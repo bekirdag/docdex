@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.3
+- Fixed npm trusted publishing configuration (environment + registry) and aligned version bump.
+
 ## 0.1.2
 - Broadened platform coverage in the workflow (musl, Windows) and kept npm version aligned with release tags.
 

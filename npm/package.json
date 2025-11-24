@@ -1,6 +1,6 @@
 {
   "name": "docdex",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Docdex CLI as an npm-installable binary wrapper.",
   "bin": {
     "docdex": "bin/docdex.js",

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3
+- Fix npm trusted publishing setup (environment + registry configuration) and bump version for release.
+- Add musl/Windows targets to the release workflow and doc updates for broader platform support.
+
 ## 0.1.2
 - Add musl/Windows targets to the release workflow and align npm publish trigger on tags.
 - Doc updates for broader platform support.

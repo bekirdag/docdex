@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.2
+- Broadened platform coverage in the workflow (musl, Windows) and kept npm version aligned with release tags.
+
 ## 0.1.1
 - Updated npm README with clearer install and usage details.
 

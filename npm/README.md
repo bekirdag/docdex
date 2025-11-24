@@ -1,6 +1,6 @@
 # Docdex CLI (npm)
 
-Docdex is a lightweight, local docs indexer/searcher. This package installs the `docdex` (alias `docdexd`) CLI via npm.
+Docdex is a lightweight, local docs indexer/searcher. It builds and serves a per-repo index of your Markdown/text files—no external services, no uploads.
 
 ## Install
 ```bash
@@ -15,15 +15,29 @@ npx docdex --version
 - Node.js >= 18
 - Platforms: macOS (arm64, x64), Linux glibc (arm64, x64), Linux musl/Alpine (x64), Windows (x64). ARM64 Windows and Linux musl ARM64 can be added when artifacts are published.
 
-## What gets installed
-- A tiny JS launcher (`docdex`/`docdexd`).
-- On install, it downloads the prebuilt `docdexd` binary for your platform from the GitHub release that matches the npm package version and stores it under `dist/<platform>/docdexd`.
+## What this package does
+- Provides a tiny JS launcher (`docdex`/`docdexd`).
+- On install, downloads the prebuilt `docdexd` binary for your platform from the GitHub release that matches the npm package version, storing it under `dist/<platform>/docdexd`.
 
-## Usage
+## What Docdex does
+- Indexes Markdown/text files in your repo (tantivy-based) and stores the index locally.
+- Serves search/snippet APIs over HTTP (`/search`, `/snippet`, `/healthz`) and via CLI commands.
+- Watches files while serving to keep the index fresh.
+- Hardened defaults: loopback bind, optional TLS/auth token, rate limits, strict state-dir perms.
+
+## Quick usage
 ```bash
+# Check version
 docdex --version
-docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 46137
+
+# Build an index
 docdexd index --repo /path/to/repo
+
+# Serve HTTP API with live watching
+docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 46137 --log info
+
+# Ad-hoc search via CLI (JSON)
+docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 ```
 
 ## Environment overrides (optional)

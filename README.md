@@ -4,7 +4,7 @@ Docdex is a lightweight, local documentation indexer/search daemon. It runs per-
 
 ## Install via npm
 - Requires Node.js >= 18.
-- Install: `npm i -g docdex` (or `npx docdex --version` to verify).
+- Install: `npm i -g docdex` (or run `npx docdex --version` to verify).
 - Commands: `docdex` (alias `docdexd`) downloads the right binary for your platform from the matching GitHub release.
 - Supported targets: macOS (arm64, x64), Linux glibc (arm64, x64), Linux musl (x64), Windows (x64); publish arm64 musl/Windows when available.
 - If you publish from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` before installing so the downloader fetches your release assets.
@@ -33,12 +33,10 @@ Docdex is a lightweight, local documentation indexer/search daemon. It runs per-
 
 ## Quick start
 ```bash
-# build the binary (output: target/release/docdexd)
-cargo build --release
-# or install into ~/.cargo/bin
-cargo install --path .
-# Note: schema changes (like non-tokenized doc_ids) require reindexing existing repos:
-#   rm -rf <repo>/.docdex/index && docdexd index --repo <repo>
+# install (npm)
+npm i -g docdex
+# or use once
+npx docdex --version
 
 # full index for a repo/workspace
 docdexd index --repo /path/to/repo

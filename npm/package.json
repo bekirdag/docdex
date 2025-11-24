@@ -29,7 +29,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/bekirdag/docdex.git"
+    "url": "git+https://github.com/bekirdag/docdex.git"
   },
   "bugs": {
     "url": "https://github.com/bekirdag/docdex/issues"

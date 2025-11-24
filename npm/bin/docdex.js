@@ -9,7 +9,11 @@ const { detectPlatformKey } = require("../lib/platform");
 
 function run() {
   const platformKey = detectPlatformKey();
-  const binaryPath = path.join(__dirname, "..", "dist", platformKey, "docdexd");
+  const basePath = path.join(__dirname, "..", "dist", platformKey);
+  const binaryPath = path.join(
+    basePath,
+    process.platform === "win32" ? "docdexd.exe" : "docdexd"
+  );
 
   if (!fs.existsSync(binaryPath)) {
     console.error(

@@ -2,8 +2,6 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -26,6 +24,11 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
             archive: docdexd-linux-x64-gnu
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-22.04
+            archive: docdexd-linux-x64-musl
+            cross_deps: "musl-tools"
+            linker: "musl-gcc"
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04
             archive: docdexd-linux-arm64-gnu
@@ -34,11 +37,14 @@ jobs:
             ar: "aarch64-linux-gnu-ar"
             cc: "aarch64-linux-gnu-gcc"
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-15
             archive: docdexd-darwin-x64
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-latest
             archive: docdexd-darwin-arm64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: docdexd-win32-x64
 
     steps:
       - name: Checkout
@@ -77,17 +83,22 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
           AR_aarch64_unknown_linux_gnu: ${{ matrix.ar }}
           CC_aarch64_unknown_linux_gnu: ${{ matrix.cc }}
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.linker }}
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Package binary
+        shell: bash
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/docdexd dist/docdexd
-          tar -czf ${{ matrix.archive }}.tar.gz -C dist docdexd
-          shasum -a 256 ${{ matrix.archive }}.tar.gz > ${{ matrix.archive }}.sha256
+          BIN_NAME="docdexd"
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            BIN_NAME="docdexd.exe"
+          fi
+          cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${BIN_NAME}"
+          tar -czf ${{ matrix.archive }}.tar.gz -C dist "${BIN_NAME}"
+          python -c "import hashlib, pathlib; p=pathlib.Path('${{ matrix.archive }}.tar.gz'); h=hashlib.sha256(p.read_bytes()).hexdigest(); pathlib.Path(f'{p}.sha256').write_text(f'{h}  {p.name}\\n')"
 
       - name: Upload GitHub release assets
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.ref_name }}
@@ -108,7 +119,6 @@ jobs:
   publish-npm:
     name: Publish npm package
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v') && github.ref_protected == true
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

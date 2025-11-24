@@ -95,7 +95,7 @@ async function main() {
   await download(downloadUrl, tmpFile);
   await extractTarball(tmpFile, distDir);
 
-  const binaryPath = path.join(distDir, "docdexd");
+  const binaryPath = path.join(distDir, process.platform === "win32" ? "docdexd.exe" : "docdexd");
   if (!fs.existsSync(binaryPath)) {
     throw new Error(`Downloaded archive missing binary at ${binaryPath}`);
   }

@@ -13,7 +13,7 @@ npx docdex --version
 
 ## Requirements
 - Node.js >= 18
-- Platforms: macOS (arm64, x64), Linux glibc (arm64, x64). Alpine/musl works when matching artifacts are published.
+- Platforms: macOS (arm64, x64), Linux glibc (arm64, x64), Linux musl/Alpine (x64), Windows (x64). ARM64 Windows and Linux musl ARM64 can be added when artifacts are published.
 
 ## What gets installed
 - A tiny JS launcher (`docdex`/`docdexd`).

@@ -29,6 +29,11 @@ function detectPlatformKey() {
     if (arch === "x64") return `linux-x64-${libc}`;
   }
 
+  if (platform === "win32") {
+    if (arch === "x64") return "win32-x64";
+    if (arch === "arm64") return "win32-arm64";
+  }
+
   throw new Error(`Unsupported platform: ${platform}/${arch}`);
 }
 

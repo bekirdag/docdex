@@ -1,28 +1,39 @@
-# Docdex (npm)
+# Docdex CLI (npm)
 
-Install the Docdex CLI via npm:
+Docdex is a lightweight, local docs indexer/searcher. This package installs the `docdex` (alias `docdexd`) CLI via npm.
 
+## Install
 ```bash
+# Global install
 npm i -g docdex
-# or
+
+# One-off use
 npx docdex --version
 ```
 
-Requirements:
+## Requirements
 - Node.js >= 18
-- Supported platforms: macOS (arm64, x64), Linux glibc (arm64, x64). Musl (Alpine) is detected automatically when artifacts are available.
+- Platforms: macOS (arm64, x64), Linux glibc (arm64, x64). Alpine/musl works when matching artifacts are published.
 
-How it works:
-- The package ships a small launcher (`docdex`/`docdexd`); `postinstall` downloads the correct `docdexd` binary for your platform from the GitHub release matching the npm package version.
+## What gets installed
+- A tiny JS launcher (`docdex`/`docdexd`).
+- On install, it downloads the prebuilt `docdexd` binary for your platform from the GitHub release that matches the npm package version and stores it under `dist/<platform>/docdexd`.
 
-Environment overrides (optional):
-- `DOCDEX_DOWNLOAD_REPO` — `owner/repo` slug hosting release assets (required if `package.json` repository is still a placeholder).
-- `DOCDEX_DOWNLOAD_BASE` — full base URL for release downloads (defaults to `https://github.com/<repo>/releases/download`).
-- `DOCDEX_VERSION` — force a specific version/tag when testing.
+## Usage
+```bash
+docdex --version
+docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 46137
+docdexd index --repo /path/to/repo
+```
+
+## Environment overrides (optional)
+- `DOCDEX_DOWNLOAD_REPO` — `owner/repo` slug hosting release assets (defaults to the linked GitHub repo).
+- `DOCDEX_DOWNLOAD_BASE` — custom base URL for release downloads (defaults to `https://github.com/<repo>/releases/download`).
+- `DOCDEX_VERSION` — override version/tag to download (for testing).
 - `DOCDEX_LIBC` — force `gnu` or `musl` on Linux if auto-detection is wrong.
-- `DOCDEX_GITHUB_TOKEN` — token for authenticated GitHub downloads (avoids rate limits/private release issues).
+- `DOCDEX_GITHUB_TOKEN` — token for authenticated GitHub downloads (avoids rate limits/private releases).
 
-Notes:
+## Notes
 - Release assets are expected to be named `docdexd-<platform>.tar.gz` with a matching `.sha256`.
 - License: MIT (see `LICENSE`).
 - Changelog: see `CHANGELOG.md`.

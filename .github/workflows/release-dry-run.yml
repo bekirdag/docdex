@@ -1,0 +1,51 @@
+name: Release Dry Run
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Tests
+        run: cargo test --locked --all
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+          key: node-dryrun-${{ runner.os }}-${{ hashFiles('npm/package-lock.json') }}
+          restore-keys: |
+            node-dryrun-${{ runner.os }}-
+
+      - name: Install npm deps (no postinstall)
+        working-directory: npm
+        run: npm install --ignore-scripts
+
+      - name: npm publish dry run
+        working-directory: npm
+        env:
+          NPM_CONFIG_PROVENANCE: "true"
+        run: npm publish --dry-run --provenance --access public

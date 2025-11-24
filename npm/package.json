@@ -1,0 +1,51 @@
+{
+  "name": "docdex",
+  "version": "0.1.0",
+  "description": "Docdex CLI as an npm-installable binary wrapper.",
+  "bin": {
+    "docdex": "bin/docdex.js",
+    "docdexd": "bin/docdex.js"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "postinstall": "node ./lib/install.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "arm64",
+    "x64"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bekirdag/docdex.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bekirdag/docdex/issues"
+  },
+  "homepage": "https://github.com/bekirdag/docdex#readme",
+  "license": "MIT",
+  "author": "bekir dağ",
+  "keywords": [
+    "docdex",
+    "search",
+    "cli"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "tar": "^6.2.1"
+  }
+}

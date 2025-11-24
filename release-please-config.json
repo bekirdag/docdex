@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "include-v-in-tag": true,
+  "include-component-in-tag": false,
+  "pull-request-title-pattern": "chore: release ${version}",
+  "packages": {
+    ".": {
+      "component": "docdex",
+      "changelog-path": "CHANGELOG.md",
+      "release-type": "rust"
+    },
+    "npm": {
+      "component": "docdex",
+      "changelog-path": "npm/CHANGELOG.md",
+      "release-type": "node"
+    }
+  }
+}

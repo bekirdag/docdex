@@ -1,0 +1,21 @@
+# Build artifacts
+/target/
+/npm/node_modules/
+/npm/dist/
+
+# Local indexes/state
+/.docdex/
+/.gpt-creator/
+/.mastercoda/
+
+# Tooling/editor noise
+/.vscode/
+/.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Env/config
+.env
+.env.*
+*.log

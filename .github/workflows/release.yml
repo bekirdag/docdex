@@ -1,0 +1,194 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.archive }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            archive: docdexd-linux-x64-gnu
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+            archive: docdexd-linux-arm64-gnu
+            cross_deps: "gcc-aarch64-linux-gnu"
+          - target: x86_64-apple-darwin
+            os: macos-13
+            archive: docdexd-darwin-x64
+          - target: aarch64-apple-darwin
+            os: macos-14
+            archive: docdexd-darwin-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute source date epoch
+        id: epoch
+        run: echo "epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-${{ matrix.target }}
+          workspaces: |
+            .
+
+      - name: Tests
+        run: cargo test --locked --all
+
+      - name: Install cross toolchain
+        if: ${{ matrix.cross_deps != '' }}
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.cross_deps }}
+
+      - name: Build release binary
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.epoch }}
+          CARGO_PROFILE_RELEASE_DEBUG: 0
+          CARGO_PROFILE_RELEASE_LTO: true
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
+          RUSTFLAGS: "-C strip=symbols"
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/docdexd dist/docdexd
+          tar -czf ${{ matrix.archive }}.tar.gz -C dist docdexd
+          shasum -a 256 ${{ matrix.archive }}.tar.gz > ${{ matrix.archive }}.sha256
+
+      - name: Upload GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            ${{ matrix.archive }}.tar.gz
+            ${{ matrix.archive }}.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts for npm packaging
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: |
+            ${{ matrix.archive }}.tar.gz
+            ${{ matrix.archive }}.sha256
+
+  publish-npm:
+    name: Publish npm package
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') && github.ref_protected == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: docdexd-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh artifacts
+
+      - name: Verify artifact checksums
+        shell: bash
+        working-directory: artifacts
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in *.sha256; do
+            shasum -a 256 -c "$f"
+          done
+
+      - name: Verify tag matches crate and npm versions
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CRATE_VERSION=$(python - <<'PY'
+import tomllib
+from pathlib import Path
+print(tomllib.loads(Path("Cargo.toml").read_text())["package"]["version"])
+PY
+)
+          PKG_VERSION=$(node -p "require('./npm/package.json').version")
+          if [ "$TAG" != "$CRATE_VERSION" ]; then
+            echo "Tag v$TAG does not match Cargo.toml version $CRATE_VERSION"
+            exit 1
+          fi
+          if [ "$TAG" != "$PKG_VERSION" ]; then
+            echo "Tag v$TAG does not match npm/package.json version $PKG_VERSION"
+            exit 1
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          always-auth: true
+
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+          key: node-${{ runner.os }}-${{ hashFiles('npm/package-lock.json') }}
+          restore-keys: |
+            node-${{ runner.os }}-
+
+      - name: Install npm deps (no postinstall)
+        working-directory: npm
+        run: npm install --ignore-scripts
+
+      - name: Pack npm tarball (verification)
+        working-directory: npm
+        run: npm pack --ignore-scripts
+
+      - name: Publish to npm
+        working-directory: npm
+        env:
+          DOCDEX_DOWNLOAD_REPO: ${{ github.repository }}
+          NPM_CONFIG_PROVENANCE: "true"
+        run: npm publish --access public --provenance
+
+      - name: Smoke test install from packed tarball
+        shell: bash
+        env:
+          DOCDEX_DOWNLOAD_REPO: ${{ github.repository }}
+          DOCDEX_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PACK_TGZ=$(ls npm/docdex-*.tgz | head -n 1)
+          TEST_DIR=$(mktemp -d)
+          pushd "$TEST_DIR" >/dev/null
+          npm init -y >/dev/null
+          npm install "$PACK_TGZ"
+          npx docdex --version
+          popd >/dev/null

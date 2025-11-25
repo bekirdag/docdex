@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4
+- Bump version for republish after 0.1.3 was already on npm.
+- Keep trusted publishing fixes and expanded platform targets.
+
 ## 0.1.3
 - Fix npm trusted publishing setup (environment + registry configuration) and bump version for release.
 - Add musl/Windows targets to the release workflow and doc updates for broader platform support.

@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.4
+- Version bump for republish (0.1.3 already exists on npm).
+
 ## 0.1.3
 - Fixed npm trusted publishing configuration (environment + registry) and aligned version bump.
 

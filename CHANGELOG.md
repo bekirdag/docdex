@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.6
+- Fix MCP stdio compliance: accept notifications, advertise underscore tool names, and return CallToolResult `content` payloads so Codex/other MCP clients stay connected.
+- Keep docs/tests in sync with MCP spec responses ahead of npm publish.
+
 ## 0.1.5
 - Ship MCP stdio mode (docdex.search/index/files/open/stats) with resource templates and docs for MCP-aware clients.
 - Expand CLI/help and tests around MCP usage to make agent/editor integration reliable.

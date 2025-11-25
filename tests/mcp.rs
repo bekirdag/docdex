@@ -85,6 +85,21 @@ fn send_line(
     Ok(())
 }
 
+fn parse_tool_result(resp: &serde_json::Value) -> Result<serde_json::Value, Box<dyn Error>> {
+    let content = resp
+        .get("result")
+        .and_then(|v| v.get("content"))
+        .and_then(|v| v.as_array())
+        .ok_or("tool result missing content array")?;
+    let first_text = content
+        .first()
+        .and_then(|v| v.get("text"))
+        .and_then(|v| v.as_str())
+        .ok_or("tool result missing text content")?;
+    let parsed: serde_json::Value = serde_json::from_str(first_text)?;
+    Ok(parsed)
+}
+
 fn read_line(
     reader: &mut BufReader<std::process::ChildStdout>,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
@@ -123,7 +138,7 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
             .get("result")
             .and_then(|v| v.get("capabilities"))
             .and_then(|v| v.get("tools"))
-            .and_then(|v| v.as_bool()),
+            .map(|v| v.is_object()),
         Some(true),
         "initialize should advertise tools capability"
     );
@@ -152,16 +167,16 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
         })
         .collect();
     assert!(
-        tool_names.contains(&"docdex.search".to_string()),
-        "tools/list should include docdex.search"
+        tool_names.contains(&"docdex_search".to_string()),
+        "tools/list should include docdex_search"
     );
     assert!(
-        tool_names.contains(&"docdex.index".to_string()),
-        "tools/list should include docdex.index"
+        tool_names.contains(&"docdex_index".to_string()),
+        "tools/list should include docdex_index"
     );
     assert!(
-        tool_names.contains(&"docdex.stats".to_string()),
-        "tools/list should include docdex.stats"
+        tool_names.contains(&"docdex_stats".to_string()),
+        "tools/list should include docdex_stats"
     );
 
     // build index via tool
@@ -172,7 +187,7 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
             "id": 3,
             "method": "tools/call",
             "params": {
-                "name": "docdex.index",
+                "name": "docdex_index",
                 "arguments": { "paths": [] }
             }
         }),
@@ -183,13 +198,11 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
         Some(3),
         "index response should echo id"
     );
+    let index_body = parse_tool_result(&index_resp)?;
     assert_eq!(
-        index_resp
-            .get("result")
-            .and_then(|v| v.get("status"))
-            .and_then(|v| v.as_str()),
+        index_body.get("status").and_then(|v| v.as_str()),
         Some("ok"),
-        "docdex.index should return status ok"
+        "docdex_index should return status ok"
     );
 
     // search for the test term
@@ -200,7 +213,7 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
             "id": 4,
             "method": "tools/call",
             "params": {
-                "name": "docdex.search",
+                "name": "docdex_search",
                 "arguments": {
                     "query": "MCP_ROADMAP",
                     "limit": 5
@@ -209,14 +222,14 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
         }),
     )?;
     let search_resp = read_line(&mut harness.reader)?;
-    let results = search_resp
-        .get("result")
-        .and_then(|v| v.get("results"))
+    let search_body = parse_tool_result(&search_resp)?;
+    let results = search_body
+        .get("results")
         .and_then(|v| v.as_array())
-        .ok_or("docdex.search should return results array")?;
+        .ok_or("docdex_search should return results array")?;
     assert!(
         !results.is_empty(),
-        "docdex.search should return at least one hit for MCP_ROADMAP"
+        "docdex_search should return at least one hit for MCP_ROADMAP"
     );
 
     // stats should report doc count
@@ -227,21 +240,20 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
             "id": 5,
             "method": "tools/call",
             "params": {
-                "name": "docdex.stats",
+                "name": "docdex_stats",
                 "arguments": {}
             }
         }),
     )?;
     let stats_resp = read_line(&mut harness.reader)?;
-    let num_docs = stats_resp
-        .get("result")
-        .and_then(|v| v.get("num_docs"))
+    let stats_body = parse_tool_result(&stats_resp)?;
+    let num_docs = stats_body
+        .get("num_docs")
         .and_then(|v| v.as_u64())
-        .ok_or("docdex.stats should include num_docs")?;
+        .ok_or("docdex_stats should include num_docs")?;
     assert!(num_docs > 0, "stats num_docs should be > 0");
-    let segments = stats_resp
-        .get("result")
-        .and_then(|v| v.get("segments"))
+    let segments = stats_body
+        .get("segments")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     assert!(segments > 0, "stats should report at least one segment");
@@ -254,26 +266,25 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
             "id": 6,
             "method": "tools/call",
             "params": {
-                "name": "docdex.files",
+                "name": "docdex_files",
                 "arguments": { "limit": 10, "offset": 0 }
             }
         }),
     )?;
     let files_resp = read_line(&mut harness.reader)?;
-    let files = files_resp
-        .get("result")
-        .and_then(|v| v.get("results"))
+    let files_body = parse_tool_result(&files_resp)?;
+    let files = files_body
+        .get("results")
         .and_then(|v| v.as_array())
-        .ok_or("docdex.files should return results array")?;
+        .ok_or("docdex_files should return results array")?;
     assert!(
         !files.is_empty(),
-        "docdex.files should return at least one document entry"
+        "docdex_files should return at least one document entry"
     );
-    let total = files_resp
-        .get("result")
-        .and_then(|v| v.get("total"))
+    let total = files_body
+        .get("total")
         .and_then(|v| v.as_u64())
-        .ok_or("docdex.files should return total")?;
+        .ok_or("docdex_files should return total")?;
     assert!(
         total >= files.len() as u64,
         "total should be >= returned rows"
@@ -351,7 +362,7 @@ fn mcp_search_empty_query_errors() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 12,
             "method": "tools/call",
-            "params": { "name": "docdex.index", "arguments": { "paths": [] } }
+            "params": { "name": "docdex_index", "arguments": { "paths": [] } }
         }),
     )?;
     let _ = read_line(&mut harness.reader)?;
@@ -363,7 +374,7 @@ fn mcp_search_empty_query_errors() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 13,
             "method": "tools/call",
-            "params": { "name": "docdex.search", "arguments": { "query": "" } }
+            "params": { "name": "docdex_search", "arguments": { "query": "" } }
         }),
     )?;
     let resp = read_line(&mut harness.reader)?;
@@ -392,7 +403,7 @@ fn mcp_files_pagination_and_invalid_params() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 20,
             "method": "tools/call",
-            "params": { "name": "docdex.index", "arguments": { "paths": [] } }
+            "params": { "name": "docdex_index", "arguments": { "paths": [] } }
         }),
     )?;
     let _ = read_line(&mut harness.reader)?;
@@ -404,20 +415,19 @@ fn mcp_files_pagination_and_invalid_params() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 21,
             "method": "tools/call",
-            "params": { "name": "docdex.files", "arguments": { "limit": 5, "offset": 10_000 } }
+            "params": { "name": "docdex_files", "arguments": { "limit": 5, "offset": 10_000 } }
         }),
     )?;
     let paged_resp = read_line(&mut harness.reader)?;
-    let total = paged_resp
-        .get("result")
-        .and_then(|v| v.get("total"))
+    let paged_body = parse_tool_result(&paged_resp)?;
+    let total = paged_body
+        .get("total")
         .and_then(|v| v.as_u64())
-        .ok_or("docdex.files should include total")?;
-    let files = paged_resp
-        .get("result")
-        .and_then(|v| v.get("results"))
+        .ok_or("docdex_files should include total")?;
+    let files = paged_body
+        .get("results")
         .and_then(|v| v.as_array())
-        .ok_or("docdex.files should include results array")?;
+        .ok_or("docdex_files should include results array")?;
     assert_eq!(
         files.len(),
         0,
@@ -435,7 +445,7 @@ fn mcp_files_pagination_and_invalid_params() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 22,
             "method": "tools/call",
-            "params": { "name": "docdex.files", "arguments": { "limit": "not-a-number" } }
+            "params": { "name": "docdex_files", "arguments": { "limit": "not-a-number" } }
         }),
     )?;
     let invalid_resp = read_line(&mut harness.reader)?;
@@ -475,17 +485,17 @@ Line5
             "id": 30,
             "method": "tools/call",
             "params": {
-                "name": "docdex.open",
+                "name": "docdex_open",
                 "arguments": { "path": "docs/open.md" }
             }
         }),
     )?;
     let full_resp = read_line(&mut harness.reader)?;
-    let full_content = full_resp
-        .get("result")
-        .and_then(|v| v.get("content"))
+    let full_body = parse_tool_result(&full_resp)?;
+    let full_content = full_body
+        .get("content")
         .and_then(|v| v.as_str())
-        .ok_or("docdex.open should return content")?;
+        .ok_or("docdex_open should return content")?;
     assert!(full_content.contains("Line1") && full_content.contains("Line5"));
 
     // Range (lines 2-3)
@@ -496,17 +506,17 @@ Line5
             "id": 31,
             "method": "tools/call",
             "params": {
-                "name": "docdex.open",
+                "name": "docdex_open",
                 "arguments": { "path": "docs/open.md", "start_line": 2, "end_line": 3 }
             }
         }),
     )?;
     let range_resp = read_line(&mut harness.reader)?;
-    let range_content = range_resp
-        .get("result")
-        .and_then(|v| v.get("content"))
+    let range_body = parse_tool_result(&range_resp)?;
+    let range_content = range_body
+        .get("content")
         .and_then(|v| v.as_str())
-        .ok_or("docdex.open range should return content")?;
+        .ok_or("docdex_open range should return content")?;
     assert!(
         range_content.lines().count() == 2 && range_content.contains("Line2"),
         "range content should include only requested lines"
@@ -520,7 +530,7 @@ Line5
             "id": 32,
             "method": "tools/call",
             "params": {
-                "name": "docdex.open",
+                "name": "docdex_open",
                 "arguments": { "path": "../open.md" }
             }
         }),
@@ -548,7 +558,7 @@ fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 50,
             "method": "tools/call",
-            "params": { "name": "docdex.search", "arguments": { "limit": 2 } }
+            "params": { "name": "docdex_search", "arguments": { "limit": 2 } }
         }),
     )?;
     let resp = read_line(&mut harness.reader)?;
@@ -569,7 +579,7 @@ fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 51,
             "method": "tools/call",
-            "params": { "name": "docdex.open", "arguments": { "path": "/etc/passwd" } }
+            "params": { "name": "docdex_open", "arguments": { "path": "/etc/passwd" } }
         }),
     )?;
     let resp = read_line(&mut harness.reader)?;
@@ -590,7 +600,7 @@ fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 52,
             "method": "tools/call",
-            "params": { "name": "docdex.open", "arguments": { "path": "docs/overview.md", "start_line": 10, "end_line": 1 } }
+            "params": { "name": "docdex_open", "arguments": { "path": "docs/overview.md", "start_line": 10, "end_line": 1 } }
         }),
     )?;
     let resp = read_line(&mut harness.reader)?;
@@ -611,7 +621,7 @@ fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 53,
             "method": "tools/call",
-            "params": { "name": "docdex.open", "arguments": { "path": "docs/overview.md", "start_line": 10_000 } }
+            "params": { "name": "docdex_open", "arguments": { "path": "docs/overview.md", "start_line": 10_000 } }
         }),
     )?;
     let resp = read_line(&mut harness.reader)?;
@@ -635,7 +645,7 @@ fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 54,
             "method": "tools/call",
-            "params": { "name": "docdex.open", "arguments": { "path": "docs/big.md" } }
+            "params": { "name": "docdex_open", "arguments": { "path": "docs/big.md" } }
         }),
     )?;
     let resp = read_line(&mut harness.reader)?;
@@ -649,7 +659,7 @@ fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
         "oversized file should be rejected with invalid params"
     );
 
-    // resource templates list should return docdex.file
+    // resource templates list should return docdex_file
     send_line(
         &mut harness.stdin,
         json!({
@@ -667,12 +677,12 @@ fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
     let has_docdex = templates.iter().any(|tpl| {
         tpl.get("name")
             .and_then(|v| v.as_str())
-            .map(|name| name == "docdex.file")
+            .map(|name| name == "docdex_file")
             .unwrap_or(false)
     });
-    assert!(has_docdex, "resource templates should include docdex.file");
+    assert!(has_docdex, "resource templates should include docdex_file");
 
-    // resources/read should resolve docdex.file
+    // resources/read should resolve docdex_file
     send_line(
         &mut harness.stdin,
         json!({
@@ -690,7 +700,7 @@ fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
         .unwrap_or_default();
     assert!(
         !content.is_empty(),
-        "resources/read should return file content for docdex.file"
+        "resources/read should return file content for docdex_file"
     );
 
     harness.shutdown();

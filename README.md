@@ -53,7 +53,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 ## TL;DR for agents
 - Use Docdex for repo docs: run `docdexd index --repo .` once, then either `docdexd serve --repo . --host 127.0.0.1 --port 46137` for HTTP, or `docdexd mcp --repo . --log warn` for MCP.
 - Add `.docdex/` to `.gitignore` so indexes aren’t committed.
-- When MCP-aware, register a server named `docdex` that runs `docdexd mcp --repo . --log warn --max-results 8`, then call `docdex.search` before coding and `docdex.index` when stale.
+- When MCP-aware, register a server named `docdex` that runs `docdexd mcp --repo . --log warn --max-results 8`, then call `docdex_search` before coding and `docdex_index` when stale.
 - Prefer summary-first (snippets=false), fetch specific snippets only when needed, keep queries short, and respect token estimates.
 
 ## Usage cheat sheet
@@ -72,7 +72,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - Trim noise early: use `--exclude-dir` and `--exclude-prefix` to keep vendor/build/cache/secrets out of the index so snippets stay relevant and short.
 - Quiet logging for agents: run `docdexd serve --log warn --access-log=false` if you marshal responses elsewhere to cut log overhead.
 - Cache hits client-side: store `doc_id` ↔ `rel_path` ↔ `summary` to avoid repeat snippet calls; fetch snippets only for new doc_ids.
-- Agent help: `curl http://127.0.0.1:46137/ai-help` (requires auth if configured; include `Authorization: Bearer <token>` when you’ve set `--auth-token`).
+- Agent help: `curl http://127.0.0.1:46137/ai-help` (requires auth if configured; include `Authorization: Bearer <token>` when you’ve set `--auth-token`). The response includes a short MCP registration recipe.
 
 ## Versioning
 - Semantic versioning with tagged releases (`vX.Y.Z`). The Rust crate and npm package share the same version.
@@ -145,6 +145,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - Ad-hoc queries: `docdexd query --help`.
 - Self-check scanner options: `docdexd self-check --help`.
 - Agent help endpoint: `curl http://127.0.0.1:46137/ai-help` (include `Authorization: Bearer <token>` if `--auth-token` is set) for a JSON listing of endpoints, limits, and best practices.
+- MCP help/registration: `docdexd mcp --help` lists MCP flags; register with your client using `docdexd mcp --repo <repo> --log warn --max-results 8` (Codex CLI shortcut: `codex mcp add docdex -- docdexd mcp --repo <repo> --log warn --max-results 8`).
 - Environment variables mirror the flags (e.g., `DOCDEX_AUTH_TOKEN`, `DOCDEX_TLS_CERT`, `DOCDEX_MAX_LIMIT`).
 - Command overview (same as `docdexd --help`):
   - `serve` — run HTTP API with watcher and security knobs.
@@ -198,9 +199,9 @@ Docdex is tool-agnostic. Drop-in recipe for agents/codegen tools:
 ```
 
 ### MCP (optional stdio server for MCP-aware clients)
-Docdex can run as an MCP tool provider over stdio; it does not replace the HTTP daemon—pick whichever fits your agent/editor. If your MCP client supports resource templates, Docdex advertises a `docdex.file` template (`docdex://{path}`) which delegates to `docdex.open`.
+Docdex can run as an MCP tool provider over stdio; it does not replace the HTTP daemon—pick whichever fits your agent/editor. If your MCP client supports resource templates, Docdex advertises a `docdex_file` template (`docdex://{path}`) which delegates to `docdex_open`.
 - Run: `docdexd mcp --repo /path/to/repo --log warn --max-results 8` (alias: `--mcp-max-results 8`).
-- Env override: `DOCDEX_MCP_MAX_RESULTS` clamps `docdex.search` results (min 1).
+- Env override: `DOCDEX_MCP_MAX_RESULTS` clamps `docdex_search` results (min 1).
 - Packaging: MCP server is built into the main `docdexd` binary (invoked via `docdexd mcp` or `docdex mcp` from the npm bin); no separate `docdex-mcp` download required.
 - Registering with MCP clients: add a server named `docdex` that runs `docdexd mcp --repo <repo> --log warn`. Example Codex config snippet:
   ```json
@@ -214,23 +215,28 @@ Docdex can run as an MCP tool provider over stdio; it does not replace the HTTP 
     }
   }
   ```
-- Tools exposed:
-  - `docdex.search` — args: `{ "query": "<text>", "limit": <int optional>, "project_root": "<path optional>" }`. Returns `{ "results": [...], "repo_root": "...", "state_dir": "...", "limit": <int>, "project_root": "...", "meta": {...} }`.
-  - `docdex.index` — args: `{ "paths": ["relative/or/absolute"], "project_root": "<path optional>" }`. Empty `paths` reindexes everything; otherwise ingests the listed files.
-  - `docdex.files` — args: `{ "limit": <int optional, default 200, max 1000>, "offset": <int optional, default 0>, "project_root": "<path optional>" }`. Returns `{ "results": [{ "doc_id", "rel_path", "summary", "token_estimate" }], "total", "limit", "offset", "repo_root", "project_root" }`.
-  - `docdex.open` — args: `{ "path": "<relative file>", "start_line": <int optional>, "end_line": <int optional>, "project_root": "<path optional>" }`. Returns `{ "path", "start_line", "end_line", "total_lines", "content", "repo_root", "project_root" }` (rejects paths outside repo and large files).
-  - `docdex.stats` — args: `{ "project_root": "<path optional>" }`. Returns `{ "num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "repo_root", "project_root" }`.
+- MCP quick add commands (popular agents):
+  - Docdex helper: `docdex mcp-add --repo /path/to/repo --log warn --max-results 8` auto-detects supported agents; add `--all` to attempt every known client and print manual steps for UI-only ones, or `--remove` to uninstall.
+  - Codex CLI: `codex mcp add docdex -- docdexd mcp --repo /path/to/repo --log warn --max-results 8`.
+  - Generic JSON config (Cursor, Continue, Windsurf, Cline, Claude Desktop devtools): add the `mcpServers.docdex` block above to your MCP config file (paths vary by client; most accept the `command`/`args` schema shown).
+  - Manual/stdio-only clients: start `docdexd mcp --repo /path/to/repo --log warn --max-results 8` yourself and point the client at that command/binary.
+- Tools exposed (CallToolResult content: result.content[0].text contains JSON):
+  - `docdex_search` — args: `{ "query": "<text>", "limit": <int optional>, "project_root": "<path optional>" }`. Returns `{ "results": [...], "repo_root": "...", "state_dir": "...", "limit": <int>, "project_root": "...", "meta": {...} }`.
+  - `docdex_index` — args: `{ "paths": ["relative/or/absolute"], "project_root": "<path optional>" }`. Empty `paths` reindexes everything; otherwise ingests the listed files.
+  - `docdex_files` — args: `{ "limit": <int optional, default 200, max 1000>, "offset": <int optional, default 0>, "project_root": "<path optional>" }`. Returns `{ "results": [{ "doc_id", "rel_path", "summary", "token_estimate" }], "total", "limit", "offset", "repo_root", "project_root" }`.
+  - `docdex_open` — args: `{ "path": "<relative file>", "start_line": <int optional>, "end_line": <int optional>, "project_root": "<path optional>" }`. Returns `{ "path", "start_line", "end_line", "total_lines", "content", "repo_root", "project_root" }` (rejects paths outside repo and large files).
+  - `docdex_stats` — args: `{ "project_root": "<path optional>" }`. Returns `{ "num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "repo_root", "project_root" }`.
 - Example calls:
   - Initialize: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
   - Initialize with workspace root: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"workspace_root":"/path/to/repo"}}` (must match the server repo; sets default project_root for later calls)
   - List tools: `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`
-  - Reindex: `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"docdex.index","arguments":{"paths":[]}}}`
-  - Search: `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"docdex.search","arguments":{"query":"payment auth flow","limit":3,"project_root":"/repo"}}}`
-  - List files: `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"docdex.files","arguments":{"limit":10,"offset":0}}}`
-  - Open file: `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"docdex.open","arguments":{"path":"docs/readme.md","start_line":1,"end_line":20}}}`
-  - Stats: `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"docdex.stats","arguments":{}}}`
+  - Reindex: `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"docdex_index","arguments":{"paths":[]}}}`
+  - Search: `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"docdex_search","arguments":{"query":"payment auth flow","limit":3,"project_root":"/repo"}}}`
+  - List files: `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"docdex_files","arguments":{"limit":10,"offset":0}}}`
+  - Open file: `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"docdex_open","arguments":{"path":"docs/readme.md","start_line":1,"end_line":20}}}`
+  - Stats: `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"docdex_stats","arguments":{}}}`
 - Errors: invalid JSON → code -32700; unsupported/missing `jsonrpc` → -32600; unknown tool/method → -32601; invalid params (empty query, bad args, project_root mismatch) → -32602; internal errors include a `reason` string in `error.data`.
-- Agent guidance: call `docdex.search` with concise queries before coding; fetch only a few hits; if results look stale, call `docdex.index`; keep using HTTP/CLI if your stack isn’t MCP-aware.
+- Agent guidance: call `docdex_search` with concise queries before coding; fetch only a few hits; if results look stale, call `docdex_index`; keep using HTTP/CLI if your stack isn’t MCP-aware.
 - Help: `docdexd mcp --help` shows MCP flags and defaults; `docdexd help-all` includes an MCP section listing tools and usage.
 
 ## HTTPS and Certbot

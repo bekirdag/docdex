@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.6
+- Align with MCP spec fixes (notification handling, CallToolResult content payloads, underscore tool names) so Codex and other clients stay stable.
+- Publish npm wrapper with the latest MCP-compliant binary.
+
 ## 0.1.5
 - Publish the MCP-enabled CLI wrapper (use `docdex mcp` for MCP clients) and align docs with the new stdio mode.
 - Keep npm version in sync with the MCP release for binary downloads.

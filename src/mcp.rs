@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use tantivy::directory::error::LockError;
+use tantivy::TantivyError;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 
 const JSONRPC_VERSION: &str = "2.0";
@@ -22,7 +24,8 @@ const OPEN_MAX_BYTES: usize = 512 * 1024; // guard rail for returning file conte
 struct RpcRequest {
     #[serde(default)]
     jsonrpc: Option<String>,
-    id: serde_json::Value,
+    #[serde(default)]
+    id: Option<serde_json::Value>,
     method: String,
     #[serde(default)]
     params: Option<serde_json::Value>,
@@ -34,6 +37,10 @@ struct InitializeParams {
     project_root: Option<PathBuf>,
     #[serde(default)]
     workspace_root: Option<PathBuf>,
+    #[serde(default, rename = "protocolVersion")]
+    protocol_version: Option<String>,
+    #[serde(default)]
+    capabilities: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -58,6 +65,7 @@ struct RpcError {
 struct ToolDefinition {
     name: &'static str,
     description: &'static str,
+    #[serde(rename = "inputSchema")]
     input_schema: serde_json::Value,
 }
 
@@ -121,6 +129,7 @@ struct ResourceReadParams {
 struct ResourceTemplate {
     name: &'static str,
     description: &'static str,
+    #[serde(rename = "uriTemplate")]
     uri_template: &'static str,
     variables: &'static [&'static str],
 }
@@ -133,7 +142,18 @@ pub async fn serve(
     let repo_root = repo_root
         .canonicalize()
         .context("resolve repo root for MCP server")?;
-    let indexer = Indexer::with_config(repo_root.clone(), index_config)?;
+    // Try to open with a writer; if the index is already locked (another docdexd
+    // instance is indexing), fall back to read-only so search/open still work.
+    let indexer = match Indexer::with_config(repo_root.clone(), index_config.clone()) {
+        Ok(ix) => ix,
+        Err(err) if is_lock_busy(&err) => {
+            eprintln!(
+                "docdex mcp: index writer is busy; opening read-only (disable other docdexd to enable indexing)"
+            );
+            Indexer::with_config_read_only(repo_root.clone(), index_config)?
+        }
+        Err(err) => return Err(err),
+    };
     let mut server = McpServer {
         repo_root,
         indexer,
@@ -156,60 +176,89 @@ impl McpServer {
         let stdout = io::stdout();
         let mut reader = BufReader::new(stdin).lines();
         let mut writer = BufWriter::new(stdout);
+        let mut _seen_input = false;
 
-        while let Some(line) = reader.next_line().await? {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let req = match serde_json::from_str::<RpcRequest>(trimmed) {
-                Ok(req) => req,
-                Err(err) => {
-                    let resp = RpcResponse {
-                        jsonrpc: JSONRPC_VERSION,
-                        id: serde_json::Value::Null,
-                        result: None,
-                        error: Some(RpcError {
-                            code: ERR_PARSE,
-                            message: format!("invalid JSON: {err}"),
-                            data: None,
+        loop {
+            match reader.next_line().await {
+                Ok(Some(line)) => {
+                    _seen_input = true;
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        eprintln!("docdex mcp: recv -> {}", trimmed);
+                    }
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let req = match serde_json::from_str::<RpcRequest>(trimmed) {
+                        Ok(req) => req,
+                        Err(err) => {
+                            let resp = RpcResponse {
+                                jsonrpc: JSONRPC_VERSION,
+                                id: serde_json::Value::Null,
+                                result: None,
+                                error: Some(RpcError {
+                                    code: ERR_PARSE,
+                                    message: format!("invalid JSON: {err}"),
+                                    data: None,
+                                }),
+                            };
+                            write_response(&mut writer, &resp).await?;
+                            continue;
+                        }
+                    };
+                    let resp_opt = match self.handle(req).await {
+                        Ok(resp) => resp,
+                        Err(err) => Some(RpcResponse {
+                            jsonrpc: JSONRPC_VERSION,
+                            id: serde_json::Value::Null,
+                            result: None,
+                            error: Some(RpcError {
+                                code: ERR_INTERNAL,
+                                message: format!("internal error"),
+                                data: Some(json!({ "reason": err.to_string() })),
+                            }),
                         }),
                     };
-                    write_response(&mut writer, &resp).await?;
+                    if let Some(resp) = resp_opt {
+                        write_response(&mut writer, &resp).await?;
+                    }
+                }
+                Ok(None) => {
+                    // Some clients momentarily close stdin; stay alive and keep polling.
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     continue;
                 }
-            };
-            let resp = match self.handle(req).await {
-                Ok(resp) => resp,
-                Err(err) => RpcResponse {
-                    jsonrpc: JSONRPC_VERSION,
-                    id: serde_json::Value::Null,
-                    result: None,
-                    error: Some(RpcError {
-                        code: ERR_INTERNAL,
-                        message: format!("internal error"),
-                        data: Some(json!({ "reason": err.to_string() })),
-                    }),
-                },
-            };
-            write_response(&mut writer, &resp).await?;
+                Err(err) => {
+                    eprintln!("docdex mcp: stdin read error: {err}");
+                    break;
+                }
+            }
         }
         Ok(())
     }
 
-    async fn handle(&mut self, req: RpcRequest) -> Result<RpcResponse> {
+    async fn handle(&mut self, req: RpcRequest) -> Result<Option<RpcResponse>> {
+        // Notifications (no id) do not expect a response.
+        if req.id.is_none() {
+            if req.method == "notifications/initialized" {
+                eprintln!("docdex mcp: client initialized");
+            }
+            return Ok(None);
+        }
+        let id = req.id.clone().unwrap();
+
         if let Some(version) = req.jsonrpc.as_deref() {
             if version != JSONRPC_VERSION {
-                return Ok(RpcResponse {
+                return Ok(Some(RpcResponse {
                     jsonrpc: JSONRPC_VERSION,
-                    id: req.id,
+                    id: id.clone(),
                     result: None,
                     error: Some(RpcError {
                         code: ERR_INVALID_REQUEST,
                         message: format!("unsupported jsonrpc version: {version}"),
                         data: Some(json!({ "expected": JSONRPC_VERSION })),
                     }),
-                });
+                }));
             }
         }
         match req.method.as_str() {
@@ -222,115 +271,109 @@ impl McpServer {
                     .or(init_params.project_root)
                     .as_ref()
                 {
-                    let canon_res = client_root.canonicalize();
-                    let canon = match canon_res {
-                        Ok(c) => c,
-                        Err(err) => {
-                            return Ok(RpcResponse {
-                                jsonrpc: JSONRPC_VERSION,
-                                id: req.id,
-                                result: None,
-                                error: Some(RpcError {
-                                    code: ERR_INVALID_REQUEST,
-                                    message: "invalid workspace root".to_string(),
-                                    data: Some(json!({ "reason": err.to_string() })),
-                                }),
-                            })
+                    match client_root.canonicalize() {
+                        Ok(canon) => {
+                            if canon == self.repo_root {
+                                self.default_project_root = Some(canon);
+                            } else {
+                                eprintln!(
+                                    "docdex mcp: workspace root mismatch; expected {}, got {} (continuing with server repo)",
+                                    self.repo_root.display(),
+                                    canon.display()
+                                );
+                            }
                         }
-                    };
-                    if canon != self.repo_root {
-                        return Ok(RpcResponse {
-                            jsonrpc: JSONRPC_VERSION,
-                            id: req.id,
-                            result: None,
-                            error: Some(RpcError {
-                                code: ERR_INVALID_REQUEST,
-                                message: "workspace root does not match MCP server repo"
-                                    .to_string(),
-                                data: Some(json!({
-                                    "expected": self.repo_root.display().to_string(),
-                                    "got": canon.display().to_string(),
-                                })),
-                            }),
-                        });
+                        Err(err) => {
+                            eprintln!("docdex mcp: workspace root not usable: {err} (continuing with server repo)");
+                        }
                     }
-                    self.default_project_root = Some(canon);
                 }
-                Ok(RpcResponse {
+                let protocol_version = init_params
+                    .protocol_version
+                    .unwrap_or_else(|| "2024-11-05".to_string());
+                let instructions = "Use docdex_search to find repo-local docs before changing code.\nUse docdex_index to refresh the index if results seem stale.";
+                let mut caps = json!({
+                    "tools": { "listChanged": false },
+                    "resources": { "listChanged": false },
+                    "resourceTemplates": { "listChanged": false },
+                });
+                if let Some(req_caps) = init_params.capabilities {
+                    if let Some(obj) = caps.as_object_mut() {
+                        if let Some(elicitation) = req_caps.get("elicitation") {
+                            obj.insert("elicitation".to_string(), elicitation.clone());
+                        }
+                    }
+                }
+                let resp = RpcResponse {
                     jsonrpc: JSONRPC_VERSION,
-                    id: req.id,
+                    id: id.clone(),
                     result: Some(json!({
-                        "protocolVersion": "0.1",
+                        "protocolVersion": protocol_version,
                         "serverInfo": {
                             "name": "docdex-mcp",
                             "version": env!("CARGO_PKG_VERSION"),
                         },
-                        "capabilities": {
-                            "tools": true,
-                            "resources": true,
-                        },
-                        "projectRoot": self.default_project_root.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| self.repo_root.display().to_string()),
-                        "instructions": [
-                            "Use docdex.search to find repo-local docs before changing code.",
-                            "Use docdex.index to refresh the index if results seem stale."
-                        ]
+                        "capabilities": caps,
+                        "instructions": instructions,
                     })),
                     error: None,
-                })
+                };
+                eprintln!("docdex mcp: initialize -> ok (id {:?})", id);
+                Ok(Some(resp))
             }
-            "tools/list" => Ok(RpcResponse {
+            "tools/list" => Ok(Some(RpcResponse {
                 jsonrpc: JSONRPC_VERSION,
-                id: req.id,
+                id: id.clone(),
                 result: Some(json!({ "tools": self.tool_defs() })),
                 error: None,
-            }),
-            "resources/list" => Ok(RpcResponse {
+            })),
+            "resources/list" => Ok(Some(RpcResponse {
                 jsonrpc: JSONRPC_VERSION,
-                id: req.id,
+                id: id.clone(),
                 result: Some(json!({ "resources": Vec::<serde_json::Value>::new() })),
                 error: None,
-            }),
-            "resources/templates/list" => Ok(RpcResponse {
+            })),
+            "resources/templates/list" => Ok(Some(RpcResponse {
                 jsonrpc: JSONRPC_VERSION,
-                id: req.id,
+                id: id.clone(),
                 result: Some(json!({ "resourceTemplates": self.resource_templates() })),
                 error: None,
-            }),
+            })),
             "resources/read" => {
                 let params_res: Result<ResourceReadParams, _> =
                     serde_json::from_value(req.params.clone().unwrap_or_default());
                 let params = match params_res {
                     Ok(p) => p,
                     Err(err) => {
-                        return Ok(RpcResponse {
+                        return Ok(Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,
-                            id: req.id,
+                            id: id.clone(),
                             result: None,
                             error: Some(RpcError {
                                 code: ERR_INVALID_PARAMS,
                                 message: "invalid resources/read params".to_string(),
                                 data: Some(json!({ "reason": err.to_string() })),
                             }),
-                        })
+                        }))
                     }
                 };
                 match self.handle_resource_read(params).await {
-                    Ok(value) => Ok(RpcResponse {
+                    Ok(value) => Ok(Some(RpcResponse {
                         jsonrpc: JSONRPC_VERSION,
-                        id: req.id,
+                        id: id.clone(),
                         result: Some(value),
                         error: None,
-                    }),
-                    Err(err) => Ok(RpcResponse {
+                    })),
+                    Err(err) => Ok(Some(RpcResponse {
                         jsonrpc: JSONRPC_VERSION,
-                        id: req.id,
+                        id: id.clone(),
                         result: None,
                         error: Some(RpcError {
                             code: ERR_INVALID_PARAMS,
                             message: "resources/read failed".to_string(),
                             data: Some(json!({ "reason": err.to_string() })),
                         }),
-                    }),
+                    })),
                 }
             }
             "tools/call" => {
@@ -339,228 +382,235 @@ impl McpServer {
                 let params = match params_res {
                     Ok(p) => p,
                     Err(err) => {
-                        return Ok(RpcResponse {
+                        return Ok(Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,
-                            id: req.id,
+                            id: id.clone(),
                             result: None,
                             error: Some(RpcError {
                                 code: ERR_INVALID_PARAMS,
                                 message: "invalid tool call params".to_string(),
                                 data: Some(json!({ "reason": err.to_string() })),
                             }),
-                        })
+                        }))
                     }
                 };
                 let result = match params.name.as_str() {
-                    "docdex.search" => {
+                    "docdex_search" | "docdex.search" => {
                         let args_res: Result<SearchArgs, _> =
                             serde_json::from_value(params.arguments.clone());
                         let args = match args_res {
                             Ok(args) => args,
                             Err(err) => {
-                                return Ok(RpcResponse {
+                                return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
-                                    id: req.id,
+                                    id: id.clone(),
                                     result: None,
                                     error: Some(RpcError {
                                         code: ERR_INVALID_PARAMS,
-                                        message: "invalid docdex.search args".to_string(),
+                                        message: "invalid docdex_search args".to_string(),
                                         data: Some(json!({ "reason": err.to_string() })),
                                     }),
-                                })
+                                }))
                             }
                         };
                         match self.handle_search(args).await {
                             Ok(value) => value,
                             Err(err) => {
-                                return Ok(RpcResponse {
+                                return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
-                                    id: req.id,
+                                    id: id.clone(),
                                     result: None,
                                     error: Some(RpcError {
                                         code: ERR_INVALID_PARAMS,
-                                        message: "docdex.search failed".to_string(),
+                                        message: "docdex_search failed".to_string(),
                                         data: Some(json!({ "reason": err.to_string() })),
                                     }),
-                                })
+                                }))
                             }
                         }
                     }
-                    "docdex.index" => {
+                    "docdex_index" | "docdex.index" => {
                         let args_res: Result<IndexArgs, _> =
                             serde_json::from_value(params.arguments.clone());
                         let args = match args_res {
                             Ok(args) => args,
                             Err(err) => {
-                                return Ok(RpcResponse {
+                                return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
-                                    id: req.id,
+                                    id: id.clone(),
                                     result: None,
                                     error: Some(RpcError {
                                         code: ERR_INVALID_PARAMS,
-                                        message: "invalid docdex.index args".to_string(),
+                                        message: "invalid docdex_index args".to_string(),
                                         data: Some(json!({ "reason": err.to_string() })),
                                     }),
-                                })
+                                }))
                             }
                         };
                         match self.handle_index(args).await {
                             Ok(value) => value,
                             Err(err) => {
-                                return Ok(RpcResponse {
+                                return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
-                                    id: req.id,
+                                    id: id.clone(),
                                     result: None,
                                     error: Some(RpcError {
                                         code: ERR_INVALID_PARAMS,
-                                        message: "docdex.index failed".to_string(),
+                                        message: "docdex_index failed".to_string(),
                                         data: Some(json!({ "reason": err.to_string() })),
                                     }),
-                                })
+                                }))
                             }
                         }
                     }
-                    "docdex.files" => {
+                    "docdex_files" | "docdex.files" => {
                         let args_res: Result<FilesArgs, _> =
                             serde_json::from_value(params.arguments.clone());
                         let args = match args_res {
                             Ok(args) => args,
                             Err(err) => {
-                                return Ok(RpcResponse {
+                                return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
-                                    id: req.id,
+                                    id: id.clone(),
                                     result: None,
                                     error: Some(RpcError {
                                         code: ERR_INVALID_PARAMS,
-                                        message: "invalid docdex.files args".to_string(),
+                                        message: "invalid docdex_files args".to_string(),
                                         data: Some(json!({ "reason": err.to_string() })),
                                     }),
-                                })
+                                }))
                             }
                         };
                         match self.handle_files(args).await {
                             Ok(value) => value,
                             Err(err) => {
-                                return Ok(RpcResponse {
+                                return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
-                                    id: req.id,
+                                    id: id.clone(),
                                     result: None,
                                     error: Some(RpcError {
                                         code: ERR_INVALID_PARAMS,
-                                        message: "docdex.files failed".to_string(),
+                                        message: "docdex_files failed".to_string(),
                                         data: Some(json!({ "reason": err.to_string() })),
                                     }),
-                                })
+                                }))
                             }
                         }
                     }
-                    "docdex.open" => {
+                    "docdex_open" | "docdex.open" => {
                         let args_res: Result<OpenArgs, _> =
                             serde_json::from_value(params.arguments.clone());
                         let args = match args_res {
                             Ok(args) => args,
                             Err(err) => {
-                                return Ok(RpcResponse {
+                                return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
-                                    id: req.id,
+                                    id: id.clone(),
                                     result: None,
                                     error: Some(RpcError {
                                         code: ERR_INVALID_PARAMS,
-                                        message: "invalid docdex.open args".to_string(),
+                                        message: "invalid docdex_open args".to_string(),
                                         data: Some(json!({ "reason": err.to_string() })),
                                     }),
-                                })
+                                }))
                             }
                         };
                         match self.handle_open(args).await {
                             Ok(value) => value,
                             Err(err) => {
-                                return Ok(RpcResponse {
+                                return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
-                                    id: req.id,
+                                    id: id.clone(),
                                     result: None,
                                     error: Some(RpcError {
                                         code: ERR_INVALID_PARAMS,
-                                        message: "docdex.open failed".to_string(),
+                                        message: "docdex_open failed".to_string(),
                                         data: Some(json!({ "reason": err.to_string() })),
                                     }),
-                                })
+                                }))
                             }
                         }
                     }
-                    "docdex.stats" => {
+                    "docdex_stats" | "docdex.stats" => {
                         let args_res: Result<StatsArgs, _> =
                             serde_json::from_value(params.arguments.clone());
                         let args = match args_res {
                             Ok(args) => args,
                             Err(err) => {
-                                return Ok(RpcResponse {
+                                return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
-                                    id: req.id,
+                                    id: id.clone(),
                                     result: None,
                                     error: Some(RpcError {
                                         code: ERR_INVALID_PARAMS,
-                                        message: "invalid docdex.stats args".to_string(),
+                                        message: "invalid docdex_stats args".to_string(),
                                         data: Some(json!({ "reason": err.to_string() })),
                                     }),
-                                })
+                                }))
                             }
                         };
                         match self.handle_stats(args).await {
                             Ok(value) => value,
                             Err(err) => {
-                                return Ok(RpcResponse {
+                                return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
-                                    id: req.id,
+                                    id: id.clone(),
                                     result: None,
                                     error: Some(RpcError {
                                         code: ERR_INTERNAL,
-                                        message: "docdex.stats failed".to_string(),
+                                        message: "docdex_stats failed".to_string(),
                                         data: Some(json!({ "reason": err.to_string() })),
                                     }),
-                                })
+                                }))
                             }
                         }
                     }
                     other => {
-                        return Ok(RpcResponse {
+                        return Ok(Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,
-                            id: req.id,
+                            id: id.clone(),
                             result: None,
                             error: Some(RpcError {
                                 code: ERR_METHOD_NOT_FOUND,
                                 message: format!("unknown tool: {other}"),
                                 data: Some(
-                                    json!({ "known_tools": ["docdex.search", "docdex.index", "docdex.files", "docdex.open", "docdex.stats"] }),
+                                    json!({ "known_tools": ["docdex_search", "docdex_index", "docdex_files", "docdex_open", "docdex_stats"] }),
                                 ),
                             }),
-                        });
+                        }));
                     }
                 };
-                Ok(RpcResponse {
+                let content = serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|_| result.to_string());
+                Ok(Some(RpcResponse {
                     jsonrpc: JSONRPC_VERSION,
-                    id: req.id,
-                    result: Some(result),
+                    id: id.clone(),
+                    result: Some(json!({
+                        "content": [
+                            { "type": "text", "text": content }
+                        ],
+                        "isError": false
+                    })),
                     error: None,
-                })
+                }))
             }
-            other => Ok(RpcResponse {
+            other => Ok(Some(RpcResponse {
                 jsonrpc: JSONRPC_VERSION,
-                id: req.id,
+                id: id.clone(),
                 result: None,
                 error: Some(RpcError {
                     code: ERR_METHOD_NOT_FOUND,
                     message: format!("unknown method: {other}"),
                     data: None,
                 }),
-            }),
+            })),
         }
     }
 
     fn tool_defs(&self) -> Vec<ToolDefinition> {
         vec![
             ToolDefinition {
-                name: "docdex.search",
+                name: "docdex_search",
                 description:
                     "Search repository docs and return hits with rel_path, summary, snippet, and doc_id.",
                 input_schema: json!({
@@ -574,7 +624,7 @@ impl McpServer {
                 }),
             },
             ToolDefinition {
-                name: "docdex.index",
+                name: "docdex_index",
                 description:
                     "Rebuild the index (or ingest specific files) for the current repo root.",
                 input_schema: json!({
@@ -590,7 +640,7 @@ impl McpServer {
                 }),
             },
             ToolDefinition {
-                name: "docdex.files",
+                name: "docdex_files",
                 description:
                     "List indexed documents (rel_path/doc_id/token_estimate) for the current repo.",
                 input_schema: json!({
@@ -603,7 +653,7 @@ impl McpServer {
                 }),
             },
             ToolDefinition {
-                name: "docdex.open",
+                name: "docdex_open",
                 description:
                     "Read a file from the repo (optional line window); rejects paths outside the repo.",
                 input_schema: json!({
@@ -618,7 +668,7 @@ impl McpServer {
                 }),
             },
             ToolDefinition {
-                name: "docdex.stats",
+                name: "docdex_stats",
                 description:
                     "Inspect index metadata: doc count, state dir, size on disk, and last update time.",
                 input_schema: json!({
@@ -633,9 +683,9 @@ impl McpServer {
 
     fn resource_templates(&self) -> Vec<ResourceTemplate> {
         vec![ResourceTemplate {
-            name: "docdex.file",
+            name: "docdex_file",
             description:
-                "Read a file from the current repo (delegates to docdex.open); vars: {path}.",
+                "Read a file from the current repo (delegates to docdex_open); vars: {path}.",
             uri_template: "docdex://{path}",
             variables: &["path"],
         }]
@@ -869,6 +919,19 @@ impl McpServer {
         }
         Ok(())
     }
+}
+
+fn is_lock_busy(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        if let Some(tantivy_err) = cause.downcast_ref::<TantivyError>() {
+            if let TantivyError::LockFailure(lock_err, _) = tantivy_err {
+                return matches!(lock_err, LockError::LockBusy);
+            }
+        }
+        // Fallback: match on string in case the error is wrapped differently.
+        let msg = cause.to_string();
+        msg.contains("LockBusy") || msg.contains("Failed to acquire Lockfile")
+    })
 }
 
 async fn write_response(writer: &mut BufWriter<io::Stdout>, resp: &RpcResponse) -> Result<()> {

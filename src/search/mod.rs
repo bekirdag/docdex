@@ -367,31 +367,31 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
         ],
         mcp_tools: vec![
             AiHelpMcpTool {
-                name: "docdex.search",
+                name: "docdex_search",
                 description: "Search docs; returns rel_path, summary, snippet, doc_id, token_estimate.",
                 args: &["query (string, required)", "limit (int, optional, clamped)", "project_root (string, optional)"],
                 returns: &["results[]", "repo_root", "state_dir", "limit"],
             },
             AiHelpMcpTool {
-                name: "docdex.index",
+                name: "docdex_index",
                 description: "Rebuild index or ingest specific files for the repo.",
                 args: &["paths (array of file paths, empty => full reindex)", "project_root (string, optional)"],
                 returns: &["status", "action", "paths?"],
             },
             AiHelpMcpTool {
-                name: "docdex.files",
+                name: "docdex_files",
                 description: "List indexed docs (rel_path/doc_id/summary/token_estimate) with pagination.",
                 args: &["limit (int, optional, default 200, max 1000)", "offset (int, optional, default 0)", "project_root (string, optional)"],
                 returns: &["results[]", "total", "limit", "offset", "repo_root"],
             },
             AiHelpMcpTool {
-                name: "docdex.open",
+                name: "docdex_open",
                 description: "Read a file from the repo; optional line range; rejects paths outside the repo.",
                 args: &["path (string, required, relative)", "start_line (int, optional)", "end_line (int, optional)", "project_root (string, optional)"],
                 returns: &["path", "start_line", "end_line", "total_lines", "content", "repo_root"],
             },
             AiHelpMcpTool {
-                name: "docdex.stats",
+                name: "docdex_stats",
                 description: "Report index metadata.",
                 args: &["project_root (string, optional)"],
                 returns: &["num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "repo_root"],
@@ -410,7 +410,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             "When building prompts, keep rel_path + summary + trimmed snippet; drop score/token_estimate/doc_id and normalize whitespace.",
             "Trim noisy content up front with --exclude-dir/--exclude-prefix so snippets stay relevant and short.",
             "Cache doc_id/rel_path/summary client-side to avoid repeat snippet fetches; only call /snippet for new doc_ids.",
-            "For MCP-aware agents, register a server named docdex that runs `docdexd mcp --repo <repo> --log warn --max-results 8`, then use docdex.search before edits and docdex.index when results look stale.",
+            "For MCP-aware agents, register a server named docdex that runs `docdexd mcp --repo <repo> --log warn --max-results 8`, then use docdex_search before edits and docdex_index when results look stale.",
         ],
         limits: AiHelpLimits {
             max_limit: state.security.max_limit,

@@ -5,6 +5,7 @@
 
 # Local indexes/state
 /.docdex/
+/.docdex/index/
 /.gpt-creator/
 /.mastercoda/
 

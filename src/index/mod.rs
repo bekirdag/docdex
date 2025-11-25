@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tantivy::collector::TopDocs;
 use tantivy::query::{AllQuery, QueryParser};
 use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
+use tantivy::DocAddress;
 use tantivy::{
     doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, SnippetGenerator, Term,
 };
@@ -178,6 +179,10 @@ pub struct Hit {
     pub summary: String,
     pub snippet: String,
     pub token_estimate: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_start: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_end: Option<usize>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -193,6 +198,8 @@ pub struct SnippetResult {
     pub html: Option<String>,
     pub truncated: bool,
     pub origin: SnippetOrigin,
+    pub line_start: Option<usize>,
+    pub line_end: Option<usize>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -201,6 +208,19 @@ pub struct DocSnapshot {
     pub rel_path: String,
     pub summary: String,
     pub token_estimate: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct IndexStats {
+    pub num_docs: u64,
+    pub state_dir: PathBuf,
+    pub index_size_bytes: u64,
+    pub segments: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avg_bytes_per_doc: Option<u64>,
+    pub generated_at_epoch_ms: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_updated_epoch_ms: Option<u128>,
 }
 
 impl IndexConfig {
@@ -373,6 +393,20 @@ impl Indexer {
         Ok(())
     }
 
+    pub async fn delete_file(&self, file: PathBuf) -> Result<()> {
+        let rel = match self.rel_path(&file) {
+            Ok(rel) => rel,
+            Err(_) => return Ok(()),
+        };
+        let writer_arc = self.writer()?;
+        let mut writer = writer_arc.lock();
+        let term = Term::from_field_text(self.doc_id_field, &rel);
+        writer.delete_term(term);
+        writer.commit()?;
+        self.reader.reload()?;
+        Ok(())
+    }
+
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Hit>> {
         let searcher = self.reader.searcher();
         let parser = QueryParser::for_index(
@@ -423,6 +457,11 @@ impl Indexer {
         let mut results = Vec::with_capacity(top_docs.len());
         for (score, addr) in top_docs {
             let retrieved = searcher.doc(addr)?;
+            let body_text = retrieved
+                .get_first(self.body_field)
+                .and_then(|v| v.as_text())
+                .unwrap_or_default()
+                .to_string();
             let doc_id = retrieved
                 .get_first(self.doc_id_field)
                 .and_then(|v| v.as_text().map(|s| s.to_string()))
@@ -439,16 +478,23 @@ impl Indexer {
                 .get_first(self.token_field)
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            let snippet = snippet_generator
+            let (snippet, line_start, line_end) = snippet_generator
                 .as_ref()
-                .map(|gen| {
+                .and_then(|gen| {
                     let snippet = gen.snippet_from_doc(&retrieved);
-                    snippet.fragment().trim().to_string()
+                    let fragment = snippet.fragment().trim().to_string();
+                    if fragment.is_empty() {
+                        None
+                    } else {
+                        let range = line_range_for_fragment(&body_text, &fragment);
+                        Some((fragment, range.map(|r| r.0), range.map(|r| r.1)))
+                    }
                 })
-                .filter(|snippet| !snippet.is_empty())
                 .or_else(|| {
                     match self.preview_snippet(&rel_path, FALLBACK_PREVIEW_LINES) {
-                        Ok(Some((text, _truncated))) => Some(text),
+                        Ok(Some((text, _truncated, start_line, end_line))) => {
+                            Some((text, Some(start_line), Some(end_line)))
+                        }
                         Ok(None) => None,
                         Err(err) => {
                             warn!(target: "docdexd", error = ?err, %rel_path, "failed to build fallback snippet");
@@ -456,7 +502,7 @@ impl Indexer {
                         }
                     }
                 })
-                .unwrap_or_else(|| summary.clone());
+                .unwrap_or_else(|| (summary.clone(), None, None));
             results.push(Hit {
                 doc_id,
                 rel_path,
@@ -464,6 +510,8 @@ impl Indexer {
                 summary,
                 snippet,
                 token_estimate,
+                line_start,
+                line_end,
             });
         }
         Ok(results)
@@ -486,7 +534,7 @@ impl Indexer {
         &self,
         rel_path: &str,
         max_lines: usize,
-    ) -> Result<Option<(String, bool)>> {
+    ) -> Result<Option<(String, bool, usize, usize)>> {
         if max_lines == 0 {
             return Ok(None);
         }
@@ -504,7 +552,7 @@ impl Indexer {
             }
         };
         let reader = BufReader::new(file);
-        let mut preview_lines = Vec::new();
+        let mut preview_lines: Vec<(usize, String)> = Vec::new();
         let mut truncated = false;
         for (idx, line_res) in reader.lines().enumerate() {
             if idx >= max_lines {
@@ -514,17 +562,33 @@ impl Indexer {
             let line = line_res?;
             let trimmed = line.trim();
             if !trimmed.is_empty() {
-                preview_lines.push(trimmed.to_string());
+                preview_lines.push((idx + 1, trimmed.to_string()));
             }
         }
         if preview_lines.is_empty() {
             return Ok(None);
         }
-        let (snippet, snippet_truncated) = condense_snippet(&preview_lines, MAX_SNIPPET_CHARS);
+        let (snippet, snippet_truncated) = condense_snippet(
+            &preview_lines
+                .iter()
+                .map(|(_, text)| text.clone())
+                .collect::<Vec<_>>(),
+            MAX_SNIPPET_CHARS,
+        );
         if snippet.is_empty() {
             return Ok(None);
         }
-        Ok(Some((snippet, truncated || snippet_truncated)))
+        let start_line = preview_lines.first().map(|(line, _)| *line).unwrap_or(1);
+        let end_line = preview_lines
+            .last()
+            .map(|(line, _)| *line)
+            .unwrap_or(start_line);
+        Ok(Some((
+            snippet,
+            truncated || snippet_truncated,
+            start_line,
+            end_line,
+        )))
     }
 
     pub fn repo_root(&self) -> &Path {
@@ -541,6 +605,61 @@ impl Indexer {
         &self.config
     }
 
+    pub fn stats(&self) -> Result<IndexStats> {
+        let searcher = self.reader.searcher();
+        let mut num_docs: u64 = 0;
+        let mut segments: usize = 0;
+        for segment_reader in searcher.segment_readers() {
+            segments += 1;
+            let live_docs = segment_reader
+                .alive_bitset()
+                .map(|bits| bits.num_alive_docs() as u64)
+                .unwrap_or_else(|| segment_reader.max_doc() as u64);
+            num_docs = num_docs.saturating_add(live_docs);
+        }
+        let state_dir = self.config.state_dir().to_path_buf();
+        let index_size_bytes = walkdir::WalkDir::new(&state_dir)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| entry.metadata().ok())
+            .map(|meta| meta.len())
+            .sum();
+        let mut last_updated_epoch_ms: Option<u128> = None;
+        for entry in walkdir::WalkDir::new(&state_dir).into_iter().flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if let Ok(modified) = meta.modified() {
+                    if let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
+                        let millis = dur.as_millis();
+                        if last_updated_epoch_ms
+                            .map(|current| millis > current)
+                            .unwrap_or(true)
+                        {
+                            last_updated_epoch_ms = Some(millis);
+                        }
+                    }
+                }
+            }
+        }
+        let generated_at_epoch_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let avg_bytes_per_doc = if num_docs > 0 {
+            Some(index_size_bytes / num_docs)
+        } else {
+            None
+        };
+        Ok(IndexStats {
+            num_docs,
+            state_dir,
+            index_size_bytes,
+            segments,
+            avg_bytes_per_doc,
+            generated_at_epoch_ms,
+            last_updated_epoch_ms,
+        })
+    }
+
     pub fn snapshot_with_snippet(
         &self,
         doc_id: &str,
@@ -554,6 +673,43 @@ impl Indexer {
         let snippet =
             self.snippet_from_document(&doc, Some(&snapshot.rel_path), query, fallback_lines)?;
         Ok(Some((snapshot, snippet)))
+    }
+
+    pub fn list_docs(&self, offset: usize, limit: usize) -> Result<(Vec<DocSnapshot>, u64)> {
+        let searcher = self.reader.searcher();
+        let mut snapshots = Vec::new();
+        let mut skipped = 0usize;
+        let mut total_live: u64 = 0;
+        'outer: for (segment_ord, segment_reader) in searcher.segment_readers().iter().enumerate() {
+            let alive = segment_reader.alive_bitset();
+            let max_doc = segment_reader.max_doc();
+            let live_in_segment = alive
+                .map(|bits| bits.num_alive_docs() as u64)
+                .unwrap_or_else(|| max_doc as u64);
+            total_live = total_live.saturating_add(live_in_segment);
+            let doc_iter: Box<dyn Iterator<Item = u32>> = if let Some(bits) = alive {
+                Box::new(bits.iter_alive())
+            } else {
+                Box::new(0..max_doc)
+            };
+            for doc_id in doc_iter {
+                if skipped < offset {
+                    skipped += 1;
+                    continue;
+                }
+                if snapshots.len() >= limit {
+                    break 'outer;
+                }
+                let address = DocAddress::new(segment_ord as u32, doc_id);
+                let doc = searcher.doc(address)?;
+                let doc_id_text = doc
+                    .get_first(self.doc_id_field)
+                    .and_then(|v| v.as_text())
+                    .unwrap_or_default();
+                snapshots.push(self.snapshot_from_document(doc_id_text, &doc));
+            }
+        }
+        Ok((snapshots, total_live))
     }
 
     fn add_document(&self, writer: &mut IndexWriter, path: &Path) -> Result<()> {
@@ -629,6 +785,8 @@ impl Indexer {
                             html: Some(snippet.to_html()),
                             truncated: false,
                             origin: SnippetOrigin::Query,
+                            line_start: None,
+                            line_end: None,
                         }));
                     }
                 }
@@ -641,12 +799,16 @@ impl Indexer {
                 .map(|text| text.to_string())
         });
         if let Some(rel_path) = rel_path {
-            if let Some((text, truncated)) = self.preview_snippet(&rel_path, fallback_lines)? {
+            if let Some((text, truncated, line_start, line_end)) =
+                self.preview_snippet(&rel_path, fallback_lines)?
+            {
                 return Ok(Some(SnippetResult {
                     text,
                     html: None,
                     truncated,
                     origin: SnippetOrigin::Preview,
+                    line_start: Some(line_start),
+                    line_end: Some(line_end),
                 }));
             }
         }
@@ -1098,3 +1260,42 @@ static HTML_TAG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"<[^>]+>").unwrap());
 static MULTISPACE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
 static SENTENCE_SPLIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[.!?]+\s+").unwrap());
 static ORDERED_LIST_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(?:\d+[\.)])+").unwrap());
+
+fn line_range_for_fragment(body: &str, fragment: &str) -> Option<(usize, usize)> {
+    if fragment.is_empty() {
+        return None;
+    }
+    if let Some(idx) = body.find(fragment) {
+        let prefix = &body[..idx];
+        let start_line = prefix.chars().filter(|&c| c == '\n').count() + 1;
+        let lines_in_fragment = fragment.lines().count().max(1);
+        let end_line = start_line + lines_in_fragment - 1;
+        return Some((start_line, end_line));
+    }
+    // fallback: match on first/last non-empty lines of the fragment
+    let frag_lines: Vec<&str> = fragment.lines().filter(|l| !l.trim().is_empty()).collect();
+    if frag_lines.is_empty() {
+        return None;
+    }
+    let body_lines: Vec<&str> = body.lines().collect();
+    let first = frag_lines.first().copied().unwrap_or("");
+    let last = frag_lines.last().copied().unwrap_or(first);
+    let mut start_line = None;
+    for (idx, line) in body_lines.iter().enumerate() {
+        if line.contains(first) {
+            start_line = Some(idx + 1);
+            break;
+        }
+    }
+    let Some(start) = start_line else {
+        return None;
+    };
+    let mut end_line_val = start;
+    for (idx, line) in body_lines.iter().enumerate().skip(start - 1) {
+        if line.contains(last) {
+            end_line_val = idx + 1;
+            break;
+        }
+    }
+    Some((start, end_line_val))
+}

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5
+- Publish the MCP-enabled CLI wrapper (use `docdex mcp` for MCP clients) and align docs with the new stdio mode.
+- Keep npm version in sync with the MCP release for binary downloads.
+
 ## 0.1.4
 - Version bump for republish (0.1.3 already exists on npm).
 

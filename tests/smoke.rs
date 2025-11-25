@@ -626,6 +626,64 @@ fn search_and_snippet_flags_reduce_payloads() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn watcher_removes_deleted_docs() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_root = repo.path();
+    let repo_str = repo_root.to_string_lossy().to_string();
+    let unique = "SHOULD_BE_REMOVED_UNIQUE_123";
+    let doomed = repo_root.join("docs").join("temp.md");
+    fs::write(&doomed, format!("# Temp\n{unique}\n"))?;
+
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let port = pick_free_port();
+    let host = "127.0.0.1";
+    let mut child = spawn_server(repo_root, host, port)?;
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let search_url = format!("http://{host}:{port}/search");
+
+    // Confirm the doc is indexed.
+    let initial: Value = client
+        .get(&search_url)
+        .query(&[("q", unique), ("limit", "2")])
+        .send()?
+        .json()?;
+    let initial_hits = initial
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.len())
+        .unwrap_or(0);
+    assert!(initial_hits > 0, "expected doc to be indexed before delete");
+
+    // Delete the file and wait for watcher to remove it from the index.
+    fs::remove_file(&doomed)?;
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let resp = client
+            .get(&search_url)
+            .query(&[("q", unique), ("limit", "2")])
+            .send()?;
+        let payload: Value = resp.json()?;
+        let hits = payload
+            .get("hits")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.len())
+            .unwrap_or(0);
+        if hits == 0 {
+            break;
+        }
+        if Instant::now() > deadline {
+            panic!("deleted doc still present after watcher grace period");
+        }
+        thread::sleep(Duration::from_millis(300));
+    }
+
+    child.kill().ok();
+    child.wait().ok();
+    Ok(())
+}
+
+#[test]
 fn snippet_html_is_sanitized_or_stripped() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let repo_root = repo.path();

@@ -2,6 +2,7 @@ mod audit;
 mod config;
 mod daemon;
 mod index;
+mod mcp;
 mod search;
 mod util;
 mod watcher;
@@ -18,7 +19,7 @@ use tracing::info;
     name = "docdexd",
     version,
     about = "Local documentation index/search daemon",
-    long_about = "Docdex indexes plain-text/markdown documentation under a workspace and serves top-k search/snippet results over HTTP or CLI. Defaults store data in <repo>/.docdex/index and avoid common tool caches; override paths and exclusions with --state-dir/--exclude-* or matching env vars."
+    long_about = "Docdex indexes plain-text/markdown documentation under a workspace and serves top-k search/snippet results over HTTP or CLI. Defaults store data in <repo>/.docdex/index and avoid common tool caches; override paths and exclusions with --state-dir/--exclude-* or matching env vars. Optional MCP server (`docdexd mcp`) exposes docdex.search/index/files/open/stats tools over stdio for MCP-aware clients; register it in your MCP client as server \"docdex\" with command: docdexd mcp --repo <repo> --log warn."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -203,7 +204,7 @@ enum Command {
             long,
             env = "DOCDEX_UNSHARE_NET",
             default_value_t = false,
-            help = "(Unix only) unshare network namespace before serving (requires CAP_SYS_ADMIN/root)"
+            help = "(Linux only) unshare network namespace before serving (requires CAP_SYS_ADMIN/root; no-op elsewhere)"
         )]
         unshare_net: bool,
         #[arg(
@@ -211,7 +212,7 @@ enum Command {
             env = "DOCDEX_ALLOW_IPS",
             value_delimiter = ',',
             value_parser = config::non_empty_string,
-            help = "Optional comma-separated IPs/CIDRs allowed to access the HTTP API (default: allow all)"
+            help = "Optional comma-separated IPs/CIDRs allowed to access the HTTP API (default: loopback-only in secure mode; allow all when secure mode is disabled)"
         )]
         allow_ip: Vec<String>,
     },
@@ -263,6 +264,20 @@ enum Command {
         query: String,
         #[arg(long, default_value_t = 8)]
         limit: usize,
+    },
+    /// Run an MCP (Model Context Protocol) server over stdio.
+    Mcp {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(long, default_value = "info")]
+        log: String,
+        #[arg(
+            long,
+            visible_alias = "mcp-max-results",
+            default_value_t = 8,
+            help = "Maximum results to return from docdex.search tool"
+        )]
+        max_results: usize,
     },
 }
 
@@ -522,6 +537,26 @@ async fn main() -> Result<()> {
             let hits = search::run_query(&server, &query, limit).await?;
             println!("{}", serde_json::to_string_pretty(&hits)?);
         }
+        Command::Mcp {
+            repo,
+            log,
+            max_results,
+        } => {
+            let max_results = std::env::var("DOCDEX_MCP_MAX_RESULTS")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(max_results)
+                .max(1);
+            let repo_root = repo.repo_root();
+            let index_config = index::IndexConfig::with_overrides(
+                &repo_root,
+                repo.state_dir_override(),
+                repo.exclude_dir_overrides(),
+                repo.exclude_prefix_overrides(),
+            );
+            util::init_logging(&log)?;
+            mcp::serve(repo_root, index_config, max_results).await?;
+        }
     }
     Ok(())
 }
@@ -538,5 +573,17 @@ fn print_full_help() -> Result<()> {
             println!();
         }
     }
+    // include MCP server help
+    if let Some(sub) = Cli::command().find_subcommand_mut("mcp") {
+        println!("\nmcp:\n");
+        sub.print_long_help()?;
+        println!();
+    }
+    println!("MCP tools (docdexd mcp):");
+    println!("  - docdex.search: search repo docs; args: query (required), limit (<= max_results), project_root (optional)");
+    println!("  - docdex.index: reindex all or ingest provided paths; args: paths[], project_root (optional)");
+    println!("  - docdex.files: list indexed docs with pagination; args: limit (<=1000), offset (<=50000), project_root (optional)");
+    println!("  - docdex.stats: index metadata; args: project_root (optional)");
+    println!("  Notes: set DOCDEX_MCP_MAX_RESULTS to clamp docdex.search; run `docdexd mcp --help` for full MCP flags.");
     Ok(())
 }

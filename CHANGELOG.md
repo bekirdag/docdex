@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5
+- Ship MCP stdio mode (docdex.search/index/files/open/stats) with resource templates and docs for MCP-aware clients.
+- Expand CLI/help and tests around MCP usage to make agent/editor integration reliable.
+- Bump versions for the MCP release and upcoming npm publish.
+
 ## 0.1.4
 - Bump version for republish after 0.1.3 was already on npm.
 - Keep trusted publishing fixes and expanded platform targets.

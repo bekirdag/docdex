@@ -1,6 +1,6 @@
 {
   "name": "docdex",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Docdex CLI as an npm-installable binary wrapper.",
   "bin": {
     "docdex": "bin/docdex.js",
@@ -21,7 +21,8 @@
   },
   "os": [
     "darwin",
-    "linux"
+    "linux",
+    "win32"
   ],
   "cpu": [
     "arm64",

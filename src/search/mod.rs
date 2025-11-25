@@ -276,14 +276,24 @@ struct AiHelpLimits {
 }
 
 #[derive(Serialize)]
+struct AiHelpMcpTool {
+    name: &'static str,
+    description: &'static str,
+    args: &'static [&'static str],
+    returns: &'static [&'static str],
+}
+
+#[derive(Serialize)]
 struct AiHelpPayload {
     product: &'static str,
     version: &'static str,
     purpose: &'static str,
     http_endpoints: Vec<AiHelpEndpoint>,
     cli_commands: Vec<AiHelpCli>,
+    mcp_tools: Vec<AiHelpMcpTool>,
     best_practices: Vec<&'static str>,
     limits: AiHelpLimits,
+    index_stats_fields: Vec<&'static str>,
 }
 
 fn rate_limit_hint(security: &SecurityConfig) -> Option<u32> {
@@ -355,6 +365,38 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 example: "docdexd self-check --repo /workspace --terms \"SECRET,API_KEY\"",
             },
         ],
+        mcp_tools: vec![
+            AiHelpMcpTool {
+                name: "docdex.search",
+                description: "Search docs; returns rel_path, summary, snippet, doc_id, token_estimate.",
+                args: &["query (string, required)", "limit (int, optional, clamped)", "project_root (string, optional)"],
+                returns: &["results[]", "repo_root", "state_dir", "limit"],
+            },
+            AiHelpMcpTool {
+                name: "docdex.index",
+                description: "Rebuild index or ingest specific files for the repo.",
+                args: &["paths (array of file paths, empty => full reindex)", "project_root (string, optional)"],
+                returns: &["status", "action", "paths?"],
+            },
+            AiHelpMcpTool {
+                name: "docdex.files",
+                description: "List indexed docs (rel_path/doc_id/summary/token_estimate) with pagination.",
+                args: &["limit (int, optional, default 200, max 1000)", "offset (int, optional, default 0)", "project_root (string, optional)"],
+                returns: &["results[]", "total", "limit", "offset", "repo_root"],
+            },
+            AiHelpMcpTool {
+                name: "docdex.open",
+                description: "Read a file from the repo; optional line range; rejects paths outside the repo.",
+                args: &["path (string, required, relative)", "start_line (int, optional)", "end_line (int, optional)", "project_root (string, optional)"],
+                returns: &["path", "start_line", "end_line", "total_lines", "content", "repo_root"],
+            },
+            AiHelpMcpTool {
+                name: "docdex.stats",
+                description: "Report index metadata.",
+                args: &["project_root (string, optional)"],
+                returns: &["num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "repo_root"],
+            },
+        ],
         best_practices: vec![
             "Prefer narrow queries (file names, headings, concepts) to keep snippets focused.",
             "Use /search to get doc_id, then /snippet/:doc_id for a larger window when needed.",
@@ -368,6 +410,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             "When building prompts, keep rel_path + summary + trimmed snippet; drop score/token_estimate/doc_id and normalize whitespace.",
             "Trim noisy content up front with --exclude-dir/--exclude-prefix so snippets stay relevant and short.",
             "Cache doc_id/rel_path/summary client-side to avoid repeat snippet fetches; only call /snippet for new doc_ids.",
+            "For MCP-aware agents, register a server named docdex that runs `docdexd mcp --repo <repo> --log warn --max-results 8`, then use docdex.search before edits and docdex.index when results look stale.",
         ],
         limits: AiHelpLimits {
             max_limit: state.security.max_limit,
@@ -377,6 +420,16 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             auth_required: state.security.auth_token.is_some(),
             snippet_html_disabled: state.security.disable_snippet_text || state.security.strip_snippet_html,
         },
+        index_stats_fields: vec![
+            "num_docs",
+            "state_dir",
+            "index_size_bytes",
+            "segments",
+            "avg_bytes_per_doc",
+            "generated_at_epoch_ms",
+            "last_updated_epoch_ms",
+            "repo_root",
+        ],
     };
     Json(payload)
 }
@@ -392,11 +445,36 @@ struct SearchParams {
 #[derive(Serialize)]
 pub struct SearchResponse {
     pub hits: Vec<Hit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta: Option<SearchMeta>,
+}
+
+#[derive(Serialize)]
+pub struct SearchMeta {
+    pub generated_at_epoch_ms: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_last_updated_epoch_ms: Option<u128>,
+    pub repo_root: String,
 }
 
 pub async fn run_query(indexer: &Indexer, query: &str, limit: usize) -> Result<SearchResponse> {
     let hits = indexer.search(query, limit)?;
-    Ok(SearchResponse { hits })
+    Ok(SearchResponse {
+        hits,
+        meta: Some(build_search_meta(indexer)?),
+    })
+}
+
+fn build_search_meta(indexer: &Indexer) -> Result<SearchMeta> {
+    let generated_at_epoch_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis();
+    let last_updated = indexer.stats().ok().and_then(|s| s.last_updated_epoch_ms);
+    Ok(SearchMeta {
+        generated_at_epoch_ms,
+        index_last_updated_epoch_ms: last_updated,
+        repo_root: indexer.repo_root().display().to_string(),
+    })
 }
 
 async fn search_handler(
@@ -420,7 +498,8 @@ async fn search_handler(
                     hit.snippet.clear();
                 }
             }
-            Json(SearchResponse { hits }).into_response()
+            let meta = build_search_meta(&state.indexer).ok();
+            Json(SearchResponse { hits, meta }).into_response()
         }
         Err(err) => {
             state.metrics.inc_error();
@@ -455,6 +534,10 @@ struct SnippetPayload {
     html: Option<String>,
     truncated: bool,
     origin: SnippetOrigin,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line_start: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line_end: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -541,6 +624,8 @@ fn render_snippet(
             html,
             truncated: snippet.truncated,
             origin: snippet.origin,
+            line_start: snippet.line_start,
+            line_end: snippet.line_end,
         }
     })
 }

@@ -200,9 +200,10 @@ jobs:
         run: |
           set -euo pipefail
           PACK_TGZ=$(ls npm/docdex-*.tgz | head -n 1)
+          PACK_PATH="$PWD/$PACK_TGZ"
           TEST_DIR=$(mktemp -d)
           pushd "$TEST_DIR" >/dev/null
           npm init -y >/dev/null
-          npm install "$PACK_TGZ"
+          npm install "$PACK_PATH"
           npx docdex --version
           popd >/dev/null

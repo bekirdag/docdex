@@ -580,8 +580,8 @@ impl McpServer {
                         }));
                     }
                 };
-                let content = serde_json::to_string_pretty(&result)
-                    .unwrap_or_else(|_| result.to_string());
+                let content =
+                    serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
                 Ok(Some(RpcResponse {
                     jsonrpc: JSONRPC_VERSION,
                     id: id.clone(),

@@ -273,18 +273,34 @@ impl McpServer {
                 {
                     match client_root.canonicalize() {
                         Ok(canon) => {
-                            if canon == self.repo_root {
-                                self.default_project_root = Some(canon);
-                            } else {
-                                eprintln!(
-                                    "docdex mcp: workspace root mismatch; expected {}, got {} (continuing with server repo)",
-                                    self.repo_root.display(),
-                                    canon.display()
-                                );
+                            if canon != self.repo_root {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(RpcError {
+                                        code: ERR_INVALID_REQUEST,
+                                        message: "workspace root mismatch".to_string(),
+                                        data: Some(json!({
+                                            "expected": self.repo_root.display().to_string(),
+                                            "got": canon.display().to_string()
+                                        })),
+                                    }),
+                                }));
                             }
+                            self.default_project_root = Some(canon);
                         }
                         Err(err) => {
-                            eprintln!("docdex mcp: workspace root not usable: {err} (continuing with server repo)");
+                            return Ok(Some(RpcResponse {
+                                jsonrpc: JSONRPC_VERSION,
+                                id: id.clone(),
+                                result: None,
+                                error: Some(RpcError {
+                                    code: ERR_INVALID_REQUEST,
+                                    message: "workspace root not usable".to_string(),
+                                    data: Some(json!({ "reason": err.to_string() })),
+                                }),
+                            }));
                         }
                     }
                 }

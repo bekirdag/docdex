@@ -165,6 +165,9 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org
 
+      - name: Update npm to latest (trusted publish requires >=11.5.1)
+        run: npm install -g npm@latest
+
       - name: Cache node modules
         uses: actions/cache@v4
         with:

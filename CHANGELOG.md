@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.7
+- Added smithery.yaml and Docker files for smithery.ai directory listing
+
 ## 0.1.6
 - Fix MCP stdio compliance: accept notifications, advertise underscore tool names, and return CallToolResult `content` payloads so Codex/other MCP clients stay connected.
 - Keep docs/tests in sync with MCP spec responses ahead of npm publish.

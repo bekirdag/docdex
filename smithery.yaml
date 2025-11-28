@@ -1,0 +1,50 @@
+build:
+  dockerfile: Dockerfile
+  dockerBuildPath: "."
+
+startCommand:
+  type: stdio
+
+  configSchema:
+    type: object
+    properties:
+      repoPath:
+        type: string
+        description: >
+          Path to the repo/workspace Docdex should index.
+          For local installs this is a path on the user's machine.
+          For container deployments it's a path inside the container.
+        default: "."
+      logLevel:
+        type: string
+        description: "Log level passed to docdexd via --log (e.g. debug, info, warn, error)."
+        default: "warn"
+      maxResults:
+        type: integer
+        description: "Maximum number of hits returned by docdex_search."
+        minimum: 1
+        default: 8
+    required: []
+
+  commandFunction: |
+    (config) => {
+      const repo = config.repoPath || ".";
+      const logLevel = config.logLevel || "warn";
+      const maxResults = config.maxResults || 8;
+
+      return {
+        command: "docdexd",
+        args: [
+          "mcp",
+          "--repo", repo,
+          "--log", logLevel,
+          "--max-results", String(maxResults)
+        ],
+        env: {}
+      };
+    }
+
+  exampleConfig:
+    repoPath: "."
+    logLevel: "warn"
+    maxResults: 8

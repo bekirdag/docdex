@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.7
+- Added smithery.yaml and Docker files for smithery.ai directory listing
+
 ## 0.1.6
 - Align with MCP spec fixes (notification handling, CallToolResult content payloads, underscore tool names) so Codex and other clients stay stable.
 - Publish npm wrapper with the latest MCP-compliant binary.

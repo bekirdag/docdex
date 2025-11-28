@@ -1,10 +1,12 @@
 build:
   dockerfile: Dockerfile
   dockerBuildPath: "."
-
 startCommand:
   type: stdio
-
+  # Point to the wrapper script we created in the Dockerfile
+  command: "/entrypoint.sh"
+  # Args are empty because the script constructs them from Env Vars
+  args: []
   configSchema:
     type: object
     properties:
@@ -12,8 +14,7 @@ startCommand:
         type: string
         description: >
           Path to the repo/workspace Docdex should index.
-          For local installs this is a path on the user's machine.
-          For container deployments it's a path inside the container.
+          For container deployments, this is the path INSIDE the container.
         default: "."
       logLevel:
         type: string
@@ -25,25 +26,6 @@ startCommand:
         minimum: 1
         default: 8
     required: []
-
-  commandFunction: |
-    (config) => {
-      const repo = config.repoPath || ".";
-      const logLevel = config.logLevel || "warn";
-      const maxResults = config.maxResults || 8;
-
-      return {
-        command: "docdexd",
-        args: [
-          "mcp",
-          "--repo", repo,
-          "--log", logLevel,
-          "--max-results", String(maxResults)
-        ],
-        env: {}
-      };
-    }
-
   exampleConfig:
     repoPath: "."
     logLevel: "warn"

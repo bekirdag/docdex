@@ -1,13 +1,12 @@
 # Dockerfile
 # Container image for the Docdex MCP server.
-# Place this in the repository root (next to Cargo.toml).
 
 ########################
 # 1) Build stage
 ########################
 FROM rust:1.79-slim AS builder
 
-# System dependencies for building (adjust if you know docdex needs more/less)
+# System dependencies for building
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
@@ -16,15 +15,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy manifest files first for better caching
+# Copy manifest files
 COPY Cargo.toml Cargo.lock ./
-# If you have a workspace, you may want to COPY additional manifests here.
 
-# Copy the rest of the source
+# Copy source code
 COPY . .
 
-# Build the release binary (docdexd)
-# If the binary name ever changes, update "docdexd" here and in the COPY below.
+# Build the release binary
 RUN cargo build --release
 
 ########################
@@ -44,7 +41,24 @@ WORKDIR /app
 # Copy the compiled binary from the builder image
 COPY --from=builder /app/target/release/docdexd /usr/local/bin/docdexd
 
+# --- KEY FIX: Create a wrapper script to bridge Env Vars -> CLI Flags ---
+# We use printf to ensure newlines are handled correctly.
+RUN printf '#!/bin/sh\n\
+\n\
+# 1. Read Env Vars (provided by Smithery/Docker), default to sensible values if missing\n\
+# We check both camelCase (Smithery default) and standard UPPERCASE just in case\n\
+REPO="${repoPath:-${REPO_PATH:-.}}"\n\
+LOG="${logLevel:-${LOG_LEVEL:-warn}}"\n\
+MAX="${maxResults:-${MAX_RESULTS:-8}}"\n\
+\n\
+# 2. Log startup for debugging\n\
+echo "Starting docdexd with: repo=$REPO, log=$LOG, max=$MAX"\n\
+\n\
+# 3. Exec into the actual binary so it takes over PID 1\n\
+exec docdexd mcp --repo "$REPO" --log "$LOG" --max-results "$MAX"\n\
+' > /entrypoint.sh && chmod +x /entrypoint.sh
+
 USER docdex
 
-# Default command: matches the smithery.yaml startCommand (can be overridden by Smithery).
-CMD ["docdexd", "mcp", "--repo", ".", "--log", "warn", "--max-results", "8"]
+# Point to our wrapper script instead of the binary directly
+CMD ["/entrypoint.sh"]

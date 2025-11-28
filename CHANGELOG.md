@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.8
+- smithery.yaml and Docker file fixes and added a entrypoint.sh to read environment variables and passes them as flags to docdexd
+
 ## 0.1.7
 - Added smithery.yaml and Docker files for smithery.ai directory listing
 

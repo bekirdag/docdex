@@ -1,30 +1,6 @@
-runtime: "container"
-
-build:
-  dockerfile: "Dockerfile"
-  dockerBuildPath: "."
-
 startCommand:
   type: "http"
   configSchema:
     type: "object"
-    properties:
-      repoPath:
-        type: "string"
-        title: "Repository Path"
-        description: "Path to the repo inside the container"
-        default: "/source"
-      logLevel:
-        type: "string"
-        title: "Log Level"
-        description: "Log level (info, warn, error)"
-        default: "warn"
-      maxResults:
-        type: "integer"
-        title: "Max Results"
-        description: "Max search results"
-        default: 8
-  exampleConfig:
-    repoPath: "/source"
-    logLevel: "warn"
-    maxResults: 8
+    properties: {}
+  exampleConfig: {}

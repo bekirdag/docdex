@@ -1,23 +1,24 @@
 runtime: "container"
 
 build:
-  dockerfile: Dockerfile
+  dockerfile: "Dockerfile"
   dockerBuildPath: "."
 
 startCommand:
   type: "http"
   configSchema:
-    type: object
+    type: "object"
+    required: [] 
     properties:
       repoPath:
-        type: string
+        type: "string"
         description: "Path to the repo inside the container."
         default: "/source"
       logLevel:
-        type: string
+        type: "string"
         default: "warn"
       maxResults:
-        type: integer
+        type: "integer"
         default: 8
   exampleConfig:
     repoPath: "/source"

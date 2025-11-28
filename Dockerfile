@@ -4,7 +4,8 @@
 ########################
 # 1) Build stage
 ########################
-FROM rust:1.79-slim AS builder
+# FIX 1: Use 'slim-bookworm' to match the runtime OS (prevents GLIBC error)
+FROM rust:slim-bookworm AS builder
 
 # System dependencies for building
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -36,29 +37,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Non-root user for safety
 RUN useradd -m -u 1000 docdex
 
+# Create the app directory
 WORKDIR /app
 
-# Copy the compiled binary from the builder image
+# FIX 2: Change ownership of /app to the docdex user so it can write indexes
+RUN chown docdex:docdex /app
+
+# Copy the compiled binary
 COPY --from=builder /app/target/release/docdexd /usr/local/bin/docdexd
 
-# --- KEY FIX: Create a wrapper script to bridge Env Vars -> CLI Flags ---
-# We use printf to ensure newlines are handled correctly.
+# Create wrapper script (Env Vars -> CLI Flags)
 RUN printf '#!/bin/sh\n\
 \n\
-# 1. Read Env Vars (provided by Smithery/Docker), default to sensible values if missing\n\
-# We check both camelCase (Smithery default) and standard UPPERCASE just in case\n\
+# 1. Read Env Vars (provided by Smithery/Docker)\n\
 REPO="${repoPath:-${REPO_PATH:-.}}"\n\
 LOG="${logLevel:-${LOG_LEVEL:-warn}}"\n\
 MAX="${maxResults:-${MAX_RESULTS:-8}}"\n\
 \n\
-# 2. Log startup for debugging\n\
+# 2. Log startup\n\
 echo "Starting docdexd with: repo=$REPO, log=$LOG, max=$MAX"\n\
 \n\
-# 3. Exec into the actual binary so it takes over PID 1\n\
+# 3. Exec binary\n\
 exec docdexd mcp --repo "$REPO" --log "$LOG" --max-results "$MAX"\n\
 ' > /entrypoint.sh && chmod +x /entrypoint.sh
 
 USER docdex
 
-# Point to our wrapper script instead of the binary directly
+# Point to wrapper script
 CMD ["/entrypoint.sh"]

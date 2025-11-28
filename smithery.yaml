@@ -3,18 +3,14 @@ build:
   dockerBuildPath: "."
 startCommand:
   type: stdio
-  # Point to the wrapper script we created in the Dockerfile
   command: "/entrypoint.sh"
-  # Args are empty because the script constructs them from Env Vars
   args: []
   configSchema:
     type: object
     properties:
       repoPath:
         type: string
-        description: >
-          Path to the repo/workspace Docdex should index.
-          For container deployments, this is the path INSIDE the container.
+        description: "Path to the repo/workspace. For container deployments, this is the path INSIDE the container."
         default: "."
       logLevel:
         type: string
@@ -25,7 +21,6 @@ startCommand:
         description: "Maximum number of hits returned by docdex_search."
         minimum: 1
         default: 8
-    required: []
   exampleConfig:
     repoPath: "."
     logLevel: "warn"

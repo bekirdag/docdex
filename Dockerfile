@@ -64,4 +64,4 @@ exec docdexd mcp --repo "$REPO" --log "$LOG" --max-results "$MAX"\n\
 USER docdex
 
 # Point to wrapper script
-CMD ["/entrypoint.sh"]
+ENTRYPOINT ["/entrypoint.sh"]

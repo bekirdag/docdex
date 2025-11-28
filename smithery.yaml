@@ -1,27 +1,25 @@
+runtime: "container"
+
 build:
   dockerfile: Dockerfile
   dockerBuildPath: "."
+
 startCommand:
-  type: stdio
-  command: "/entrypoint.sh"
-  args: []
+  type: "http"
   configSchema:
     type: object
     properties:
       repoPath:
         type: string
-        description: "Path to the repo/workspace. For container deployments, this is the path INSIDE the container."
-        default: "."
+        description: "Path to the repo inside the container."
+        default: "/source"
       logLevel:
         type: string
-        description: "Log level passed to docdexd via --log (e.g. debug, info, warn, error)."
         default: "warn"
       maxResults:
         type: integer
-        description: "Maximum number of hits returned by docdex_search."
-        minimum: 1
         default: 8
   exampleConfig:
-    repoPath: "."
+    repoPath: "/source"
     logLevel: "warn"
     maxResults: 8

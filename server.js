@@ -57,7 +57,6 @@ function ensureMcpChild() {
       stdoutBuffer = stdoutBuffer.slice(idx + 1);
       if (!line) continue;
 
-      // 1) Fan out for HTTP /mcp
       try {
         const msg = JSON.parse(line);
         const id = msg.id;
@@ -66,15 +65,12 @@ function ensureMcpChild() {
           pending.delete(id);
           resolve(msg);
         } else {
-          // Notifications or unmatched responses – safe to log
+          // Notifications / logs without an id
           console.log("[Adapter] Unmatched MCP message:", msg);
         }
       } catch (err) {
         console.error("[Adapter] Failed to parse MCP JSON:", err, "line:", line);
       }
-
-      // 2) SSE clients also get the raw JSON line (handled below via listener)
-      // We don't do anything extra here; SSE handler uses its own listener.
     }
   });
 
@@ -113,7 +109,7 @@ function sendJsonRpc(message) {
       reject(err);
     }
 
-    // Simple timeout so we don't hang forever
+    // Simple timeout
     setTimeout(() => {
       if (pending.has(id)) {
         pending.delete(id);
@@ -123,27 +119,53 @@ function sendJsonRpc(message) {
   });
 }
 
-// Streamable HTTP entrypoint expected by Smithery
+// ---- Streamable HTTP entrypoint (what Smithery hits) ----
+
 app.post("/mcp", async (req, res) => {
+  const msg = req.body;
+  const child = ensureMcpChild();
+
+  // 1) Notification (no id): fire-and-forget
+  if (msg.id === undefined || msg.id === null) {
+    try {
+      const payload = JSON.stringify(msg) + "\n";
+      child.stdin.write(payload);
+      // JSON-RPC notifications don't have responses; HTTP can be 204 or 200 with empty body
+      return res.status(204).end();
+    } catch (err) {
+      console.error("[Adapter] /mcp notification error:", err);
+      return res.status(500).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32000,
+          message: err?.message || "Failed to send notification to MCP server",
+        },
+        id: null,
+      });
+    }
+  }
+
+  // 2) Normal request with id: go through sendJsonRpc and return its response
   try {
-    const response = await sendJsonRpc(req.body);
+    const response = await sendJsonRpc(msg);
     res.json(response);
   } catch (err) {
-    console.error("[Adapter] /mcp error:", err);
+    console.error("[Adapter] /mcp request error:", err);
     res.status(500).json({
       jsonrpc: "2.0",
       error: {
         code: -32000,
         message: err?.message || "Internal MCP adapter error",
       },
-      id: req.body && req.body.id !== undefined ? req.body.id : null,
+      id: msg.id,
     });
   }
 });
 
-// ---- Legacy SSE transport (still supported) ----
 
-// 1. SSE stream: server → client
+// ---- SSE transport (kept, but now reuses the same child) ----
+
+// 1. SSE: server → client
 app.get("/sse", (req, res) => {
   const child = ensureMcpChild();
 
@@ -155,7 +177,7 @@ app.get("/sse", (req, res) => {
 
   console.log("[Adapter] New SSE connection");
 
-  // Tell client to POST messages to /message
+  // Tell client where to POST messages
   res.write(`event: endpoint\ndata: /message\n\n`);
 
   const onStdout = (chunk) => {
@@ -169,19 +191,14 @@ app.get("/sse", (req, res) => {
 
   child.stdout.on("data", onStdout);
 
-  child.stderr.on("data", (data) => {
-    console.error("[Docdex stderr]", data.toString());
-  });
-
   req.on("close", () => {
     console.log("[Adapter] SSE connection closed");
     child.stdout.off("data", onStdout);
-    // Optional: DON'T kill here so /mcp sessions stay alive
-    // child.kill();
+    // We *don't* kill the child here so /mcp keeps working
   });
 });
 
-// 2. Message endpoint: client → server (used only for SSE transport)
+// 2. Message endpoint: client → server (used only with /sse)
 app.post("/message", (req, res) => {
   const child = ensureMcpChild();
 

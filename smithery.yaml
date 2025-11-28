@@ -1,22 +1,26 @@
+# Smithery configuration file: https://smithery.ai/docs/build/project-config/smithery-yaml
+
+version: 1
 runtime: "container"
+
+build:
+  dockerfile: "Dockerfile"      # Path to your Dockerfile
+  dockerBuildPath: "."          # Docker build context
 
 startCommand:
   type: "http"
   configSchema:
     type: "object"
-    required: ["repoPath"]
     properties:
       repoPath:
         type: "string"
-        description: "Path to the repo inside the container"
+        description: "Path to the repo inside the container."
         default: "/source"
       logLevel:
         type: "string"
-        description: "Log level (info, warn, error)"
         default: "warn"
       maxResults:
         type: "integer"
-        description: "Max search results"
         default: 8
   exampleConfig:
     repoPath: "/source"

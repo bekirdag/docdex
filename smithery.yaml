@@ -3,6 +3,7 @@ startCommand:
   type: "http"
   configSchema:
     type: "object"
+    required: ["repoPath"]
     properties:
       repoPath:
         type: "string"

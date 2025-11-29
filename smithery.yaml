@@ -8,11 +8,11 @@ startCommand:
       repoPath:
         type: "string"
         title: "Repo path"
-        description: "Path to the repo inside the container that Docdex should index"
+        description: "Path to the repo"
       logLevel:
         type: "string"
         title: "Log level"
-        description: "Log level for docdexd (error, warn, info, debug, trace)"
+        description: "error, warn, info, debug, trace"
       maxResults:
         type: integer
         title: "Max Results"

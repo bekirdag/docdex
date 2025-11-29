@@ -1,0 +1,26 @@
+{
+  "version": "1.0",
+  "protocolVersion": "2025-06-18",
+  "serverInfo": {
+    "name": "docdex",
+    "title": "Docdex – Repo Docs Index & Search",
+    "version": "0.1.8"
+  },
+  "description": "Per-repo documentation indexer and search daemon that exposes fast search tools over MCP.",
+  "iconUrl": "https://raw.githubusercontent.com/bekirdag/docdex/main/.well-known/icons/docdex-icon-512.png",
+  "documentationUrl": "https://github.com/bekirdag/docdex",
+  "transport": {
+    "type": "streamable-http",
+    "endpoint": "/mcp"
+  },
+  "capabilities": {
+    "tools": { "listChanged": false },
+    "prompts": { "listChanged": false },
+    "resources": { "listChanged": false }
+  },
+  "requires": {},
+  "instructions": "Use docdex_search to find relevant docs, then docdex_open or docdex_files for details. Call docdex_index if results look stale.",
+  "resources": ["dynamic"],
+  "tools": ["dynamic"],
+  "prompts": ["dynamic"]
+}

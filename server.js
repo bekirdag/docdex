@@ -1,75 +1,84 @@
-import express from 'express';
-import bodyParser from 'body-parser';
-import { spawn } from 'child_process';
+import express from "express";
+import bodyParser from "body-parser";
+import { spawn } from "child_process";
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Defaults (can be overridden by Smithery config)
-const FALLBACK_REPO = '/source';
-const FALLBACK_LOG = 'warn';
-const FALLBACK_MAX = 8;
+// Defaults (can be overridden via config or env)
+const DEFAULT_REPO = process.env.DOCDEX_REPO_PATH || "/source";
+const DEFAULT_LOG = process.env.DOCDEX_LOG_LEVEL || "warn";
+const DEFAULT_MAX_RESULTS = Number(process.env.DOCDEX_MAX_RESULTS || 8);
 
-let activeConfig = {
-  repoPath: FALLBACK_REPO,
-  logLevel: FALLBACK_LOG,
-  maxResults: FALLBACK_MAX,
-};
+// Parse JSON bodies
+app.use(bodyParser.json());
+
+// Serve server card + icon from the repo copied into /source
+// Smithery will hit /.well-known/mcp/server-card.json
+app.use("/.well-known", (req, res, next) => {
+  // CORS for discovery endpoints
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  next();
+});
+app.use("/.well-known", express.static("/source/.well-known"));
+
+// ---------------------------------------------------------------------------
+// Child process management (docdexd mcp)
+// ---------------------------------------------------------------------------
 
 let child = null;
-let stdoutBuffer = '';
-const pending = new Map(); // id -> { resolve, reject }
+let childConfig = null; // { repoPath, logLevel, maxResults }
+let stdoutBuffer = "";
+const pending = new Map(); // id(string) -> { resolve, reject }
 
-// --- Helper: decode Smithery config from ?config=<base64> ---
-function decodeConfig(req) {
-  const raw = req.query?.config;
-  if (!raw) return {};
+function normalizeConfig(overrides = {}) {
+  const repoPath =
+    typeof overrides.repoPath === "string" && overrides.repoPath.trim()
+      ? overrides.repoPath.trim()
+      : DEFAULT_REPO;
 
-  try {
-    const json = Buffer.from(String(raw), 'base64').toString('utf8');
-    const parsed = JSON.parse(json);
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch (err) {
-    console.error('[Adapter] Failed to decode config param:', err);
-    return {};
-  }
+  const logLevel =
+    typeof overrides.logLevel === "string" && overrides.logLevel.trim()
+      ? overrides.logLevel.trim()
+      : DEFAULT_LOG;
+
+  const maxRaw = overrides.maxResults ?? DEFAULT_MAX_RESULTS;
+  const maxNum = Number(maxRaw);
+  const maxResults =
+    Number.isFinite(maxNum) && maxNum > 0 ? maxNum : DEFAULT_MAX_RESULTS;
+
+  return { repoPath, logLevel, maxResults };
 }
 
-// --- Start / manage docdexd mcp child process ---
-function startDocdex(configOverrides = {}) {
-  if (child && !child.killed) {
-    return child;
-  }
-
-  activeConfig = {
-    ...activeConfig,
-    ...configOverrides,
-  };
-
-  const repoPath = activeConfig.repoPath || FALLBACK_REPO;
-  const logLevel = activeConfig.logLevel || FALLBACK_LOG;
-  const maxResults = String(
-    activeConfig.maxResults || FALLBACK_MAX,
-  );
+function startDocdex(config) {
+  const { repoPath, logLevel, maxResults } = config;
 
   console.log(
-    `[Adapter] Starting docdexd mcp --repo=${repoPath} --log=${logLevel} --max-results=${maxResults}`,
+    `[Adapter] Starting docdexd mcp --repo=${repoPath} --log=${logLevel} --max-results=${maxResults}`
   );
 
-  child = spawn('docdexd', [
-    'mcp',
-    '--repo',
+  const args = [
+    "mcp",
+    "--repo",
     repoPath,
-    '--log',
+    "--log",
     logLevel,
-    '--max-results',
-    maxResults,
-  ]);
+    "--max-results",
+    String(maxResults),
+  ];
 
-  child.stdout.on('data', (chunk) => {
+  const proc = spawn("docdexd", args);
+
+  proc.stderr.on("data", (data) => {
+    console.error("[docdexd]", data.toString());
+  });
+
+  proc.stdout.on("data", (chunk) => {
     stdoutBuffer += chunk.toString();
     let idx;
-    while ((idx = stdoutBuffer.indexOf('\n')) !== -1) {
+    while ((idx = stdoutBuffer.indexOf("\n")) !== -1) {
       const line = stdoutBuffer.slice(0, idx).trim();
       stdoutBuffer = stdoutBuffer.slice(idx + 1);
       if (!line) continue;
@@ -78,92 +87,145 @@ function startDocdex(configOverrides = {}) {
       try {
         msg = JSON.parse(line);
       } catch (err) {
-        console.error('[Adapter] Invalid JSON from docdexd:', line);
+        console.error(
+          "[Adapter] Failed to parse JSON from docdexd:",
+          err,
+          "line:",
+          line
+        );
         continue;
       }
 
-      if (Object.prototype.hasOwnProperty.call(msg, 'id')) {
+      if (Object.prototype.hasOwnProperty.call(msg, "id")) {
         const key = String(msg.id);
-        const pendingEntry = pending.get(key);
-        if (pendingEntry) {
+        const entry = pending.get(key);
+        if (entry) {
           pending.delete(key);
-          pendingEntry.resolve(msg);
+          entry.resolve(msg);
         } else {
-          console.log('[Adapter] Unmatched message from docdexd:', msg);
+          console.log("[Adapter] Unmatched response from docdexd:", msg);
         }
       } else {
-        // Notifications from docdexd – just log.
-        console.log('[Adapter] Notification from docdexd:', msg);
+        // Notifications from docdexd
+        console.log("[Adapter] Notification from docdexd:", msg);
       }
     }
   });
 
-  child.stderr.on('data', (data) => {
-    console.error('[docdexd]', data.toString());
-  });
-
-  child.on('exit', (code, signal) => {
+  proc.on("exit", (code, signal) => {
     console.warn(`[Adapter] docdexd exited (code=${code}, signal=${signal})`);
-    for (const entry of pending.values()) {
-      entry.reject(new Error('docdexd exited'));
+    if (child === proc) {
+      child = null;
+      childConfig = null;
+      stdoutBuffer = "";
+    }
+    for (const { reject } of pending.values()) {
+      reject(new Error("docdexd process exited"));
     }
     pending.clear();
-    child = null;
   });
 
-  return child;
+  child = proc;
+  childConfig = config;
+  return proc;
 }
 
-function sendNotificationToDocdex(message, configOverrides = {}) {
-  startDocdex(configOverrides);
-  try {
-    child.stdin.write(JSON.stringify(message) + '\n');
-  } catch (err) {
-    console.error('[Adapter] Failed to send notification to docdexd:', err);
+function ensureDocdex(configOverrides = {}) {
+  const desired = normalizeConfig(configOverrides);
+
+  if (child && !child.killed && childConfig) {
+    const same =
+      childConfig.repoPath === desired.repoPath &&
+      childConfig.logLevel === desired.logLevel &&
+      childConfig.maxResults === desired.maxResults;
+
+    if (same) return child;
+
+    console.log("[Adapter] Restarting docdexd with new config");
+    child.kill();
   }
+
+  return startDocdex(desired);
 }
 
-// JSON-RPC request (expects a response)
+function decodeConfig(req) {
+  const raw = req.query?.config;
+  if (!raw) return {};
+
+  try {
+    const json = Buffer.from(String(raw), "base64").toString("utf8");
+    const parsed = JSON.parse(json);
+    if (parsed && typeof parsed === "object") return parsed;
+  } catch (err) {
+    console.error("[Adapter] Failed to decode config query param:", err);
+  }
+  return {};
+}
+
 function sendRequestToDocdex(message, configOverrides = {}) {
-  startDocdex(configOverrides);
+  const proc = ensureDocdex(configOverrides);
   const id = message.id;
   const key = String(id);
 
   return new Promise((resolve, reject) => {
     pending.set(key, { resolve, reject });
 
-    child.stdin.write(JSON.stringify(message) + '\n', (err) => {
-      if (err) {
-        console.error('[Adapter] Failed to write to docdexd:', err);
-        if (pending.has(key)) {
-          pending.get(key).reject(err);
-          pending.delete(key);
+    try {
+      const payload = JSON.stringify(message) + "\n";
+      proc.stdin.write(payload, (err) => {
+        if (err) {
+          console.error("[Adapter] Failed to write to docdexd stdin:", err);
+          if (pending.has(key)) {
+            pending.get(key).reject(err);
+            pending.delete(key);
+          }
         }
+      });
+    } catch (err) {
+      if (pending.has(key)) {
+        pending.get(key).reject(err);
+        pending.delete(key);
       }
-    });
+      return;
+    }
 
-    // Optional: timeout
+    // Simple timeout so we don't hang forever
+    const timeoutMs = 15000;
     setTimeout(() => {
       if (pending.has(key)) {
+        pending.get(key).reject(
+          new Error("Timeout waiting for response from docdexd")
+        );
         pending.delete(key);
-        reject(new Error('Timeout waiting for response from docdexd'));
       }
-    }, 15000);
+    }, timeoutMs);
   });
 }
 
-// --- MCP Prompts (in adapter) ---
+function sendNotificationToDocdex(message, configOverrides = {}) {
+  const proc = ensureDocdex(configOverrides);
+  try {
+    const payload = JSON.stringify(message) + "\n";
+    proc.stdin.write(payload);
+  } catch (err) {
+    console.error("[Adapter] Failed to send notification to docdexd:", err);
+  }
+}
 
-const PROMPTS_LIST_RESULT = {
+// ---------------------------------------------------------------------------
+// MCP prompts (implemented in adapter)
+// ---------------------------------------------------------------------------
+
+const DOCDEX_PROMPTS_LIST = {
   prompts: [
     {
-      name: 'docdex_repo_search',
+      name: "docdex_repo_search",
       description:
-        'Use Docdex tools to search this repository documentation and answer questions.',
+        "Plan how to use Docdex tools to answer a question about this repository.",
       arguments: [
         {
-          name: 'question',
-          description: 'Question about this repository or its documentation.',
+          name: "question",
+          description: "Question about this repository or its documentation.",
           required: true,
         },
       ],
@@ -173,9 +235,9 @@ const PROMPTS_LIST_RESULT = {
 
 function handlePromptsList(message) {
   return {
-    jsonrpc: '2.0',
+    jsonrpc: "2.0",
     id: message.id,
-    result: PROMPTS_LIST_RESULT,
+    result: DOCDEX_PROMPTS_LIST,
   };
 }
 
@@ -184,9 +246,9 @@ function handlePromptsCall(message) {
   const name = params.name;
   const args = params.arguments || {};
 
-  if (name !== 'docdex_repo_search') {
+  if (name !== "docdex_repo_search") {
     return {
-      jsonrpc: '2.0',
+      jsonrpc: "2.0",
       id: message.id,
       error: {
         code: -32601,
@@ -195,80 +257,82 @@ function handlePromptsCall(message) {
     };
   }
 
-  const question = String(args.question || '').trim();
+  const question = String(args.question || "").trim();
 
   const messages = [
     {
-      role: 'system',
+      role: "system",
       content: [
         {
-          type: 'text',
+          type: "text",
           text:
-            'You have access to Docdex MCP tools for this repository. ' +
-            'Use docdex_search first to find relevant docs, then docdex_open or docdex_files for details. ' +
-            'Cite file paths in your answer.',
+            "You have access to Docdex MCP tools for this repository. " +
+            "Use docdex_search to find relevant docs, then docdex_open or docdex_files " +
+            "for detailed context. Cite file paths in your answer.",
         },
       ],
     },
     {
-      role: 'user',
+      role: "user",
       content: [
         {
-          type: 'text',
+          type: "text",
           text:
             `Question: ${question}\n\n` +
-            'Plan:\n' +
-            '1. Call the docdex_search tool with a short query.\n' +
-            '2. Skim summaries/snippets.\n' +
-            '3. Use docdex_open / docdex_files if you need full context.\n' +
-            '4. Answer using only those docs.',
+            "Plan:\n" +
+            "1. Call docdex_search with a short query.\n" +
+            "2. Skim summaries/snippets.\n" +
+            "3. Use docdex_open/docdex_files for details.\n" +
+            "4. Answer using only those docs.",
         },
       ],
     },
   ];
 
   return {
-    jsonrpc: '2.0',
+    jsonrpc: "2.0",
     id: message.id,
     result: { messages },
   };
 }
 
-// --- MCP Resources (in adapter) ---
+// ---------------------------------------------------------------------------
+// MCP resources (simple static help resource)
+// ---------------------------------------------------------------------------
 
-const STATIC_RESOURCES = [
+const DOCDEX_RESOURCES = [
   {
-    uri: 'docdex://help',
-    name: 'Docdex MCP usage guide',
+    uri: "docdex://help",
+    name: "Docdex MCP usage guide",
     description:
-      'Short guide on how to use Docdex tools (search, index, files, open, stats) inside an AI agent.',
-    mimeType: 'text/markdown',
+      "How to use docdex_search, docdex_index, docdex_files, docdex_open and docdex_stats.",
+    mimeType: "text/markdown",
   },
 ];
 
-const RESOURCE_CONTENT = {
-  'docdex://help': {
-    uri: 'docdex://help',
-    mimeType: 'text/markdown',
+const DOCDEX_RESOURCE_CONTENT = {
+  "docdex://help": {
+    uri: "docdex://help",
+    mimeType: "text/markdown",
     text: [
-      '# Docdex MCP usage',
-      '',
-      '- Use `docdex_search` first to find relevant docs.',
-      '- If results look stale, call `docdex_index` to rebuild the index.',
-      '- Browse indexed docs with `docdex_files`.',
-      '- Open a specific file or span with `docdex_open`.',
-      '- Inspect index stats with `docdex_stats`.',
-      '',
-      'Keep queries short and focused. Use file paths in your answers.',
-    ].join('\n'),
+      "# Docdex MCP Usage",
+      "",
+      "- Use `docdex_search` first to find relevant docs.",
+      "- If results look stale, call `docdex_index` to rebuild the index.",
+      "- Use `docdex_files` to browse indexed files.",
+      "- Use `docdex_open` to read a specific file or line range.",
+      "- Use `docdex_stats` to inspect index statistics.",
+      "",
+      "Keep queries short and focused. Include file paths in your answer when possible.",
+    ].join("\n"),
   },
 };
 
 function handleResourcesList(message) {
   return {
-    jsonrpc: '2.0',
+    jsonrpc: "2.0",
     id: message.id,
-    result: { resources: STATIC_RESOURCES },
+    result: { resources: DOCDEX_RESOURCES },
   };
 }
 
@@ -278,194 +342,220 @@ function handleResourcesRead(message) {
   const contents = [];
 
   for (const uri of uris) {
-    const entry = RESOURCE_CONTENT[uri];
-    if (entry) contents.push(entry);
+    if (DOCDEX_RESOURCE_CONTENT[uri]) {
+      contents.push(DOCDEX_RESOURCE_CONTENT[uri]);
+    }
   }
 
   return {
-    jsonrpc: '2.0',
+    jsonrpc: "2.0",
     id: message.id,
     result: { contents },
   };
 }
 
-// --- Tool annotations wrapper ---
+// ---------------------------------------------------------------------------
+// Tool annotations (for Smithery Tool Quality score)
+// ---------------------------------------------------------------------------
 
 function annotateTool(tool) {
-  const baseAnnotations = tool.annotations || {};
+  const base = tool.annotations || {};
 
   switch (tool.name) {
-    case 'docdex_search':
+    case "docdex_search":
       return {
         ...tool,
         annotations: {
-          ...baseAnnotations,
-          category: 'search',
+          ...base,
+          category: "search",
           preferred: true,
-          purpose: 'Search repository docs by natural language query.',
+          purpose:
+            "Search repository documentation with a natural-language query.",
         },
       };
-    case 'docdex_index':
+
+    case "docdex_index":
       return {
         ...tool,
         annotations: {
-          ...baseAnnotations,
-          category: 'maintenance',
-          purpose: 'Rebuild the Docdex index when results look stale.',
+          ...base,
+          category: "maintenance",
+          purpose: "Rebuild or refresh the Docdex index.",
         },
       };
-    case 'docdex_files':
+
+    case "docdex_files":
       return {
         ...tool,
         annotations: {
-          ...baseAnnotations,
-          category: 'navigation',
-          purpose: 'List indexed documentation files.',
+          ...base,
+          category: "navigation",
+          purpose: "List indexed documentation files.",
         },
       };
-    case 'docdex_open':
+
+    case "docdex_open":
       return {
         ...tool,
         annotations: {
-          ...baseAnnotations,
-          category: 'navigation',
-          purpose: 'Open a specific file or line range from the index.',
+          ...base,
+          category: "navigation",
+          purpose: "Open a specific file or line range from the index.",
         },
       };
-    case 'docdex_stats':
+
+    case "docdex_stats":
       return {
         ...tool,
         annotations: {
-          ...baseAnnotations,
-          category: 'introspection',
-          purpose: 'Inspect index size and basic statistics.',
+          ...base,
+          category: "introspection",
+          purpose: "Inspect index size and statistics.",
         },
       };
+
     default:
       return {
         ...tool,
         annotations: {
-          ...baseAnnotations,
-          category: 'other',
+          ...base,
+          category: "other",
         },
       };
   }
 }
 
-// --- MCP Server Card (for icon + metadata) ---
-
-const SERVER_CARD = {
-  version: '1.0',
-  protocolVersion: '2025-06-18',
-  serverInfo: {
-    name: 'docdex',
-    title: 'Docdex – Repo Docs Index & Search',
-    version: process.env.DOCDEX_VERSION || '0.1.6',
-  },
-  description:
-    'Per-repo documentation indexer and search daemon exposing docdex tools over MCP.',
-  iconUrl: 'https://docdex.org/assets/docdex.png', // change this to your actual icon
-  documentationUrl: 'https://docdex.org/',
-  transport: {
-    type: 'streamable-http',
-    endpoint: '/mcp',
-    sseEndpoint: '/mcp',
-  },
-  capabilities: {
-    tools: { listChanged: true },
-    prompts: { listChanged: true },
-    resources: { listChanged: true },
-  },
-  instructions:
-    'Use docdex_search to find relevant docs before coding. ' +
-    'Call docdex_index when results look stale, docdex_files to browse, ' +
-    'docdex_open for detailed spans, and docdex_stats to inspect the index.',
-  resources: ['dynamic'],
-  tools: ['dynamic'],
-  prompts: ['dynamic'],
-};
-
-// --- Express wiring ---
-
-app.use(bodyParser.json());
-
-// Server card (metadata + icon)
-app.get('/.well-known/mcp.json', (req, res) => {
-  res.set('Access-Control-Allow-Origin', '*');
-  res.json(SERVER_CARD);
-});
-
+// ---------------------------------------------------------------------------
 // Streamable HTTP MCP endpoint
-app.post('/mcp', async (req, res) => {
+// ---------------------------------------------------------------------------
+
+app.post("/mcp", async (req, res) => {
   const message = req.body;
 
-  if (!message || message.jsonrpc !== '2.0') {
+  if (!message || message.jsonrpc !== "2.0") {
     return res.status(400).json({
-      jsonrpc: '2.0',
+      jsonrpc: "2.0",
       id: null,
       error: {
         code: -32600,
-        message: 'Invalid JSON-RPC 2.0 message',
+        message: "Invalid JSON-RPC 2.0 message",
       },
     });
   }
 
-  const hasId = Object.prototype.hasOwnProperty.call(message, 'id');
-  const id = hasId ? message.id : null;
+  const hasId = Object.prototype.hasOwnProperty.call(message, "id");
   const method = message.method;
   const configOverrides = decodeConfig(req);
 
-  try {
-    // Notifications (no id) – forward to docdexd, return 204
-    if (!hasId) {
-      if (method) {
-        sendNotificationToDocdex(message, configOverrides);
-      }
-      return res.status(204).send();
+  // Notifications (no id) – fire-and-forget
+  if (!hasId) {
+    if (method) {
+      sendNotificationToDocdex(message, configOverrides);
     }
+    return res.status(204).end();
+  }
 
-    // Prompts implemented in adapter
-    if (method === 'prompts/list') {
-      return res.json(handlePromptsList(message));
-    }
-    if (method === 'prompts/call') {
-      return res.json(handlePromptsCall(message));
-    }
+  // Prompts implemented in adapter
+  if (method === "prompts/list") {
+    return res.json(handlePromptsList(message));
+  }
+  if (method === "prompts/call") {
+    return res.json(handlePromptsCall(message));
+  }
 
-    // Resources implemented in adapter
-    if (method === 'resources/list') {
-      return res.json(handleResourcesList(message));
-    }
-    if (method === 'resources/read') {
-      return res.json(handleResourcesRead(message));
-    }
+  // Resources implemented in adapter
+  if (method === "resources/list") {
+    return res.json(handleResourcesList(message));
+  }
+  if (method === "resources/read") {
+    return res.json(handleResourcesRead(message));
+  }
 
-    // Wrap tools/list to inject annotations
-    if (method === 'tools/list') {
+  // Wrap tools/list to inject annotations
+  if (method === "tools/list") {
+    try {
       const response = await sendRequestToDocdex(message, configOverrides);
-      if (response && response.result && Array.isArray(response.result.tools)) {
+      if (response?.result?.tools && Array.isArray(response.result.tools)) {
         response.result.tools = response.result.tools.map(annotateTool);
       }
       return res.json(response);
+    } catch (err) {
+      console.error("[Adapter] tools/list error:", err);
+      return res.status(500).json({
+        jsonrpc: "2.0",
+        id: message.id,
+        error: {
+          code: -32000,
+          message: err?.message || "Internal error in tools/list wrapper",
+        },
+      });
     }
+  }
 
-    // Everything else -> proxy to docdexd
+  // Everything else -> pure proxy to docdexd
+  try {
     const response = await sendRequestToDocdex(message, configOverrides);
     return res.json(response);
   } catch (err) {
-    console.error('[Adapter] Error handling /mcp request:', err);
+    console.error("[Adapter] /mcp error:", err);
     return res.status(500).json({
-      jsonrpc: '2.0',
-      id,
+      jsonrpc: "2.0",
+      id: message.id,
       error: {
         code: -32000,
-        message: err.message || 'Internal error in adapter',
+        message: err?.message || "Internal MCP adapter error",
       },
     });
   }
 });
 
+// ---------------------------------------------------------------------------
+// Optional SSE transport (for compatibility)
+// ---------------------------------------------------------------------------
+
+app.get("/sse", (req, res) => {
+  const configOverrides = decodeConfig(req);
+  const proc = ensureDocdex(configOverrides);
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  console.log("[Adapter] New SSE connection");
+
+  // Tell client where to POST messages
+  res.write(`event: endpoint\ndata: /message\n\n`);
+
+  const onStdout = (chunk) => {
+    const lines = chunk.toString().split("\n");
+    for (const line of lines) {
+      if (line.trim()) {
+        res.write(`event: message\ndata: ${line}\n\n`);
+      }
+    }
+  };
+
+  proc.stdout.on("data", onStdout);
+
+  req.on("close", () => {
+    console.log("[Adapter] SSE connection closed");
+    proc.stdout.off("data", onStdout);
+  });
+});
+
+app.post("/message", (req, res) => {
+  const configOverrides = decodeConfig(req);
+  sendNotificationToDocdex(req.body, configOverrides);
+  res.status(202).send("Accepted");
+});
+
+// ---------------------------------------------------------------------------
+// Start server
+// ---------------------------------------------------------------------------
+
 app.listen(PORT, () => {
   console.log(`Docdex MCP adapter listening on port ${PORT}`);
-  console.log(`Default repo path: ${activeConfig.repoPath}`);
+  console.log(`Default repo path: ${DEFAULT_REPO}`);
 });

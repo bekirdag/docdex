@@ -13,8 +13,13 @@ const DEFAULT_MAX_RESULTS = Number(process.env.DOCDEX_MAX_RESULTS || 8);
 // Parse JSON bodies
 app.use(bodyParser.json());
 
-// Serve server card + icon from the repo copied into /source
-// Smithery will hit /.well-known/mcp/server-card.json
+// ---------------------------------------------------------------------------
+// Serve .well-known (server card + icon)
+// ---------------------------------------------------------------------------
+
+// Smithery will hit e.g.:
+//   https://server.smithery.ai/@bekirdag/docdex/.well-known/mcp/server-card.json
+// The repo is copied to /source, so we serve /source/.well-known.
 app.use("/.well-known", (req, res, next) => {
   // CORS for discovery endpoints
   res.setHeader("Access-Control-Allow-Origin", "*");

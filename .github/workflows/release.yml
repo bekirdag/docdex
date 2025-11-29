@@ -96,7 +96,7 @@ jobs:
           fi
           cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${BIN_NAME}"
           tar -czf ${{ matrix.archive }}.tar.gz -C dist "${BIN_NAME}"
-          python -c "import hashlib, pathlib; p=pathlib.Path('${{ matrix.archive }}.tar.gz'); h=hashlib.sha256(p.read_bytes()).hexdigest(); pathlib.Path(f'{p}.sha256').write_text(f'{h}  {p.name}\\n')"
+          python -c "import hashlib, pathlib; p=pathlib.Path('${{ matrix.archive }}.tar.gz'); h=hashlib.sha256(p.read_bytes()).hexdigest(); pathlib.Path(f'{p}.sha256').write_text(f'{h}  {p.name}\n')"
 
       - name: Upload GitHub release assets
         uses: softprops/action-gh-release@v1
@@ -117,7 +117,7 @@ jobs:
             ${{ matrix.archive }}.sha256
 
   publish-npm:
-    name: Publish npm package
+    name: Publish npm package and MCP server
     needs: build
     runs-on: ubuntu-latest
     environment: release
@@ -158,6 +158,32 @@ jobs:
             echo "Tag v$TAG does not match npm/package.json version $PKG_VERSION"
             exit 1
           fi
+          echo "✓ Tag matches Cargo.toml and npm/package.json: $TAG"
+
+      # Keep server.json in sync with npm/package.json before publishing
+      - name: Update server.json version
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('npm/package.json', 'utf8'));
+            const server = JSON.parse(fs.readFileSync('server.json', 'utf8'));
+            const version = pkg.version;
+            server.version = version;
+            if (Array.isArray(server.packages) && server.packages.length > 0) {
+              server.packages[0].version = version;
+            }
+            fs.writeFileSync('server.json', JSON.stringify(server, null, 2) + '\n');
+          "
+
+      - name: Verify server.json version
+        run: |
+          PKG_VERSION=$(node -p "require('./npm/package.json').version")
+          SERVER_VERSION=$(node -e "console.log(require('./server.json').version)")
+          if [ "$PKG_VERSION" != "$SERVER_VERSION" ]; then
+            echo "Error: Version mismatch between npm/package.json ($PKG_VERSION) and server.json ($SERVER_VERSION)"
+            exit 1
+          fi
+          echo "✓ server.json version synchronized: $SERVER_VERSION"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -207,3 +233,16 @@ jobs:
           npm install "$PACK_PATH"
           npx docdex --version
           popd >/dev/null
+
+      # MCP Registry publishing
+      - name: Install MCP Publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/download/v1.3.10/mcp-publisher_linux_amd64.tar.gz" \
+            | tar xz mcp-publisher
+          chmod +x mcp-publisher
+
+      - name: Login to MCP Registry
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish

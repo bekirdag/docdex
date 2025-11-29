@@ -16,7 +16,7 @@ startCommand:
       maxResults:
         type: "integer"
         title: "Max results"
-        description: "Maximum number of hits returned by docdex_search"
+        default: 8
   exampleConfig:
     repoPath: "/source"
     logLevel: "warn"

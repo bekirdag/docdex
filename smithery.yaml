@@ -1,3 +1,5 @@
+# Smithery configuration file: https://smithery.ai/docs/build/project-config/smithery-yaml
+version: 1
 runtime: "container"
 
 build:
@@ -8,26 +10,5 @@ startCommand:
   type: "http"
   configSchema:
     type: "object"
-    properties:
-      repoPath:
-        type: "string"
-        title: "Repository path"
-        description: "Path to the repo inside the container that Docdex should index."
-        default: "/source"
-      logLevel:
-        type: "string"
-        title: "Log level"
-        description: "Log level passed to docdexd."
-        enum: ["error", "warn", "info", "debug", "trace"]
-        default: "warn"
-      maxResults:
-        type: "integer"
-        title: "Max results"
-        description: "Maximum number of hits returned by docdex_search."
-        default: 8
-        minimum: 1
-        maximum: 32
-  exampleConfig:
-    repoPath: "/source"
-    logLevel: "warn"
-    maxResults: 8
+    properties: {}
+  exampleConfig: {}

@@ -17,10 +17,6 @@ startCommand:
         type: "integer"
         title: "Max results"
         description: "Maximum number of hits returned by docdex_search"
-  exampleConfig:
-    repoPath: "/source"
-    logLevel: "warn"
-    maxResults: 8
 build:
   dockerfile: "Dockerfile"
   dockerBuildPath: "."

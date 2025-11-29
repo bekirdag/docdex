@@ -1,5 +1,5 @@
 # Smithery configuration file: https://smithery.ai/docs/build/project-config/smithery-yaml
-version: "1.0.0"          # optional, but keep it a string if you use it
+
 runtime: "container"
 
 build:
@@ -8,9 +8,11 @@ build:
 
 startCommand:
   type: "http"
-  path: "/mcp"            # your server.js exposes POST /mcp
+  path: "/mcp"  # MUST match your Express endpoint: app.post("/mcp", ...)
   configSchema:
     type: "object"
+    required:
+      - "repoPath"
     properties:
       repoPath:
         type: "string"
@@ -23,12 +25,10 @@ startCommand:
       maxResults:
         type: "integer"
         title: "Max Results"
-        description: "Maximum number of results returned by docdex_search"
+        description: "Maximum number of results"
         default: 8
         minimum: 1
         maximum: 50
-    required:
-      - "repoPath"
   exampleConfig:
     repoPath: "/source"
     logLevel: "warn"

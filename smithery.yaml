@@ -1,10 +1,4 @@
-version: 1
 runtime: "container"
-
-build:
-  dockerfile: "Dockerfile"
-  dockerBuildPath: "."
-
 startCommand:
   type: "http"
   configSchema:
@@ -24,7 +18,9 @@ startCommand:
         title: "Max results"
         description: "Maximum number of hits returned by docdex_search"
   exampleConfig:
-    apiKey: "sk-example123"
     repoPath: "/source"
     logLevel: "warn"
     maxResults: 8
+build:
+  dockerfile: "Dockerfile"
+  dockerBuildPath: "."

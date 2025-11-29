@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.11
+- Added glama support
+
 ## 0.1.10
 - smithery deployment work to get a bettwe score. enriched server.js, added mcp.json and an icon address.
 

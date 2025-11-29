@@ -1,25 +1,35 @@
+# Smithery configuration file: https://smithery.ai/docs/build/project-config/smithery-yaml
+version: "1.0.0"          # optional, but keep it a string if you use it
 runtime: "container"
+
+build:
+  dockerfile: "Dockerfile"
+  dockerBuildPath: "."
 
 startCommand:
   type: "http"
+  path: "/mcp"            # your server.js exposes POST /mcp
   configSchema:
     type: "object"
     properties:
       repoPath:
         type: "string"
-        description: "Path to the repo"
+        title: "Repo path"
+        description: "Path to the repo inside the container that Docdex should index"
       logLevel:
         type: "string"
+        title: "Log level"
         description: "error, warn, info, debug, trace"
       maxResults:
         type: "integer"
-        description: "Maximum number of results"
-    required: ["repoPath"]
+        title: "Max Results"
+        description: "Maximum number of results returned by docdex_search"
+        default: 8
+        minimum: 1
+        maximum: 50
+    required:
+      - "repoPath"
   exampleConfig:
     repoPath: "/source"
     logLevel: "warn"
     maxResults: 8
-
-build:
-  dockerfile: "Dockerfile"
-  dockerBuildPath: "."

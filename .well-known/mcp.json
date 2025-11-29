@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "protocolVersion": "2025-06-18",
+  "serverInfo": {
+    "name": "docdex",
+    "title": "Docdex – Repo Docs Index & Search",
+    "version": "1.0.0"
+  },
+  "description": "Per-repo documentation indexer and MCP server exposing fast full-text search over your local docs.",
+  "iconUrl": "https://docdex.org/assets/docdex.png",
+  "documentationUrl": "https://docdex.org/",
+  "transport": {
+    "type": "streamable-http",
+    "endpoint": "/mcp"
+  },
+  "capabilities": {
+    "tools": {
+      "listChanged": true
+    },
+    "prompts": {
+      "listChanged": true
+    },
+    "resources": {
+      "listChanged": true
+    }
+  },
+  "requires": {
+    "roots": {},
+    "sampling": {}
+  },
+  "instructions": "Use docdex_search to find relevant docs before coding. Call docdex_index when results look stale, docdex_files to browse indexed files, docdex_open to read file slices, and docdex_stats to inspect the index.",
+  "resources": ["dynamic"],
+  "tools": ["dynamic"],
+  "prompts": ["dynamic"]
+}

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.10
+- smithery deployment work to get a bettwe score. enriched server.js, added mcp.json and an icon address.
+
+## 0.1.9
+- smithery deployment work
+
 ## 0.1.8
 - smithery.yaml and Docker file fixes and added a entrypoint.sh to read environment variables and passes them as flags to docdexd
 

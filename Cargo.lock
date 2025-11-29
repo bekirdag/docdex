@@ -490,7 +490,7 @@ dependencies = [
 
 [[package]]
 name = "docdexd"
-version = "0.1.8"
+version = "0.1.10"
 dependencies = [
  "ammonia",
  "anyhow",

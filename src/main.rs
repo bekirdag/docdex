@@ -14,6 +14,7 @@ use crate::dag::{DagStatus, NO_TRACE_MESSAGE};
 use crate::dag_tui::run_dag_tui;
 use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand};
+use serde::Serialize;
 use serde_json::json;
 use std::fs;
 use std::path::Path;
@@ -60,6 +61,49 @@ impl WebRagRepoArgs {
     fn state_dir_override(&self) -> Option<PathBuf> {
         self.state_dir.clone()
     }
+}
+
+#[derive(Debug, Args)]
+struct WebRagArgs {
+    #[command(flatten)]
+    repo: WebRagRepoArgs,
+    #[arg(
+        short,
+        long,
+        help = "Query to run against the local index before considering web escalation"
+    )]
+    query: String,
+    #[arg(
+        long,
+        default_value_t = 8,
+        value_parser = clap::value_parser!(usize).range(1..=64),
+        help = "Maximum hits to request from the local index"
+    )]
+    limit: usize,
+    #[arg(
+        long,
+        default_value_t = 4,
+        value_parser = clap::value_parser!(usize).range(1..=64),
+        help = "Per-repo hit cap applied before escalation"
+    )]
+    max_repo_hits: usize,
+    #[arg(
+        long,
+        default_value_t = 0.5,
+        help = "Confidence threshold (0-1); below this triggers web escalation unless forced"
+    )]
+    confidence_threshold: f32,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Run the web stage regardless of confidence"
+    )]
+    force_web: bool,
+    #[arg(
+        long,
+        help = "Optional token budget for local hits; drops hits once the budget is exceeded"
+    )]
+    max_tokens: Option<u64>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -304,7 +348,7 @@ enum Command {
     /// Run web-based retrieval against an indexed repo.
     WebRag {
         #[command(flatten)]
-        repo: WebRagRepoArgs,
+        args: WebRagArgs,
     },
     /// Load a reasoning DAG for a prior session using local trace storage.
     Dag {
@@ -644,17 +688,50 @@ async fn main() -> Result<()> {
             let hits = search::run_query(&server, &query, limit).await?;
             println!("{}", serde_json::to_string_pretty(&hits)?);
         }
-        Command::WebRag { repo } => {
+        Command::WebRag { args } => {
             util::init_logging("warn")?;
-            let target = match validate_web_rag_repo(&repo) {
+            let target = match validate_web_rag_repo(&args.repo) {
                 Ok(info) => info,
                 Err(err) => err.exit(),
             };
-            println!(
-                "web-rag repo ready: {} (index at {})",
-                target.repo_root.display(),
-                target.state_dir.display()
+            let index_config = index::IndexConfig::with_overrides(
+                &target.repo_root,
+                args.repo.state_dir_override(),
+                Vec::new(),
+                Vec::new(),
             );
+            let indexer =
+                index::Indexer::with_config_read_only(target.repo_root.clone(), index_config)?;
+            let local = run_waterfall_local(
+                &indexer,
+                &args.query,
+                args.limit,
+                args.max_repo_hits,
+                args.max_tokens,
+            )
+            .await?;
+            let threshold = args.confidence_threshold.clamp(0.0, 1.0);
+            let web_needed = args.force_web || local.confidence < threshold;
+            let web = WaterfallWebStage {
+                ran: web_needed,
+                forced: args.force_web,
+                confidence_threshold: threshold,
+                reason: if args.force_web {
+                    "force_web".to_string()
+                } else if web_needed {
+                    "below_confidence_threshold".to_string()
+                } else {
+                    "confidence_threshold_met".to_string()
+                },
+            };
+            let outcome = WaterfallOutcome {
+                query: args.query,
+                repo_root: target.repo_root.display().to_string(),
+                state_dir: target.state_dir.display().to_string(),
+                local,
+                web,
+            };
+            println!("{}", serde_json::to_string_pretty(&outcome)?);
         }
         Command::Dag {
             repo,
@@ -753,6 +830,39 @@ struct WebRagTarget {
     state_dir: PathBuf,
 }
 
+#[derive(Serialize)]
+struct WaterfallLocalStage {
+    hits: Vec<index::Hit>,
+    confidence: f32,
+    limit: usize,
+    max_repo_hits: usize,
+    effective_limit: usize,
+    truncated_for_repo_cap: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token_budget: Option<u64>,
+    token_budget_consumed: u64,
+    truncated_for_token_budget: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    meta: Option<search::SearchMeta>,
+}
+
+#[derive(Serialize)]
+struct WaterfallWebStage {
+    ran: bool,
+    forced: bool,
+    confidence_threshold: f32,
+    reason: String,
+}
+
+#[derive(Serialize)]
+struct WaterfallOutcome {
+    query: String,
+    repo_root: String,
+    state_dir: String,
+    local: WaterfallLocalStage,
+    web: WaterfallWebStage,
+}
+
 struct WebRagValidationError {
     exit_code: i32,
     message: String,
@@ -795,6 +905,76 @@ impl WebRagValidationError {
         eprintln!("{}", self.message);
         process::exit(self.exit_code);
     }
+}
+
+async fn run_waterfall_local(
+    indexer: &index::Indexer,
+    query: &str,
+    limit: usize,
+    max_repo_hits: usize,
+    max_tokens: Option<u64>,
+) -> Result<WaterfallLocalStage> {
+    let effective_limit = compute_effective_limit(limit, max_repo_hits);
+    let mut response = search::run_query(indexer, query, effective_limit).await?;
+    let meta = response.meta.take();
+    let (hits, truncated_for_token_budget, token_budget_consumed) =
+        apply_token_budget(response.hits, max_tokens);
+    let confidence = compute_confidence(&hits, effective_limit);
+    Ok(WaterfallLocalStage {
+        hits,
+        confidence,
+        limit,
+        max_repo_hits,
+        effective_limit,
+        truncated_for_repo_cap: limit > effective_limit,
+        token_budget: max_tokens,
+        token_budget_consumed,
+        truncated_for_token_budget,
+        meta,
+    })
+}
+
+fn apply_token_budget(
+    hits: Vec<index::Hit>,
+    max_tokens: Option<u64>,
+) -> (Vec<index::Hit>, bool, u64) {
+    let Some(max_tokens) = max_tokens else {
+        let consumed = hits.iter().map(|hit| hit.token_estimate).sum();
+        return (hits, false, consumed);
+    };
+    let mut remaining = max_tokens;
+    let mut kept = Vec::new();
+    let mut truncated = false;
+    for hit in hits.into_iter() {
+        if hit.token_estimate > max_tokens {
+            truncated = true;
+            continue;
+        }
+        if hit.token_estimate > remaining {
+            truncated = true;
+            continue;
+        }
+        remaining = remaining.saturating_sub(hit.token_estimate);
+        kept.push(hit);
+    }
+    let consumed = max_tokens.saturating_sub(remaining);
+    (kept, truncated, consumed)
+}
+
+fn compute_effective_limit(limit: usize, max_repo_hits: usize) -> usize {
+    let sanitized_limit = limit.max(1);
+    let repo_cap = max_repo_hits.max(1);
+    sanitized_limit.min(repo_cap)
+}
+
+fn compute_confidence(hits: &[index::Hit], effective_limit: usize) -> f32 {
+    if hits.is_empty() {
+        return 0.0;
+    }
+    let fill_ratio = (hits.len() as f32 / effective_limit.max(1) as f32).min(1.0);
+    let top_score = hits.first().map(|hit| hit.score.abs()).unwrap_or(0.0);
+    let normalized_score = 1.0 - (1.0 / (1.0 + top_score));
+    ((fill_ratio + normalized_score) / 2.0).clamp(0.0, 1.0)
 }
 
 fn validate_web_rag_repo(repo: &WebRagRepoArgs) -> Result<WebRagTarget, WebRagValidationError> {

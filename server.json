@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
   "name": "io.github.bekirdag/docdex",
-  "description": "Docdex is a lightweight, per-repo documentation indexer and search daemon that exposes fast full-text search tools over MCP and HTTP for local markdown/text docs.",
+  "description": "Fast per-repo documentation indexer and full-text search MCP server for codebases.",
   "repository": {
     "url": "https://github.com/bekirdag/docdex",
     "source": "github"
   },
-  "version": "0.1.11",
+  "version": "1.0.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "docdex",
-      "version": "0.1.11",
+      "version": "1.0.0",
       "transport": {
         "type": "stdio"
       }

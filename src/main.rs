@@ -1,7 +1,8 @@
 mod audit;
-mod dag;
 mod config;
 mod daemon;
+mod dag;
+mod dag_tui;
 mod index;
 mod mcp;
 mod search;
@@ -10,6 +11,7 @@ mod watcher;
 
 use crate::config::RepoArgs;
 use crate::dag::{DagStatus, NO_TRACE_MESSAGE};
+use crate::dag_tui::run_dag_tui;
 use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use serde_json::json;
@@ -286,6 +288,12 @@ enum Command {
             help = "Override global state root (default: ~/.docdex/state)"
         )]
         global_state_dir: Option<PathBuf>,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Open keyboard-navigable DAG inspector (interactive view)"
+        )]
+        tui: bool,
     },
     /// Run an MCP (Model Context Protocol) server over stdio.
     Mcp {
@@ -605,10 +613,15 @@ async fn main() -> Result<()> {
             repo,
             session,
             global_state_dir,
+            tui,
         } => {
             let repo_root = repo.repo_root();
             util::init_logging("warn")?;
             let result = dag::load_session_dag(&repo_root, &session, global_state_dir)?;
+            if tui {
+                run_dag_tui(&session, result)?;
+                return Ok(());
+            }
             println!("{}", serde_json::to_string_pretty(&result)?);
             match result.status {
                 DagStatus::Missing => eprintln!("{NO_TRACE_MESSAGE}"),

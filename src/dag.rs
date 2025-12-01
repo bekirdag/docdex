@@ -159,7 +159,9 @@ fn load_from_sqlite(path: &Path, session_id: &str) -> Result<Option<Vec<DagNode>
         .query_map([session_id], |row| {
             let payload_raw: Option<String> = row.get(2)?;
             let payload = match payload_raw {
-                Some(raw) if !raw.is_empty() => serde_json::from_str(&raw).unwrap_or(Value::String(raw)),
+                Some(raw) if !raw.is_empty() => {
+                    serde_json::from_str(&raw).unwrap_or(Value::String(raw))
+                }
                 Some(_) | None => Value::Null,
             };
             Ok(DagNode {

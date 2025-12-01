@@ -137,6 +137,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - `index --repo <path>` — rebuild the entire index.
 - `ingest --repo <path> --file <file>` — reindex a single file.
 - `query --repo <path> --query "<text>" [--limit 8]` — run a search and print JSON hits.
+- `dag --repo <path> --session <id> [--tui]` — print a recorded reasoning trace; add `--tui` for the keyboard inspector (Tab/arrow keys move selection, Enter expands/collapses prompt text per node, `r` shows retry hint, `q` quits). Prompts start collapsed; interactive runs log local navigation/expand counts to `.docdex/logs/dag_telemetry.log` without prompt text (set `DOCDEX_TUI_TELEMETRY_DISABLE=1` to skip).
 - `self-check --repo <path> --terms "foo,bar" [--limit 5]` — scan the index for sensitive terms before enabling access (fails with non-zero exit if any are found; reports sample hits and if more exist). Includes built-in token/password patterns by default; disable with `--include-default-patterns=false` if you only want your provided terms.
 
 ## Help and command discovery

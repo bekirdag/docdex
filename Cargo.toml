@@ -34,6 +34,7 @@ uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 hex = "0.4"
 which = "6"
+rusqlite = { version = "0.31", features = ["bundled"] }
 
 [dev-dependencies]
 assert_cmd = "2.0"

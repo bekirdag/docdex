@@ -4,6 +4,7 @@ mod daemon;
 mod dag;
 mod dag_tui;
 mod index;
+mod llm;
 mod mcp;
 mod search;
 mod util;
@@ -344,6 +345,15 @@ enum Command {
         query: String,
         #[arg(long, default_value_t = 8)]
         limit: usize,
+    },
+    /// List hardware-aware LLM recommendations.
+    LlmList {
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Optional llm_list.json path (defaults to current directory or built-in catalog)"
+        )]
+        catalog: Option<PathBuf>,
     },
     /// Run web-based retrieval against an indexed repo.
     WebRag {
@@ -688,6 +698,17 @@ async fn main() -> Result<()> {
             let hits = search::run_query(&server, &query, limit).await?;
             println!("{}", serde_json::to_string_pretty(&hits)?);
         }
+        Command::LlmList { catalog } => {
+            util::init_logging("warn")?;
+            let hardware = llm::detect_hardware();
+            println!("{}", llm::format_detection_summary(&hardware));
+            let catalog = llm::load_catalog(catalog.as_deref());
+            if let Some(warning) = catalog.warning.as_deref() {
+                eprintln!("llm-list: {warning}");
+            }
+            let recommendations = llm::recommended_with_reasons(&catalog.models, &hardware);
+            println!("{}", llm::render_recommendations(&recommendations));
+        }
         Command::WebRag { args } => {
             util::init_logging("warn")?;
             let target = match validate_web_rag_repo(&args.repo) {
@@ -1015,6 +1036,7 @@ fn print_full_help() -> Result<()> {
         "index",
         "ingest",
         "query",
+        "llm-list",
         "web-rag",
         "dag",
     ] {

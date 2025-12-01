@@ -186,7 +186,7 @@ pub fn load_session_dag(
     })
 }
 
-fn resolve_state_root(global_state_dir: Option<PathBuf>) -> Result<PathBuf> {
+pub fn resolve_state_root(global_state_dir: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(dir) = global_state_dir {
         return Ok(dir);
     }

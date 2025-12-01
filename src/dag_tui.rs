@@ -36,18 +36,149 @@ struct DaemonStatus {
     last_error: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+struct RepoChoice {
+    fingerprint: String,
+    path: PathBuf,
+}
+
+impl RepoChoice {
+    fn label(&self) -> String {
+        format!("{} ({})", self.fingerprint, self.path.display())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RepoInventory {
+    missing_repo: bool,
+    state_root: Option<PathBuf>,
+    available: Vec<RepoChoice>,
+    reason: Option<String>,
+    selection: Option<usize>,
+    last_warning: Option<String>,
+}
+
+impl RepoInventory {
+    fn new() -> Self {
+        Self {
+            missing_repo: false,
+            state_root: None,
+            available: Vec::new(),
+            reason: None,
+            selection: None,
+            last_warning: None,
+        }
+    }
+
+    fn refresh(&mut self, status: &DagStatus, repo_fingerprint: &str, state_root: Option<PathBuf>) {
+        self.state_root = state_root.clone();
+        self.available = state_root.as_ref().map(discover_repos).unwrap_or_default();
+        self.missing_repo = false;
+        self.reason = None;
+        self.selection = None;
+        if !matches!(status, DagStatus::Missing) {
+            return;
+        }
+        match state_root {
+            None => {
+                self.missing_repo = true;
+                self.reason = Some(
+                    "Repo manager directory not found; index or attach a repo before retrying."
+                        .to_string(),
+                );
+            }
+            Some(root) => {
+                let repos_dir = root.join("repos");
+                if !repos_dir.exists() {
+                    self.missing_repo = true;
+                    self.reason = Some(format!(
+                        "Repo manager path not found at {}.",
+                        repos_dir.display()
+                    ));
+                    return;
+                }
+                let repo_dir = repos_dir.join(repo_fingerprint);
+                if !repo_dir.exists() {
+                    self.missing_repo = true;
+                    let detail = if self.available.is_empty() {
+                        format!(
+                            "Fingerprint {} not found; no repos registered under {}.",
+                            repo_fingerprint,
+                            repos_dir.display()
+                        )
+                    } else {
+                        format!(
+                            "Fingerprint {} not found under {}.",
+                            repo_fingerprint,
+                            repos_dir.display()
+                        )
+                    };
+                    self.reason = Some(detail);
+                }
+            }
+        }
+    }
+
+    fn banner_lines(&self) -> Option<Vec<String>> {
+        if !self.missing_repo {
+            return None;
+        }
+        let mut lines = Vec::new();
+        lines.push(
+            "Repo is not attached. Index or pick a known repo before continuing.".to_string(),
+        );
+        if let Some(reason) = self.reason.as_ref() {
+            lines.push(format!("Reason: {}", truncate(reason, DETAIL_WIDTH)));
+        }
+        if let Some(root) = self.state_root.as_ref() {
+            lines.push(format!(
+                "Repo manager: {}",
+                truncate(&root.display().to_string(), DETAIL_WIDTH.saturating_sub(15))
+            ));
+        }
+        if self.available.is_empty() {
+            lines.push("Available repos: (none registered yet)".to_string());
+        } else {
+            lines.push(format!("Available repos ({}):", self.available.len()));
+            for (idx, repo) in self.available.iter().enumerate() {
+                if idx >= 5 {
+                    lines.push(format!("  ... {} more", self.available.len() - idx));
+                    break;
+                }
+                lines.push(format!(
+                    "  [{}] {}",
+                    idx + 1,
+                    truncate(&repo.label(), DETAIL_WIDTH.saturating_sub(6))
+                ));
+            }
+        }
+        lines.push(
+            "Actions: [s] Select repo • [r] Retry • [q] Quit (session preserved)".to_string(),
+        );
+        Some(lines)
+    }
+
+    fn select_next(&mut self) -> Option<&RepoChoice> {
+        if self.available.is_empty() {
+            self.selection = None;
+            return None;
+        }
+        let next = match self.selection {
+            Some(idx) if idx + 1 < self.available.len() => idx + 1,
+            _ => 0,
+        };
+        self.selection = Some(next);
+        self.available.get(next)
+    }
+}
+
 pub fn run_dag_tui(
     session_id: &str,
     dag: DagLoadResult,
     global_state_dir: Option<PathBuf>,
 ) -> Result<()> {
     let telemetry = TelemetryRecorder::new(&dag.repo_root, session_id);
-    let mut app = App::from_dag(session_id, dag, telemetry);
-    app.reload_config = Some(ReloadConfig::new(
-        &app.repo_root,
-        session_id,
-        global_state_dir,
-    ));
+    let mut app = App::from_dag(session_id, dag, telemetry, global_state_dir);
     if app.daemon.unreachable {
         let reason = app
             .daemon
@@ -75,6 +206,7 @@ pub fn run_dag_tui(
             Key::Prev => app.prev(),
             Key::TogglePrompt => app.toggle_prompt(),
             Key::Retry => app.retry(),
+            Key::SelectRepo => app.select_repo(),
             Key::None => {}
         }
         app.render(&mut stdout)?;
@@ -88,6 +220,7 @@ enum Key {
     Prev,
     TogglePrompt,
     Retry,
+    SelectRepo,
     Quit,
     None,
 }
@@ -98,6 +231,7 @@ fn parse_key(bytes: &[u8]) -> Key {
         [9, ..] => Key::Next,
         [13, ..] | [10, ..] => Key::TogglePrompt,
         [b'r', ..] | [b'R', ..] => Key::Retry,
+        [b's', ..] | [b'S', ..] => Key::SelectRepo,
         [27, 91, 65, ..] | [27, 79, 65, ..] | [b'k', ..] => Key::Prev,
         [27, 91, 66, ..] | [27, 79, 66, ..] | [b'j', ..] => Key::Next,
         [27, 91, 67, ..] | [27, 79, 67, ..] | [b'l', ..] => Key::Next,
@@ -109,6 +243,7 @@ fn parse_key(bytes: &[u8]) -> Key {
 struct App {
     session_id: String,
     repo_root: String,
+    repo_fingerprint: String,
     nodes: Vec<DagNode>,
     selected: usize,
     prompt_open: Vec<bool>,
@@ -120,14 +255,21 @@ struct App {
     telemetry: TelemetryRecorder,
     daemon: DaemonStatus,
     reload_config: Option<ReloadConfig>,
+    repo_inventory: RepoInventory,
+    repo_warning_logged: bool,
 }
 
 impl App {
-    fn from_dag(session_id: &str, dag: DagLoadResult, telemetry: TelemetryRecorder) -> Self {
+    fn from_dag(
+        session_id: &str,
+        dag: DagLoadResult,
+        telemetry: TelemetryRecorder,
+        global_state_dir: Option<PathBuf>,
+    ) -> Self {
         let daemon = DaemonStatus::from_status(&dag);
         let DagLoadResult {
             repo_root,
-            repo_fingerprint: _,
+            repo_fingerprint,
             session_id: _,
             status,
             nodes,
@@ -155,8 +297,16 @@ impl App {
             warnings,
             telemetry,
             daemon,
-            reload_config: None,
+            reload_config: Some(ReloadConfig::new(
+                &repo_root,
+                session_id,
+                global_state_dir.clone(),
+            )),
+            repo_inventory: RepoInventory::new(),
+            repo_warning_logged: false,
+            repo_fingerprint,
         };
+        app.refresh_repo_inventory();
         app.telemetry.record_node_view(app.current_node());
         app
     }
@@ -267,8 +417,91 @@ impl App {
         }
     }
 
+    fn select_repo(&mut self) {
+        if !self.repo_inventory.missing_repo {
+            self.status_line = Some("Repo already attached; no selection needed.".to_string());
+            return;
+        }
+        if let Some(choice) = self.repo_inventory.select_next() {
+            let idx = self.repo_inventory.selection.map(|i| i + 1).unwrap_or(1);
+            let message = format!(
+                "Selected repo [{}]: {} (attach or retry when ready)",
+                idx,
+                truncate(&choice.label(), DETAIL_WIDTH.saturating_sub(32))
+            );
+            self.status_line = Some(message);
+            return;
+        }
+        self.status_line = Some(
+            "No repos available; index or attach a repo, then retry (state preserved).".to_string(),
+        );
+    }
+
+    fn refresh_repo_inventory(&mut self) {
+        let override_root = self
+            .reload_config
+            .as_ref()
+            .and_then(|cfg| cfg.global_state_dir.clone());
+        let state_root = dag::resolve_state_root(override_root).ok();
+        self.repo_inventory
+            .refresh(&self.dag_status, &self.repo_fingerprint, state_root);
+        if self.repo_inventory.missing_repo {
+            self.log_repo_warning();
+        } else {
+            self.repo_warning_logged = false;
+            self.repo_inventory.last_warning = None;
+        }
+    }
+
+    fn log_repo_warning(&mut self) {
+        if self.repo_warning_logged || !self.repo_inventory.missing_repo {
+            return;
+        }
+        let state_root = self
+            .repo_inventory
+            .state_root
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "unavailable".to_string());
+        let available = if self.repo_inventory.available.is_empty() {
+            "-".to_string()
+        } else {
+            self.repo_inventory
+                .available
+                .iter()
+                .map(|r| r.fingerprint.as_str())
+                .take(6)
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let reason = self
+            .repo_inventory
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .replace('\n', " ");
+        let warning = format!(
+            "tui_repo_not_attached repo={} session={} state_root={} available_count={} available_repos={} reason={}",
+            self.repo_root,
+            self.session_id,
+            state_root,
+            self.repo_inventory.available.len(),
+            available,
+            reason
+        );
+        self.repo_inventory.last_warning = Some(warning.clone());
+        eprintln!("{}", warning);
+        self.repo_warning_logged = true;
+    }
+
     fn render(&self, out: &mut impl Write) -> io::Result<()> {
         write!(out, "\x1b[2J\x1b[H")?;
+        if let Some(lines) = self.repo_inventory.banner_lines() {
+            for line in lines {
+                writeln!(out, "{}", truncate(&line, DETAIL_WIDTH))?;
+            }
+            writeln!(out)?;
+        }
         if let Some(lines) = self.daemon.banner_lines(&self.repo_root) {
             for line in lines {
                 writeln!(out, "{}", truncate(&line, DETAIL_WIDTH))?;
@@ -295,7 +528,7 @@ impl App {
         }
         writeln!(
             out,
-            "Keys: ↑/↓/←/→ or Tab to move • Enter toggles prompt • r retry • q quit"
+            "Keys: ↑/↓/←/→ or Tab to move • Enter toggles prompt • r retry • s select repo • q quit"
         )?;
         writeln!(out, "\nNodes:")?;
         if self.nodes.is_empty() {
@@ -334,6 +567,8 @@ impl App {
     }
 
     fn apply_dag(&mut self, dag: DagLoadResult) {
+        self.repo_root = dag.repo_root.clone();
+        self.repo_fingerprint = dag.repo_fingerprint.clone();
         self.dag_status = dag.status;
         self.source = dag.source.as_ref().map(source_label);
         self.message = dag.message.clone().or_else(|| match dag.status {
@@ -350,6 +585,10 @@ impl App {
             .cloned()
             .or_else(|| self.message.clone());
         self.daemon.refresh_from_status(&self.dag_status);
+        if let Some(config) = self.reload_config.as_mut() {
+            config.repo_root = PathBuf::from(&self.repo_root);
+        }
+        self.refresh_repo_inventory();
         self.telemetry.record_node_view(self.current_node());
     }
 
@@ -458,8 +697,8 @@ impl ReloadConfig {
 
 impl DaemonStatus {
     fn from_status(dag: &DagLoadResult) -> Self {
-        let host = std::env::var("DOCDEX_TUI_HOST")
-            .unwrap_or_else(|_| DEFAULT_DAEMON_HOST.to_string());
+        let host =
+            std::env::var("DOCDEX_TUI_HOST").unwrap_or_else(|_| DEFAULT_DAEMON_HOST.to_string());
         let port = std::env::var("DOCDEX_TUI_PORT")
             .ok()
             .and_then(|raw| raw.parse::<u16>().ok())
@@ -559,6 +798,28 @@ fn probe_daemon(host: &str, port: u16) -> Result<(), String> {
     TcpStream::connect_timeout(&addr, Duration::from_millis(DAEMON_PROBE_TIMEOUT_MS))
         .map_err(|err| format!("connect {target}: {err}"))?;
     Ok(())
+}
+
+fn discover_repos(state_root: &Path) -> Vec<RepoChoice> {
+    let repos_dir = state_root.join("repos");
+    let Ok(entries) = fs::read_dir(&repos_dir) else {
+        return Vec::new();
+    };
+    let mut repos = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if let Some(name) = path.file_name().and_then(|v| v.to_str()) {
+            repos.push(RepoChoice {
+                fingerprint: name.to_string(),
+                path: path.clone(),
+            });
+        }
+    }
+    repos.sort_by(|a, b| a.fingerprint.cmp(&b.fingerprint));
+    repos
 }
 
 fn source_label(source: &DagDataSource) -> String {
@@ -941,7 +1202,7 @@ mod tests {
         }];
         let dag = dag_result(&temp, nodes, DagStatus::Found);
         let telemetry = TelemetryRecorder::for_tests(&dag.repo_root, "session-1");
-        let mut app = App::from_dag("session-1", dag, telemetry);
+        let mut app = App::from_dag("session-1", dag, telemetry, None);
 
         let mut out = Vec::new();
         app.render(&mut out).unwrap();
@@ -971,7 +1232,7 @@ mod tests {
         ];
         let dag = dag_result(&temp, nodes, DagStatus::Found);
         let telemetry = TelemetryRecorder::for_tests(&dag.repo_root, "session-nav");
-        let mut app = App::from_dag("session-nav", dag, telemetry);
+        let mut app = App::from_dag("session-nav", dag, telemetry, None);
 
         app.status_line = Some("set".to_string());
         app.next();
@@ -997,7 +1258,7 @@ mod tests {
             warnings: vec!["Offline cache directory not found".to_string()],
         };
         let telemetry = TelemetryRecorder::for_tests(&dag.repo_root, "session-empty");
-        let mut app = App::from_dag("session-empty", dag, telemetry);
+        let mut app = App::from_dag("session-empty", dag, telemetry, None);
 
         let mut out = Vec::new();
         app.render(&mut out).unwrap();
@@ -1021,7 +1282,7 @@ mod tests {
         }];
         let dag = dag_result(&temp, nodes, DagStatus::Found);
         let telemetry = TelemetryRecorder::for_tests(&dag.repo_root, "session-telemetry");
-        let mut app = App::from_dag("session-telemetry", dag, telemetry);
+        let mut app = App::from_dag("session-telemetry", dag, telemetry, None);
 
         app.toggle_prompt();
 
@@ -1051,7 +1312,7 @@ mod tests {
             warnings: vec![],
         };
         let telemetry = TelemetryRecorder::for_tests(&dag.repo_root, "session-banner");
-        let mut app = App::from_dag("session-banner", dag, telemetry);
+        let mut app = App::from_dag("session-banner", dag, telemetry, None);
 
         let mut out = Vec::new();
         app.render(&mut out).unwrap();
@@ -1064,14 +1325,82 @@ mod tests {
     }
 
     #[test]
+    fn missing_repo_banner_lists_available_repos() {
+        let temp = TempDir::new().unwrap();
+        let repo_root = temp.path().join("repo_missing");
+        fs::create_dir_all(&repo_root).unwrap();
+        let state_root = temp.path().join("state");
+        let repos_dir = state_root.join("repos");
+        fs::create_dir_all(repos_dir.join("fp-known")).unwrap();
+
+        let dag = DagLoadResult {
+            repo_root: repo_root.display().to_string(),
+            repo_fingerprint: "fp-missing".to_string(),
+            session_id: "session-missing".to_string(),
+            status: DagStatus::Missing,
+            nodes: vec![],
+            source: None,
+            message: Some(NO_TRACE_MESSAGE.to_string()),
+            warnings: vec![],
+        };
+        let telemetry = TelemetryRecorder::for_tests(&dag.repo_root, "session-missing");
+        let mut app = App::from_dag("session-missing", dag, telemetry, Some(state_root.clone()));
+
+        let mut out = Vec::new();
+        app.render(&mut out).unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+
+        assert!(app.repo_inventory.missing_repo);
+        assert!(rendered.contains("Repo is not attached"));
+        assert!(rendered.contains("fp-known"));
+        assert!(rendered.contains("Available repos"));
+        let warning = app.repo_inventory.last_warning.clone().unwrap_or_default();
+        assert!(warning.contains("tui_repo_not_attached"));
+        assert!(warning.contains("available_count=1"));
+    }
+
+    #[test]
+    fn select_repo_cycles_without_dropping_state() {
+        let temp = TempDir::new().unwrap();
+        let repo_root = temp.path().join("repo_missing");
+        fs::create_dir_all(&repo_root).unwrap();
+        let state_root = temp.path().join("state");
+        let repos_dir = state_root.join("repos");
+        fs::create_dir_all(repos_dir.join("fp-one")).unwrap();
+        fs::create_dir_all(repos_dir.join("fp-two")).unwrap();
+
+        let dag = DagLoadResult {
+            repo_root: repo_root.display().to_string(),
+            repo_fingerprint: "fp-missing".to_string(),
+            session_id: "session-select".to_string(),
+            status: DagStatus::Missing,
+            nodes: vec![],
+            source: None,
+            message: Some(NO_TRACE_MESSAGE.to_string()),
+            warnings: vec![],
+        };
+        let telemetry = TelemetryRecorder::for_tests(&dag.repo_root, "session-select");
+        let mut app = App::from_dag("session-select", dag, telemetry, Some(state_root.clone()));
+
+        let initial_selected = app.selected;
+        app.select_repo();
+        let first = app.status_line.clone().unwrap_or_default();
+        assert!(first.contains("fp-one"));
+
+        app.select_repo();
+        let second = app.status_line.clone().unwrap_or_default();
+        assert!(second.contains("fp-two"));
+        assert_eq!(app.selected, initial_selected);
+    }
+
+    #[test]
     fn retry_reloads_trace_without_dropping_selection() {
         let temp = TempDir::new().unwrap();
         let repo_root = temp.path().join("repo");
         fs::create_dir_all(&repo_root).unwrap();
         let state_root = temp.path().join("state");
         let session = "session-retry";
-        let initial =
-            dag::load_session_dag(&repo_root, session, Some(state_root.clone())).unwrap();
+        let initial = dag::load_session_dag(&repo_root, session, Some(state_root.clone())).unwrap();
         let fingerprint = initial.repo_fingerprint.clone();
         let repo_root_str = initial.repo_root.clone();
         let dag_dir = state_root.join("repos").join(fingerprint).join("dag");
@@ -1088,12 +1417,7 @@ mod tests {
         env::set_var("DOCDEX_TUI_PORT", port.to_string());
 
         let telemetry = TelemetryRecorder::for_tests(&repo_root_str, session);
-        let mut app = App::from_dag(session, initial, telemetry);
-        app.reload_config = Some(ReloadConfig::new(
-            &app.repo_root,
-            session,
-            Some(state_root.clone()),
-        ));
+        let mut app = App::from_dag(session, initial, telemetry, Some(state_root.clone()));
 
         app.retry();
 

@@ -1,4 +1,5 @@
 mod audit;
+mod dag;
 mod config;
 mod daemon;
 mod index;
@@ -8,6 +9,7 @@ mod util;
 mod watcher;
 
 use crate::config::RepoArgs;
+use crate::dag::{DagStatus, NO_TRACE_MESSAGE};
 use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use serde_json::json;
@@ -266,6 +268,24 @@ enum Command {
         query: String,
         #[arg(long, default_value_t = 8)]
         limit: usize,
+    },
+    /// Load a reasoning DAG for a prior session using local trace storage.
+    Dag {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(
+            long,
+            value_name = "SESSION_ID",
+            help = "Session/turn identifier to load from local trace storage"
+        )]
+        session: String,
+        #[arg(
+            long,
+            env = "DOCDEX_GLOBAL_STATE_DIR",
+            value_name = "PATH",
+            help = "Override global state root (default: ~/.docdex/state)"
+        )]
+        global_state_dir: Option<PathBuf>,
     },
     /// Run an MCP (Model Context Protocol) server over stdio.
     Mcp {
@@ -581,6 +601,25 @@ async fn main() -> Result<()> {
             let hits = search::run_query(&server, &query, limit).await?;
             println!("{}", serde_json::to_string_pretty(&hits)?);
         }
+        Command::Dag {
+            repo,
+            session,
+            global_state_dir,
+        } => {
+            let repo_root = repo.repo_root();
+            util::init_logging("warn")?;
+            let result = dag::load_session_dag(&repo_root, &session, global_state_dir)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            match result.status {
+                DagStatus::Missing => eprintln!("{NO_TRACE_MESSAGE}"),
+                DagStatus::Error => {
+                    if let Some(msg) = result.message.as_ref() {
+                        eprintln!("{msg}");
+                    }
+                }
+                DagStatus::Found => {}
+            }
+        }
         Command::Mcp {
             repo,
             log,
@@ -653,7 +692,7 @@ fn print_full_help() -> Result<()> {
     let mut root = Cli::command();
     root.print_long_help()?;
     println!();
-    for name in ["serve", "self-check", "index", "ingest", "query"] {
+    for name in ["serve", "self-check", "index", "ingest", "query", "dag"] {
         let mut cmd = Cli::command();
         if let Some(sub) = cmd.find_subcommand_mut(name) {
             println!("\n{name}:\n");

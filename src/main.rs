@@ -346,12 +346,16 @@ enum Command {
         #[arg(long, default_value_t = 8)]
         limit: usize,
     },
-    /// List hardware-aware LLM recommendations.
+    /// List hardware-aware local LLM recommendations.
+    #[command(
+        about = "List hardware-aware local LLM recommendations.",
+        long_about = "List recommended local/offline models that match detected RAM/VRAM.\n\n- Prefer quantized builds (e.g., Q4_K_M) to shrink RAM/VRAM while staying fully local.\n- Uses the bundled offline catalog by default; pass --catalog <path> to point at a local llm_list.json.\n- Output is ordered from lower to higher requirements with explicit labels for screen readers."
+    )]
     LlmList {
         #[arg(
             long,
             value_name = "PATH",
-            help = "Optional llm_list.json path (defaults to current directory or built-in catalog)"
+            help = "Optional path to a local llm_list.json (defaults to current directory or bundled catalog)"
         )]
         catalog: Option<PathBuf>,
     },
@@ -706,6 +710,9 @@ async fn main() -> Result<()> {
             if let Some(warning) = catalog.warning.as_deref() {
                 eprintln!("llm-list: {warning}");
             }
+            println!(
+                "Local/offline picks are ordered from lowest to higher requirements. Prefer quantized variants (e.g., Q4_K_M) to trim RAM/VRAM; use --catalog to point at a local list."
+            );
             let recommendations = llm::recommended_with_reasons(&catalog.models, &hardware);
             println!("{}", llm::render_recommendations(&recommendations));
         }

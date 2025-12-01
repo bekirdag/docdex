@@ -79,23 +79,39 @@ pub fn recommended_with_reasons(
     models: &[LlmModel],
     hardware: &HardwareInfo,
 ) -> Vec<Recommendation> {
-    models
+    let mut recs: Vec<(Recommendation, (u64, u64, String))> = models
         .iter()
         .filter_map(|model| {
             if !meets_requirements(model, hardware) {
                 return None;
             }
+            let ram_rank = model.min_ram_gb.unwrap_or(u64::MAX);
+            let vram_rank = model.min_vram_gb.unwrap_or(u64::MAX);
             let reason = build_reason(model, hardware);
-            Some(Recommendation {
-                id: model.id.clone(),
-                quantization: model
-                    .quantization
-                    .clone()
-                    .unwrap_or_else(|| "-".to_string()),
-                reason,
-            })
+            Some((
+                Recommendation {
+                    id: model.id.clone(),
+                    quantization: model
+                        .quantization
+                        .clone()
+                        .unwrap_or_else(|| "-".to_string()),
+                    reason,
+                },
+                (ram_rank, vram_rank, model.id.clone()),
+            ))
         })
-        .collect()
+        .collect();
+
+    recs.sort_by(|a, b| {
+        let (a_ram, a_vram, a_id) = &a.1;
+        let (b_ram, b_vram, b_id) = &b.1;
+        a_ram
+            .cmp(b_ram)
+            .then(a_vram.cmp(b_vram))
+            .then(a_id.cmp(b_id))
+    });
+
+    recs.into_iter().map(|(rec, _)| rec).collect()
 }
 
 pub fn format_detection_summary(hardware: &HardwareInfo) -> String {
@@ -115,26 +131,30 @@ pub fn render_recommendations(recs: &[Recommendation]) -> String {
     if recs.is_empty() {
         return "No recommended models matched the detected hardware.".to_string();
     }
+    let model_heading = "Model (local/offline)";
+    let quant_heading = "Quant (lower RAM/VRAM)";
+    let reason_heading = "Why it fits";
     let model_width = recs
         .iter()
         .map(|r| r.id.len())
         .max()
         .unwrap_or(5)
-        .max("Model".len())
+        .max(model_heading.len())
         + 2;
     let quant_width = recs
         .iter()
         .map(|r| r.quantization.len())
         .max()
         .unwrap_or(5)
-        .max("Quant".len())
+        .max(quant_heading.len())
         + 2;
     let mut lines = Vec::new();
+    lines.push("Recommendations (lightest -> heavier requirements):".to_string());
     lines.push(format!(
         "{:<model_width$}{:<quant_width$}{}",
-        "Model",
-        "Quant",
-        "Reason",
+        model_heading,
+        quant_heading,
+        reason_heading,
         model_width = model_width,
         quant_width = quant_width
     ));
@@ -226,7 +246,7 @@ fn build_reason(model: &LlmModel, hardware: &HardwareInfo) -> String {
         }
     }
     if let Some(q) = model.quantization.as_deref() {
-        parts.push(format!("quant {q}"));
+        parts.push(format!("quant {q} (lower RAM/VRAM footprint)"));
     }
     if let Some(note) = model.suitability.as_deref() {
         parts.push(note.to_string());

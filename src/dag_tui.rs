@@ -88,11 +88,7 @@ impl App {
             DagStatus::Error => Some("Failed to load reasoning trace".to_string()),
             DagStatus::Found => None,
         });
-        let status_line = dag
-            .warnings
-            .first()
-            .cloned()
-            .or_else(|| message.clone());
+        let status_line = dag.warnings.first().cloned().or_else(|| message.clone());
         let mut app = Self {
             session_id: session_id.to_string(),
             nodes: dag.nodes,

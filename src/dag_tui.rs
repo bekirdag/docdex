@@ -1,7 +1,12 @@
 use crate::dag::{DagDataSource, DagLoadResult, DagNode, DagStatus, NO_TRACE_MESSAGE};
 use anyhow::{Context, Result};
+use chrono::Utc;
+use serde::Serialize;
 use serde_json::Value;
-use std::io::{self, Read, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufWriter, Read, Write};
+use std::path::{Path, PathBuf};
+use tracing::warn;
 
 #[cfg(unix)]
 use nix::sys::termios;
@@ -12,7 +17,8 @@ const LIST_SUMMARY_WIDTH: usize = 72;
 const DETAIL_WIDTH: usize = 96;
 
 pub fn run_dag_tui(session_id: &str, dag: DagLoadResult) -> Result<()> {
-    let mut app = App::from_dag(session_id, dag);
+    let telemetry = TelemetryRecorder::new(&dag.repo_root, session_id);
+    let mut app = App::from_dag(session_id, dag, telemetry);
     let _raw = RawMode::new().context("enable raw terminal mode for DAG inspector")?;
     let mut stdout = io::stdout();
     app.render(&mut stdout)?;
@@ -70,10 +76,11 @@ struct App {
     source: Option<String>,
     message: Option<String>,
     warnings: Vec<String>,
+    telemetry: TelemetryRecorder,
 }
 
 impl App {
-    fn from_dag(session_id: &str, dag: DagLoadResult) -> Self {
+    fn from_dag(session_id: &str, dag: DagLoadResult, telemetry: TelemetryRecorder) -> Self {
         let count = dag.nodes.len();
         let source = dag.source.as_ref().map(source_label);
         let message = dag.message.clone().or_else(|| match dag.status {
@@ -86,7 +93,7 @@ impl App {
             .first()
             .cloned()
             .or_else(|| message.clone());
-        Self {
+        let mut app = Self {
             session_id: session_id.to_string(),
             nodes: dag.nodes,
             selected: 0,
@@ -96,7 +103,10 @@ impl App {
             source,
             message,
             warnings: dag.warnings,
-        }
+            telemetry,
+        };
+        app.telemetry.record_node_view(app.current_node());
+        app
     }
 
     fn current_node(&self) -> Option<&DagNode> {
@@ -109,6 +119,7 @@ impl App {
         }
         self.selected = (self.selected + 1) % self.nodes.len();
         self.status_line = None;
+        self.telemetry.record_node_view(self.current_node());
     }
 
     fn prev(&mut self) {
@@ -121,10 +132,11 @@ impl App {
             self.selected -= 1;
         }
         self.status_line = None;
+        self.telemetry.record_node_view(self.current_node());
     }
 
     fn toggle_prompt(&mut self) {
-        if let Some(flag) = self.prompt_open.get_mut(self.selected) {
+        let expanded = if let Some(flag) = self.prompt_open.get_mut(self.selected) {
             *flag = !*flag;
             self.status_line = Some(
                 if *flag {
@@ -134,6 +146,13 @@ impl App {
                 }
                 .to_string(),
             );
+            Some(*flag)
+        } else {
+            None
+        };
+        if let Some(expanded) = expanded {
+            self.telemetry
+                .record_prompt_toggle(self.current_node(), expanded);
         }
     }
 
@@ -493,4 +512,283 @@ fn wrap_text(text: &str, width: usize) -> String {
         lines.push(line);
     }
     lines.join("\n")
+}
+
+#[derive(Clone, Debug)]
+struct TelemetryPhase {
+    label: String,
+    enabled: bool,
+}
+
+impl TelemetryPhase {
+    fn detect() -> Self {
+        let label = std::env::var("DOCDEX_PHASE").unwrap_or_else(|_| "ga".to_string());
+        let disabled_env = std::env::var("DOCDEX_TUI_TELEMETRY_DISABLE")
+            .map(|value| {
+                let normalized = value.to_lowercase();
+                !normalized.is_empty() && normalized != "0" && normalized != "false"
+            })
+            .unwrap_or(false);
+        let normalized = label.to_lowercase();
+        let phase_allows = !matches!(normalized.as_str(), "alpha" | "dev" | "disabled" | "off");
+        Self {
+            label,
+            enabled: !disabled_env && phase_allows,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TelemetryRecorder {
+    writer: Option<BufWriter<File>>,
+    session_id: String,
+    repo_root: String,
+    phase: TelemetryPhase,
+}
+
+#[derive(Serialize)]
+struct TelemetryEvent {
+    ts: String,
+    action: String,
+    session_id: String,
+    repo_root: String,
+    phase: String,
+    node_id: Option<i64>,
+    node_type: Option<String>,
+    state: Option<String>,
+}
+
+impl TelemetryRecorder {
+    fn new(repo_root: &str, session_id: &str) -> Self {
+        let phase = TelemetryPhase::detect();
+        if !phase.enabled {
+            return Self {
+                writer: None,
+                session_id: session_id.to_string(),
+                repo_root: repo_root.to_string(),
+                phase,
+            };
+        }
+        let path = telemetry_path(repo_root);
+        let writer = open_telemetry_writer(&path).ok();
+        if writer.is_none() {
+            warn!(
+                path = %path.display(),
+                "failed to open DAG telemetry log; continuing without telemetry"
+            );
+        }
+        Self {
+            writer,
+            session_id: session_id.to_string(),
+            repo_root: repo_root.to_string(),
+            phase,
+        }
+    }
+
+    fn record_node_view(&mut self, node: Option<&DagNode>) {
+        if !self.phase.enabled {
+            return;
+        }
+        if let Some(node) = node {
+            let event = TelemetryEvent {
+                ts: Utc::now().to_rfc3339(),
+                action: "node_expand".to_string(),
+                session_id: self.session_id.clone(),
+                repo_root: self.repo_root.clone(),
+                phase: self.phase.label.clone(),
+                node_id: Some(node.id),
+                node_type: Some(node.node_type.clone()),
+                state: Some("selected".to_string()),
+            };
+            self.write_event(event);
+        }
+    }
+
+    fn record_prompt_toggle(&mut self, node: Option<&DagNode>, expanded: bool) {
+        if !self.phase.enabled {
+            return;
+        }
+        let event = TelemetryEvent {
+            ts: Utc::now().to_rfc3339(),
+            action: "prompt_toggle".to_string(),
+            session_id: self.session_id.clone(),
+            repo_root: self.repo_root.clone(),
+            phase: self.phase.label.clone(),
+            node_id: node.map(|n| n.id),
+            node_type: node.map(|n| n.node_type.clone()),
+            state: Some(if expanded { "expanded" } else { "collapsed" }.to_string()),
+        };
+        self.write_event(event);
+    }
+
+    fn write_event(&mut self, event: TelemetryEvent) {
+        if let Some(writer) = self.writer.as_mut() {
+            if let Ok(line) = serde_json::to_string(&event) {
+                let _ = writer.write_all(line.as_bytes());
+                let _ = writer.write_all(b"\n");
+                let _ = writer.flush();
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn for_tests(repo_root: &str, session_id: &str) -> Self {
+        let path = telemetry_path(repo_root);
+        let writer = open_telemetry_writer(&path).ok();
+        Self {
+            writer,
+            session_id: session_id.to_string(),
+            repo_root: repo_root.to_string(),
+            phase: TelemetryPhase {
+                label: "test".to_string(),
+                enabled: true,
+            },
+        }
+    }
+}
+
+fn telemetry_path(repo_root: &str) -> PathBuf {
+    Path::new(repo_root)
+        .join(".docdex")
+        .join("logs")
+        .join("dag_telemetry.log")
+}
+
+fn open_telemetry_writer(path: &Path) -> io::Result<BufWriter<File>> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file = OpenOptions::new().create(true).append(true).open(path)?;
+    Ok(BufWriter::new(file))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn dag_result(root: &TempDir, nodes: Vec<DagNode>, status: DagStatus) -> DagLoadResult {
+        DagLoadResult {
+            repo_root: root.path().display().to_string(),
+            repo_fingerprint: "fp".to_string(),
+            session_id: "session-1".to_string(),
+            status,
+            nodes,
+            source: Some(DagDataSource::JsonFile),
+            message: None,
+            warnings: vec![],
+        }
+    }
+
+    #[test]
+    fn render_shows_nodes_and_prompt_preview() {
+        let temp = TempDir::new().unwrap();
+        let nodes = vec![DagNode {
+            id: 1,
+            node_type: "tool".to_string(),
+            payload: json!({
+                "summary": "call tool",
+                "prompt": "show full content",
+                "response": { "summary": "ok" }
+            }),
+            created_at: None,
+        }];
+        let dag = dag_result(&temp, nodes, DagStatus::Found);
+        let telemetry = TelemetryRecorder::for_tests(&dag.repo_root, "session-1");
+        let mut app = App::from_dag("session-1", dag, telemetry);
+
+        let mut out = Vec::new();
+        app.render(&mut out).unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+
+        assert!(rendered.contains("DAG inspector"));
+        assert!(rendered.contains("Prompt: hidden"));
+        assert!(rendered.contains("Keys:"));
+    }
+
+    #[test]
+    fn navigation_wraps_and_clears_status_line() {
+        let temp = TempDir::new().unwrap();
+        let nodes = vec![
+            DagNode {
+                id: 1,
+                node_type: "tool".to_string(),
+                payload: json!({ "summary": "step a" }),
+                created_at: None,
+            },
+            DagNode {
+                id: 2,
+                node_type: "tool".to_string(),
+                payload: json!({ "summary": "step b" }),
+                created_at: None,
+            },
+        ];
+        let dag = dag_result(&temp, nodes, DagStatus::Found);
+        let telemetry = TelemetryRecorder::for_tests(&dag.repo_root, "session-nav");
+        let mut app = App::from_dag("session-nav", dag, telemetry);
+
+        app.status_line = Some("set".to_string());
+        app.next();
+        assert_eq!(app.selected, 1);
+        assert!(app.status_line.is_none());
+        app.next();
+        assert_eq!(app.selected, 0);
+        app.prev();
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn render_handles_empty_state() {
+        let temp = TempDir::new().unwrap();
+        let dag = DagLoadResult {
+            repo_root: temp.path().display().to_string(),
+            repo_fingerprint: "fp".to_string(),
+            session_id: "session-empty".to_string(),
+            status: DagStatus::Missing,
+            nodes: vec![],
+            source: None,
+            message: Some(NO_TRACE_MESSAGE.to_string()),
+            warnings: vec!["Offline cache directory not found".to_string()],
+        };
+        let telemetry = TelemetryRecorder::for_tests(&dag.repo_root, "session-empty");
+        let mut app = App::from_dag("session-empty", dag, telemetry);
+
+        let mut out = Vec::new();
+        app.render(&mut out).unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+
+        assert!(rendered.contains("no nodes to display"));
+        assert!(rendered.contains(NO_TRACE_MESSAGE));
+    }
+
+    #[test]
+    fn telemetry_logs_without_prompt_content() {
+        let temp = TempDir::new().unwrap();
+        let nodes = vec![DagNode {
+            id: 7,
+            node_type: "tool".to_string(),
+            payload: json!({
+                "prompt": "secret prompt text",
+                "response": { "summary": "ok" }
+            }),
+            created_at: None,
+        }];
+        let dag = dag_result(&temp, nodes, DagStatus::Found);
+        let telemetry = TelemetryRecorder::for_tests(&dag.repo_root, "session-telemetry");
+        let mut app = App::from_dag("session-telemetry", dag, telemetry);
+
+        app.toggle_prompt();
+
+        let log_path = temp
+            .path()
+            .join(".docdex")
+            .join("logs")
+            .join("dag_telemetry.log");
+        let contents = fs::read_to_string(log_path).unwrap();
+        assert!(contents.contains("\"action\":\"prompt_toggle\""));
+        assert!(contents.contains("\"state\":\"expanded\""));
+        assert!(!contents.contains("secret prompt text"));
+    }
 }

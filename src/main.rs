@@ -769,9 +769,9 @@ async fn main() -> Result<()> {
         } => {
             let repo_root = repo.repo_root();
             util::init_logging("warn")?;
-            let result = dag::load_session_dag(&repo_root, &session, global_state_dir)?;
+            let result = dag::load_session_dag(&repo_root, &session, global_state_dir.clone())?;
             if tui {
-                run_dag_tui(&session, result)?;
+                run_dag_tui(&session, result, global_state_dir)?;
                 return Ok(());
             }
             println!("{}", serde_json::to_string_pretty(&result)?);

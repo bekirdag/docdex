@@ -1,11 +1,13 @@
-use crate::dag::{DagDataSource, DagLoadResult, DagNode, DagStatus, NO_TRACE_MESSAGE};
+use crate::dag::{self, DagDataSource, DagLoadResult, DagNode, DagStatus, NO_TRACE_MESSAGE};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::Serialize;
 use serde_json::Value;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tracing::warn;
 
 #[cfg(unix)]
@@ -15,10 +17,48 @@ use std::os::fd::AsRawFd;
 
 const LIST_SUMMARY_WIDTH: usize = 72;
 const DETAIL_WIDTH: usize = 96;
+const DEFAULT_DAEMON_HOST: &str = "127.0.0.1";
+const DEFAULT_DAEMON_PORT: u16 = 46137;
+const DAEMON_PROBE_TIMEOUT_MS: u64 = 200;
 
-pub fn run_dag_tui(session_id: &str, dag: DagLoadResult) -> Result<()> {
+#[derive(Clone)]
+struct ReloadConfig {
+    repo_root: PathBuf,
+    session_id: String,
+    global_state_dir: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+struct DaemonStatus {
+    host: String,
+    port: u16,
+    unreachable: bool,
+    last_error: Option<String>,
+}
+
+pub fn run_dag_tui(
+    session_id: &str,
+    dag: DagLoadResult,
+    global_state_dir: Option<PathBuf>,
+) -> Result<()> {
     let telemetry = TelemetryRecorder::new(&dag.repo_root, session_id);
     let mut app = App::from_dag(session_id, dag, telemetry);
+    app.reload_config = Some(ReloadConfig::new(
+        &app.repo_root,
+        session_id,
+        global_state_dir,
+    ));
+    if app.daemon.unreachable {
+        let reason = app
+            .daemon
+            .last_error
+            .as_deref()
+            .unwrap_or("daemon unreachable");
+        eprintln!(
+            "tui_daemon_unreachable repo={} session={} target={}:{} error={}",
+            app.repo_root, app.session_id, app.daemon.host, app.daemon.port, reason
+        );
+    }
     let _raw = RawMode::new().context("enable raw terminal mode for DAG inspector")?;
     let mut stdout = io::stdout();
     app.render(&mut stdout)?;
@@ -68,6 +108,7 @@ fn parse_key(bytes: &[u8]) -> Key {
 
 struct App {
     session_id: String,
+    repo_root: String,
     nodes: Vec<DagNode>,
     selected: usize,
     prompt_open: Vec<bool>,
@@ -77,29 +118,44 @@ struct App {
     message: Option<String>,
     warnings: Vec<String>,
     telemetry: TelemetryRecorder,
+    daemon: DaemonStatus,
+    reload_config: Option<ReloadConfig>,
 }
 
 impl App {
     fn from_dag(session_id: &str, dag: DagLoadResult, telemetry: TelemetryRecorder) -> Self {
-        let count = dag.nodes.len();
-        let source = dag.source.as_ref().map(source_label);
-        let message = dag.message.clone().or_else(|| match dag.status {
+        let daemon = DaemonStatus::from_status(&dag);
+        let DagLoadResult {
+            repo_root,
+            repo_fingerprint: _,
+            session_id: _,
+            status,
+            nodes,
+            source,
+            message,
+            warnings,
+        } = dag;
+        let count = nodes.len();
+        let message = message.clone().or_else(|| match status {
             DagStatus::Missing => Some(NO_TRACE_MESSAGE.to_string()),
             DagStatus::Error => Some("Failed to load reasoning trace".to_string()),
             DagStatus::Found => None,
         });
-        let status_line = dag.warnings.first().cloned().or_else(|| message.clone());
+        let status_line = warnings.first().cloned().or_else(|| message.clone());
         let mut app = Self {
             session_id: session_id.to_string(),
-            nodes: dag.nodes,
+            repo_root,
+            nodes,
             selected: 0,
             prompt_open: vec![false; count],
             status_line,
-            dag_status: dag.status,
-            source,
+            dag_status: status,
+            source: source.map(source_label),
             message,
-            warnings: dag.warnings,
+            warnings,
             telemetry,
+            daemon,
+            reload_config: None,
         };
         app.telemetry.record_node_view(app.current_node());
         app
@@ -153,17 +209,72 @@ impl App {
     }
 
     fn retry(&mut self) {
+        match self.daemon.check() {
+            Ok(_) => {}
+            Err(err) => {
+                let guidance = format!(
+                    "Docdex daemon is not reachable on {}:{}; start it and press r to retry.",
+                    self.daemon.host, self.daemon.port
+                );
+                self.status_line = Some(truncate(&guidance, DETAIL_WIDTH));
+                eprintln!(
+                    "tui_daemon_unreachable repo={} session={} target={}:{} error={}",
+                    self.repo_root, self.session_id, self.daemon.host, self.daemon.port, err
+                );
+                return;
+            }
+        }
+
+        if let Some(config) = self.reload_config.clone() {
+            match dag::load_session_dag(
+                &config.repo_root,
+                &config.session_id,
+                config.global_state_dir.clone(),
+            ) {
+                Ok(new_dag) => {
+                    let previous = self.selected;
+                    self.apply_dag(new_dag);
+                    if !self.nodes.is_empty() {
+                        self.selected = previous.min(self.nodes.len().saturating_sub(1));
+                    } else {
+                        self.selected = 0;
+                    }
+                    self.status_line = Some(
+                        "Retry succeeded; state preserved. Press r to refresh again or q to exit."
+                            .to_string(),
+                    );
+                }
+                Err(err) => {
+                    let message = format!("Retry failed: {err}");
+                    self.status_line = Some(truncate(&message, DETAIL_WIDTH));
+                    eprintln!(
+                        "tui_retry_failed repo={} session={} error={}",
+                        self.repo_root, self.session_id, err
+                    );
+                }
+            }
+            return;
+        }
+
         if let Some(node) = self.current_node() {
             if retry_available(&node.payload) {
-                self.status_line = Some("Retry requested (disabled in viewer)".to_string());
+                self.status_line = Some("Retry requested (no reload source available)".to_string());
             } else {
                 self.status_line = Some("Retry disabled for this node".to_string());
             }
+        } else {
+            self.status_line = Some("Retry requested (no trace available)".to_string());
         }
     }
 
     fn render(&self, out: &mut impl Write) -> io::Result<()> {
         write!(out, "\x1b[2J\x1b[H")?;
+        if let Some(lines) = self.daemon.banner_lines(&self.repo_root) {
+            for line in lines {
+                writeln!(out, "{}", truncate(&line, DETAIL_WIDTH))?;
+            }
+            writeln!(out)?;
+        }
         writeln!(out, "DAG inspector — session {}", self.session_id)?;
         let status_label = match self.dag_status {
             DagStatus::Found => "found",
@@ -220,6 +331,26 @@ impl App {
             writeln!(out, "\nStatus: {}", truncate(status, DETAIL_WIDTH))?;
         }
         out.flush()
+    }
+
+    fn apply_dag(&mut self, dag: DagLoadResult) {
+        self.dag_status = dag.status;
+        self.source = dag.source.as_ref().map(source_label);
+        self.message = dag.message.clone().or_else(|| match dag.status {
+            DagStatus::Missing => Some(NO_TRACE_MESSAGE.to_string()),
+            DagStatus::Error => Some("Failed to load reasoning trace".to_string()),
+            DagStatus::Found => None,
+        });
+        self.warnings = dag.warnings;
+        self.nodes = dag.nodes;
+        self.prompt_open = vec![false; self.nodes.len()];
+        self.status_line = self
+            .warnings
+            .first()
+            .cloned()
+            .or_else(|| self.message.clone());
+        self.daemon.refresh_from_status(&self.dag_status);
+        self.telemetry.record_node_view(self.current_node());
     }
 
     fn render_details(&self, out: &mut impl Write, node: &DagNode) -> io::Result<()> {
@@ -313,6 +444,121 @@ impl RawMode {
     fn new() -> Result<Self> {
         Ok(Self)
     }
+}
+
+impl ReloadConfig {
+    fn new(repo_root: &str, session_id: &str, global_state_dir: Option<PathBuf>) -> Self {
+        Self {
+            repo_root: PathBuf::from(repo_root),
+            session_id: session_id.to_string(),
+            global_state_dir,
+        }
+    }
+}
+
+impl DaemonStatus {
+    fn from_status(dag: &DagLoadResult) -> Self {
+        let host = std::env::var("DOCDEX_TUI_HOST")
+            .unwrap_or_else(|_| DEFAULT_DAEMON_HOST.to_string());
+        let port = std::env::var("DOCDEX_TUI_PORT")
+            .ok()
+            .and_then(|raw| raw.parse::<u16>().ok())
+            .unwrap_or(DEFAULT_DAEMON_PORT);
+        let mut status = Self {
+            host,
+            port,
+            unreachable: matches!(dag.status, DagStatus::Missing | DagStatus::Error),
+            last_error: None,
+        };
+        if status.unreachable && daemon_probe_enabled() {
+            if let Err(err) = status.check() {
+                status.last_error.get_or_insert(err);
+            }
+        }
+        if status.unreachable && status.last_error.is_none() {
+            status.last_error =
+                Some("trace unavailable; start the docdex daemon and retry".to_string());
+        }
+        status
+    }
+
+    fn check(&mut self) -> Result<(), String> {
+        if !daemon_probe_enabled() {
+            return if self.unreachable {
+                Err(self
+                    .last_error
+                    .clone()
+                    .unwrap_or_else(|| "daemon probe disabled; last state unreachable".into()))
+            } else {
+                Ok(())
+            };
+        }
+        match probe_daemon(&self.host, self.port) {
+            Ok(_) => {
+                self.unreachable = false;
+                self.last_error = None;
+                Ok(())
+            }
+            Err(err) => {
+                self.unreachable = true;
+                self.last_error = Some(err.clone());
+                Err(err)
+            }
+        }
+    }
+
+    fn refresh_from_status(&mut self, status: &DagStatus) {
+        if matches!(status, DagStatus::Found) {
+            self.unreachable = false;
+            self.last_error = None;
+        }
+    }
+
+    fn banner_lines(&self, repo_root: &str) -> Option<Vec<String>> {
+        if !self.unreachable {
+            return None;
+        }
+        let target = format!("{}:{}", self.host, self.port);
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "Docdex daemon is not reachable on {target}. Start it locally and retry."
+        ));
+        if let Some(err) = self.last_error.as_ref() {
+            lines.push(format!("Reason: {}", truncate(err, DETAIL_WIDTH)));
+        }
+        let repo_hint = truncate(repo_root, DETAIL_WIDTH.saturating_sub(12));
+        lines.push(format!(
+            "Start hint: docdexd serve --repo {} --host {} --port {} --log warn",
+            repo_hint, self.host, self.port
+        ));
+        lines.push(format!("Health: docdexd check --repo {}", repo_hint));
+        lines.push(
+            "Actions: [r] Retry • [q] Quit (loopback expected; add --auth-token when exposed)"
+                .to_string(),
+        );
+        Some(lines)
+    }
+}
+
+fn daemon_probe_enabled() -> bool {
+    std::env::var("DOCDEX_TUI_DISABLE_PROBE")
+        .map(|value| {
+            let normalized = value.to_lowercase();
+            !(normalized == "1" || normalized == "true" || normalized == "yes")
+        })
+        .unwrap_or(true)
+}
+
+fn probe_daemon(host: &str, port: u16) -> Result<(), String> {
+    let target = format!("{host}:{port}");
+    let addr = target
+        .to_socket_addrs()
+        .map_err(|err| format!("resolve {target}: {err}"))?
+        .next()
+        .ok_or_else(|| format!("resolve {target}: no addresses"))?;
+    TcpStream::connect_timeout(&addr, Duration::from_millis(DAEMON_PROBE_TIMEOUT_MS))
+        .map_err(|err| format!("connect {target}: {err}"))?;
+    Ok(())
 }
 
 fn source_label(source: &DagDataSource) -> String {
@@ -662,7 +908,9 @@ fn open_telemetry_writer(path: &Path) -> io::Result<BufWriter<File>> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::env;
     use std::fs;
+    use std::net::TcpListener;
     use tempfile::TempDir;
 
     fn dag_result(root: &TempDir, nodes: Vec<DagNode>, status: DagStatus) -> DagLoadResult {
@@ -786,5 +1034,81 @@ mod tests {
         assert!(contents.contains("\"action\":\"prompt_toggle\""));
         assert!(contents.contains("\"state\":\"expanded\""));
         assert!(!contents.contains("secret prompt text"));
+    }
+
+    #[test]
+    fn daemon_unreachable_banner_shows_with_instructions() {
+        env::set_var("DOCDEX_TUI_DISABLE_PROBE", "1");
+        let temp = TempDir::new().unwrap();
+        let dag = DagLoadResult {
+            repo_root: temp.path().display().to_string(),
+            repo_fingerprint: "fp".to_string(),
+            session_id: "session-banner".to_string(),
+            status: DagStatus::Missing,
+            nodes: vec![],
+            source: None,
+            message: Some(NO_TRACE_MESSAGE.to_string()),
+            warnings: vec![],
+        };
+        let telemetry = TelemetryRecorder::for_tests(&dag.repo_root, "session-banner");
+        let mut app = App::from_dag("session-banner", dag, telemetry);
+
+        let mut out = Vec::new();
+        app.render(&mut out).unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+
+        assert!(rendered.contains("Docdex daemon is not reachable"));
+        assert!(rendered.contains("docdexd serve"));
+        assert!(rendered.contains("[r] Retry"));
+        env::remove_var("DOCDEX_TUI_DISABLE_PROBE");
+    }
+
+    #[test]
+    fn retry_reloads_trace_without_dropping_selection() {
+        let temp = TempDir::new().unwrap();
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).unwrap();
+        let state_root = temp.path().join("state");
+        let session = "session-retry";
+        let initial =
+            dag::load_session_dag(&repo_root, session, Some(state_root.clone())).unwrap();
+        let fingerprint = initial.repo_fingerprint.clone();
+        let repo_root_str = initial.repo_root.clone();
+        let dag_dir = state_root.join("repos").join(fingerprint).join("dag");
+        fs::create_dir_all(&dag_dir).unwrap();
+        fs::write(
+            dag_dir.join(format!("{session}.json")),
+            r#"[ { "id": 1, "type": "tool", "payload": { "summary": "loaded" } }, { "id": 2, "type": "decision", "payload": { "summary": "more", "retryable": true } } ]"#,
+        )
+        .unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        env::set_var("DOCDEX_TUI_HOST", "127.0.0.1");
+        env::set_var("DOCDEX_TUI_PORT", port.to_string());
+
+        let telemetry = TelemetryRecorder::for_tests(&repo_root_str, session);
+        let mut app = App::from_dag(session, initial, telemetry);
+        app.reload_config = Some(ReloadConfig::new(
+            &app.repo_root,
+            session,
+            Some(state_root.clone()),
+        ));
+
+        app.retry();
+
+        assert_eq!(app.nodes.len(), 2);
+        assert!(app
+            .status_line
+            .as_deref()
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("retry"));
+        assert!(app.selected < 2);
+        assert!(app.daemon.banner_lines(&app.repo_root).is_none());
+
+        env::remove_var("DOCDEX_TUI_HOST");
+        env::remove_var("DOCDEX_TUI_PORT");
+        drop(listener);
     }
 }

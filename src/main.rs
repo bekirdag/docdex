@@ -13,11 +13,12 @@ use crate::config::RepoArgs;
 use crate::dag::{DagStatus, NO_TRACE_MESSAGE};
 use crate::dag_tui::run_dag_tui;
 use anyhow::{anyhow, Context, Result};
-use clap::{ArgAction, CommandFactory, Parser, Subcommand};
+use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand};
 use serde_json::json;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process;
 use tracing::info;
 
 #[derive(Parser, Debug)]
@@ -30,6 +31,35 @@ use tracing::info;
 struct Cli {
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Debug, Args)]
+struct WebRagRepoArgs {
+    #[arg(
+        long,
+        value_name = "PATH_OR_ID",
+        help = "Indexed repo path or repo id (required for web-rag)"
+    )]
+    repo: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "DOCDEX_STATE_DIR",
+        value_name = "PATH",
+        help = "Override index storage directory for this repo"
+    )]
+    state_dir: Option<PathBuf>,
+}
+
+impl WebRagRepoArgs {
+    fn repo_root(&self) -> Option<PathBuf> {
+        self.repo
+            .as_ref()
+            .map(|raw| raw.canonicalize().unwrap_or(raw.clone()))
+    }
+
+    fn state_dir_override(&self) -> Option<PathBuf> {
+        self.state_dir.clone()
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -270,6 +300,11 @@ enum Command {
         query: String,
         #[arg(long, default_value_t = 8)]
         limit: usize,
+    },
+    /// Run web-based retrieval against an indexed repo.
+    WebRag {
+        #[command(flatten)]
+        repo: WebRagRepoArgs,
     },
     /// Load a reasoning DAG for a prior session using local trace storage.
     Dag {
@@ -609,6 +644,18 @@ async fn main() -> Result<()> {
             let hits = search::run_query(&server, &query, limit).await?;
             println!("{}", serde_json::to_string_pretty(&hits)?);
         }
+        Command::WebRag { repo } => {
+            util::init_logging("warn")?;
+            let target = match validate_web_rag_repo(&repo) {
+                Ok(info) => info,
+                Err(err) => err.exit(),
+            };
+            println!(
+                "web-rag repo ready: {} (index at {})",
+                target.repo_root.display(),
+                target.state_dir.display()
+            );
+        }
         Command::Dag {
             repo,
             session,
@@ -701,11 +748,96 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+struct WebRagTarget {
+    repo_root: PathBuf,
+    state_dir: PathBuf,
+}
+
+struct WebRagValidationError {
+    exit_code: i32,
+    message: String,
+}
+
+impl WebRagValidationError {
+    fn missing_repo() -> Self {
+        Self {
+            exit_code: 2,
+            message: "missing required --repo; pass an indexed repo path or id.
+- build the index with: docdexd index --repo <path>
+- or verify the repo id/path points to an indexed workspace"
+                .to_string(),
+        }
+    }
+
+    fn unindexed(repo_root: PathBuf, state_dir: PathBuf, reason: Option<String>) -> Self {
+        let mut message = format!(
+            "repo not indexed or unavailable: {}
+- expected index at {}
+- build the index with: docdexd index --repo {}
+- or verify the repo id/path points to an indexed workspace",
+            repo_root.display(),
+            state_dir.display(),
+            repo_root.display()
+        );
+        if let Some(reason) = reason {
+            message.push_str(&format!(
+                "
+- details: {reason}"
+            ));
+        }
+        Self {
+            exit_code: 3,
+            message,
+        }
+    }
+
+    fn exit(self) -> ! {
+        eprintln!("{}", self.message);
+        process::exit(self.exit_code);
+    }
+}
+
+fn validate_web_rag_repo(repo: &WebRagRepoArgs) -> Result<WebRagTarget, WebRagValidationError> {
+    let Some(repo_root) = repo.repo_root() else {
+        return Err(WebRagValidationError::missing_repo());
+    };
+    let index_config = index::IndexConfig::with_overrides(
+        &repo_root,
+        repo.state_dir_override(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let state_dir = index_config.state_dir().to_path_buf();
+    if !state_dir.exists() {
+        return Err(WebRagValidationError::unindexed(repo_root, state_dir, None));
+    }
+    if let Err(err) = index::Indexer::with_config_read_only(repo_root.clone(), index_config.clone())
+    {
+        return Err(WebRagValidationError::unindexed(
+            repo_root,
+            state_dir,
+            Some(err.to_string()),
+        ));
+    }
+    Ok(WebRagTarget {
+        repo_root,
+        state_dir,
+    })
+}
+
 fn print_full_help() -> Result<()> {
     let mut root = Cli::command();
     root.print_long_help()?;
     println!();
-    for name in ["serve", "self-check", "index", "ingest", "query", "dag"] {
+    for name in [
+        "serve",
+        "self-check",
+        "index",
+        "ingest",
+        "query",
+        "web-rag",
+        "dag",
+    ] {
         let mut cmd = Cli::command();
         if let Some(sub) = cmd.find_subcommand_mut(name) {
             println!("\n{name}:\n");

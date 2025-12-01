@@ -387,12 +387,7 @@ mod tests {
         let result = load_session_dag(&repo, "offline", Some(state_root.clone()))?;
         assert_eq!(result.status, DagStatus::Missing);
         assert_eq!(result.message.as_deref(), Some(NO_TRACE_MESSAGE));
-        assert!(
-            result
-                .warnings
-                .iter()
-                .any(|w| w.contains("Offline cache"))
-        );
+        assert!(result.warnings.iter().any(|w| w.contains("Offline cache")));
         Ok(())
     }
 
@@ -415,5 +410,4 @@ mod tests {
             .any(|w| w.contains("contained no nodes") || w.contains("No cached DAG")));
         Ok(())
     }
-
 }

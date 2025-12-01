@@ -1,4 +1,4 @@
-use crate::dag::{DagDataSource, DagLoadResult, DagNode, DagStatus};
+use crate::dag::{DagDataSource, DagLoadResult, DagNode, DagStatus, NO_TRACE_MESSAGE};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::io::{self, Read, Write};
@@ -69,21 +69,33 @@ struct App {
     dag_status: DagStatus,
     source: Option<String>,
     message: Option<String>,
+    warnings: Vec<String>,
 }
 
 impl App {
     fn from_dag(session_id: &str, dag: DagLoadResult) -> Self {
         let count = dag.nodes.len();
         let source = dag.source.as_ref().map(source_label);
+        let message = dag.message.clone().or_else(|| match dag.status {
+            DagStatus::Missing => Some(NO_TRACE_MESSAGE.to_string()),
+            DagStatus::Error => Some("Failed to load reasoning trace".to_string()),
+            DagStatus::Found => None,
+        });
+        let status_line = dag
+            .warnings
+            .first()
+            .cloned()
+            .or_else(|| message.clone());
         Self {
             session_id: session_id.to_string(),
             nodes: dag.nodes,
             selected: 0,
             prompt_open: vec![false; count],
-            status_line: dag.message.clone(),
+            status_line,
             dag_status: dag.status,
             source,
-            message: dag.message,
+            message,
+            warnings: dag.warnings,
         }
     }
 
@@ -143,11 +155,16 @@ impl App {
             DagStatus::Missing => "missing",
             DagStatus::Error => "error",
         };
-        let source_label = self.source.as_deref().unwrap_or("unknown");
+        let source_label = self.source.as_deref().unwrap_or("none");
         writeln!(out, "Status: {status_label} | Source: {source_label}")?;
         if let Some(msg) = self.message.as_ref() {
             if !msg.is_empty() {
                 writeln!(out, "Message: {}", truncate(msg, DETAIL_WIDTH))?;
+            }
+        }
+        for warning in &self.warnings {
+            if !warning.is_empty() {
+                writeln!(out, "Warning: {}", truncate(warning, DETAIL_WIDTH))?;
             }
         }
         writeln!(
@@ -156,7 +173,21 @@ impl App {
         )?;
         writeln!(out, "\nNodes:")?;
         if self.nodes.is_empty() {
-            writeln!(out, "  (no nodes to display)")?;
+            let reason = self.message.as_deref().unwrap_or(NO_TRACE_MESSAGE);
+            if let Some(warning) = self.warnings.first() {
+                writeln!(
+                    out,
+                    "  (no nodes to display — {}; {})",
+                    truncate(reason, DETAIL_WIDTH),
+                    truncate(warning, DETAIL_WIDTH)
+                )?;
+            } else {
+                writeln!(
+                    out,
+                    "  (no nodes to display — {})",
+                    truncate(reason, DETAIL_WIDTH)
+                )?;
+            }
         } else {
             for (idx, node) in self.nodes.iter().enumerate() {
                 let marker = if idx == self.selected { '>' } else { ' ' };

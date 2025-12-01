@@ -45,6 +45,8 @@ pub struct DagLoadResult {
     pub source: Option<DagDataSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 pub fn load_session_dag(
@@ -58,8 +60,36 @@ pub fn load_session_dag(
     let repo_fingerprint = fingerprint_repo(&repo_root)?;
     let state_root = resolve_state_root(global_state_dir)?;
     let repo_dir = state_root.join("repos").join(&repo_fingerprint);
+    let mut warnings = Vec::new();
+
+    if !state_root.exists() {
+        warnings.push(format!(
+            "Offline cache directory not found at {}. DAG traces are unavailable while offline.",
+            state_root.display()
+        ));
+        return Ok(DagLoadResult {
+            repo_root: repo_root.display().to_string(),
+            repo_fingerprint,
+            session_id: session_id.to_string(),
+            status: DagStatus::Missing,
+            nodes: vec![],
+            source: None,
+            message: Some(NO_TRACE_MESSAGE.to_string()),
+            warnings,
+        });
+    }
 
     let sqlite_path = repo_dir.join("dag.db");
+    let json_path = repo_dir.join("dag").join(format!("{session_id}.json"));
+
+    if !repo_dir.exists() {
+        warnings.push(format!(
+            "No cached DAG directory for repo fingerprint {} (searched {}).",
+            repo_fingerprint,
+            repo_dir.display()
+        ));
+    }
+
     if sqlite_path.exists() {
         match load_from_sqlite(&sqlite_path, session_id) {
             Ok(Some(nodes)) => {
@@ -71,10 +101,19 @@ pub fn load_session_dag(
                     nodes,
                     source: Some(DagDataSource::Sqlite),
                     message: None,
+                    warnings,
                 })
             }
-            Ok(None) => { /* fall through to other formats */ }
+            Ok(None) => {
+                warnings.push(format!(
+                    "Found SQLite DAG at {} but no rows for session {}.",
+                    sqlite_path.display(),
+                    session_id
+                ));
+            }
             Err(err) => {
+                let message = format_error(&sqlite_path, &err);
+                warnings.push(message.clone());
                 return Ok(DagLoadResult {
                     repo_root: repo_root.display().to_string(),
                     repo_fingerprint,
@@ -82,16 +121,16 @@ pub fn load_session_dag(
                     status: DagStatus::Error,
                     nodes: vec![],
                     source: Some(DagDataSource::Sqlite),
-                    message: Some(format_error(&sqlite_path, err)),
-                })
+                    message: Some(message),
+                    warnings,
+                });
             }
         }
     }
 
-    let json_path = repo_dir.join("dag").join(format!("{session_id}.json"));
     if json_path.exists() {
         match load_from_json(&json_path) {
-            Ok(nodes) => {
+            Ok(nodes) if !nodes.is_empty() => {
                 return Ok(DagLoadResult {
                     repo_root: repo_root.display().to_string(),
                     repo_fingerprint,
@@ -100,9 +139,18 @@ pub fn load_session_dag(
                     nodes,
                     source: Some(DagDataSource::JsonFile),
                     message: None,
+                    warnings,
                 })
             }
+            Ok(_) => {
+                warnings.push(format!(
+                    "Found JSON trace at {} but it contained no nodes.",
+                    json_path.display()
+                ));
+            }
             Err(err) => {
+                let message = format_error(&json_path, &err);
+                warnings.push(message.clone());
                 return Ok(DagLoadResult {
                     repo_root: repo_root.display().to_string(),
                     repo_fingerprint,
@@ -110,10 +158,20 @@ pub fn load_session_dag(
                     status: DagStatus::Error,
                     nodes: vec![],
                     source: Some(DagDataSource::JsonFile),
-                    message: Some(format_error(&json_path, err)),
-                })
+                    message: Some(message),
+                    warnings,
+                });
             }
         }
+    }
+
+    if warnings.is_empty() {
+        warnings.push(format!(
+            "No cached DAG found for session {} (looked for {} and {}).",
+            session_id,
+            sqlite_path.display(),
+            json_path.display()
+        ));
     }
 
     Ok(DagLoadResult {
@@ -124,6 +182,7 @@ pub fn load_session_dag(
         nodes: vec![],
         source: None,
         message: Some(NO_TRACE_MESSAGE.to_string()),
+        warnings,
     })
 }
 
@@ -318,4 +377,43 @@ mod tests {
             .contains("Failed to load DAG"));
         Ok(())
     }
+
+    #[test]
+    fn offline_state_dir_reports_offline_missing() -> Result<()> {
+        let temp = tempfile::TempDir::new()?;
+        let repo = temp.path().join("repo_offline");
+        fs::create_dir_all(&repo)?;
+        let state_root = temp.path().join("offline_state");
+        let result = load_session_dag(&repo, "offline", Some(state_root.clone()))?;
+        assert_eq!(result.status, DagStatus::Missing);
+        assert_eq!(result.message.as_deref(), Some(NO_TRACE_MESSAGE));
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("Offline cache"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_json_trace_reports_warning() -> Result<()> {
+        let temp = tempfile::TempDir::new()?;
+        let repo = temp.path().join("repo_empty");
+        fs::create_dir_all(&repo)?;
+        let state_root = temp.path().join("state");
+        let fp = fingerprint_repo(&repo)?;
+        let dag_dir = state_root.join("repos").join(fp).join("dag");
+        fs::create_dir_all(&dag_dir)?;
+        fs::write(dag_dir.join("empty.json"), r#"{ "nodes": [] }"#)?;
+        let result = load_session_dag(&repo, "empty", Some(state_root))?;
+        assert_eq!(result.status, DagStatus::Missing);
+        assert_eq!(result.message.as_deref(), Some(NO_TRACE_MESSAGE));
+        assert!(result
+            .warnings
+            .iter()
+            .any(|w| w.contains("contained no nodes") || w.contains("No cached DAG")));
+        Ok(())
+    }
+
 }

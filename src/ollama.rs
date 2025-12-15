@@ -77,7 +77,8 @@ impl OllamaClient {
 
         let host_header = self.host_header.clone();
         let connect_addr = self.connect_addr.clone();
-        let result = tokio::time::timeout(timeout, async move {
+        let result: Result<Result<Vec<f32>, anyhow::Error>, tokio::time::error::Elapsed> =
+            tokio::time::timeout(timeout, async move {
             let mut stream = TcpStream::connect(&connect_addr)
                 .await
                 .context("connect to ollama")?;
@@ -131,7 +132,19 @@ impl OllamaClient {
         .await;
 
         match result {
-            Ok(value) => value,
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(err)) => {
+                if err.downcast_ref::<AppError>().is_some() {
+                    return Err(err);
+                }
+                // Harden error surfaces: never leak embedding inputs via error strings.
+                let message = redact_embedding_prompt(err.to_string(), prompt);
+                Err(AppError::new(
+                    ERR_EMBEDDING_FAILED,
+                    format!("ollama embedding request failed: {message}"),
+                )
+                .into())
+            }
             Err(_) => Err(AppError::new(
                 ERR_EMBEDDING_TIMEOUT,
                 format!(
@@ -280,4 +293,15 @@ fn decode_chunked(mut input: &[u8]) -> Result<Vec<u8>, anyhow::Error> {
         input = &input[size + 2..]; // skip chunk + trailing \r\n
     }
     Ok(out)
+}
+
+fn redact_embedding_prompt(message: String, prompt: &str) -> String {
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return message;
+    }
+    if message.contains(prompt) {
+        return message.replace(prompt, "<redacted>");
+    }
+    message
 }

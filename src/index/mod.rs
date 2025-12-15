@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use regex::Regex;
+use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
@@ -180,6 +181,8 @@ pub struct Indexer {
 pub struct Hit {
     pub doc_id: String,
     pub rel_path: String,
+    // Stable search contract alias for `rel_path` (preferred by downstream clients).
+    pub path: String,
     pub score: f32,
     pub summary: String,
     pub snippet: String,
@@ -498,6 +501,15 @@ impl Indexer {
             }
             .into());
         }
+        // Tantivy's query parser accepts some operator-only inputs (e.g. "!!!") that contain
+        // no searchable terms. Enforce a strict "must contain at least one term" rule for
+        // determinism and predictable validation behavior.
+        if sanitize_query(raw).trim().is_empty() {
+            return Err(SearchError::InvalidQuery {
+                reason: "query contains no searchable terms".to_string(),
+            }
+            .into());
+        }
         let searcher = self.reader.searcher();
         let parser = QueryParser::for_index(
             &self.index,
@@ -562,6 +574,7 @@ impl Indexer {
                 .get_first(self.path_field)
                 .and_then(|v| v.as_text().map(|s| s.to_string()))
                 .unwrap_or_default();
+            let path = rel_path.clone();
             let summary = retrieved
                 .get_first(self.summary_field)
                 .and_then(|v| v.as_text().map(|s| s.to_string()))
@@ -621,6 +634,7 @@ impl Indexer {
             results.push(Hit {
                 doc_id,
                 rel_path,
+                path,
                 score,
                 summary,
                 snippet,
@@ -631,6 +645,7 @@ impl Indexer {
                 line_end,
             });
         }
+        sort_hits_deterministically(&mut results);
         Ok((results, query_meta))
     }
 
@@ -1519,4 +1534,63 @@ fn line_range_for_fragment(body: &str, fragment: &str) -> Option<(usize, usize)>
         }
     }
     Some((start, end_line_val))
+}
+
+fn sort_hits_deterministically(hits: &mut [Hit]) {
+    hits.sort_by(|a, b| {
+        let score_cmp = b.score.total_cmp(&a.score);
+        if score_cmp != Ordering::Equal {
+            return score_cmp;
+        }
+        let path_cmp = a.rel_path.cmp(&b.rel_path);
+        if path_cmp != Ordering::Equal {
+            return path_cmp;
+        }
+        a.doc_id.cmp(&b.doc_id)
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sort_hits_deterministically, Hit};
+
+    fn hit(doc_id: &str, rel_path: &str, score: f32) -> Hit {
+        Hit {
+            doc_id: doc_id.to_string(),
+            rel_path: rel_path.to_string(),
+            path: rel_path.to_string(),
+            score,
+            summary: String::new(),
+            snippet: String::new(),
+            token_estimate: 0,
+            snippet_origin: None,
+            snippet_truncated: None,
+            line_start: None,
+            line_end: None,
+        }
+    }
+
+    #[test]
+    fn deterministic_sorting_orders_by_score_then_path_then_doc_id() {
+        let mut hits = vec![
+            hit("b", "docs/b.md", 1.0),
+            hit("a", "docs/a.md", 1.0),
+            hit("z", "docs/c.md", 2.0),
+            hit("c", "docs/a.md", 1.0),
+        ];
+        sort_hits_deterministically(&mut hits);
+        let ordered = hits
+            .iter()
+            .map(|h| (h.score, h.rel_path.as_str(), h.doc_id.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordered,
+            vec![
+                (2.0, "docs/c.md", "z"),
+                (1.0, "docs/a.md", "a"),
+                (1.0, "docs/a.md", "c"),
+                (1.0, "docs/b.md", "b"),
+            ]
+        );
+    }
 }

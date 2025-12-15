@@ -114,6 +114,19 @@ fn cli_index_and_query_smoke() -> Result<(), Box<dyn Error>> {
         "expected at least one search hit for 'roadmap'"
     );
     let first = hits.first().expect("hit missing");
+    let path = first
+        .get("path")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    assert!(!path.is_empty(), "hit.path should be present in CLI query response");
+    assert!(
+        first.get("snippet").and_then(|v| v.as_str()).is_some(),
+        "hit.snippet should be present in CLI query response"
+    );
+    assert!(
+        first.get("score").and_then(|v| v.as_f64()).is_some(),
+        "hit.score should be present in CLI query response"
+    );
     let summary = first
         .get("summary")
         .and_then(|value| value.as_str())
@@ -328,9 +341,14 @@ fn http_server_smoke() -> Result<(), Box<dyn Error>> {
         .unwrap_or(0);
     assert!(hit_count > 0, "HTTP /search should return at least one hit");
     let top_score = payload.get("top_score").and_then(|v| v.as_f64());
+    let top_score_camel = payload.get("topScore").and_then(|v| v.as_f64());
     assert!(
         top_score.is_some(),
         "HTTP /search should include top_score when hits are returned"
+    );
+    assert!(
+        top_score_camel.is_some(),
+        "HTTP /search should include topScore when hits are returned"
     );
     let first_score = payload
         .get("hits")
@@ -339,9 +357,26 @@ fn http_server_smoke() -> Result<(), Box<dyn Error>> {
         .and_then(|hit| hit.get("score"))
         .and_then(|v| v.as_f64())
         .unwrap_or(-1.0);
+    let first = payload
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .ok_or("hits missing from response")?;
+    assert!(
+        first.get("path").and_then(|v| v.as_str()).is_some(),
+        "HTTP /search hits should include path"
+    );
+    assert!(
+        first.get("snippet").and_then(|v| v.as_str()).is_some(),
+        "HTTP /search hits should include snippet"
+    );
     assert!(
         (top_score.unwrap_or(-1.0) - first_score).abs() < 1e-6,
         "top_score should match the first hit score"
+    );
+    assert!(
+        (top_score.unwrap_or(-1.0) - top_score_camel.unwrap_or(-1.0)).abs() < 1e-6,
+        "topScore should match top_score"
     );
     child.kill().ok();
     child.wait().ok();
@@ -429,6 +464,10 @@ fn http_search_no_matches_returns_empty_hits_and_null_top_score() -> Result<(), 
     assert!(
         payload.get("top_score").map(|v| v.is_null()).unwrap_or(false),
         "no-match query should return top_score: null"
+    );
+    assert!(
+        payload.get("topScore").map(|v| v.is_null()).unwrap_or(false),
+        "no-match query should return topScore: null"
     );
 
     child.kill().ok();

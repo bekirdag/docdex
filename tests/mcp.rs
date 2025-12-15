@@ -231,20 +231,43 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
     )?;
     let search_resp = read_line(&mut harness.reader)?;
     let search_body = parse_tool_result(&search_resp)?;
+    let hits = search_body
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .ok_or("docdex_search should return hits array")?;
     let results = search_body
         .get("results")
         .and_then(|v| v.as_array())
         .ok_or("docdex_search should return results array")?;
+    assert_eq!(
+        hits.len(),
+        results.len(),
+        "docdex_search hits/results should have same length"
+    );
     assert!(
-        !results.is_empty(),
+        !hits.is_empty(),
         "docdex_search should return at least one hit for MCP_ROADMAP"
     );
     let top_score = search_body.get("top_score").and_then(|v| v.as_f64());
+    let top_score_camel = search_body.get("topScore").and_then(|v| v.as_f64());
     assert!(
         top_score.is_some(),
         "docdex_search should include top_score when results are returned"
     );
-    let first_score = results
+    assert!(
+        top_score_camel.is_some(),
+        "docdex_search should include topScore when results are returned"
+    );
+    let first = hits.first().ok_or("hit missing")?;
+    assert!(
+        first.get("path").and_then(|v| v.as_str()).is_some(),
+        "docdex_search hits should include path"
+    );
+    assert!(
+        first.get("snippet").and_then(|v| v.as_str()).is_some(),
+        "docdex_search hits should include snippet"
+    );
+    let first_score = hits
         .first()
         .and_then(|hit| hit.get("score"))
         .and_then(|v| v.as_f64())
@@ -252,6 +275,10 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
     assert!(
         (top_score.unwrap_or(-1.0) - first_score).abs() < 1e-6,
         "docdex_search top_score should match the first result score"
+    );
+    assert!(
+        (top_score.unwrap_or(-1.0) - top_score_camel.unwrap_or(-1.0)).abs() < 1e-6,
+        "docdex_search topScore should match top_score"
     );
 
     // no-match search should return empty results and a null top_score
@@ -272,17 +299,29 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
     )?;
     let no_match_resp = read_line(&mut harness.reader)?;
     let no_match_body = parse_tool_result(&no_match_resp)?;
+    let no_match_hits = no_match_body
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .ok_or("docdex_search no-match should return hits array")?;
     let no_match_results = no_match_body
         .get("results")
         .and_then(|v| v.as_array())
         .ok_or("docdex_search no-match should return results array")?;
     assert!(
-        no_match_results.is_empty(),
+        no_match_hits.is_empty(),
         "no-match docdex_search should return empty results"
+    );
+    assert!(
+        no_match_results.is_empty(),
+        "no-match docdex_search should return empty results array"
     );
     assert!(
         no_match_body.get("top_score").map(|v| v.is_null()).unwrap_or(false),
         "no-match docdex_search should return top_score: null"
+    );
+    assert!(
+        no_match_body.get("topScore").map(|v| v.is_null()).unwrap_or(false),
+        "no-match docdex_search should return topScore: null"
     );
 
     // stats should report doc count

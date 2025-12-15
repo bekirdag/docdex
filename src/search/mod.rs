@@ -448,6 +448,8 @@ struct SearchParams {
 pub struct SearchResponse {
     pub hits: Vec<Hit>,
     pub top_score: Option<f32>,
+    #[serde(rename = "topScore")]
+    pub top_score_camel: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meta: Option<SearchMeta>,
 }
@@ -526,6 +528,7 @@ pub async fn run_query(indexer: &Indexer, query: &str, limit: usize) -> Result<S
     Ok(SearchResponse {
         hits,
         top_score,
+        top_score_camel: top_score,
         meta: Some(build_search_meta(indexer, Some(query_meta), None)?),
     })
 }
@@ -653,6 +656,7 @@ async fn search_handler(
             Json(SearchResponse {
                 hits,
                 top_score,
+                top_score_camel: top_score,
                 meta,
             })
             .into_response()

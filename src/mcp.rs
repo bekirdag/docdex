@@ -772,6 +772,7 @@ impl McpServer {
             .unwrap_or(self.max_results)
             .clamp(1, self.max_results);
         let hits = search::run_query(&self.indexer, query, limit).await?;
+        let hits_value = serde_json::to_value(&hits.hits)?;
         let project_root_path = self
             .default_project_root
             .as_ref()
@@ -787,8 +788,10 @@ impl McpServer {
         });
         meta.repo_root = project_root_path.clone();
         Ok(json!({
-            "results": hits.hits,
+            "hits": hits_value.clone(),
+            "results": hits_value,
             "top_score": hits.top_score,
+            "topScore": hits.top_score,
             "repo_root": self.repo_root.display().to_string(),
             "state_dir": self.indexer.config().state_dir().display().to_string(),
             "limit": limit,

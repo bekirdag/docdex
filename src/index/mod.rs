@@ -1343,6 +1343,13 @@ fn ensure_state_dir_secure(path: &Path) -> Result<()> {
     {
         fs::create_dir_all(path)?;
     }
+    if cfg!(debug_assertions) {
+        if let Ok(value) = std::env::var("DOCDEX_TEST_HOLD_AFTER_STATE_DIR_CREATED_MS") {
+            if let Ok(ms) = value.trim().parse::<u64>() {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
+        }
+    }
     Ok(())
 }
 

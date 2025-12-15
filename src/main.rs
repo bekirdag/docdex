@@ -1,6 +1,7 @@
 mod audit;
 mod config;
 mod daemon;
+mod error;
 mod index;
 mod mcp;
 mod search;
@@ -9,6 +10,7 @@ mod util;
 mod watcher;
 
 use crate::config::RepoArgs;
+use crate::error::StartupError;
 use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use serde_json::json;
@@ -327,7 +329,13 @@ enum Command {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(err) = run().await {
+        render_error_and_exit(err);
+    }
+}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Serve {
@@ -648,6 +656,25 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn render_error_and_exit(err: anyhow::Error) -> ! {
+    if let Some(startup) = err.downcast_ref::<StartupError>() {
+        let payload = json!({
+            "error": {
+                "code": startup.code,
+                "message": startup.message,
+            }
+        });
+        match serde_json::to_string(&payload) {
+            Ok(line) => eprintln!("{line}"),
+            Err(_) => eprintln!("{}", startup.message),
+        }
+        std::process::exit(1);
+    }
+
+    eprintln!("{err}");
+    std::process::exit(1);
 }
 
 fn print_full_help() -> Result<()> {

@@ -551,9 +551,33 @@ fn non_loopback_plain_http_requires_tls_or_opt_out() -> Result<(), Box<dyn Error
         "non-loopback binds without TLS should fail unless explicitly allowed"
     );
     let stderr = String::from_utf8_lossy(&failure.stderr);
+    let trimmed = stderr.trim();
     assert!(
         stderr.contains("refusing to bind on non-loopback without TLS"),
         "stderr should mention TLS requirement, got: {stderr}"
+    );
+    assert_eq!(
+        trimmed.lines().filter(|line| !line.trim().is_empty()).count(),
+        1,
+        "startup failures should emit a single primary error line, got: {stderr}"
+    );
+    let payload: Value = serde_json::from_str(trimmed)
+        .map_err(|err| format!("startup error should be JSON (got {trimmed:?}): {err}"))?;
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("startup_tls_required"),
+        "startup error code should be stable"
+    );
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str()),
+        Some("refusing to bind on non-loopback without TLS; provide --tls-cert/--tls-key or --insecure to allow plain HTTP"),
+        "startup error message should be stable"
     );
 
     // Optional override: allow plain HTTP when explicitly opting out.

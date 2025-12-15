@@ -1,4 +1,5 @@
 use crate::audit::AuditLogger;
+use crate::error::StartupError;
 use crate::index::{IndexConfig, Indexer};
 use crate::search::{self, AppState, SecurityConfig};
 use crate::watcher;
@@ -215,9 +216,11 @@ pub async fn serve(
     #[cfg(unix)]
     {
         if nix::unistd::Uid::effective().is_root() && run_as_uid.is_none() && run_as_gid.is_none() {
-            return Err(anyhow!(
-                "refusing to run as root without --run-as-uid/--run-as-gid; provide explicit drop targets"
-            ));
+            return Err(StartupError::new(
+                "startup_refuse_root",
+                "refusing to run as root without --run-as-uid/--run-as-gid; provide explicit drop targets",
+            )
+            .into());
         }
     }
     let repo_display = repo.display().to_string();
@@ -248,9 +251,11 @@ pub async fn serve(
         .map(|ip| ip.is_loopback())
         .unwrap_or_else(|_| host.eq_ignore_ascii_case("localhost"));
     if require_tls && !is_loopback && tls_config.is_none() && !allow_insecure {
-        return Err(anyhow!(
-            "refusing to bind on non-loopback without TLS; provide --tls-cert/--tls-key or --insecure to allow plain HTTP"
-        ));
+        return Err(StartupError::new(
+            "startup_tls_required",
+            "refusing to bind on non-loopback without TLS; provide --tls-cert/--tls-key or --insecure to allow plain HTTP",
+        )
+        .into());
     }
     if !is_loopback {
         warn!(

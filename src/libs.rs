@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -45,7 +45,7 @@ pub struct LibSourcesFile {
     pub sources: Vec<LibSource>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LibSourceStatus {
     Success,
@@ -94,7 +94,26 @@ pub struct LibsIngestReport {
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 struct LibsManifest {
     version: u32,
+    #[serde(default)]
+    created_at_epoch_ms: Option<u128>,
+    #[serde(default)]
+    updated_at_epoch_ms: Option<u128>,
+    #[serde(default)]
+    inputs_fingerprint_sha256: Option<String>,
+    #[serde(default)]
+    input_sources: Vec<LibsManifestSourceInput>,
     sources: BTreeMap<String, LibsManifestEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LibsManifestSourceInput {
+    library: String,
+    #[serde(default)]
+    version: Option<String>,
+    source: String,
+    path: String,
+    #[serde(default)]
+    title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +121,14 @@ struct LibsManifestEntry {
     fingerprint_sha256: String,
     doc_ids: Vec<String>,
     updated_at_epoch_ms: u128,
+    #[serde(default)]
+    created_at_epoch_ms: Option<u128>,
+    #[serde(default)]
+    last_status: Option<LibSourceStatus>,
+    #[serde(default)]
+    last_error: Option<String>,
+    #[serde(default)]
+    last_checked_at_epoch_ms: Option<u128>,
 }
 
 #[derive(Clone)]
@@ -447,30 +474,174 @@ impl LibsIndexer {
             ));
             LibsManifest::default()
         });
-        if manifest.version == 0 {
-            manifest.version = 1;
+        if manifest.version < 2 {
+            manifest.version = 2;
         }
 
-        let writer_arc = self.writer()?;
-        let mut writer = writer_arc.lock();
+        let now = now_epoch_ms()?;
+        if manifest.created_at_epoch_ms.is_none() {
+            manifest.created_at_epoch_ms = Some(now);
+        }
+
+        let mut normalized_sources: Vec<LibSource> = sources
+            .iter()
+            .map(|source| LibSource {
+                library: source.library.trim().to_string(),
+                version: source
+                    .version
+                    .as_ref()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+                source: source.source.trim().to_string(),
+                path: source.path.clone(),
+                title: source
+                    .title
+                    .as_ref()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+            })
+            .collect();
+        normalized_sources.sort_by(|a, b| source_key_for(a).cmp(&source_key_for(b)));
 
         let mut reports: Vec<LibSourceReport> = Vec::new();
         let mut succeeded_sources = 0usize;
         let mut failed_sources = 0usize;
         let mut skipped_sources = 0usize;
 
-        for source in sources {
-            let report = ingest_one_source(&mut writer, self, &mut manifest, source);
+        let desired_keys: BTreeSet<String> = normalized_sources.iter().map(source_key_for).collect();
+        let manifest_keys: BTreeSet<String> = manifest.sources.keys().cloned().collect();
+        let removed_keys: Vec<String> = manifest_keys
+            .difference(&desired_keys)
+            .cloned()
+            .collect();
+
+        struct PreparedSource {
+            source: LibSource,
+            key: String,
+            read: Result<(String, u64, bool)>,
+        }
+
+        let mut prepared: Vec<PreparedSource> = Vec::with_capacity(normalized_sources.len());
+        for source in normalized_sources.iter().cloned() {
+            let key = source_key_for(&source);
+            let read = read_text_limited(&source.path, MAX_LIB_DOC_BYTES);
+            prepared.push(PreparedSource { source, key, read });
+        }
+
+        let mut did_mutate_index = false;
+        let mut stale_or_missing = false;
+        let mut had_read_errors = false;
+        let mut computed_fingerprints: Vec<(String, String)> = Vec::new();
+        for entry in prepared.iter() {
+            match entry.read.as_ref() {
+                Ok((body, _, _)) => {
+                    let fingerprint = sha256_hex(body.as_bytes());
+                    computed_fingerprints.push((entry.key.clone(), fingerprint.clone()));
+                    match manifest.sources.get(&entry.key) {
+                        Some(existing) if existing.fingerprint_sha256 == fingerprint => {}
+                        _ => stale_or_missing = true,
+                    }
+                }
+                Err(_) => {
+                    had_read_errors = true;
+                }
+            }
+        }
+        computed_fingerprints.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let current_inputs_fingerprint = if had_read_errors {
+            None
+        } else {
+            match libs_inputs_fingerprint_sha256(computed_fingerprints.as_slice()) {
+                Ok(fingerprint) => Some(fingerprint),
+                Err(err) => {
+                    warnings.push(format!("failed to compute libs input fingerprint: {err}"));
+                    None
+                }
+            }
+        };
+
+        let overall_stale = match (
+            manifest.inputs_fingerprint_sha256.as_ref(),
+            current_inputs_fingerprint.as_ref(),
+        ) {
+            (Some(previous), Some(current)) => previous != current,
+            (Some(_), None) => true,
+            (None, _) => stale_or_missing,
+        };
+
+        let needs_writer = !removed_keys.is_empty() || overall_stale;
+        let writer_arc = if needs_writer { Some(self.writer()?) } else { None };
+        let mut writer_guard = None;
+        if let Some(arc) = writer_arc.as_ref() {
+            writer_guard = Some(arc.lock());
+        }
+
+        if let Some(writer) = writer_guard.as_mut() {
+            for removed in removed_keys.into_iter() {
+                if let Some(previous) = manifest.sources.remove(&removed) {
+                    for old in previous.doc_ids.iter() {
+                        let term = Term::from_field_text(self.doc_id_field, old);
+                        writer.delete_term(term);
+                        did_mutate_index = true;
+                    }
+                }
+            }
+        }
+
+        for entry in prepared.into_iter() {
+            let report = ingest_one_source_prepared(
+                writer_guard.as_mut().map(|writer| &mut **writer),
+                self,
+                &mut manifest,
+                now,
+                entry.source,
+                entry.key,
+                entry.read,
+            );
             match report.status {
-                LibSourceStatus::Success => succeeded_sources += 1,
+                LibSourceStatus::Success => {
+                    succeeded_sources += 1;
+                    did_mutate_index = true;
+                }
                 LibSourceStatus::Failed => failed_sources += 1,
                 LibSourceStatus::SkippedStale => skipped_sources += 1,
             }
             reports.push(report);
         }
 
-        writer.commit()?;
-        self.reader.reload()?;
+        if did_mutate_index {
+            if let Some(writer) = writer_guard.as_mut() {
+                writer.commit()?;
+            }
+            self.reader.reload()?;
+        }
+
+        manifest.input_sources = normalized_sources
+            .iter()
+            .map(|source| LibsManifestSourceInput {
+                library: source.library.trim().to_string(),
+                version: source
+                    .version
+                    .as_ref()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+                source: source.source.trim().to_string(),
+                path: normalize_path_for_key(&source.path),
+                title: source
+                    .title
+                    .as_ref()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+            })
+            .collect();
+
+        if !had_read_errors && failed_sources == 0 {
+            if let Some(fingerprint) = current_inputs_fingerprint {
+                manifest.inputs_fingerprint_sha256 = Some(fingerprint);
+            }
+        }
+        manifest.updated_at_epoch_ms = Some(now);
 
         if let Err(err) = save_manifest(&manifest_path, &manifest) {
             warnings.push(format!("failed to write libs manifest: {err}"));
@@ -497,14 +668,79 @@ impl LibsIndexer {
     }
 }
 
-fn ingest_one_source(
-    writer: &mut IndexWriter,
+fn source_key_for(source: &LibSource) -> String {
+    let library = source.library.trim();
+    let version = source
+        .version
+        .as_deref()
+        .unwrap_or("unknown")
+        .trim()
+        .to_string();
+    let source_label = source.source.trim();
+    let path = normalize_path_for_key(&source.path);
+    format!("{library}@{version}|{source_label}|{path}")
+}
+
+fn normalize_path_for_key(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn upsert_manifest_status(
+    manifest: &mut LibsManifest,
+    source_key: &str,
+    status: LibSourceStatus,
+    error: Option<String>,
+    checked_at_epoch_ms: u128,
+) {
+    let entry = manifest.sources.entry(source_key.to_string()).or_insert_with(|| {
+        LibsManifestEntry {
+            fingerprint_sha256: String::new(),
+            doc_ids: Vec::new(),
+            updated_at_epoch_ms: 0,
+            created_at_epoch_ms: None,
+            last_status: None,
+            last_error: None,
+            last_checked_at_epoch_ms: None,
+        }
+    });
+    entry.last_status = Some(status);
+    entry.last_error = error;
+    entry.last_checked_at_epoch_ms = Some(checked_at_epoch_ms);
+}
+
+fn libs_inputs_fingerprint_sha256(source_fingerprints: &[(String, String)]) -> Result<String> {
+    #[derive(Serialize)]
+    struct FingerprintEntry<'a> {
+        source_key: &'a str,
+        fingerprint_sha256: &'a str,
+    }
+
+    let payload: Vec<FingerprintEntry<'_>> = source_fingerprints
+        .iter()
+        .map(|(key, fingerprint)| FingerprintEntry {
+            source_key: key.as_str(),
+            fingerprint_sha256: fingerprint.as_str(),
+        })
+        .collect();
+    let bytes = serde_json::to_vec(&payload).context("serialize libs inputs fingerprint")?;
+    Ok(sha256_hex(&bytes))
+}
+
+fn ingest_one_source_prepared(
+    writer: Option<&mut IndexWriter>,
     indexer: &LibsIndexer,
     manifest: &mut LibsManifest,
-    source: &LibSource,
+    now_epoch_ms: u128,
+    source: LibSource,
+    source_key: String,
+    read: Result<(String, u64, bool)>,
 ) -> LibSourceReport {
     let library = source.library.trim().to_string();
-    let version = source.version.as_ref().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let version = source
+        .version
+        .as_ref()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
     let source_label = source.source.trim().to_string();
     let path = source.path.clone();
     let path_display = path.display().to_string();
@@ -539,20 +775,26 @@ fn ingest_one_source(
         };
     }
 
-    let source_key = format!(
-        "{}@{}|{}",
-        library,
-        version.clone().unwrap_or_else(|| "unknown".to_string()),
-        source_label
-    );
-
-    let (body, bytes_ingested, truncated) = match read_text_limited(&path, MAX_LIB_DOC_BYTES) {
+    let (body, bytes_ingested, truncated) = match read {
         Ok(value) => value,
         Err(err) => {
+            upsert_manifest_status(
+                manifest,
+                &source_key,
+                LibSourceStatus::Failed,
+                Some(err.to_string()),
+                now_epoch_ms,
+            );
             let hint = if err.to_string().contains("No such file") {
-                Some("Verify the resolver output path and ensure the library docs are present on disk.".to_string())
+                Some(
+                    "Verify the resolver output path and ensure the library docs are present on disk."
+                        .to_string(),
+                )
             } else {
-                Some("Check file permissions and that the path points to a text/markdown document.".to_string())
+                Some(
+                    "Check file permissions and that the path points to a text/markdown document."
+                        .to_string(),
+                )
             };
             return LibSourceReport {
                 library,
@@ -572,6 +814,13 @@ fn ingest_one_source(
     let fingerprint = sha256_hex(body.as_bytes());
     if let Some(entry) = manifest.sources.get(&source_key) {
         if entry.fingerprint_sha256 == fingerprint {
+            upsert_manifest_status(
+                manifest,
+                &source_key,
+                LibSourceStatus::SkippedStale,
+                None,
+                now_epoch_ms,
+            );
             return LibSourceReport {
                 library,
                 version,
@@ -586,6 +835,31 @@ fn ingest_one_source(
             };
         }
     }
+
+    let Some(writer) = writer else {
+        upsert_manifest_status(
+            manifest,
+            &source_key,
+            LibSourceStatus::Failed,
+            Some("libs index writer unavailable; retry later".to_string()),
+            now_epoch_ms,
+        );
+        return LibSourceReport {
+            library,
+            version,
+            source: source_label,
+            path: path_display,
+            status: LibSourceStatus::Failed,
+            docs_ingested: 0,
+            bytes_ingested,
+            truncated,
+            error: Some("libs index writer unavailable; retry later".to_string()),
+            hint: Some(
+                "Another docdexd may be writing this repo's libs index; retry once indexing completes."
+                    .to_string(),
+            ),
+        };
+    };
 
     // Guardrail: cap per-source total bytes to avoid index bloat.
     let capped_body = if (body.as_bytes().len() as u64) > MAX_LIB_SOURCE_BYTES {
@@ -619,6 +893,13 @@ fn ingest_one_source(
             indexer.title_field => title.unwrap_or_else(|| library.clone()),
         )) {
         warn!(target: "docdexd", error = ?err, source_key = %source_key, "failed to add libs doc to index");
+        upsert_manifest_status(
+            manifest,
+            &source_key,
+            LibSourceStatus::Failed,
+            Some(err.to_string()),
+            now_epoch_ms,
+        );
         return LibSourceReport {
             library,
             version,
@@ -641,12 +922,21 @@ fn ingest_one_source(
         }
     }
 
+    let previous_created_at = manifest
+        .sources
+        .get(&source_key)
+        .and_then(|entry| entry.created_at_epoch_ms);
+
     manifest.sources.insert(
-        source_key,
+        source_key.clone(),
         LibsManifestEntry {
             fingerprint_sha256: fingerprint,
             doc_ids: vec![doc_id],
-            updated_at_epoch_ms: now_epoch_ms().unwrap_or(0),
+            updated_at_epoch_ms: now_epoch_ms,
+            created_at_epoch_ms: previous_created_at.or(Some(now_epoch_ms)),
+            last_status: Some(LibSourceStatus::Success),
+            last_error: None,
+            last_checked_at_epoch_ms: Some(now_epoch_ms),
         },
     );
 
@@ -828,4 +1118,71 @@ fn now_epoch_ms() -> Result<u128> {
         .duration_since(std::time::UNIX_EPOCH)
         .context("read system clock")?
         .as_millis())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn compute_inputs_fingerprint_for_sources(sources: &[LibSource]) -> String {
+        let mut computed: Vec<(String, String)> = Vec::new();
+        for source in sources {
+            let key = source_key_for(source);
+            let (body, _, _) =
+                read_text_limited(&source.path, MAX_LIB_DOC_BYTES).expect("read lib doc");
+            computed.push((key, sha256_hex(body.as_bytes())));
+        }
+        computed.sort_by(|a, b| a.0.cmp(&b.0));
+        libs_inputs_fingerprint_sha256(computed.as_slice()).expect("fingerprint")
+    }
+
+    #[test]
+    fn libs_inputs_fingerprint_is_deterministic_across_source_order() {
+        let repo = TempDir::new().expect("tmp dir");
+        let a_path = repo.path().join("a.md");
+        let b_path = repo.path().join("b.md");
+        fs::write(&a_path, "alpha").expect("write a");
+        fs::write(&b_path, "beta").expect("write b");
+
+        let a = LibSource {
+            library: "a".to_string(),
+            version: Some("1.0.0".to_string()),
+            source: "local".to_string(),
+            path: a_path,
+            title: None,
+        };
+        let b = LibSource {
+            library: "b".to_string(),
+            version: Some("1.0.0".to_string()),
+            source: "local".to_string(),
+            path: b_path,
+            title: None,
+        };
+
+        let fingerprint_1 = compute_inputs_fingerprint_for_sources(&[a.clone(), b.clone()]);
+        let fingerprint_2 = compute_inputs_fingerprint_for_sources(&[b, a]);
+        assert_eq!(fingerprint_1, fingerprint_2);
+    }
+
+    #[test]
+    fn libs_inputs_fingerprint_changes_when_a_doc_changes() {
+        let repo = TempDir::new().expect("tmp dir");
+        let path = repo.path().join("doc.md");
+        fs::write(&path, "first").expect("write");
+
+        let source = LibSource {
+            library: "lib".to_string(),
+            version: Some("1.0.0".to_string()),
+            source: "local".to_string(),
+            path: path.clone(),
+            title: None,
+        };
+
+        let fingerprint_1 = compute_inputs_fingerprint_for_sources(&[source.clone()]);
+        fs::write(&path, "second").expect("rewrite");
+        let fingerprint_2 = compute_inputs_fingerprint_for_sources(&[source]);
+        assert_ne!(fingerprint_1, fingerprint_2);
+    }
 }

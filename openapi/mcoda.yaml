@@ -212,6 +212,13 @@ paths:
       description: |-
         Returns inbound/outbound dependency edges for a repo-scoped file.
 
+        Edge direction semantics:
+        - Each directed edge is `source -> target` where `source` depends on/imports/references `target`.
+        - For the requested file `F`, `outbound` contains `target` paths for edges where `source == F`.
+        - For the requested file `F`, `inbound` contains `source` paths for edges where `target == F`.
+
+        The response includes an explicit `schema` compatibility signal; see `docs/contracts/code_intelligence_schema_v1.md`.
+
         When started with `--expose`, requests require `Authorization: Bearer <token>`.
       operationId: getImpactGraph
       parameters:
@@ -236,21 +243,38 @@ paths:
                 type: object
                 additionalProperties: false
                 required:
+                  - schema
                   - source
                   - inbound
                   - outbound
                 properties:
+                  schema: &a18
+                    $ref: "#/components/schemas/DocdexSchemaInfo"
+                  repo_id:
+                    $ref: "#/components/schemas/RepoId"
                   source:
                     type: string
                     description: The requested file path.
                   inbound:
                     type: array
+                    description: Repo-relative file paths which depend on (import/reference) `source`.
                     items:
                       type: string
                   outbound:
                     type: array
+                    description: Repo-relative file paths which `source` depends on (imports/references).
                     items:
                       type: string
+                  edges:
+                    type: array
+                    description: |-
+                      Directed edges. Each edge is `source -> target` where `source` depends on `target`.
+
+                      For the requested file `F`:
+                      - inbound edges are those with `target == F`
+                      - outbound edges are those with `source == F`
+                    items:
+                      $ref: "#/components/schemas/ImpactGraphEdge"
         "400":
           description: Bad request
           content:
@@ -452,6 +476,52 @@ components:
     ChatCompletionUsage: *a10
     ChatCompletionResponse: *a11
     ImpactGraphResponse: *a12
+    DocdexSchemaCompatRange: &a19
+      type: object
+      additionalProperties: false
+      required:
+        - min
+        - max
+      properties:
+        min:
+          type: integer
+          minimum: 1
+        max:
+          type: integer
+          minimum: 1
+    DocdexSchemaInfo:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - version
+        - compatible
+      properties:
+        name:
+          type: string
+          description: Stable identifier for a payload family (example: `docdex.impact_graph`).
+        version:
+          type: integer
+          minimum: 1
+          description: Schema version emitted by the server/tool.
+        compatible:
+          $ref: "#/components/schemas/DocdexSchemaCompatRange"
+    ImpactGraphEdge:
+      type: object
+      additionalProperties: false
+      required:
+        - source
+        - target
+      properties:
+        source:
+          type: string
+          description: Repo-relative file path of the depender/importer.
+        target:
+          type: string
+          description: Repo-relative file path of the dependee/imported file.
+        kind:
+          type: string
+          description: Optional edge classifier (e.g. `import`, `include`, `require`).
     MemoryStoreRequest: *a13
     MemoryStoreResponse: *a14
     MemoryRecallRequest: *a15

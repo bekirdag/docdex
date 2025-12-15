@@ -387,7 +387,8 @@ Components and flows
 - Libraries index (per repo): ingests cached library docs (Phase 2.1) into `libs_index` so library answers count as Tier 1 local context.  
 - Query path (Tier 1): `docdexd chat --repo` and `/v1/chat/completions` call local BM25 search across source \+ libs index; optional local rerank (model unspecified in PDR—TBD). Waterfall escalation only if top score \< `web_trigger_threshold` or forced.  
 - Symbol extraction (Phase 6): Tree-sitter during `index` populates `symbols.db` with name/kind/file/lines/signature to support code intelligence and impact graph.  
-- Impact graph (Phase 6): dependency edges captured during indexing; served via `GET /v1/graph/impact?repo_id=<id>&file=<path>` returning inbound/outbound deps.
+- Impact graph (Phase 6): dependency edges captured during indexing; served via `GET /v1/graph/impact?repo_id=<id>&file=<path>`
+  returning schema-tagged inbound/outbound deps with explicit edge direction semantics.
 
 Data contracts (as implied)
 
@@ -722,7 +723,8 @@ Architectural intent: define per-repo and global storage schemas that support lo
 - `dag.db` (per repo): nodes table with `type ENUM(UserRequest|Thought|ToolCall|Observation|Decision)`, `session_id`, `payload JSON`, `created_at`; edges implied by `session_id` \+ ordering (PDR: DAG logging and view).  
 - `index/` (per repo, Tantivy): source index for repo code; `libs_index/` for ingested library docs; both scoped by repo fingerprint to prevent cross-contamination.  
 - `cache/web` and `cache/libs` (global read-mostly): raw HTML/cleaned JSON and cached library docs; ingestion into per-repo indexes is explicit.  
-- Impact graph (per repo, likely in `dag.db` or adjacent store): directed edges derived from imports; API `GET /v1/graph/impact` returns inbound/outbound deps keyed by `file`.
+- Impact graph (per repo, likely in `dag.db` or adjacent store): directed edges derived from imports; API `GET /v1/graph/impact`
+  returns schema-tagged inbound/outbound deps keyed by `file` (directed `source -> target`).
 
 **Interactions**
 
@@ -917,7 +919,8 @@ Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper
 **Endpoints**
 
 - `POST /v1/chat/completions`: OpenAI-compatible; requires repo identification (body/header/query). Runs RepoContext resolution → Waterfall (Tier 1 local index \+ libs, Tier 2 web on low confidence/explicit, Tier 3 cognition/memory) with token budgeting before calling Ollama; supports streaming responses.  
-- `GET /v1/graph/impact?repo_id=<id>&file=<path>`: returns inbound/outbound dependency edges from per-repo `symbols.db`/dependency graph.
+- `GET /v1/graph/impact?repo_id=<id>&file=<path>`: returns schema-tagged inbound/outbound dependency edges from per-repo
+  `symbols.db`/dependency graph (directed `source -> target`).
 
 **Behavior & Contracts**
 
@@ -1352,7 +1355,9 @@ Docdex advances through gated phases; each gate requires the preceding functiona
 - Phase 3/3.5 (Unified API \+ Memory): `/v1/chat/completions` routes by repo (body/header/query), budgets tokens, streams via Ollama; per-repo `memory_store/recall` on `memory.db` with sqlite-vec embeddings; memory prioritized in context merge.  
 - Phase 4 (Reasoning DAG): Per-repo `dag.db` logging UserRequest/Thought/ToolCall/Observation/Decision; `dag view --repo <session_id>` renders text/DOT.  
 - Phase 5 (MCP): Single MCP server exposes repo-aware tools (`docdex_search`, `docdex_web_research`, `docdex_memory_save/recall`); unknown/unindexed repo yields clear error; no per-repo MCP instances.  
-- Phase 6 (Code Intelligence): Tree-sitter symbols for Rust/TS-JS/Python/Go stored in `symbols.db`; import graph impact API `GET /v1/graph/impact?repo_id=&file=` returns inbound/outbound deps; `run-tests --repo --target` returns structured JSON; diff-aware RAG uses git diff \+ impact graph \+ memory.  
+- Phase 6 (Code Intelligence): Tree-sitter symbols for Rust/TS-JS/Python/Go stored in `symbols.db`; import graph impact API
+  `GET /v1/graph/impact?repo_id=&file=` returns schema-tagged inbound/outbound deps with explicit edge direction semantics;
+  `run-tests --repo --target` returns structured JSON; diff-aware RAG uses git diff \+ impact graph \+ memory.  
 - Phase 7 (UI Surfaces): TUI repo switcher; web dashboard (chat to `/v1/chat/completions`, memory explorer, library shelf, DAG viewer, repo selector); VSCode extension always passes `repo_path` and uses HTTP/MCP.
 
 **Scalability/Reliability/Security Notes**
@@ -1515,8 +1520,11 @@ Verification Strategy
 - Impact graph stored per repo in `symbols.db` tables:  
   - `files(path TEXT PK, lang TEXT)`  
   - `deps(src_path TEXT, dst_path TEXT, kind TEXT)` (indexes on src/dst).  
-- API `GET /v1/graph/impact?repo_id=<id>&file=<path>` returns `{inbound: [path], outbound: [path], source=file}`.  
-- `run-tests --repo <path> --target <file|dir>` executes configured command (from repo-local config or env) and returns JSON `{status: pass|fail|error, exit_code, stdout, stderr, duration_ms}`.
+  - Edge direction semantics: `src_path -> dst_path` where `src_path` depends on/imports/references `dst_path`.  
+- API `GET /v1/graph/impact?repo_id=<id>&file=<path>` returns a JSON payload with an explicit `schema`
+  compatibility signal and directed edge semantics (see `docs/contracts/code_intelligence_schema_v1.md`).  
+- `run-tests --repo <path> --target <file|dir>` executes configured command (from repo-local config or env)
+  and returns JSON `{status: pass|fail|error, exit_code, stdout, stderr, duration_ms}`.
 
 ### 3.10 Library Context
 
@@ -1595,4 +1603,3 @@ Verification Strategy
 - Defaults: `http_bind_addr=127.0.0.1:3210`, `max-open-repos=12`, `web_trigger_threshold=0.45`, `max_concurrent_fetches=2`, `cache_ttl_secs=86400`, `page_load_timeout_secs=15`, `request_delay_ms=1000`, DDG spacing 2000ms.  
 - Required overrides for exposure: `--expose` or config override must include non-empty token.  
 - All thresholds configurable via `config.toml`; changes require daemon restart or config reload (if implemented later).
-

@@ -6,7 +6,7 @@ use crate::error::{
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
 };
 use crate::memory::{inject_embedding_metadata, MemoryStore};
-use crate::ollama::OllamaClient;
+use crate::ollama::OllamaEmbedder;
 use anyhow::Result;
 use axum::body::HttpBody;
 use axum::{
@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -212,9 +212,7 @@ pub struct RequestId(pub String);
 #[derive(Clone)]
 pub struct MemoryState {
     pub store: MemoryStore,
-    pub ollama: OllamaClient,
-    pub embedding_model: String,
-    pub embedding_timeout: Duration,
+    pub embedder: OllamaEmbedder,
 }
 
 #[derive(Default)]
@@ -454,8 +452,8 @@ async fn memory_store_handler(
     }
 
     let embedding = match memory
-        .ollama
-        .embed(&memory.embedding_model, text, memory.embedding_timeout)
+        .embedder
+        .embed(text)
         .await
     {
         Ok(value) => value,
@@ -480,7 +478,11 @@ async fn memory_store_handler(
         .ok()
         .and_then(|ms| i64::try_from(ms).ok())
         .unwrap_or(0);
-    let metadata = inject_embedding_metadata(req.metadata, "ollama", &memory.embedding_model);
+    let metadata = inject_embedding_metadata(
+        req.metadata,
+        memory.embedder.provider(),
+        memory.embedder.model(),
+    );
     let store = memory.store.clone();
     let text_owned = text.to_string();
 
@@ -546,8 +548,8 @@ async fn memory_recall_handler(
     let top_k = req.top_k.unwrap_or(5).max(1).min(50);
 
     let query_embedding = match memory
-        .ollama
-        .embed(&memory.embedding_model, query, memory.embedding_timeout)
+        .embedder
+        .embed(query)
         .await
     {
         Ok(value) => value,

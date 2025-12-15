@@ -16,6 +16,13 @@ pub struct OllamaClient {
     path_prefix: String,
 }
 
+#[derive(Clone)]
+pub struct OllamaEmbedder {
+    client: OllamaClient,
+    model: String,
+    timeout: Duration,
+}
+
 impl OllamaClient {
     pub fn new(base_url: String) -> Result<Self, anyhow::Error> {
         let trimmed = base_url.trim().trim_end_matches('/');
@@ -134,6 +141,36 @@ impl OllamaClient {
             )
             .into()),
         }
+    }
+}
+
+impl OllamaEmbedder {
+    pub fn new(base_url: String, model: String, timeout: Duration) -> Result<Self, anyhow::Error> {
+        let model = model.trim().to_string();
+        if model.is_empty() {
+            return Err(AppError::new(
+                ERR_EMBEDDING_FAILED,
+                "embedding model is not configured",
+            )
+            .into());
+        }
+        Ok(Self {
+            client: OllamaClient::new(base_url)?,
+            model,
+            timeout: timeout.max(Duration::from_millis(1)),
+        })
+    }
+
+    pub fn provider(&self) -> &'static str {
+        "ollama"
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub async fn embed(&self, prompt: &str) -> Result<Vec<f32>, anyhow::Error> {
+        self.client.embed(&self.model, prompt, self.timeout).await
     }
 }
 

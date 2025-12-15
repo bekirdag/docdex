@@ -1,7 +1,7 @@
 use crate::error::{AppError, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED};
 use crate::index::{IndexConfig, Indexer};
 use crate::memory::{inject_embedding_metadata, MemoryStore};
-use crate::ollama::OllamaClient;
+use crate::ollama::OllamaEmbedder;
 use crate::search;
 use crate::symbols::SymbolsStore;
 use anyhow::{anyhow, Context, Result};
@@ -309,9 +309,14 @@ pub async fn serve(
         Err(err) => return Err(err),
     };
     let memory = if env_flag_enabled("DOCDEX_ENABLE_MEMORY") {
-        let base_url = std::env::var("DOCDEX_OLLAMA_BASE_URL")
+        let base_url = std::env::var("DOCDEX_EMBEDDING_BASE_URL")
             .ok()
             .filter(|v| !v.trim().is_empty())
+            .or_else(|| {
+                std::env::var("DOCDEX_OLLAMA_BASE_URL")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+            })
             .unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
         let model = std::env::var("DOCDEX_EMBEDDING_MODEL")
             .ok()
@@ -324,9 +329,7 @@ pub async fn serve(
             .max(1);
         Some(McpMemoryState {
             store: MemoryStore::new(indexer.state_dir()),
-            ollama: OllamaClient::new(base_url)?,
-            embedding_model: model,
-            embedding_timeout: Duration::from_millis(timeout_ms),
+            embedder: OllamaEmbedder::new(base_url, model, Duration::from_millis(timeout_ms))?,
         })
     } else {
         None
@@ -344,9 +347,7 @@ pub async fn serve(
 #[derive(Clone)]
 struct McpMemoryState {
     store: MemoryStore,
-    ollama: OllamaClient,
-    embedding_model: String,
-    embedding_timeout: Duration,
+    embedder: OllamaEmbedder,
 }
 
 struct McpServer {
@@ -1361,16 +1362,16 @@ impl McpServer {
             return Err(AppError::new(ERR_INVALID_ARGUMENT, "text must not be empty").into());
         }
 
-        let embedding = memory
-            .ollama
-            .embed(&memory.embedding_model, text, memory.embedding_timeout)
-            .await?;
+        let embedding = memory.embedder.embed(text).await?;
 
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_millis() as i64;
-        let metadata =
-            inject_embedding_metadata(args.metadata, "ollama", memory.embedding_model.as_str());
+        let metadata = inject_embedding_metadata(
+            args.metadata,
+            memory.embedder.provider(),
+            memory.embedder.model(),
+        );
         let store = memory.store.clone();
         let text_owned = text.to_string();
         let stored = tokio::task::spawn_blocking(move || {
@@ -1398,10 +1399,7 @@ impl McpServer {
         }
 
         let top_k = args.top_k.unwrap_or(5).max(1).min(50);
-        let embedding = memory
-            .ollama
-            .embed(&memory.embedding_model, query, memory.embedding_timeout)
-            .await?;
+        let embedding = memory.embedder.embed(query).await?;
 
         let store = memory.store.clone();
         let items = tokio::task::spawn_blocking(move || store.recall(&embedding, top_k)).await??;

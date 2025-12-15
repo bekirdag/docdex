@@ -164,9 +164,17 @@ enum Command {
         enable_memory: bool,
         #[arg(
             long,
+            env = "DOCDEX_EMBEDDING_BASE_URL",
+            value_parser = config::non_empty_string,
+            help = "Ollama base URL for embedding calls (memory); takes precedence over --ollama-base-url when both are set"
+        )]
+        embedding_base_url: Option<String>,
+        #[arg(
+            long,
             env = "DOCDEX_OLLAMA_BASE_URL",
             default_value = "http://127.0.0.1:11434",
-            help = "Ollama base URL for embedding calls (memory)"
+            value_parser = config::non_empty_string,
+            help = "Ollama base URL for embedding calls (memory) (legacy; prefer --embedding-base-url / DOCDEX_EMBEDDING_BASE_URL)"
         )]
         ollama_base_url: String,
         #[arg(
@@ -312,9 +320,17 @@ enum Command {
         metadata: Option<String>,
         #[arg(
             long,
+            env = "DOCDEX_EMBEDDING_BASE_URL",
+            value_parser = config::non_empty_string,
+            help = "Ollama base URL for embedding calls; takes precedence over --ollama-base-url when both are set"
+        )]
+        embedding_base_url: Option<String>,
+        #[arg(
+            long,
             env = "DOCDEX_OLLAMA_BASE_URL",
             default_value = "http://127.0.0.1:11434",
-            help = "Ollama base URL for embedding calls"
+            value_parser = config::non_empty_string,
+            help = "Ollama base URL for embedding calls (legacy; prefer --embedding-base-url / DOCDEX_EMBEDDING_BASE_URL)"
         )]
         ollama_base_url: String,
         #[arg(
@@ -342,9 +358,17 @@ enum Command {
         top_k: usize,
         #[arg(
             long,
+            env = "DOCDEX_EMBEDDING_BASE_URL",
+            value_parser = config::non_empty_string,
+            help = "Ollama base URL for embedding calls; takes precedence over --ollama-base-url when both are set"
+        )]
+        embedding_base_url: Option<String>,
+        #[arg(
+            long,
             env = "DOCDEX_OLLAMA_BASE_URL",
             default_value = "http://127.0.0.1:11434",
-            help = "Ollama base URL for embedding calls"
+            value_parser = config::non_empty_string,
+            help = "Ollama base URL for embedding calls (legacy; prefer --embedding-base-url / DOCDEX_EMBEDDING_BASE_URL)"
         )]
         ollama_base_url: String,
         #[arg(
@@ -454,6 +478,7 @@ async fn run() -> Result<()> {
             secure_mode,
             disable_snippet_text,
             enable_memory,
+            embedding_base_url,
             ollama_base_url,
             embedding_model,
             embedding_timeout_ms,
@@ -521,6 +546,7 @@ async fn run() -> Result<()> {
                 secure_mode,
                 disable_snippet_text,
             )?;
+            let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);
             daemon::serve(
                 repo_root,
                 host,
@@ -537,7 +563,7 @@ async fn run() -> Result<()> {
                 run_as_gid,
                 unshare_net,
                 enable_memory,
-                ollama_base_url,
+                embedding_base_url,
                 embedding_model,
                 embedding_timeout_ms,
             )
@@ -706,6 +732,7 @@ async fn run() -> Result<()> {
             repo,
             text,
             metadata,
+            embedding_base_url,
             ollama_base_url,
             embedding_model,
             embedding_timeout_ms,
@@ -720,9 +747,11 @@ async fn run() -> Result<()> {
             util::init_logging("warn")?;
             index::ensure_state_dir_secure(index_config.state_dir())?;
 
-            let ollama = ollama::OllamaClient::new(ollama_base_url)?;
             let timeout = std::time::Duration::from_millis(embedding_timeout_ms.max(1));
-            let embedding = ollama.embed(&embedding_model, &text, timeout).await?;
+            let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);
+            let embedder =
+                ollama::OllamaEmbedder::new(embedding_base_url, embedding_model, timeout)?;
+            let embedding = embedder.embed(&text).await?;
             let user_metadata = match metadata {
                 None => None,
                 Some(raw) => Some(
@@ -734,7 +763,11 @@ async fn run() -> Result<()> {
                     })?,
                 ),
             };
-            let metadata = memory::inject_embedding_metadata(user_metadata, "ollama", &embedding_model);
+            let metadata = memory::inject_embedding_metadata(
+                user_metadata,
+                embedder.provider(),
+                embedder.model(),
+            );
             let store = memory::MemoryStore::new(index_config.state_dir());
             let created_at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
@@ -756,6 +789,7 @@ async fn run() -> Result<()> {
             repo,
             query,
             top_k,
+            embedding_base_url,
             ollama_base_url,
             embedding_model,
             embedding_timeout_ms,
@@ -770,9 +804,11 @@ async fn run() -> Result<()> {
             util::init_logging("warn")?;
             index::ensure_state_dir_secure(index_config.state_dir())?;
 
-            let ollama = ollama::OllamaClient::new(ollama_base_url)?;
             let timeout = std::time::Duration::from_millis(embedding_timeout_ms.max(1));
-            let embedding = ollama.embed(&embedding_model, &query, timeout).await?;
+            let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);
+            let embedder =
+                ollama::OllamaEmbedder::new(embedding_base_url, embedding_model, timeout)?;
+            let embedding = embedder.embed(&query).await?;
             let store = memory::MemoryStore::new(index_config.state_dir());
             let top_k = top_k.max(1).min(50);
             let results = tokio::task::spawn_blocking(move || store.recall(&embedding, top_k)).await??;

@@ -2,7 +2,7 @@ use crate::audit::AuditLogger;
 use crate::error::StartupError;
 use crate::index::{IndexConfig, Indexer};
 use crate::memory::MemoryStore;
-use crate::ollama::OllamaClient;
+use crate::ollama::OllamaEmbedder;
 use crate::search::{self, AppState, SecurityConfig};
 use crate::util;
 use crate::watcher;
@@ -268,18 +268,17 @@ pub async fn serve(
             .with_hint("Set --embedding-model (or DOCDEX_EMBEDDING_MODEL) to an Ollama embedding model identifier.")
             .into());
         }
-        let ollama = OllamaClient::new(ollama_base_url).map_err(|err| {
+        let timeout = Duration::from_millis(embedding_timeout_ms.max(1));
+        let embedder = OllamaEmbedder::new(ollama_base_url, model.clone(), timeout).map_err(|err| {
             StartupError::new(
                 "startup_config_invalid",
-                format!("invalid --ollama-base-url: {err}"),
+                format!("invalid embedding base URL: {err}"),
             )
             .with_hint("Expected a URL like http://127.0.0.1:11434")
         })?;
         Some(search::MemoryState {
             store: MemoryStore::new(indexer.state_dir()),
-            ollama,
-            embedding_model: model,
-            embedding_timeout: Duration::from_millis(embedding_timeout_ms.max(1)),
+            embedder,
         })
     } else {
         None

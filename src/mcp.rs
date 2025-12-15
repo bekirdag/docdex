@@ -8,6 +8,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use tantivy::directory::error::LockError;
 use tantivy::TantivyError;
+use thiserror::Error;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 
 const JSONRPC_VERSION: &str = "2.0";
@@ -20,6 +21,116 @@ const FILES_DEFAULT_LIMIT: usize = 200;
 const FILES_MAX_LIMIT: usize = 1000;
 const FILES_MAX_OFFSET: usize = 50_000;
 const OPEN_MAX_BYTES: usize = 512 * 1024; // guard rail for returning file content
+
+#[derive(Error, Debug)]
+#[error("project_root mismatch (started for {expected}; got {got})")]
+struct RepoMismatchError {
+    expected: String,
+    got: String,
+}
+
+#[derive(Error, Debug)]
+#[error("path must be relative and not contain parent components")]
+struct InvalidPathError;
+
+#[derive(Error, Debug)]
+#[error("file too large ({actual_bytes} bytes > {max_bytes} limit)")]
+struct MaxContentError {
+    actual_bytes: usize,
+    max_bytes: usize,
+}
+
+#[derive(Error, Debug)]
+#[error("symbol extraction is disabled; set DOCDEX_ENABLE_SYMBOL_EXTRACTION=1 and reindex")]
+struct MissingSymbolsDependencyError;
+
+#[derive(Error, Debug)]
+#[error("no symbols record found for {rel_path}; run docdex_index")]
+struct MissingSymbolsIndexError {
+    rel_path: String,
+}
+
+fn mcp_error_data(
+    code: &'static str,
+    message: String,
+    reason: Option<String>,
+    tool: Option<&str>,
+    details: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let mut data = serde_json::Map::new();
+    data.insert("code".to_string(), json!(code));
+    data.insert("message".to_string(), json!(message));
+    if let Some(reason) = reason {
+        data.insert("reason".to_string(), json!(reason));
+    }
+    if let Some(tool) = tool {
+        data.insert("tool".to_string(), json!(tool));
+    }
+    if let Some(details) = details {
+        data.insert("details".to_string(), details);
+    }
+    serde_json::Value::Object(data)
+}
+
+fn rpc_error(
+    rpc_code: i32,
+    message: impl Into<String>,
+    mcp_code: &'static str,
+    reason: Option<String>,
+    tool: Option<&str>,
+    details: Option<serde_json::Value>,
+) -> RpcError {
+    let message = message.into();
+    RpcError {
+        code: rpc_code,
+        message: message.clone(),
+        data: Some(mcp_error_data(mcp_code, message, reason, tool, details)),
+    }
+}
+
+fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
+    if let Some(search_err) = err.downcast_ref::<crate::index::SearchError>() {
+        match search_err {
+            crate::index::SearchError::InvalidQuery { .. } => return ("invalid_query", None),
+        }
+    }
+    if err.downcast_ref::<RepoMismatchError>().is_some() {
+        return ("unknown_repo", None);
+    }
+    if err.downcast_ref::<InvalidPathError>().is_some() {
+        return ("invalid_path", None);
+    }
+    if let Some(max_err) = err.downcast_ref::<MaxContentError>() {
+        return (
+            "max_content_exceeded",
+            Some(json!({
+                "max_bytes": max_err.max_bytes,
+                "actual_bytes": max_err.actual_bytes,
+            })),
+        );
+    }
+    if err.downcast_ref::<MissingSymbolsDependencyError>().is_some() {
+        return (
+            "missing_dependency",
+            Some(json!({ "dependency": "DOCDEX_ENABLE_SYMBOL_EXTRACTION" })),
+        );
+    }
+    if let Some(missing) = err.downcast_ref::<MissingSymbolsIndexError>() {
+        return (
+            "missing_index",
+            Some(json!({ "resource": "symbols", "path": missing.rel_path })),
+        );
+    }
+    // Fallback string matching for legacy anyhow errors.
+    let msg = err.to_string();
+    if msg.contains("start_line beyond file length")
+        || msg.contains("end_line beyond file length")
+        || msg.contains("end_line must be >=")
+    {
+        return ("invalid_range", None);
+    }
+    ("internal_error", None)
+}
 
 #[derive(Deserialize)]
 struct RpcRequest {
@@ -204,11 +315,14 @@ impl McpServer {
                                 jsonrpc: JSONRPC_VERSION,
                                 id: serde_json::Value::Null,
                                 result: None,
-                                error: Some(RpcError {
-                                    code: ERR_PARSE,
-                                    message: format!("invalid JSON: {err}"),
-                                    data: None,
-                                }),
+                                error: Some(rpc_error(
+                                    ERR_PARSE,
+                                    format!("invalid JSON: {err}"),
+                                    "parse_error",
+                                    Some(err.to_string()),
+                                    None,
+                                    None,
+                                )),
                             };
                             write_response(&mut writer, &resp).await?;
                             continue;
@@ -220,11 +334,14 @@ impl McpServer {
                             jsonrpc: JSONRPC_VERSION,
                             id: serde_json::Value::Null,
                             result: None,
-                            error: Some(RpcError {
-                                code: ERR_INTERNAL,
-                                message: format!("internal error"),
-                                data: Some(json!({ "reason": err.to_string() })),
-                            }),
+                            error: Some(rpc_error(
+                                ERR_INTERNAL,
+                                "internal error",
+                                "internal_error",
+                                Some(err.to_string()),
+                                None,
+                                None,
+                            )),
                         }),
                     };
                     if let Some(resp) = resp_opt {
@@ -261,11 +378,14 @@ impl McpServer {
                     jsonrpc: JSONRPC_VERSION,
                     id: id.clone(),
                     result: None,
-                    error: Some(RpcError {
-                        code: ERR_INVALID_REQUEST,
-                        message: format!("unsupported jsonrpc version: {version}"),
-                        data: Some(json!({ "expected": JSONRPC_VERSION })),
-                    }),
+                    error: Some(rpc_error(
+                        ERR_INVALID_REQUEST,
+                        format!("unsupported jsonrpc version: {version}"),
+                        "invalid_request",
+                        None,
+                        None,
+                        Some(json!({ "expected": JSONRPC_VERSION })),
+                    )),
                 }));
             }
         }
@@ -286,14 +406,17 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_REQUEST,
-                                        message: "workspace root mismatch".to_string(),
-                                        data: Some(json!({
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_REQUEST,
+                                        "workspace root mismatch",
+                                        "unknown_repo",
+                                        None,
+                                        None,
+                                        Some(json!({
                                             "expected": self.repo_root.display().to_string(),
                                             "got": canon.display().to_string()
                                         })),
-                                    }),
+                                    )),
                                 }));
                             }
                             self.default_project_root = Some(canon);
@@ -303,11 +426,14 @@ impl McpServer {
                                 jsonrpc: JSONRPC_VERSION,
                                 id: id.clone(),
                                 result: None,
-                                error: Some(RpcError {
-                                    code: ERR_INVALID_REQUEST,
-                                    message: "workspace root not usable".to_string(),
-                                    data: Some(json!({ "reason": err.to_string() })),
-                                }),
+                                error: Some(rpc_error(
+                                    ERR_INVALID_REQUEST,
+                                    "workspace root not usable",
+                                    "invalid_request",
+                                    Some(err.to_string()),
+                                    None,
+                                    None,
+                                )),
                             }));
                         }
                     }
@@ -373,11 +499,14 @@ impl McpServer {
                             jsonrpc: JSONRPC_VERSION,
                             id: id.clone(),
                             result: None,
-                            error: Some(RpcError {
-                                code: ERR_INVALID_PARAMS,
-                                message: "invalid resources/read params".to_string(),
-                                data: Some(json!({ "reason": err.to_string() })),
-                            }),
+                            error: Some(rpc_error(
+                                ERR_INVALID_PARAMS,
+                                "invalid resources/read params",
+                                "invalid_params",
+                                Some(err.to_string()),
+                                None,
+                                Some(json!({ "validation": "serde", "method": "resources/read" })),
+                            )),
                         }))
                     }
                 };
@@ -392,11 +521,17 @@ impl McpServer {
                         jsonrpc: JSONRPC_VERSION,
                         id: id.clone(),
                         result: None,
-                        error: Some(RpcError {
-                            code: ERR_INVALID_PARAMS,
-                            message: "resources/read failed".to_string(),
-                            data: Some(json!({ "reason": err.to_string() })),
-                        }),
+                        error: {
+                            let (mcp_code, details) = classify_tool_error(&err);
+                            Some(rpc_error(
+                                ERR_INVALID_PARAMS,
+                                "resources/read failed",
+                                mcp_code,
+                                Some(err.to_string()),
+                                None,
+                                details,
+                            ))
+                        },
                     })),
                 }
             }
@@ -410,11 +545,14 @@ impl McpServer {
                             jsonrpc: JSONRPC_VERSION,
                             id: id.clone(),
                             result: None,
-                            error: Some(RpcError {
-                                code: ERR_INVALID_PARAMS,
-                                message: "invalid tool call params".to_string(),
-                                data: Some(json!({ "reason": err.to_string() })),
-                            }),
+                            error: Some(rpc_error(
+                                ERR_INVALID_PARAMS,
+                                "invalid tool call params",
+                                "invalid_params",
+                                Some(err.to_string()),
+                                None,
+                                Some(json!({ "validation": "serde", "method": "tools/call" })),
+                            )),
                         }))
                     }
                 };
@@ -429,26 +567,33 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "invalid docdex_search args".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        "invalid docdex_search args",
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_search"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_search" })),
+                                    )),
                                 }))
                             }
                         };
                         match self.handle_search(args).await {
                             Ok(value) => value,
                             Err(err) => {
+                                let (mcp_code, details) = classify_tool_error(&err);
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "docdex_search failed".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        "docdex_search failed",
+                                        mcp_code,
+                                        Some(err.to_string()),
+                                        Some("docdex_search"),
+                                        details,
+                                    )),
                                 }))
                             }
                         }
@@ -463,26 +608,33 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "invalid docdex_index args".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        "invalid docdex_index args",
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_index"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_index" })),
+                                    )),
                                 }))
                             }
                         };
                         match self.handle_index(args).await {
                             Ok(value) => value,
                             Err(err) => {
+                                let (mcp_code, details) = classify_tool_error(&err);
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "docdex_index failed".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        "docdex_index failed",
+                                        mcp_code,
+                                        Some(err.to_string()),
+                                        Some("docdex_index"),
+                                        details,
+                                    )),
                                 }))
                             }
                         }
@@ -497,26 +649,33 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "invalid docdex_files args".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        "invalid docdex_files args",
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_files"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_files" })),
+                                    )),
                                 }))
                             }
                         };
                         match self.handle_files(args).await {
                             Ok(value) => value,
                             Err(err) => {
+                                let (mcp_code, details) = classify_tool_error(&err);
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "docdex_files failed".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        "docdex_files failed",
+                                        mcp_code,
+                                        Some(err.to_string()),
+                                        Some("docdex_files"),
+                                        details,
+                                    )),
                                 }))
                             }
                         }
@@ -531,26 +690,33 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "invalid docdex_open args".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        "invalid docdex_open args",
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_open"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_open" })),
+                                    )),
                                 }))
                             }
                         };
                         match self.handle_open(args).await {
                             Ok(value) => value,
                             Err(err) => {
+                                let (mcp_code, details) = classify_tool_error(&err);
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "docdex_open failed".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        "docdex_open failed",
+                                        mcp_code,
+                                        Some(err.to_string()),
+                                        Some("docdex_open"),
+                                        details,
+                                    )),
                                 }))
                             }
                         }
@@ -565,26 +731,33 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "invalid docdex_stats args".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        "invalid docdex_stats args",
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_stats"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_stats" })),
+                                    )),
                                 }))
                             }
                         };
                         match self.handle_stats(args).await {
                             Ok(value) => value,
                             Err(err) => {
+                                let (mcp_code, details) = classify_tool_error(&err);
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INTERNAL,
-                                        message: "docdex_stats failed".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
+                                    error: Some(rpc_error(
+                                        ERR_INTERNAL,
+                                        "docdex_stats failed",
+                                        mcp_code,
+                                        Some(err.to_string()),
+                                        Some("docdex_stats"),
+                                        details,
+                                    )),
                                 }))
                             }
                         }
@@ -599,26 +772,33 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "invalid docdex_symbols args".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        "invalid docdex_symbols args",
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_symbols"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_symbols" })),
+                                    )),
                                 }))
                             }
                         };
                         match self.handle_symbols(args).await {
                             Ok(value) => value,
                             Err(err) => {
+                                let (mcp_code, details) = classify_tool_error(&err);
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "docdex_symbols failed".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        "docdex_symbols failed",
+                                        mcp_code,
+                                        Some(err.to_string()),
+                                        Some("docdex_symbols"),
+                                        details,
+                                    )),
                                 }))
                             }
                         }
@@ -628,13 +808,23 @@ impl McpServer {
                             jsonrpc: JSONRPC_VERSION,
                             id: id.clone(),
                             result: None,
-                            error: Some(RpcError {
-                                code: ERR_METHOD_NOT_FOUND,
-                                message: format!("unknown tool: {other}"),
-                                data: Some(
-                                    json!({ "known_tools": ["docdex_search", "docdex_index", "docdex_files", "docdex_open", "docdex_stats", "docdex_symbols"] }),
-                                ),
-                            }),
+                            error: Some(rpc_error(
+                                ERR_METHOD_NOT_FOUND,
+                                format!("unknown tool: {other}"),
+                                "method_not_found",
+                                None,
+                                None,
+                                Some(json!({
+                                    "known_tools": [
+                                        "docdex_search",
+                                        "docdex_index",
+                                        "docdex_files",
+                                        "docdex_open",
+                                        "docdex_stats",
+                                        "docdex_symbols"
+                                    ]
+                                })),
+                            )),
                         }));
                     }
                 };
@@ -656,11 +846,14 @@ impl McpServer {
                 jsonrpc: JSONRPC_VERSION,
                 id: id.clone(),
                 result: None,
-                error: Some(RpcError {
-                    code: ERR_METHOD_NOT_FOUND,
-                    message: format!("unknown method: {other}"),
-                    data: None,
-                }),
+                error: Some(rpc_error(
+                    ERR_METHOD_NOT_FOUND,
+                    format!("unknown method: {other}"),
+                    "method_not_found",
+                    None,
+                    None,
+                    None,
+                )),
             })),
         }
     }
@@ -764,9 +957,6 @@ impl McpServer {
     async fn handle_search(&self, args: SearchArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
         let query = args.query.trim();
-        if query.is_empty() {
-            return Err(anyhow!("query must not be empty"));
-        }
         let limit = args
             .limit
             .unwrap_or(self.max_results)
@@ -886,8 +1076,7 @@ impl McpServer {
 
     async fn handle_open(&self, args: OpenArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
-        let rel_path = normalize_rel_path(&args.path)
-            .ok_or_else(|| anyhow!("path must be relative and not contain parent components"))?;
+        let rel_path = normalize_rel_path(&args.path).ok_or(InvalidPathError)?;
         let abs_path = self.repo_root.join(&rel_path);
         let canonical = abs_path
             .canonicalize()
@@ -898,11 +1087,11 @@ impl McpServer {
         let content = fs::read_to_string(&canonical)
             .with_context(|| format!("read {}", rel_path.display()))?;
         if content.len() > OPEN_MAX_BYTES {
-            return Err(anyhow!(
-                "file too large ({} bytes > {} limit)",
-                content.len(),
-                OPEN_MAX_BYTES
-            ));
+            return Err(MaxContentError {
+                actual_bytes: content.len(),
+                max_bytes: OPEN_MAX_BYTES,
+            }
+            .into());
         }
         let lines: Vec<&str> = content.lines().collect();
         let total_lines = lines.len();
@@ -955,18 +1144,18 @@ impl McpServer {
     async fn handle_symbols(&self, args: SymbolsArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
         if !self.indexer.config().symbols_enabled() {
-            return Err(anyhow!(
-                "symbol extraction is disabled; set DOCDEX_ENABLE_SYMBOL_EXTRACTION=1 and reindex"
-            ));
+            return Err(MissingSymbolsDependencyError.into());
         }
         let rel_path = normalize_rel_path(&args.path)
-            .ok_or_else(|| anyhow!("path must be relative and not contain parent components"))?;
+            .ok_or(InvalidPathError)?;
         let rel_str = rel_path.to_string_lossy().replace('\\', "/");
         let store = SymbolsStore::new(self.indexer.repo_root(), self.indexer.config().state_dir())
             .context("open symbols store")?;
         let payload = store
             .read_symbols(&rel_str)?
-            .ok_or_else(|| anyhow!("no symbols record found for {rel_str}; run docdex_index"))?;
+            .ok_or_else(|| MissingSymbolsIndexError {
+                rel_path: rel_str.to_string(),
+            })?;
         Ok(serde_json::to_value(payload).context("serialize symbols payload")?)
     }
 
@@ -995,11 +1184,11 @@ impl McpServer {
     fn ensure_same_repo(&self, candidate: &Path) -> Result<()> {
         let normalized = candidate.canonicalize().context("resolve project_root")?;
         if normalized != self.repo_root {
-            return Err(anyhow!(
-                "project_root mismatch (started for {}; got {})",
-                self.repo_root.display(),
-                normalized.display()
-            ));
+            return Err(RepoMismatchError {
+                expected: self.repo_root.display().to_string(),
+                got: normalized.display().to_string(),
+            }
+            .into());
         }
         Ok(())
     }

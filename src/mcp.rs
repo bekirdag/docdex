@@ -1,5 +1,6 @@
 use crate::index::{IndexConfig, Indexer};
 use crate::search;
+use crate::symbols::SymbolsStore;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -118,6 +119,13 @@ struct OpenArgs {
     start_line: Option<usize>,
     #[serde(default)]
     end_line: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct SymbolsArgs {
+    path: String,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -581,6 +589,40 @@ impl McpServer {
                             }
                         }
                     }
+                    "docdex_symbols" | "docdex.symbols" => {
+                        let args_res: Result<SymbolsArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(RpcError {
+                                        code: ERR_INVALID_PARAMS,
+                                        message: "invalid docdex_symbols args".to_string(),
+                                        data: Some(json!({ "reason": err.to_string() })),
+                                    }),
+                                }))
+                            }
+                        };
+                        match self.handle_symbols(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(RpcError {
+                                        code: ERR_INVALID_PARAMS,
+                                        message: "docdex_symbols failed".to_string(),
+                                        data: Some(json!({ "reason": err.to_string() })),
+                                    }),
+                                }))
+                            }
+                        }
+                    }
                     other => {
                         return Ok(Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,
@@ -590,7 +632,7 @@ impl McpServer {
                                 code: ERR_METHOD_NOT_FOUND,
                                 message: format!("unknown tool: {other}"),
                                 data: Some(
-                                    json!({ "known_tools": ["docdex_search", "docdex_index", "docdex_files", "docdex_open", "docdex_stats"] }),
+                                    json!({ "known_tools": ["docdex_search", "docdex_index", "docdex_files", "docdex_open", "docdex_stats", "docdex_symbols"] }),
                                 ),
                             }),
                         }));
@@ -692,6 +734,18 @@ impl McpServer {
                     "properties": {
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
                     }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_symbols",
+                description: "Read the symbol extraction result for a file, including per-file outcome (ok/skipped/failed).",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "minLength": 1, "description": "Relative path under the repo" },
+                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+                    },
+                    "required": ["path"]
                 }),
             },
         ]
@@ -890,6 +944,24 @@ impl McpServer {
                 .display()
                 .to_string(),
         }))
+    }
+
+    async fn handle_symbols(&self, args: SymbolsArgs) -> Result<serde_json::Value> {
+        self.ensure_project_root(args.project_root.as_deref())?;
+        if !self.indexer.config().symbols_enabled() {
+            return Err(anyhow!(
+                "symbol extraction is disabled; set DOCDEX_ENABLE_SYMBOL_EXTRACTION=1 and reindex"
+            ));
+        }
+        let rel_path = normalize_rel_path(&args.path)
+            .ok_or_else(|| anyhow!("path must be relative and not contain parent components"))?;
+        let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+        let store = SymbolsStore::new(self.indexer.repo_root(), self.indexer.config().state_dir())
+            .context("open symbols store")?;
+        let payload = store
+            .read_symbols(&rel_str)?
+            .ok_or_else(|| anyhow!("no symbols record found for {rel_str}; run docdex_index"))?;
+        Ok(serde_json::to_value(payload).context("serialize symbols payload")?)
     }
 
     async fn handle_resource_read(&self, params: ResourceReadParams) -> Result<serde_json::Value> {

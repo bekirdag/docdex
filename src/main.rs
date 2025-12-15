@@ -4,6 +4,7 @@ mod daemon;
 mod index;
 mod mcp;
 mod search;
+mod symbols;
 mod util;
 mod watcher;
 

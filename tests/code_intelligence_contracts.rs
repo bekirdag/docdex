@@ -9,6 +9,10 @@ fn contract_docs_exist_and_define_edge_direction() {
         "contract doc should define the impact graph schema name"
     );
     assert!(
+        text.contains("`outcome`") && text.contains("ok") && text.contains("skipped"),
+        "contract doc should describe per-file symbols outcomes"
+    );
+    assert!(
         text.contains("Edge direction semantics"),
         "contract doc should define edge direction semantics"
     );

@@ -35,6 +35,13 @@ Symbol responses represent extracted symbols within a repo, scoped to a file.
 }
 ```
 
+**Optional top-level fields**
+
+- `outcome` (object, optional): Per-file extraction outcome metadata.
+  - `status` (string, required): `ok` | `skipped` | `failed`
+  - `reason` (string, optional): Short stable reason code/message (e.g. `unsupported_language`, `read_failed (markdown)`).
+  - `error_summary` (string, optional): Best-effort human-readable error summary (must be bounded; avoid stack traces).
+
 **Symbol item fields (v1)**
 
 - `symbol_id` (string, required): Deterministic identifier stable across runs for the same repo snapshot.
@@ -75,4 +82,3 @@ For a request where `source = F`:
 - `inbound` is the set of `source` paths for edges where `target == F`.
 
 `edges[].kind` is an optional classifier such as `import`, `include`, or `require` (implementation-defined).
-

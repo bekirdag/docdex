@@ -18,17 +18,25 @@ struct McpHarness {
 
 impl McpHarness {
     fn spawn(repo: &Path) -> Result<Self, Box<dyn Error>> {
+        Self::spawn_with_symbols(repo, false)
+    }
+
+    fn spawn_with_symbols(repo: &Path, enable_symbols: bool) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo.to_string_lossy().to_string();
-        let mut child = Command::new(docdex_bin())
-            .args([
-                "mcp",
-                "--repo",
-                repo_str.as_str(),
-                "--log",
-                "warn",
-                "--max-results",
-                "4",
-            ])
+        let mut cmd = Command::new(docdex_bin());
+        cmd.args([
+            "mcp",
+            "--repo",
+            repo_str.as_str(),
+            "--log",
+            "warn",
+            "--max-results",
+            "4",
+        ]);
+        if enable_symbols {
+            cmd.env("DOCDEX_ENABLE_SYMBOL_EXTRACTION", "1");
+        }
+        let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -288,6 +296,103 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
     assert!(
         total >= files.len() as u64,
         "total should be >= returned rows"
+    );
+
+    harness.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_symbols_returns_outcome_and_symbols_when_enabled() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_root = repo.path();
+    fs::write(
+        repo_root.join("docs").join("symbols.md"),
+        "# Title\n\nIntro text.\n\n## Subsection\nMore.\n",
+    )?;
+    let mut harness = McpHarness::spawn_with_symbols(repo_root, true)?;
+
+    send_line(
+        &mut harness.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 100,
+            "method": "initialize",
+            "params": {}
+        }),
+    )?;
+    let _ = read_line(&mut harness.reader)?;
+
+    // build index via tool
+    send_line(
+        &mut harness.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 101,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_index",
+                "arguments": { "paths": [] }
+            }
+        }),
+    )?;
+    let _ = read_line(&mut harness.reader)?;
+
+    // fetch symbols for a known file
+    send_line(
+        &mut harness.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 102,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_symbols",
+                "arguments": { "path": "docs/symbols.md" }
+            }
+        }),
+    )?;
+    let symbols_resp = read_line(&mut harness.reader)?;
+    let payload = parse_tool_result(&symbols_resp)?;
+
+    assert_eq!(
+        payload.get("schema").and_then(|v| v.get("name")).and_then(|v| v.as_str()),
+        Some("docdex.symbols"),
+        "symbols payload should include schema name"
+    );
+    assert_eq!(
+        payload.get("file").and_then(|v| v.as_str()),
+        Some("docs/symbols.md"),
+        "symbols payload should identify the file"
+    );
+    let repo_id = payload
+        .get("repo_id")
+        .and_then(|v| v.as_str())
+        .ok_or("symbols payload missing repo_id")?;
+    assert_eq!(repo_id.len(), 64, "repo_id should be a sha256 hex string");
+
+    let status = payload
+        .get("outcome")
+        .and_then(|v| v.get("status"))
+        .and_then(|v| v.as_str())
+        .ok_or("symbols payload missing outcome.status")?;
+    assert_eq!(status, "ok", "markdown symbol extraction should be ok");
+
+    let symbols = payload
+        .get("symbols")
+        .and_then(|v| v.as_array())
+        .ok_or("symbols payload missing symbols array")?;
+    assert!(
+        symbols.len() >= 2,
+        "markdown file should yield at least two heading symbols"
+    );
+    let first_id = symbols
+        .first()
+        .and_then(|v| v.get("symbol_id"))
+        .and_then(|v| v.as_str())
+        .ok_or("symbol missing symbol_id")?;
+    assert!(
+        first_id.starts_with(&format!("{repo_id}:docs/symbols.md#")),
+        "symbol_id should include repo_id and file prefix"
     );
 
     harness.shutdown();

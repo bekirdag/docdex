@@ -6,6 +6,7 @@ mod error;
 mod impact;
 mod index;
 mod libs;
+mod libs_source_resolver;
 mod memory;
 mod mcp;
 mod ollama;
@@ -323,6 +324,17 @@ enum Command {
             help = "Path to a JSON file containing `{ \"sources\": [...] }` entries"
         )]
         sources: PathBuf,
+    },
+    /// Discover eligible library documentation sources for a repo (dependency manifests + optional configured sources).
+    LibsDiscover {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Optional JSON file containing `{ \"sources\": [...] }` entries to merge as explicit configured sources"
+        )]
+        sources: Option<PathBuf>,
     },
     /// Store a memory item (requires Ollama embeddings).
     MemoryStore {
@@ -781,6 +793,23 @@ async fn run() -> Result<()> {
                 serde_json::from_str(&raw).context("parse libs sources json")?;
             let report = indexer.ingest_sources(&sources_file.sources)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        Command::LibsDiscover { repo, sources } => {
+            let repo_root = repo.repo_root();
+            util::init_logging("warn")?;
+            let explicit = match sources {
+                None => None,
+                Some(path) => {
+                    let raw = fs::read_to_string(&path)
+                        .with_context(|| format!("read libs sources file {}", path.display()))?;
+                    let parsed: libs::LibSourcesFile =
+                        serde_json::from_str(&raw).context("parse libs sources json")?;
+                    Some(parsed)
+                }
+            };
+            let resolver = libs_source_resolver::LibsSourceResolver::new(repo_root);
+            let resolution = resolver.resolve(explicit.as_ref())?;
+            println!("{}", serde_json::to_string_pretty(&resolution)?);
         }
         Command::MemoryStore {
             repo,

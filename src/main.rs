@@ -565,7 +565,7 @@ async fn main() -> Result<()> {
                 repo.exclude_prefix_overrides(),
             );
             util::init_logging("warn")?;
-            index::Indexer::with_config(repo_root, index_config)?
+            let _ = index::Indexer::with_config(repo_root, index_config)?
                 .ingest_file(file)
                 .await?;
         }

@@ -28,19 +28,31 @@ pub fn spawn(indexer: Arc<Indexer>) -> Result<()> {
             let idx = indexer.clone();
             match action {
                 WatchAction::Upsert(path) => {
-                    if let Err(err) = idx.ingest_file(path.clone()).await {
-                        warn!(
-                            target: "docdexd",
-                            error = ?err,
-                            file = %path.display(),
-                            "failed to ingest file change"
-                        );
-                    } else {
-                        debug!(
-                            target: "docdexd",
-                            file = %path.display(),
-                            "indexed modified document"
-                        );
+                    match idx.ingest_file(path.clone()).await {
+                        Ok(decision) => {
+                            if decision.should_index() {
+                                debug!(
+                                    target: "docdexd",
+                                    file = %path.display(),
+                                    "indexed modified document"
+                                );
+                            } else {
+                                debug!(
+                                    target: "docdexd",
+                                    file = %path.display(),
+                                    reason = ?decision.reason,
+                                    "skipped file change"
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            warn!(
+                                target: "docdexd",
+                                error = ?err,
+                                file = %path.display(),
+                                "failed to ingest file change"
+                            );
+                        }
                     }
                 }
                 WatchAction::Delete(path) => {

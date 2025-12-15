@@ -436,7 +436,8 @@ impl Indexer {
             .filter(|e| e.file_type().is_file())
         {
             let path = entry.path();
-            if !should_index(path, &self.repo_root, &self.config) {
+            let decision = decide_file(path, &self.repo_root, &self.config);
+            if !decision.should_index() {
                 continue;
             }
             let ingest = self.add_document(&mut writer, path)?;
@@ -447,10 +448,11 @@ impl Indexer {
         Ok(())
     }
 
-    pub async fn ingest_file(&self, file: PathBuf) -> Result<()> {
+    pub async fn ingest_file(&self, file: PathBuf) -> Result<FileDecision> {
         let path = file.canonicalize().context("resolve file")?;
-        if !should_index(&path, &self.repo_root, &self.config) {
-            return Ok(());
+        let decision = decide_file(&path, &self.repo_root, &self.config);
+        if !decision.should_index() {
+            return Ok(decision);
         }
         let writer_arc = self.writer()?;
         let mut writer = writer_arc.lock();
@@ -461,7 +463,7 @@ impl Indexer {
         self.maybe_update_symbols(&ingest);
         writer.commit()?;
         self.reader.reload()?;
-        Ok(())
+        Ok(decision)
     }
 
     pub async fn delete_file(&self, file: PathBuf) -> Result<()> {
@@ -1077,30 +1079,121 @@ fn build_schema() -> (
     )
 }
 
-pub(crate) fn should_index(path: &Path, repo_root: &Path, config: &IndexConfig) -> bool {
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileDecisionOutcome {
+    Include,
+    Exclude,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case", tag = "code")]
+pub enum FileDecisionReason {
+    OutsideRepo,
+    StateDir,
+    NotAFile,
+    ExcludedPrefix { prefix: String },
+    ExcludedDirName { name: String },
+    MissingExtension,
+    UnsupportedExtension { extension: String },
+    AllowedExtension { extension: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct FileDecision {
+    pub decision: FileDecisionOutcome,
+    pub reason: FileDecisionReason,
+}
+
+impl FileDecision {
+    fn include(reason: FileDecisionReason) -> Self {
+        Self {
+            decision: FileDecisionOutcome::Include,
+            reason,
+        }
+    }
+
+    fn exclude(reason: FileDecisionReason) -> Self {
+        Self {
+            decision: FileDecisionOutcome::Exclude,
+            reason,
+        }
+    }
+
+    pub fn should_index(&self) -> bool {
+        matches!(self.decision, FileDecisionOutcome::Include)
+    }
+}
+
+pub(crate) fn decide_file(path: &Path, repo_root: &Path, config: &IndexConfig) -> FileDecision {
     if path.starts_with(config.state_dir()) {
-        return false;
+        return FileDecision::exclude(FileDecisionReason::StateDir);
     }
     if let (Ok(state_dir), Ok(canonical)) = (config.state_dir().canonicalize(), path.canonicalize())
     {
         if canonical.starts_with(state_dir) {
-            return false;
+            return FileDecision::exclude(FileDecisionReason::StateDir);
         }
     }
-    let relative = path.strip_prefix(repo_root).unwrap_or(path);
+
+    if path.exists() && !path.is_file() {
+        return FileDecision::exclude(FileDecisionReason::NotAFile);
+    }
+
+    let relative: PathBuf = if path.starts_with(repo_root) {
+        match path.strip_prefix(repo_root) {
+            Ok(value) => value.to_path_buf(),
+            Err(_) => {
+                return FileDecision::exclude(FileDecisionReason::OutsideRepo);
+            }
+        }
+    } else if let (Ok(repo_canon), Ok(path_canon)) = (repo_root.canonicalize(), path.canonicalize())
+    {
+        if path_canon.starts_with(&repo_canon) {
+            match path_canon.strip_prefix(&repo_canon) {
+                Ok(value) => value.to_path_buf(),
+                Err(_) => {
+                    return FileDecision::exclude(FileDecisionReason::OutsideRepo);
+                }
+            }
+        } else {
+            return FileDecision::exclude(FileDecisionReason::OutsideRepo);
+        }
+    } else {
+        return FileDecision::exclude(FileDecisionReason::OutsideRepo);
+    };
+
     let normalized = relative
         .to_string_lossy()
         .replace('\\', "/")
         .trim_start_matches('/')
         .to_string()
         .to_lowercase();
-    if config
-        .excluded_relative_prefixes()
-        .iter()
-        .any(|prefix| normalized.starts_with(prefix))
-    {
-        return false;
+
+    let mut best_prefix: Option<&String> = None;
+    for prefix in config.excluded_relative_prefixes().iter() {
+        if !normalized.starts_with(prefix) {
+            continue;
+        }
+        best_prefix = match best_prefix {
+            None => Some(prefix),
+            Some(current) => {
+                if prefix.len() > current.len()
+                    || (prefix.len() == current.len() && prefix.as_str() < current.as_str())
+                {
+                    Some(prefix)
+                } else {
+                    Some(current)
+                }
+            }
+        };
     }
+    if let Some(prefix) = best_prefix {
+        return FileDecision::exclude(FileDecisionReason::ExcludedPrefix {
+            prefix: prefix.clone(),
+        });
+    }
+
     for component in relative.components() {
         if let Component::Normal(name) = component {
             let name_lower = name.to_string_lossy().to_lowercase();
@@ -1109,15 +1202,122 @@ pub(crate) fn should_index(path: &Path, repo_root: &Path, config: &IndexConfig) 
                 .iter()
                 .any(|excluded| excluded == &name_lower)
             {
-                return false;
+                return FileDecision::exclude(FileDecisionReason::ExcludedDirName { name: name_lower });
             }
         }
     }
+
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-        return false;
+        return FileDecision::exclude(FileDecisionReason::MissingExtension);
     };
-    let lower = format!(".{}", ext.to_lowercase());
-    DEFAULT_EXTENSIONS.contains(&lower.as_str())
+    let extension = format!(".{}", ext.to_lowercase());
+    if !DEFAULT_EXTENSIONS.contains(&extension.as_str()) {
+        return FileDecision::exclude(FileDecisionReason::UnsupportedExtension { extension });
+    }
+
+    FileDecision::include(FileDecisionReason::AllowedExtension { extension })
+}
+
+pub(crate) fn should_index(path: &Path, repo_root: &Path, config: &IndexConfig) -> bool {
+    decide_file(path, repo_root, config).should_index()
+}
+
+#[cfg(test)]
+mod file_decision_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn decide_file_picks_longest_excluded_prefix() {
+        let repo = TempDir::new().expect("temp repo");
+        let repo_root = repo.path().canonicalize().expect("canonical repo root");
+        let config = IndexConfig::with_overrides(
+            &repo_root,
+            None,
+            Vec::new(),
+            vec!["docs/".into(), "docs/private/".into()],
+        );
+        let file = repo_root.join("docs/private/a.md");
+        fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
+        fs::write(&file, "# test\n").expect("write file");
+
+        let decision = decide_file(&file, &repo_root, &config);
+        assert_eq!(decision.decision, FileDecisionOutcome::Exclude);
+        assert_eq!(
+            decision.reason,
+            FileDecisionReason::ExcludedPrefix {
+                prefix: "docs/private/".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn decide_file_excludes_state_dir_before_prefix_rules() {
+        let repo = TempDir::new().expect("temp repo");
+        let repo_root = repo.path().canonicalize().expect("canonical repo root");
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new());
+        let file = config.state_dir().join("doc.md");
+        fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
+        fs::write(&file, "# state dir\n").expect("write file");
+
+        let decision = decide_file(&file, &repo_root, &config);
+        assert_eq!(decision.decision, FileDecisionOutcome::Exclude);
+        assert_eq!(decision.reason, FileDecisionReason::StateDir);
+    }
+
+    #[test]
+    fn decide_file_excludes_default_vendor_dir() {
+        let repo = TempDir::new().expect("temp repo");
+        let repo_root = repo.path().canonicalize().expect("canonical repo root");
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new());
+        let file = repo_root.join("vendor/doc.md");
+        fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
+        fs::write(&file, "# vendor\n").expect("write file");
+
+        let decision = decide_file(&file, &repo_root, &config);
+        assert_eq!(decision.decision, FileDecisionOutcome::Exclude);
+        assert_eq!(
+            decision.reason,
+            FileDecisionReason::ExcludedDirName {
+                name: "vendor".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn decide_file_excludes_outside_repo() {
+        let repo = TempDir::new().expect("temp repo");
+        let repo_root = repo.path().canonicalize().expect("canonical repo root");
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new());
+
+        let other = TempDir::new().expect("other repo");
+        let outside = other.path().join("note.md");
+        fs::write(&outside, "# outside\n").expect("write file");
+
+        let decision = decide_file(&outside, &repo_root, &config);
+        assert_eq!(decision.decision, FileDecisionOutcome::Exclude);
+        assert_eq!(decision.reason, FileDecisionReason::OutsideRepo);
+    }
+
+    #[test]
+    fn decide_file_includes_supported_extensions() {
+        let repo = TempDir::new().expect("temp repo");
+        let repo_root = repo.path().canonicalize().expect("canonical repo root");
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new());
+        let file = repo_root.join("docs/notes.txt");
+        fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
+        fs::write(&file, "hello\n").expect("write file");
+
+        let decision = decide_file(&file, &repo_root, &config);
+        assert_eq!(decision.decision, FileDecisionOutcome::Include);
+        assert_eq!(
+            decision.reason,
+            FileDecisionReason::AllowedExtension {
+                extension: ".txt".to_string()
+            }
+        );
+    }
 }
 
 fn ensure_state_dir_secure(path: &Path) -> Result<()> {

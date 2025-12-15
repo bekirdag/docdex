@@ -1008,19 +1008,27 @@ impl McpServer {
             }));
         }
         let mut ingested = Vec::new();
+        let mut decisions = Vec::new();
         for path in args.paths {
             let resolved = if path.is_absolute() {
                 path
             } else {
                 self.repo_root.join(path)
             };
-            self.indexer.ingest_file(resolved.clone()).await?;
+            let path_display = resolved.display().to_string();
+            let decision = self.indexer.ingest_file(resolved.clone()).await?;
             ingested.push(resolved);
+            decisions.push(json!({
+                "path": path_display,
+                "decision": decision.decision,
+                "reason": decision.reason,
+            }));
         }
         Ok(json!({
             "status": "ok",
             "action": "ingest",
             "paths": ingested.into_iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            "decisions": decisions,
             "project_root": self
                 .default_project_root
                 .as_ref()

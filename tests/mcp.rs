@@ -1,4 +1,5 @@
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -80,6 +81,16 @@ fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
     let temp = TempDir::new()?;
     write_fixture_repo(temp.path())?;
     Ok(temp)
+}
+
+fn symbols_record_path(repo_root: &Path, rel_path: &str) -> PathBuf {
+    let key = hex::encode(Sha256::digest(rel_path.as_bytes()));
+    repo_root
+        .join(".docdex")
+        .join("index")
+        .join("symbols.db")
+        .join("files")
+        .join(format!("{key}.json"))
 }
 
 fn send_line(
@@ -477,6 +488,114 @@ fn mcp_symbols_returns_outcome_and_symbols_when_enabled() -> Result<(), Box<dyn 
     assert!(
         first_id.starts_with(&format!("{repo_id}:docs/symbols.md#")),
         "symbol_id should include repo_id and file prefix"
+    );
+
+    harness.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<(), Box<dyn Error>>
+{
+    let repo = setup_repo()?;
+    let repo_root = repo.path();
+    let rel_path = "docs/symbols.md";
+    fs::write(
+        repo_root.join(rel_path),
+        "# Title\n\nIntro text.\n\n## Subsection\nMore.\n",
+    )?;
+    let mut harness = McpHarness::spawn_with_symbols(repo_root, true)?;
+
+    send_line(
+        &mut harness.stdin,
+        json!({ "jsonrpc": "2.0", "id": 200, "method": "initialize", "params": {} }),
+    )?;
+    let _ = read_line(&mut harness.reader)?;
+
+    send_line(
+        &mut harness.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 201,
+            "method": "tools/call",
+            "params": { "name": "docdex_index", "arguments": { "paths": [] } }
+        }),
+    )?;
+    let _ = read_line(&mut harness.reader)?;
+
+    let record_path = symbols_record_path(repo_root, rel_path);
+    let raw = fs::read_to_string(&record_path)?;
+    let mut value: serde_json::Value = serde_json::from_str(&raw)?;
+    let symbols = value
+        .get_mut("symbols")
+        .and_then(|v| v.as_array_mut())
+        .ok_or("expected symbols store record to contain a symbols array")?;
+    for symbol in symbols {
+        if let Some(obj) = symbol.as_object_mut() {
+            obj.remove("symbol_id");
+        }
+    }
+    fs::write(&record_path, serde_json::to_string_pretty(&value)?)?;
+
+    send_line(
+        &mut harness.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 202,
+            "method": "tools/call",
+            "params": { "name": "docdex_symbols", "arguments": { "path": rel_path } }
+        }),
+    )?;
+    let first_resp = read_line(&mut harness.reader)?;
+    let first_payload = parse_tool_result(&first_resp)?;
+    let ids_first: Vec<String> = first_payload
+        .get("symbols")
+        .and_then(|v| v.as_array())
+        .ok_or("symbols payload missing symbols array")?
+        .iter()
+        .filter_map(|v| v.get("symbol_id").and_then(|id| id.as_str()).map(|s| s.to_string()))
+        .collect();
+    assert!(
+        !ids_first.is_empty(),
+        "expected symbols response to return at least one symbol"
+    );
+    assert!(
+        ids_first.iter().all(|id| !id.trim().is_empty()),
+        "expected all returned symbols to include symbol_id"
+    );
+
+    send_line(
+        &mut harness.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 203,
+            "method": "tools/call",
+            "params": { "name": "docdex_index", "arguments": { "paths": [] } }
+        }),
+    )?;
+    let _ = read_line(&mut harness.reader)?;
+
+    send_line(
+        &mut harness.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 204,
+            "method": "tools/call",
+            "params": { "name": "docdex_symbols", "arguments": { "path": rel_path } }
+        }),
+    )?;
+    let second_resp = read_line(&mut harness.reader)?;
+    let second_payload = parse_tool_result(&second_resp)?;
+    let ids_second: Vec<String> = second_payload
+        .get("symbols")
+        .and_then(|v| v.as_array())
+        .ok_or("symbols payload missing symbols array")?
+        .iter()
+        .filter_map(|v| v.get("symbol_id").and_then(|id| id.as_str()).map(|s| s.to_string()))
+        .collect();
+    assert_eq!(
+        ids_first, ids_second,
+        "symbol identifiers should remain stable across repeated indexing runs"
     );
 
     harness.shutdown();

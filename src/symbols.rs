@@ -6,6 +6,14 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+fn default_symbols_schema() -> SchemaInfo {
+    SchemaInfo {
+        name: "docdex.symbols".to_string(),
+        version: 1,
+        compatible: SchemaCompatibleRange { min: 1, max: 1 },
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchemaInfo {
     pub name: String,
@@ -46,6 +54,7 @@ pub struct SymbolRange {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolItem {
+    #[serde(default)]
     pub symbol_id: String,
     pub name: String,
     pub kind: String,
@@ -57,9 +66,13 @@ pub struct SymbolItem {
 /// `docdex.symbols` response schema v1 (see `docs/contracts/code_intelligence_schema_v1.md`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolsResponseV1 {
+    #[serde(default = "default_symbols_schema")]
     pub schema: SchemaInfo,
+    #[serde(default)]
     pub repo_id: String,
+    #[serde(default)]
     pub file: String,
+    #[serde(default)]
     pub symbols: Vec<SymbolItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<SymbolOutcome>,
@@ -173,8 +186,23 @@ impl SymbolsStore {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
         };
-        let parsed: SymbolsResponseV1 =
+        let mut parsed: SymbolsResponseV1 =
             serde_json::from_str(&data).context("parse symbols payload")?;
+        if parsed.repo_id.is_empty() {
+            parsed.repo_id = self.repo_id.clone();
+        }
+        if parsed.file.is_empty() {
+            parsed.file = rel_path.to_string();
+        }
+        let repo_id = parsed.repo_id.clone();
+        let file = parsed.file.clone();
+        for symbol in &mut parsed.symbols {
+            if symbol.symbol_id.is_empty() {
+                symbol.symbol_id =
+                    make_symbol_id(&repo_id, &file, &symbol.range, &symbol.kind, &symbol.name);
+            }
+        }
+        parsed.symbols.sort_by(|a, b| a.symbol_id.cmp(&b.symbol_id));
         Ok(Some(parsed))
     }
 
@@ -202,11 +230,7 @@ pub fn build_symbols_payload(
     outcome: SymbolOutcome,
 ) -> SymbolsResponseV1 {
     SymbolsResponseV1 {
-        schema: SchemaInfo {
-            name: "docdex.symbols".to_string(),
-            version: 1,
-            compatible: SchemaCompatibleRange { min: 1, max: 1 },
-        },
+        schema: default_symbols_schema(),
         repo_id: repo_id.to_string(),
         file: file.to_string(),
         symbols,
@@ -558,4 +582,3 @@ fn extract_go_symbols(repo_id: &str, rel_path: &str, content: &str) -> Result<Ve
     }
     Ok(symbols)
 }
-

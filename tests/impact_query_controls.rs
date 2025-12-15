@@ -75,7 +75,9 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
 }
 
 fn write_impact_graph(state_dir: &Path) -> Result<(), Box<dyn Error>> {
-    let payload = serde_json::json!({
+    write_impact_graph_payload(
+        state_dir,
+        serde_json::json!({
         "edges": [
             { "source": "a.ts", "target": "b.ts", "kind": "import" },
             { "source": "b.ts", "target": "c.ts", "kind": "import" },
@@ -83,12 +85,13 @@ fn write_impact_graph(state_dir: &Path) -> Result<(), Box<dyn Error>> {
             { "source": "x.ts", "target": "a.ts", "kind": "include" },
             { "source": "a.ts", "target": "z.ts" }
         ]
-    });
+    }),
+    )
+}
+
+fn write_impact_graph_payload(state_dir: &Path, payload: serde_json::Value) -> Result<(), Box<dyn Error>> {
     std::fs::create_dir_all(state_dir)?;
-    std::fs::write(
-        state_dir.join("impact_graph.json"),
-        serde_json::to_vec_pretty(&payload)?,
-    )?;
+    std::fs::write(state_dir.join("impact_graph.json"), serde_json::to_vec_pretty(&payload)?)?;
     Ok(())
 }
 
@@ -220,6 +223,60 @@ fn impact_filters_edge_types() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         edges[0].get("kind").and_then(|v| v.as_str()),
         Some("include")
+    );
+
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn impact_edge_types_does_not_expand_through_excluded_edges() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    write_impact_graph_payload(
+        &repo.path().join(".docdex").join("index"),
+        serde_json::json!({
+            "edges": [
+                { "source": "a.ts", "target": "b.ts", "kind": "include" },
+                { "source": "b.ts", "target": "c.ts", "kind": "require" },
+                { "source": "c.ts", "target": "d.ts", "kind": "include" }
+            ]
+        }),
+    )?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(repo.path(), host, port)?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/v1/graph/impact");
+    let resp: Value = client
+        .get(&url)
+        .query(&[
+            ("file", "a.ts"),
+            ("maxEdges", "100"),
+            ("maxDepth", "10"),
+            ("edgeTypes", "include"),
+        ])
+        .send()?
+        .json()?;
+    let edges = resp
+        .get("edges")
+        .and_then(|v| v.as_array())
+        .ok_or("missing edges array")?;
+
+    assert_eq!(edges.len(), 1, "should not reach c.ts without traversing require edges");
+    assert!(
+        !edges.iter().any(|edge| {
+            edge.get("source").and_then(|v| v.as_str()) == Some("c.ts")
+                && edge.get("target").and_then(|v| v.as_str()) == Some("d.ts")
+        }),
+        "should not expand traversal via excluded edge types"
     );
 
     server.kill().ok();

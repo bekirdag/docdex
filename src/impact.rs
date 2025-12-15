@@ -19,7 +19,8 @@ fn default_impact_schema() -> SchemaInfo {
 pub struct ImpactGraphEdge {
     pub source: String,
     pub target: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    // Backwards/forwards compatibility: some producers may emit edge label under `type`.
+    #[serde(skip_serializing_if = "Option::is_none", alias = "type")]
     pub kind: Option<String>,
 }
 
@@ -416,6 +417,7 @@ pub fn build_impact_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     fn fixture_edges() -> Vec<ImpactGraphEdge> {
         vec![
@@ -624,5 +626,57 @@ mod tests {
         assert_eq!(res.edges.len(), 1);
         assert_eq!(res.edges[0].source, "x.ts");
         assert_eq!(res.edges[0].target, "a.ts");
+    }
+
+    #[test]
+    fn traverse_does_not_expand_through_excluded_edge_types() {
+        let edges = vec![
+            ImpactGraphEdge {
+                source: "a.ts".into(),
+                target: "b.ts".into(),
+                kind: Some("include".into()),
+            },
+            ImpactGraphEdge {
+                source: "b.ts".into(),
+                target: "c.ts".into(),
+                kind: Some("require".into()),
+            },
+            ImpactGraphEdge {
+                source: "c.ts".into(),
+                target: "d.ts".into(),
+                kind: Some("include".into()),
+            },
+        ];
+        let controls = ImpactQueryControlsRaw {
+            max_edges: Some(100),
+            max_depth: Some(10),
+            edge_types: Some(vec!["include".into()]),
+        }
+        .validate()
+        .unwrap();
+        let res = traverse_impact("a.ts", &edges, &controls);
+
+        assert!(res.edges.iter().all(|edge| edge.kind.as_deref() == Some("include")));
+        assert!(
+            !res.edges.iter().any(|edge| edge.source == "c.ts" && edge.target == "d.ts"),
+            "should not reach c.ts without traversing the excluded b.ts -> c.ts require edge"
+        );
+    }
+
+    #[test]
+    fn store_accepts_type_alias_for_kind() {
+        let dir = TempDir::new().expect("tempdir");
+        let state_dir = dir.path().join(".docdex").join("index");
+        std::fs::create_dir_all(&state_dir).expect("create state dir");
+        std::fs::write(
+            state_dir.join("impact_graph.json"),
+            r#"{ "edges": [ { "source": "a.ts", "target": "b.ts", "type": "import" } ] }"#,
+        )
+        .expect("write impact_graph.json");
+
+        let store = ImpactGraphStore::new(&state_dir);
+        let edges = store.read_edges().expect("read edges");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].kind.as_deref(), Some("import"));
     }
 }

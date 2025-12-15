@@ -9,7 +9,7 @@ pub struct RepoArgs {
     #[arg(
         long,
         env = "DOCDEX_STATE_DIR",
-        help = "Override index storage directory (default: <repo>/.docdex/index; falls back to legacy .gpt-creator/docdex/index if present)"
+        help = "Override index storage directory (default: <repo>/.docdex/index; falls back to legacy .gpt-creator/docdex/index if present). If an absolute path outside the repo is provided, Docdex scopes state under <state-dir>/repos/<repo_id>/index to prevent cross-repo mixing."
     )]
     pub state_dir: Option<PathBuf>,
     #[arg(

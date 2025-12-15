@@ -1377,7 +1377,29 @@ pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
 
 fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> PathBuf {
     match state_dir {
-        Some(custom) if custom.is_absolute() => custom,
+        Some(custom) if custom.is_absolute() => {
+            // Guardrail: when an absolute state dir is provided outside the repo root,
+            // treat it as a shared *base* directory and scope all state under a repo id.
+            // This prevents accidental cross-repo mixing when the same `--state-dir` is
+            // used across multiple repos.
+            let repo_root = repo_root
+                .canonicalize()
+                .unwrap_or_else(|_| repo_root.to_path_buf());
+            if custom.starts_with(&repo_root) {
+                return custom;
+            }
+            let repo_id = crate::symbols::repo_id_for_root(&repo_root)
+                .unwrap_or_else(|_| "unknown".to_string());
+            let suffix = PathBuf::from("repos").join(&repo_id).join("index");
+            if custom.ends_with(&suffix) {
+                return custom;
+            }
+            let suffix = PathBuf::from("repos").join(&repo_id);
+            if custom.ends_with(&suffix) {
+                return custom.join("index");
+            }
+            custom.join("repos").join(repo_id).join("index")
+        }
         Some(custom) => repo_root.join(custom),
         None => {
             let default_dir = repo_root.join(".docdex").join("index");

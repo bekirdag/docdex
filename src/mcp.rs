@@ -1,5 +1,5 @@
 use crate::error::{
-    AppError, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
+    AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
     ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_RATE_LIMITED, ERR_STALE_INDEX,
     ERR_UNKNOWN_REPO,
@@ -7,6 +7,7 @@ use crate::error::{
 use crate::index::{IndexConfig, Indexer};
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
+use crate::ratelimit::RateLimiter;
 use crate::search;
 use crate::symbols::SymbolsStore;
 use anyhow::{Context, Result};
@@ -26,10 +27,13 @@ const ERR_INVALID_REQUEST: i32 = -32600;
 const ERR_METHOD_NOT_FOUND: i32 = -32601;
 const ERR_INVALID_PARAMS: i32 = -32602;
 const ERR_INTERNAL: i32 = -32000;
+const ERR_RATE_LIMITED_RPC: i32 = -32029;
 const FILES_DEFAULT_LIMIT: usize = 200;
 const FILES_MAX_LIMIT: usize = 1000;
 const FILES_MAX_OFFSET: usize = 50_000;
 const OPEN_MAX_BYTES: usize = 512 * 1024; // guard rail for returning file content
+const MAX_ERROR_MESSAGE_BYTES: usize = 256;
+const MAX_ERROR_REASON_BYTES: usize = 768;
 
 #[derive(Error, Debug)]
 #[error("project_root mismatch (started for {expected}; got {got})")]
@@ -82,12 +86,13 @@ fn mcp_error_data(
     tool: Option<&str>,
     details: Option<serde_json::Value>,
 ) -> serde_json::Value {
+    let message = truncate_bytes(message, MAX_ERROR_MESSAGE_BYTES);
     let message_for_data = message.clone();
     let mut envelope_error = serde_json::Map::new();
     envelope_error.insert("code".to_string(), json!(code));
     envelope_error.insert("message".to_string(), json!(message));
-    if let Some(reason) = reason.clone() {
-        envelope_error.insert("reason".to_string(), json!(reason));
+    if let Some(reason) = reason.clone().map(|value| truncate_bytes(value, MAX_ERROR_REASON_BYTES)) {
+        envelope_error.insert("reason".to_string(), json!(reason.clone()));
     }
     if let Some(tool) = tool {
         envelope_error.insert("tool".to_string(), json!(tool));
@@ -101,7 +106,7 @@ fn mcp_error_data(
     data.insert("code".to_string(), json!(code));
     data.insert("message".to_string(), json!(message_for_data));
     data.insert("error".to_string(), envelope_error_value);
-    if let Some(reason) = reason {
+    if let Some(reason) = reason.map(|value| truncate_bytes(value, MAX_ERROR_REASON_BYTES)) {
         data.insert("reason".to_string(), json!(reason));
     }
     if let Some(tool) = tool {
@@ -113,6 +118,31 @@ fn mcp_error_data(
     serde_json::Value::Object(data)
 }
 
+fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
+    let mut data = serde_json::Map::new();
+    data.insert("code".to_string(), json!(ERR_RATE_LIMITED));
+    data.insert("retry_after_ms".to_string(), json!(err.retry_after_ms));
+    if let Some(at) = err.retry_at.as_ref() {
+        data.insert("retry_at".to_string(), json!(at.to_rfc3339()));
+    }
+    data.insert("limit_key".to_string(), json!(&err.limit_key));
+    data.insert("scope".to_string(), json!(&err.scope));
+    serde_json::Value::Object(data)
+}
+
+fn truncate_bytes(input: String, max_bytes: usize) -> String {
+    if input.len() <= max_bytes {
+        return input;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = input[..end].to_string();
+    out.push_str("…");
+    out
+}
+
 fn rpc_error(
     rpc_code: i32,
     message: impl Into<String>,
@@ -121,12 +151,35 @@ fn rpc_error(
     tool: Option<&str>,
     details: Option<serde_json::Value>,
 ) -> RpcError {
-    let message = message.into();
+    let message = truncate_bytes(message.into(), MAX_ERROR_MESSAGE_BYTES);
     RpcError {
         code: rpc_code,
         message: message.clone(),
         data: Some(mcp_error_data(mcp_code, message, reason, tool, details)),
     }
+}
+
+fn rpc_rate_limited(err: &RateLimited) -> RpcError {
+    RpcError {
+        code: ERR_RATE_LIMITED_RPC,
+        message: truncate_bytes(err.message.clone(), MAX_ERROR_MESSAGE_BYTES),
+        data: Some(mcp_rate_limited_data(err)),
+    }
+}
+
+fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
+    if let Some(rate) = err.downcast_ref::<RateLimited>() {
+        return rpc_rate_limited(rate);
+    }
+    let (mcp_code, details) = classify_tool_error(err);
+    rpc_error(
+        ERR_INVALID_PARAMS,
+        default_message_for_code(mcp_code),
+        mcp_code,
+        Some(err.to_string()),
+        tool,
+        details,
+    )
 }
 
 fn default_message_for_code(code: &str) -> &'static str {
@@ -155,6 +208,9 @@ fn default_message_for_code(code: &str) -> &'static str {
 }
 
 fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
+    if let Some(rate) = err.downcast_ref::<RateLimited>() {
+        return (rate.code, Some(mcp_rate_limited_data(rate)));
+    }
     if let Some(app) = err.downcast_ref::<AppError>() {
         return (app.code, None);
     }
@@ -371,6 +427,8 @@ pub async fn serve(
     repo_root: PathBuf,
     index_config: IndexConfig,
     max_results: usize,
+    rate_limit_per_min: u32,
+    rate_limit_burst: u32,
 ) -> Result<()> {
     let repo_root = repo_root
         .canonicalize()
@@ -413,12 +471,23 @@ pub async fn serve(
     } else {
         None
     };
+    let effective_burst = if rate_limit_per_min > 0 && rate_limit_burst == 0 {
+        rate_limit_per_min
+    } else {
+        rate_limit_burst
+    };
+    let tool_rate_limit = if rate_limit_per_min > 0 {
+        Some(RateLimiter::<()>::new(rate_limit_per_min, effective_burst))
+    } else {
+        None
+    };
     let mut server = McpServer {
         repo_root,
         indexer,
         max_results: max_results.max(1),
         default_project_root: None,
         memory,
+        tool_rate_limit,
     };
     server.run().await
 }
@@ -435,6 +504,7 @@ struct McpServer {
     max_results: usize,
     default_project_root: Option<PathBuf>,
     memory: Option<McpMemoryState>,
+    tool_rate_limit: Option<RateLimiter<()>>,
 }
 
 impl McpServer {
@@ -671,17 +741,7 @@ impl McpServer {
                         jsonrpc: JSONRPC_VERSION,
                         id: id.clone(),
                         result: None,
-                        error: {
-                            let (mcp_code, details) = classify_tool_error(&err);
-                            Some(rpc_error(
-                                ERR_INVALID_PARAMS,
-                                default_message_for_code(mcp_code),
-                                mcp_code,
-                                Some(err.to_string()),
-                                None,
-                                details,
-                            ))
-                        },
+                        error: Some(rpc_tool_error(&err, None)),
                     })),
                 }
             }
@@ -706,6 +766,16 @@ impl McpServer {
                         }))
                     }
                 };
+                if let Some(limiter) = self.tool_rate_limit.as_ref() {
+                    if let Err(err) = limiter.check_or_rate_limited((), "mcp_tools", "global") {
+                        return Ok(Some(RpcResponse {
+                            jsonrpc: JSONRPC_VERSION,
+                            id: id.clone(),
+                            result: None,
+                            error: Some(rpc_rate_limited(&err)),
+                        }));
+                    }
+                }
                 let result = match params.name.as_str() {
                     "docdex_search" | "docdex.search" => {
                         let args_res: Result<SearchArgs, _> =
@@ -731,19 +801,11 @@ impl McpServer {
                         match self.handle_search(args).await {
                             Ok(value) => value,
                             Err(err) => {
-                                let (mcp_code, details) = classify_tool_error(&err);
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_PARAMS,
-                                        default_message_for_code(mcp_code),
-                                        mcp_code,
-                                        Some(err.to_string()),
-                                        Some("docdex_search"),
-                                        details,
-                                    )),
+                                    error: Some(rpc_tool_error(&err, Some("docdex_search"))),
                                 }))
                             }
                         }
@@ -772,19 +834,11 @@ impl McpServer {
                         match self.handle_index(args).await {
                             Ok(value) => value,
                             Err(err) => {
-                                let (mcp_code, details) = classify_tool_error(&err);
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_PARAMS,
-                                        default_message_for_code(mcp_code),
-                                        mcp_code,
-                                        Some(err.to_string()),
-                                        Some("docdex_index"),
-                                        details,
-                                    )),
+                                    error: Some(rpc_tool_error(&err, Some("docdex_index"))),
                                 }))
                             }
                         }
@@ -813,19 +867,11 @@ impl McpServer {
                         match self.handle_files(args).await {
                             Ok(value) => value,
                             Err(err) => {
-                                let (mcp_code, details) = classify_tool_error(&err);
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_PARAMS,
-                                        default_message_for_code(mcp_code),
-                                        mcp_code,
-                                        Some(err.to_string()),
-                                        Some("docdex_files"),
-                                        details,
-                                    )),
+                                    error: Some(rpc_tool_error(&err, Some("docdex_files"))),
                                 }))
                             }
                         }
@@ -854,19 +900,11 @@ impl McpServer {
                         match self.handle_open(args).await {
                             Ok(value) => value,
                             Err(err) => {
-                                let (mcp_code, details) = classify_tool_error(&err);
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_PARAMS,
-                                        default_message_for_code(mcp_code),
-                                        mcp_code,
-                                        Some(err.to_string()),
-                                        Some("docdex_open"),
-                                        details,
-                                    )),
+                                    error: Some(rpc_tool_error(&err, Some("docdex_open"))),
                                 }))
                             }
                         }
@@ -895,19 +933,11 @@ impl McpServer {
                         match self.handle_stats(args).await {
                             Ok(value) => value,
                             Err(err) => {
-                                let (mcp_code, details) = classify_tool_error(&err);
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_PARAMS,
-                                        default_message_for_code(mcp_code),
-                                        mcp_code,
-                                        Some(err.to_string()),
-                                        Some("docdex_stats"),
-                                        details,
-                                    )),
+                                    error: Some(rpc_tool_error(&err, Some("docdex_stats"))),
                                 }))
                             }
                         }
@@ -936,19 +966,11 @@ impl McpServer {
                         match self.handle_symbols(args).await {
                             Ok(value) => value,
                             Err(err) => {
-                                let (mcp_code, details) = classify_tool_error(&err);
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_PARAMS,
-                                        default_message_for_code(mcp_code),
-                                        mcp_code,
-                                        Some(err.to_string()),
-                                        Some("docdex_symbols"),
-                                        details,
-                                    )),
+                                    error: Some(rpc_tool_error(&err, Some("docdex_symbols"))),
                                 }))
                             }
                         }
@@ -977,19 +999,11 @@ impl McpServer {
                         match self.handle_memory_store(args).await {
                             Ok(value) => value,
                             Err(err) => {
-                                let (mcp_code, details) = classify_tool_error(&err);
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_PARAMS,
-                                        default_message_for_code(mcp_code),
-                                        mcp_code,
-                                        Some(err.to_string()),
-                                        Some("docdex_memory_store"),
-                                        details,
-                                    )),
+                                    error: Some(rpc_tool_error(&err, Some("docdex_memory_store"))),
                                 }))
                             }
                         }
@@ -1018,19 +1032,11 @@ impl McpServer {
                         match self.handle_memory_recall(args).await {
                             Ok(value) => value,
                             Err(err) => {
-                                let (mcp_code, details) = classify_tool_error(&err);
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_PARAMS,
-                                        default_message_for_code(mcp_code),
-                                        mcp_code,
-                                        Some(err.to_string()),
-                                        Some("docdex_memory_recall"),
-                                        details,
-                                    )),
+                                    error: Some(rpc_tool_error(&err, Some("docdex_memory_recall"))),
                                 }))
                             }
                         }
@@ -1583,5 +1589,42 @@ fn normalize_rel_path(input: &str) -> Option<PathBuf> {
         None
     } else {
         Some(clean)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use std::time::Duration;
+
+    #[test]
+    fn rate_limited_rpc_has_stable_data_shape() {
+        let err = RateLimited::new(Duration::from_millis(0), "mcp_tools".to_string(), "global".to_string());
+        let rpc = rpc_rate_limited(&err);
+        assert_eq!(rpc.code, ERR_RATE_LIMITED_RPC);
+        let data = rpc.data.expect("rate limited rpc should include data");
+        let obj = data.as_object().expect("rate limited data should be object");
+        assert_eq!(obj.get("code").and_then(|v| v.as_str()), Some(ERR_RATE_LIMITED));
+        assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(0));
+        assert_eq!(obj.get("limit_key").and_then(|v| v.as_str()), Some("mcp_tools"));
+        assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
+        assert!(obj.get("retry_at").is_none(), "retry_at should be omitted when unset");
+    }
+
+    #[test]
+    fn rate_limited_rpc_truncates_long_message_and_allows_retry_at() {
+        let err = RateLimited::new(Duration::from_millis(1234), "bucket".to_string(), "global".to_string())
+            .with_message("x".repeat(10_000))
+            .with_retry_at(Utc::now());
+        let rpc = rpc_rate_limited(&err);
+        assert!(
+            rpc.message.len() <= MAX_ERROR_MESSAGE_BYTES + "…".len(),
+            "rpc error message should be bounded"
+        );
+        let data = rpc.data.expect("rate limited rpc should include data");
+        let obj = data.as_object().expect("rate limited data should be object");
+        assert!(obj.get("retry_at").and_then(|v| v.as_str()).is_some());
+        assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(1234));
     }
 }

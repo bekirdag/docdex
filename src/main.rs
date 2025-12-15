@@ -7,6 +7,7 @@ mod index;
 mod memory;
 mod mcp;
 mod ollama;
+mod ratelimit;
 mod search;
 mod symbols;
 mod util;
@@ -399,6 +400,20 @@ enum Command {
             help = "Maximum results to return from docdex_search tool"
         )]
         max_results: usize,
+        #[arg(
+            long,
+            env = "DOCDEX_MCP_RATE_LIMIT_PER_MIN",
+            default_value_t = 0u32,
+            help = "Optional global tool-call rate limit per minute for MCP (0 disables)"
+        )]
+        rate_limit_per_min: u32,
+        #[arg(
+            long,
+            env = "DOCDEX_MCP_RATE_LIMIT_BURST",
+            default_value_t = 0u32,
+            help = "Optional burst size for MCP rate limiting (defaults to per-minute limit when 0)"
+        )]
+        rate_limit_burst: u32,
     },
     /// Helper to register or remove Docdex MCP in supported agent CLIs.
     McpAdd {
@@ -836,6 +851,8 @@ async fn run() -> Result<()> {
             repo,
             log,
             max_results,
+            rate_limit_per_min,
+            rate_limit_burst,
         } => {
             let max_results = std::env::var("DOCDEX_MCP_MAX_RESULTS")
                 .ok()
@@ -851,7 +868,14 @@ async fn run() -> Result<()> {
                 repo.symbols_enabled(),
             );
             util::init_logging(&log)?;
-            mcp::serve(repo_root, index_config, max_results).await?;
+            mcp::serve(
+                repo_root,
+                index_config,
+                max_results,
+                rate_limit_per_min,
+                rate_limit_burst,
+            )
+            .await?;
         }
         Command::McpAdd {
             agent,

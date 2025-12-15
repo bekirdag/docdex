@@ -21,6 +21,13 @@ struct McpHarness {
 
 impl McpHarness {
     fn spawn(repo: &Path) -> Result<Self, Box<dyn Error>> {
+        Self::spawn_with_env(repo, &[])
+    }
+
+    fn spawn_with_env(
+        repo: &Path,
+        envs: &[(&str, &str)],
+    ) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo.to_string_lossy().to_string();
         let mut cmd = Command::new(docdex_bin());
         cmd.args([
@@ -32,6 +39,9 @@ impl McpHarness {
             "--max-results",
             "4",
         ]);
+        for (key, value) in envs {
+            cmd.env(key, value);
+        }
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -138,6 +148,73 @@ fn mcp_error_data_code(resp: &Value) -> Option<&str> {
         .and_then(|v| v.get("data"))
         .and_then(|v| v.get("code"))
         .and_then(|v| v.as_str())
+}
+
+#[test]
+fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let mut mcp = McpHarness::spawn_with_env(
+        repo.path(),
+        &[
+            ("DOCDEX_MCP_RATE_LIMIT_PER_MIN", "1"),
+            ("DOCDEX_MCP_RATE_LIMIT_BURST", "1"),
+        ],
+    )?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1 } }
+        }),
+    )?;
+    let ok = read_line(&mut mcp.reader)?;
+    assert!(ok.get("result").is_some(), "first tool call should succeed");
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1 } }
+        }),
+    )?;
+    let limited = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&limited), Some(-32029));
+    assert_eq!(mcp_error_data_code(&limited), Some("rate_limited"));
+
+    let data = limited
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.as_object())
+        .ok_or("rate-limit error missing error.data object")?;
+    assert_eq!(
+        data.get("limit_key").and_then(|v| v.as_str()),
+        Some("mcp_tools")
+    );
+    assert_eq!(data.get("scope").and_then(|v| v.as_str()), Some("global"));
+    assert!(
+        data.get("retry_after_ms").and_then(|v| v.as_u64()).is_some(),
+        "retry_after_ms must be an integer"
+    );
+    assert!(
+        data.keys().all(|k| {
+            matches!(
+                k.as_str(),
+                "code" | "retry_after_ms" | "retry_at" | "limit_key" | "scope"
+            )
+        }),
+        "error.data should only include stable keys"
+    );
+
+    mcp.shutdown();
+    Ok(())
 }
 
 fn pick_free_port() -> Option<u16> {
@@ -416,4 +493,3 @@ fn cli_invalid_query_error_matches_machine_reason() -> Result<(), Box<dyn Error>
     );
     Ok(())
 }
-

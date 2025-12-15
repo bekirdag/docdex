@@ -7,6 +7,7 @@ use crate::error::{
 };
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
+use crate::ratelimit::RateLimiter;
 use anyhow::Result;
 use axum::body::HttpBody;
 use axum::{
@@ -19,7 +20,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -31,53 +32,7 @@ const DEFAULT_SNIPPET_WINDOW: usize = 40;
 const MIN_SNIPPET_WINDOW: usize = 10;
 const MAX_SNIPPET_WINDOW: usize = 400;
 
-#[derive(Clone)]
-pub struct RateLimiter {
-    inner: Arc<parking_lot::Mutex<HashMap<IpAddr, RateBucket>>>,
-    refill_per_sec: f64,
-    capacity: f64,
-}
-
-#[derive(Clone, Copy)]
-struct RateBucket {
-    tokens: f64,
-    last: Instant,
-}
-
-impl RateLimiter {
-    pub fn new(per_minute: u32, burst: u32) -> Self {
-        let capacity = if burst == 0 {
-            per_minute as f64
-        } else {
-            burst as f64
-        }
-        .max(1.0);
-        let refill_per_sec = per_minute as f64 / 60.0;
-        Self {
-            inner: Arc::new(parking_lot::Mutex::new(HashMap::new())),
-            refill_per_sec,
-            capacity,
-        }
-    }
-
-    pub fn allow(&self, ip: IpAddr) -> bool {
-        let mut guard = self.inner.lock();
-        let now = Instant::now();
-        let bucket = guard.entry(ip).or_insert(RateBucket {
-            tokens: self.capacity,
-            last: now,
-        });
-        let elapsed = now.duration_since(bucket.last).as_secs_f64();
-        bucket.tokens = (bucket.tokens + elapsed * self.refill_per_sec).min(self.capacity);
-        bucket.last = now;
-        if bucket.tokens >= 1.0 {
-            bucket.tokens -= 1.0;
-            true
-        } else {
-            false
-        }
-    }
-}
+// Rate limiting is shared with MCP and other surfaces via crate::ratelimit.
 
 #[derive(Clone)]
 pub struct SecurityConfig {
@@ -86,7 +41,7 @@ pub struct SecurityConfig {
     pub max_limit: usize,
     pub max_query_bytes: usize,
     pub max_request_bytes: usize,
-    pub rate_limit: Option<RateLimiter>,
+    pub rate_limit: Option<RateLimiter<IpAddr>>,
     pub strip_snippet_html: bool,
     pub disable_snippet_text: bool,
 }
@@ -666,10 +621,7 @@ struct AiHelpPayload {
 }
 
 fn rate_limit_hint(security: &SecurityConfig) -> Option<u32> {
-    security.rate_limit.as_ref().map(|lim| {
-        // refill_per_sec is tokens/min / 60
-        (lim.refill_per_sec * 60.0).round() as u32
-    })
+    security.rate_limit.as_ref().map(|lim| lim.per_minute())
 }
 
 async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
@@ -1230,8 +1182,15 @@ async fn security_middleware(
     }
     if path != "/healthz" {
         if let Some(limiter) = state.security.rate_limit.as_ref() {
-            if !limiter.allow(addr.ip()) {
+            if let Err(err) =
+                limiter.check_or_rate_limited(addr.ip(), "http_ip", "ip")
+            {
                 state.metrics.inc_rate_limit();
+                let mut headers = HeaderMap::new();
+                let retry_after_seconds = err.retry_after_ms.saturating_add(999) / 1000;
+                if let Ok(value) = HeaderValue::from_str(&retry_after_seconds.to_string()) {
+                    headers.insert(axum::http::header::RETRY_AFTER, value);
+                }
                 if let Some(audit) = state.audit.as_ref() {
                     audit.log(
                         "rate_limit",
@@ -1244,7 +1203,7 @@ async fn security_middleware(
                         None,
                     );
                 }
-                return Err((StatusCode::TOO_MANY_REQUESTS, HeaderMap::new()));
+                return Err((StatusCode::TOO_MANY_REQUESTS, headers));
             }
         }
         if state.security.max_request_bytes > 0 {

@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 type BoxError = Box<dyn Error + Send + Sync>;
+const MAX_RATE_LIMIT_MESSAGE_BYTES: usize = 256;
 
 fn docdex_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
@@ -132,10 +133,13 @@ fn assert_http_rate_limit_payload(body: &Value) -> Result<HashSet<String>, BoxEr
     if code != "rate_limited" {
         return Err(format!("rate-limit error.code mismatch: {code}").into());
     }
-    error
+    let message = error
         .get("message")
         .and_then(|v| v.as_str())
         .ok_or("rate-limit error.message missing or not a string")?;
+    if message.len() > MAX_RATE_LIMIT_MESSAGE_BYTES + "…".len() {
+        return Err(format!("rate-limit error.message too large: {} bytes", message.len()).into());
+    }
     error
         .get("retry_after_ms")
         .and_then(|v| v.as_u64())

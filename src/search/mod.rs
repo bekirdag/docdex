@@ -33,6 +33,7 @@ use uuid::Uuid;
 const DEFAULT_SNIPPET_WINDOW: usize = 40;
 const MIN_SNIPPET_WINDOW: usize = 10;
 const MAX_SNIPPET_WINDOW: usize = 400;
+const MAX_RATE_LIMIT_MESSAGE_BYTES: usize = 256;
 
 // Rate limiting is shared with MCP and other surfaces via crate::ratelimit.
 
@@ -964,6 +965,19 @@ struct ErrorBody {
     error: ErrorDetail,
 }
 
+fn truncate_bytes(input: &str, max_bytes: usize) -> String {
+    if input.len() <= max_bytes {
+        return input.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = input[..end].to_string();
+    out.push_str("…");
+    out
+}
+
 #[derive(Serialize)]
 struct ErrorDetail {
     code: &'static str,
@@ -993,12 +1007,64 @@ impl ErrorDetail {
     fn rate_limited(err: &RateLimited) -> Self {
         Self {
             code: ERR_RATE_LIMITED,
-            message: err.message.clone(),
+            message: truncate_bytes(&err.message, MAX_RATE_LIMIT_MESSAGE_BYTES),
             retry_after_ms: Some(err.retry_after_ms),
             retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
             limit_key: Some(err.limit_key.clone()),
             scope: Some(err.scope.clone()),
         }
+    }
+}
+
+#[cfg(test)]
+mod rate_limit_contract_tests {
+    use super::*;
+    use chrono::Utc;
+    use serde_json::Value;
+    use std::time::Duration;
+
+    #[test]
+    fn http_rate_limited_error_truncates_message_and_bounds_payload() {
+        let err = RateLimited::new(
+            Duration::from_millis(1234),
+            "http_ip".to_string(),
+            "ip".to_string(),
+        )
+        .with_message("x".repeat(10_000))
+        .with_retry_at(Utc::now());
+
+        let body = ErrorBody {
+            error: ErrorDetail::rate_limited(&err),
+        };
+
+        assert!(
+            body.error.message.len() <= MAX_RATE_LIMIT_MESSAGE_BYTES + "…".len(),
+            "rate-limit error message should be bounded"
+        );
+
+        let bytes = serde_json::to_vec(&body).expect("rate-limit error body should serialize");
+        assert!(
+            bytes.len() <= 1024,
+            "rate-limit payload should remain small (got {} bytes)",
+            bytes.len()
+        );
+
+        let json: Value = serde_json::from_slice(&bytes).expect("rate-limit body should parse");
+        let error = json
+            .get("error")
+            .and_then(|v| v.as_object())
+            .expect("rate-limit response should contain error object");
+
+        assert_eq!(
+            error.get("code").and_then(|v| v.as_str()),
+            Some("rate_limited")
+        );
+        assert!(error
+            .get("retry_after_ms")
+            .and_then(|v| v.as_u64())
+            .is_some());
+        assert!(error.get("limit_key").and_then(|v| v.as_str()).is_some());
+        assert!(error.get("scope").and_then(|v| v.as_str()).is_some());
     }
 }
 

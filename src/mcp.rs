@@ -120,15 +120,24 @@ fn mcp_error_data(
 }
 
 fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
-    let mut data = serde_json::Map::new();
-    data.insert("code".to_string(), json!(ERR_RATE_LIMITED));
-    data.insert("retry_after_ms".to_string(), json!(err.retry_after_ms));
-    if let Some(at) = err.retry_at.as_ref() {
-        data.insert("retry_at".to_string(), json!(at.to_rfc3339()));
+    #[derive(Serialize)]
+    struct RateLimitData<'a> {
+        code: &'static str,
+        retry_after_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_at: Option<String>,
+        limit_key: &'a str,
+        scope: &'a str,
     }
-    data.insert("limit_key".to_string(), json!(&err.limit_key));
-    data.insert("scope".to_string(), json!(&err.scope));
-    serde_json::Value::Object(data)
+
+    serde_json::to_value(RateLimitData {
+        code: ERR_RATE_LIMITED,
+        retry_after_ms: err.retry_after_ms,
+        retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
+        limit_key: &err.limit_key,
+        scope: &err.scope,
+    })
+    .expect("rate-limit data should serialize")
 }
 
 fn truncate_bytes(input: String, max_bytes: usize) -> String {

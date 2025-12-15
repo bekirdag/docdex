@@ -208,7 +208,37 @@ paths:
           description: Rate limited
           content:
             application/json:
-              schema: *a3
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - code
+                      - message
+                      - retry_after_ms
+                      - limit_key
+                      - scope
+                    properties:
+                      code:
+                        const: rate_limited
+                      message:
+                        type: string
+                        maxLength: 260
+                      retry_after_ms:
+                        type: integer
+                        minimum: 0
+                      retry_at:
+                        type: string
+                        format: date-time
+                      limit_key:
+                        type: string
+                      scope:
+                        type: string
         "500":
           description: Server error
           content:

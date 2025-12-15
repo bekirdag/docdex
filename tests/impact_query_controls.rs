@@ -107,7 +107,25 @@ fn issue_fields(body: &Value) -> Result<Vec<String>, Box<dyn Error>> {
         .filter_map(|issue| issue.get("field").and_then(|v| v.as_str()).map(|s| s.to_string()))
         .collect::<Vec<_>>();
     fields.sort();
+    fields.dedup();
     Ok(fields)
+}
+
+fn field_error_codes(body: &Value, field: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let errors = body
+        .get("error")
+        .and_then(|v| v.get("details"))
+        .and_then(|v| v.get("fieldErrors"))
+        .and_then(|v| v.get(field))
+        .and_then(|v| v.as_array())
+        .ok_or("missing error.details.fieldErrors.<field> array")?;
+    let mut codes = errors
+        .iter()
+        .filter_map(|err| err.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect::<Vec<_>>();
+    codes.sort();
+    codes.dedup();
+    Ok(codes)
 }
 
 #[test]
@@ -151,6 +169,48 @@ fn impact_enforces_max_edges_and_sets_truncated() -> Result<(), Box<dyn Error>> 
             .and_then(|v| v.get("maxDepth"))
             .and_then(|v| v.as_u64()),
         Some(10)
+    );
+
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn impact_max_edges_zero_returns_empty_and_truncated() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(repo.path(), host, port)?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/v1/graph/impact");
+    let resp: Value = client
+        .get(&url)
+        .query(&[("file", "a.ts"), ("maxEdges", "0"), ("maxDepth", "10")])
+        .send()?
+        .json()?;
+    let edges = resp
+        .get("edges")
+        .and_then(|v| v.as_array())
+        .ok_or("missing edges array")?;
+    assert!(edges.is_empty());
+    assert_eq!(
+        resp.get("truncated").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        resp.get("appliedLimits")
+            .and_then(|v| v.get("maxEdges"))
+            .and_then(|v| v.as_u64()),
+        Some(0)
     );
 
     server.kill().ok();
@@ -206,6 +266,48 @@ fn impact_enforces_max_depth() -> Result<(), Box<dyn Error>> {
             .and_then(|v| v.get("maxDepth"))
             .and_then(|v| v.as_u64()),
         Some(1)
+    );
+
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn impact_max_depth_zero_returns_empty_and_truncated() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(repo.path(), host, port)?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/v1/graph/impact");
+    let resp: Value = client
+        .get(&url)
+        .query(&[("file", "a.ts"), ("maxEdges", "100"), ("maxDepth", "0")])
+        .send()?
+        .json()?;
+    let edges = resp
+        .get("edges")
+        .and_then(|v| v.as_array())
+        .ok_or("missing edges array")?;
+    assert!(edges.is_empty());
+    assert_eq!(
+        resp.get("truncated").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        resp.get("appliedLimits")
+            .and_then(|v| v.get("maxDepth"))
+            .and_then(|v| v.as_u64()),
+        Some(0)
     );
 
     server.kill().ok();
@@ -388,6 +490,14 @@ fn impact_invalid_params_return_invalid_argument_with_field_details() -> Result<
         Some("invalid_argument")
     );
     assert_eq!(issue_fields(&body)?, vec!["maxDepth", "maxEdges"]);
+    assert_eq!(
+        field_error_codes(&body, "maxEdges")?,
+        vec!["must_be_non_negative"]
+    );
+    assert_eq!(
+        field_error_codes(&body, "maxDepth")?,
+        vec!["must_be_non_negative"]
+    );
 
     server.kill().ok();
     server.wait().ok();
@@ -423,6 +533,10 @@ fn impact_non_integer_params_return_invalid_argument_with_field_details() -> Res
         Some("invalid_argument")
     );
     assert_eq!(issue_fields(&body)?, vec!["maxEdges"]);
+    assert_eq!(
+        field_error_codes(&body, "maxEdges")?,
+        vec!["must_be_integer"]
+    );
 
     server.kill().ok();
     server.wait().ok();
@@ -454,7 +568,14 @@ fn impact_missing_file_returns_invalid_argument_with_field_details() -> Result<(
             .and_then(|v| v.as_str()),
         Some("invalid_argument")
     );
+    assert_eq!(
+        body.get("error")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str()),
+        Some("file must not be empty")
+    );
     assert_eq!(issue_fields(&body)?, vec!["file"]);
+    assert_eq!(field_error_codes(&body, "file")?, vec!["must_be_non_empty"]);
 
     server.kill().ok();
     server.wait().ok();
@@ -490,6 +611,10 @@ fn impact_edge_types_empty_returns_invalid_argument_with_field_details() -> Resu
         Some("invalid_argument")
     );
     assert_eq!(issue_fields(&body)?, vec!["edgeTypes"]);
+    assert_eq!(
+        field_error_codes(&body, "edgeTypes")?,
+        vec!["must_be_non_empty_string"]
+    );
 
     server.kill().ok();
     server.wait().ok();

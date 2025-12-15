@@ -215,6 +215,7 @@ pub struct ImpactGraphResponseV1 {
     pub edges: Vec<ImpactGraphEdge>,
     pub truncated: bool,
     pub applied: AppliedImpactControls,
+    pub applied_limits: AppliedImpactControls,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -288,16 +289,14 @@ pub fn traverse_impact(
     let mut outgoing: HashMap<&str, Vec<usize>> = HashMap::new();
     let mut incoming: HashMap<&str, Vec<usize>> = HashMap::new();
     for (idx, edge) in all_edges.iter().enumerate() {
-        if !edge_kind_matches(edge, &controls.edge_types) {
-            continue;
-        }
         outgoing.entry(edge.source.as_str()).or_default().push(idx);
         incoming.entry(edge.target.as_str()).or_default().push(idx);
     }
 
     let mut seen_edges: HashSet<(&str, &str, Option<&str>)> = HashSet::new();
     let mut result: Vec<ImpactGraphEdge> = Vec::new();
-    let mut truncated = false;
+    let mut hard_truncated = false;
+    let mut filter_truncated = false;
 
     let mut visited: HashSet<String> = HashSet::new();
     visited.insert(root.to_string());
@@ -326,17 +325,21 @@ pub fn traverse_impact(
 
     while let Some((node, depth)) = queue.pop_front() {
         if depth >= controls.max_depth {
-            if depth == controls.max_depth && !truncated {
+            if depth == controls.max_depth && !hard_truncated {
                 let incident = incident_edges(node.as_str(), &outgoing, &incoming);
                 for edge_idx in incident {
                     let edge = &all_edges[edge_idx];
+                    if !edge_kind_matches(edge, &controls.edge_types) {
+                        filter_truncated = filter_truncated || controls.edge_types.is_some();
+                        continue;
+                    }
                     let key = edge_sort_key(edge);
                     if !seen_edges.contains(&key) {
-                        truncated = true;
+                        hard_truncated = true;
                         break;
                     }
                 }
-                if truncated {
+                if hard_truncated {
                     break;
                 }
             }
@@ -347,12 +350,16 @@ pub fn traverse_impact(
 
         for edge_idx in incident {
             let edge = &all_edges[edge_idx];
+            if !edge_kind_matches(edge, &controls.edge_types) {
+                filter_truncated = filter_truncated || controls.edge_types.is_some();
+                continue;
+            }
             let key = edge_sort_key(edge);
             if !seen_edges.insert(key) {
                 continue;
             }
             if result.len() >= controls.max_edges {
-                truncated = true;
+                hard_truncated = true;
                 break;
             }
             result.push(edge.clone());
@@ -363,14 +370,14 @@ pub fn traverse_impact(
             }
         }
 
-        if truncated {
+        if hard_truncated {
             break;
         }
     }
 
     ImpactTraversalResult {
         edges: result,
-        truncated,
+        truncated: hard_truncated || filter_truncated,
     }
 }
 
@@ -398,6 +405,12 @@ pub fn build_impact_response(
         list
     });
 
+    let applied_controls = AppliedImpactControls {
+        max_edges: applied.max_edges,
+        max_depth: applied.max_depth,
+        edge_types,
+    };
+
     ImpactGraphResponseV1 {
         schema: default_impact_schema(),
         repo_id: repo_id.to_string(),
@@ -406,11 +419,8 @@ pub fn build_impact_response(
         outbound: outbound_set.into_iter().collect(),
         edges: traversal.edges,
         truncated: traversal.truncated,
-        applied: AppliedImpactControls {
-            max_edges: applied.max_edges,
-            max_depth: applied.max_depth,
-            edge_types,
-        },
+        applied: applied_controls.clone(),
+        applied_limits: applied_controls,
     }
 }
 
@@ -626,6 +636,44 @@ mod tests {
         assert_eq!(res.edges.len(), 1);
         assert_eq!(res.edges[0].source, "x.ts");
         assert_eq!(res.edges[0].target, "a.ts");
+    }
+
+    #[test]
+    fn traverse_edge_type_filter_marks_truncated_when_edges_are_excluded() {
+        let controls = ImpactQueryControlsRaw {
+            max_edges: Some(100),
+            max_depth: Some(10),
+            edge_types: Some(vec!["include".into()]),
+        }
+        .validate()
+        .unwrap();
+        let res = traverse_impact("a.ts", &fixture_edges(), &controls);
+        assert!(res.truncated);
+    }
+
+    #[test]
+    fn traverse_edge_type_filter_not_truncated_when_filter_excludes_nothing() {
+        let edges = vec![
+            ImpactGraphEdge {
+                source: "a.ts".into(),
+                target: "b.ts".into(),
+                kind: Some("include".into()),
+            },
+            ImpactGraphEdge {
+                source: "b.ts".into(),
+                target: "c.ts".into(),
+                kind: Some("include".into()),
+            },
+        ];
+        let controls = ImpactQueryControlsRaw {
+            max_edges: Some(100),
+            max_depth: Some(10),
+            edge_types: Some(vec!["include".into()]),
+        }
+        .validate()
+        .unwrap();
+        let res = traverse_impact("a.ts", &edges, &controls);
+        assert!(!res.truncated);
     }
 
     #[test]

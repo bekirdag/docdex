@@ -140,6 +140,18 @@ fn impact_enforces_max_edges_and_sets_truncated() -> Result<(), Box<dyn Error>> 
         resp.get("truncated").and_then(|v| v.as_bool()),
         Some(true)
     );
+    assert_eq!(
+        resp.get("appliedLimits")
+            .and_then(|v| v.get("maxEdges"))
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        resp.get("appliedLimits")
+            .and_then(|v| v.get("maxDepth"))
+            .and_then(|v| v.as_u64()),
+        Some(10)
+    );
 
     server.kill().ok();
     server.wait().ok();
@@ -183,6 +195,18 @@ fn impact_enforces_max_depth() -> Result<(), Box<dyn Error>> {
         Some(true),
         "maxDepth=1 should mark response as truncated"
     );
+    assert_eq!(
+        resp.get("appliedLimits")
+            .and_then(|v| v.get("maxEdges"))
+            .and_then(|v| v.as_u64()),
+        Some(100)
+    );
+    assert_eq!(
+        resp.get("appliedLimits")
+            .and_then(|v| v.get("maxDepth"))
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
 
     server.kill().ok();
     server.wait().ok();
@@ -223,6 +247,57 @@ fn impact_filters_edge_types() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         edges[0].get("kind").and_then(|v| v.as_str()),
         Some("include")
+    );
+    let applied_edge_types = resp
+        .get("appliedLimits")
+        .and_then(|v| v.get("edgeTypes"))
+        .and_then(|v| v.as_array())
+        .ok_or("missing appliedLimits.edgeTypes array")?;
+    assert_eq!(
+        applied_edge_types
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>(),
+        vec!["include"]
+    );
+
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn impact_reports_applied_limits_and_not_truncated_by_default() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(repo.path(), host, port)?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/v1/graph/impact");
+    let resp: Value = client.get(&url).query(&[("file", "a.ts")]).send()?.json()?;
+    assert_eq!(
+        resp.get("truncated").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        resp.get("appliedLimits")
+            .and_then(|v| v.get("maxEdges"))
+            .and_then(|v| v.as_u64()),
+        Some(1000)
+    );
+    assert_eq!(
+        resp.get("appliedLimits")
+            .and_then(|v| v.get("maxDepth"))
+            .and_then(|v| v.as_u64()),
+        Some(10)
     );
 
     server.kill().ok();

@@ -313,6 +313,9 @@ paths:
                   - source
                   - inbound
                   - outbound
+                  - edges
+                  - truncated
+                  - appliedLimits
                 properties:
                   schema: &a18
                     $ref: "#/components/schemas/DocdexSchemaInfo"
@@ -343,8 +346,26 @@ paths:
                       $ref: "#/components/schemas/ImpactGraphEdge"
                   truncated:
                     type: boolean
-                    description: True if the response was truncated due to maxEdges/maxDepth limits.
+                    description: True if the response was incomplete due to maxEdges/maxDepth limits or edgeTypes filtering.
                   applied:
+                    deprecated: true
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - maxEdges
+                      - maxDepth
+                    properties:
+                      maxEdges:
+                        type: integer
+                        minimum: 0
+                      maxDepth:
+                        type: integer
+                        minimum: 0
+                      edgeTypes:
+                        type: array
+                        items:
+                          type: string
+                  appliedLimits:
                     type: object
                     additionalProperties: false
                     required:

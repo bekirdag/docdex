@@ -1,4 +1,6 @@
-use crate::index::{DocSnapshot, Hit, Indexer, SnippetOrigin, SnippetResult};
+use crate::index::{
+    DocSnapshot, Hit, Indexer, SearchError, SearchQueryMeta, SnippetOrigin, SnippetResult,
+};
 use anyhow::{anyhow, Result};
 use axum::body::HttpBody;
 use axum::{
@@ -436,7 +438,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
 
 #[derive(Deserialize)]
 struct SearchParams {
-    q: String,
+    q: Option<String>,
     limit: Option<usize>,
     snippets: Option<bool>,
     max_tokens: Option<u64>,
@@ -445,6 +447,7 @@ struct SearchParams {
 #[derive(Serialize)]
 pub struct SearchResponse {
     pub hits: Vec<Hit>,
+    pub top_score: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meta: Option<SearchMeta>,
 }
@@ -455,25 +458,97 @@ pub struct SearchMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_last_updated_epoch_ms: Option<u128>,
     pub repo_root: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<SearchQueryMeta>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_assembly: Option<ContextAssemblyMeta>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnippetPolicy {
+    Full,
+    SummaryOnly,
+    Disabled,
+}
+
+#[derive(Serialize)]
+pub struct SelectedSourceMeta {
+    pub doc_id: String,
+    pub rel_path: String,
+    pub score: f32,
+    pub token_estimate: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet_origin: Option<crate::index::SearchSnippetOrigin>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet_truncated: Option<bool>,
+}
+
+#[derive(Serialize)]
+pub struct PrunedHitMeta {
+    pub doc_id: String,
+    pub rel_path: String,
+    pub score: f32,
+    pub token_estimate: u64,
+    pub reason: String,
+}
+
+#[derive(Serialize)]
+pub struct ContextAssemblyMeta {
+    pub requested_limit: Option<usize>,
+    pub effective_limit: usize,
+    pub snippet_policy: SnippetPolicy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u64>,
+    pub token_budget_mode: &'static str,
+    pub hits_before_pruning: usize,
+    pub hits_after_pruning: usize,
+    pub token_estimate_sum_kept: u64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pruned: Vec<PrunedHitMeta>,
+    pub selected_sources: Vec<SelectedSourceMeta>,
+}
+
+#[derive(Serialize)]
+struct ErrorBody {
+    error: ErrorDetail,
+}
+
+#[derive(Serialize)]
+struct ErrorDetail {
+    code: &'static str,
+    message: String,
 }
 
 pub async fn run_query(indexer: &Indexer, query: &str, limit: usize) -> Result<SearchResponse> {
-    let hits = indexer.search(query, limit)?;
+    let (hits, query_meta) = indexer.search_with_query_meta(query, limit)?;
+    let top_score = hits.first().map(|hit| hit.score);
     Ok(SearchResponse {
         hits,
-        meta: Some(build_search_meta(indexer)?),
+        top_score,
+        meta: Some(build_search_meta(indexer, Some(query_meta), None)?),
     })
 }
 
-fn build_search_meta(indexer: &Indexer) -> Result<SearchMeta> {
-    let generated_at_epoch_ms = std::time::SystemTime::now()
+fn now_epoch_ms() -> Result<u128> {
+    Ok(std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
-        .as_millis();
+        .as_millis())
+}
+
+fn build_search_meta(
+    indexer: &Indexer,
+    query: Option<SearchQueryMeta>,
+    context_assembly: Option<ContextAssemblyMeta>,
+) -> Result<SearchMeta> {
+    let generated_at_epoch_ms = now_epoch_ms()?;
     let last_updated = indexer.stats().ok().and_then(|s| s.last_updated_epoch_ms);
     Ok(SearchMeta {
         generated_at_epoch_ms,
         index_last_updated_epoch_ms: last_updated,
         repo_root: indexer.repo_root().display().to_string(),
+        query,
+        context_assembly,
     })
 }
 
@@ -483,25 +558,118 @@ async fn search_handler(
     Query(params): Query<SearchParams>,
 ) -> impl IntoResponse {
     let limit = params.limit.unwrap_or(8).min(state.security.max_limit);
-    match state.indexer.search(&params.q, limit) {
-        Ok(mut hits) => {
-            if params.snippets == Some(false) || state.security.disable_snippet_text {
+    let raw = match params.q.as_deref() {
+        Some(value) => value,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorBody {
+                    error: ErrorDetail {
+                        code: "missing_query",
+                        message: "q is required".to_string(),
+                    },
+                }),
+            )
+                .into_response();
+        }
+    };
+    let query = raw.trim();
+    if query.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: ErrorDetail {
+                    code: "invalid_query",
+                    message: "q must not be empty".to_string(),
+                },
+            }),
+        )
+            .into_response();
+    }
+
+    match state.indexer.search_with_query_meta(query, limit) {
+        Ok((mut hits, query_meta)) => {
+            let max_tokens = params.max_tokens;
+            let snippet_policy = if state.security.disable_snippet_text {
+                SnippetPolicy::Disabled
+            } else if params.snippets == Some(false) {
+                SnippetPolicy::SummaryOnly
+            } else {
+                SnippetPolicy::Full
+            };
+
+            let hits_before_pruning = hits.len();
+            let mut pruned: Vec<PrunedHitMeta> = Vec::new();
+            if let Some(budget) = max_tokens {
+                hits.retain(|hit| {
+                    if hit.token_estimate <= budget {
+                        true
+                    } else {
+                        pruned.push(PrunedHitMeta {
+                            doc_id: hit.doc_id.clone(),
+                            rel_path: hit.rel_path.clone(),
+                            score: hit.score,
+                            token_estimate: hit.token_estimate,
+                            reason: format!("token_estimate {}/{} exceeds max_tokens", hit.token_estimate, budget),
+                        });
+                        false
+                    }
+                });
+            }
+
+            if !matches!(snippet_policy, SnippetPolicy::Full) {
                 for hit in hits.iter_mut() {
                     hit.snippet.clear();
                 }
             }
-            if let Some(max_tokens) = params.max_tokens {
-                hits.retain(|hit| hit.token_estimate <= max_tokens);
-            }
-            if state.security.disable_snippet_text {
-                for hit in hits.iter_mut() {
-                    hit.snippet.clear();
-                }
-            }
-            let meta = build_search_meta(&state.indexer).ok();
-            Json(SearchResponse { hits, meta }).into_response()
+
+            let top_score = hits.first().map(|hit| hit.score);
+            let token_estimate_sum_kept = hits.iter().map(|hit| hit.token_estimate).sum();
+            let selected_sources = hits
+                .iter()
+                .map(|hit| SelectedSourceMeta {
+                    doc_id: hit.doc_id.clone(),
+                    rel_path: hit.rel_path.clone(),
+                    score: hit.score,
+                    token_estimate: hit.token_estimate,
+                    snippet_origin: hit.snippet_origin.clone(),
+                    snippet_truncated: hit.snippet_truncated,
+                })
+                .collect::<Vec<_>>();
+
+            let context_assembly = ContextAssemblyMeta {
+                requested_limit: params.limit,
+                effective_limit: limit,
+                snippet_policy,
+                max_tokens,
+                token_budget_mode: "per_hit_token_estimate",
+                hits_before_pruning,
+                hits_after_pruning: hits.len(),
+                token_estimate_sum_kept,
+                pruned,
+                selected_sources,
+            };
+            let meta = build_search_meta(&state.indexer, Some(query_meta), Some(context_assembly)).ok();
+            Json(SearchResponse {
+                hits,
+                top_score,
+                meta,
+            })
+            .into_response()
         }
         Err(err) => {
+            if let Some(SearchError::InvalidQuery { reason }) = err.downcast_ref::<SearchError>() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorBody {
+                        error: ErrorDetail {
+                            code: "invalid_query",
+                            message: reason.clone(),
+                        },
+                    }),
+                )
+                    .into_response();
+            }
             state.metrics.inc_error();
             warn!(
                 target: "docdexd",

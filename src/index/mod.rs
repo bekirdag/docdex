@@ -7,12 +7,13 @@ use std::io::{self, BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tantivy::collector::TopDocs;
-use tantivy::query::{AllQuery, QueryParser};
+use tantivy::query::QueryParser;
 use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
 use tantivy::DocAddress;
 use tantivy::{
     doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, SnippetGenerator, Term,
 };
+use thiserror::Error;
 use tracing::warn;
 use crate::symbols;
 use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
@@ -184,9 +185,41 @@ pub struct Hit {
     pub snippet: String,
     pub token_estimate: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet_origin: Option<SearchSnippetOrigin>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet_truncated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub line_start: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_end: Option<usize>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchSnippetOrigin {
+    Query,
+    Preview,
+    Summary,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryRewrite {
+    None,
+    Sanitized,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SearchQueryMeta {
+    pub raw: String,
+    pub effective: String,
+    pub rewrite: QueryRewrite,
+}
+
+#[derive(Error, Debug)]
+pub enum SearchError {
+    #[error("invalid query: {reason}")]
+    InvalidQuery { reason: String },
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -447,43 +480,62 @@ impl Indexer {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Hit>> {
+        let (hits, _meta) = self.search_with_query_meta(query, limit)?;
+        Ok(hits)
+    }
+
+    pub fn search_with_query_meta(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<(Vec<Hit>, SearchQueryMeta)> {
+        let raw = query.trim();
+        if raw.is_empty() {
+            return Err(SearchError::InvalidQuery {
+                reason: "query must not be empty".to_string(),
+            }
+            .into());
+        }
         let searcher = self.reader.searcher();
         let parser = QueryParser::for_index(
             &self.index,
             vec![self.body_field, self.summary_field, self.path_field],
         );
-        let tantivy_query = match parser.parse_query(query) {
-            Ok(q) => q,
+        let (tantivy_query, query_meta) = match parser.parse_query(raw) {
+            Ok(q) => (
+                q,
+                SearchQueryMeta {
+                    raw: raw.to_string(),
+                    effective: raw.to_string(),
+                    rewrite: QueryRewrite::None,
+                },
+            ),
             Err(err) => {
-                let sanitized = sanitize_query(query);
+                let sanitized = sanitize_query(raw);
                 if sanitized.trim().is_empty() {
-                    warn!(
-                        target: "docdexd",
-                        error = ?err,
-                        "query parse failed; using AllQuery fallback"
-                    );
-                    Box::new(AllQuery)
-                } else {
-                    match parser.parse_query(&sanitized) {
-                        Ok(q) => {
-                            warn!(
-                                target: "docdexd",
-                                error = ?err,
-                                sanitized = %sanitized,
-                                "query parse failed; using sanitized query"
-                            );
-                            q
+                    return Err(SearchError::InvalidQuery {
+                        reason: "query contains no searchable terms".to_string(),
+                    }
+                    .into());
+                }
+                match parser.parse_query(&sanitized) {
+                    Ok(q) => (
+                        q,
+                        SearchQueryMeta {
+                            raw: raw.to_string(),
+                            effective: sanitized.clone(),
+                            rewrite: QueryRewrite::Sanitized,
+                        },
+                    ),
+                    Err(err2) => {
+                        return Err(SearchError::InvalidQuery {
+                            reason: format!(
+                                "query parse failed: {err}; sanitized parse failed: {err2}"
+                            ),
                         }
-                        Err(err2) => {
-                            warn!(
-                                target: "docdexd",
-                                error = ?err2,
-                                sanitized = %sanitized,
-                                "sanitized query parse failed; using AllQuery fallback"
-                            );
-                            Box::new(AllQuery)
-                        }
+                        .into());
                     }
                 }
             }
@@ -518,7 +570,8 @@ impl Indexer {
                 .get_first(self.token_field)
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            let (snippet, line_start, line_end) = snippet_generator
+            let (snippet, snippet_origin, snippet_truncated, line_start, line_end) =
+                snippet_generator
                 .as_ref()
                 .and_then(|gen| {
                     let snippet = gen.snippet_from_doc(&retrieved);
@@ -527,13 +580,27 @@ impl Indexer {
                         None
                     } else {
                         let range = line_range_for_fragment(&body_text, &fragment);
-                        Some((fragment, range.map(|r| r.0), range.map(|r| r.1)))
+                        let inferred_truncated =
+                            fragment.chars().count() >= MAX_SNIPPET_CHARS.saturating_sub(1);
+                        Some((
+                            fragment,
+                            SearchSnippetOrigin::Query,
+                            inferred_truncated,
+                            range.map(|r| r.0),
+                            range.map(|r| r.1),
+                        ))
                     }
                 })
                 .or_else(|| {
                     match self.preview_snippet(&rel_path, FALLBACK_PREVIEW_LINES) {
-                        Ok(Some((text, _truncated, start_line, end_line))) => {
-                            Some((text, Some(start_line), Some(end_line)))
+                        Ok(Some((text, truncated, start_line, end_line))) => {
+                            Some((
+                                text,
+                                SearchSnippetOrigin::Preview,
+                                truncated,
+                                Some(start_line),
+                                Some(end_line),
+                            ))
                         }
                         Ok(None) => None,
                         Err(err) => {
@@ -542,7 +609,15 @@ impl Indexer {
                         }
                     }
                 })
-                .unwrap_or_else(|| (summary.clone(), None, None));
+                .unwrap_or_else(|| {
+                    (
+                        summary.clone(),
+                        SearchSnippetOrigin::Summary,
+                        false,
+                        None,
+                        None,
+                    )
+                });
             results.push(Hit {
                 doc_id,
                 rel_path,
@@ -550,11 +625,13 @@ impl Indexer {
                 summary,
                 snippet,
                 token_estimate,
+                snippet_origin: Some(snippet_origin),
+                snippet_truncated: Some(snippet_truncated),
                 line_start,
                 line_end,
             });
         }
-        Ok(results)
+        Ok((results, query_meta))
     }
 
     fn fetch_document(&self, doc_id: &str) -> Result<Option<Document>> {

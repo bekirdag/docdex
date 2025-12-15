@@ -782,10 +782,13 @@ impl McpServer {
             generated_at_epoch_ms: 0,
             index_last_updated_epoch_ms: None,
             repo_root: self.repo_root.display().to_string(),
+            query: None,
+            context_assembly: None,
         });
         meta.repo_root = project_root_path.clone();
         Ok(json!({
             "results": hits.hits,
+            "top_score": hits.top_score,
             "repo_root": self.repo_root.display().to_string(),
             "state_dir": self.indexer.config().state_dir().display().to_string(),
             "limit": limit,

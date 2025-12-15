@@ -190,7 +190,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 Docdex is tool-agnostic. Drop-in recipe for agents/codegen tools:
 - Start once per repo: `docdexd index --repo <repo>` then `docdexd serve --repo <repo> --host 127.0.0.1 --port 46137 --log warn` (or use the CLI directly without serving).
 - Configure via env: `DOCDEX_STATE_DIR` (index location), `DOCDEX_EXCLUDE_PREFIXES`, `DOCDEX_EXCLUDE_DIRS`, `RUST_LOG=docdexd=debug` (optional verbose logs).
-- Query over HTTP: `GET /search?q=<text>&limit=<n>` returns `{"hits":[{"doc_id","rel_path","score","summary","snippet","token_estimate"}...]}`; `GET /snippet/:doc_id` fetches a focused snippet plus doc metadata.
+- Query over HTTP: `GET /search?q=<text>&limit=<n>` returns `{"hits":[{"doc_id","rel_path","score","summary","snippet","token_estimate"}...],"top_score":<float|null>,"meta":{...}}`; `GET /snippet/:doc_id` fetches a focused snippet plus doc metadata.
 - Or query via CLI: `docdexd query --repo <repo> --query "<text>" --limit 8` (JSON to stdout).
 - Health check: `GET /healthz` should return `ok` before issuing search requests.
 - Inject snippets into prompts:

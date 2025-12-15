@@ -239,6 +239,51 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
         !results.is_empty(),
         "docdex_search should return at least one hit for MCP_ROADMAP"
     );
+    let top_score = search_body.get("top_score").and_then(|v| v.as_f64());
+    assert!(
+        top_score.is_some(),
+        "docdex_search should include top_score when results are returned"
+    );
+    let first_score = results
+        .first()
+        .and_then(|hit| hit.get("score"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(-1.0);
+    assert!(
+        (top_score.unwrap_or(-1.0) - first_score).abs() < 1e-6,
+        "docdex_search top_score should match the first result score"
+    );
+
+    // no-match search should return empty results and a null top_score
+    send_line(
+        &mut harness.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 44,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": {
+                    "query": "NO_MATCH_TERM_123456",
+                    "limit": 5
+                }
+            }
+        }),
+    )?;
+    let no_match_resp = read_line(&mut harness.reader)?;
+    let no_match_body = parse_tool_result(&no_match_resp)?;
+    let no_match_results = no_match_body
+        .get("results")
+        .and_then(|v| v.as_array())
+        .ok_or("docdex_search no-match should return results array")?;
+    assert!(
+        no_match_results.is_empty(),
+        "no-match docdex_search should return empty results"
+    );
+    assert!(
+        no_match_body.get("top_score").map(|v| v.is_null()).unwrap_or(false),
+        "no-match docdex_search should return top_score: null"
+    );
 
     // stats should report doc count
     send_line(

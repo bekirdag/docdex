@@ -327,6 +327,110 @@ fn http_server_smoke() -> Result<(), Box<dyn Error>> {
         .map(|arr| arr.len())
         .unwrap_or(0);
     assert!(hit_count > 0, "HTTP /search should return at least one hit");
+    let top_score = payload.get("top_score").and_then(|v| v.as_f64());
+    assert!(
+        top_score.is_some(),
+        "HTTP /search should include top_score when hits are returned"
+    );
+    let first_score = payload
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|hit| hit.get("score"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(-1.0);
+    assert!(
+        (top_score.unwrap_or(-1.0) - first_score).abs() < 1e-6,
+        "top_score should match the first hit score"
+    );
+    child.kill().ok();
+    child.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn http_search_validation_error_on_empty_or_invalid_query() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_root = repo.path();
+    let repo_str = repo_root.to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut child = spawn_server(repo_root, host, port)?;
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/search");
+
+    let empty_resp = client.get(&url).query(&[("q", "")]).send()?;
+    assert_eq!(
+        empty_resp.status(),
+        reqwest::StatusCode::BAD_REQUEST,
+        "empty query should be rejected"
+    );
+    let empty_payload: Value = empty_resp.json()?;
+    assert_eq!(
+        empty_payload
+            .get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("invalid_query"),
+        "empty query should return machine-readable invalid_query code"
+    );
+
+    let invalid_resp = client.get(&url).query(&[("q", "!!!")]).send()?;
+    assert_eq!(
+        invalid_resp.status(),
+        reqwest::StatusCode::BAD_REQUEST,
+        "invalid query should be rejected"
+    );
+    let invalid_payload: Value = invalid_resp.json()?;
+    assert_eq!(
+        invalid_payload
+            .get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("invalid_query"),
+        "invalid query should return machine-readable invalid_query code"
+    );
+
+    child.kill().ok();
+    child.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn http_search_no_matches_returns_empty_hits_and_null_top_score() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_root = repo.path();
+    let repo_str = repo_root.to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut child = spawn_server(repo_root, host, port)?;
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/search");
+
+    let payload: Value = client
+        .get(&url)
+        .query(&[("q", "NO_MATCH_TERM_123456"), ("limit", "3")])
+        .send()?
+        .json()?;
+    let hits = payload
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.len())
+        .unwrap_or(999);
+    assert_eq!(hits, 0, "no-match query should return empty hits");
+    assert!(
+        payload.get("top_score").map(|v| v.is_null()).unwrap_or(false),
+        "no-match query should return top_score: null"
+    );
+
     child.kill().ok();
     child.wait().ok();
     Ok(())

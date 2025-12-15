@@ -1,0 +1,511 @@
+#![allow(dead_code)]
+
+use std::fs::{self, File, OpenOptions};
+use std::future::Future;
+use std::io;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use parking_lot::Mutex;
+use thiserror::Error;
+use tokio::process::Command;
+use tokio::sync::Notify;
+
+#[derive(Debug, Clone)]
+pub struct BrowserSessionOptions {
+    pub lock_file: Option<PathBuf>,
+    pub graceful_shutdown_timeout: Duration,
+    pub kill_timeout: Duration,
+}
+
+impl Default for BrowserSessionOptions {
+    fn default() -> Self {
+        Self {
+            lock_file: None,
+            graceful_shutdown_timeout: Duration::from_secs(2),
+            kill_timeout: Duration::from_secs(2),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Error)]
+pub enum BrowserSessionError {
+    #[error("browser session cancelled")]
+    Cancelled,
+    #[error("browser session timed out after {0:?}")]
+    TimedOut(Duration),
+    #[error("browser session work failed: {0}")]
+    WorkFailed(String),
+    #[error("browser session launch failed: {0}")]
+    LaunchFailed(String),
+    #[error("browser session cleanup failed: {0}")]
+    CleanupFailed(String),
+}
+
+#[derive(Debug)]
+struct LockFile {
+    path: PathBuf,
+    _file: File,
+}
+
+#[derive(Debug)]
+struct Inner {
+    child: Mutex<Option<tokio::process::Child>>,
+    pid: u32,
+    #[cfg(unix)]
+    pgid: i32,
+    lock: Mutex<Option<LockFile>>,
+    graceful_shutdown_timeout: Duration,
+    kill_timeout: Duration,
+    cleanup_started: AtomicBool,
+    cleanup_result: Mutex<Option<Result<(), BrowserSessionError>>>,
+    cleanup_notify: Notify,
+}
+
+#[derive(Clone, Debug)]
+pub struct BrowserSession {
+    inner: Arc<Inner>,
+}
+
+impl BrowserSession {
+    pub async fn spawn(mut command: Command, opts: BrowserSessionOptions) -> Result<Self, BrowserSessionError> {
+        let lock = match opts.lock_file {
+            Some(path) => Some(create_lock_file(&path)?),
+            None => None,
+        };
+
+        #[cfg(unix)]
+        {
+            unsafe {
+                command.pre_exec(|| {
+                    // New session/process-group so we can SIGTERM/SIGKILL the whole tree (Chrome spawns children).
+                    let rc = nix::libc::setsid();
+                    if rc == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+
+        let child = command
+            .spawn()
+            .map_err(|err| BrowserSessionError::LaunchFailed(err.to_string()))?;
+        let pid = child.id().ok_or_else(|| {
+            BrowserSessionError::LaunchFailed("spawned process did not expose a PID".to_string())
+        })?;
+
+        Ok(Self {
+            inner: Arc::new(Inner {
+                child: Mutex::new(Some(child)),
+                pid,
+                #[cfg(unix)]
+                pgid: pid as i32,
+                lock: Mutex::new(lock),
+                graceful_shutdown_timeout: opts.graceful_shutdown_timeout,
+                kill_timeout: opts.kill_timeout,
+                cleanup_started: AtomicBool::new(false),
+                cleanup_result: Mutex::new(None),
+                cleanup_notify: Notify::new(),
+            }),
+        })
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.inner.pid
+    }
+
+    #[cfg(unix)]
+    pub fn process_group_id(&self) -> i32 {
+        self.inner.pgid
+    }
+
+    pub async fn close(&self) -> Result<(), BrowserSessionError> {
+        self.cleanup(false).await
+    }
+
+    pub async fn abort(&self) -> Result<(), BrowserSessionError> {
+        self.cleanup(true).await
+    }
+
+    pub async fn run_scoped<T, Cancel, Work>(
+        &self,
+        timeout: Duration,
+        cancel: Cancel,
+        work: Work,
+    ) -> Result<T, BrowserSessionError>
+    where
+        Cancel: Future<Output = ()> + Send,
+        Work: Future<Output = anyhow::Result<T>> + Send,
+        T: Send,
+    {
+        tokio::pin!(cancel);
+        tokio::pin!(work);
+        let timeout_sleep = tokio::time::sleep(timeout);
+        tokio::pin!(timeout_sleep);
+
+        let outcome = tokio::select! {
+            res = &mut work => Outcome::Work(res),
+            _ = &mut cancel => Outcome::Cancelled,
+            _ = &mut timeout_sleep => Outcome::TimedOut,
+        };
+
+        let close_result = self.close().await;
+        match close_result {
+            Err(err) => Err(err),
+            Ok(()) => match outcome {
+                Outcome::Work(Ok(value)) => Ok(value),
+                Outcome::Work(Err(err)) => Err(BrowserSessionError::WorkFailed(err.to_string())),
+                Outcome::Cancelled => Err(BrowserSessionError::Cancelled),
+                Outcome::TimedOut => Err(BrowserSessionError::TimedOut(timeout)),
+            },
+        }
+    }
+
+    async fn cleanup(&self, force_kill: bool) -> Result<(), BrowserSessionError> {
+        if !self
+            .inner
+            .cleanup_started
+            .swap(true, Ordering::AcqRel)
+        {
+            let result = cleanup_inner(&self.inner, force_kill).await;
+            *self.inner.cleanup_result.lock() = Some(result.clone());
+            self.inner.cleanup_notify.notify_waiters();
+            return result;
+        }
+
+        loop {
+            if let Some(result) = self.inner.cleanup_result.lock().clone() {
+                return result;
+            }
+            self.inner.cleanup_notify.notified().await;
+        }
+    }
+}
+
+impl Drop for BrowserSession {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.inner) != 1 {
+            return;
+        }
+
+        if self
+            .inner
+            .cleanup_started
+            .swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let inner = Arc::clone(&self.inner);
+            handle.spawn(async move {
+                let result = cleanup_inner(&inner, true).await;
+                *inner.cleanup_result.lock() = Some(result);
+                inner.cleanup_notify.notify_waiters();
+            });
+        } else {
+            best_effort_abort_sync(&self.inner);
+        }
+    }
+}
+
+#[derive(Debug)]
+enum Outcome<T> {
+    Work(anyhow::Result<T>),
+    Cancelled,
+    TimedOut,
+}
+
+fn create_lock_file(path: &PathBuf) -> Result<LockFile, BrowserSessionError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| BrowserSessionError::LaunchFailed(err.to_string()))?;
+    }
+    let file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map_err(|err| {
+            let message = if err.kind() == io::ErrorKind::AlreadyExists {
+                format!("lock already held: {}", path.display())
+            } else {
+                err.to_string()
+            };
+            BrowserSessionError::LaunchFailed(message)
+        })?;
+    Ok(LockFile {
+        path: path.clone(),
+        _file: file,
+    })
+}
+
+async fn cleanup_inner(inner: &Inner, force_kill: bool) -> Result<(), BrowserSessionError> {
+    let child = inner.child.lock().take();
+    let Some(mut child) = child else {
+        cleanup_lock(inner);
+        return Ok(());
+    };
+
+    #[cfg(unix)]
+    let pgid = inner.pgid;
+
+    let terminate = async {
+        if force_kill {
+            #[cfg(unix)]
+            signal_process_group(pgid, nix::libc::SIGKILL);
+            #[cfg(not(unix))]
+            {
+                let _ = child.start_kill();
+            }
+            return wait_with_timeout(&mut child, inner.kill_timeout).await;
+        }
+
+        #[cfg(unix)]
+        signal_process_group(pgid, nix::libc::SIGTERM);
+        #[cfg(not(unix))]
+        {
+            let _ = child.start_kill();
+        }
+
+        match wait_with_timeout(&mut child, inner.graceful_shutdown_timeout).await {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                #[cfg(unix)]
+                signal_process_group(pgid, nix::libc::SIGKILL);
+                #[cfg(not(unix))]
+                {
+                    let _ = child.start_kill();
+                }
+                wait_with_timeout(&mut child, inner.kill_timeout).await
+            }
+        }
+    };
+
+    let result = terminate.await;
+    match result {
+        Ok(()) => {
+            cleanup_lock(inner);
+            Ok(())
+        }
+        Err(err) => Err(BrowserSessionError::CleanupFailed(err.to_string())),
+    }
+}
+
+async fn wait_with_timeout(
+    child: &mut tokio::process::Child,
+    timeout: Duration,
+) -> Result<(), io::Error> {
+    match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(err)) => Err(err),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "process did not exit in time",
+        )),
+    }
+}
+
+fn cleanup_lock(inner: &Inner) {
+    let lock = inner.lock.lock().take();
+    let Some(lock) = lock else { return };
+    let path = lock.path.clone();
+    drop(lock);
+    let _ = fs::remove_file(&path);
+}
+
+#[cfg(unix)]
+fn signal_process_group(pgid: i32, signal: i32) {
+    // If the process group is already gone, ignore.
+    let rc = unsafe { nix::libc::killpg(pgid, signal) };
+    if rc == -1 {
+        let err = io::Error::last_os_error();
+        if err.raw_os_error() != Some(nix::libc::ESRCH) {
+            tracing::debug!("killpg({pgid},{signal}) failed: {err}");
+        }
+    }
+}
+
+fn best_effort_abort_sync(inner: &Inner) {
+    #[cfg(unix)]
+    signal_process_group(inner.pgid, nix::libc::SIGKILL);
+    #[cfg(not(unix))]
+    {
+        if let Some(mut child) = inner.child.lock().take() {
+            let _ = child.start_kill();
+        }
+    }
+    cleanup_lock(inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+    use tempfile::TempDir;
+
+    #[cfg(unix)]
+    fn process_group_alive(pgid: i32) -> bool {
+        let rc = unsafe { nix::libc::killpg(pgid, 0) };
+        if rc == 0 {
+            return true;
+        }
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(code) if code == nix::libc::ESRCH => false,
+            _ => true,
+        }
+    }
+
+    #[cfg(unix)]
+    fn pid_alive(pid: i32) -> bool {
+        let rc = unsafe { nix::libc::kill(pid, 0) };
+        if rc == 0 {
+            return true;
+        }
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(code) if code == nix::libc::ESRCH => false,
+            _ => true,
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn close_is_idempotent_and_kills_process_group() {
+        let temp = TempDir::new().expect("temp dir");
+        let lock_path = temp.path().join("locks").join("browser.lock");
+
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("sleep 1000");
+
+        let session = BrowserSession::spawn(
+            cmd,
+            BrowserSessionOptions {
+                lock_file: Some(lock_path),
+                graceful_shutdown_timeout: Duration::from_millis(200),
+                kill_timeout: Duration::from_millis(200),
+            },
+        )
+        .await
+        .expect("spawn browser session");
+
+        let pgid = session.process_group_id();
+        assert!(process_group_alive(pgid));
+
+        let (r1, r2) = tokio::join!(session.close(), session.close());
+        assert!(r1.is_ok(), "first close: {r1:?}");
+        assert!(r2.is_ok(), "second close: {r2:?}");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && process_group_alive(pgid) {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(!process_group_alive(pgid), "process group still alive");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn scoped_timeout_triggers_cleanup() {
+        let temp = TempDir::new().expect("temp dir");
+        let lock_path = temp.path().join("locks").join("browser.lock");
+
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("sleep 1000");
+
+        let session = BrowserSession::spawn(
+            cmd,
+            BrowserSessionOptions {
+                lock_file: Some(lock_path),
+                graceful_shutdown_timeout: Duration::from_millis(200),
+                kill_timeout: Duration::from_millis(200),
+            },
+        )
+        .await
+        .expect("spawn browser session");
+
+        let pgid = session.process_group_id();
+        let result = session
+            .run_scoped(
+                Duration::from_millis(100),
+                std::future::pending::<()>(),
+                async {
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    Ok::<_, anyhow::Error>(())
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(BrowserSessionError::TimedOut(_))));
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && process_group_alive(pgid) {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(!process_group_alive(pgid), "process group still alive");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn scoped_cancel_triggers_cleanup_and_kills_children() {
+        let temp = TempDir::new().expect("temp dir");
+        let lock_path = temp.path().join("locks").join("browser.lock");
+        let pid_file = temp.path().join("child.pid");
+
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg(r#"sleep 1000 & echo $! > "$1"; wait"#)
+            .arg("sh")
+            .arg(pid_file.as_os_str());
+
+        let session = BrowserSession::spawn(
+            cmd,
+            BrowserSessionOptions {
+                lock_file: Some(lock_path),
+                graceful_shutdown_timeout: Duration::from_millis(200),
+                kill_timeout: Duration::from_millis(200),
+            },
+        )
+        .await
+        .expect("spawn browser session");
+
+        let pgid = session.process_group_id();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let child_pid = loop {
+            if let Ok(bytes) = fs::read(&pid_file) {
+                if let Ok(text) = String::from_utf8(bytes) {
+                    if let Ok(pid) = text.trim().parse::<i32>() {
+                        break pid;
+                    }
+                }
+            }
+            if Instant::now() > deadline {
+                panic!("timed out waiting for child pid file");
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        assert!(pid_alive(child_pid), "expected child sleep to be alive");
+
+        let result = session
+            .run_scoped(
+                Duration::from_secs(10),
+                tokio::time::sleep(Duration::from_millis(100)),
+                async {
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    Ok::<_, anyhow::Error>(())
+                },
+            )
+            .await;
+        assert!(matches!(result, Err(BrowserSessionError::Cancelled)));
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && (process_group_alive(pgid) || pid_alive(child_pid)) {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(!process_group_alive(pgid), "process group still alive");
+        assert!(!pid_alive(child_pid), "child process still alive");
+    }
+}

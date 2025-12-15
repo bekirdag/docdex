@@ -1,4 +1,5 @@
 mod audit;
+mod browser_session;
 mod config;
 mod daemon;
 mod error;

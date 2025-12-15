@@ -506,6 +506,7 @@ async fn run() -> Result<()> {
                 repo.state_dir_override(),
                 repo.exclude_dir_overrides(),
                 repo.exclude_prefix_overrides(),
+                repo.symbols_enabled(),
             );
             let tls = daemon::TlsConfig::from_options(
                 tls_cert,
@@ -592,6 +593,7 @@ async fn run() -> Result<()> {
                 repo.state_dir_override(),
                 repo.exclude_dir_overrides(),
                 repo.exclude_prefix_overrides(),
+                repo.symbols_enabled(),
             );
             util::init_logging("warn")?;
             let indexer =
@@ -695,6 +697,7 @@ async fn run() -> Result<()> {
                 repo.state_dir_override(),
                 repo.exclude_dir_overrides(),
                 repo.exclude_prefix_overrides(),
+                repo.symbols_enabled(),
             );
             util::init_logging("info")?;
             info!("Rebuilding index for {}", repo_root.display());
@@ -709,6 +712,7 @@ async fn run() -> Result<()> {
                 repo.state_dir_override(),
                 repo.exclude_dir_overrides(),
                 repo.exclude_prefix_overrides(),
+                repo.symbols_enabled(),
             );
             util::init_logging("warn")?;
             let _ = index::Indexer::with_config(repo_root, index_config)?
@@ -722,6 +726,7 @@ async fn run() -> Result<()> {
                 repo.state_dir_override(),
                 repo.exclude_dir_overrides(),
                 repo.exclude_prefix_overrides(),
+                repo.symbols_enabled(),
             );
             util::init_logging("warn")?;
             let server = index::Indexer::with_config_read_only(repo_root, index_config)?;
@@ -743,6 +748,7 @@ async fn run() -> Result<()> {
                 repo.state_dir_override(),
                 repo.exclude_dir_overrides(),
                 repo.exclude_prefix_overrides(),
+                repo.symbols_enabled(),
             );
             util::init_logging("warn")?;
             index::ensure_state_dir_secure(index_config.state_dir())?;
@@ -800,6 +806,7 @@ async fn run() -> Result<()> {
                 repo.state_dir_override(),
                 repo.exclude_dir_overrides(),
                 repo.exclude_prefix_overrides(),
+                repo.symbols_enabled(),
             );
             util::init_logging("warn")?;
             index::ensure_state_dir_secure(index_config.state_dir())?;
@@ -841,6 +848,7 @@ async fn run() -> Result<()> {
                 repo.state_dir_override(),
                 repo.exclude_dir_overrides(),
                 repo.exclude_prefix_overrides(),
+                repo.symbols_enabled(),
             );
             util::init_logging(&log)?;
             mcp::serve(repo_root, index_config, max_results).await?;

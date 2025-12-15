@@ -1,5 +1,6 @@
 use reqwest::blocking::Client;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fs;
 use std::net::TcpListener;
@@ -47,12 +48,25 @@ fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
     Ok(temp)
 }
 
+fn symbols_record_path(repo_root: &Path, rel_path: &str) -> PathBuf {
+    let key = hex::encode(Sha256::digest(rel_path.as_bytes()));
+    repo_root
+        .join(".docdex")
+        .join("index")
+        .join("symbols.db")
+        .join("files")
+        .join(format!("{key}.json"))
+}
+
 fn run_docdex<I, S>(args: I) -> Result<Vec<u8>, Box<dyn Error>>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let output = Command::new(docdex_bin()).args(args).output()?;
+    let output = Command::new(docdex_bin())
+        .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+        .args(args)
+        .output()?;
     if !output.status.success() {
         return Err(format!(
             "docdexd exited with {}: {}",
@@ -183,6 +197,70 @@ fn index_honors_custom_state_dir() -> Result<(), Box<dyn Error>> {
     assert!(
         !repo_root.join(".docdex").exists(),
         "default .docdex should not be created when custom state dir is used"
+    );
+    Ok(())
+}
+
+#[test]
+fn symbols_disabled_does_not_create_symbols_store() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_root = repo.path();
+    let repo_str = repo_root.to_string_lossy().to_string();
+
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    assert!(
+        !repo_root
+            .join(".docdex")
+            .join("index")
+            .join("symbols.db")
+            .exists(),
+        "symbols.db should not be created when symbol extraction is disabled"
+    );
+    Ok(())
+}
+
+#[test]
+fn symbols_enabled_creates_symbols_store_records() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_root = repo.path();
+    let repo_str = repo_root.to_string_lossy().to_string();
+    let rel_path = "docs/overview.md";
+
+    run_docdex([
+        "index",
+        "--repo",
+        repo_str.as_str(),
+        "--enable-symbol-extraction=true",
+    ])?;
+
+    let record_path = symbols_record_path(repo_root, rel_path);
+    assert!(
+        record_path.exists(),
+        "expected symbols record to exist for {rel_path}"
+    );
+    let raw = fs::read_to_string(record_path)?;
+    let parsed: Value = serde_json::from_str(&raw)?;
+    assert_eq!(
+        parsed
+            .get("schema")
+            .and_then(|v| v.get("name"))
+            .and_then(|v| v.as_str()),
+        Some("docdex.symbols"),
+        "symbols record should use docdex.symbols schema"
+    );
+    assert_eq!(
+        parsed.get("file").and_then(|v| v.as_str()),
+        Some(rel_path),
+        "symbols record should include the file rel path"
+    );
+    assert_eq!(
+        parsed
+            .get("outcome")
+            .and_then(|v| v.get("status"))
+            .and_then(|v| v.as_str()),
+        Some("ok"),
+        "markdown symbol extraction should succeed"
     );
     Ok(())
 }

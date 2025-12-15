@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::Args;
+use clap::{ArgAction, Args};
 
 #[derive(Debug, Args)]
 pub struct RepoArgs {
@@ -28,6 +28,15 @@ pub struct RepoArgs {
         help = "Additional directory names to skip anywhere under the repo (comma-separated)"
     )]
     pub exclude_dir: Vec<String>,
+    #[arg(
+        long,
+        env = "DOCDEX_ENABLE_SYMBOL_EXTRACTION",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        default_value_t = false,
+        action = ArgAction::Set,
+        help = "Enable best-effort symbol extraction into a per-repo symbols store (symbols.db)"
+    )]
+    pub enable_symbol_extraction: bool,
 }
 
 impl RepoArgs {
@@ -47,6 +56,10 @@ impl RepoArgs {
 
     pub fn exclude_prefix_overrides(&self) -> Vec<String> {
         self.exclude_prefix.clone()
+    }
+
+    pub fn symbols_enabled(&self) -> bool {
+        self.enable_symbol_extraction
     }
 }
 

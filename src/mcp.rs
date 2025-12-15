@@ -65,7 +65,7 @@ struct PathOutsideRepoError;
 struct InvalidUriError;
 
 #[derive(Error, Debug)]
-#[error("symbol extraction is disabled; set DOCDEX_ENABLE_SYMBOL_EXTRACTION=1 and reindex")]
+#[error("symbol extraction is disabled; re-run with --enable-symbol-extraction=true (or set DOCDEX_ENABLE_SYMBOL_EXTRACTION=1) and reindex")]
 struct MissingSymbolsDependencyError;
 
 #[derive(Error, Debug)]
@@ -199,7 +199,10 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
     if err.downcast_ref::<MissingSymbolsDependencyError>().is_some() {
         return (
             ERR_MISSING_DEPENDENCY,
-            Some(json!({ "dependency": "DOCDEX_ENABLE_SYMBOL_EXTRACTION" })),
+            Some(json!({
+                "dependency": "DOCDEX_ENABLE_SYMBOL_EXTRACTION",
+                "flag": "--enable-symbol-extraction=true"
+            })),
         );
     }
     if let Some(missing) = err.downcast_ref::<MissingSymbolsIndexError>() {

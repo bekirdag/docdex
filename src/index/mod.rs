@@ -267,7 +267,13 @@ pub struct IndexStats {
 impl IndexConfig {
     #[allow(dead_code)]
     pub fn for_repo(repo_root: &Path) -> Self {
-        Self::with_overrides(repo_root, None, Vec::new(), Vec::new())
+        Self::with_overrides(
+            repo_root,
+            None,
+            Vec::new(),
+            Vec::new(),
+            env_flag_enabled("DOCDEX_ENABLE_SYMBOL_EXTRACTION"),
+        )
     }
 
     pub fn with_overrides(
@@ -275,6 +281,7 @@ impl IndexConfig {
         state_dir: Option<PathBuf>,
         extra_excluded_dirs: Vec<String>,
         extra_excluded_prefixes: Vec<String>,
+        symbols_enabled: bool,
     ) -> Self {
         let state_dir = resolve_state_dir(repo_root, state_dir);
         let mut excluded_dir_names: Vec<String> = DEFAULT_EXCLUDED_DIR_NAMES
@@ -309,7 +316,6 @@ impl IndexConfig {
                 excluded_relative_prefixes.push(normalized);
             }
         }
-        let symbols_enabled = env_flag_enabled("DOCDEX_ENABLE_SYMBOL_EXTRACTION");
         Self {
             state_dir,
             excluded_dir_names,
@@ -1252,6 +1258,7 @@ mod file_decision_tests {
             None,
             Vec::new(),
             vec!["docs/".into(), "docs/private/".into()],
+            false,
         );
         let file = repo_root.join("docs/private/a.md");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
@@ -1271,7 +1278,7 @@ mod file_decision_tests {
     fn decide_file_excludes_state_dir_before_prefix_rules() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new());
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false);
         let file = config.state_dir().join("doc.md");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
         fs::write(&file, "# state dir\n").expect("write file");
@@ -1285,7 +1292,7 @@ mod file_decision_tests {
     fn decide_file_excludes_default_vendor_dir() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new());
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false);
         let file = repo_root.join("vendor/doc.md");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
         fs::write(&file, "# vendor\n").expect("write file");
@@ -1304,7 +1311,7 @@ mod file_decision_tests {
     fn decide_file_excludes_outside_repo() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new());
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false);
 
         let other = TempDir::new().expect("other repo");
         let outside = other.path().join("note.md");
@@ -1319,7 +1326,7 @@ mod file_decision_tests {
     fn decide_file_includes_supported_extensions() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new());
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false);
         let file = repo_root.join("docs/notes.txt");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
         fs::write(&file, "hello\n").expect("write file");

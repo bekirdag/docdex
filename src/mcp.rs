@@ -1,10 +1,14 @@
-use crate::error::{AppError, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED};
+use crate::error::{
+    AppError, ERR_BACKOFF_REQUIRED, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
+    ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_RATE_LIMITED, ERR_STALE_INDEX,
+    ERR_UNKNOWN_REPO,
+};
 use crate::index::{IndexConfig, Indexer};
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::search;
 use crate::symbols::SymbolsStore;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
@@ -45,6 +49,22 @@ struct MaxContentError {
 }
 
 #[derive(Error, Debug)]
+#[error("line range is invalid (start_line={start_line}, end_line={end_line}, total_lines={total_lines})")]
+struct InvalidRangeError {
+    start_line: usize,
+    end_line: usize,
+    total_lines: usize,
+}
+
+#[derive(Error, Debug)]
+#[error("path must be under repo root")]
+struct PathOutsideRepoError;
+
+#[derive(Error, Debug)]
+#[error("unsupported uri scheme")]
+struct InvalidUriError;
+
+#[derive(Error, Debug)]
 #[error("symbol extraction is disabled; set DOCDEX_ENABLE_SYMBOL_EXTRACTION=1 and reindex")]
 struct MissingSymbolsDependencyError;
 
@@ -61,9 +81,25 @@ fn mcp_error_data(
     tool: Option<&str>,
     details: Option<serde_json::Value>,
 ) -> serde_json::Value {
+    let message_for_data = message.clone();
+    let mut envelope_error = serde_json::Map::new();
+    envelope_error.insert("code".to_string(), json!(code));
+    envelope_error.insert("message".to_string(), json!(message));
+    if let Some(reason) = reason.clone() {
+        envelope_error.insert("reason".to_string(), json!(reason));
+    }
+    if let Some(tool) = tool {
+        envelope_error.insert("tool".to_string(), json!(tool));
+    }
+    if let Some(details) = details.clone() {
+        envelope_error.insert("details".to_string(), details);
+    }
+    let envelope_error_value = serde_json::Value::Object(envelope_error);
+
     let mut data = serde_json::Map::new();
     data.insert("code".to_string(), json!(code));
-    data.insert("message".to_string(), json!(message));
+    data.insert("message".to_string(), json!(message_for_data));
+    data.insert("error".to_string(), envelope_error_value);
     if let Some(reason) = reason {
         data.insert("reason".to_string(), json!(reason));
     }
@@ -92,6 +128,28 @@ fn rpc_error(
     }
 }
 
+fn default_message_for_code(code: &str) -> &'static str {
+    match code {
+        "invalid_request" => "invalid request",
+        "invalid_params" => "invalid parameters",
+        "invalid_argument" => "invalid argument",
+        "missing_query" => "missing query",
+        "invalid_query" => "invalid query",
+        "invalid_path" => "invalid path",
+        "invalid_range" => "invalid range",
+        "max_content_exceeded" => "content too large",
+        ERR_MISSING_REPO => "missing repo",
+        ERR_UNKNOWN_REPO => "unknown repo",
+        ERR_MISSING_INDEX => "missing index",
+        ERR_STALE_INDEX => "stale index",
+        ERR_MISSING_DEPENDENCY => "missing dependency",
+        ERR_RATE_LIMITED => "rate limited",
+        ERR_BACKOFF_REQUIRED => "backoff required",
+        ERR_INTERNAL_ERROR => "internal error",
+        _ => "error",
+    }
+}
+
 fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
     if let Some(app) = err.downcast_ref::<AppError>() {
         return (app.code, None);
@@ -101,11 +159,33 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
             crate::index::SearchError::InvalidQuery { .. } => return ("invalid_query", None),
         }
     }
-    if err.downcast_ref::<RepoMismatchError>().is_some() {
-        return ("unknown_repo", None);
+    if let Some(mismatch) = err.downcast_ref::<RepoMismatchError>() {
+        return (
+            ERR_UNKNOWN_REPO,
+            Some(json!({
+                "expected": mismatch.expected.clone(),
+                "got": mismatch.got.clone(),
+            })),
+        );
     }
     if err.downcast_ref::<InvalidPathError>().is_some() {
         return ("invalid_path", None);
+    }
+    if let Some(range) = err.downcast_ref::<InvalidRangeError>() {
+        return (
+            "invalid_range",
+            Some(json!({
+                "start_line": range.start_line,
+                "end_line": range.end_line,
+                "total_lines": range.total_lines,
+            })),
+        );
+    }
+    if err.downcast_ref::<PathOutsideRepoError>().is_some() {
+        return ("invalid_path", Some(json!({ "kind": "outside_repo" })));
+    }
+    if err.downcast_ref::<InvalidUriError>().is_some() {
+        return ("invalid_params", Some(json!({ "kind": "invalid_uri" })));
     }
     if let Some(max_err) = err.downcast_ref::<MaxContentError>() {
         return (
@@ -118,25 +198,17 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
     }
     if err.downcast_ref::<MissingSymbolsDependencyError>().is_some() {
         return (
-            "missing_dependency",
+            ERR_MISSING_DEPENDENCY,
             Some(json!({ "dependency": "DOCDEX_ENABLE_SYMBOL_EXTRACTION" })),
         );
     }
     if let Some(missing) = err.downcast_ref::<MissingSymbolsIndexError>() {
         return (
-            "missing_index",
+            ERR_MISSING_INDEX,
             Some(json!({ "resource": "symbols", "path": missing.rel_path })),
         );
     }
-    // Fallback string matching for legacy anyhow errors.
-    let msg = err.to_string();
-    if msg.contains("start_line beyond file length")
-        || msg.contains("end_line beyond file length")
-        || msg.contains("end_line must be >=")
-    {
-        return ("invalid_range", None);
-    }
-    ("internal_error", None)
+    (ERR_INTERNAL_ERROR, None)
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -479,8 +551,8 @@ impl McpServer {
                                     result: None,
                                     error: Some(rpc_error(
                                         ERR_INVALID_REQUEST,
-                                        "workspace root mismatch",
-                                        "unknown_repo",
+                                        default_message_for_code(ERR_UNKNOWN_REPO),
+                                        ERR_UNKNOWN_REPO,
                                         None,
                                         None,
                                         Some(json!({
@@ -497,14 +569,14 @@ impl McpServer {
                                 jsonrpc: JSONRPC_VERSION,
                                 id: id.clone(),
                                 result: None,
-                                error: Some(rpc_error(
-                                    ERR_INVALID_REQUEST,
-                                    "workspace root not usable",
-                                    "invalid_request",
-                                    Some(err.to_string()),
-                                    None,
-                                    None,
-                                )),
+                            error: Some(rpc_error(
+                                ERR_INVALID_REQUEST,
+                                default_message_for_code("invalid_request"),
+                                "invalid_request",
+                                Some(err.to_string()),
+                                None,
+                                None,
+                            )),
                             }));
                         }
                     }
@@ -572,7 +644,7 @@ impl McpServer {
                             result: None,
                             error: Some(rpc_error(
                                 ERR_INVALID_PARAMS,
-                                "invalid resources/read params",
+                                default_message_for_code("invalid_params"),
                                 "invalid_params",
                                 Some(err.to_string()),
                                 None,
@@ -596,7 +668,7 @@ impl McpServer {
                             let (mcp_code, details) = classify_tool_error(&err);
                             Some(rpc_error(
                                 ERR_INVALID_PARAMS,
-                                "resources/read failed",
+                                default_message_for_code(mcp_code),
                                 mcp_code,
                                 Some(err.to_string()),
                                 None,
@@ -618,7 +690,7 @@ impl McpServer {
                             result: None,
                             error: Some(rpc_error(
                                 ERR_INVALID_PARAMS,
-                                "invalid tool call params",
+                                default_message_for_code("invalid_params"),
                                 "invalid_params",
                                 Some(err.to_string()),
                                 None,
@@ -640,7 +712,7 @@ impl McpServer {
                                     result: None,
                                     error: Some(rpc_error(
                                         ERR_INVALID_PARAMS,
-                                        "invalid docdex_search args",
+                                        default_message_for_code("invalid_params"),
                                         "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_search"),
@@ -659,7 +731,7 @@ impl McpServer {
                                     result: None,
                                     error: Some(rpc_error(
                                         ERR_INVALID_PARAMS,
-                                        "docdex_search failed",
+                                        default_message_for_code(mcp_code),
                                         mcp_code,
                                         Some(err.to_string()),
                                         Some("docdex_search"),
@@ -681,7 +753,7 @@ impl McpServer {
                                     result: None,
                                     error: Some(rpc_error(
                                         ERR_INVALID_PARAMS,
-                                        "invalid docdex_index args",
+                                        default_message_for_code("invalid_params"),
                                         "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_index"),
@@ -700,7 +772,7 @@ impl McpServer {
                                     result: None,
                                     error: Some(rpc_error(
                                         ERR_INVALID_PARAMS,
-                                        "docdex_index failed",
+                                        default_message_for_code(mcp_code),
                                         mcp_code,
                                         Some(err.to_string()),
                                         Some("docdex_index"),
@@ -722,7 +794,7 @@ impl McpServer {
                                     result: None,
                                     error: Some(rpc_error(
                                         ERR_INVALID_PARAMS,
-                                        "invalid docdex_files args",
+                                        default_message_for_code("invalid_params"),
                                         "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_files"),
@@ -741,7 +813,7 @@ impl McpServer {
                                     result: None,
                                     error: Some(rpc_error(
                                         ERR_INVALID_PARAMS,
-                                        "docdex_files failed",
+                                        default_message_for_code(mcp_code),
                                         mcp_code,
                                         Some(err.to_string()),
                                         Some("docdex_files"),
@@ -763,7 +835,7 @@ impl McpServer {
                                     result: None,
                                     error: Some(rpc_error(
                                         ERR_INVALID_PARAMS,
-                                        "invalid docdex_open args",
+                                        default_message_for_code("invalid_params"),
                                         "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_open"),
@@ -782,7 +854,7 @@ impl McpServer {
                                     result: None,
                                     error: Some(rpc_error(
                                         ERR_INVALID_PARAMS,
-                                        "docdex_open failed",
+                                        default_message_for_code(mcp_code),
                                         mcp_code,
                                         Some(err.to_string()),
                                         Some("docdex_open"),
@@ -804,7 +876,7 @@ impl McpServer {
                                     result: None,
                                     error: Some(rpc_error(
                                         ERR_INVALID_PARAMS,
-                                        "invalid docdex_stats args",
+                                        default_message_for_code("invalid_params"),
                                         "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_stats"),
@@ -822,8 +894,8 @@ impl McpServer {
                                     id: id.clone(),
                                     result: None,
                                     error: Some(rpc_error(
-                                        ERR_INTERNAL,
-                                        "docdex_stats failed",
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code(mcp_code),
                                         mcp_code,
                                         Some(err.to_string()),
                                         Some("docdex_stats"),
@@ -845,7 +917,7 @@ impl McpServer {
                                     result: None,
                                     error: Some(rpc_error(
                                         ERR_INVALID_PARAMS,
-                                        "invalid docdex_symbols args",
+                                        default_message_for_code("invalid_params"),
                                         "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_symbols"),
@@ -864,7 +936,7 @@ impl McpServer {
                                     result: None,
                                     error: Some(rpc_error(
                                         ERR_INVALID_PARAMS,
-                                        "docdex_symbols failed",
+                                        default_message_for_code(mcp_code),
                                         mcp_code,
                                         Some(err.to_string()),
                                         Some("docdex_symbols"),
@@ -886,7 +958,7 @@ impl McpServer {
                                     result: None,
                                     error: Some(rpc_error(
                                         ERR_INVALID_PARAMS,
-                                        "invalid docdex_memory_store args",
+                                        default_message_for_code("invalid_params"),
                                         "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_memory_store"),
@@ -905,7 +977,7 @@ impl McpServer {
                                     result: None,
                                     error: Some(rpc_error(
                                         ERR_INVALID_PARAMS,
-                                        "docdex_memory_store failed",
+                                        default_message_for_code(mcp_code),
                                         mcp_code,
                                         Some(err.to_string()),
                                         Some("docdex_memory_store"),
@@ -927,7 +999,7 @@ impl McpServer {
                                     result: None,
                                     error: Some(rpc_error(
                                         ERR_INVALID_PARAMS,
-                                        "invalid docdex_memory_recall args",
+                                        default_message_for_code("invalid_params"),
                                         "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_memory_recall"),
@@ -946,7 +1018,7 @@ impl McpServer {
                                     result: None,
                                     error: Some(rpc_error(
                                         ERR_INVALID_PARAMS,
-                                        "docdex_memory_recall failed",
+                                        default_message_for_code(mcp_code),
                                         mcp_code,
                                         Some(err.to_string()),
                                         Some("docdex_memory_recall"),
@@ -1271,7 +1343,7 @@ impl McpServer {
             .canonicalize()
             .with_context(|| format!("resolve path {}", rel_path.display()))?;
         if !canonical.starts_with(&self.repo_root) {
-            return Err(anyhow!("path must be under repo root"));
+            return Err(PathOutsideRepoError.into());
         }
         let content = fs::read_to_string(&canonical)
             .with_context(|| format!("read {}", rel_path.display()))?;
@@ -1302,14 +1374,13 @@ impl McpServer {
         }
         let start = args.start_line.unwrap_or(1).max(1);
         let end_raw = args.end_line.unwrap_or(total_lines);
-        if end_raw < start {
-            return Err(anyhow!("end_line must be >= start_line"));
-        }
-        if start > total_lines {
-            return Err(anyhow!("start_line beyond file length"));
-        }
-        if end_raw > total_lines {
-            return Err(anyhow!("end_line beyond file length"));
+        if end_raw < start || start > total_lines || end_raw > total_lines {
+            return Err(InvalidRangeError {
+                start_line: start,
+                end_line: end_raw,
+                total_lines,
+            }
+            .into());
         }
         let start_idx = start.saturating_sub(1);
         let end_idx = end_raw.saturating_sub(1);
@@ -1404,6 +1475,7 @@ impl McpServer {
         let store = memory.store.clone();
         let items = tokio::task::spawn_blocking(move || store.recall(&embedding, top_k)).await??;
         Ok(json!({
+            "top_k": top_k,
             "results": items.into_iter().map(|item| json!({
                 "content": item.content,
                 "score": item.score,
@@ -1417,7 +1489,7 @@ impl McpServer {
         let uri = params.uri.trim();
         let prefix = "docdex://";
         if !uri.starts_with(prefix) {
-            return Err(anyhow!("unsupported uri scheme"));
+            return Err(InvalidUriError.into());
         }
         let raw_path = &uri[prefix.len()..];
         let rel = if raw_path.starts_with('/') {
@@ -1435,7 +1507,16 @@ impl McpServer {
     }
 
     fn ensure_same_repo(&self, candidate: &Path) -> Result<()> {
-        let normalized = candidate.canonicalize().context("resolve project_root")?;
+        let normalized = match candidate.canonicalize() {
+            Ok(path) => path,
+            Err(_) => {
+                return Err(RepoMismatchError {
+                    expected: self.repo_root.display().to_string(),
+                    got: candidate.display().to_string(),
+                }
+                .into())
+            }
+        };
         if normalized != self.repo_root {
             return Err(RepoMismatchError {
                 expected: self.repo_root.display().to_string(),

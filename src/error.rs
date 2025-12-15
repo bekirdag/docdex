@@ -8,6 +8,13 @@ pub const ERR_EMBEDDING_MODEL_NOT_FOUND: &str = "embedding_model_not_found";
 pub const ERR_EMBEDDING_FAILED: &str = "embedding_failed";
 pub const ERR_MEMORY_DISABLED: &str = "memory_disabled";
 pub const ERR_INVALID_ARGUMENT: &str = "invalid_argument";
+pub const ERR_MISSING_REPO: &str = "missing_repo";
+pub const ERR_UNKNOWN_REPO: &str = "unknown_repo";
+pub const ERR_MISSING_INDEX: &str = "missing_index";
+pub const ERR_STALE_INDEX: &str = "stale_index";
+pub const ERR_MISSING_DEPENDENCY: &str = "missing_dependency";
+pub const ERR_RATE_LIMITED: &str = "rate_limited";
+pub const ERR_BACKOFF_REQUIRED: &str = "backoff_required";
 pub const ERR_INTERNAL_ERROR: &str = "internal_error";
 
 #[derive(Debug, Clone)]

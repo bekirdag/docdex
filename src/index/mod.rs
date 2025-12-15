@@ -16,6 +16,7 @@ use tantivy::{
 };
 use thiserror::Error;
 use tracing::warn;
+use crate::error::{AppError, ERR_BACKOFF_REQUIRED, ERR_MISSING_INDEX};
 use crate::symbols;
 use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
 use walkdir::WalkDir;
@@ -385,10 +386,14 @@ impl Indexer {
     pub fn with_config_read_only(repo_root: PathBuf, config: IndexConfig) -> Result<Self> {
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
         if !config.state_dir().exists() {
-            return Err(anyhow!(
-                "index not found at {}; run `docdexd index` first",
-                config.state_dir().display()
-            ));
+            return Err(AppError::new(
+                ERR_MISSING_INDEX,
+                format!(
+                    "index not found at {}; run `docdexd index --repo <repo>` first",
+                    config.state_dir().display()
+                ),
+            )
+            .into());
         }
         let index = Index::open_in_dir(config.state_dir())?;
         let reader = index
@@ -736,7 +741,13 @@ impl Indexer {
     fn writer(&self) -> Result<Arc<Mutex<IndexWriter>>> {
         self.writer
             .clone()
-            .ok_or_else(|| anyhow!("index opened in read-only mode; writer unavailable"))
+            .ok_or_else(|| {
+                AppError::new(
+                    ERR_BACKOFF_REQUIRED,
+                    "index writer unavailable (another docdexd may be indexing); retry later",
+                )
+                .into()
+            })
     }
 
     pub fn config(&self) -> &IndexConfig {

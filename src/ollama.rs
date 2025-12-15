@@ -4,6 +4,7 @@ use crate::error::{
 };
 use anyhow::{anyhow, Context};
 use serde::Deserialize;
+use serde_json::Value;
 use serde_json::json;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -99,13 +100,36 @@ impl OllamaClient {
             stream.read_to_end(&mut raw).await.context("read response")?;
             let (status_code, response_body) = parse_http_response(&raw)?;
 
-            if !(200..300).contains(&status_code) {
-                let body_text = String::from_utf8_lossy(&response_body);
-                let lowered = body_text.to_ascii_lowercase();
-                if status_code == 404 || lowered.contains("not found") || lowered.contains("model") {
+            if let Some(error_message) = ollama_error_message(&response_body) {
+                let error_message = redact_embedding_prompt(error_message, prompt);
+                if is_ollama_model_not_found_error(&error_message) {
                     return Err(AppError::new(
                         ERR_EMBEDDING_MODEL_NOT_FOUND,
                         format!("ollama embedding model not found: {model}"),
+                    )
+                    .into());
+                }
+                return Err(AppError::new(
+                    ERR_EMBEDDING_FAILED,
+                    format!("ollama embedding request failed: {error_message}"),
+                )
+                .into());
+            }
+
+            if !(200..300).contains(&status_code) {
+                let body_text = String::from_utf8_lossy(&response_body);
+                let lowered = body_text.to_ascii_lowercase();
+                if is_ollama_model_not_found_error(&lowered) {
+                    return Err(AppError::new(
+                        ERR_EMBEDDING_MODEL_NOT_FOUND,
+                        format!("ollama embedding model not found: {model}"),
+                    )
+                    .into());
+                }
+                if status_code == 404 || lowered.contains("not found") {
+                    return Err(AppError::new(
+                        ERR_EMBEDDING_FAILED,
+                        "ollama embeddings endpoint not found; check --embedding-base-url/--ollama-base-url",
                     )
                     .into());
                 }
@@ -304,4 +328,19 @@ fn redact_embedding_prompt(message: String, prompt: &str) -> String {
         return message.replace(prompt, "<redacted>");
     }
     message
+}
+
+fn ollama_error_message(response_body: &[u8]) -> Option<String> {
+    let value: Value = serde_json::from_slice(response_body).ok()?;
+    let error = value.get("error").and_then(|v| v.as_str()).map(str::trim);
+    let message = value.get("message").and_then(|v| v.as_str()).map(str::trim);
+    error
+        .or(message)
+        .filter(|text| !text.is_empty())
+        .map(|text| text.to_string())
+}
+
+fn is_ollama_model_not_found_error(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    lowered.contains("model") && (lowered.contains("not found") || lowered.contains("unknown"))
 }

@@ -361,6 +361,208 @@ fn invalid_model_is_explicit_and_daemon_stays_healthy() -> Result<(), Box<dyn Er
 }
 
 #[test]
+fn invalid_model_in_ok_response_is_explicit_and_daemon_stays_healthy() -> Result<(), Box<dyn Error>>
+{
+    let repo = setup_repo()?;
+    let Some(mock) = MockOllama::spawn(post(|| async move {
+        (axum::http::StatusCode::OK, Json(json!({ "error": "model not found" })))
+    }))?
+    else {
+        return Ok(());
+    };
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = Command::new(docdex_bin())
+        .args([
+            "serve",
+            "--repo",
+            repo.path().to_string_lossy().as_ref(),
+            "--host",
+            host,
+            "--port",
+            &port.to_string(),
+            "--log",
+            "warn",
+            "--secure-mode=false",
+            "--enable-memory=true",
+            "--ollama-base-url",
+            mock.base_url.as_str(),
+            "--embedding-model",
+            "definitely-not-installed",
+            "--embedding-timeout-ms",
+            "200",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let store_url = format!("http://{host}:{port}/v1/memory/store");
+    let resp = client.post(&store_url).json(&json!({ "text": "hello" })).send()?;
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: Value = resp.json()?;
+    assert_eq!(
+        body.get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("embedding_model_not_found")
+    );
+    assert!(
+        !body.to_string().contains("hello"),
+        "embedding input leaked in response body: {body}"
+    );
+
+    let health_url = format!("http://{host}:{port}/healthz");
+    let health = client.get(&health_url).send()?;
+    assert!(health.status().is_success());
+
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn mcp_invalid_model_in_ok_response_returns_stable_code() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let Some(mock) = MockOllama::spawn(post(|| async move {
+        (axum::http::StatusCode::OK, Json(json!({ "error": "model not found" })))
+    }))?
+    else {
+        return Ok(());
+    };
+
+    let envs = [
+        ("DOCDEX_ENABLE_MEMORY", "1"),
+        ("DOCDEX_OLLAMA_BASE_URL", mock.base_url.as_str()),
+        ("DOCDEX_EMBEDDING_MODEL", "definitely-not-installed"),
+        ("DOCDEX_EMBEDDING_TIMEOUT_MS", "200"),
+    ];
+    let mut mcp = McpHarness::spawn(repo.path(), &envs)?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "docdex_memory_store", "arguments": { "text": "hello" } }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_data_code(&resp), Some("embedding_model_not_found"));
+    assert!(
+        !resp.to_string().contains("hello"),
+        "embedding input leaked in MCP error payload: {resp}"
+    );
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn invalid_model_in_ok_response_is_explicit_and_daemon_stays_healthy() -> Result<(), Box<dyn Error>>
+{
+    let repo = setup_repo()?;
+    let Some(mock) = MockOllama::spawn(post(|| async move {
+        (axum::http::StatusCode::OK, Json(json!({ "error": "model not found" })))
+    }))?
+    else {
+        return Ok(());
+    };
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = Command::new(docdex_bin())
+        .args([
+            "serve",
+            "--repo",
+            repo.path().to_string_lossy().as_ref(),
+            "--host",
+            host,
+            "--port",
+            &port.to_string(),
+            "--log",
+            "warn",
+            "--secure-mode=false",
+            "--enable-memory=true",
+            "--ollama-base-url",
+            mock.base_url.as_str(),
+            "--embedding-model",
+            "definitely-not-installed",
+            "--embedding-timeout-ms",
+            "200",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let store_url = format!("http://{host}:{port}/v1/memory/store");
+    let resp = client.post(&store_url).json(&json!({ "text": "hello" })).send()?;
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: Value = resp.json()?;
+    assert_eq!(
+        body.get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("embedding_model_not_found")
+    );
+    assert!(
+        !body.to_string().contains("hello"),
+        "embedding input leaked in response body: {body}"
+    );
+
+    let health_url = format!("http://{host}:{port}/healthz");
+    let health = client.get(&health_url).send()?;
+    assert!(health.status().is_success());
+
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn mcp_invalid_model_in_ok_response_returns_stable_code() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let Some(mock) = MockOllama::spawn(post(|| async move {
+        (axum::http::StatusCode::OK, Json(json!({ "error": "model not found" })))
+    }))?
+    else {
+        return Ok(());
+    };
+
+    let envs = [
+        ("DOCDEX_ENABLE_MEMORY", "1"),
+        ("DOCDEX_OLLAMA_BASE_URL", mock.base_url.as_str()),
+        ("DOCDEX_EMBEDDING_MODEL", "definitely-not-installed"),
+        ("DOCDEX_EMBEDDING_TIMEOUT_MS", "200"),
+    ];
+    let mut mcp = McpHarness::spawn(repo.path(), &envs)?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "docdex_memory_store", "arguments": { "text": "hello" } }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_data_code(&resp), Some("embedding_model_not_found"));
+    assert!(
+        !resp.to_string().contains("hello"),
+        "embedding input leaked in MCP error payload: {resp}"
+    );
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
 fn memory_metadata_includes_embedding_model() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let Some(mock) = MockOllama::spawn(post(|| async move {

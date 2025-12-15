@@ -1,5 +1,6 @@
 use crate::error::{
-    AppError, ERR_BACKOFF_REQUIRED, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
+    AppError, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
+    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
     ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_RATE_LIMITED, ERR_STALE_INDEX,
     ERR_UNKNOWN_REPO,
 };
@@ -138,6 +139,9 @@ fn default_message_for_code(code: &str) -> &'static str {
         "invalid_path" => "invalid path",
         "invalid_range" => "invalid range",
         "max_content_exceeded" => "content too large",
+        ERR_EMBEDDING_TIMEOUT => "embedding timeout",
+        ERR_EMBEDDING_MODEL_NOT_FOUND => "embedding model not found",
+        ERR_EMBEDDING_FAILED => "embedding failed",
         ERR_MISSING_REPO => "missing repo",
         ERR_UNKNOWN_REPO => "unknown repo",
         ERR_MISSING_INDEX => "missing index",

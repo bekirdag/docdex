@@ -234,6 +234,32 @@ paths:
           schema:
             type: string
           description: Repo-relative file path.
+        - name: maxEdges
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 10000
+            default: 1000
+          description: Maximum number of edges to return (hard-capped server-side).
+        - name: maxDepth
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 100
+            default: 10
+          description: Maximum traversal depth from the requested file (0 returns no edges).
+        - name: edgeTypes
+          in: query
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          description: Optional edge kind/type filter (e.g. import/include/require). When provided, only matching edges are returned.
       responses:
         "200":
           description: Impact graph
@@ -275,6 +301,26 @@ paths:
                       - outbound edges are those with `source == F`
                     items:
                       $ref: "#/components/schemas/ImpactGraphEdge"
+                  truncated:
+                    type: boolean
+                    description: True if the response was truncated due to maxEdges/maxDepth limits.
+                  applied:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - maxEdges
+                      - maxDepth
+                    properties:
+                      maxEdges:
+                        type: integer
+                        minimum: 0
+                      maxDepth:
+                        type: integer
+                        minimum: 0
+                      edgeTypes:
+                        type: array
+                        items:
+                          type: string
         "400":
           description: Bad request
           content:

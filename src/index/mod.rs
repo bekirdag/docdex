@@ -729,6 +729,10 @@ impl Indexer {
         &self.repo_root
     }
 
+    pub fn state_dir(&self) -> &Path {
+        self.config.state_dir()
+    }
+
     fn writer(&self) -> Result<Arc<Mutex<IndexWriter>>> {
         self.writer
             .clone()

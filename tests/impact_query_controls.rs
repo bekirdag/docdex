@@ -1,0 +1,255 @@
+use reqwest::blocking::Client;
+use serde_json::Value;
+use std::error::Error;
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+use tempfile::TempDir;
+
+fn docdex_bin() -> PathBuf {
+    assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
+}
+
+fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    std::fs::write(temp.path().join("a.ts"), "export const A = 1;\n")?;
+    std::fs::write(temp.path().join("b.ts"), "export const B = 2;\n")?;
+    std::fs::write(temp.path().join("c.ts"), "export const C = 3;\n")?;
+    std::fs::write(temp.path().join("d.ts"), "export const D = 4;\n")?;
+    std::fs::write(temp.path().join("x.ts"), "export const X = 5;\n")?;
+    Ok(temp)
+}
+
+fn run_docdex<I, S>(args: I) -> Result<std::process::Output, Box<dyn Error>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    Ok(Command::new(docdex_bin()).args(args).output()?)
+}
+
+fn pick_free_port() -> Option<u16> {
+    match TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => Some(listener.local_addr().ok()?.port()),
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            eprintln!("skipping impact tests: TCP bind not permitted in this environment");
+            None
+        }
+        Err(err) => panic!("bind ephemeral port: {err}"),
+    }
+}
+
+fn spawn_server(repo_root: &Path, host: &str, port: u16) -> Result<Child, Box<dyn Error>> {
+    let repo_str = repo_root.to_string_lossy().to_string();
+    Ok(Command::new(docdex_bin())
+        .args([
+            "serve",
+            "--repo",
+            repo_str.as_str(),
+            "--host",
+            host,
+            "--port",
+            &port.to_string(),
+            "--log",
+            "warn",
+            "--secure-mode=false",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?)
+}
+
+fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
+    let client = Client::builder().timeout(Duration::from_secs(1)).build()?;
+    let url = format!("http://{host}:{port}/healthz");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        match client.get(&url).send() {
+            Ok(resp) if resp.status().is_success() => return Ok(()),
+            _ => thread::sleep(Duration::from_millis(200)),
+        }
+    }
+    Err("docdexd healthz endpoint did not respond in time".into())
+}
+
+fn write_impact_graph(state_dir: &Path) -> Result<(), Box<dyn Error>> {
+    let payload = serde_json::json!({
+        "edges": [
+            { "source": "a.ts", "target": "b.ts", "kind": "import" },
+            { "source": "b.ts", "target": "c.ts", "kind": "import" },
+            { "source": "c.ts", "target": "d.ts", "kind": "require" },
+            { "source": "x.ts", "target": "a.ts", "kind": "include" },
+            { "source": "a.ts", "target": "z.ts" }
+        ]
+    });
+    std::fs::create_dir_all(state_dir)?;
+    std::fs::write(
+        state_dir.join("impact_graph.json"),
+        serde_json::to_vec_pretty(&payload)?,
+    )?;
+    Ok(())
+}
+
+#[test]
+fn impact_enforces_max_edges_and_sets_truncated() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(repo.path(), host, port)?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/v1/graph/impact");
+    let resp: Value = client
+        .get(&url)
+        .query(&[("file", "a.ts"), ("maxEdges", "1"), ("maxDepth", "10")])
+        .send()?
+        .json()?;
+    let edges = resp
+        .get("edges")
+        .and_then(|v| v.as_array())
+        .ok_or("missing edges array")?;
+    assert!(edges.len() <= 1);
+    assert_eq!(
+        resp.get("truncated").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn impact_enforces_max_depth() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(repo.path(), host, port)?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/v1/graph/impact");
+    let resp: Value = client
+        .get(&url)
+        .query(&[("file", "a.ts"), ("maxEdges", "100"), ("maxDepth", "1")])
+        .send()?
+        .json()?;
+    let edges = resp
+        .get("edges")
+        .and_then(|v| v.as_array())
+        .ok_or("missing edges array")?;
+    assert!(
+        !edges.iter().any(|edge| {
+            edge.get("source").and_then(|v| v.as_str()) == Some("b.ts")
+                && edge.get("target").and_then(|v| v.as_str()) == Some("c.ts")
+        }),
+        "maxDepth=1 should not traverse to b.ts -> c.ts"
+    );
+
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn impact_filters_edge_types() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(repo.path(), host, port)?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/v1/graph/impact");
+    let resp: Value = client
+        .get(&url)
+        .query(&[
+            ("file", "a.ts"),
+            ("maxEdges", "100"),
+            ("maxDepth", "10"),
+            ("edgeTypes", "include"),
+        ])
+        .send()?
+        .json()?;
+    let edges = resp
+        .get("edges")
+        .and_then(|v| v.as_array())
+        .ok_or("missing edges array")?;
+    assert_eq!(edges.len(), 1);
+    assert_eq!(
+        edges[0].get("kind").and_then(|v| v.as_str()),
+        Some("include")
+    );
+
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn impact_invalid_params_return_invalid_argument_with_field_details() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(repo.path(), host, port)?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/v1/graph/impact");
+    let resp = client
+        .get(&url)
+        .query(&[("file", "a.ts"), ("maxEdges", "-1"), ("maxDepth", "-2")])
+        .send()?;
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: Value = resp.json()?;
+    assert_eq!(
+        body.get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("invalid_argument")
+    );
+    let issues = body
+        .get("error")
+        .and_then(|v| v.get("details"))
+        .and_then(|v| v.get("issues"))
+        .and_then(|v| v.as_array())
+        .ok_or("missing error.details.issues")?;
+    let mut fields = issues
+        .iter()
+        .filter_map(|issue| issue.get("field").and_then(|v| v.as_str()))
+        .collect::<Vec<_>>();
+    fields.sort();
+    assert_eq!(fields, vec!["maxDepth", "maxEdges"]);
+
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}
+

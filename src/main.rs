@@ -2,6 +2,7 @@ mod audit;
 mod config;
 mod daemon;
 mod error;
+mod impact;
 mod index;
 mod mcp;
 mod search;

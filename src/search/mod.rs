@@ -13,6 +13,7 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -245,6 +246,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/search", get(search_handler))
         .route("/snippet/*doc_id", get(snippet_handler))
+        .route("/v1/graph/impact", get(impact_graph_handler))
         .route("/ai-help", get(ai_help_handler))
         .route("/metrics", get(metrics_handler))
         .route_layer(middleware::from_fn_with_state(
@@ -262,6 +264,103 @@ pub fn router(state: AppState) -> Router {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImpactGraphParams {
+    file: String,
+    #[serde(default)]
+    max_edges: Option<i64>,
+    #[serde(default)]
+    max_depth: Option<i64>,
+    #[serde(default)]
+    edge_types: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+struct ImpactErrorResponse {
+    error: ImpactErrorDetail,
+}
+
+#[derive(Serialize)]
+struct ImpactErrorDetail {
+    code: &'static str,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<serde_json::Value>,
+}
+
+async fn impact_graph_handler(
+    State(state): State<AppState>,
+    Query(params): Query<ImpactGraphParams>,
+) -> impl IntoResponse {
+    let source = params.file.trim();
+    if source.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ImpactErrorResponse {
+                error: ImpactErrorDetail {
+                    code: "invalid_argument",
+                    message: "file must not be empty".to_string(),
+                    details: Some(json!({
+                        "issues": [{ "field": "file", "code": "must_be_non_empty", "message": "file must not be empty" }]
+                    })),
+                },
+            }),
+        )
+            .into_response();
+    }
+
+    let raw = crate::impact::ImpactQueryControlsRaw {
+        max_edges: params.max_edges,
+        max_depth: params.max_depth,
+        edge_types: params.edge_types,
+    };
+    let controls = match raw.validate() {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ImpactErrorResponse {
+                    error: ImpactErrorDetail {
+                        code: "invalid_argument",
+                        message: "invalid query parameters".to_string(),
+                        details: Some(
+                            serde_json::to_value(err.details).unwrap_or_else(|_| json!({})),
+                        ),
+                    },
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let repo_id = crate::symbols::repo_id_for_root(state.indexer.repo_root())
+        .unwrap_or_else(|_| String::new());
+    let store = crate::impact::ImpactGraphStore::new(state.indexer.state_dir());
+    let all_edges = match store.read_edges() {
+        Ok(edges) => edges,
+        Err(err) => {
+            state.metrics.inc_error();
+            warn!(target: "docdexd", error = ?err, "impact graph read failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ImpactErrorResponse {
+                    error: ImpactErrorDetail {
+                        code: "internal_error",
+                        message: "impact graph unavailable".to_string(),
+                        details: None,
+                    },
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let traversal = crate::impact::traverse_impact(source, &all_edges, &controls);
+    let response = crate::impact::build_impact_response(&repo_id, source, traversal, &controls);
+    Json(response).into_response()
 }
 
 async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {

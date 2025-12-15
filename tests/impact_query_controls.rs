@@ -92,6 +92,21 @@ fn write_impact_graph(state_dir: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn issue_fields(body: &Value) -> Result<Vec<String>, Box<dyn Error>> {
+    let issues = body
+        .get("error")
+        .and_then(|v| v.get("details"))
+        .and_then(|v| v.get("issues"))
+        .and_then(|v| v.as_array())
+        .ok_or("missing error.details.issues")?;
+    let mut fields = issues
+        .iter()
+        .filter_map(|issue| issue.get("field").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect::<Vec<_>>();
+    fields.sort();
+    Ok(fields)
+}
+
 #[test]
 fn impact_enforces_max_edges_and_sets_truncated() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
@@ -235,21 +250,111 @@ fn impact_invalid_params_return_invalid_argument_with_field_details() -> Result<
             .and_then(|v| v.as_str()),
         Some("invalid_argument")
     );
-    let issues = body
-        .get("error")
-        .and_then(|v| v.get("details"))
-        .and_then(|v| v.get("issues"))
-        .and_then(|v| v.as_array())
-        .ok_or("missing error.details.issues")?;
-    let mut fields = issues
-        .iter()
-        .filter_map(|issue| issue.get("field").and_then(|v| v.as_str()))
-        .collect::<Vec<_>>();
-    fields.sort();
-    assert_eq!(fields, vec!["maxDepth", "maxEdges"]);
+    assert_eq!(issue_fields(&body)?, vec!["maxDepth", "maxEdges"]);
 
     server.kill().ok();
     server.wait().ok();
     Ok(())
 }
 
+#[test]
+fn impact_non_integer_params_return_invalid_argument_with_field_details() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(repo.path(), host, port)?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/v1/graph/impact");
+    let resp = client
+        .get(&url)
+        .query(&[("file", "a.ts"), ("maxEdges", "nope"), ("maxDepth", "10")])
+        .send()?;
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: Value = resp.json()?;
+    assert_eq!(
+        body.get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("invalid_argument")
+    );
+    assert_eq!(issue_fields(&body)?, vec!["maxEdges"]);
+
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn impact_missing_file_returns_invalid_argument_with_field_details() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(repo.path(), host, port)?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/v1/graph/impact");
+    let resp = client.get(&url).send()?;
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: Value = resp.json()?;
+    assert_eq!(
+        body.get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("invalid_argument")
+    );
+    assert_eq!(issue_fields(&body)?, vec!["file"]);
+
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn impact_edge_types_empty_returns_invalid_argument_with_field_details() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(repo.path(), host, port)?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/v1/graph/impact");
+    let resp = client
+        .get(&url)
+        .query(&[("file", "a.ts"), ("edgeTypes", ",")])
+        .send()?;
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: Value = resp.json()?;
+    assert_eq!(
+        body.get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("invalid_argument")
+    );
+    assert_eq!(issue_fields(&body)?, vec!["edgeTypes"]);
+
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}

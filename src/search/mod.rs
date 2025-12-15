@@ -13,7 +13,7 @@ use crate::ratelimit::RateLimiter;
 use anyhow::Result;
 use axum::body::HttpBody;
 use axum::{
-    extract::{ConnectInfo, Path, Query, State},
+    extract::{ConnectInfo, Path, Query, RawQuery, State},
     http::{header::CONTENT_LENGTH, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Json, Response},
@@ -238,18 +238,6 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ImpactGraphParams {
-    file: String,
-    #[serde(default)]
-    max_edges: Option<i64>,
-    #[serde(default)]
-    max_depth: Option<i64>,
-    #[serde(default)]
-    edge_types: Option<Vec<String>>,
-}
-
 #[derive(Serialize)]
 struct ImpactErrorResponse {
     error: ImpactErrorDetail,
@@ -263,48 +251,154 @@ struct ImpactErrorDetail {
     details: Option<serde_json::Value>,
 }
 
-async fn impact_graph_handler(
-    State(state): State<AppState>,
-    Query(params): Query<ImpactGraphParams>,
-) -> impl IntoResponse {
-    let source = params.file.trim();
-    if source.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ImpactErrorResponse {
-                error: ImpactErrorDetail {
-                    code: "invalid_argument",
-                    message: "file must not be empty".to_string(),
-                    details: Some(json!({
-                        "issues": [{ "field": "file", "code": "must_be_non_empty", "message": "file must not be empty" }]
-                    })),
-                },
-            }),
-        )
-            .into_response();
+fn invalid_argument_details(
+    issues: Vec<crate::impact::InvalidFieldIssue>,
+) -> crate::impact::InvalidArgumentDetails {
+    crate::impact::InvalidArgumentDetails::new(issues)
+}
+
+fn invalid_argument_response(message: impl Into<String>, details: crate::impact::InvalidArgumentDetails) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ImpactErrorResponse {
+            error: ImpactErrorDetail {
+                code: "invalid_argument",
+                message: message.into(),
+                details: Some(serde_json::to_value(details).unwrap_or_else(|_| json!({}))),
+            },
+        }),
+    )
+        .into_response()
+}
+
+fn push_issue(
+    issues: &mut Vec<crate::impact::InvalidFieldIssue>,
+    field: &'static str,
+    code: &'static str,
+    message: impl Into<String>,
+) {
+    issues.push(crate::impact::InvalidFieldIssue {
+        field,
+        code,
+        message: message.into(),
+    });
+}
+
+fn parse_i64_param(
+    issues: &mut Vec<crate::impact::InvalidFieldIssue>,
+    field: &'static str,
+    raw: &str,
+) -> Option<i64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        push_issue(issues, field, "must_be_integer", format!("{field} must be an integer"));
+        return None;
+    }
+    match trimmed.parse::<i64>() {
+        Ok(value) => Some(value),
+        Err(_) => {
+            push_issue(issues, field, "must_be_integer", format!("{field} must be an integer"));
+            None
+        }
+    }
+}
+
+fn parse_impact_graph_query(
+    raw_query: Option<&str>,
+) -> std::result::Result<(String, crate::impact::ImpactQueryControls), crate::impact::InvalidArgumentError>
+{
+    let mut issues: Vec<crate::impact::InvalidFieldIssue> = Vec::new();
+    let mut file: Option<String> = None;
+    let mut max_edges: Option<i64> = None;
+    let mut max_depth: Option<i64> = None;
+    let mut edge_types: Vec<String> = Vec::new();
+    let mut edge_types_seen = false;
+
+    let pairs = match raw_query {
+        None => Vec::new(),
+        Some(raw) if raw.is_empty() => Vec::new(),
+        Some(raw) => match serde_urlencoded::from_str::<Vec<(String, String)>>(raw) {
+            Ok(pairs) => pairs,
+            Err(_) => {
+                push_issue(
+                    &mut issues,
+                    "query",
+                    "invalid_encoding",
+                    "invalid query string encoding",
+                );
+                return Err(crate::impact::InvalidArgumentError {
+                    details: invalid_argument_details(issues),
+                });
+            }
+        },
+    };
+
+    for (key, value) in pairs {
+        match key.as_str() {
+            "file" => file = Some(value),
+            "maxEdges" => max_edges = parse_i64_param(&mut issues, "maxEdges", &value),
+            "maxDepth" => max_depth = parse_i64_param(&mut issues, "maxDepth", &value),
+            "edgeTypes" => {
+                edge_types_seen = true;
+                for item in value.split(',') {
+                    let trimmed = item.trim();
+                    if trimmed.is_empty() {
+                        push_issue(
+                            &mut issues,
+                            "edgeTypes",
+                            "must_be_non_empty_string",
+                            "edgeTypes entries must be non-empty strings",
+                        );
+                    } else {
+                        edge_types.push(trimmed.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
-    let raw = crate::impact::ImpactQueryControlsRaw {
-        max_edges: params.max_edges,
-        max_depth: params.max_depth,
-        edge_types: params.edge_types,
+    let source = file.unwrap_or_default();
+    let source_trimmed = source.trim();
+    if source_trimmed.is_empty() {
+        push_issue(
+            &mut issues,
+            "file",
+            "must_be_non_empty",
+            "file must not be empty",
+        );
+    }
+
+    if !issues.is_empty() {
+        return Err(crate::impact::InvalidArgumentError {
+            details: invalid_argument_details(issues),
+        });
+    }
+
+    let raw_controls = crate::impact::ImpactQueryControlsRaw {
+        max_edges,
+        max_depth,
+        edge_types: if edge_types_seen { Some(edge_types) } else { None },
     };
-    let controls = match raw.validate() {
+    let controls = raw_controls.validate()?;
+
+    Ok((source_trimmed.to_string(), controls))
+}
+
+async fn impact_graph_handler(
+    State(state): State<AppState>,
+    RawQuery(raw): RawQuery,
+) -> impl IntoResponse {
+    let (source, controls) = match parse_impact_graph_query(raw.as_deref()) {
         Ok(value) => value,
         Err(err) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ImpactErrorResponse {
-                    error: ImpactErrorDetail {
-                        code: "invalid_argument",
-                        message: "invalid query parameters".to_string(),
-                        details: Some(
-                            serde_json::to_value(err.details).unwrap_or_else(|_| json!({})),
-                        ),
-                    },
-                }),
-            )
-                .into_response();
+            let message = if err.details.issues.len() == 1 && err.details.field_errors.contains_key("file")
+            {
+                "file must not be empty"
+            } else {
+                "invalid query parameters"
+            };
+            return invalid_argument_response(message, err.details);
         }
     };
 
@@ -330,8 +424,8 @@ async fn impact_graph_handler(
         }
     };
 
-    let traversal = crate::impact::traverse_impact(source, &all_edges, &controls);
-    let response = crate::impact::build_impact_response(&repo_id, source, traversal, &controls);
+    let traversal = crate::impact::traverse_impact(&source, &all_edges, &controls);
+    let response = crate::impact::build_impact_response(&repo_id, &source, traversal, &controls);
     Json(response).into_response()
 }
 

@@ -1,7 +1,7 @@
 use crate::symbols::{SchemaCompatibleRange, SchemaInfo};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 const HARD_MAX_EDGES: usize = 10_000;
@@ -49,8 +49,35 @@ pub struct InvalidFieldIssue {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct FieldErrorDetail {
+    pub code: &'static str,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct InvalidArgumentDetails {
     pub issues: Vec<InvalidFieldIssue>,
+    pub field_errors: BTreeMap<String, Vec<FieldErrorDetail>>,
+}
+
+impl InvalidArgumentDetails {
+    pub fn new(issues: Vec<InvalidFieldIssue>) -> Self {
+        let mut field_errors: BTreeMap<String, Vec<FieldErrorDetail>> = BTreeMap::new();
+        for issue in &issues {
+            field_errors
+                .entry(issue.field.to_string())
+                .or_default()
+                .push(FieldErrorDetail {
+                    code: issue.code,
+                    message: issue.message.clone(),
+                });
+        }
+        Self {
+            issues,
+            field_errors,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -162,7 +189,7 @@ impl ImpactQueryControlsRaw {
 
         if !issues.is_empty() {
             return Err(InvalidArgumentError {
-                details: InvalidArgumentDetails { issues },
+                details: InvalidArgumentDetails::new(issues),
             });
         }
 
@@ -460,4 +487,3 @@ mod tests {
         assert_eq!(res.edges[0].target, "a.ts");
     }
 }
-

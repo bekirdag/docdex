@@ -14,7 +14,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "postinstall": "node ./lib/install.js"
+    "postinstall": "node ./lib/install.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18"

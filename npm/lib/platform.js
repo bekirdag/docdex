@@ -41,8 +41,37 @@ function artifactName(platformKey) {
   return `docdexd-${platformKey}.tar.gz`;
 }
 
+function targetTripleForPlatformKey(platformKey) {
+  switch (platformKey) {
+    case "darwin-arm64":
+      return "aarch64-apple-darwin";
+    case "darwin-x64":
+      return "x86_64-apple-darwin";
+    case "linux-x64-gnu":
+      return "x86_64-unknown-linux-gnu";
+    case "linux-x64-musl":
+      return "x86_64-unknown-linux-musl";
+    case "linux-arm64-gnu":
+      return "aarch64-unknown-linux-gnu";
+    case "linux-arm64-musl":
+      return "aarch64-unknown-linux-musl";
+    case "win32-x64":
+      return "x86_64-pc-windows-msvc";
+    case "win32-arm64":
+      return "aarch64-pc-windows-msvc";
+    default:
+      throw new Error(`Unsupported platform key: ${platformKey}`);
+  }
+}
+
+function detectTargetTriple() {
+  return targetTripleForPlatformKey(detectPlatformKey());
+}
+
 module.exports = {
   detectLibc,
   detectPlatformKey,
-  artifactName
+  artifactName,
+  targetTripleForPlatformKey,
+  detectTargetTriple
 };

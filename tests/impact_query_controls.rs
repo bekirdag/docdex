@@ -175,6 +175,11 @@ fn impact_enforces_max_depth() -> Result<(), Box<dyn Error>> {
         }),
         "maxDepth=1 should not traverse to b.ts -> c.ts"
     );
+    assert_eq!(
+        resp.get("truncated").and_then(|v| v.as_bool()),
+        Some(true),
+        "maxDepth=1 should mark response as truncated"
+    );
 
     server.kill().ok();
     server.wait().ok();

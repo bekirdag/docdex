@@ -294,7 +294,7 @@ pub fn traverse_impact(
         incoming.entry(edge.target.as_str()).or_default().push(idx);
     }
 
-    let mut seen_edges: HashSet<(String, String, Option<String>)> = HashSet::new();
+    let mut seen_edges: HashSet<(&str, &str, Option<&str>)> = HashSet::new();
     let mut result: Vec<ImpactGraphEdge> = Vec::new();
     let mut truncated = false;
 
@@ -303,20 +303,46 @@ pub fn traverse_impact(
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();
     queue.push_back((root.to_string(), 0));
 
-    while let Some((node, depth)) = queue.pop_front() {
-        if depth >= controls.max_depth {
-            continue;
-        }
-
+    let incident_edges = |node: &str,
+                          outgoing: &HashMap<&str, Vec<usize>>,
+                          incoming: &HashMap<&str, Vec<usize>>|
+     -> Vec<usize> {
         let mut incident: Vec<usize> = Vec::new();
-        if let Some(list) = outgoing.get(node.as_str()) {
+        if let Some(list) = outgoing.get(node) {
             incident.extend(list.iter().copied());
         }
-        if let Some(list) = incoming.get(node.as_str()) {
+        if let Some(list) = incoming.get(node) {
             incident.extend(list.iter().copied());
         }
         incident.sort_unstable();
         incident.dedup();
+        incident
+    };
+
+    while let Some((node, depth)) = queue.pop_front() {
+        if depth >= controls.max_depth {
+            if depth == controls.max_depth && !truncated {
+                let incident = incident_edges(node.as_str(), &outgoing, &incoming);
+                for edge_idx in incident {
+                    let edge = &edges[edge_idx];
+                    let key = (
+                        edge.source.as_str(),
+                        edge.target.as_str(),
+                        edge.kind.as_deref(),
+                    );
+                    if !seen_edges.contains(&key) {
+                        truncated = true;
+                        break;
+                    }
+                }
+                if truncated {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        let incident = incident_edges(node.as_str(), &outgoing, &incoming);
 
         for edge_idx in incident {
             if result.len() >= controls.max_edges {
@@ -324,7 +350,7 @@ pub fn traverse_impact(
                 break;
             }
             let edge = &edges[edge_idx];
-            let key = (edge.source.clone(), edge.target.clone(), edge.kind.clone());
+            let key = (edge.source.as_str(), edge.target.as_str(), edge.kind.as_deref());
             if !seen_edges.insert(key) {
                 continue;
             }
@@ -469,6 +495,55 @@ mod tests {
             .edges
             .iter()
             .any(|e| e.source == "b.ts" && e.target == "c.ts"));
+    }
+
+    #[test]
+    fn traverse_max_depth_zero_returns_no_edges() {
+        let controls = ImpactQueryControlsRaw {
+            max_edges: Some(100),
+            max_depth: Some(0),
+            edge_types: None,
+        }
+        .validate()
+        .unwrap();
+        let res = traverse_impact("a.ts", &fixture_edges(), &controls);
+        assert!(res.edges.is_empty());
+        assert!(res.truncated);
+    }
+
+    #[test]
+    fn traverse_max_depth_two_includes_second_hop_but_not_third() {
+        let controls = ImpactQueryControlsRaw {
+            max_edges: Some(100),
+            max_depth: Some(2),
+            edge_types: None,
+        }
+        .validate()
+        .unwrap();
+        let res = traverse_impact("a.ts", &fixture_edges(), &controls);
+        assert!(res
+            .edges
+            .iter()
+            .any(|e| e.source == "b.ts" && e.target == "c.ts"));
+        assert!(!res
+            .edges
+            .iter()
+            .any(|e| e.source == "c.ts" && e.target == "d.ts"));
+        assert!(res.truncated);
+    }
+
+    #[test]
+    fn traverse_depth_limit_not_marked_truncated_when_fully_explored() {
+        let controls = ImpactQueryControlsRaw {
+            max_edges: Some(100),
+            max_depth: Some(3),
+            edge_types: None,
+        }
+        .validate()
+        .unwrap();
+        let res = traverse_impact("a.ts", &fixture_edges(), &controls);
+        assert_eq!(res.edges.len(), fixture_edges().len());
+        assert!(!res.truncated);
     }
 
     #[test]

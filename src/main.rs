@@ -1,5 +1,6 @@
 mod audit;
 mod browser_session;
+mod chrome_watchdog;
 mod config;
 mod daemon;
 mod error;
@@ -588,6 +589,7 @@ async fn run() -> Result<()> {
                 disable_snippet_text,
             )?;
             let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);
+            let _ = chrome_watchdog::init_global_from_env();
             daemon::serve(
                 repo_root,
                 host,
@@ -931,6 +933,7 @@ async fn run() -> Result<()> {
                 repo.symbols_enabled(),
             );
             util::init_logging(&log)?;
+            let _ = chrome_watchdog::init_global_from_env();
             mcp::serve(
                 repo_root,
                 index_config,

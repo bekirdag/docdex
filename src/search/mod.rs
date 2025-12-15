@@ -2,8 +2,9 @@ use crate::index::{
     DocSnapshot, Hit, Indexer, SearchError, SearchQueryMeta, SnippetOrigin, SnippetResult,
 };
 use crate::error::{
-    AppError, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
+    AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
+    ERR_RATE_LIMITED,
 };
 use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
@@ -382,10 +383,7 @@ fn json_error(status: StatusCode, code: &'static str, message: impl Into<String>
     (
         status,
         Json(ErrorBody {
-            error: ErrorDetail {
-                code,
-                message: message.into(),
-            },
+            error: ErrorDetail::new(code, message),
         }),
     )
         .into_response()
@@ -876,6 +874,38 @@ struct ErrorBody {
 struct ErrorDetail {
     code: &'static str,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retry_after_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retry_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope: Option<String>,
+}
+
+impl ErrorDetail {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            retry_after_ms: None,
+            retry_at: None,
+            limit_key: None,
+            scope: None,
+        }
+    }
+
+    fn rate_limited(err: &RateLimited) -> Self {
+        Self {
+            code: ERR_RATE_LIMITED,
+            message: err.message.clone(),
+            retry_after_ms: Some(err.retry_after_ms),
+            retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
+            limit_key: Some(err.limit_key.clone()),
+            scope: Some(err.scope.clone()),
+        }
+    }
 }
 
 pub async fn run_query(
@@ -982,10 +1012,7 @@ async fn search_handler(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorBody {
-                    error: ErrorDetail {
-                        code: "missing_query",
-                        message: "q is required".to_string(),
-                    },
+                    error: ErrorDetail::new("missing_query", "q is required"),
                 }),
             )
                 .into_response();
@@ -996,10 +1023,7 @@ async fn search_handler(
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorBody {
-                error: ErrorDetail {
-                    code: "invalid_query",
-                    message: "q must not be empty".to_string(),
-                },
+                error: ErrorDetail::new("invalid_query", "q must not be empty"),
             }),
         )
             .into_response();
@@ -1087,10 +1111,7 @@ async fn search_handler(
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorBody {
-                        error: ErrorDetail {
-                            code: "invalid_query",
-                            message: reason.clone(),
-                        },
+                        error: ErrorDetail::new("invalid_query", reason.clone()),
                     }),
                 )
                     .into_response();
@@ -1236,7 +1257,7 @@ async fn security_middleware(
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
     request: axum::http::Request<axum::body::Body>,
     next: Next,
-) -> Result<Response, (StatusCode, HeaderMap)> {
+) -> Result<Response, Response> {
     let path = request.uri().path().to_string();
     let size_hint = request.body().size_hint();
     if !state.security.ip_allowed(addr.ip()) {
@@ -1252,7 +1273,7 @@ async fn security_middleware(
                 None,
             );
         }
-        return Err((StatusCode::FORBIDDEN, HeaderMap::new()));
+        return Err((StatusCode::FORBIDDEN, HeaderMap::new()).into_response());
     }
     if path != "/healthz" {
         if let Some(limiter) = state.security.rate_limit.as_ref() {
@@ -1277,7 +1298,14 @@ async fn security_middleware(
                         None,
                     );
                 }
-                return Err((StatusCode::TOO_MANY_REQUESTS, headers));
+                return Err((
+                    StatusCode::TOO_MANY_REQUESTS,
+                    headers,
+                    Json(ErrorBody {
+                        error: ErrorDetail::rate_limited(&err),
+                    }),
+                )
+                    .into_response());
             }
         }
         if state.security.max_request_bytes > 0 {
@@ -1288,19 +1316,19 @@ async fn security_middleware(
                 .and_then(|value| value.parse::<u64>().ok())
             {
                 if len as usize > state.security.max_request_bytes {
-                    return Err((StatusCode::PAYLOAD_TOO_LARGE, HeaderMap::new()));
+                    return Err((StatusCode::PAYLOAD_TOO_LARGE, HeaderMap::new()).into_response());
                 }
             }
             if let Some(upper) = size_hint.upper() {
                 if upper as usize > state.security.max_request_bytes {
-                    return Err((StatusCode::PAYLOAD_TOO_LARGE, HeaderMap::new()));
+                    return Err((StatusCode::PAYLOAD_TOO_LARGE, HeaderMap::new()).into_response());
                 }
             }
         }
         if state.security.max_query_bytes > 0 {
             if let Some(query) = request.uri().query() {
                 if query.len() > state.security.max_query_bytes {
-                    return Err((StatusCode::PAYLOAD_TOO_LARGE, HeaderMap::new()));
+                    return Err((StatusCode::PAYLOAD_TOO_LARGE, HeaderMap::new()).into_response());
                 }
             }
         }
@@ -1323,7 +1351,7 @@ async fn security_middleware(
                 axum::http::header::WWW_AUTHENTICATE,
                 HeaderValue::from_static("Bearer"),
             );
-            return Err((StatusCode::UNAUTHORIZED, hdrs));
+            return Err((StatusCode::UNAUTHORIZED, hdrs).into_response());
         }
         if let Some(audit) = state.audit.as_ref() {
             audit.log(

@@ -159,7 +159,9 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     let mut mcp = McpHarness::spawn_with_env(
         repo.path(),
         &[
-            ("DOCDEX_MCP_RATE_LIMIT_PER_MIN", "1"),
+            // 1 request/sec refill + burst=1 lets us deterministically rate-limit
+            // multiple tools within a short test window.
+            ("DOCDEX_MCP_RATE_LIMIT_PER_MIN", "60"),
             ("DOCDEX_MCP_RATE_LIMIT_BURST", "1"),
         ],
     )?;
@@ -182,35 +184,103 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
-            "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1 } }
+            "params": { "name": "docdex_files", "arguments": {} }
         }),
     )?;
-    let limited = read_line(&mut mcp.reader)?;
-    assert_eq!(mcp_error_code(&limited), Some(-32029));
-    assert_eq!(mcp_error_data_code(&limited), Some("rate_limited"));
+    let limited_files = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&limited_files), Some(-32029));
+    assert_eq!(mcp_error_data_code(&limited_files), Some("rate_limited"));
 
-    let data = limited
+    let data_files = limited_files
         .get("error")
         .and_then(|v| v.get("data"))
         .and_then(|v| v.as_object())
         .ok_or("rate-limit error missing error.data object")?;
     assert_eq!(
-        data.get("limit_key").and_then(|v| v.as_str()),
+        data_files.get("limit_key").and_then(|v| v.as_str()),
         Some("mcp_tools")
     );
-    assert_eq!(data.get("scope").and_then(|v| v.as_str()), Some("global"));
+    assert_eq!(
+        data_files.get("scope").and_then(|v| v.as_str()),
+        Some("global")
+    );
     assert!(
-        data.get("retry_after_ms").and_then(|v| v.as_u64()).is_some(),
+        data_files
+            .get("retry_after_ms")
+            .and_then(|v| v.as_u64())
+            .is_some(),
         "retry_after_ms must be an integer"
     );
     assert!(
-        data.keys().all(|k| {
+        data_files.keys().all(|k| {
             matches!(
                 k.as_str(),
                 "code" | "retry_after_ms" | "retry_at" | "limit_key" | "scope"
             )
         }),
         "error.data should only include stable keys"
+    );
+
+    // Wait long enough for the limiter to refill 1 token (per_minute=60).
+    thread::sleep(Duration::from_millis(1100));
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": { "name": "docdex_files", "arguments": {} }
+        }),
+    )?;
+    let ok_files = read_line(&mut mcp.reader)?;
+    assert!(
+        ok_files.get("result").is_some(),
+        "docdex_files should succeed after refill"
+    );
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1 } }
+        }),
+    )?;
+    let limited_search = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&limited_search), Some(-32029));
+    assert_eq!(mcp_error_data_code(&limited_search), Some("rate_limited"));
+
+    let data_search = limited_search
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.as_object())
+        .ok_or("rate-limit error missing error.data object (docdex_search)")?;
+
+    fn shape_signature(data: &serde_json::Map<String, Value>) -> Vec<(String, &'static str)> {
+        let mut out: Vec<(String, &'static str)> = data
+            .iter()
+            .map(|(k, v)| {
+                let kind = match v {
+                    Value::Null => "null",
+                    Value::Bool(_) => "bool",
+                    Value::Number(_) => "number",
+                    Value::String(_) => "string",
+                    Value::Array(_) => "array",
+                    Value::Object(_) => "object",
+                };
+                (k.clone(), kind)
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    assert_eq!(
+        shape_signature(data_files),
+        shape_signature(data_search),
+        "rate-limit error schema should be identical across tools sharing the limiter"
     );
 
     mcp.shutdown();

@@ -782,10 +782,28 @@ fn rate_limit_and_request_size_limits_apply() -> Result<(), Box<dyn Error>> {
         .get(&rate_url)
         .query(&[("q", "roadmap"), ("limit", "1")])
         .send()?;
+    let third_status = third.status();
     assert_eq!(
-        third.status(),
+        third_status,
         reqwest::StatusCode::TOO_MANY_REQUESTS,
         "third request within window should be rate limited"
+    );
+    let limited: Value = third.json()?;
+    assert_eq!(
+        limited
+            .get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("rate_limited"),
+        "rate-limited responses should include stable code"
+    );
+    assert!(
+        limited
+            .get("error")
+            .and_then(|v| v.get("retry_after_ms"))
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "rate-limited responses should include machine-readable retry_after_ms"
     );
 
     rate_child.kill().ok();

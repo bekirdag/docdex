@@ -184,6 +184,16 @@ paths:
                         type: string
                       message:
                         type: string
+                      retry_after_ms:
+                        type: integer
+                        minimum: 0
+                      retry_at:
+                        type: string
+                        format: date-time
+                      limit_key:
+                        type: string
+                      scope:
+                        type: string
         "401":
           description: Unauthorized
           content:

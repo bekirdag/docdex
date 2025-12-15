@@ -1,4 +1,5 @@
 use reqwest::blocking::Client;
+use serde_json::Value;
 use std::error::Error;
 use std::fs;
 use std::net::TcpListener;
@@ -67,6 +68,16 @@ fn spawn_server_default_host(repo_root: &Path, port: u16) -> Result<Child, Box<d
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?)
+}
+
+fn parse_single_error_envelope(stderr: &[u8]) -> Result<Value, Box<dyn Error>> {
+    let raw = String::from_utf8_lossy(stderr);
+    let trimmed = raw.trim();
+    assert!(
+        !trimmed.contains('\n'),
+        "expected a single-line JSON error envelope; got:\n{trimmed}"
+    );
+    Ok(serde_json::from_str(trimmed)?)
 }
 
 struct ChildGuard(Child);
@@ -161,3 +172,103 @@ fn daemon_defaults_to_loopback_binding() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[test]
+fn startup_failure_emits_single_error_envelope_for_auth() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_arg = repo.path().to_string_lossy().to_string();
+    let output = Command::new(docdex_bin())
+        .args([
+            "serve",
+            "--repo",
+            repo_arg.as_str(),
+            "--log",
+            "warn",
+            // secure mode defaults true; omit --auth-token to force startup failure
+        ])
+        .output()?;
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit when secure mode has no auth token"
+    );
+    let payload = parse_single_error_envelope(&output.stderr)?;
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|c| c.as_str()),
+        Some("startup_auth_required")
+    );
+    assert!(
+        payload
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("auth token"),
+        "expected message to mention auth token requirement; got: {payload}"
+    );
+    Ok(())
+}
+
+#[test]
+fn startup_failure_emits_single_error_envelope_for_bind() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_arg = repo.path().to_string_lossy().to_string();
+    let listener = match TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => listener,
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            eprintln!("skipping bind failure test: TCP bind not permitted in this environment");
+            return Ok(());
+        }
+        Err(err) => return Err(format!("bind ephemeral port: {err}").into()),
+    };
+    let port = listener.local_addr()?.port();
+
+    let output = Command::new(docdex_bin())
+        .args([
+            "serve",
+            "--repo",
+            repo_arg.as_str(),
+            "--port",
+            &port.to_string(),
+            "--log",
+            "warn",
+            "--secure-mode=false",
+        ])
+        .output()?;
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit when port is already in use"
+    );
+    let payload = parse_single_error_envelope(&output.stderr)?;
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|c| c.as_str()),
+        Some("startup_bind_failed")
+    );
+    drop(listener);
+    Ok(())
+}
+
+#[test]
+fn startup_failure_emits_single_error_envelope_for_config_parse() -> Result<(), Box<dyn Error>> {
+    let output = Command::new(docdex_bin())
+        .args(["serve", "--this-flag-does-not-exist"])
+        .output()?;
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for invalid flags"
+    );
+    let payload = parse_single_error_envelope(&output.stderr)?;
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|c| c.as_str()),
+        Some("startup_config_invalid")
+    );
+    Ok(())
+}

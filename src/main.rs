@@ -336,7 +336,10 @@ async fn main() {
 }
 
 async fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = Cli::try_parse().map_err(|err| {
+        StartupError::new("startup_config_invalid", err.to_string())
+            .with_hint("Run `docdexd help-all` for full usage.")
+    })?;
     match cli.command {
         Command::Serve {
             repo,
@@ -370,7 +373,11 @@ async fn run() -> Result<()> {
             allow_ip,
         } => {
             if let Some(ref dir) = chroot_dir {
-                daemon::enter_chroot(dir)?;
+                daemon::enter_chroot(dir).map_err(|err| {
+                    StartupError::new("startup_state_invalid", err.to_string()).with_hint(
+                        "Verify the chroot path exists and is accessible (Unix only).",
+                    )
+                })?;
             }
             let repo_root = repo.repo_root();
             let index_config = index::IndexConfig::with_overrides(
@@ -384,7 +391,12 @@ async fn run() -> Result<()> {
                 tls_key,
                 certbot_domain,
                 certbot_live_dir,
-            )?;
+            )
+            .map_err(|err| {
+                StartupError::new("startup_config_invalid", err.to_string()).with_hint(
+                    "Fix TLS flags (provide both --tls-cert/--tls-key or use --certbot-* options).",
+                )
+            })?;
             let audit_logger = if audit_disable {
                 None
             } else {
@@ -395,7 +407,11 @@ async fn run() -> Result<()> {
                     path,
                     audit_max_bytes,
                     audit_max_files,
-                )?)
+                )
+                .map_err(|err| {
+                    StartupError::new("startup_state_invalid", err.to_string())
+                        .with_hint("Verify the state dir is writable or set --audit-disable.")
+                })?)
             };
             let security = search::SecurityConfig::from_options(
                 auth_token,
@@ -409,15 +425,11 @@ async fn run() -> Result<()> {
                 secure_mode,
                 disable_snippet_text,
             )?;
-            util::init_logging(&log)?;
-            info!(
-                "Starting docdex daemon on {host}:{port} (repo={})",
-                repo_root.display()
-            );
             daemon::serve(
                 repo_root,
                 host,
                 port,
+                log,
                 index_config,
                 security,
                 tls,
@@ -660,11 +672,19 @@ async fn run() -> Result<()> {
 
 fn render_error_and_exit(err: anyhow::Error) -> ! {
     if let Some(startup) = err.downcast_ref::<StartupError>() {
-        let payload = json!({
-            "error": {
-                "code": startup.code,
-                "message": startup.message,
-            }
+        let mut body = serde_json::Map::new();
+        body.insert("code".to_string(), json!(startup.code));
+        body.insert("message".to_string(), json!(startup.message.as_str()));
+        if let Some(hint) = startup.hint.as_ref() {
+            body.insert("hint".to_string(), json!(hint));
+        }
+        if let Some(steps) = startup.remediation.as_ref() {
+            body.insert("remediation".to_string(), json!(steps));
+        }
+        let payload = serde_json::Value::Object({
+            let mut root = serde_json::Map::new();
+            root.insert("error".to_string(), serde_json::Value::Object(body));
+            root
         });
         match serde_json::to_string(&payload) {
             Ok(line) => eprintln!("{line}"),

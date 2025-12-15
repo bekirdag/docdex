@@ -2,6 +2,7 @@ use crate::audit::AuditLogger;
 use crate::error::StartupError;
 use crate::index::{IndexConfig, Indexer};
 use crate::search::{self, AppState, SecurityConfig};
+use crate::util;
 use crate::watcher;
 use anyhow::{anyhow, Context, Result};
 use hyper_util::{
@@ -10,7 +11,7 @@ use hyper_util::{
 };
 use rustls_pemfile;
 use std::env;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::{io, sync::Arc};
 use tokio::net::TcpListener;
@@ -202,6 +203,7 @@ pub async fn serve(
     repo: PathBuf,
     host: String,
     port: u16,
+    log_level: String,
     config: IndexConfig,
     security: SecurityConfig,
     tls: Option<TlsConfig>,
@@ -220,23 +222,35 @@ pub async fn serve(
                 "startup_refuse_root",
                 "refusing to run as root without --run-as-uid/--run-as-gid; provide explicit drop targets",
             )
+            .with_hint("Provide `--run-as-uid <uid>` and/or `--run-as-gid <gid>` to drop privileges after startup preparation.")
             .into());
         }
     }
     let repo_display = repo.display().to_string();
+
     let tls_config = match tls {
-        Some(tls) => Some(Arc::new(tls.to_rustls()?)),
+        Some(tls) => Some(Arc::new(tls.to_rustls().map_err(|err| {
+            StartupError::new("startup_config_invalid", format!("invalid TLS configuration: {err}"))
+                .with_hint("Check certificate/key paths and PEM contents (or disable TLS options).")
+        })?)),
         None => None,
     };
-    apply_privilege_drop(run_as_uid, run_as_gid, unshare_net)?;
-    info!(
-        target: "docdexd",
-        repo = %repo_display,
-        host = %host,
-        port,
-        "initialising docdex indexer"
-    );
-    let indexer = Arc::new(Indexer::with_config(repo, config)?);
+
+    apply_privilege_drop(run_as_uid, run_as_gid, unshare_net).map_err(|err| {
+        StartupError::new(
+            "startup_state_invalid",
+            format!("failed to apply privilege drop settings: {err}"),
+        )
+        .with_hint("On non-Unix platforms, remove --run-as-uid/--run-as-gid/--unshare-net.")
+    })?;
+
+    let indexer = Arc::new(Indexer::with_config(repo, config).map_err(|err| {
+        StartupError::new(
+            "startup_state_invalid",
+            format!("failed to initialize state directory/index: {err}"),
+        )
+        .with_hint("Verify repo/state-dir paths and permissions; consider `--state-dir <path>`.")
+    })?);
     let metrics = Arc::new(crate::search::Metrics::default());
     let state = AppState {
         indexer: indexer.clone(),
@@ -245,18 +259,46 @@ pub async fn serve(
         audit,
         metrics: metrics.clone(),
     };
-    watcher::spawn(indexer.clone())?;
-    let is_loopback = host
-        .parse::<IpAddr>()
-        .map(|ip| ip.is_loopback())
-        .unwrap_or_else(|_| host.eq_ignore_ascii_case("localhost"));
+    watcher::spawn(indexer.clone()).map_err(|err| {
+        StartupError::new(
+            "startup_state_invalid",
+            format!("failed to start file watcher: {err}"),
+        )
+        .with_hint("Verify the repo path is accessible and not on an unsupported filesystem.")
+    })?;
+
+    let ip = if host.eq_ignore_ascii_case("localhost") {
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    } else {
+        host.parse::<IpAddr>().map_err(|_| {
+            StartupError::new(
+                "startup_config_invalid",
+                format!("invalid --host value `{host}`: expected an IP address"),
+            )
+            .with_hint("Use `127.0.0.1` (default) or a specific interface IP like `0.0.0.0`.")
+        })?
+    };
+    let is_loopback = ip.is_loopback();
     if require_tls && !is_loopback && tls_config.is_none() && !allow_insecure {
         return Err(StartupError::new(
             "startup_tls_required",
             "refusing to bind on non-loopback without TLS; provide --tls-cert/--tls-key or --insecure to allow plain HTTP",
         )
+        .with_hint("Provide `--tls-cert/--tls-key`, use `--certbot-domain/--certbot-live-dir`, or (unsafe) pass `--insecure` behind a trusted proxy.")
         .into());
     }
+    let addr = SocketAddr::new(ip, port);
+
+    let listener = TcpListener::bind(&addr).await.map_err(|err| {
+        StartupError::new("startup_bind_failed", format!("failed to bind {addr}: {err}")).with_hint(
+            "If the port is in use, choose another with `--port`; if permission is denied, use an unprivileged port (>=1024).",
+        )
+    })?;
+
+    // Logging is intentionally initialised only after startup validation + bind succeed so
+    // startup failures emit a single structured error without interleaved log lines.
+    util::init_logging(&log_level)?;
+
     if !is_loopback {
         warn!(
             target: "docdexd",
@@ -276,7 +318,6 @@ pub async fn serve(
             );
         }
     }
-    let addr: SocketAddr = format!("{host}:{port}").parse()?;
     let router = search::router(state);
     let make_service = router.into_make_service_with_connect_info::<SocketAddr>();
     info!(
@@ -288,7 +329,6 @@ pub async fn serve(
     );
     if let Some(tls_config) = tls_config.clone() {
         let tls_acceptor = TlsAcceptor::from(tls_config);
-        let listener = TcpListener::bind(&addr).await?;
         loop {
             let (stream, remote_addr) = listener.accept().await?;
             let acceptor = tls_acceptor.clone();
@@ -322,7 +362,6 @@ pub async fn serve(
             });
         }
     }
-    let listener = TcpListener::bind(&addr).await?;
     let result = axum::serve(listener, make_service).await;
     match result {
         Ok(()) => {

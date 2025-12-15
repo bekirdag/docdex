@@ -1,7 +1,8 @@
 use crate::index::{
     DocSnapshot, Hit, Indexer, SearchError, SearchQueryMeta, SnippetOrigin, SnippetResult,
 };
-use anyhow::{anyhow, Result};
+use crate::error::StartupError;
+use anyhow::Result;
 use axum::body::HttpBody;
 use axum::{
     extract::{ConnectInfo, Path, Query, State},
@@ -97,12 +98,20 @@ impl SecurityConfig {
         secure_mode: bool,
         disable_snippet_text: bool,
     ) -> Result<Self> {
-        let mut allow_nets: Vec<ipnet::IpNet> = allow_ips
-            .iter()
-            .map(|raw| raw.trim())
-            .filter(|raw| !raw.is_empty())
-            .map(|raw| raw.parse::<ipnet::IpNet>().map_err(|err| anyhow!(err)))
-            .collect::<Result<Vec<_>>>()?;
+        let mut allow_nets: Vec<ipnet::IpNet> = Vec::new();
+        for raw in allow_ips.iter().map(|raw| raw.trim()).filter(|raw| !raw.is_empty()) {
+            match raw.parse::<ipnet::IpNet>() {
+                Ok(net) => allow_nets.push(net),
+                Err(err) => {
+                    return Err(StartupError::new(
+                        "startup_config_invalid",
+                        format!("invalid --allow-ip value `{raw}`: {err}"),
+                    )
+                    .with_hint("Expected an IP or CIDR, e.g. `127.0.0.1/32` or `10.0.0.0/8`.")
+                    .into());
+                }
+            }
+        }
         if secure_mode && allow_nets.is_empty() {
             allow_nets.push("127.0.0.0/8".parse()?);
             if let Ok(ipv6) = "::1/128".parse() {
@@ -111,9 +120,16 @@ impl SecurityConfig {
         }
         let auth_token = token.filter(|value| !value.is_empty());
         if secure_mode && auth_token.is_none() {
-            return Err(anyhow!(
-                "secure mode requires an auth token; provide --auth-token or disable with --secure-mode=false"
-            ));
+            return Err(StartupError::new(
+                "startup_auth_required",
+                "secure mode requires an auth token",
+            )
+            .with_hint("Provide `--auth-token <token>` or disable with `--secure-mode=false` for local-only use.")
+            .with_remediation(vec![
+                "docdexd serve --repo . --host 127.0.0.1 --port 46137 --auth-token <token>".to_string(),
+                "docdexd serve --repo . --host 127.0.0.1 --port 46137 --secure-mode=false".to_string(),
+            ])
+            .into());
         }
         let effective_per_min = if secure_mode && rate_limit_per_min == 0 {
             60

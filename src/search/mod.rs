@@ -1,7 +1,12 @@
 use crate::index::{
     DocSnapshot, Hit, Indexer, SearchError, SearchQueryMeta, SnippetOrigin, SnippetResult,
 };
-use crate::error::StartupError;
+use crate::error::{
+    AppError, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
+    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
+};
+use crate::memory::{inject_embedding_metadata, MemoryStore};
+use crate::ollama::OllamaClient;
 use anyhow::Result;
 use axum::body::HttpBody;
 use axum::{
@@ -9,7 +14,7 @@ use axum::{
     http::{header::CONTENT_LENGTH, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Json, Response},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use serde::{Deserialize, Serialize};
@@ -18,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -198,10 +203,19 @@ pub struct AppState {
     pub access_log: bool,
     pub audit: Option<crate::audit::AuditLogger>,
     pub metrics: Arc<Metrics>,
+    pub memory: Option<MemoryState>,
 }
 
 #[derive(Clone)]
 pub struct RequestId(pub String);
+
+#[derive(Clone)]
+pub struct MemoryState {
+    pub store: MemoryStore,
+    pub ollama: OllamaClient,
+    pub embedding_model: String,
+    pub embedding_timeout: Duration,
+}
 
 #[derive(Default)]
 pub struct Metrics {
@@ -247,6 +261,8 @@ pub fn router(state: AppState) -> Router {
         .route("/search", get(search_handler))
         .route("/snippet/*doc_id", get(snippet_handler))
         .route("/v1/graph/impact", get(impact_graph_handler))
+        .route("/v1/memory/store", post(memory_store_handler))
+        .route("/v1/memory/recall", post(memory_recall_handler))
         .route("/ai-help", get(ai_help_handler))
         .route("/metrics", get(metrics_handler))
         .route_layer(middleware::from_fn_with_state(
@@ -363,6 +379,240 @@ async fn impact_graph_handler(
     Json(response).into_response()
 }
 
+#[derive(Deserialize)]
+struct MemoryStoreRequest {
+    text: String,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct MemoryStoreResponse {
+    id: String,
+    created_at: i64,
+}
+
+#[derive(Deserialize)]
+struct MemoryRecallRequest {
+    query: String,
+    #[serde(default)]
+    top_k: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct MemoryRecallResponse {
+    results: Vec<MemoryRecallItem>,
+}
+
+#[derive(Serialize)]
+struct MemoryRecallItem {
+    content: String,
+    score: f32,
+    metadata: serde_json::Value,
+}
+
+fn status_for_app_error(code: &str) -> StatusCode {
+    match code {
+        ERR_EMBEDDING_TIMEOUT => StatusCode::GATEWAY_TIMEOUT,
+        ERR_EMBEDDING_MODEL_NOT_FOUND => StatusCode::BAD_REQUEST,
+        ERR_EMBEDDING_FAILED => StatusCode::BAD_GATEWAY,
+        ERR_INVALID_ARGUMENT => StatusCode::BAD_REQUEST,
+        ERR_MEMORY_DISABLED => StatusCode::CONFLICT,
+        ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+fn json_error(status: StatusCode, code: &'static str, message: impl Into<String>) -> Response {
+    (
+        status,
+        Json(ErrorBody {
+            error: ErrorDetail {
+                code,
+                message: message.into(),
+            },
+        }),
+    )
+        .into_response()
+}
+
+async fn memory_store_handler(
+    State(state): State<AppState>,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    Json(req): Json<MemoryStoreRequest>,
+) -> impl IntoResponse {
+    let Some(memory) = state.memory.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            "memory is disabled; start the daemon with --enable-memory=true",
+        );
+    };
+    let text = req.text.trim();
+    if text.is_empty() {
+        return json_error(StatusCode::BAD_REQUEST, ERR_INVALID_ARGUMENT, "text must not be empty");
+    }
+
+    let embedding = match memory
+        .ollama
+        .embed(&memory.embedding_model, text, memory.embedding_timeout)
+        .await
+    {
+        Ok(value) => value,
+        Err(err) => {
+            let (code, status, message) = if let Some(app) = err.downcast_ref::<AppError>() {
+                (app.code, status_for_app_error(app.code), app.message.clone())
+            } else {
+                (ERR_INTERNAL_ERROR, StatusCode::INTERNAL_SERVER_ERROR, "embedding failed".to_string())
+            };
+            state.metrics.inc_error();
+            warn!(
+                target: "docdexd",
+                request_id = %request_id.0,
+                error_code = %code,
+                "memory_store embedding failed"
+            );
+            return json_error(status, code, message);
+        }
+    };
+
+    let created_at = now_epoch_ms()
+        .ok()
+        .and_then(|ms| i64::try_from(ms).ok())
+        .unwrap_or(0);
+    let metadata = inject_embedding_metadata(req.metadata, "ollama", &memory.embedding_model);
+    let store = memory.store.clone();
+    let text_owned = text.to_string();
+
+    let write = tokio::task::spawn_blocking(move || store.store(&text_owned, &embedding, metadata, created_at))
+        .await;
+    match write {
+        Ok(Ok((id, created_at))) => Json(MemoryStoreResponse {
+            id: id.to_string(),
+            created_at,
+        })
+        .into_response(),
+        Ok(Err(err)) => {
+            state.metrics.inc_error();
+            warn!(
+                target: "docdexd",
+                request_id = %request_id.0,
+                error = ?err,
+                "memory_store persistence failed"
+            );
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "memory persistence failed",
+            )
+        }
+        Err(err) => {
+            state.metrics.inc_error();
+            warn!(
+                target: "docdexd",
+                request_id = %request_id.0,
+                error = ?err,
+                "memory_store task join failed"
+            );
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "memory persistence failed",
+            )
+        }
+    }
+}
+
+async fn memory_recall_handler(
+    State(state): State<AppState>,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    Json(req): Json<MemoryRecallRequest>,
+) -> impl IntoResponse {
+    let Some(memory) = state.memory.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            "memory is disabled; start the daemon with --enable-memory=true",
+        );
+    };
+    let query = req.query.trim();
+    if query.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "query must not be empty",
+        );
+    }
+    let top_k = req.top_k.unwrap_or(5).max(1).min(50);
+
+    let query_embedding = match memory
+        .ollama
+        .embed(&memory.embedding_model, query, memory.embedding_timeout)
+        .await
+    {
+        Ok(value) => value,
+        Err(err) => {
+            let (code, status, message) = if let Some(app) = err.downcast_ref::<AppError>() {
+                (app.code, status_for_app_error(app.code), app.message.clone())
+            } else {
+                (ERR_INTERNAL_ERROR, StatusCode::INTERNAL_SERVER_ERROR, "embedding failed".to_string())
+            };
+            state.metrics.inc_error();
+            warn!(
+                target: "docdexd",
+                request_id = %request_id.0,
+                error_code = %code,
+                "memory_recall embedding failed"
+            );
+            return json_error(status, code, message);
+        }
+    };
+
+    let store = memory.store.clone();
+    let read = tokio::task::spawn_blocking(move || store.recall(&query_embedding, top_k)).await;
+    match read {
+        Ok(Ok(items)) => {
+            let results = items
+                .into_iter()
+                .map(|item| MemoryRecallItem {
+                    content: item.content,
+                    score: item.score,
+                    metadata: item.metadata,
+                })
+                .collect();
+            Json(MemoryRecallResponse { results }).into_response()
+        }
+        Ok(Err(err)) => {
+            state.metrics.inc_error();
+            warn!(
+                target: "docdexd",
+                request_id = %request_id.0,
+                error = ?err,
+                "memory_recall persistence failed"
+            );
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "memory recall failed",
+            )
+        }
+        Err(err) => {
+            state.metrics.inc_error();
+            warn!(
+                target: "docdexd",
+                request_id = %request_id.0,
+                error = ?err,
+                "memory_recall task join failed"
+            );
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "memory recall failed",
+            )
+        }
+    }
+}
+
 async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     state.metrics.render_prometheus()
 }
@@ -450,6 +700,29 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             },
             AiHelpEndpoint {
                 method: "GET",
+                path: "/v1/graph/impact",
+                description: "Read per-file impact graph (inbound/outbound dependency edges).",
+                params: &[
+                    "file=<repo-relative path>",
+                    "maxEdges=<int optional>",
+                    "maxDepth=<int optional>",
+                    "edgeTypes=<comma-separated optional>",
+                ],
+            },
+            AiHelpEndpoint {
+                method: "POST",
+                path: "/v1/memory/store",
+                description: "Store a memory item (requires --enable-memory=true).",
+                params: &[],
+            },
+            AiHelpEndpoint {
+                method: "POST",
+                path: "/v1/memory/recall",
+                description: "Recall memory items by semantic similarity (requires --enable-memory=true).",
+                params: &[],
+            },
+            AiHelpEndpoint {
+                method: "GET",
                 path: "/healthz",
                 description: "Liveness check (200 OK => ready).",
                 params: &[],
@@ -512,6 +785,18 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 description: "Report index metadata.",
                 args: &["project_root (string, optional)"],
                 returns: &["num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "repo_root"],
+            },
+            AiHelpMcpTool {
+                name: "docdex_memory_store",
+                description: "Store a memory item (requires DOCDEX_ENABLE_MEMORY=1).",
+                args: &["text (string, required)", "metadata (object, optional)", "project_root (string, optional)"],
+                returns: &["id", "created_at"],
+            },
+            AiHelpMcpTool {
+                name: "docdex_memory_recall",
+                description: "Recall memory items by semantic similarity (requires DOCDEX_ENABLE_MEMORY=1).",
+                args: &["query (string, required)", "top_k (int, optional)", "project_root (string, optional)"],
+                returns: &["results[]"],
             },
         ],
         best_practices: vec![

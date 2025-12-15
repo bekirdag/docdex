@@ -1,4 +1,7 @@
+use crate::error::{AppError, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED};
 use crate::index::{IndexConfig, Indexer};
+use crate::memory::{inject_embedding_metadata, MemoryStore};
+use crate::ollama::OllamaClient;
 use crate::search;
 use crate::symbols::SymbolsStore;
 use anyhow::{anyhow, Context, Result};
@@ -6,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 use tantivy::directory::error::LockError;
 use tantivy::TantivyError;
 use thiserror::Error;
@@ -89,6 +93,9 @@ fn rpc_error(
 }
 
 fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
+    if let Some(app) = err.downcast_ref::<AppError>() {
+        return (app.code, None);
+    }
     if let Some(search_err) = err.downcast_ref::<crate::index::SearchError>() {
         match search_err {
             crate::index::SearchError::InvalidQuery { .. } => return ("invalid_query", None),
@@ -130,6 +137,16 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
         return ("invalid_range", None);
     }
     ("internal_error", None)
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
 }
 
 #[derive(Deserialize)]
@@ -240,6 +257,24 @@ struct SymbolsArgs {
 }
 
 #[derive(Deserialize)]
+struct MemoryStoreArgs {
+    text: String,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
+struct MemoryRecallArgs {
+    query: String,
+    #[serde(default)]
+    top_k: Option<usize>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
 struct ResourceReadParams {
     uri: String,
 }
@@ -273,13 +308,45 @@ pub async fn serve(
         }
         Err(err) => return Err(err),
     };
+    let memory = if env_flag_enabled("DOCDEX_ENABLE_MEMORY") {
+        let base_url = std::env::var("DOCDEX_OLLAMA_BASE_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
+        let model = std::env::var("DOCDEX_EMBEDDING_MODEL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "nomic-embed-text".to_string());
+        let timeout_ms = std::env::var("DOCDEX_EMBEDDING_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(5000)
+            .max(1);
+        Some(McpMemoryState {
+            store: MemoryStore::new(indexer.state_dir()),
+            ollama: OllamaClient::new(base_url)?,
+            embedding_model: model,
+            embedding_timeout: Duration::from_millis(timeout_ms),
+        })
+    } else {
+        None
+    };
     let mut server = McpServer {
         repo_root,
         indexer,
         max_results: max_results.max(1),
         default_project_root: None,
+        memory,
     };
     server.run().await
+}
+
+#[derive(Clone)]
+struct McpMemoryState {
+    store: MemoryStore,
+    ollama: OllamaClient,
+    embedding_model: String,
+    embedding_timeout: Duration,
 }
 
 struct McpServer {
@@ -287,6 +354,7 @@ struct McpServer {
     indexer: Indexer,
     max_results: usize,
     default_project_root: Option<PathBuf>,
+    memory: Option<McpMemoryState>,
 }
 
 impl McpServer {
@@ -302,9 +370,6 @@ impl McpServer {
                 Ok(Some(line)) => {
                     _seen_input = true;
                     let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        eprintln!("docdex mcp: recv -> {}", trimmed);
-                    }
                     if trimmed.is_empty() {
                         continue;
                     }
@@ -328,6 +393,11 @@ impl McpServer {
                             continue;
                         }
                     };
+                    if let Some(id) = req.id.as_ref() {
+                        eprintln!("docdex mcp: recv method={} id={}", req.method, id);
+                    } else {
+                        eprintln!("docdex mcp: recv method={}", req.method);
+                    }
                     let resp_opt = match self.handle(req).await {
                         Ok(resp) => resp,
                         Err(err) => Some(RpcResponse {
@@ -803,6 +873,88 @@ impl McpServer {
                             }
                         }
                     }
+                    "docdex_memory_store" | "docdex.memory_store" => {
+                        let args_res: Result<MemoryStoreArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        "invalid docdex_memory_store args",
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_memory_store"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_memory_store" })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_memory_store(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                let (mcp_code, details) = classify_tool_error(&err);
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        "docdex_memory_store failed",
+                                        mcp_code,
+                                        Some(err.to_string()),
+                                        Some("docdex_memory_store"),
+                                        details,
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_memory_recall" | "docdex.memory_recall" => {
+                        let args_res: Result<MemoryRecallArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        "invalid docdex_memory_recall args",
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_memory_recall"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_memory_recall" })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_memory_recall(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                let (mcp_code, details) = classify_tool_error(&err);
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        "docdex_memory_recall failed",
+                                        mcp_code,
+                                        Some(err.to_string()),
+                                        Some("docdex_memory_recall"),
+                                        details,
+                                    )),
+                                }))
+                            }
+                        }
+                    }
                     other => {
                         return Ok(Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,
@@ -819,9 +971,11 @@ impl McpServer {
                                         "docdex_search",
                                         "docdex_index",
                                         "docdex_files",
-                                        "docdex_open",
-                                        "docdex_stats",
-                                        "docdex_symbols"
+                                    "docdex_open",
+                                    "docdex_stats",
+                                    "docdex_symbols",
+                                    "docdex_memory_store",
+                                    "docdex_memory_recall"
                                     ]
                                 })),
                             )),
@@ -939,6 +1093,32 @@ impl McpServer {
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
                     },
                     "required": ["path"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_memory_store",
+                description: "Store a memory item (requires DOCDEX_ENABLE_MEMORY=1).",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "text": { "type": "string", "minLength": 1, "description": "Memory text to store" },
+                        "metadata": { "type": "object", "description": "Optional metadata object", "additionalProperties": true },
+                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+                    },
+                    "required": ["text"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_memory_recall",
+                description: "Recall memory items by semantic similarity (requires DOCDEX_ENABLE_MEMORY=1).",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "minLength": 1, "description": "Query text to embed" },
+                        "top_k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 5, "description": "Max results to return" },
+                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+                    },
+                    "required": ["query"]
                 }),
             },
         ]
@@ -1165,6 +1345,73 @@ impl McpServer {
                 rel_path: rel_str.to_string(),
             })?;
         Ok(serde_json::to_value(payload).context("serialize symbols payload")?)
+    }
+
+    async fn handle_memory_store(&self, args: MemoryStoreArgs) -> Result<serde_json::Value> {
+        self.ensure_project_root(args.project_root.as_deref())?;
+        let Some(memory) = self.memory.clone() else {
+            return Err(AppError::new(
+                ERR_MEMORY_DISABLED,
+                "memory is disabled; set DOCDEX_ENABLE_MEMORY=1",
+            )
+            .into());
+        };
+        let text = args.text.trim();
+        if text.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "text must not be empty").into());
+        }
+
+        let embedding = memory
+            .ollama
+            .embed(&memory.embedding_model, text, memory.embedding_timeout)
+            .await?;
+
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis() as i64;
+        let metadata =
+            inject_embedding_metadata(args.metadata, "ollama", memory.embedding_model.as_str());
+        let store = memory.store.clone();
+        let text_owned = text.to_string();
+        let stored = tokio::task::spawn_blocking(move || {
+            store.store(&text_owned, &embedding, metadata, created_at)
+        })
+        .await??;
+        Ok(json!({
+            "id": stored.0.to_string(),
+            "created_at": stored.1
+        }))
+    }
+
+    async fn handle_memory_recall(&self, args: MemoryRecallArgs) -> Result<serde_json::Value> {
+        self.ensure_project_root(args.project_root.as_deref())?;
+        let Some(memory) = self.memory.clone() else {
+            return Err(AppError::new(
+                ERR_MEMORY_DISABLED,
+                "memory is disabled; set DOCDEX_ENABLE_MEMORY=1",
+            )
+            .into());
+        };
+        let query = args.query.trim();
+        if query.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "query must not be empty").into());
+        }
+
+        let top_k = args.top_k.unwrap_or(5).max(1).min(50);
+        let embedding = memory
+            .ollama
+            .embed(&memory.embedding_model, query, memory.embedding_timeout)
+            .await?;
+
+        let store = memory.store.clone();
+        let items = tokio::task::spawn_blocking(move || store.recall(&embedding, top_k)).await??;
+        Ok(json!({
+            "results": items.into_iter().map(|item| json!({
+                "content": item.content,
+                "score": item.score,
+                "metadata": item.metadata
+            })).collect::<Vec<_>>()
+        }))
     }
 
     async fn handle_resource_read(&self, params: ResourceReadParams) -> Result<serde_json::Value> {

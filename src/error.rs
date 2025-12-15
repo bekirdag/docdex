@@ -1,6 +1,15 @@
 use std::error::Error;
 use std::fmt;
 
+use thiserror::Error;
+
+pub const ERR_EMBEDDING_TIMEOUT: &str = "embedding_timeout";
+pub const ERR_EMBEDDING_MODEL_NOT_FOUND: &str = "embedding_model_not_found";
+pub const ERR_EMBEDDING_FAILED: &str = "embedding_failed";
+pub const ERR_MEMORY_DISABLED: &str = "memory_disabled";
+pub const ERR_INVALID_ARGUMENT: &str = "invalid_argument";
+pub const ERR_INTERNAL_ERROR: &str = "internal_error";
+
 #[derive(Debug, Clone)]
 pub struct StartupError {
     pub code: &'static str,
@@ -39,3 +48,19 @@ impl fmt::Display for StartupError {
 }
 
 impl Error for StartupError {}
+
+#[derive(Debug, Clone, Error)]
+#[error("{message}")]
+pub struct AppError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl AppError {
+    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}

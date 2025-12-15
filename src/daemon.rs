@@ -1,6 +1,8 @@
 use crate::audit::AuditLogger;
 use crate::error::StartupError;
 use crate::index::{IndexConfig, Indexer};
+use crate::memory::MemoryStore;
+use crate::ollama::OllamaClient;
 use crate::search::{self, AppState, SecurityConfig};
 use crate::util;
 use crate::watcher;
@@ -14,6 +16,7 @@ use std::env;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::{io, sync::Arc};
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio_rustls::{
     rustls::{self, pki_types::CertificateDer, pki_types::PrivateKeyDer},
@@ -214,6 +217,10 @@ pub async fn serve(
     run_as_uid: Option<u32>,
     run_as_gid: Option<u32>,
     unshare_net: bool,
+    enable_memory: bool,
+    ollama_base_url: String,
+    embedding_model: String,
+    embedding_timeout_ms: u64,
 ) -> Result<()> {
     #[cfg(unix)]
     {
@@ -251,6 +258,32 @@ pub async fn serve(
         )
         .with_hint("Verify repo/state-dir paths and permissions; consider `--state-dir <path>`.")
     })?);
+    let memory = if enable_memory {
+        let model = embedding_model.trim().to_string();
+        if model.is_empty() {
+            return Err(StartupError::new(
+                "startup_config_invalid",
+                "--embedding-model must not be empty when memory is enabled",
+            )
+            .with_hint("Set --embedding-model (or DOCDEX_EMBEDDING_MODEL) to an Ollama embedding model identifier.")
+            .into());
+        }
+        let ollama = OllamaClient::new(ollama_base_url).map_err(|err| {
+            StartupError::new(
+                "startup_config_invalid",
+                format!("invalid --ollama-base-url: {err}"),
+            )
+            .with_hint("Expected a URL like http://127.0.0.1:11434")
+        })?;
+        Some(search::MemoryState {
+            store: MemoryStore::new(indexer.state_dir()),
+            ollama,
+            embedding_model: model,
+            embedding_timeout: Duration::from_millis(embedding_timeout_ms.max(1)),
+        })
+    } else {
+        None
+    };
     let metrics = Arc::new(crate::search::Metrics::default());
     let state = AppState {
         indexer: indexer.clone(),
@@ -258,6 +291,7 @@ pub async fn serve(
         access_log,
         audit,
         metrics: metrics.clone(),
+        memory,
     };
     watcher::spawn(indexer.clone()).map_err(|err| {
         StartupError::new(

@@ -4,7 +4,9 @@ mod daemon;
 mod error;
 mod impact;
 mod index;
+mod memory;
 mod mcp;
+mod ollama;
 mod search;
 mod symbols;
 mod util;
@@ -154,6 +156,35 @@ enum Command {
         disable_snippet_text: bool,
         #[arg(
             long,
+            env = "DOCDEX_ENABLE_MEMORY",
+            default_value_t = false,
+            action = ArgAction::Set,
+            help = "Enable repo-scoped memory endpoints (/v1/memory/store, /v1/memory/recall)"
+        )]
+        enable_memory: bool,
+        #[arg(
+            long,
+            env = "DOCDEX_OLLAMA_BASE_URL",
+            default_value = "http://127.0.0.1:11434",
+            help = "Ollama base URL for embedding calls (memory)"
+        )]
+        ollama_base_url: String,
+        #[arg(
+            long,
+            env = "DOCDEX_EMBEDDING_MODEL",
+            default_value = "nomic-embed-text",
+            help = "Ollama embedding model identifier"
+        )]
+        embedding_model: String,
+        #[arg(
+            long,
+            env = "DOCDEX_EMBEDDING_TIMEOUT_MS",
+            default_value_t = 5000u64,
+            help = "Embedding request timeout in milliseconds"
+        )]
+        embedding_timeout_ms: u64,
+        #[arg(
+            long,
             env = "DOCDEX_ACCESS_LOG",
             default_value_t = true,
             action = ArgAction::Set,
@@ -271,6 +302,66 @@ enum Command {
         #[arg(long, default_value_t = 8)]
         limit: usize,
     },
+    /// Store a memory item (requires Ollama embeddings).
+    MemoryStore {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(long, value_parser = config::non_empty_string, help = "Text to store in memory")]
+        text: String,
+        #[arg(long, help = "Optional JSON object metadata (stringified)")]
+        metadata: Option<String>,
+        #[arg(
+            long,
+            env = "DOCDEX_OLLAMA_BASE_URL",
+            default_value = "http://127.0.0.1:11434",
+            help = "Ollama base URL for embedding calls"
+        )]
+        ollama_base_url: String,
+        #[arg(
+            long,
+            env = "DOCDEX_EMBEDDING_MODEL",
+            default_value = "nomic-embed-text",
+            help = "Ollama embedding model identifier"
+        )]
+        embedding_model: String,
+        #[arg(
+            long,
+            env = "DOCDEX_EMBEDDING_TIMEOUT_MS",
+            default_value_t = 5000u64,
+            help = "Embedding request timeout in milliseconds"
+        )]
+        embedding_timeout_ms: u64,
+    },
+    /// Recall memory items by semantic similarity (requires Ollama embeddings).
+    MemoryRecall {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(long, value_parser = config::non_empty_string, help = "Query text to embed")]
+        query: String,
+        #[arg(long, default_value_t = 5, help = "Max results to return (1..=50)")]
+        top_k: usize,
+        #[arg(
+            long,
+            env = "DOCDEX_OLLAMA_BASE_URL",
+            default_value = "http://127.0.0.1:11434",
+            help = "Ollama base URL for embedding calls"
+        )]
+        ollama_base_url: String,
+        #[arg(
+            long,
+            env = "DOCDEX_EMBEDDING_MODEL",
+            default_value = "nomic-embed-text",
+            help = "Ollama embedding model identifier"
+        )]
+        embedding_model: String,
+        #[arg(
+            long,
+            env = "DOCDEX_EMBEDDING_TIMEOUT_MS",
+            default_value_t = 5000u64,
+            help = "Embedding request timeout in milliseconds"
+        )]
+        embedding_timeout_ms: u64,
+    },
     /// Run an MCP (Model Context Protocol) server over stdio.
     Mcp {
         #[command(flatten)]
@@ -362,6 +453,10 @@ async fn run() -> Result<()> {
             strip_snippet_html,
             secure_mode,
             disable_snippet_text,
+            enable_memory,
+            ollama_base_url,
+            embedding_model,
+            embedding_timeout_ms,
             access_log,
             audit_log_path,
             audit_max_bytes,
@@ -441,6 +536,10 @@ async fn run() -> Result<()> {
                 run_as_uid,
                 run_as_gid,
                 unshare_net,
+                enable_memory,
+                ollama_base_url,
+                embedding_model,
+                embedding_timeout_ms,
             )
             .await?;
         }
@@ -603,6 +702,93 @@ async fn run() -> Result<()> {
             let hits = search::run_query(&server, &query, limit).await?;
             println!("{}", serde_json::to_string_pretty(&hits)?);
         }
+        Command::MemoryStore {
+            repo,
+            text,
+            metadata,
+            ollama_base_url,
+            embedding_model,
+            embedding_timeout_ms,
+        } => {
+            let repo_root = repo.repo_root();
+            let index_config = index::IndexConfig::with_overrides(
+                &repo_root,
+                repo.state_dir_override(),
+                repo.exclude_dir_overrides(),
+                repo.exclude_prefix_overrides(),
+            );
+            util::init_logging("warn")?;
+            index::ensure_state_dir_secure(index_config.state_dir())?;
+
+            let ollama = ollama::OllamaClient::new(ollama_base_url)?;
+            let timeout = std::time::Duration::from_millis(embedding_timeout_ms.max(1));
+            let embedding = ollama.embed(&embedding_model, &text, timeout).await?;
+            let user_metadata = match metadata {
+                None => None,
+                Some(raw) => Some(
+                    serde_json::from_str::<serde_json::Value>(&raw).map_err(|err| {
+                        error::AppError::new(
+                            error::ERR_INVALID_ARGUMENT,
+                            format!("invalid --metadata JSON: {err}"),
+                        )
+                    })?,
+                ),
+            };
+            let metadata = memory::inject_embedding_metadata(user_metadata, "ollama", &embedding_model);
+            let store = memory::MemoryStore::new(index_config.state_dir());
+            let created_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_millis() as i64;
+            let text_owned = text.clone();
+            let stored = tokio::task::spawn_blocking(move || {
+                store.store(&text_owned, &embedding, metadata, created_at)
+            })
+            .await??;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "id": stored.0.to_string(),
+                    "created_at": stored.1
+                }))?
+            );
+        }
+        Command::MemoryRecall {
+            repo,
+            query,
+            top_k,
+            ollama_base_url,
+            embedding_model,
+            embedding_timeout_ms,
+        } => {
+            let repo_root = repo.repo_root();
+            let index_config = index::IndexConfig::with_overrides(
+                &repo_root,
+                repo.state_dir_override(),
+                repo.exclude_dir_overrides(),
+                repo.exclude_prefix_overrides(),
+            );
+            util::init_logging("warn")?;
+            index::ensure_state_dir_secure(index_config.state_dir())?;
+
+            let ollama = ollama::OllamaClient::new(ollama_base_url)?;
+            let timeout = std::time::Duration::from_millis(embedding_timeout_ms.max(1));
+            let embedding = ollama.embed(&embedding_model, &query, timeout).await?;
+            let store = memory::MemoryStore::new(index_config.state_dir());
+            let top_k = top_k.max(1).min(50);
+            let results = tokio::task::spawn_blocking(move || store.recall(&embedding, top_k)).await??;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "results": results.into_iter().map(|item| {
+                        serde_json::json!({
+                            "content": item.content,
+                            "score": item.score,
+                            "metadata": item.metadata
+                        })
+                    }).collect::<Vec<_>>()
+                }))?
+            );
+        }
         Command::Mcp {
             repo,
             log,
@@ -693,6 +879,19 @@ fn render_error_and_exit(err: anyhow::Error) -> ! {
         }
         std::process::exit(1);
     }
+    if let Some(app) = err.downcast_ref::<crate::error::AppError>() {
+        let payload = serde_json::json!({
+            "error": {
+                "code": app.code,
+                "message": app.message
+            }
+        });
+        match serde_json::to_string(&payload) {
+            Ok(line) => eprintln!("{line}"),
+            Err(_) => eprintln!("{}", app.message),
+        }
+        std::process::exit(1);
+    }
 
     eprintln!("{err}");
     std::process::exit(1);
@@ -702,7 +901,15 @@ fn print_full_help() -> Result<()> {
     let mut root = Cli::command();
     root.print_long_help()?;
     println!();
-    for name in ["serve", "self-check", "index", "ingest", "query"] {
+    for name in [
+        "serve",
+        "self-check",
+        "index",
+        "ingest",
+        "query",
+        "memory-store",
+        "memory-recall",
+    ] {
         let mut cmd = Cli::command();
         if let Some(sub) = cmd.find_subcommand_mut(name) {
             println!("\n{name}:\n");

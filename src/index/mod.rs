@@ -1324,7 +1324,7 @@ mod file_decision_tests {
     }
 }
 
-fn ensure_state_dir_secure(path: &Path) -> Result<()> {
+pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::fs::DirBuilder;

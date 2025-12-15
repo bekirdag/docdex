@@ -92,6 +92,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - `--state-dir <path>` / `DOCDEX_STATE_DIR`: override index storage path (relative paths are resolved under `repo`).
 - `--exclude-prefix a,b,c` / `DOCDEX_EXCLUDE_PREFIXES`: extra relative prefixes to skip.
 - `--exclude-dir a,b,c` / `DOCDEX_EXCLUDE_DIRS`: extra directory names to skip anywhere in the tree.
+- `DOCDEX_ENABLE_SYMBOL_EXTRACTION`: enable optional per-file symbol extraction during indexing; see `docs/symbols_store.md`.
 - `--auth-token <token>` / `DOCDEX_AUTH_TOKEN`: bearer token required in secure mode (default); omit only when starting with `--secure-mode=false`.
 - `--secure-mode <true|false>` / `DOCDEX_SECURE_MODE`: default `true`; when enabled, requires an auth token, loopback allowlist by default, and default rate limiting (60 req/min).
 - `--allow-ip a,b,c` / `DOCDEX_ALLOW_IPS`: optional comma-separated IPs/CIDRs allowed to reach the HTTP API (default: loopback-only in secure mode; allow all when secure mode is disabled).

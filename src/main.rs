@@ -4,6 +4,7 @@ mod daemon;
 mod error;
 mod impact;
 mod index;
+mod libs;
 mod memory;
 mod mcp;
 mod ollama;
@@ -310,6 +311,17 @@ enum Command {
         query: String,
         #[arg(long, default_value_t = 8)]
         limit: usize,
+    },
+    /// Ingest library documentation sources into the repo-scoped libs index.
+    LibsIngest {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Path to a JSON file containing `{ \"sources\": [...] }` entries"
+        )]
+        sources: PathBuf,
     },
     /// Store a memory item (requires Ollama embeddings).
     MemoryStore {
@@ -628,7 +640,7 @@ async fn run() -> Result<()> {
             }
             for term in all_terms {
                 let search_limit = limit.saturating_add(1);
-                let hits = search::run_query(&indexer, &term, search_limit).await?;
+                let hits = search::run_query(&indexer, None, &term, search_limit).await?;
                 if !hits.hits.is_empty() {
                     let more = hits.hits.len() > limit;
                     let sample: Vec<String> = hits
@@ -745,8 +757,29 @@ async fn run() -> Result<()> {
             );
             util::init_logging("warn")?;
             let server = index::Indexer::with_config_read_only(repo_root, index_config)?;
-            let hits = search::run_query(&server, &query, limit).await?;
+            let libs_dir = libs::libs_state_dir_from_index_state_dir(server.state_dir());
+            let libs_indexer = libs::LibsIndexer::open_read_only(libs_dir).ok().flatten();
+            let hits = search::run_query(&server, libs_indexer.as_ref(), &query, limit).await?;
             println!("{}", serde_json::to_string_pretty(&hits)?);
+        }
+        Command::LibsIngest { repo, sources } => {
+            let repo_root = repo.repo_root();
+            let index_config = index::IndexConfig::with_overrides(
+                &repo_root,
+                repo.state_dir_override(),
+                repo.exclude_dir_overrides(),
+                repo.exclude_prefix_overrides(),
+                repo.symbols_enabled(),
+            );
+            util::init_logging("warn")?;
+            let libs_dir = libs::libs_state_dir_from_index_state_dir(index_config.state_dir());
+            let indexer = libs::LibsIndexer::open_or_create(libs_dir)?;
+            let raw = fs::read_to_string(&sources)
+                .with_context(|| format!("read libs sources file {}", sources.display()))?;
+            let sources_file: libs::LibSourcesFile =
+                serde_json::from_str(&raw).context("parse libs sources json")?;
+            let report = indexer.ingest_sources(&sources_file.sources)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
         }
         Command::MemoryStore {
             repo,

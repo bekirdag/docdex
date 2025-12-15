@@ -1,0 +1,143 @@
+use serde_json::Value;
+use std::error::Error;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use tempfile::TempDir;
+
+fn docdex_bin() -> PathBuf {
+    assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
+}
+
+fn run_docdex<I, S>(args: I) -> Result<Vec<u8>, Box<dyn Error>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let output = Command::new(docdex_bin())
+        .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+        .args(args)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "docdexd exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(output.stdout)
+}
+
+fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    fs::write(
+        repo.path().join("readme.md"),
+        "# Repo Doc\n\nThis is a repository document.\n",
+    )?;
+    Ok(repo)
+}
+
+fn write_lib_doc(repo_root: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let path = repo_root.join("vendor").join("serde").join("README.md");
+    fs::create_dir_all(path.parent().expect("parent"))?;
+    fs::write(
+        &path,
+        "# Serde\n\nLIBS_ONLY_TERM_123 appears only in library docs.\n",
+    )?;
+    Ok(path)
+}
+
+#[test]
+fn libs_ingestion_is_partial_and_searchable() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_root = repo.path();
+    let repo_str = repo_root.to_string_lossy().to_string();
+
+    let lib_doc = write_lib_doc(repo_root)?;
+    let invalid_path = repo_root.join("vendor").join("missing").join("README.md");
+
+    let sources_path = repo_root.join("libs_sources.json");
+    let sources = serde_json::json!({
+        "sources": [
+            {
+                "library": "serde",
+                "version": "1.0.0",
+                "source": "local_file",
+                "path": lib_doc.display().to_string(),
+                "title": "Serde"
+            },
+            {
+                "library": "missing-lib",
+                "version": "0.0.0",
+                "source": "local_file",
+                "path": invalid_path.display().to_string()
+            }
+        ]
+    });
+    fs::write(&sources_path, serde_json::to_string_pretty(&sources)?)?;
+
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let ingest_out = run_docdex([
+        "libs-ingest",
+        "--repo",
+        repo_str.as_str(),
+        "--sources",
+        sources_path.to_string_lossy().as_ref(),
+    ])?;
+    let ingest_payload: Value = serde_json::from_slice(&ingest_out)?;
+    assert_eq!(
+        ingest_payload
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+        "partial_success"
+    );
+    assert_eq!(
+        ingest_payload
+            .get("succeeded_sources")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        1
+    );
+    assert_eq!(
+        ingest_payload
+            .get("failed_sources")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        1
+    );
+
+    let query_out = run_docdex([
+        "query",
+        "--repo",
+        repo_str.as_str(),
+        "--query",
+        "LIBS_ONLY_TERM_123",
+        "--limit",
+        "5",
+    ])?;
+    let query_payload: Value = serde_json::from_slice(&query_out)?;
+    let hits = query_payload
+        .get("hits")
+        .and_then(|value| value.as_array())
+        .expect("hits array missing");
+    assert!(
+        !hits.is_empty(),
+        "expected at least one search hit from libs index"
+    );
+    let any_libs_hit = hits.iter().any(|hit| {
+        hit.get("doc_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .starts_with("libs:")
+            || hit.get("rel_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .starts_with("libs/")
+    });
+    assert!(any_libs_hit, "expected at least one libs:* hit");
+
+    Ok(())
+}

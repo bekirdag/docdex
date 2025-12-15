@@ -1,6 +1,7 @@
 use crate::audit::AuditLogger;
 use crate::error::StartupError;
 use crate::index::{IndexConfig, Indexer};
+use crate::libs;
 use crate::memory::MemoryStore;
 use crate::ollama::OllamaEmbedder;
 use crate::search::{self, AppState, SecurityConfig};
@@ -258,6 +259,13 @@ pub async fn serve(
         )
         .with_hint("Verify repo/state-dir paths and permissions; consider `--state-dir <path>`.")
     })?);
+    let libs_indexer = {
+        let libs_dir = libs::libs_state_dir_from_index_state_dir(indexer.state_dir());
+        libs::LibsIndexer::open_read_only(libs_dir)
+            .ok()
+            .flatten()
+            .map(Arc::new)
+    };
     let memory = if enable_memory {
         let model = embedding_model.trim().to_string();
         if model.is_empty() {
@@ -286,6 +294,7 @@ pub async fn serve(
     let metrics = Arc::new(crate::search::Metrics::default());
     let state = AppState {
         indexer: indexer.clone(),
+        libs_indexer,
         security,
         access_log,
         audit,

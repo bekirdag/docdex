@@ -5,6 +5,7 @@ use crate::error::{
     ERR_UNKNOWN_REPO,
 };
 use crate::index::{IndexConfig, Indexer};
+use crate::libs;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::ratelimit::RateLimiter;
@@ -481,9 +482,15 @@ pub async fn serve(
     } else {
         None
     };
+    let libs_indexer = libs::LibsIndexer::open_read_only(libs::libs_state_dir_from_index_state_dir(
+        indexer.state_dir(),
+    ))
+    .ok()
+    .flatten();
     let mut server = McpServer {
         repo_root,
         indexer,
+        libs_indexer,
         max_results: max_results.max(1),
         default_project_root: None,
         memory,
@@ -501,6 +508,7 @@ struct McpMemoryState {
 struct McpServer {
     repo_root: PathBuf,
     indexer: Indexer,
+    libs_indexer: Option<libs::LibsIndexer>,
     max_results: usize,
     default_project_root: Option<PathBuf>,
     memory: Option<McpMemoryState>,
@@ -1227,7 +1235,8 @@ impl McpServer {
             .limit
             .unwrap_or(self.max_results)
             .clamp(1, self.max_results);
-        let hits = search::run_query(&self.indexer, query, limit).await?;
+        let hits =
+            search::run_query(&self.indexer, self.libs_indexer.as_ref(), query, limit).await?;
         let hits_value = serde_json::to_value(&hits.hits)?;
         let project_root_path = self
             .default_project_root

@@ -5,6 +5,7 @@ use crate::error::{
     AppError, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
 };
+use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::ratelimit::RateLimiter;
@@ -154,6 +155,7 @@ impl SecurityConfig {
 #[derive(Clone)]
 pub struct AppState {
     pub indexer: Arc<Indexer>,
+    pub libs_indexer: Option<Arc<LibsIndexer>>,
     pub security: SecurityConfig,
     pub access_log: bool,
     pub audit: Option<crate::audit::AuditLogger>,
@@ -876,8 +878,13 @@ struct ErrorDetail {
     message: String,
 }
 
-pub async fn run_query(indexer: &Indexer, query: &str, limit: usize) -> Result<SearchResponse> {
-    let (hits, query_meta) = indexer.search_with_query_meta(query, limit)?;
+pub async fn run_query(
+    indexer: &Indexer,
+    libs_indexer: Option<&LibsIndexer>,
+    query: &str,
+    limit: usize,
+) -> Result<SearchResponse> {
+    let (hits, query_meta) = search_with_optional_libs(indexer, libs_indexer, query, limit)?;
     let top_score = hits.first().map(|hit| hit.score);
     Ok(SearchResponse {
         hits,
@@ -885,6 +892,60 @@ pub async fn run_query(indexer: &Indexer, query: &str, limit: usize) -> Result<S
         top_score_camel: top_score,
         meta: Some(build_search_meta(indexer, Some(query_meta), None)?),
     })
+}
+
+fn search_with_optional_libs(
+    indexer: &Indexer,
+    libs_indexer: Option<&LibsIndexer>,
+    query: &str,
+    limit: usize,
+) -> Result<(Vec<Hit>, SearchQueryMeta)> {
+    let (repo_hits, query_meta) = indexer.search_with_query_meta(query, limit)?;
+    let Some(libs) = libs_indexer else {
+        return Ok((repo_hits, query_meta));
+    };
+    let libs_hits = match libs.search_with_query_meta(query, limit) {
+        Ok((hits, _meta)) => hits,
+        Err(err) => {
+            warn!(target: "docdexd", error = ?err, "libs search failed; continuing with repo-only hits");
+            Vec::new()
+        }
+    };
+    Ok((merge_hits(repo_hits, libs_hits, limit), query_meta))
+}
+
+fn merge_hits(repo_hits: Vec<Hit>, libs_hits: Vec<Hit>, limit: usize) -> Vec<Hit> {
+    if libs_hits.is_empty() {
+        return repo_hits;
+    }
+    let repo_max = repo_hits.first().map(|h| h.score).unwrap_or(0.0).max(0.0001);
+    let libs_max = libs_hits.first().map(|h| h.score).unwrap_or(0.0).max(0.0001);
+
+    struct Ranked {
+        rank: f32,
+        hit: Hit,
+    }
+
+    let mut ranked: Vec<Ranked> = Vec::with_capacity(repo_hits.len() + libs_hits.len());
+    for hit in repo_hits {
+        ranked.push(Ranked {
+            rank: (hit.score / repo_max) * 1.0,
+            hit,
+        });
+    }
+    for hit in libs_hits {
+        ranked.push(Ranked {
+            rank: (hit.score / libs_max) * 0.95,
+            hit,
+        });
+    }
+    ranked.sort_by(|a, b| {
+        b.rank
+            .partial_cmp(&a.rank)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.hit.doc_id.cmp(&b.hit.doc_id))
+    });
+    ranked.into_iter().take(limit).map(|r| r.hit).collect()
 }
 
 fn now_epoch_ms() -> Result<u128> {
@@ -944,7 +1005,12 @@ async fn search_handler(
             .into_response();
     }
 
-    match state.indexer.search_with_query_meta(query, limit) {
+    match search_with_optional_libs(
+        state.indexer.as_ref(),
+        state.libs_indexer.as_deref(),
+        query,
+        limit,
+    ) {
         Ok((mut hits, query_meta)) => {
             let max_tokens = params.max_tokens;
             let snippet_policy = if state.security.disable_snippet_text {
@@ -1006,7 +1072,8 @@ async fn search_handler(
                 pruned,
                 selected_sources,
             };
-            let meta = build_search_meta(&state.indexer, Some(query_meta), Some(context_assembly)).ok();
+            let meta =
+                build_search_meta(&state.indexer, Some(query_meta), Some(context_assembly)).ok();
             Json(SearchResponse {
                 hits,
                 top_score,
@@ -1085,10 +1152,17 @@ async fn snippet_handler(
     let strip_html_flag = params.strip_html.unwrap_or(false)
         | params.text_only.unwrap_or(false)
         | state.security.strip_snippet_html;
-    match state
-        .indexer
-        .snapshot_with_snippet(&doc_id, params.q.as_deref(), window)
-    {
+    let snapshot = if doc_id.starts_with("libs:") {
+        match state.libs_indexer.as_deref() {
+            Some(libs) => libs.snapshot_with_snippet(&doc_id, params.q.as_deref(), window),
+            None => Ok(None),
+        }
+    } else {
+        state
+            .indexer
+            .snapshot_with_snippet(&doc_id, params.q.as_deref(), window)
+    };
+    match snapshot {
         Ok(Some((doc, snippet))) => {
             let payload = if let Some(max_tokens) = params.max_tokens {
                 if doc.token_estimate > max_tokens {

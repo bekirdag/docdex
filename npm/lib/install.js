@@ -1121,7 +1121,7 @@ async function runInstaller(options) {
       );
     }
 
-    await verifyDownloadedFileIntegrityFn({
+    const verifiedArchiveSha256 = await verifyDownloadedFileIntegrityFn({
       filePath: tmpFile,
       expectedSha256,
       archiveName: archive,
@@ -1163,13 +1163,20 @@ async function runInstaller(options) {
     logger.log(`[docdex] Installed binary to ${binaryPath}`);
 
     const binarySha256 = await sha256FileFn(binaryPath);
+    const installedAt = nowIso();
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
-      installedAt: nowIso(),
+      installedAt,
+      expectedVersion: version,
+      installedVersion: version,
       version,
+      lastOutcome: local.outcome,
+      lastOutcomeReason: local.reason,
+      lastOutcomeAt: installedAt,
       repoSlug,
       platformKey,
       targetTriple,
+      sourceUri: downloadUrl,
       binary: {
         filename: isWin32 ? "docdexd.exe" : "docdexd",
         sha256: binarySha256
@@ -1177,6 +1184,7 @@ async function runInstaller(options) {
       archive: {
         name: archive,
         sha256: expectedSha256 || null,
+        verifiedSha256: typeof verifiedArchiveSha256 === "string" ? verifiedArchiveSha256 : null,
         source,
         downloadUrl
       }

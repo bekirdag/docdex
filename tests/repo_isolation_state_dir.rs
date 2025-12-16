@@ -9,6 +9,13 @@ fn docdex_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
+fn normalize_path(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
 fn run_docdex<I, S>(args: I) -> Result<Vec<u8>, Box<dyn Error>>
 where
     I: IntoIterator<Item = S>,
@@ -53,6 +60,40 @@ fn hits_from_query(stdout: &[u8]) -> Result<Vec<Value>, Box<dyn Error>> {
         .and_then(|value| value.as_array())
         .ok_or("hits array missing")?;
     Ok(hits.to_vec())
+}
+
+fn parse_error(stderr: &[u8]) -> Result<Value, Box<dyn Error>> {
+    let raw = String::from_utf8_lossy(stderr);
+    let json_line = raw
+        .lines()
+        .rev()
+        .find(|line| line.trim_start().starts_with('{'))
+        .ok_or("expected JSON error line in stderr")?;
+    Ok(serde_json::from_str(json_line.trim())?)
+}
+
+fn registry_entry_for_path(state_root: &Path, canonical_path: &str) -> Result<(String, String), Box<dyn Error>> {
+    let registry_path = state_root.join("repos").join("repo_registry.json");
+    let registry_raw = fs::read_to_string(&registry_path)?;
+    let registry_json: Value = serde_json::from_str(&registry_raw)?;
+    let repos = registry_json
+        .get("repos")
+        .and_then(|value| value.as_object())
+        .ok_or("registry missing repos object")?;
+    for (fingerprint, entry) in repos {
+        let canon = entry
+            .get("canonical_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if canon == canonical_path {
+            let state_key = entry
+                .get("state_key")
+                .and_then(|v| v.as_str())
+                .ok_or("registry entry missing state_key")?;
+            return Ok((fingerprint.clone(), state_key.to_string()));
+        }
+    }
+    Err(format!("no registry entry found for canonical_path={canonical_path}").into())
 }
 
 #[test]
@@ -157,7 +198,7 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
     run_docdex(["index", "--repo", repo_a_str.as_str(), "--state-dir", &state_root_str])?;
 
     let repos_dir = state_root.join("repos");
-    let repo_dirs: Vec<PathBuf> = fs::read_dir(&repos_dir)?
+    let mut repo_dirs: Vec<PathBuf> = fs::read_dir(&repos_dir)?
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| {
             let path = entry.path();
@@ -165,12 +206,11 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
             if file_type.is_dir() { Some(path) } else { None }
         })
         .collect();
+    repo_dirs.sort();
     assert_eq!(repo_dirs.len(), 1, "expected one repo state dir after first index");
-    let state_key = repo_dirs[0]
-        .file_name()
-        .and_then(|s| s.to_str())
-        .ok_or("state dir missing name")?
-        .to_string();
+
+    let canon_a = normalize_path(&repo_a);
+    let (fp_a, state_key) = registry_entry_for_path(&state_root, &canon_a)?;
 
     fs::rename(&repo_a, &repo_b)?;
     let moved_out = Command::new(docdex_bin())
@@ -187,13 +227,7 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
         !moved_out.status.success(),
         "expected moved repo to fast-fail before explicit re-association"
     );
-    let stderr = String::from_utf8_lossy(&moved_out.stderr);
-    let json_line = stderr
-        .lines()
-        .rev()
-        .find(|line| line.trim_start().starts_with('{'))
-        .ok_or("expected JSON error line in stderr")?;
-    let err_payload: Value = serde_json::from_str(json_line.trim())?;
+    let err_payload = parse_error(&moved_out.stderr)?;
     assert_eq!(
         err_payload
             .get("error")
@@ -235,6 +269,22 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
     let reassociated: Value = serde_json::from_slice(&reassociate_out)?;
     assert_eq!(
         reassociated
+            .get("fingerprint")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+        fp_a.as_str(),
+        "expected reassociate diagnostics to include the repo fingerprint"
+    );
+    assert_eq!(
+        reassociated
+            .get("state_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+        state_key.as_str(),
+        "expected reassociate diagnostics to include the mapped state_key"
+    );
+    assert_eq!(
+        reassociated
             .get("canonical_path")
             .and_then(|v| v.as_str())
             .unwrap_or_default(),
@@ -243,6 +293,14 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
             .unwrap_or_else(|_| repo_b.clone())
             .to_string_lossy()
             .replace('\\', "/")
+    );
+    assert_eq!(
+        reassociated
+            .get("prior_canonical_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+        known_canonical.as_str(),
+        "expected reassociate to report the prior canonical path"
     );
 
     run_docdex(["index", "--repo", repo_b_str.as_str(), "--state-dir", &state_root_str])?;
@@ -298,75 +356,155 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
 
     Ok(())
 }
-    let moved_out = Command::new(docdex_bin())
+
+#[test]
+fn reassociate_fails_closed_when_fingerprint_mismatches() -> Result<(), Box<dyn Error>> {
+    let state_root = TempDir::new()?;
+    let state_root = state_root.path().canonicalize()?;
+    let workspace = TempDir::new()?;
+
+    let repo_a = workspace.path().join("repo-a");
+    let repo_b = workspace.path().join("repo-b");
+    write_repo(&repo_a, "a.md", "repo_a_token")?;
+    write_repo(&repo_b, "b.md", "repo_b_token")?;
+
+    let state_root_str = state_root.to_string_lossy().to_string();
+    run_docdex([
+        "index",
+        "--repo",
+        repo_a.to_string_lossy().as_ref(),
+        "--state-dir",
+        &state_root_str,
+    ])?;
+
+    let canon_a = normalize_path(&repo_a);
+    let (fp_a, _state_key_a) = registry_entry_for_path(&state_root, &canon_a)?;
+
+    let output = Command::new(docdex_bin())
         .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
         .args([
-            "index",
+            "repo",
+            "reassociate",
             "--repo",
-            repo_b_str.as_str(),
+            repo_b.to_string_lossy().as_ref(),
             "--state-dir",
             &state_root_str,
+            "--fingerprint",
+            fp_a.as_str(),
         ])
         .output()?;
     assert!(
-        !moved_out.status.success(),
-        "expected moved repo to fast-fail before explicit re-association"
+        !output.status.success(),
+        "expected reassociate to fail when fingerprint does not match"
     );
-    let stderr = String::from_utf8_lossy(&moved_out.stderr);
-    let json_line = stderr
-        .lines()
-        .rev()
-        .find(|line| line.trim_start().starts_with('{'))
-        .ok_or("expected JSON error line in stderr")?;
-    let err_payload: Value = serde_json::from_str(json_line.trim())?;
+    let payload = parse_error(&output.stderr)?;
     assert_eq!(
-        err_payload
+        payload
             .get("error")
             .and_then(|e| e.get("code"))
             .and_then(|v| v.as_str()),
         Some("repo_state_mismatch")
     );
-    let steps = err_payload
+    let attempted = payload
         .get("error")
         .and_then(|e| e.get("details"))
-        .and_then(|d| d.get("recoverySteps"))
-        .and_then(|v| v.as_array())
-        .ok_or("expected recoverySteps array")?;
-    assert!(
-        steps.iter().any(|v| v
-            .as_str()
-            .unwrap_or_default()
-            .contains("repo reassociate")),
-        "expected recoverySteps to mention `repo reassociate`; got: {err_payload}"
-    );
-    let known_canonical = err_payload
-        .get("error")
-        .and_then(|e| e.get("details"))
-        .and_then(|d| d.get("knownCanonicalPath"))
+        .and_then(|d| d.get("attemptedFingerprint"))
         .and_then(|v| v.as_str())
-        .ok_or("expected details.knownCanonicalPath")?
-        .to_string();
+        .ok_or("expected details.attemptedFingerprint")?;
+    assert_ne!(
+        attempted,
+        fp_a.as_str(),
+        "attemptedFingerprint should reflect the new repo, not the target registry fingerprint"
+    );
 
-    let reassociate_out = run_docdex([
-        "repo",
-        "reassociate",
-        "--repo",
-        repo_b_str.as_str(),
-        "--state-dir",
-        &state_root_str,
-        "--old-path",
-        known_canonical.as_str(),
-    ])?;
-    let reassociated: Value = serde_json::from_slice(&reassociate_out)?;
+    // Registry should remain unchanged: no reassociation to repo-b.
+    let registry_path = state_root.join("repos").join("repo_registry.json");
+    let registry_raw = fs::read_to_string(&registry_path)?;
+    let registry_json: Value = serde_json::from_str(&registry_raw)?;
+    let repos = registry_json
+        .get("repos")
+        .and_then(|value| value.as_object())
+        .ok_or("registry missing repos object")?;
+    let entry = repos.get(&fp_a).ok_or("expected registry entry for repo-a fingerprint")?;
     assert_eq!(
-        reassociated
+        entry
             .get("canonical_path")
             .and_then(|v| v.as_str())
             .unwrap_or_default(),
-        repo_b
-            .canonicalize()
-            .unwrap_or_else(|_| repo_b.clone())
-            .to_string_lossy()
-            .replace('\\', "/")
+        canon_a.as_str(),
+        "failed reassociate must not modify canonical_path"
+    );
+    let canon_b = normalize_path(&repo_b);
+    assert!(
+        !repos.values().any(|v| v
+            .get("canonical_path")
+            .and_then(|p| p.as_str())
+            .unwrap_or_default()
+            == canon_b),
+        "failed reassociate must not create a new registry entry"
     );
 
+    Ok(())
+}
+
+#[test]
+fn never_cross_associates_repo_requests_via_other_repo_scoped_state_dir() -> Result<(), Box<dyn Error>> {
+    let state_root = TempDir::new()?;
+    let state_root = state_root.path().canonicalize()?;
+
+    let workspace = TempDir::new()?;
+    let repo_a = workspace.path().join("repo-a");
+    let repo_b = workspace.path().join("repo-b");
+    write_repo(&repo_a, "a-only.md", "repo_a_token")?;
+    write_repo(&repo_b, "b-only.md", "repo_b_token")?;
+
+    let state_root_str = state_root.to_string_lossy().to_string();
+    run_docdex([
+        "index",
+        "--repo",
+        repo_b.to_string_lossy().as_ref(),
+        "--state-dir",
+        &state_root_str,
+    ])?;
+
+    let canon_b = normalize_path(&repo_b);
+    let (_fp_b, state_key_b) = registry_entry_for_path(&state_root, &canon_b)?;
+    let scoped_b_index = state_root
+        .join("repos")
+        .join(&state_key_b)
+        .join("index")
+        .to_string_lossy()
+        .to_string();
+
+    // Querying repo-a with repo-b's scoped state dir must not return repo-b hits.
+    // Repo-a is unindexed, so the only safe outcome is a missing_index error.
+    let output = Command::new(docdex_bin())
+        .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+        .args([
+            "query",
+            "--repo",
+            repo_a.to_string_lossy().as_ref(),
+            "--state-dir",
+            scoped_b_index.as_str(),
+            "--query",
+            "shared_term",
+            "--limit",
+            "10",
+        ])
+        .output()?;
+    assert!(
+        !output.status.success(),
+        "expected repo-a query to fail closed instead of using repo-b state"
+    );
+    let payload = parse_error(&output.stderr)?;
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("missing_index"),
+        "repo-a must not be served from repo-b state; expected missing_index"
+    );
+
+    Ok(())
+}

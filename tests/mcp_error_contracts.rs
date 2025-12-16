@@ -458,13 +458,17 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
         Some(expected.as_str()),
         "mismatch details should include known canonical path"
     );
+    let steps = details
+        .get("recoverySteps")
+        .and_then(|v| v.as_array())
+        .ok_or("mismatch details should include recoverySteps array")?;
+    assert!(!steps.is_empty(), "mismatch details should include recovery steps");
     assert!(
-        details
-            .get("recoverySteps")
-            .and_then(|v| v.as_array())
-            .map(|v| !v.is_empty())
-            .unwrap_or(false),
-        "mismatch details should include recovery steps"
+        steps.iter().any(|v| v
+            .as_str()
+            .unwrap_or_default()
+            .contains("docdexd mcp --repo")),
+        "expected recoverySteps to mention restarting the MCP server with `docdexd mcp --repo`; got: {details}"
     );
 
     mcp.shutdown();

@@ -1990,12 +1990,3 @@ mod tests {
         );
     }
 }
-    if let crate::repo_identity::RepoIdentityError::ReassociationRequired {
-        registered_canonical_path,
-        ..
-    } = identity
-    {
-        known_canonical_path = Some(registered_canonical_path.clone());
-    }
-            "To explicitly re-associate a moved repo to existing shared state, run: `docdexd repo reassociate --repo <new_path> --state-dir <shared_state_dir> --old-path <knownCanonicalPath>` (or `--fingerprint <attemptedFingerprint>`)."
-                .to_string(),

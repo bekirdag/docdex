@@ -108,7 +108,9 @@ test("docdex CLI wrapper: supported platform with missing local binary exits non
 
   const platformModule = {
     UnsupportedPlatformError: class UnsupportedPlatformError extends Error {},
-    detectPlatformKey: () => "darwin-arm64"
+    detectPlatformKey: () => "darwin-arm64",
+    targetTripleForPlatformKey: () => "aarch64-apple-darwin",
+    assetPatternForPlatformKey: () => "docdexd-<platformKey>.tar.gz (e.g. docdexd-darwin-arm64.tar.gz)"
   };
 
   const scriptPath = path.join(__dirname, "..", "bin", "docdex.js");
@@ -132,4 +134,3 @@ test("docdex CLI wrapper: supported platform with missing local binary exits non
   assert.ok(!result.stderr.includes("unsupported platform"));
   assert.equal(spawnCalls, 0);
 });
-

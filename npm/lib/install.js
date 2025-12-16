@@ -9,7 +9,13 @@ const { pipeline } = require("node:stream/promises");
 const crypto = require("node:crypto");
 
 const pkg = require("../package.json");
-const { artifactName, detectPlatformKey, targetTripleForPlatformKey, UnsupportedPlatformError } = require("./platform");
+const {
+  artifactName,
+  assetPatternForPlatformKey,
+  detectPlatformKey,
+  targetTripleForPlatformKey,
+  UnsupportedPlatformError
+} = require("./platform");
 const { ManifestResolutionError, resolveCanonicalAssetForTargetTriple } = require("./release_manifest");
 
 const MAX_REDIRECTS = 5;
@@ -532,7 +538,7 @@ async function resolveInstallerDownloadPlan({
         ...withBaseDetails(err.details),
         platformKey,
         expectedAsset,
-        expectedAssetPattern: `docdexd-<platformKey>.tar.gz (e.g. ${expectedAsset})`
+        expectedAssetPattern: assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset })
       };
     }
     throw err;
@@ -639,6 +645,7 @@ async function runInstaller(options) {
   const pathModule = opts.pathModule || path;
   const osModule = opts.osModule || os;
   const artifactNameFn = opts.artifactNameFn || artifactName;
+  const assetPatternForPlatformKeyFn = opts.assetPatternForPlatformKeyFn || assetPatternForPlatformKey;
 
   const platformKey = detectPlatformKeyFn();
   const targetTriple = targetTripleForPlatformKeyFn(platformKey);
@@ -680,7 +687,7 @@ async function runInstaller(options) {
           repoSlug,
           downloadUrl,
           expectedAsset: archive,
-          expectedAssetPattern: `docdexd-<platformKey>.tar.gz (e.g. ${artifactNameFn(platformKey)})`,
+          expectedAssetPattern: assetPatternForPlatformKeyFn(platformKey, { exampleAssetName: archive }),
           note: "This usually means the GitHub release assets are missing or the npm version is out of sync with the release."
         });
       }
@@ -922,8 +929,8 @@ function describeFatalError(err) {
       typeof err.details?.expectedAssetPattern === "string"
         ? err.details.expectedAssetPattern
         : platformKey
-          ? `docdexd-<platformKey>.tar.gz (e.g. ${artifactName(platformKey)})`
-          : "docdexd-<platformKey>.tar.gz";
+          ? assetPatternForPlatformKey(platformKey)
+          : assetPatternForPlatformKey(null);
 
     const lines =
       err.code === "DOCDEX_ASSET_NO_MATCH"

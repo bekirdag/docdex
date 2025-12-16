@@ -10,6 +10,8 @@ const {
   detectLibcFromRuntime,
   detectPlatformKey,
   detectTargetTriple,
+  assetPatternForPlatformKey,
+  resolvePlatformPolicy,
   targetTripleForPlatformKey,
   UnsupportedPlatformError
 } = require("../lib/platform");
@@ -162,4 +164,22 @@ test("unsupported OS/arch throws typed error with detected platform details", ()
       return true;
     }
   );
+});
+
+test("assetPatternForPlatformKey describes docdexd archive naming deterministically", () => {
+  assert.equal(
+    assetPatternForPlatformKey("linux-x64-gnu"),
+    "docdexd-<platformKey>.tar.gz (e.g. docdexd-linux-x64-gnu.tar.gz)"
+  );
+  assert.equal(assetPatternForPlatformKey(null), "docdexd-<platformKey>.tar.gz");
+  assert.equal(assetPatternForPlatformKey("darwin-arm64", { includeExample: false }), "docdexd-<platformKey>.tar.gz");
+});
+
+test("resolvePlatformPolicy returns platform key, target triple, and expected asset naming", () => {
+  const policy = resolvePlatformPolicy({ platform: "darwin", arch: "arm64" });
+  assert.deepEqual(policy.detected, { platform: "darwin", arch: "arm64" });
+  assert.equal(policy.platformKey, "darwin-arm64");
+  assert.equal(policy.targetTriple, "aarch64-apple-darwin");
+  assert.equal(policy.expectedAssetName, "docdexd-darwin-arm64.tar.gz");
+  assert.equal(policy.expectedAssetPattern, "docdexd-<platformKey>.tar.gz (e.g. docdexd-darwin-arm64.tar.gz)");
 });

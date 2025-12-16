@@ -5,7 +5,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const { detectPlatformKey, UnsupportedPlatformError } = require("../lib/platform");
+const {
+  detectPlatformKey,
+  targetTripleForPlatformKey,
+  assetPatternForPlatformKey,
+  UnsupportedPlatformError
+} = require("../lib/platform");
 
 function run() {
   let platformKey;
@@ -21,6 +26,9 @@ function run() {
       if (Array.isArray(err.details?.supportedPlatformKeys) && err.details.supportedPlatformKeys.length) {
         console.error(`[docdex] Supported platforms: ${err.details.supportedPlatformKeys.join(", ")}`);
       }
+      if (typeof err.details?.candidatePlatformKey === "string") {
+        console.error(`[docdex] Asset naming pattern: ${assetPatternForPlatformKey(err.details.candidatePlatformKey)}`);
+      }
       console.error("[docdex] Next steps: use a supported platform or build from source (Rust).");
       process.exit(err.exitCode || 3);
     }
@@ -35,9 +43,11 @@ function run() {
   );
 
   if (!fs.existsSync(binaryPath)) {
-    console.error(
-      `[docdex] Missing binary for ${platformKey}. Try reinstalling or set DOCDEX_DOWNLOAD_REPO to a repo with release assets.`
-    );
+    console.error(`[docdex] Missing binary for ${platformKey}. Try reinstalling or set DOCDEX_DOWNLOAD_REPO to a repo with release assets.`);
+    try {
+      console.error(`[docdex] Expected target triple: ${targetTripleForPlatformKey(platformKey)}`);
+      console.error(`[docdex] Asset naming pattern: ${assetPatternForPlatformKey(platformKey)}`);
+    } catch {}
     process.exit(1);
   }
 

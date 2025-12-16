@@ -240,6 +240,23 @@ function artifactName(platformKey) {
   return assetNameForPlatformKey(platformKey);
 }
 
+/**
+ * Human-readable release asset naming pattern for `docdexd` archives.
+ * @param {string|null} [platformKey]
+ * @param {{includeExample?: boolean, exampleAssetName?: string}} [options]
+ */
+function assetPatternForPlatformKey(platformKey, options) {
+  const includeExample = options?.includeExample !== false;
+  const exampleAssetName =
+    typeof options?.exampleAssetName === "string" && options.exampleAssetName.trim()
+      ? options.exampleAssetName.trim()
+      : null;
+  const base = "docdexd-<platformKey>.tar.gz";
+  if (!platformKey || typeof platformKey !== "string") return base;
+  if (!includeExample) return base;
+  return `${base} (e.g. ${exampleAssetName || assetNameForPlatformKey(platformKey)})`;
+}
+
 function targetTripleForPlatformKey(platformKey) {
   const triple = PLATFORM_ENTRY_BY_KEY[platformKey]?.targetTriple;
   if (triple) return triple;
@@ -252,12 +269,35 @@ function detectTargetTriple(options) {
   return targetTripleForPlatformKey(detectPlatformKey(options));
 }
 
+/**
+ * Resolve the full platform support policy (runtime → supported? → target triple + asset naming).
+ * Consumers should use this as the single source of truth for distinguishing unsupported platforms
+ * from missing release artifacts (supported-but-missing).
+ *
+ * @param {Parameters<typeof detectPlatformKey>[0]} [options]
+ */
+function resolvePlatformPolicy(options) {
+  const platform = options?.platform ?? process.platform;
+  const arch = options?.arch ?? process.arch;
+  const platformKey = detectPlatformKey(options);
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  return {
+    detected: { platform, arch },
+    platformKey,
+    targetTriple,
+    expectedAssetName: artifactName(platformKey),
+    expectedAssetPattern: assetPatternForPlatformKey(platformKey)
+  };
+}
+
 module.exports = {
   detectLibc,
   detectLibcFromRuntime,
   detectPlatformKey,
   UnsupportedPlatformError,
   artifactName,
+  assetPatternForPlatformKey,
   targetTripleForPlatformKey,
-  detectTargetTriple
+  detectTargetTriple,
+  resolvePlatformPolicy
 };

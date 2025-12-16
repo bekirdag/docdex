@@ -51,7 +51,7 @@ function validInstallMetadata({ platformKey, version, binarySha256 }) {
   };
 }
 
-test("decision engine: missing binary => update (binary_missing)", async () => {
+test("decision engine: missing binary => install (binary_missing)", async () => {
   const platformKey = "linux-x64-gnu";
   const distDir = path.posix.join("/dist", platformKey);
 
@@ -70,7 +70,7 @@ test("decision engine: missing binary => update (binary_missing)", async () => {
     sha256FileFn
   });
 
-  assert.equal(outcome.outcome, "update");
+  assert.equal(outcome.outcome, "install");
   assert.equal(outcome.reason, "binary_missing");
   assert.equal(outcome.plan, "upgrade");
   assert.equal(outcome.installedVersion, null);
@@ -167,7 +167,7 @@ test("decision engine: platform mismatch => reinstall_unknown (platform_mismatch
   assert.equal(outcome.installedVersion, "0.1.0");
 });
 
-test("decision engine: version mismatch => update (version_mismatch)", async () => {
+test("decision engine: version mismatch => upgrade (version_mismatch)", async () => {
   const platformKey = "linux-x64-gnu";
   const distDir = path.posix.join("/dist", platformKey);
   const binaryPath = path.posix.join(distDir, "docdexd");
@@ -196,13 +196,17 @@ test("decision engine: version mismatch => update (version_mismatch)", async () 
     }
   });
 
-  assert.equal(outcome.outcome, "update");
+  assert.equal(outcome.outcome, "upgrade");
   assert.equal(outcome.reason, "version_mismatch");
   assert.equal(outcome.plan, "upgrade");
   assert.equal(outcome.installedVersion, "0.0.9");
 });
 
+<<<<<<< HEAD
 test("decision engine: version mismatch (higher installed) => update plan downgrade", async () => {
+=======
+test("decision engine: version mismatch => downgrade (version_mismatch)", async () => {
+>>>>>>> mcoda/task/ops-01-us-06-t40
   const platformKey = "linux-x64-gnu";
   const distDir = path.posix.join("/dist", platformKey);
   const binaryPath = path.posix.join(distDir, "docdexd");
@@ -231,9 +235,14 @@ test("decision engine: version mismatch (higher installed) => update plan downgr
     }
   });
 
+<<<<<<< HEAD
   assert.equal(outcome.outcome, "update");
   assert.equal(outcome.reason, "version_mismatch");
   assert.equal(outcome.plan, "downgrade");
+=======
+  assert.equal(outcome.outcome, "downgrade");
+  assert.equal(outcome.reason, "version_mismatch");
+>>>>>>> mcoda/task/ops-01-us-06-t40
   assert.equal(outcome.installedVersion, "0.2.0");
 });
 

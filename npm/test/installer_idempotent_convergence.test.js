@@ -72,7 +72,7 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
     }
   });
 
-  assert.equal(first.outcome, "update");
+  assert.equal(first.outcome, "install");
   assert.equal(firstDownloadCalls, 1);
   assert.equal(firstExtractCalls, 1);
 
@@ -131,6 +131,7 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
   assert.equal(metadataAfterSecond, metadataAfterFirst);
   assert.equal(binaryAfterSecond, binaryAfterFirst);
 });
+<<<<<<< HEAD
 <<<<<<< HEAD
 =======
 
@@ -561,3 +562,5 @@ test("installer: repair replaces corrupted binary and converges idempotently", a
   assert.equal(binaryAfterThird, binaryAfterRepair);
 });
 >>>>>>> mcoda/task/ops-01-us-06-t32
+=======
+>>>>>>> mcoda/task/ops-01-us-06-t40

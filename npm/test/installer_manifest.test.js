@@ -158,34 +158,37 @@ test("installer falls back deterministically on invalid JSON manifests with stab
   ]);
 });
 
-test("installer fails deterministically when a manifest exists but is malformed (no fallback)", async () => {
+test("installer falls back deterministically when a manifest exists but is malformed", async () => {
   const base = "https://example.test/releases/download";
   const version = "0.0.0";
+  const sha = "e".repeat(64);
+
+  const { logger, logs, warns } = createCapturingLogger();
 
   const downloadTextFn = async (url) => {
     if (url === `${base}/v${version}/docdexd-manifest.json`) return fixture("manifest/invalid-shape.json");
+    if (url === `${base}/v${version}/SHA256SUMS`) return `${sha}  docdexd-linux-x64-gnu.tar.gz\n`;
     throw httpError(404, `not found: ${url}`);
   };
 
-  await assert.rejects(
-    () =>
-      resolveInstallerDownloadPlan({
-        repoSlug: "owner/repo",
-        version,
-        platformKey: "linux-x64-gnu",
-        targetTriple: "x86_64-unknown-linux-gnu",
-        downloadTextFn,
-        getDownloadBaseFn: () => base,
-        manifestCandidateNamesFn: () => ["docdexd-manifest.json"],
-        logger: createCapturingLogger().logger
-      }),
-    (err) => {
-      assert.ok(err instanceof ManifestResolutionError);
-      assert.equal(err.code, "DOCDEX_MANIFEST_MALFORMED");
-      assert.match(err.message, /^Manifest docdexd-manifest\.json: Malformed manifest:/);
-      return true;
-    }
-  );
+  const plan = await resolveInstallerDownloadPlan({
+    repoSlug: "owner/repo",
+    version,
+    platformKey: "linux-x64-gnu",
+    targetTriple: "x86_64-unknown-linux-gnu",
+    downloadTextFn,
+    getDownloadBaseFn: () => base,
+    manifestCandidateNamesFn: () => ["docdexd-manifest.json"],
+    logger
+  });
+
+  assert.equal(plan.archive, "docdexd-linux-x64-gnu.tar.gz");
+  assert.equal(plan.expectedSha256, sha);
+  assert.equal(plan.source, "fallback");
+  assert.deepEqual(logs, []);
+  assert.deepEqual(warns, [
+    "[docdex] Manifest unavailable; falling back. Details: [DOCDEX_MANIFEST_UNUSABLE] Manifest unusable (docdexd-manifest.json): DOCDEX_MANIFEST_MALFORMED Malformed manifest: expected `targets` object or `assets` array"
+  ]);
 });
 
 test("installer integrity failures include stable expected + actual sha256", async () => {
@@ -251,6 +254,51 @@ test("installer fails deterministically when manifest exists but does not suppor
       return true;
     }
   );
+});
+
+test("installer falls back deterministically when manifest entry is missing sha256 integrity metadata", async () => {
+  const base = "https://example.test/releases/download";
+  const version = "0.0.0";
+  const sha = "f".repeat(64);
+
+  const { logger, warns } = createCapturingLogger();
+
+  const manifestText = JSON.stringify(
+    {
+      manifestVersion: 1,
+      targets: {
+        "x86_64-unknown-linux-gnu": {
+          asset: { name: "docdexd-linux-x64-gnu.tar.gz" }
+        }
+      }
+    },
+    null,
+    2
+  );
+
+  const downloadTextFn = async (url) => {
+    if (url === `${base}/v${version}/docdex-release-manifest.json`) return manifestText;
+    if (url === `${base}/v${version}/SHA256SUMS`) return `${sha}  docdexd-linux-x64-gnu.tar.gz\n`;
+    throw httpError(404, `not found: ${url}`);
+  };
+
+  const plan = await resolveInstallerDownloadPlan({
+    repoSlug: "owner/repo",
+    version,
+    platformKey: "linux-x64-gnu",
+    targetTriple: "x86_64-unknown-linux-gnu",
+    downloadTextFn,
+    getDownloadBaseFn: () => base,
+    manifestCandidateNamesFn: () => ["docdex-release-manifest.json"],
+    logger
+  });
+
+  assert.equal(plan.archive, "docdexd-linux-x64-gnu.tar.gz");
+  assert.equal(plan.expectedSha256, sha);
+  assert.equal(plan.source, "fallback");
+  assert.equal(warns.length, 1);
+  assert.match(warns[0], /\[DOCDEX_MANIFEST_UNUSABLE\]/);
+  assert.match(warns[0], /DOCDEX_ASSET_MALFORMED/);
 });
 
 test("installer fails deterministically when manifest has multiple assets for a target triple (no fallback)", async () => {

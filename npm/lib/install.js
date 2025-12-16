@@ -418,15 +418,34 @@ async function tryResolveAssetViaManifest({
         };
       } catch (e) {
         if (e instanceof ManifestResolutionError) {
-          e.message = `Manifest ${name}: ${e.message}`;
-          e.details = {
-            ...withBaseDetails(e.details),
-            manifestName: name,
-            manifestUrl: url,
-            fallbackAttempted: false,
-            fallbackReason: "manifest_present_but_unusable"
-          };
-          throw e;
+          // Fail closed when the manifest is present but resolution is unsupported or ambiguous.
+          if (e.code === "DOCDEX_ASSET_NO_MATCH" || e.code === "DOCDEX_ASSET_MULTI_MATCH") {
+            e.message = `Manifest ${name}: ${e.message}`;
+            e.details = {
+              ...withBaseDetails(e.details),
+              manifestName: name,
+              manifestUrl: url,
+              fallbackAttempted: false,
+              fallbackReason: "manifest_present_but_unusable"
+            };
+            throw e;
+          }
+
+          // Missing keys / invalid shape / missing sha256: treat as malformed and deterministically fall back.
+          const message = `Manifest unusable (${name}): ${e.code} ${e.message}`;
+          errors.push(`[DOCDEX_MANIFEST_UNUSABLE] ${message}`);
+          events.push({
+            code: "DOCDEX_MANIFEST_UNUSABLE",
+            message,
+            details: {
+              manifestName: name,
+              url,
+              targetTriple,
+              manifestErrorCode: e.code,
+              manifestErrorMessage: e.message
+            }
+          });
+          continue;
         }
         throw e;
       }

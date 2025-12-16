@@ -1,0 +1,100 @@
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const crypto = require("node:crypto");
+
+const {
+  generateReleaseManifest,
+  DEFAULT_TARGETS
+} = require("../../scripts/generate_release_manifest.cjs");
+
+function sha256(buf) {
+  return crypto.createHash("sha256").update(buf).digest("hex");
+}
+
+function mkTmpDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "docdex-release-manifest-"));
+}
+
+test("generateReleaseManifest: emits targets mapping with sha256 and validates checksums", () => {
+  const dir = mkTmpDir();
+  const outPath = path.join(dir, "docdexd-manifest.json");
+
+  const expectedByTriple = new Map();
+
+  for (const entry of DEFAULT_TARGETS) {
+    const tarName = `${entry.archiveBase}.tar.gz`;
+    const tarPath = path.join(dir, tarName);
+    const payload = Buffer.from(`fake-archive:${tarName}\n`, "utf8");
+    fs.writeFileSync(tarPath, payload);
+
+    const tarSha = sha256(payload);
+    expectedByTriple.set(entry.targetTriple, { tarName, tarSha });
+
+    const shaFilePath = `${tarPath}.sha256`;
+    fs.writeFileSync(shaFilePath, `${tarSha}  ${tarName}\n`, "utf8");
+  }
+
+  const now = new Date("2025-01-01T00:00:00.000Z");
+  const result = generateReleaseManifest({
+    assetsDir: dir,
+    outPath,
+    tag: "v0.0.0",
+    repo: "owner/repo",
+    now
+  });
+
+  assert.equal(result.manifestPath, outPath);
+  assert.equal(result.sha256Path, `${outPath}.sha256`);
+  assert.ok(fs.existsSync(outPath));
+  assert.ok(fs.existsSync(`${outPath}.sha256`));
+
+  const manifest = JSON.parse(fs.readFileSync(outPath, "utf8"));
+  assert.equal(manifest.manifestVersion, 1);
+  assert.equal(manifest.repo, "owner/repo");
+  assert.equal(manifest.tag, "v0.0.0");
+  assert.equal(manifest.version, "0.0.0");
+  assert.equal(manifest.generatedAt, now.toISOString());
+
+  const triples = Object.keys(manifest.targets).sort();
+  assert.deepEqual(
+    triples,
+    DEFAULT_TARGETS.map((t) => t.targetTriple).slice().sort()
+  );
+
+  for (const triple of triples) {
+    const expected = expectedByTriple.get(triple);
+    assert.ok(expected, `missing expected triple ${triple}`);
+    const targetEntry = manifest.targets[triple];
+    assert.equal(targetEntry.asset.name, expected.tarName);
+    assert.equal(targetEntry.integrity.sha256, expected.tarSha);
+  }
+
+  const manifestShaLine = fs.readFileSync(`${outPath}.sha256`, "utf8").trim();
+  assert.match(manifestShaLine, /^[0-9a-f]{64}\s+docdexd-manifest\.json$/);
+  assert.equal(manifestShaLine.split(/\s+/)[0], sha256(fs.readFileSync(outPath)));
+});
+
+test("generateReleaseManifest: missing assets fails with stable exitCode", () => {
+  const dir = mkTmpDir();
+  const outPath = path.join(dir, "docdexd-manifest.json");
+
+  const entry = DEFAULT_TARGETS[0];
+  const tarName = `${entry.archiveBase}.tar.gz`;
+  fs.writeFileSync(path.join(dir, tarName), Buffer.from("x", "utf8"));
+  fs.writeFileSync(path.join(dir, `${tarName}.sha256`), `${sha256(Buffer.from("x"))}  ${tarName}\n`, "utf8");
+
+  assert.throws(
+    () => generateReleaseManifest({ assetsDir: dir, outPath }),
+    (err) => {
+      assert.equal(err.exitCode, 3);
+      assert.match(err.message, /^Missing expected release assets:/);
+      return true;
+    }
+  );
+});
+

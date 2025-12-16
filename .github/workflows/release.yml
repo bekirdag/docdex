@@ -104,7 +104,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: |
             ${{ matrix.archive }}.tar.gz
-            ${{ matrix.archive }}.sha256
+            ${{ matrix.archive }}.tar.gz.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -114,7 +114,7 @@ jobs:
           name: ${{ matrix.archive }}
           path: |
             ${{ matrix.archive }}.tar.gz
-            ${{ matrix.archive }}.sha256
+            ${{ matrix.archive }}.tar.gz.sha256
 
   publish-npm:
     name: Publish npm package and MCP server
@@ -190,6 +190,25 @@ jobs:
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
+
+      - name: Generate release manifest
+        run: |
+          node scripts/generate_release_manifest.cjs \
+            --dir artifacts \
+            --out artifacts/docdexd-manifest.json \
+            --tag "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}"
+
+      - name: Upload release manifest assets
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/docdexd-manifest.json
+            artifacts/docdexd-manifest.json.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update npm to latest (trusted publish requires >=11.5.1)
         run: npm install -g npm@latest

@@ -30,24 +30,24 @@ test("describeFatalError: unsupported platform includes detected OS/arch and no-
 test("describeFatalError: missing artifact distinguishes from unsupported and includes target triple + pattern", () => {
   const err = new MissingArtifactError({
     detected: { os: "linux", arch: "arm64" },
-    platformKey: "linux-arm64-musl",
-    targetTriple: "aarch64-unknown-linux-musl",
+    platformKey: "linux-arm64-gnu",
+    targetTriple: "aarch64-unknown-linux-gnu",
     version: "0.1.11",
     repoSlug: "owner/repo",
-    downloadUrl: "https://example.test/releases/download/v0.1.11/docdexd-linux-arm64-musl.tar.gz",
-    assetName: "docdexd-linux-arm64-musl.tar.gz",
-    expectedAsset: "docdexd-linux-arm64-musl.tar.gz",
+    downloadUrl: "https://example.test/releases/download/v0.1.11/docdexd-linux-arm64-gnu.tar.gz",
+    assetName: "docdexd-linux-arm64-gnu.tar.gz",
+    expectedAsset: "docdexd-linux-arm64-gnu.tar.gz",
     expectedAssetPattern: "docdexd-<platformKey>.tar.gz"
   });
 
   const report = describeFatalError(err);
   assert.equal(report.code, "DOCDEX_ASSET_MISSING");
   assert.equal(report.exitCode, 21);
-  assert.equal(report.details.targetTriple, "aarch64-unknown-linux-musl");
+  assert.equal(report.details.targetTriple, "aarch64-unknown-linux-gnu");
   assert.equal(report.details.manifestVersion, null);
-  assert.equal(report.details.assetName, "docdexd-linux-arm64-musl.tar.gz");
+  assert.equal(report.details.assetName, "docdexd-linux-arm64-gnu.tar.gz");
   assert.ok(report.lines.some((l) => l.includes("missing artifact/version sync issue")));
-  assert.ok(report.lines.some((l) => l.includes("Expected target triple: aarch64-unknown-linux-musl")));
+  assert.ok(report.lines.some((l) => l.includes("Expected target triple: aarch64-unknown-linux-gnu")));
   assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platformKey>.tar.gz")));
 });
 

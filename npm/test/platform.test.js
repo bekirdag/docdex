@@ -14,6 +14,9 @@ const {
   UnsupportedPlatformError
 } = require("../lib/platform");
 
+const { PUBLISHED_RELEASE_TARGETS } = require("../lib/platform_matrix");
+const { DEFAULT_TARGETS } = require("../../scripts/generate_release_manifest.cjs");
+
 function writeElf64WithInterpreter(filePath, interpreter) {
   const interpBytes = Buffer.from(`${interpreter}\0`, "utf8");
   const interpOffset = 0x100;
@@ -59,7 +62,7 @@ function fsProxyNoAlpineHint() {
   };
 }
 
-test("targetTripleForPlatformKey matches canonical release-manifest keys", () => {
+test("targetTripleForPlatformKey maps known platform keys deterministically", () => {
   assert.equal(targetTripleForPlatformKey("darwin-arm64"), "aarch64-apple-darwin");
   assert.equal(targetTripleForPlatformKey("darwin-x64"), "x86_64-apple-darwin");
   assert.equal(targetTripleForPlatformKey("linux-x64-gnu"), "x86_64-unknown-linux-gnu");
@@ -78,11 +81,45 @@ test("detectTargetTriple deterministically maps supported runtimes", () => {
     "x86_64-unknown-linux-gnu"
   );
   assert.equal(
-    detectTargetTriple({ platform: "linux", arch: "arm64", env: { DOCDEX_LIBC: "musl" } }),
-    "aarch64-unknown-linux-musl"
+    detectTargetTriple({ platform: "linux", arch: "arm64", env: { DOCDEX_LIBC: "gnu" } }),
+    "aarch64-unknown-linux-gnu"
   );
   assert.equal(detectTargetTriple({ platform: "win32", arch: "x64" }), "x86_64-pc-windows-msvc");
-  assert.equal(detectTargetTriple({ platform: "win32", arch: "arm64" }), "aarch64-pc-windows-msvc");
+});
+
+test("unpublished targets are treated as unsupported (no download expected)", () => {
+  assert.throws(
+    () => detectPlatformKey({ platform: "linux", arch: "arm64", env: { DOCDEX_LIBC: "musl" } }),
+    (err) => {
+      assert.ok(err instanceof UnsupportedPlatformError);
+      assert.equal(err.code, "DOCDEX_UNSUPPORTED_PLATFORM");
+      assert.equal(err.details.platform, "linux");
+      assert.equal(err.details.arch, "arm64");
+      assert.equal(err.details.libc, "musl");
+      assert.equal(err.details.candidatePlatformKey, "linux-arm64-musl");
+      assert.equal(err.details.candidateTargetTriple, "aarch64-unknown-linux-musl");
+      assert.equal(err.details.reason, "target_not_published");
+      return true;
+    }
+  );
+
+  assert.throws(
+    () => detectPlatformKey({ platform: "win32", arch: "arm64" }),
+    (err) => {
+      assert.ok(err instanceof UnsupportedPlatformError);
+      assert.equal(err.code, "DOCDEX_UNSUPPORTED_PLATFORM");
+      assert.equal(err.details.platform, "win32");
+      assert.equal(err.details.arch, "arm64");
+      assert.equal(err.details.candidatePlatformKey, "win32-arm64");
+      assert.equal(err.details.candidateTargetTriple, "aarch64-pc-windows-msvc");
+      assert.equal(err.details.reason, "target_not_published");
+      return true;
+    }
+  );
+});
+
+test("published platform keys match manifest generator defaults", () => {
+  assert.deepEqual(DEFAULT_TARGETS, PUBLISHED_RELEASE_TARGETS);
 });
 
 test("DOCDEX_LIBC invalid value fails with actionable error", () => {

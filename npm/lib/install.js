@@ -9,7 +9,7 @@ const { pipeline } = require("node:stream/promises");
 const crypto = require("node:crypto");
 
 const pkg = require("../package.json");
-const { artifactName, detectPlatformKey, detectTargetTriple, UnsupportedPlatformError } = require("./platform");
+const { artifactName, detectPlatformKey, targetTripleForPlatformKey, UnsupportedPlatformError } = require("./platform");
 const { ManifestResolutionError, resolveCanonicalAssetForTargetTriple } = require("./release_manifest");
 
 const MAX_REDIRECTS = 5;
@@ -474,7 +474,7 @@ async function verifyDownloadedFileIntegrity({
 
 async function main() {
   const platformKey = detectPlatformKey();
-  const targetTriple = detectTargetTriple();
+  const targetTriple = targetTripleForPlatformKey(platformKey);
   const version = getVersion();
   const repoSlug = parseRepoSlug();
 
@@ -587,6 +587,12 @@ function describeFatalError(err) {
     const detected = `${err.details.platform}/${err.details.arch}`;
     const supportedKeys = (err.details.supportedPlatformKeys || []).join(", ");
     const supportedTriples = (err.details.supportedTargetTriples || []).join(", ");
+    const libc = err.details?.libc ? String(err.details.libc) : null;
+    const candidatePlatformKey =
+      typeof err.details?.candidatePlatformKey === "string" ? err.details.candidatePlatformKey : null;
+    const candidateTargetTriple =
+      typeof err.details?.candidateTargetTriple === "string" ? err.details.candidateTargetTriple : null;
+    const unpublished = err.details?.reason === "target_not_published";
 
     return {
       code: err.code,
@@ -596,10 +602,14 @@ function describeFatalError(err) {
         `[docdex] install failed: unsupported platform (${detected})`,
         `[docdex] error code: ${err.code}`,
         "[docdex] No download was attempted for this platform.",
+        libc ? `[docdex] Detected libc: ${libc}` : null,
+        candidatePlatformKey ? `[docdex] Platform key: ${candidatePlatformKey}` : null,
+        candidateTargetTriple ? `[docdex] Target triple: ${candidateTargetTriple}` : null,
+        unpublished ? "[docdex] Note: this platform is recognized but no published binary is available yet." : null,
         supportedKeys ? `[docdex] Supported platforms: ${supportedKeys}` : null,
         supportedTriples ? `[docdex] Supported target triples: ${supportedTriples}` : null,
         "[docdex] Next steps:",
-        "[docdex] - Use a supported OS/arch (macOS/Linux/Windows on arm64/x64).",
+        "[docdex] - Use a supported platform (see list above).",
         "[docdex] - Or build from source (requires Rust): `cargo build --release --locked`.",
         "[docdex] - If you are on Linux and unsure of libc, set `DOCDEX_LIBC=gnu` or `DOCDEX_LIBC=musl`."
       ].filter(Boolean)

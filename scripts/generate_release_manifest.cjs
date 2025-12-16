@@ -5,14 +5,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-const DEFAULT_TARGETS = Object.freeze([
-  { targetTriple: "x86_64-unknown-linux-gnu", archiveBase: "docdexd-linux-x64-gnu" },
-  { targetTriple: "x86_64-unknown-linux-musl", archiveBase: "docdexd-linux-x64-musl" },
-  { targetTriple: "aarch64-unknown-linux-gnu", archiveBase: "docdexd-linux-arm64-gnu" },
-  { targetTriple: "x86_64-apple-darwin", archiveBase: "docdexd-darwin-x64" },
-  { targetTriple: "aarch64-apple-darwin", archiveBase: "docdexd-darwin-arm64" },
-  { targetTriple: "x86_64-pc-windows-msvc", archiveBase: "docdexd-win32-x64" }
-]);
+const { PUBLISHED_RELEASE_TARGETS } = require("../npm/lib/platform_matrix");
+
+// Single source of truth: published targets come from npm/lib/platform_matrix.js
+const DEFAULT_TARGETS = Object.freeze(PUBLISHED_RELEASE_TARGETS.slice());
 
 function usage() {
   return [
@@ -206,4 +202,3 @@ if (require.main === module) {
 }
 
 module.exports = { generateReleaseManifest, DEFAULT_TARGETS };
-

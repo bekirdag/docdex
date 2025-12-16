@@ -2,11 +2,36 @@
 
 const fs = require("node:fs");
 
+const {
+  PLATFORM_ENTRY_BY_KEY,
+  PUBLISHED_PLATFORM_KEYS,
+  PUBLISHED_TARGET_TRIPLES,
+  assetNameForPlatformKey
+} = require("./platform_matrix");
+
 class UnsupportedPlatformError extends Error {
   /**
-   * @param {{platform: string, arch: string, supportedPlatformKeys: string[], supportedTargetTriples: string[]}} options
+   * @param {{
+   *   platform: string,
+   *   arch: string,
+   *   libc?: (null|"gnu"|"musl"),
+   *   candidatePlatformKey?: (string|null),
+   *   candidateTargetTriple?: (string|null),
+   *   reason?: (string|null),
+   *   supportedPlatformKeys: string[],
+   *   supportedTargetTriples: string[]
+   * }} options
    */
-  constructor({ platform, arch, supportedPlatformKeys, supportedTargetTriples }) {
+  constructor({
+    platform,
+    arch,
+    libc = null,
+    candidatePlatformKey = null,
+    candidateTargetTriple = null,
+    reason = null,
+    supportedPlatformKeys,
+    supportedTargetTriples
+  }) {
     super(`Unsupported platform: ${platform}/${arch}`);
     this.name = "UnsupportedPlatformError";
     this.code = "DOCDEX_UNSUPPORTED_PLATFORM";
@@ -17,27 +42,18 @@ class UnsupportedPlatformError extends Error {
       assetName: null,
       platform,
       arch,
+      libc,
+      candidatePlatformKey,
+      candidateTargetTriple,
+      reason,
       supportedPlatformKeys: supportedPlatformKeys || [],
       supportedTargetTriples: supportedTargetTriples || []
     };
   }
 }
 
-const PLATFORM_KEY_TO_TARGET_TRIPLE = Object.freeze({
-  "darwin-arm64": "aarch64-apple-darwin",
-  "darwin-x64": "x86_64-apple-darwin",
-  "linux-x64-gnu": "x86_64-unknown-linux-gnu",
-  "linux-x64-musl": "x86_64-unknown-linux-musl",
-  "linux-arm64-gnu": "aarch64-unknown-linux-gnu",
-  "linux-arm64-musl": "aarch64-unknown-linux-musl",
-  "win32-x64": "x86_64-pc-windows-msvc",
-  "win32-arm64": "aarch64-pc-windows-msvc"
-});
-
-const SUPPORTED_PLATFORM_KEYS = Object.freeze(Object.keys(PLATFORM_KEY_TO_TARGET_TRIPLE).sort());
-const SUPPORTED_TARGET_TRIPLES = Object.freeze(
-  [...new Set(Object.values(PLATFORM_KEY_TO_TARGET_TRIPLE))].sort()
-);
+const SUPPORTED_PLATFORM_KEYS = PUBLISHED_PLATFORM_KEYS;
+const SUPPORTED_TARGET_TRIPLES = PUBLISHED_TARGET_TRIPLES;
 
 function normalizeLibc(value) {
   if (value == null) return null;
@@ -170,39 +186,66 @@ function detectLibcFromRuntime(options) {
 function detectPlatformKey(options) {
   const platform = options?.platform ?? process.platform;
   const arch = options?.arch ?? process.arch;
+  let libc = null;
+  let candidatePlatformKey = null;
+  let candidateTargetTriple = null;
 
   if (platform === "darwin") {
-    if (arch === "arm64") return "darwin-arm64";
-    if (arch === "x64") return "darwin-x64";
+    if (arch === "arm64") candidatePlatformKey = "darwin-arm64";
+    if (arch === "x64") candidatePlatformKey = "darwin-x64";
   }
 
   if (platform === "linux") {
-    const libc = normalizeLibc(options?.libc) ?? detectLibcFromRuntime(options);
-    if (arch === "arm64") return `linux-arm64-${libc}`;
-    if (arch === "x64") return `linux-x64-${libc}`;
+    libc = normalizeLibc(options?.libc) ?? detectLibcFromRuntime(options);
+    if (arch === "arm64") candidatePlatformKey = `linux-arm64-${libc}`;
+    if (arch === "x64") candidatePlatformKey = `linux-x64-${libc}`;
   }
 
   if (platform === "win32") {
-    if (arch === "x64") return "win32-x64";
-    if (arch === "arm64") return "win32-arm64";
+    if (arch === "x64") candidatePlatformKey = "win32-x64";
+    if (arch === "arm64") candidatePlatformKey = "win32-arm64";
+  }
+
+  if (candidatePlatformKey) {
+    const entry = PLATFORM_ENTRY_BY_KEY[candidatePlatformKey];
+    candidateTargetTriple = entry?.targetTriple ?? null;
+    if (entry?.published) return candidatePlatformKey;
+    if (entry && entry.published === false) {
+      throw new UnsupportedPlatformError({
+        platform,
+        arch,
+        libc,
+        candidatePlatformKey,
+        candidateTargetTriple,
+        reason: "target_not_published",
+        supportedPlatformKeys: SUPPORTED_PLATFORM_KEYS,
+        supportedTargetTriples: SUPPORTED_TARGET_TRIPLES
+      });
+    }
   }
 
   throw new UnsupportedPlatformError({
     platform,
     arch,
+    libc,
+    candidatePlatformKey,
+    candidateTargetTriple,
+    reason: "unknown_or_unsupported_runtime",
     supportedPlatformKeys: SUPPORTED_PLATFORM_KEYS,
     supportedTargetTriples: SUPPORTED_TARGET_TRIPLES
   });
 }
 
 function artifactName(platformKey) {
-  return `docdexd-${platformKey}.tar.gz`;
+  return assetNameForPlatformKey(platformKey);
 }
 
 function targetTripleForPlatformKey(platformKey) {
-  const triple = PLATFORM_KEY_TO_TARGET_TRIPLE[platformKey];
+  const triple = PLATFORM_ENTRY_BY_KEY[platformKey]?.targetTriple;
   if (triple) return triple;
-  throw new Error(`Unsupported platform key: ${platformKey}. Supported: ${SUPPORTED_PLATFORM_KEYS.join(", ")}`);
+  throw new Error(
+    `Unsupported platform key: ${platformKey}. Supported: ${Object.keys(PLATFORM_ENTRY_BY_KEY).sort().join(", ")}`
+  );
 }
 
 function detectTargetTriple(options) {

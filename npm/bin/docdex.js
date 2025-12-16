@@ -5,10 +5,29 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const { detectPlatformKey } = require("../lib/platform");
+const { detectPlatformKey, UnsupportedPlatformError } = require("../lib/platform");
 
 function run() {
-  const platformKey = detectPlatformKey();
+  let platformKey;
+  try {
+    platformKey = detectPlatformKey();
+  } catch (err) {
+    if (err instanceof UnsupportedPlatformError) {
+      const detected = `${err.details?.platform ?? process.platform}/${err.details?.arch ?? process.arch}`;
+      const libc = err.details?.libc ? `/${err.details.libc}` : "";
+      console.error(`[docdex] unsupported platform (${detected}${libc})`);
+      console.error(`[docdex] error code: ${err.code}`);
+      console.error("[docdex] No download/run was attempted for this platform.");
+      if (Array.isArray(err.details?.supportedPlatformKeys) && err.details.supportedPlatformKeys.length) {
+        console.error(`[docdex] Supported platforms: ${err.details.supportedPlatformKeys.join(", ")}`);
+      }
+      console.error("[docdex] Next steps: use a supported platform or build from source (Rust).");
+      process.exit(err.exitCode || 3);
+    }
+    console.error(`[docdex] failed to detect platform: ${err?.message || String(err)}`);
+    process.exit(1);
+  }
+
   const basePath = path.join(__dirname, "..", "dist", platformKey);
   const binaryPath = path.join(
     basePath,

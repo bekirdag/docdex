@@ -24,7 +24,8 @@ You are interacting with Docdex, a local documentation indexer/search daemon. It
 ## Paths and binaries
 - Binary name: `docdexd` (`docdex` alias via npm).
 - Index path: `<repo>/.docdex/index` (or `DOCDEX_STATE_DIR`).
-- Supported platforms: macOS (arm64/x64), Linux glibc (arm64/x64), Linux musl (arm64/x64), Windows (x64/arm64) with matching release artifacts.
+- Supported published platforms: macOS (arm64/x64), Linux glibc (arm64/x64), Linux musl (x64), Windows (x64).
+- Unpublished/unsupported (fails gracefully): Linux musl (arm64), Windows (arm64).
 
 ## Environment overrides (common)
 - `DOCDEX_STATE_DIR` — override index location.

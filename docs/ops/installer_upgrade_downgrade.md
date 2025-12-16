@@ -11,7 +11,7 @@ Assumptions (explicit):
 
 The installer converges to a single final state: the installed `docdexd` under `dist/<platformKey>/` matches the expected version for this npm package install.
 
-Outcomes (stable strings):
+Decision outcomes (stable strings; used by the installer decision engine):
 
 | Outcome | Meaning | Deterministic trigger (local state) |
 |---|---|---|
@@ -20,8 +20,21 @@ Outcomes (stable strings):
 | `repair` | Reinstall the expected version due to a local integrity mismatch. | Metadata exists for the expected version, but the current binary’s SHA-256 does not match the recorded `binary.sha256`. |
 | `reinstall_unknown` | Reinstall because current state can’t be verified deterministically. | Binary exists but install metadata is missing/unreadable/invalid, or metadata does not match the detected `platformKey`. |
 
-The installer logs the outcome as a single line:
+User-facing outcome codes (stable; suitable for automation):
+
+| Outcome code | Maps from decision outcome | Meaning |
+|---|---|---|
+| `skipped_noop` | `no-op` | Already correct and verified; no download/install work was performed. |
+| `updated` | `update` | Version was aligned to the expected version. |
+| `repaired` | `repair` | Binary was replaced due to an integrity verification failure. |
+| `reinstalled_unknown` | `reinstall_unknown` | State could not be verified deterministically; forced reinstall. |
+
+The installer logs both legacy and automation-friendly outcomes:
 - `[docdex] Install outcome: <outcome>`
+- `[docdex] Install outcome code: <outcomeCode>`
+
+Optional structured output (for automation):
+- Set `DOCDEX_INSTALLER_OUTPUT=json` to emit a single JSON object to stdout (and suppress other installer logs).
 
 ## Upgrade vs downgrade
 
@@ -114,4 +127,3 @@ This is usually a repo state issue, not an installer issue:
 - Installer error codes + remediation: `docs/ops/installer_error_codes.md`
 - Release manifest contract: `docs/contracts/release_manifest_schema_v1.md`
 - Installer error contract: `docs/contracts/installer_error_contract_v1.md`
-

@@ -42,7 +42,7 @@ function validInstallMetadata({ platformKey, version, binarySha256 }) {
   };
 }
 
-test("decision engine: missing binary => update (binary_missing)", async () => {
+test("decision engine: missing binary => install (binary_missing)", async () => {
   const platformKey = "linux-x64-gnu";
   const distDir = path.posix.join("/dist", platformKey);
 
@@ -61,7 +61,7 @@ test("decision engine: missing binary => update (binary_missing)", async () => {
     sha256FileFn
   });
 
-  assert.equal(outcome.outcome, "update");
+  assert.equal(outcome.outcome, "install");
   assert.equal(outcome.reason, "binary_missing");
   assert.equal(outcome.installedVersion, null);
 });
@@ -154,7 +154,7 @@ test("decision engine: platform mismatch => reinstall_unknown (platform_mismatch
   assert.equal(outcome.installedVersion, "0.1.0");
 });
 
-test("decision engine: version mismatch => update (version_mismatch)", async () => {
+test("decision engine: version mismatch => upgrade (version_mismatch)", async () => {
   const platformKey = "linux-x64-gnu";
   const distDir = path.posix.join("/dist", platformKey);
   const binaryPath = path.posix.join(distDir, "docdexd");
@@ -183,9 +183,43 @@ test("decision engine: version mismatch => update (version_mismatch)", async () 
     }
   });
 
-  assert.equal(outcome.outcome, "update");
+  assert.equal(outcome.outcome, "upgrade");
   assert.equal(outcome.reason, "version_mismatch");
   assert.equal(outcome.installedVersion, "0.0.9");
+});
+
+test("decision engine: version mismatch => downgrade (version_mismatch)", async () => {
+  const platformKey = "linux-x64-gnu";
+  const distDir = path.posix.join("/dist", platformKey);
+  const binaryPath = path.posix.join(distDir, "docdexd");
+  const metadataPath = path.posix.join(distDir, "docdexd-install.json");
+
+  const fsModule = createMockFs({
+    existingPaths: [binaryPath],
+    filesByPath: {
+      [metadataPath]: JSON.stringify(
+        validInstallMetadata({ platformKey, version: "0.2.0", binarySha256: "a".repeat(64) }),
+        null,
+        2
+      )
+    }
+  });
+
+  const outcome = await determineLocalInstallerOutcome({
+    fsModule,
+    pathModule: path.posix,
+    distDir,
+    platformKey,
+    expectedVersion: "0.1.0",
+    isWin32: false,
+    sha256FileFn: async () => {
+      throw new Error("unexpected sha256");
+    }
+  });
+
+  assert.equal(outcome.outcome, "downgrade");
+  assert.equal(outcome.reason, "version_mismatch");
+  assert.equal(outcome.installedVersion, "0.2.0");
 });
 
 test("decision engine: binary hash mismatch => repair (binary_integrity_mismatch)", async () => {

@@ -327,6 +327,72 @@ function normalizeSha256Hex(value) {
   return trimmed;
 }
 
+function parseSemverLoose(version) {
+  if (typeof version !== "string") return null;
+  const cleaned = version.trim().replace(/^v/, "");
+  if (!cleaned) return null;
+
+  const withoutBuild = cleaned.split("+", 1)[0];
+  const [core, prereleaseRaw] = withoutBuild.split("-", 2);
+  const parts = core.split(".");
+  if (parts.length !== 3) return null;
+
+  const major = Number(parts[0]);
+  const minor = Number(parts[1]);
+  const patch = Number(parts[2]);
+  if (!Number.isInteger(major) || !Number.isInteger(minor) || !Number.isInteger(patch)) return null;
+  if (major < 0 || minor < 0 || patch < 0) return null;
+
+  const prerelease = prereleaseRaw
+    ? prereleaseRaw
+        .split(".")
+        .map((id) => (id === "" ? null : id))
+        .filter((id) => id != null)
+    : [];
+
+  return { major, minor, patch, prerelease };
+}
+
+function compareSemverLoose(a, b) {
+  const av = parseSemverLoose(a);
+  const bv = parseSemverLoose(b);
+  if (!av || !bv) return null;
+
+  if (av.major !== bv.major) return av.major < bv.major ? -1 : 1;
+  if (av.minor !== bv.minor) return av.minor < bv.minor ? -1 : 1;
+  if (av.patch !== bv.patch) return av.patch < bv.patch ? -1 : 1;
+
+  const aPre = av.prerelease;
+  const bPre = bv.prerelease;
+  const aHas = aPre.length > 0;
+  const bHas = bPre.length > 0;
+  if (!aHas && !bHas) return 0;
+  if (!aHas && bHas) return 1;
+  if (aHas && !bHas) return -1;
+
+  const len = Math.max(aPre.length, bPre.length);
+  for (let i = 0; i < len; i += 1) {
+    const ai = aPre[i];
+    const bi = bPre[i];
+    if (ai == null && bi == null) return 0;
+    if (ai == null) return -1;
+    if (bi == null) return 1;
+
+    const aNum = /^[0-9]+$/.test(ai) ? Number(ai) : null;
+    const bNum = /^[0-9]+$/.test(bi) ? Number(bi) : null;
+    if (aNum != null && bNum != null) {
+      if (aNum !== bNum) return aNum < bNum ? -1 : 1;
+      continue;
+    }
+    if (aNum != null && bNum == null) return -1;
+    if (aNum == null && bNum != null) return 1;
+
+    if (ai !== bi) return ai < bi ? -1 : 1;
+  }
+
+  return 0;
+}
+
 function integrityUnverifiable(reason, { expectedSha256, actualSha256, expectedSource, error } = {}) {
   return {
     status: "unverifiable",
@@ -432,7 +498,7 @@ function decideInstallAction({
   discoveredInstalledState,
   integrityResult
 }) {
-  if (!discoveredInstalledState?.binaryPresent) return { outcome: "update", reason: "binary_missing" };
+  if (!discoveredInstalledState?.binaryPresent) return { outcome: "install", reason: "binary_missing" };
 
   if (discoveredInstalledState.metadataStatus !== "valid") {
     return {
@@ -446,7 +512,10 @@ function decideInstallAction({
   }
 
   if (discoveredInstalledState.installedVersion !== expectedVersion) {
-    return { outcome: "update", reason: "version_mismatch" };
+    const comparison = compareSemverLoose(discoveredInstalledState.installedVersion, expectedVersion);
+    if (comparison === -1) return { outcome: "upgrade", reason: "version_mismatch" };
+    if (comparison === 1) return { outcome: "downgrade", reason: "version_mismatch" };
+    return { outcome: "replace", reason: "version_mismatch" };
   }
 
   const expectedBinarySha256 = normalizeSha256Hex(expectedIntegrityMaterial?.binarySha256);
@@ -1060,7 +1129,15 @@ async function runInstaller(options) {
 
   if (local.outcome === "no-op") {
     logger.log("[docdex] Install outcome: no-op");
-    return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
+    return {
+      binaryPath: local.binaryPath,
+      outcome: local.outcome,
+      reason: local.reason,
+      previousVersion: local.installedVersion,
+      expectedVersion: version,
+      finalVersion: version,
+      integrityResult: local.integrityResult
+    };
   }
 
   const repoSlug = parseRepoSlugFn();
@@ -1189,7 +1266,14 @@ async function runInstaller(options) {
     });
 
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
-    return { binaryPath, outcome: local.outcome };
+    return {
+      binaryPath,
+      outcome: local.outcome,
+      reason: local.reason,
+      previousVersion: local.installedVersion,
+      expectedVersion: version,
+      finalVersion: version
+    };
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
   }

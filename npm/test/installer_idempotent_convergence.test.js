@@ -72,7 +72,7 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
     }
   });
 
-  assert.equal(first.outcome, "update");
+  assert.equal(first.outcome, "install");
   assert.equal(firstDownloadCalls, 1);
   assert.equal(firstExtractCalls, 1);
 
@@ -131,4 +131,3 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
   assert.equal(metadataAfterSecond, metadataAfterFirst);
   assert.equal(binaryAfterSecond, binaryAfterFirst);
 });
-

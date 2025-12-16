@@ -118,7 +118,7 @@ test("installer outcome: no-op skips plan/download when local install is verifie
   assert.equal(extractCalls, 0);
 });
 
-test("installer outcome: update installs when version differs and writes fresh metadata", async (t) => {
+test("installer outcome: upgrade installs when expected version is newer and writes fresh metadata", async (t) => {
   const base = "https://example.test/releases/download";
   const expectedVersion = "0.0.2";
   const installedVersion = "0.0.1";
@@ -126,7 +126,7 @@ test("installer outcome: update installs when version differs and writes fresh m
   const targetTriple = targetTripleForPlatformKey(platformKey);
   const isWin32 = false;
 
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-outcome-update-"));
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-outcome-upgrade-"));
   t.after(async () => {
     await fs.promises.rm(tmpRoot, { recursive: true, force: true });
   });
@@ -188,7 +188,88 @@ test("installer outcome: update installs when version differs and writes fresh m
   });
 
   assert.equal(downloadUrl, expectedDownloadUrl);
-  assert.equal(result.outcome, "update");
+  assert.equal(result.outcome, "upgrade");
+
+  const metadataPath = path.join(distDir, "docdexd-install.json");
+  assert.ok(fs.existsSync(metadataPath));
+  const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
+  assert.equal(meta.version, expectedVersion);
+  assert.equal(meta.platformKey, platformKey);
+  assert.equal(typeof meta.binary?.sha256, "string");
+  assert.equal(meta.binary.sha256.length, 64);
+});
+
+test("installer outcome: downgrade installs when expected version is older and writes fresh metadata", async (t) => {
+  const base = "https://example.test/releases/download";
+  const expectedVersion = "0.0.1";
+  const installedVersion = "0.0.2";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const isWin32 = false;
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-outcome-downgrade-"));
+  t.after(async () => {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  const distBaseDir = path.join(tmpRoot, "dist");
+  const distDir = path.join(distBaseDir, platformKey);
+  const tmpDir = path.join(tmpRoot, "tmp");
+  await ensureDir(tmpDir);
+
+  const oldBinaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "old-binary\n" });
+  const oldSha = await sha256File(oldBinaryPath);
+  await writeInstallMetadata({
+    distDir,
+    platformKey,
+    version: installedVersion,
+    targetTriple,
+    binarySha256: oldSha
+  });
+
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+  const expectedDownloadUrl = `${base}/v${expectedVersion}/${archive}`;
+
+  let downloadUrl = null;
+  let downloadDest = null;
+
+  const result = await runInstaller({
+    logger: createNoopLogger(),
+    platform: "linux",
+    arch: "x64",
+    tmpDir,
+    distBaseDir,
+    detectPlatformKeyFn: () => platformKey,
+    targetTripleForPlatformKeyFn: () => targetTriple,
+    getVersionFn: () => expectedVersion,
+    parseRepoSlugFn: () => "owner/repo",
+    getDownloadBaseFn: () => base,
+    resolveInstallerDownloadPlanFn: async () => ({
+      archive,
+      expectedSha256: null,
+      source: "fallback",
+      manifestAttempt: { errors: [], resolved: null, manifestName: null }
+    }),
+    downloadFn: async (url, dest) => {
+      downloadUrl = url;
+      downloadDest = dest;
+      await ensureDir(path.dirname(dest));
+      await fs.promises.writeFile(dest, "fake-archive-bytes");
+    },
+    verifyDownloadedFileIntegrityFn: async ({ filePath }) => {
+      assert.equal(filePath, downloadDest);
+      assert.ok(fs.existsSync(filePath));
+      return null;
+    },
+    extractTarballFn: async (_archivePath, targetDir) => {
+      await ensureDir(targetDir);
+      const newBinaryPath = path.join(targetDir, "docdexd");
+      await fs.promises.writeFile(newBinaryPath, "new-binary\n");
+    }
+  });
+
+  assert.equal(downloadUrl, expectedDownloadUrl);
+  assert.equal(result.outcome, "downgrade");
 
   const metadataPath = path.join(distDir, "docdexd-install.json");
   assert.ok(fs.existsSync(metadataPath));

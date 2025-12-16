@@ -24,12 +24,27 @@ test("installer: unsupported OS/arch fails before any plan resolution or downloa
   let planCalls = 0;
   let downloadCalls = 0;
   let extractCalls = 0;
+  let versionCalls = 0;
+  let repoSlugCalls = 0;
+  let tripleCalls = 0;
 
   let err;
   try {
     await runInstaller({
       logger: createNoopLogger(),
       detectPlatformKeyFn: () => detectPlatformKey({ platform: "freebsd", arch: "x64" }),
+      targetTripleForPlatformKeyFn: () => {
+        tripleCalls += 1;
+        throw new Error("unexpected target triple resolution");
+      },
+      getVersionFn: () => {
+        versionCalls += 1;
+        throw new Error("unexpected version resolution");
+      },
+      parseRepoSlugFn: () => {
+        repoSlugCalls += 1;
+        throw new Error("unexpected repo slug resolution");
+      },
       resolveInstallerDownloadPlanFn: async () => {
         planCalls += 1;
         throw new Error("unexpected plan resolution");
@@ -56,12 +71,18 @@ test("installer: unsupported OS/arch fails before any plan resolution or downloa
   assert.equal(planCalls, 0);
   assert.equal(downloadCalls, 0);
   assert.equal(extractCalls, 0);
+  assert.equal(tripleCalls, 0);
+  assert.equal(versionCalls, 0);
+  assert.equal(repoSlugCalls, 0);
 });
 
 test("installer: unpublished linux arm64 musl fails before any plan resolution or download", async () => {
   let planCalls = 0;
   let downloadCalls = 0;
   let extractCalls = 0;
+  let versionCalls = 0;
+  let repoSlugCalls = 0;
+  let tripleCalls = 0;
 
   let err;
   try {
@@ -69,6 +90,18 @@ test("installer: unpublished linux arm64 musl fails before any plan resolution o
       logger: createNoopLogger(),
       detectPlatformKeyFn: () =>
         detectPlatformKey({ platform: "linux", arch: "arm64", env: { DOCDEX_LIBC: "musl" }, report: null }),
+      targetTripleForPlatformKeyFn: () => {
+        tripleCalls += 1;
+        throw new Error("unexpected target triple resolution");
+      },
+      getVersionFn: () => {
+        versionCalls += 1;
+        throw new Error("unexpected version resolution");
+      },
+      parseRepoSlugFn: () => {
+        repoSlugCalls += 1;
+        throw new Error("unexpected repo slug resolution");
+      },
       resolveInstallerDownloadPlanFn: async () => {
         planCalls += 1;
         throw new Error("unexpected plan resolution");
@@ -97,18 +130,36 @@ test("installer: unpublished linux arm64 musl fails before any plan resolution o
   assert.equal(planCalls, 0);
   assert.equal(downloadCalls, 0);
   assert.equal(extractCalls, 0);
+  assert.equal(tripleCalls, 0);
+  assert.equal(versionCalls, 0);
+  assert.equal(repoSlugCalls, 0);
 });
 
 test("installer: unpublished win32 arm64 fails before any plan resolution or download", async () => {
   let planCalls = 0;
   let downloadCalls = 0;
   let extractCalls = 0;
+  let versionCalls = 0;
+  let repoSlugCalls = 0;
+  let tripleCalls = 0;
 
   let err;
   try {
     await runInstaller({
       logger: createNoopLogger(),
       detectPlatformKeyFn: () => detectPlatformKey({ platform: "win32", arch: "arm64" }),
+      targetTripleForPlatformKeyFn: () => {
+        tripleCalls += 1;
+        throw new Error("unexpected target triple resolution");
+      },
+      getVersionFn: () => {
+        versionCalls += 1;
+        throw new Error("unexpected version resolution");
+      },
+      parseRepoSlugFn: () => {
+        repoSlugCalls += 1;
+        throw new Error("unexpected repo slug resolution");
+      },
       resolveInstallerDownloadPlanFn: async () => {
         planCalls += 1;
         throw new Error("unexpected plan resolution");
@@ -136,86 +187,9 @@ test("installer: unpublished win32 arm64 fails before any plan resolution or dow
   assert.equal(planCalls, 0);
   assert.equal(downloadCalls, 0);
   assert.equal(extractCalls, 0);
-});
-
-test("installer: unpublished linux arm64 musl fails before any plan resolution or download", async () => {
-  let planCalls = 0;
-  let downloadCalls = 0;
-  let extractCalls = 0;
-
-  let err;
-  try {
-    await runInstaller({
-      logger: createNoopLogger(),
-      detectPlatformKeyFn: () =>
-        detectPlatformKey({ platform: "linux", arch: "arm64", env: { DOCDEX_LIBC: "musl" }, report: null }),
-      resolveInstallerDownloadPlanFn: async () => {
-        planCalls += 1;
-        throw new Error("unexpected plan resolution");
-      },
-      downloadFn: async () => {
-        downloadCalls += 1;
-        throw new Error("unexpected download");
-      },
-      extractTarballFn: async () => {
-        extractCalls += 1;
-        throw new Error("unexpected extract");
-      }
-    });
-  } catch (e) {
-    err = e;
-  }
-
-  assert.ok(err, "expected an error");
-  const report = describeFatalError(err);
-  assert.equal(report.code, "DOCDEX_UNSUPPORTED_PLATFORM");
-  assert.ok(report.lines.some((l) => l.includes("unsupported platform (linux/arm64)")));
-  assert.ok(report.lines.some((l) => l.includes("Detected libc: musl")));
-  assert.ok(report.lines.some((l) => l.includes("no published binary")));
-  assert.ok(report.lines.some((l) => l.includes("No download was attempted")));
-
-  assert.equal(planCalls, 0);
-  assert.equal(downloadCalls, 0);
-  assert.equal(extractCalls, 0);
-});
-
-test("installer: unpublished win32 arm64 fails before any plan resolution or download", async () => {
-  let planCalls = 0;
-  let downloadCalls = 0;
-  let extractCalls = 0;
-
-  let err;
-  try {
-    await runInstaller({
-      logger: createNoopLogger(),
-      detectPlatformKeyFn: () => detectPlatformKey({ platform: "win32", arch: "arm64" }),
-      resolveInstallerDownloadPlanFn: async () => {
-        planCalls += 1;
-        throw new Error("unexpected plan resolution");
-      },
-      downloadFn: async () => {
-        downloadCalls += 1;
-        throw new Error("unexpected download");
-      },
-      extractTarballFn: async () => {
-        extractCalls += 1;
-        throw new Error("unexpected extract");
-      }
-    });
-  } catch (e) {
-    err = e;
-  }
-
-  assert.ok(err, "expected an error");
-  const report = describeFatalError(err);
-  assert.equal(report.code, "DOCDEX_UNSUPPORTED_PLATFORM");
-  assert.ok(report.lines.some((l) => l.includes("unsupported platform (win32/arm64)")));
-  assert.ok(report.lines.some((l) => l.includes("no published binary")));
-  assert.ok(report.lines.some((l) => l.includes("No download was attempted")));
-
-  assert.equal(planCalls, 0);
-  assert.equal(downloadCalls, 0);
-  assert.equal(extractCalls, 0);
+  assert.equal(tripleCalls, 0);
+  assert.equal(versionCalls, 0);
+  assert.equal(repoSlugCalls, 0);
 });
 
 test("installer: supported runtime with missing manifest target triple never downloads/extracts the docdexd asset", async () => {
@@ -342,6 +316,10 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
   }
 
   assert.ok(err, "expected an error");
+  assert.equal(err.name, "MissingArtifactError");
+  assert.equal(err.code, "DOCDEX_ASSET_MISSING");
+  assert.equal(err.details.targetTriple, "x86_64-unknown-linux-gnu");
+  assert.ok(String(err.details.expectedAssetPattern || "").includes("docdexd-<platformKey>.tar.gz"));
   const report = describeFatalError(err);
   assert.equal(report.code, "DOCDEX_ASSET_MISSING");
   assert.equal(report.exitCode, 21);

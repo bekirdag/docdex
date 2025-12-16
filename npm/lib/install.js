@@ -309,6 +309,139 @@ function isValidInstallMetadata(meta) {
   return true;
 }
 
+function normalizeSha256Hex(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(trimmed)) return null;
+  return trimmed;
+}
+
+/**
+ * @param {object} args
+ * @param {string} args.expectedVersion
+ * @param {{binarySha256: (string|null)}} args.expectedIntegrityMaterial
+ * @param {object} args.discoveredInstalledState
+ * @param {object} args.integrityResult
+ * @returns {{outcome: string, reason: string}}
+ */
+function decideInstallAction({
+  expectedVersion,
+  expectedIntegrityMaterial,
+  discoveredInstalledState,
+  integrityResult
+}) {
+  if (!discoveredInstalledState?.binaryPresent) return { outcome: "update", reason: "binary_missing" };
+
+  if (discoveredInstalledState.metadataStatus !== "valid") {
+    return {
+      outcome: "reinstall_unknown",
+      reason: discoveredInstalledState.metadataStatusReason || "metadata_invalid"
+    };
+  }
+
+  if (discoveredInstalledState.platformMismatch) {
+    return { outcome: "reinstall_unknown", reason: "platform_mismatch" };
+  }
+
+  if (discoveredInstalledState.installedVersion !== expectedVersion) {
+    return { outcome: "update", reason: "version_mismatch" };
+  }
+
+  const expectedBinarySha256 = normalizeSha256Hex(expectedIntegrityMaterial?.binarySha256);
+  if (!expectedBinarySha256) {
+    return { outcome: "reinstall_unknown", reason: "expected_integrity_missing" };
+  }
+
+  if (integrityResult?.status === "mismatch") {
+    return { outcome: "repair", reason: "binary_integrity_mismatch" };
+  }
+
+  if (integrityResult?.status === "verified") {
+    return { outcome: "no-op", reason: "verified" };
+  }
+
+  return { outcome: "reinstall_unknown", reason: "integrity_unverifiable" };
+}
+
+async function discoverInstalledState({ fsModule, pathModule, distDir, platformKey, isWin32 }) {
+  const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+  const metadataPath = installMetadataPath(distDir, pathModule);
+
+  const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+  if (!existsSync) {
+    return {
+      binaryPath,
+      metadataPath,
+      binaryPresent: false,
+      installedVersion: null,
+      metadata: null,
+      metadataStatus: "unavailable",
+      metadataStatusReason: "existsSync_unavailable",
+      platformMismatch: false
+    };
+  }
+
+  if (!existsSync(binaryPath)) {
+    return {
+      binaryPath,
+      metadataPath,
+      binaryPresent: false,
+      installedVersion: null,
+      metadata: null,
+      metadataStatus: "missing",
+      metadataStatusReason: "binary_missing",
+      platformMismatch: false
+    };
+  }
+
+  const metaResult = await readJsonFileIfPossible({ fsModule, filePath: metadataPath });
+  const meta = metaResult.value;
+  if (!isValidInstallMetadata(meta)) {
+    return {
+      binaryPath,
+      metadataPath,
+      binaryPresent: true,
+      installedVersion: typeof meta?.version === "string" ? meta.version : null,
+      metadata: null,
+      metadataStatus: metaResult.error ? "unreadable" : "invalid",
+      metadataStatusReason: metaResult.error ? "metadata_unreadable" : "metadata_invalid",
+      platformMismatch: false
+    };
+  }
+
+  return {
+    binaryPath,
+    metadataPath,
+    binaryPresent: true,
+    installedVersion: meta.version,
+    metadata: meta,
+    metadataStatus: "valid",
+    metadataStatusReason: null,
+    platformMismatch: meta.platformKey !== platformKey
+  };
+}
+
+async function verifyInstalledBinaryIntegrity({ sha256FileFn, binaryPath, expectedBinarySha256 }) {
+  const expected = normalizeSha256Hex(expectedBinarySha256);
+  if (!expected) return { status: "unknown", expectedSha256: null, actualSha256: null, error: "expected_missing" };
+
+  try {
+    const actual = normalizeSha256Hex(await sha256FileFn(binaryPath));
+    if (!actual) return { status: "unknown", expectedSha256: expected, actualSha256: null, error: "actual_invalid" };
+    if (actual !== expected) {
+      return { status: "mismatch", expectedSha256: expected, actualSha256: actual, error: null };
+    }
+    return { status: "verified", expectedSha256: expected, actualSha256: actual, error: null };
+  } catch (err) {
+    return {
+      status: "unknown",
+      expectedSha256: expected,
+      actualSha256: null,
+      error: err?.message || String(err)
+    };
+  }
+}
+
 async function determineLocalInstallerOutcome({
   fsModule,
   pathModule,
@@ -318,58 +451,50 @@ async function determineLocalInstallerOutcome({
   isWin32,
   sha256FileFn = sha256File
 }) {
-  const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
-  const metadataPath = installMetadataPath(distDir, pathModule);
+  const discoveredInstalledState = await discoverInstalledState({
+    fsModule,
+    pathModule,
+    distDir,
+    platformKey,
+    isWin32
+  });
 
-  const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
-  if (!existsSync || !existsSync(binaryPath)) {
-    return { outcome: "update", reason: "binary_missing", binaryPath, metadataPath, installedVersion: null };
-  }
+  const expectedIntegrityMaterial = {
+    binarySha256:
+      discoveredInstalledState.metadataStatus === "valid" ? discoveredInstalledState.metadata.binary.sha256 : null
+  };
 
-  const metaResult = await readJsonFileIfPossible({ fsModule, filePath: metadataPath });
-  const meta = metaResult.value;
-  if (!isValidInstallMetadata(meta)) {
-    return {
-      outcome: "reinstall_unknown",
-      reason: metaResult.error ? "metadata_unreadable" : "metadata_invalid",
-      binaryPath,
-      metadataPath,
-      installedVersion: typeof meta?.version === "string" ? meta.version : null
-    };
-  }
+  const shouldVerifyIntegrity =
+    discoveredInstalledState.binaryPresent &&
+    discoveredInstalledState.metadataStatus === "valid" &&
+    !discoveredInstalledState.platformMismatch &&
+    discoveredInstalledState.installedVersion === expectedVersion;
 
-  if (meta.platformKey !== platformKey) {
-    return {
-      outcome: "reinstall_unknown",
-      reason: "platform_mismatch",
-      binaryPath,
-      metadataPath,
-      installedVersion: meta.version
-    };
-  }
+  const integrityResult = shouldVerifyIntegrity
+    ? await verifyInstalledBinaryIntegrity({
+        sha256FileFn,
+        binaryPath: discoveredInstalledState.binaryPath,
+        expectedBinarySha256: expectedIntegrityMaterial.binarySha256
+      })
+    : { status: "skipped" };
 
-  if (meta.version !== expectedVersion) {
-    return {
-      outcome: "update",
-      reason: "version_mismatch",
-      binaryPath,
-      metadataPath,
-      installedVersion: meta.version
-    };
-  }
+  const decision = decideInstallAction({
+    expectedVersion,
+    expectedIntegrityMaterial,
+    discoveredInstalledState,
+    integrityResult
+  });
 
-  const actualBinarySha256 = await sha256FileFn(binaryPath);
-  if (actualBinarySha256.toLowerCase() !== String(meta.binary.sha256).toLowerCase()) {
-    return {
-      outcome: "repair",
-      reason: "binary_integrity_mismatch",
-      binaryPath,
-      metadataPath,
-      installedVersion: meta.version
-    };
-  }
+  const installedVersion =
+    typeof discoveredInstalledState.installedVersion === "string" ? discoveredInstalledState.installedVersion : null;
 
-  return { outcome: "no-op", reason: "verified", binaryPath, metadataPath, installedVersion: meta.version };
+  return {
+    outcome: decision.outcome,
+    reason: decision.reason,
+    binaryPath: discoveredInstalledState.binaryPath,
+    metadataPath: discoveredInstalledState.metadataPath,
+    installedVersion
+  };
 }
 
 function parseSha256File(text, expectedFilename) {
@@ -1147,6 +1272,7 @@ module.exports = {
   resolveInstallerDownloadPlan,
   parseSha256File,
   sha256File,
+  decideInstallAction,
   determineLocalInstallerOutcome,
   verifyDownloadedFileIntegrity,
   MissingArtifactError,

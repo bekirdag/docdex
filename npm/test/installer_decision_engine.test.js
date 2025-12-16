@@ -262,3 +262,40 @@ test("decision engine: verified => no-op (verified)", async () => {
   assert.equal(shaCalls, 1);
 });
 
+test("decision engine: integrity check throws => reinstall_unknown (integrity_unverifiable)", async () => {
+  const platformKey = "linux-x64-gnu";
+  const distDir = path.posix.join("/dist", platformKey);
+  const binaryPath = path.posix.join(distDir, "docdexd");
+  const metadataPath = path.posix.join(distDir, "docdexd-install.json");
+
+  const fsModule = createMockFs({
+    existingPaths: [binaryPath],
+    filesByPath: {
+      [metadataPath]: JSON.stringify(
+        validInstallMetadata({ platformKey, version: "0.1.0", binarySha256: "a".repeat(64) }),
+        null,
+        2
+      )
+    }
+  });
+
+  let shaCalls = 0;
+  const outcome = await determineLocalInstallerOutcome({
+    fsModule,
+    pathModule: path.posix,
+    distDir,
+    platformKey,
+    expectedVersion: "0.1.0",
+    isWin32: false,
+    sha256FileFn: async (filePath) => {
+      shaCalls += 1;
+      assert.equal(filePath, binaryPath);
+      throw new Error("EACCES: permission denied");
+    }
+  });
+
+  assert.equal(outcome.outcome, "reinstall_unknown");
+  assert.equal(outcome.reason, "integrity_unverifiable");
+  assert.equal(outcome.installedVersion, "0.1.0");
+  assert.equal(shaCalls, 1);
+});

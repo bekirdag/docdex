@@ -321,3 +321,76 @@ test("installer outcome: reinstall_unknown reinstalls when metadata is missing",
   assert.equal(meta.targetTriple, targetTriple);
 });
 
+test("installer outcome: reinstall_unknown reinstalls when integrity cannot be verified", async (t) => {
+  const base = "https://example.test/releases/download";
+  const version = "0.0.0";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const isWin32 = false;
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-outcome-unverifiable-"));
+  t.after(async () => {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  const distBaseDir = path.join(tmpRoot, "dist");
+  const distDir = path.join(distBaseDir, platformKey);
+  const tmpDir = path.join(tmpRoot, "tmp");
+  await ensureDir(tmpDir);
+
+  const binaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "verified-binary\n" });
+  const binarySha = await sha256File(binaryPath);
+  await writeInstallMetadata({ distDir, platformKey, version, targetTriple, binarySha256: binarySha });
+
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+
+  let shaCalls = 0;
+  let downloadCalls = 0;
+  let extractCalls = 0;
+
+  const result = await runInstaller({
+    logger: createNoopLogger(),
+    platform: "linux",
+    arch: "x64",
+    tmpDir,
+    distBaseDir,
+    detectPlatformKeyFn: () => platformKey,
+    targetTripleForPlatformKeyFn: () => targetTriple,
+    getVersionFn: () => version,
+    parseRepoSlugFn: () => "owner/repo",
+    getDownloadBaseFn: () => base,
+    resolveInstallerDownloadPlanFn: async () => ({
+      archive,
+      expectedSha256: null,
+      source: "fallback",
+      manifestAttempt: { errors: [], resolved: null, manifestName: null }
+    }),
+    downloadFn: async (_url, dest) => {
+      downloadCalls += 1;
+      await ensureDir(path.dirname(dest));
+      await fs.promises.writeFile(dest, "fake-archive-bytes");
+    },
+    verifyDownloadedFileIntegrityFn: async () => null,
+    extractTarballFn: async (_archivePath, targetDir) => {
+      extractCalls += 1;
+      await ensureDir(targetDir);
+      await fs.promises.writeFile(path.join(targetDir, "docdexd"), "fresh\n");
+    },
+    sha256FileFn: async (filePath) => {
+      shaCalls += 1;
+      if (shaCalls === 1) throw new Error("EACCES: permission denied");
+      return sha256File(filePath);
+    }
+  });
+
+  assert.equal(result.outcome, "reinstall_unknown");
+  assert.equal(downloadCalls, 1);
+  assert.equal(extractCalls, 1);
+  assert.ok(shaCalls >= 2, "expected sha256 to be attempted for local check and after install");
+
+  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
+  assert.equal(meta.version, version);
+  assert.equal(meta.platformKey, platformKey);
+  assert.equal(meta.targetTriple, targetTriple);
+});

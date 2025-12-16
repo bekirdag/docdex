@@ -173,6 +173,78 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
         .to_string();
 
     fs::rename(&repo_a, &repo_b)?;
+    let moved_out = Command::new(docdex_bin())
+        .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+        .args([
+            "index",
+            "--repo",
+            repo_b_str.as_str(),
+            "--state-dir",
+            &state_root_str,
+        ])
+        .output()?;
+    assert!(
+        !moved_out.status.success(),
+        "expected moved repo to fast-fail before explicit re-association"
+    );
+    let stderr = String::from_utf8_lossy(&moved_out.stderr);
+    let json_line = stderr
+        .lines()
+        .rev()
+        .find(|line| line.trim_start().starts_with('{'))
+        .ok_or("expected JSON error line in stderr")?;
+    let err_payload: Value = serde_json::from_str(json_line.trim())?;
+    assert_eq!(
+        err_payload
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("repo_state_mismatch")
+    );
+    let steps = err_payload
+        .get("error")
+        .and_then(|e| e.get("details"))
+        .and_then(|d| d.get("recoverySteps"))
+        .and_then(|v| v.as_array())
+        .ok_or("expected recoverySteps array")?;
+    assert!(
+        steps.iter().any(|v| v
+            .as_str()
+            .unwrap_or_default()
+            .contains("repo reassociate")),
+        "expected recoverySteps to mention `repo reassociate`; got: {err_payload}"
+    );
+    let known_canonical = err_payload
+        .get("error")
+        .and_then(|e| e.get("details"))
+        .and_then(|d| d.get("knownCanonicalPath"))
+        .and_then(|v| v.as_str())
+        .ok_or("expected details.knownCanonicalPath")?
+        .to_string();
+
+    let reassociate_out = run_docdex([
+        "repo",
+        "reassociate",
+        "--repo",
+        repo_b_str.as_str(),
+        "--state-dir",
+        &state_root_str,
+        "--old-path",
+        known_canonical.as_str(),
+    ])?;
+    let reassociated: Value = serde_json::from_slice(&reassociate_out)?;
+    assert_eq!(
+        reassociated
+            .get("canonical_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+        repo_b
+            .canonicalize()
+            .unwrap_or_else(|_| repo_b.clone())
+            .to_string_lossy()
+            .replace('\\', "/")
+    );
+
     run_docdex(["index", "--repo", repo_b_str.as_str(), "--state-dir", &state_root_str])?;
 
     let repo_dirs_after: Vec<PathBuf> = fs::read_dir(&repos_dir)?
@@ -226,3 +298,75 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
 
     Ok(())
 }
+    let moved_out = Command::new(docdex_bin())
+        .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+        .args([
+            "index",
+            "--repo",
+            repo_b_str.as_str(),
+            "--state-dir",
+            &state_root_str,
+        ])
+        .output()?;
+    assert!(
+        !moved_out.status.success(),
+        "expected moved repo to fast-fail before explicit re-association"
+    );
+    let stderr = String::from_utf8_lossy(&moved_out.stderr);
+    let json_line = stderr
+        .lines()
+        .rev()
+        .find(|line| line.trim_start().starts_with('{'))
+        .ok_or("expected JSON error line in stderr")?;
+    let err_payload: Value = serde_json::from_str(json_line.trim())?;
+    assert_eq!(
+        err_payload
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("repo_state_mismatch")
+    );
+    let steps = err_payload
+        .get("error")
+        .and_then(|e| e.get("details"))
+        .and_then(|d| d.get("recoverySteps"))
+        .and_then(|v| v.as_array())
+        .ok_or("expected recoverySteps array")?;
+    assert!(
+        steps.iter().any(|v| v
+            .as_str()
+            .unwrap_or_default()
+            .contains("repo reassociate")),
+        "expected recoverySteps to mention `repo reassociate`; got: {err_payload}"
+    );
+    let known_canonical = err_payload
+        .get("error")
+        .and_then(|e| e.get("details"))
+        .and_then(|d| d.get("knownCanonicalPath"))
+        .and_then(|v| v.as_str())
+        .ok_or("expected details.knownCanonicalPath")?
+        .to_string();
+
+    let reassociate_out = run_docdex([
+        "repo",
+        "reassociate",
+        "--repo",
+        repo_b_str.as_str(),
+        "--state-dir",
+        &state_root_str,
+        "--old-path",
+        known_canonical.as_str(),
+    ])?;
+    let reassociated: Value = serde_json::from_slice(&reassociate_out)?;
+    assert_eq!(
+        reassociated
+            .get("canonical_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+        repo_b
+            .canonicalize()
+            .unwrap_or_else(|_| repo_b.clone())
+            .to_string_lossy()
+            .replace('\\', "/")
+    );
+

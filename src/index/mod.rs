@@ -1473,6 +1473,13 @@ fn repo_state_mismatch_error(
     if let crate::repo_identity::RepoIdentityError::CanonicalPathCollision { canonical_path, .. } = identity {
         known_canonical_path = Some(canonical_path.clone());
     }
+    if let crate::repo_identity::RepoIdentityError::ReassociationRequired {
+        registered_canonical_path,
+        ..
+    } = identity
+    {
+        known_canonical_path = Some(registered_canonical_path.clone());
+    }
     AppError::new(
         ERR_REPO_STATE_MISMATCH,
         "repo state mismatch; refusing to associate this repo with the existing state directory",
@@ -1484,6 +1491,8 @@ fn repo_state_mismatch_error(
         vec![
             "Repo may have moved or been renamed.".to_string(),
             "Verify you are using the correct `--repo` and `--state-dir` combination.".to_string(),
+            "To explicitly re-associate a moved repo to existing shared state, run: `docdexd repo reassociate --repo <new_path> --state-dir <shared_state_dir> --old-path <knownCanonicalPath>` (or `--fingerprint <attemptedFingerprint>`)."
+                .to_string(),
             "Do not reuse a shared `--state-dir` across unrelated repos; choose a different state dir or clear the conflicting state."
                 .to_string(),
         ],
@@ -1981,3 +1990,12 @@ mod tests {
         );
     }
 }
+    if let crate::repo_identity::RepoIdentityError::ReassociationRequired {
+        registered_canonical_path,
+        ..
+    } = identity
+    {
+        known_canonical_path = Some(registered_canonical_path.clone());
+    }
+            "To explicitly re-associate a moved repo to existing shared state, run: `docdexd repo reassociate --repo <new_path> --state-dir <shared_state_dir> --old-path <knownCanonicalPath>` (or `--fingerprint <attemptedFingerprint>`)."
+                .to_string(),

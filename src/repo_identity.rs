@@ -24,6 +24,27 @@ pub enum RepoIdentityError {
         existing_state_key: String,
         requested_state_key: String,
     },
+    #[error(
+        "repo fingerprint `{fingerprint}` is registered for `{registered_canonical_path}`; refusing to use it for `{requested_canonical_path}` without explicit re-association"
+    )]
+    ReassociationRequired {
+        fingerprint: String,
+        state_key: String,
+        registered_canonical_path: String,
+        requested_canonical_path: String,
+    },
+    #[error(
+        "cannot re-associate `{old_path}`: multiple fingerprints match; re-run with --fingerprint to select one"
+    )]
+    AmbiguousOldPath {
+        old_path: String,
+        candidate_fingerprints: Vec<String>,
+    },
+    #[error("cannot re-associate: fingerprint `{fingerprint}` not found in registry at {registry_path}")]
+    UnknownFingerprint {
+        fingerprint: String,
+        registry_path: PathBuf,
+    },
     #[error("failed to persist repo registry at {path}: {source}")]
     PersistFailed {
         path: PathBuf,
@@ -35,6 +56,14 @@ pub enum RepoIdentityError {
 #[derive(Debug, Clone)]
 pub struct RepoStateKeyResolution {
     pub state_key: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RepoReassociateResult {
+    pub fingerprint: String,
+    pub state_key: String,
+    pub canonical_path: String,
+    pub prior_canonical_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -165,12 +194,16 @@ pub fn record_repo_opened(repo_root: &Path, index_state_dir: &Path) -> Result<()
         .into());
     }
 
-    let entry = registry.repos.entry(fingerprint.clone()).or_insert_with(|| RepoRegistryEntry {
-        state_key: state_key.clone(),
-        canonical_path: canonical_path.clone(),
-        prior_paths: Vec::new(),
-        last_seen_at_epoch_ms: now_ms,
-    });
+    let existing_entry = registry.repos.get(&fingerprint).cloned();
+    let entry = registry
+        .repos
+        .entry(fingerprint.clone())
+        .or_insert_with(|| RepoRegistryEntry {
+            state_key: state_key.clone(),
+            canonical_path: canonical_path.clone(),
+            prior_paths: Vec::new(),
+            last_seen_at_epoch_ms: now_ms,
+        });
 
     if entry.state_key != state_key {
         return Err(RepoIdentityError::StateKeyConflict {
@@ -181,11 +214,16 @@ pub fn record_repo_opened(repo_root: &Path, index_state_dir: &Path) -> Result<()
         .into());
     }
 
-    if entry.canonical_path != canonical_path {
-        if !entry.prior_paths.contains(&entry.canonical_path) {
-            entry.prior_paths.push(entry.canonical_path.clone());
+    if let Some(existing) = existing_entry {
+        if existing.canonical_path != canonical_path {
+            return Err(RepoIdentityError::ReassociationRequired {
+                fingerprint,
+                state_key: existing.state_key,
+                registered_canonical_path: existing.canonical_path,
+                requested_canonical_path: canonical_path,
+            }
+            .into());
         }
-        entry.canonical_path = canonical_path.clone();
     }
     entry.last_seen_at_epoch_ms = now_ms;
 
@@ -202,6 +240,7 @@ pub fn validate_repo_state_dir(repo_root: &Path, index_state_dir: &Path) -> Resu
     let fingerprint = repo_fingerprint_sha256(repo_root)?;
     validate_state_meta(&base_dir, &state_key, &fingerprint)?;
 
+    let canonical_path = normalize_path(repo_root);
     let registry_path = repo_registry_path(&base_dir);
     let registry = load_registry(&registry_path)?;
     if let Some(entry) = registry.repos.get(&fingerprint) {
@@ -213,9 +252,17 @@ pub fn validate_repo_state_dir(repo_root: &Path, index_state_dir: &Path) -> Resu
             }
             .into());
         }
+        if entry.canonical_path != canonical_path {
+            return Err(RepoIdentityError::ReassociationRequired {
+                fingerprint: fingerprint.clone(),
+                state_key: entry.state_key.clone(),
+                registered_canonical_path: entry.canonical_path.clone(),
+                requested_canonical_path: canonical_path.clone(),
+            }
+            .into());
+        }
     }
 
-    let canonical_path = normalize_path(repo_root);
     if let Some((other_fp, _)) = registry
         .repos
         .iter()
@@ -229,6 +276,119 @@ pub fn validate_repo_state_dir(repo_root: &Path, index_state_dir: &Path) -> Resu
     }
 
     Ok(())
+}
+
+pub fn reassociate_repo_path(
+    repo_root: &Path,
+    custom_state_dir: &Path,
+    fingerprint_override: Option<&str>,
+    old_path_hint: Option<&Path>,
+) -> Result<RepoReassociateResult> {
+    if !repo_root.exists() {
+        anyhow::bail!("repo path not found: {}", repo_root.display());
+    }
+    if !repo_root.is_dir() {
+        anyhow::bail!("repo root is not a directory: {}", repo_root.display());
+    }
+
+    let (base_dir, _, _) =
+        split_scoped_state_dir(custom_state_dir).unwrap_or_else(|| (custom_state_dir.to_path_buf(), None, false));
+    let registry_path = repo_registry_path(&base_dir);
+    let mut registry = load_registry(&registry_path)?;
+
+    let canonical_new = normalize_path(repo_root);
+    let computed_fingerprint = repo_fingerprint_sha256(repo_root)?;
+
+    let target_fingerprint = if let Some(fp) = fingerprint_override {
+        fp.trim().to_string()
+    } else if let Some(old_path) = old_path_hint {
+        let normalized_old = normalize_path(old_path);
+        let matches: Vec<String> = registry
+            .repos
+            .iter()
+            .filter_map(|(fp, entry)| {
+                if entry.canonical_path == normalized_old || entry.prior_paths.iter().any(|p| p == &normalized_old) {
+                    Some(fp.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        match matches.len() {
+            0 => anyhow::bail!("no registry entry matches old path `{}`", normalized_old),
+            1 => matches[0].clone(),
+            _ => {
+                return Err(RepoIdentityError::AmbiguousOldPath {
+                    old_path: normalized_old,
+                    candidate_fingerprints: matches,
+                }
+                .into());
+            }
+        }
+    } else {
+        anyhow::bail!("missing association selector: provide --fingerprint or --old-path");
+    };
+
+    if computed_fingerprint != target_fingerprint {
+        return Err(RepoIdentityError::StateMetaFingerprintMismatch {
+            state_key: "<reassociate>".to_string(),
+            expected_fingerprint: target_fingerprint,
+            found_fingerprint: computed_fingerprint,
+        }
+        .into());
+    }
+
+    if let Some((other_fp, _)) = registry
+        .repos
+        .iter()
+        .find(|(fp, other)| fp.as_str() != target_fingerprint.as_str() && other.canonical_path == canonical_new)
+    {
+        return Err(RepoIdentityError::CanonicalPathCollision {
+            canonical_path: canonical_new,
+            other_fingerprint: other_fp.to_string(),
+        }
+        .into());
+    }
+
+    let entry = registry.repos.get_mut(&target_fingerprint).ok_or_else(|| {
+        RepoIdentityError::UnknownFingerprint {
+            fingerprint: target_fingerprint.clone(),
+            registry_path: registry_path.clone(),
+        }
+    })?;
+
+    let prior = if entry.canonical_path != canonical_new {
+        let prior = entry.canonical_path.clone();
+        if !entry.prior_paths.contains(&prior) {
+            entry.prior_paths.push(prior.clone());
+        }
+        entry.canonical_path = canonical_new.clone();
+        Some(prior)
+    } else {
+        None
+    };
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    entry.last_seen_at_epoch_ms = now_ms;
+
+    let state_key = entry.state_key.clone();
+    let canonical_path = entry.canonical_path.clone();
+
+    validate_state_meta(&base_dir, &state_key, &target_fingerprint)?;
+    write_repo_meta(
+        &base_dir,
+        &state_key,
+        &target_fingerprint,
+        &canonical_path,
+        now_ms,
+    )?;
+    save_registry_atomic(&registry_path, &registry)?;
+
+    Ok(RepoReassociateResult {
+        fingerprint: target_fingerprint,
+        state_key,
+        canonical_path,
+        prior_canonical_path: prior,
+    })
 }
 
 fn normalize_path(path: &Path) -> String {
@@ -491,6 +651,22 @@ mod tests {
 
         let moved = base.path().join("repo-moved");
         fs::rename(&repo_root, &moved)?;
+        let err = record_repo_opened(&moved, &shared_repo_root_dir(&shared, &state_key).join("index"))
+            .unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<RepoIdentityError>(),
+                Some(RepoIdentityError::ReassociationRequired { .. })
+            ),
+            "expected ReassociationRequired; got: {err}"
+        );
+
+        let reassociated =
+            reassociate_repo_path(&moved, &shared, Some(fingerprint.as_str()), None)?;
+        assert_eq!(reassociated.fingerprint, fingerprint);
+        assert_eq!(reassociated.state_key, state_key);
+        assert_eq!(reassociated.canonical_path, normalize_path(&moved));
+
         record_repo_opened(&moved, &shared_repo_root_dir(&shared, &state_key).join("index"))?;
         let registry2 = load_registry(&repo_registry_path(&shared))?;
         let entry = registry2.repos.get(&fingerprint).unwrap();

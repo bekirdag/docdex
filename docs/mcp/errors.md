@@ -27,7 +27,7 @@ On failure, the MCP server returns a JSON-RPC error response:
 - `message` (string, required): short summary message (often mirrors `error.message`).
 - `reason` (string, optional): a more specific reason (typically an underlying error string).
 - `tool` (string, optional): tool name (for `tools/call` failures), e.g. `docdex_search`.
-- `details` (object, optional): structured context (limits, fields, expected/got, etc). For repo move/rename/mismatch errors, `details` may include `normalizedPath`, `attemptedFingerprint`, `knownCanonicalPath`, and `recoverySteps`.
+- `details` (object, optional): structured context (limits, fields, expected/got, etc). For repo move/rename/mismatch errors, `details` may include `normalizedPath`, `attemptedFingerprint`, `knownCanonicalPath`, and `recoverySteps` (often including explicit `docdexd repo reassociate` guidance for moved repos under shared state dirs).
 - `error` (object, required): the canonical envelope, containing the same fields as above (`code/message/reason/tool/details`).
 
 Compatibility guidance for clients:

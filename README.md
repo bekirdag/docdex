@@ -90,7 +90,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 
 ## Configuration knobs
 - `--repo <path>`: workspace root to index (defaults to `.`).
-- `--state-dir <path>` / `DOCDEX_STATE_DIR`: override index storage path (relative paths are resolved under `repo`).
+- `--state-dir <path>` / `DOCDEX_STATE_DIR`: override index storage path (relative paths are resolved under `repo`). When `--state-dir` is an absolute shared base used across repos, repo moves/renames require an explicit `docdexd repo reassociate` step before Docdex will reuse the existing state.
 - `--exclude-prefix a,b,c` / `DOCDEX_EXCLUDE_PREFIXES`: extra relative prefixes to skip.
 - `--exclude-dir a,b,c` / `DOCDEX_EXCLUDE_DIRS`: extra directory names to skip anywhere in the tree.
 - `DOCDEX_ENABLE_SYMBOL_EXTRACTION`: enable optional per-file symbol extraction during indexing; see `docs/symbols_store.md`.
@@ -139,6 +139,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - `index --repo <path>` — rebuild the entire index.
 - `ingest --repo <path> --file <file>` — reindex a single file.
 - `query --repo <path> --query "<text>" [--limit 8] [--repo-only]` — run a search and print JSON hits.
+- `repo reassociate --repo <new_path> --state-dir <shared_state_dir> (--old-path <old_path> | --fingerprint <sha256>)` — explicitly re-associate a moved/renamed repo path to existing state under a shared base state directory.
 - `self-check --repo <path> --terms "foo,bar" [--limit 5]` — scan the index for sensitive terms before enabling access (fails with non-zero exit if any are found; reports sample hits and if more exist). Includes built-in token/password patterns by default; disable with `--include-default-patterns=false` if you only want your provided terms.
 
 ## Perf checks

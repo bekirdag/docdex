@@ -18,6 +18,7 @@ Related contracts:
 - `docs/contracts/release_manifest_schema_v1.md`
 - `docs/ops/installer_platform_audit.md`
 - `docs/ops/installer_supported_platforms.md`
+- `docs/ops/installer_upgrade_downgrade.md`
 
 ---
 

@@ -7,6 +7,7 @@ Source of truth for platform mapping + published support:
 - `npm/lib/platform.js` (Linux libc detection + `DOCDEX_LIBC` override; `platformKey` resolution)
 - `docs/contracts/release_manifest_schema_v1.md` (manifest + asset naming expectations)
 - `docs/contracts/installer_error_contract_v1.md` and `docs/ops/installer_error_codes.md` (how failures are reported)
+- `docs/ops/installer_upgrade_downgrade.md` (upgrade/downgrade guarantees, repair, install metadata)
 
 Assumptions (explicit):
 - You install via npm (`npm i -g docdex` or `npx docdex --version`) on Node.js >= 18.

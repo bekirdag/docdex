@@ -23,6 +23,8 @@ const USER_AGENT = "docdex-installer";
 const PLACEHOLDER_REPO_TOKEN = /OWNER|REPO/i;
 const MAX_MANIFEST_BYTES = 1024 * 1024; // 1 MiB cap for safety
 const INVALID_JSON_ERROR = "invalid JSON";
+const INSTALL_METADATA_SCHEMA_VERSION = 1;
+const INSTALL_METADATA_FILENAME = "docdexd-install.json";
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -268,6 +270,106 @@ async function sha256File(filePath) {
     stream.on("error", reject);
     stream.on("end", () => resolve(hash.digest("hex")));
   });
+}
+
+function installMetadataPath(distDir, pathModule = path) {
+  return pathModule.join(distDir, INSTALL_METADATA_FILENAME);
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+async function readJsonFileIfPossible({ fsModule, filePath }) {
+  if (!fsModule?.promises?.readFile) return { value: null, error: "readFile_unavailable" };
+  try {
+    const raw = await fsModule.promises.readFile(filePath, "utf8");
+    return { value: JSON.parse(raw), error: null };
+  } catch (err) {
+    return { value: null, error: err?.message || String(err) };
+  }
+}
+
+async function writeJsonFileAtomic({ fsModule, pathModule, filePath, value }) {
+  const dir = pathModule.dirname(filePath);
+  await fsModule.promises.mkdir(dir, { recursive: true });
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const payload = `${JSON.stringify(value, null, 2)}\n`;
+  await fsModule.promises.writeFile(tmp, payload, "utf8");
+  await fsModule.promises.rename(tmp, filePath);
+}
+
+function isValidInstallMetadata(meta) {
+  if (!meta || typeof meta !== "object") return false;
+  if (meta.schemaVersion !== INSTALL_METADATA_SCHEMA_VERSION) return false;
+  if (typeof meta.version !== "string" || !meta.version) return false;
+  if (typeof meta.platformKey !== "string" || !meta.platformKey) return false;
+  if (!meta.binary || typeof meta.binary !== "object") return false;
+  if (typeof meta.binary.sha256 !== "string" || meta.binary.sha256.length !== 64) return false;
+  return true;
+}
+
+async function determineLocalInstallerOutcome({
+  fsModule,
+  pathModule,
+  distDir,
+  platformKey,
+  expectedVersion,
+  isWin32,
+  sha256FileFn = sha256File
+}) {
+  const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+  const metadataPath = installMetadataPath(distDir, pathModule);
+
+  const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+  if (!existsSync || !existsSync(binaryPath)) {
+    return { outcome: "update", reason: "binary_missing", binaryPath, metadataPath, installedVersion: null };
+  }
+
+  const metaResult = await readJsonFileIfPossible({ fsModule, filePath: metadataPath });
+  const meta = metaResult.value;
+  if (!isValidInstallMetadata(meta)) {
+    return {
+      outcome: "reinstall_unknown",
+      reason: metaResult.error ? "metadata_unreadable" : "metadata_invalid",
+      binaryPath,
+      metadataPath,
+      installedVersion: typeof meta?.version === "string" ? meta.version : null
+    };
+  }
+
+  if (meta.platformKey !== platformKey) {
+    return {
+      outcome: "reinstall_unknown",
+      reason: "platform_mismatch",
+      binaryPath,
+      metadataPath,
+      installedVersion: meta.version
+    };
+  }
+
+  if (meta.version !== expectedVersion) {
+    return {
+      outcome: "update",
+      reason: "version_mismatch",
+      binaryPath,
+      metadataPath,
+      installedVersion: meta.version
+    };
+  }
+
+  const actualBinarySha256 = await sha256FileFn(binaryPath);
+  if (actualBinarySha256.toLowerCase() !== String(meta.binary.sha256).toLowerCase()) {
+    return {
+      outcome: "repair",
+      reason: "binary_integrity_mismatch",
+      binaryPath,
+      metadataPath,
+      installedVersion: meta.version
+    };
+  }
+
+  return { outcome: "no-op", reason: "verified", binaryPath, metadataPath, installedVersion: meta.version };
 }
 
 function parseSha256File(text, expectedFilename) {
@@ -646,10 +748,30 @@ async function runInstaller(options) {
   const osModule = opts.osModule || os;
   const artifactNameFn = opts.artifactNameFn || artifactName;
   const assetPatternForPlatformKeyFn = opts.assetPatternForPlatformKeyFn || assetPatternForPlatformKey;
+  const sha256FileFn = opts.sha256FileFn || sha256File;
 
   const platformKey = detectPlatformKeyFn();
   const targetTriple = targetTripleForPlatformKeyFn(platformKey);
   const version = getVersionFn();
+  const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
+  const distDir = pathModule.join(distBaseDir, platformKey);
+  const isWin32 = (opts.platform || process.platform) === "win32";
+
+  const local = await determineLocalInstallerOutcome({
+    fsModule,
+    pathModule,
+    distDir,
+    platformKey,
+    expectedVersion: version,
+    isWin32,
+    sha256FileFn
+  });
+
+  if (local.outcome === "no-op") {
+    logger.log("[docdex] Install outcome: no-op");
+    return { binaryPath: local.binaryPath, outcome: local.outcome };
+  }
+
   const repoSlug = parseRepoSlugFn();
 
   const { archive, expectedSha256, source, manifestAttempt } = await resolveInstallerDownloadPlanFn({
@@ -661,8 +783,6 @@ async function runInstaller(options) {
   });
 
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
-  const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
-  const distDir = pathModule.join(distBaseDir, platformKey);
   const tmpDir = opts.tmpDir || osModule.tmpdir();
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
 
@@ -731,7 +851,6 @@ async function runInstaller(options) {
     await fsModule.promises.rm(distDir, { recursive: true, force: true });
     await extractTarballFn(tmpFile, distDir);
 
-    const isWin32 = (opts.platform || process.platform) === "win32";
     const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
     if (!fsModule.existsSync(binaryPath)) {
       throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
@@ -751,7 +870,35 @@ async function runInstaller(options) {
 
     await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
     logger.log(`[docdex] Installed binary to ${binaryPath}`);
-    return { binaryPath };
+
+    const binarySha256 = await sha256FileFn(binaryPath);
+    const metadata = {
+      schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
+      installedAt: nowIso(),
+      version,
+      repoSlug,
+      platformKey,
+      targetTriple,
+      binary: {
+        filename: isWin32 ? "docdexd.exe" : "docdexd",
+        sha256: binarySha256
+      },
+      archive: {
+        name: archive,
+        sha256: expectedSha256 || null,
+        source,
+        downloadUrl
+      }
+    };
+    await writeJsonFileAtomic({
+      fsModule,
+      pathModule,
+      filePath: installMetadataPath(distDir, pathModule),
+      value: metadata
+    });
+
+    logger.log(`[docdex] Install outcome: ${local.outcome}`);
+    return { binaryPath, outcome: local.outcome };
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
   }

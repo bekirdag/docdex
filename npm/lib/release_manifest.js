@@ -1,5 +1,13 @@
 "use strict";
 
+const EXIT_CODE_BY_CODE = Object.freeze({
+  DOCDEX_MANIFEST_MALFORMED: 10,
+  DOCDEX_TARGET_TRIPLE_INVALID: 11,
+  DOCDEX_ASSET_NO_MATCH: 12,
+  DOCDEX_ASSET_MULTI_MATCH: 13,
+  DOCDEX_ASSET_MALFORMED: 14
+});
+
 class ManifestResolutionError extends Error {
   /**
    * @param {string} code
@@ -10,12 +18,23 @@ class ManifestResolutionError extends Error {
     super(message);
     this.name = "ManifestResolutionError";
     this.code = code;
-    this.details = details || {};
+    this.exitCode = EXIT_CODE_BY_CODE[code] ?? 1;
+    this.details = {
+      targetTriple: null,
+      manifestVersion: null,
+      assetName: null,
+      ...(details || {})
+    };
   }
 }
 
 function isPlainObject(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function getManifestVersion(manifest) {
+  if (!isPlainObject(manifest)) return null;
+  return manifest.manifestVersion ?? manifest.schemaVersion ?? manifest.version ?? null;
 }
 
 function getSupportedTargetTriples(manifest) {
@@ -90,7 +109,8 @@ function entriesFromManifest(manifest) {
   if (!isPlainObject(manifest)) {
     throw new ManifestResolutionError(
       "DOCDEX_MANIFEST_MALFORMED",
-      "Malformed manifest: expected a JSON object at top-level"
+      "Malformed manifest: expected a JSON object at top-level",
+      { manifestVersion: null }
     );
   }
 
@@ -121,7 +141,8 @@ function entriesFromManifest(manifest) {
 
   throw new ManifestResolutionError(
     "DOCDEX_MANIFEST_MALFORMED",
-    "Malformed manifest: expected `targets` object or `assets` array"
+    "Malformed manifest: expected `targets` object or `assets` array",
+    { manifestVersion: getManifestVersion(manifest) }
   );
 }
 
@@ -137,10 +158,13 @@ function entriesFromManifest(manifest) {
  * @returns {{targetTriple: string, asset: {name: string, id?: (string|number)}, integrity: {sha256: string}}}
  */
 function resolveCanonicalAssetForTargetTriple(manifest, targetTriple) {
+  const manifestVersion = getManifestVersion(manifest);
+
   if (typeof targetTriple !== "string" || !targetTriple.trim()) {
     throw new ManifestResolutionError(
       "DOCDEX_TARGET_TRIPLE_INVALID",
-      "Invalid target triple: expected a non-empty string"
+      "Invalid target triple: expected a non-empty string",
+      { targetTriple: null, manifestVersion }
     );
   }
 
@@ -154,7 +178,7 @@ function resolveCanonicalAssetForTargetTriple(manifest, targetTriple) {
     throw new ManifestResolutionError(
       "DOCDEX_ASSET_NO_MATCH",
       `No asset found in manifest for target triple ${needle}. Supported: ${supportedMsg}`,
-      { targetTriple: needle, supported }
+      { targetTriple: needle, manifestVersion, supported, assetName: null }
     );
   }
 
@@ -165,7 +189,7 @@ function resolveCanonicalAssetForTargetTriple(manifest, targetTriple) {
     throw new ManifestResolutionError(
       "DOCDEX_ASSET_MULTI_MATCH",
       `Multiple assets found in manifest for target triple ${needle}: ${simplified.join(", ")}`,
-      { targetTriple: needle, matches: simplified }
+      { targetTriple: needle, manifestVersion, matches: simplified, assetName: null }
     );
   }
 
@@ -174,7 +198,7 @@ function resolveCanonicalAssetForTargetTriple(manifest, targetTriple) {
     throw new ManifestResolutionError(
       "DOCDEX_ASSET_MALFORMED",
       `Manifest entry for ${needle} is missing a canonical asset name/identifier`,
-      { targetTriple: needle }
+      { targetTriple: needle, manifestVersion, assetName: null }
     );
   }
 
@@ -182,16 +206,21 @@ function resolveCanonicalAssetForTargetTriple(manifest, targetTriple) {
     throw new ManifestResolutionError(
       "DOCDEX_ASSET_MALFORMED",
       `Manifest entry for ${needle} is missing SHA-256 integrity metadata`,
-      { targetTriple: needle, assetName: resolved.asset.name }
+      { targetTriple: needle, manifestVersion, assetName: resolved.asset.name }
     );
   }
 
-  return { targetTriple: needle, asset: resolved.asset, integrity: resolved.integrity };
+  return {
+    targetTriple: needle,
+    manifestVersion,
+    asset: resolved.asset,
+    integrity: resolved.integrity
+  };
 }
 
 module.exports = {
   ManifestResolutionError,
   resolveCanonicalAssetForTargetTriple,
-  getSupportedTargetTriples
+  getSupportedTargetTriples,
+  getManifestVersion
 };
-

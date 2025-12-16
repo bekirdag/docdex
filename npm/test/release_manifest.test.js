@@ -57,6 +57,8 @@ test("no-match throws actionable error with supported list", () => {
       assert.ok(err instanceof ManifestResolutionError);
       assert.equal(err.code, "DOCDEX_ASSET_NO_MATCH");
       assert.deepEqual(err.details.supported, ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"]);
+      assert.equal(err.details.manifestVersion, null);
+      assert.equal(err.details.assetName, null);
       return true;
     }
   );
@@ -84,6 +86,8 @@ test("multi-match throws deterministic error", () => {
       assert.ok(err instanceof ManifestResolutionError);
       assert.equal(err.code, "DOCDEX_ASSET_MULTI_MATCH");
       assert.deepEqual(err.details.matches, ["docdexd-win32-x64-alt.tar.gz", "docdexd-win32-x64.tar.gz"]);
+      assert.equal(err.details.manifestVersion, null);
+      assert.equal(err.details.assetName, null);
       return true;
     }
   );
@@ -103,8 +107,9 @@ test("missing sha256 throws actionable error", () => {
     (err) => {
       assert.ok(err instanceof ManifestResolutionError);
       assert.equal(err.code, "DOCDEX_ASSET_MALFORMED");
+      assert.equal(err.details.manifestVersion, null);
+      assert.equal(err.details.assetName, "docdexd-linux-x64-gnu.tar.gz");
       return true;
     }
   );
 });
-

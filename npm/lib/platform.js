@@ -10,7 +10,11 @@ class UnsupportedPlatformError extends Error {
     super(`Unsupported platform: ${platform}/${arch}`);
     this.name = "UnsupportedPlatformError";
     this.code = "DOCDEX_UNSUPPORTED_PLATFORM";
+    this.exitCode = 3;
     this.details = {
+      targetTriple: null,
+      manifestVersion: null,
+      assetName: null,
       platform,
       arch,
       supportedPlatformKeys: supportedPlatformKeys || [],

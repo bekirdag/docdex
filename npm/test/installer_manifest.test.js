@@ -152,7 +152,7 @@ test("installer falls back deterministically on invalid JSON manifests with stab
   assert.equal(plan.source, "fallback");
   assert.deepEqual(logs, []);
   assert.deepEqual(warns, [
-    "[docdex] Manifest unavailable; falling back. Details: Malformed manifest (docdexd-manifest.json): invalid JSON"
+    "[docdex] Manifest unavailable; falling back. Details: [DOCDEX_MANIFEST_JSON_INVALID] Malformed manifest (docdexd-manifest.json): invalid JSON"
   ]);
 });
 

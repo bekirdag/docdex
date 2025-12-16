@@ -18,6 +18,43 @@ const PLACEHOLDER_REPO_TOKEN = /OWNER|REPO/i;
 const MAX_MANIFEST_BYTES = 1024 * 1024; // 1 MiB cap for safety
 const INVALID_JSON_ERROR = "invalid JSON";
 
+const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
+  DOCDEX_INSTALLER_CONFIG: 2,
+  DOCDEX_UNSUPPORTED_PLATFORM: 3,
+  DOCDEX_MANIFEST_MALFORMED: 10,
+  DOCDEX_TARGET_TRIPLE_INVALID: 11,
+  DOCDEX_ASSET_NO_MATCH: 12,
+  DOCDEX_ASSET_MULTI_MATCH: 13,
+  DOCDEX_ASSET_MALFORMED: 14,
+  DOCDEX_DOWNLOAD_FAILED: 20,
+  DOCDEX_ASSET_MISSING: 21,
+  DOCDEX_INTEGRITY_MISMATCH: 22,
+  DOCDEX_ARCHIVE_INVALID: 23
+});
+
+function withBaseDetails(details) {
+  return {
+    targetTriple: null,
+    manifestVersion: null,
+    assetName: null,
+    ...(details || {})
+  };
+}
+
+class InstallerConfigError extends Error {
+  /**
+   * @param {string} message
+   * @param {object} [details]
+   */
+  constructor(message, details) {
+    super(message);
+    this.name = "InstallerConfigError";
+    this.code = "DOCDEX_INSTALLER_CONFIG";
+    this.exitCode = EXIT_CODE_BY_ERROR_CODE[this.code];
+    this.details = withBaseDetails(details);
+  }
+}
+
 class MissingArtifactError extends Error {
   /**
    * @param {object} details
@@ -26,7 +63,60 @@ class MissingArtifactError extends Error {
     super("Missing release artifact for detected platform");
     this.name = "MissingArtifactError";
     this.code = "DOCDEX_ASSET_MISSING";
-    this.details = details || {};
+    this.exitCode = EXIT_CODE_BY_ERROR_CODE[this.code];
+    this.details = withBaseDetails(details);
+  }
+}
+
+class DownloadError extends Error {
+  /**
+   * @param {string} message
+   * @param {object} details
+   * @param {Error} [cause]
+   */
+  constructor(message, details, cause) {
+    super(message, cause ? { cause } : undefined);
+    this.name = "DownloadError";
+    this.code = "DOCDEX_DOWNLOAD_FAILED";
+    this.exitCode = EXIT_CODE_BY_ERROR_CODE[this.code];
+    this.details = withBaseDetails(details);
+  }
+}
+
+class IntegrityMismatchError extends Error {
+  /**
+   * @param {string} archiveName
+   * @param {string} expectedSha256
+   * @param {string} actualSha256
+   * @param {object} [details]
+   */
+  constructor(archiveName, expectedSha256, actualSha256, details) {
+    super(
+      `Integrity check failed for ${archiveName}: expected sha256=${expectedSha256} got sha256=${actualSha256}`
+    );
+    this.name = "IntegrityMismatchError";
+    this.code = "DOCDEX_INTEGRITY_MISMATCH";
+    this.exitCode = EXIT_CODE_BY_ERROR_CODE[this.code];
+    this.details = withBaseDetails({
+      ...details,
+      assetName: archiveName,
+      expectedSha256,
+      actualSha256
+    });
+  }
+}
+
+class ArchiveInvalidError extends Error {
+  /**
+   * @param {string} message
+   * @param {object} details
+   */
+  constructor(message, details) {
+    super(message);
+    this.name = "ArchiveInvalidError";
+    this.code = "DOCDEX_ARCHIVE_INVALID";
+    this.exitCode = EXIT_CODE_BY_ERROR_CODE[this.code];
+    this.details = withBaseDetails(details);
   }
 }
 
@@ -41,7 +131,10 @@ function parseRepoSlug() {
     return match[1];
   }
 
-  throw new Error("Set DOCDEX_DOWNLOAD_REPO env var or update package.json repository.url to owner/repo");
+  throw new InstallerConfigError(
+    "Set DOCDEX_DOWNLOAD_REPO env var or update package.json repository.url to owner/repo",
+    { repoSlug: null }
+  );
 }
 
 function getDownloadBase(repoSlug) {
@@ -53,7 +146,9 @@ function getVersion() {
   const version = (envVersion || pkg.version || "").replace(/^v/, "");
 
   if (!version) {
-    throw new Error("Missing package version; set DOCDEX_VERSION or package.json version");
+    throw new InstallerConfigError("Missing package version; set DOCDEX_VERSION or package.json version", {
+      version: null
+    });
   }
 
   return version;
@@ -92,7 +187,12 @@ function downloadText(url, redirects = 0) {
         res.on("data", (chunk) => {
           total += chunk.length;
           if (total > MAX_MANIFEST_BYTES) {
-            res.destroy(new Error(`Response too large while fetching ${url} (>${MAX_MANIFEST_BYTES} bytes)`));
+            const err = new Error(`Response too large while fetching ${url} (>${MAX_MANIFEST_BYTES} bytes)`);
+            err.code = "DOCDEX_DOWNLOAD_TOO_LARGE";
+            err.url = url;
+            err.maxBytes = MAX_MANIFEST_BYTES;
+            err.actualBytes = total;
+            res.destroy(err);
             return;
           }
           chunks.push(chunk);
@@ -185,8 +285,10 @@ async function tryResolveAssetViaManifest({
 }) {
   const base = getDownloadBaseFn(repoSlug);
   const errors = [];
+  const events = [];
+  const candidates = manifestCandidateNamesFn();
 
-  for (const name of manifestCandidateNamesFn()) {
+  for (const name of candidates) {
     const url = `${base}/v${version}/${name}`;
     try {
       const text = await downloadTextFn(url);
@@ -194,16 +296,35 @@ async function tryResolveAssetViaManifest({
       try {
         manifest = JSON.parse(text);
       } catch (e) {
-        errors.push(`Malformed manifest (${name}): ${INVALID_JSON_ERROR}`);
+        const message = `Malformed manifest (${name}): ${INVALID_JSON_ERROR}`;
+        errors.push(`[DOCDEX_MANIFEST_JSON_INVALID] ${message}`);
+        events.push({
+          code: "DOCDEX_MANIFEST_JSON_INVALID",
+          message,
+          details: { manifestName: name, url, targetTriple }
+        });
         continue;
       }
 
       // If a manifest exists but doesn't support the current triple, fail deterministically.
       try {
-        return { manifestName: name, resolved: resolveCanonicalAssetForTargetTriple(manifest, targetTriple) };
+        return {
+          manifestName: name,
+          resolved: resolveCanonicalAssetForTargetTriple(manifest, targetTriple),
+          errors,
+          events,
+          attempted: true
+        };
       } catch (e) {
         if (e instanceof ManifestResolutionError) {
           e.message = `Manifest ${name}: ${e.message}`;
+          e.details = {
+            ...withBaseDetails(e.details),
+            manifestName: name,
+            manifestUrl: url,
+            fallbackAttempted: false,
+            fallbackReason: "manifest_present_but_unusable"
+          };
           throw e;
         }
         throw e;
@@ -211,13 +332,51 @@ async function tryResolveAssetViaManifest({
     } catch (e) {
       if (e instanceof ManifestResolutionError) throw e;
       // 404 => "missing manifest" candidate; try next. Anything else is recorded and we still try next.
-      if (e && typeof e.statusCode === "number" && e.statusCode === 404) continue;
-      errors.push(`Failed to fetch manifest (${name}): ${e.message}`);
+      if (e && typeof e.statusCode === "number" && e.statusCode === 404) {
+        events.push({
+          code: "DOCDEX_MANIFEST_NOT_FOUND",
+          message: `Manifest candidate not found (${name})`,
+          details: { manifestName: name, url, targetTriple, statusCode: 404 }
+        });
+        continue;
+      }
+
+      if (e && e.code === "DOCDEX_DOWNLOAD_TOO_LARGE") {
+        const message = `Manifest too large (${name}): exceeded ${e.maxBytes} bytes`;
+        errors.push(`[DOCDEX_MANIFEST_TOO_LARGE] ${message}`);
+        events.push({
+          code: "DOCDEX_MANIFEST_TOO_LARGE",
+          message,
+          details: { manifestName: name, url, targetTriple, maxBytes: e.maxBytes, actualBytes: e.actualBytes }
+        });
+        continue;
+      }
+
+      const message = `Failed to fetch manifest (${name}): ${e.message}`;
+      errors.push(`[DOCDEX_MANIFEST_FETCH_FAILED] ${message}`);
+      events.push({
+        code: "DOCDEX_MANIFEST_FETCH_FAILED",
+        message,
+        details: {
+          manifestName: name,
+          url,
+          targetTriple,
+          statusCode: typeof e?.statusCode === "number" ? e.statusCode : null
+        }
+      });
       continue;
     }
   }
 
-  return { manifestName: null, resolved: null, errors };
+  if (candidates.length) {
+    events.push({
+      code: "DOCDEX_FALLBACK_USED",
+      message: "No usable manifest candidate; falling back to deterministic asset naming",
+      details: { targetTriple, manifestCandidates: candidates.slice() }
+    });
+  }
+
+  return { manifestName: null, resolved: null, errors, events, attempted: true };
 }
 
 async function resolveInstallerDownloadPlan({
@@ -261,27 +420,40 @@ async function resolveInstallerDownloadPlan({
       const shaText = await downloadTextFn(shaUrl);
       expectedSha256 = parseSha256File(shaText, archive);
       if (!expectedSha256) {
-        logger.warn(`[docdex] Could not parse SHA-256 from ${archive}.sha256; continuing without integrity check.`);
+        logger.warn(
+          `[docdex] [DOCDEX_CHECKSUM_PARSE_FAILED] Could not parse SHA-256 from ${archive}.sha256; continuing without integrity check.`
+        );
       }
     } catch (e) {
       if (e && typeof e.statusCode === "number" && e.statusCode === 404) {
-        logger.warn(`[docdex] Missing ${archive}.sha256; continuing without integrity check.`);
+        logger.warn(`[docdex] [DOCDEX_CHECKSUM_MISSING] Missing ${archive}.sha256; continuing without integrity check.`);
       } else {
-        logger.warn(`[docdex] Failed to fetch ${archive}.sha256; continuing without integrity check: ${e.message}`);
+        logger.warn(
+          `[docdex] [DOCDEX_CHECKSUM_FETCH_FAILED] Failed to fetch ${archive}.sha256; continuing without integrity check: ${e.message}`
+        );
       }
     }
   }
 
-  return { archive, expectedSha256, source, manifestAttempt };
+  return {
+    archive,
+    expectedSha256,
+    source,
+    manifestAttempt: { ...manifestAttempt, fallbackAttempted: !manifestAttempt.resolved }
+  };
 }
 
-async function verifyDownloadedFileIntegrity({ filePath, expectedSha256, archiveName, sha256FileFn = sha256File }) {
+async function verifyDownloadedFileIntegrity({
+  filePath,
+  expectedSha256,
+  archiveName,
+  sha256FileFn = sha256File,
+  details
+}) {
   if (!expectedSha256) return null;
   const actual = await sha256FileFn(filePath);
   if (actual.toLowerCase() !== expectedSha256.toLowerCase()) {
-    throw new Error(
-      `Integrity check failed for ${archiveName}: expected sha256=${expectedSha256} got sha256=${actual}`
-    );
+    throw new IntegrityMismatchError(archiveName, expectedSha256, actual, details);
   }
   return actual;
 }
@@ -292,7 +464,7 @@ async function main() {
   const version = getVersion();
   const repoSlug = parseRepoSlug();
 
-  const { archive, expectedSha256, source } = await resolveInstallerDownloadPlan({
+  const { archive, expectedSha256, source, manifestAttempt } = await resolveInstallerDownloadPlan({
     repoSlug,
     version,
     platformKey,
@@ -310,10 +482,17 @@ async function main() {
       await download(downloadUrl, tmpFile);
     } catch (err) {
       if (err && typeof err.statusCode === "number" && err.statusCode === 404) {
+        const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
         throw new MissingArtifactError({
           detected: { os: process.platform, arch: process.arch },
           platformKey,
           targetTriple,
+          assetName: archive,
+          source,
+          manifestName: manifestAttempt?.manifestName ?? null,
+          manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+          fallbackAttempted: source === "fallback",
+          fallbackReason,
           version,
           repoSlug,
           downloadUrl,
@@ -322,10 +501,41 @@ async function main() {
           note: "This usually means the GitHub release assets are missing or the npm version is out of sync with the release."
         });
       }
-      throw err;
+      throw new DownloadError(
+        `Download failed for ${archive}`,
+        {
+          platformKey,
+          targetTriple,
+          version,
+          repoSlug,
+          assetName: archive,
+          downloadUrl,
+          source,
+          manifestName: manifestAttempt?.manifestName ?? null,
+          manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+          fallbackAttempted: source === "fallback",
+          statusCode: typeof err?.statusCode === "number" ? err.statusCode : null
+        },
+        err
+      );
     }
 
-    await verifyDownloadedFileIntegrity({ filePath: tmpFile, expectedSha256, archiveName: archive });
+    await verifyDownloadedFileIntegrity({
+      filePath: tmpFile,
+      expectedSha256,
+      archiveName: archive,
+      details: {
+        platformKey,
+        targetTriple,
+        version,
+        repoSlug,
+        downloadUrl,
+        source,
+        manifestName: manifestAttempt?.manifestName ?? null,
+        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+        fallbackAttempted: source === "fallback"
+      }
+    });
 
     // Only replace an existing installation after we have successfully fetched + verified the archive.
     await fs.promises.rm(distDir, { recursive: true, force: true });
@@ -333,7 +543,19 @@ async function main() {
 
     const binaryPath = path.join(distDir, process.platform === "win32" ? "docdexd.exe" : "docdexd");
     if (!fs.existsSync(binaryPath)) {
-      throw new Error(`Downloaded archive missing binary at ${binaryPath}`);
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
+        platformKey,
+        targetTriple,
+        version,
+        repoSlug,
+        assetName: archive,
+        downloadUrl,
+        source,
+        manifestName: manifestAttempt?.manifestName ?? null,
+        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+        fallbackAttempted: source === "fallback",
+        binaryPath
+      });
     }
 
     await fs.promises.chmod(binaryPath, 0o755).catch(() => {});
@@ -344,15 +566,21 @@ async function main() {
 }
 
 function describeFatalError(err) {
+  const fallbackAttempted =
+    err && typeof err.details?.fallbackAttempted === "boolean" ? err.details.fallbackAttempted : null;
+
   if (err instanceof UnsupportedPlatformError) {
     const detected = `${err.details.platform}/${err.details.arch}`;
     const supportedKeys = (err.details.supportedPlatformKeys || []).join(", ");
     const supportedTriples = (err.details.supportedTargetTriples || []).join(", ");
 
     return {
-      exitCode: 1,
+      code: err.code,
+      exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
+      details: withBaseDetails(err.details),
       lines: [
         `[docdex] install failed: unsupported platform (${detected})`,
+        `[docdex] error code: ${err.code}`,
         "[docdex] No download was attempted for this platform.",
         supportedKeys ? `[docdex] Supported platforms: ${supportedKeys}` : null,
         supportedTriples ? `[docdex] Supported target triples: ${supportedTriples}` : null,
@@ -364,15 +592,37 @@ function describeFatalError(err) {
     };
   }
 
+  if (err instanceof InstallerConfigError) {
+    return {
+      code: err.code,
+      exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
+      details: withBaseDetails(err.details),
+      lines: [
+        `[docdex] install failed: ${err.message}`,
+        `[docdex] error code: ${err.code}`,
+        "[docdex] Next steps:",
+        "[docdex] - Ensure you are installing a published npm package version (not a local folder missing metadata).",
+        "[docdex] - If installing from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` to the repo that hosts the release assets."
+      ]
+    };
+  }
+
   if (err instanceof MissingArtifactError) {
     const detected = err.details?.detected ? `${err.details.detected.os}/${err.details.detected.arch}` : null;
     return {
-      exitCode: 1,
+      code: err.code,
+      exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
+      details: withBaseDetails(err.details),
       lines: [
         "[docdex] install failed: missing release artifact for this platform",
+        `[docdex] error code: ${err.code}`,
         detected ? `[docdex] Detected platform: ${detected}` : null,
         err.details?.platformKey ? `[docdex] Platform key: ${err.details.platformKey}` : null,
         err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
+        err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,
+        err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,
+        fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,
+        err.details?.fallbackReason ? `[docdex] Fallback reason: ${err.details.fallbackReason}` : null,
         err.details?.version ? `[docdex] Version: v${err.details.version}` : null,
         err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
         err.details?.expectedAsset ? `[docdex] Expected asset: ${err.details.expectedAsset}` : null,
@@ -387,21 +637,75 @@ function describeFatalError(err) {
     };
   }
 
+  if (err instanceof DownloadError) {
+    return {
+      code: err.code,
+      exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
+      details: withBaseDetails(err.details),
+      lines: [
+        `[docdex] install failed: ${err.message}`,
+        `[docdex] error code: ${err.code}`,
+        err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
+        err.details?.statusCode != null ? `[docdex] HTTP status: ${err.details.statusCode}` : null,
+        err.cause?.message ? `[docdex] Cause: ${err.cause.message}` : null
+      ].filter(Boolean)
+    };
+  }
+
+  if (err instanceof IntegrityMismatchError) {
+    return {
+      code: err.code,
+      exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
+      details: withBaseDetails(err.details),
+      lines: [
+        `[docdex] install failed: ${err.message}`,
+        `[docdex] error code: ${err.code}`
+      ]
+    };
+  }
+
+  if (err instanceof ArchiveInvalidError) {
+    return {
+      code: err.code,
+      exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
+      details: withBaseDetails(err.details),
+      lines: [
+        `[docdex] install failed: ${err.message}`,
+        `[docdex] error code: ${err.code}`,
+        err.details?.binaryPath ? `[docdex] Expected binary path: ${err.details.binaryPath}` : null
+      ].filter(Boolean)
+    };
+  }
+
   if (err instanceof ManifestResolutionError) {
     const lines = [
       `[docdex] install failed: ${err.message}`,
       `[docdex] error code: ${err.code}`
     ];
+    if (fallbackAttempted === false) {
+      lines.push("[docdex] Fallback was not attempted because a manifest was present but unusable.");
+    }
     if (Array.isArray(err.details?.supported) && err.details.supported.length) {
       lines.push(`[docdex] supported targets: ${err.details.supported.join(", ")}`);
     }
     if (Array.isArray(err.details?.matches) && err.details.matches.length) {
       lines.push(`[docdex] matched assets: ${err.details.matches.join(", ")}`);
     }
-    return { exitCode: 1, lines };
+    return {
+      code: err.code,
+      exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
+      details: withBaseDetails(err.details),
+      lines
+    };
   }
 
-  return { exitCode: 1, lines: [`[docdex] install failed: ${err.message}`] };
+  const code = (err && typeof err.code === "string" && err.code) || "DOCDEX_INSTALL_FAILED";
+  return {
+    code,
+    exitCode: (err && typeof err.exitCode === "number" && err.exitCode) || EXIT_CODE_BY_ERROR_CODE[code] || 1,
+    details: withBaseDetails(err && err.details),
+    lines: [`[docdex] install failed: ${err?.message || "unknown error"}`, `[docdex] error code: ${code}`]
+  };
 }
 
 function handleFatal(err) {

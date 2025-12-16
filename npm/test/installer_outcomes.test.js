@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { runInstaller, sha256File } = require("../lib/install");
+const { runInstaller, sha256File, buildInstallOutcomeReport } = require("../lib/install");
 const { targetTripleForPlatformKey } = require("../lib/platform");
 
 function createNoopLogger() {
@@ -112,6 +112,8 @@ test("installer outcome: no-op skips plan/download when local install is verifie
 
   assert.equal(result.binaryPath, binaryPath);
   assert.equal(result.outcome, "no-op");
+  assert.equal(result.outcomeCode, "skipped_noop");
+  assert.equal(typeof result.outcomeMessage, "string");
   assert.equal(parseRepoSlugCalls, 0);
   assert.equal(planCalls, 0);
   assert.equal(downloadCalls, 0);
@@ -189,6 +191,7 @@ test("installer outcome: update installs when version differs and writes fresh m
 
   assert.equal(downloadUrl, expectedDownloadUrl);
   assert.equal(result.outcome, "update");
+  assert.equal(result.outcomeCode, "updated");
 
   const metadataPath = path.join(distDir, "docdexd-install.json");
   assert.ok(fs.existsSync(metadataPath));
@@ -254,6 +257,7 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
   });
 
   assert.equal(result.outcome, "repair");
+  assert.equal(result.outcomeCode, "repaired");
   const metadataPath = path.join(distDir, "docdexd-install.json");
   const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
   assert.equal(meta.version, version);
@@ -314,6 +318,7 @@ test("installer outcome: reinstall_unknown reinstalls when metadata is missing",
   });
 
   assert.equal(result.outcome, "reinstall_unknown");
+  assert.equal(result.outcomeCode, "reinstalled_unknown");
   const metadataPath = path.join(distDir, "docdexd-install.json");
   const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
   assert.equal(meta.version, version);
@@ -321,27 +326,39 @@ test("installer outcome: reinstall_unknown reinstalls when metadata is missing",
   assert.equal(meta.targetTriple, targetTriple);
 });
 
+<<<<<<< HEAD
 test("installer outcome: reinstall_unknown reinstalls when integrity cannot be verified", async (t) => {
   const base = "https://example.test/releases/download";
+=======
+test("installer outputFormat=json emits a single JSON outcome report", async (t) => {
+>>>>>>> mcoda/task/ops-01-us-06-t47
   const version = "0.0.0";
   const platformKey = "linux-x64-gnu";
   const targetTriple = targetTripleForPlatformKey(platformKey);
   const isWin32 = false;
 
+<<<<<<< HEAD
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-outcome-unverifiable-"));
+=======
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-outcome-json-"));
+>>>>>>> mcoda/task/ops-01-us-06-t47
   t.after(async () => {
     await fs.promises.rm(tmpRoot, { recursive: true, force: true });
   });
 
   const distBaseDir = path.join(tmpRoot, "dist");
   const distDir = path.join(distBaseDir, platformKey);
+<<<<<<< HEAD
   const tmpDir = path.join(tmpRoot, "tmp");
   await ensureDir(tmpDir);
+=======
+>>>>>>> mcoda/task/ops-01-us-06-t47
 
   const binaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "verified-binary\n" });
   const binarySha = await sha256File(binaryPath);
   await writeInstallMetadata({ distDir, platformKey, version, targetTriple, binarySha256: binarySha });
 
+<<<<<<< HEAD
   const archive = "docdexd-linux-x64-gnu.tar.gz";
 
   let shaCalls = 0;
@@ -353,10 +370,25 @@ test("installer outcome: reinstall_unknown reinstalls when integrity cannot be v
     platform: "linux",
     arch: "x64",
     tmpDir,
+=======
+  const logs = [];
+  const captureLogger = {
+    log: (line) => logs.push(String(line)),
+    warn: () => {},
+    error: () => {}
+  };
+
+  const result = await runInstaller({
+    logger: captureLogger,
+    outputFormat: "json",
+    platform: "linux",
+    arch: "x64",
+>>>>>>> mcoda/task/ops-01-us-06-t47
     distBaseDir,
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
     getVersionFn: () => version,
+<<<<<<< HEAD
     parseRepoSlugFn: () => "owner/repo",
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
@@ -393,4 +425,35 @@ test("installer outcome: reinstall_unknown reinstalls when integrity cannot be v
   assert.equal(meta.version, version);
   assert.equal(meta.platformKey, platformKey);
   assert.equal(meta.targetTriple, targetTriple);
+=======
+    parseRepoSlugFn: () => {
+      throw new Error("unexpected repo slug resolution");
+    }
+  });
+
+  assert.equal(result.outcome, "no-op");
+  assert.equal(result.outcomeCode, "skipped_noop");
+  assert.equal(logs.length, 1);
+  const payload = JSON.parse(logs[0]);
+  assert.equal(payload.kind, "docdex_installer_outcome");
+  assert.equal(payload.code, "skipped_noop");
+  assert.equal(payload.legacyOutcome, "no-op");
+  assert.equal(payload.expectedVersion, version);
+});
+
+test("installer outcome code: supports `no_op` alias for `no-op`", () => {
+  const report = buildInstallOutcomeReport({
+    decision: { outcome: "no_op", reason: "verified", installedVersion: "0.0.0" },
+    expectedVersion: "0.0.0",
+    platformKey: null,
+    targetTriple: null,
+    repoSlug: null,
+    archive: null,
+    downloadUrl: null,
+    source: null
+  });
+
+  assert.equal(report.code, "skipped_noop");
+  assert.equal(report.downloaded, false);
+>>>>>>> mcoda/task/ops-01-us-06-t47
 });

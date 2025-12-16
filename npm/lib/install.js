@@ -26,6 +26,16 @@ const MAX_MANIFEST_BYTES = 1024 * 1024; // 1 MiB cap for safety
 const INVALID_JSON_ERROR = "invalid JSON";
 const INSTALL_METADATA_SCHEMA_VERSION = 1;
 const INSTALL_METADATA_FILENAME = "docdexd-install.json";
+const INSTALL_OUTCOME_SCHEMA_VERSION = 1;
+
+const INSTALL_OUTCOME_CODE_BY_DECISION_OUTCOME = Object.freeze({
+  "no-op": "skipped_noop",
+  // Back-compat alias: some earlier design docs used `no_op`.
+  no_op: "skipped_noop",
+  update: "updated",
+  repair: "repaired",
+  reinstall_unknown: "reinstalled_unknown"
+});
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -41,6 +51,14 @@ const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INTEGRITY_MISMATCH: 22,
   DOCDEX_ARCHIVE_INVALID: 23
 });
+
+function createNoopLogger() {
+  return {
+    log: () => {},
+    warn: () => {},
+    error: () => {}
+  };
+}
 
 function withBaseDetails(details) {
   return {
@@ -279,6 +297,98 @@ function installMetadataPath(distDir, pathModule = path) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function normalizeInstallerOutputFormat(raw) {
+  const value = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (value === "json") return "json";
+  return "text";
+}
+
+function installOutcomeCodeForDecisionOutcome(decisionOutcome) {
+  if (typeof decisionOutcome !== "string") return "reinstalled_unknown";
+  return INSTALL_OUTCOME_CODE_BY_DECISION_OUTCOME[decisionOutcome] || "reinstalled_unknown";
+}
+
+function isNoopDecisionOutcome(decisionOutcome) {
+  return decisionOutcome === "no-op" || decisionOutcome === "no_op";
+}
+
+function buildInstallOutcomeMessage({ code, decisionReason, expectedVersion, installedVersion }) {
+  const expected = expectedVersion ? `v${expectedVersion}` : "the expected version";
+  const installed = installedVersion ? `v${installedVersion}` : null;
+
+  switch (code) {
+    case "skipped_noop":
+      return `docdexd ${expected} is already installed and verified; skipping download.`;
+    case "updated":
+      if (decisionReason === "binary_missing") return `installed docdexd ${expected}.`;
+      if (installed) return `updated docdexd to ${expected} (was ${installed}).`;
+      return `updated docdexd to ${expected}.`;
+    case "repaired":
+      return `repaired docdexd ${expected} by replacing a binary that failed integrity verification.`;
+    case "reinstalled_unknown":
+    default: {
+      const reason = decisionReason ? ` (${decisionReason})` : "";
+      return `reinstalled docdexd ${expected} because the prior state could not be verified deterministically${reason}.`;
+    }
+  }
+}
+
+function buildInstallOutcomeReport({
+  decision,
+  expectedVersion,
+  platformKey,
+  targetTriple,
+  repoSlug,
+  archive,
+  downloadUrl,
+  source
+}) {
+  const legacyOutcome = decision?.outcome || null;
+  const decisionReason = decision?.reason || null;
+  const code = installOutcomeCodeForDecisionOutcome(legacyOutcome);
+  const message = buildInstallOutcomeMessage({
+    code,
+    decisionReason,
+    expectedVersion,
+    installedVersion: decision?.installedVersion || null
+  });
+
+  return {
+    schemaVersion: INSTALL_OUTCOME_SCHEMA_VERSION,
+    kind: "docdex_installer_outcome",
+    timestamp: nowIso(),
+    code,
+    message,
+    legacyOutcome,
+    decisionReason,
+    expectedVersion: expectedVersion || null,
+    installedVersion: decision?.installedVersion ?? null,
+    platformKey: platformKey || null,
+    targetTriple: targetTriple || null,
+    repoSlug: repoSlug || null,
+    binaryPath: decision?.binaryPath || null,
+    metadataPath: decision?.metadataPath || null,
+    downloaded: isNoopDecisionOutcome(legacyOutcome) ? false : true,
+    archive: archive || null,
+    downloadUrl: downloadUrl || null,
+    source: source || null
+  };
+}
+
+function emitInstallOutcomeReport(report, { logger, outputFormat }) {
+  const format = normalizeInstallerOutputFormat(outputFormat);
+  if (format === "json") {
+    logger.log(JSON.stringify(report));
+    return;
+  }
+
+  if (report.legacyOutcome) logger.log(`[docdex] Install outcome: ${report.legacyOutcome}`);
+  logger.log(`[docdex] Install outcome code: ${report.code}`);
+  logger.log(`[docdex] ${report.message}`);
 }
 
 async function readJsonFileIfPossible({ fsModule, filePath }) {
@@ -992,7 +1102,9 @@ async function verifyDownloadedFileIntegrity({
 
 async function runInstaller(options) {
   const opts = options || {};
-  const logger = opts.logger || console;
+  const noisyLogger = opts.logger || console;
+  const outputFormat = normalizeInstallerOutputFormat(opts.outputFormat || process.env.DOCDEX_INSTALLER_OUTPUT);
+  const logger = outputFormat === "json" ? createNoopLogger() : noisyLogger;
 
   const detectPlatformKeyFn = opts.detectPlatformKeyFn || detectPlatformKey;
   const targetTripleForPlatformKeyFn = opts.targetTripleForPlatformKeyFn || targetTripleForPlatformKey;
@@ -1059,8 +1171,29 @@ async function runInstaller(options) {
   });
 
   if (local.outcome === "no-op") {
+<<<<<<< HEAD
     logger.log("[docdex] Install outcome: no-op");
     return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
+=======
+    const report = buildInstallOutcomeReport({
+      decision: local,
+      expectedVersion: version,
+      platformKey,
+      targetTriple,
+      repoSlug: null,
+      archive: null,
+      downloadUrl: null,
+      source: null
+    });
+    emitInstallOutcomeReport(report, { logger: noisyLogger, outputFormat });
+    return {
+      binaryPath: local.binaryPath,
+      outcome: local.outcome,
+      outcomeCode: report.code,
+      outcomeMessage: report.message,
+      decisionReason: local.reason
+    };
+>>>>>>> mcoda/task/ops-01-us-06-t47
   }
 
   const repoSlug = parseRepoSlugFn();
@@ -1188,8 +1321,24 @@ async function runInstaller(options) {
       value: metadata
     });
 
-    logger.log(`[docdex] Install outcome: ${local.outcome}`);
-    return { binaryPath, outcome: local.outcome };
+    const report = buildInstallOutcomeReport({
+      decision: local,
+      expectedVersion: version,
+      platformKey,
+      targetTriple,
+      repoSlug,
+      archive,
+      downloadUrl,
+      source
+    });
+    emitInstallOutcomeReport(report, { logger: noisyLogger, outputFormat });
+    return {
+      binaryPath,
+      outcome: local.outcome,
+      outcomeCode: report.code,
+      outcomeMessage: report.message,
+      decisionReason: local.reason
+    };
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
   }
@@ -1422,6 +1571,21 @@ function describeFatalError(err) {
 
 function handleFatal(err) {
   const report = describeFatalError(err);
+  const outputFormat = normalizeInstallerOutputFormat(process.env.DOCDEX_INSTALLER_OUTPUT);
+  if (outputFormat === "json") {
+    const payload = {
+      schemaVersion: 1,
+      kind: "docdex_installer_error",
+      timestamp: nowIso(),
+      code: report.code,
+      exitCode: report.exitCode || 1,
+      details: report.details,
+      lines: report.lines
+    };
+    console.log(JSON.stringify(payload));
+    process.exit(payload.exitCode);
+  }
+
   for (const line of report.lines) console.error(line);
   process.exit(report.exitCode || 1);
 }
@@ -1444,6 +1608,7 @@ module.exports = {
   verifyDownloadedFileIntegrity,
   MissingArtifactError,
   ChecksumResolutionError,
+  buildInstallOutcomeReport,
   runInstaller,
   describeFatalError,
   handleFatal

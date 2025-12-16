@@ -126,3 +126,73 @@ test("installer: supported runtime with missing manifest target triple never dow
   assert.equal(assetDownloadCalls, 0);
   assert.equal(extractCalls, 0);
 });
+
+test("installer: supported runtime with missing release asset (404) exits non-zero and does not install", async () => {
+  let downloadCalls = 0;
+  let tmpCleanupRmCalls = 0;
+  let installRmCalls = 0;
+  let extractCalls = 0;
+
+  const base = "https://example.test/releases/download";
+  const version = "0.0.0";
+  const platformKey = "linux-x64-gnu";
+
+  const fsModule = {
+    promises: {
+      rm: async (_path, options) => {
+        if (options && options.recursive) installRmCalls += 1;
+        else tmpCleanupRmCalls += 1;
+      }
+    },
+    existsSync: () => true
+  };
+
+  let err;
+  try {
+    await runInstaller({
+      logger: createNoopLogger(),
+      platform: "linux",
+      arch: "x64",
+      tmpDir: "/tmp/docdex-installer-test",
+      detectPlatformKeyFn: () => platformKey,
+      getVersionFn: () => version,
+      parseRepoSlugFn: () => "owner/repo",
+      getDownloadBaseFn: () => base,
+      resolveInstallerDownloadPlanFn: async () => ({
+        archive: "docdexd-linux-x64-gnu.tar.gz",
+        expectedSha256: null,
+        source: "fallback",
+        manifestAttempt: { errors: [], resolved: null, manifestName: null }
+      }),
+      downloadFn: async () => {
+        downloadCalls += 1;
+        throw httpError(404, "not found");
+      },
+      verifyDownloadedFileIntegrityFn: async () => {
+        throw new Error("unexpected integrity check");
+      },
+      extractTarballFn: async () => {
+        extractCalls += 1;
+        throw new Error("unexpected extract");
+      },
+      fsModule
+    });
+  } catch (e) {
+    err = e;
+  }
+
+  assert.ok(err, "expected an error");
+  const report = describeFatalError(err);
+  assert.equal(report.code, "DOCDEX_ASSET_MISSING");
+  assert.equal(report.exitCode, 21);
+  assert.ok(report.lines.some((l) => l.includes("missing artifact/version sync issue")));
+  assert.ok(report.lines.some((l) => l.includes("Detected platform: linux/x64")));
+  assert.ok(report.lines.some((l) => l.includes("Expected target triple: x86_64-unknown-linux-gnu")));
+  assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platformKey>.tar.gz")));
+  assert.ok(!report.lines.some((l) => l.includes("unsupported platform")));
+
+  assert.equal(downloadCalls, 1);
+  assert.equal(extractCalls, 0);
+  assert.equal(installRmCalls, 0, "should not remove existing install on 404");
+  assert.equal(tmpCleanupRmCalls, 1, "should still attempt tmp cleanup");
+});

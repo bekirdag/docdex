@@ -15,11 +15,16 @@ Decision outcomes (stable strings; used by the installer decision engine):
 
 | Outcome | Meaning | Deterministic trigger (local state) |
 |---|---|---|
+<<<<<<< HEAD
 | `no-op` | Nothing changes. | A previous verified install metadata file exists and its recorded `binary.sha256` matches the currently installed binary for the expected version. |
 | `install` | Install the expected version. | No binary exists for the detected platform. |
 | `upgrade` | Replace the binary with a newer expected version. | Install metadata indicates an older version than expected. |
 | `downgrade` | Replace the binary with an older expected version. | Install metadata indicates a newer version than expected. |
 | `replace` | Replace the binary, but ordering can’t be determined. | Installed version differs from expected, but versions are not comparable as SemVer. |
+=======
+| `no-op` | Nothing changes. | A previous verified install metadata file exists, its recorded `binary.sha256` matches the currently installed binary for the expected version, and (when executable) the binary reports the expected version. |
+| `update` | Install/reinstall the expected version. (Includes first install, upgrade, downgrade.) | No binary exists, install metadata indicates a different version than expected, or a hash-verified binary reports a different version than expected. |
+>>>>>>> mcoda/task/ops-01-us-06-t41
 | `repair` | Reinstall the expected version due to a local integrity mismatch. | Metadata exists for the expected version, but the current binary’s SHA-256 does not match the recorded `binary.sha256`. |
 | `reinstall_unknown` | Reinstall because current state can’t be verified deterministically. | Binary exists but install metadata is missing/unreadable/invalid, or metadata does not match the detected `platformKey`. |
 
@@ -79,6 +84,7 @@ There are two relevant integrity checks:
 2) **Local binary integrity (no-op vs repair)**  
    For a `no-op`, the installer verifies the existing binary by hashing it and comparing to the recorded `binary.sha256` from the last successful, verified install.
    - If this local check fails, the outcome becomes `repair` and the installer reinstalls a verified binary.
+   - If the local hash check succeeds, the installer may also run the binary with `--version` to confirm it reports the expected version; a mismatch triggers `update`.
 
 ## Install metadata: what it is and where it lives
 

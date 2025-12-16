@@ -394,14 +394,28 @@ async function resolveInstallerDownloadPlan({
   let expectedSha256 = null;
   let source = "fallback";
 
-  const manifestAttempt = await tryResolveAssetViaManifest({
-    repoSlug,
-    version,
-    targetTriple,
-    downloadTextFn,
-    getDownloadBaseFn,
-    manifestCandidateNamesFn
-  });
+  let manifestAttempt;
+  try {
+    manifestAttempt = await tryResolveAssetViaManifest({
+      repoSlug,
+      version,
+      targetTriple,
+      downloadTextFn,
+      getDownloadBaseFn,
+      manifestCandidateNamesFn
+    });
+  } catch (err) {
+    if (err instanceof ManifestResolutionError) {
+      const expectedAsset = artifactNameFn(platformKey);
+      err.details = {
+        ...withBaseDetails(err.details),
+        platformKey,
+        expectedAsset,
+        expectedAssetPattern: `docdexd-<platformKey>.tar.gz (e.g. ${expectedAsset})`
+      };
+    }
+    throw err;
+  }
 
   if (manifestAttempt.resolved) {
     archive = manifestAttempt.resolved.asset.name;
@@ -497,7 +511,7 @@ async function main() {
           repoSlug,
           downloadUrl,
           expectedAsset: archive,
-          expectedAssetPattern: `docdexd-<platform>.tar.gz (e.g. ${artifactName(platformKey)})`,
+          expectedAssetPattern: `docdexd-<platformKey>.tar.gz (e.g. ${artifactName(platformKey)})`,
           note: "This usually means the GitHub release assets are missing or the npm version is out of sync with the release."
         });
       }
@@ -614,7 +628,7 @@ function describeFatalError(err) {
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
       lines: [
-        "[docdex] install failed: missing release artifact for this platform",
+        "[docdex] install failed: missing artifact/version sync issue (release asset not found)",
         `[docdex] error code: ${err.code}`,
         detected ? `[docdex] Detected platform: ${detected}` : null,
         err.details?.platformKey ? `[docdex] Platform key: ${err.details.platformKey}` : null,
@@ -678,10 +692,25 @@ function describeFatalError(err) {
   }
 
   if (err instanceof ManifestResolutionError) {
-    const lines = [
-      `[docdex] install failed: ${err.message}`,
-      `[docdex] error code: ${err.code}`
-    ];
+    const platformKey = typeof err.details?.platformKey === "string" ? err.details.platformKey : null;
+    const expectedAssetPattern =
+      typeof err.details?.expectedAssetPattern === "string"
+        ? err.details.expectedAssetPattern
+        : platformKey
+          ? `docdexd-<platformKey>.tar.gz (e.g. ${artifactName(platformKey)})`
+          : "docdexd-<platformKey>.tar.gz";
+
+    const lines =
+      err.code === "DOCDEX_ASSET_NO_MATCH"
+        ? [
+            "[docdex] install failed: missing artifact/version sync issue (manifest has no asset for this target)",
+            `[docdex] error code: ${err.code}`,
+            err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
+            `[docdex] Asset naming pattern: ${expectedAssetPattern}`,
+            `[docdex] Details: ${err.message}`
+          ].filter(Boolean)
+        : [`[docdex] install failed: ${err.message}`, `[docdex] error code: ${err.code}`];
+
     if (fallbackAttempted === false) {
       lines.push("[docdex] Fallback was not attempted because a manifest was present but unusable.");
     }

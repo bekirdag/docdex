@@ -1491,6 +1491,7 @@ fn repo_state_mismatch_error(
         vec![
             "Repo may have moved or been renamed.".to_string(),
             "Verify you are using the correct `--repo` and `--state-dir` combination.".to_string(),
+            "Run: `docdexd repo inspect --repo <repo> --state-dir <shared_state_dir>` to see the repo fingerprint and any known canonical/alias mappings.".to_string(),
             "To explicitly re-associate a moved repo to existing shared state, run: `docdexd repo reassociate --repo <new_path> --state-dir <shared_state_dir> --old-path <knownCanonicalPath>` (or `--fingerprint <attemptedFingerprint>`)."
                 .to_string(),
             "Do not reuse a shared `--state-dir` across unrelated repos; choose a different state dir or clear the conflicting state."

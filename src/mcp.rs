@@ -360,6 +360,12 @@ struct StatsArgs {
 }
 
 #[derive(Deserialize)]
+struct RepoInspectArgs {
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
 struct FilesArgs {
     #[serde(default)]
     project_root: Option<PathBuf>,
@@ -945,6 +951,39 @@ impl McpServer {
                             }
                         }
                     }
+                    "docdex_repo_inspect" | "docdex.repo_inspect" => {
+                        let args_res: Result<RepoInspectArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_repo_inspect"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_repo_inspect" })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_repo_inspect(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_repo_inspect"))),
+                                }))
+                            }
+                        }
+                    }
                     "docdex_symbols" | "docdex.symbols" => {
                         let args_res: Result<SymbolsArgs, _> =
                             serde_json::from_value(params.arguments.clone());
@@ -1062,6 +1101,7 @@ impl McpServer {
                                         "docdex_files",
                                     "docdex_open",
                                     "docdex_stats",
+                                    "docdex_repo_inspect",
                                     "docdex_symbols",
                                     "docdex_memory_store",
                                     "docdex_memory_recall"
@@ -1165,6 +1205,17 @@ impl McpServer {
                 name: "docdex_stats",
                 description:
                     "Inspect index metadata: doc count, state dir, size on disk, and last update time.",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_repo_inspect",
+                description:
+                    "Inspect how Docdex resolves repo identity (normalized path, fingerprint, and any shared-state mapping).",
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1350,6 +1401,15 @@ impl McpServer {
                 .display()
                 .to_string(),
         }))
+    }
+
+    async fn handle_repo_inspect(&self, args: RepoInspectArgs) -> Result<serde_json::Value> {
+        self.ensure_project_root(args.project_root.as_deref())?;
+        let report = crate::repo_identity::inspect_repo(
+            &self.repo_root,
+            Some(self.indexer.config().state_dir()),
+        )?;
+        Ok(serde_json::to_value(&report).context("serialize docdex_repo_inspect")?)
     }
 
     async fn handle_open(&self, args: OpenArgs) -> Result<serde_json::Value> {

@@ -520,6 +520,11 @@ enum RepoCommand {
         )]
         old_path: Option<PathBuf>,
     },
+    /// Inspect how Docdex resolves repo identity and any shared-state mapping.
+    Inspect {
+        #[command(flatten)]
+        repo: RepoArgs,
+    },
 }
 
 #[tokio::main]
@@ -934,6 +939,12 @@ async fn run() -> Result<()> {
                         return Err(err);
                     }
                 }
+            }
+            RepoCommand::Inspect { repo } => {
+                let repo_root = repo.repo_root();
+                let state_dir = repo.state_dir_override();
+                let report = crate::repo_identity::inspect_repo(&repo_root, state_dir.as_deref())?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
             }
         },
         Command::LibsIngest { repo, sources } => {

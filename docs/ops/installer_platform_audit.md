@@ -1,6 +1,6 @@
 # Installer Platform Detection + Release Asset Naming (Audit)
 
-Task: `ops-01-us-07-t34`
+Task: `ops-01-us-07-t28`
 
 Operator-facing platform support + troubleshooting:
 - `docs/ops/installer_supported_platforms.md`
@@ -38,6 +38,17 @@ Contracts:
 - `docs/contracts/installer_error_contract_v1.md`
 - `docs/contracts/release_manifest_schema_v1.md`
 - Remediation playbook: `docs/ops/installer_error_codes.md`
+
+## Failure modes that can look like “unsupported platform”
+
+- **Unknown runtime**: `process.platform`/`process.arch` not in the matrix → `DOCDEX_UNSUPPORTED_PLATFORM` (no download attempted).
+- **Recognized but unpublished**: mapping exists with `published: false` (currently `linux-arm64-musl`, `win32-arm64`) → `DOCDEX_UNSUPPORTED_PLATFORM` (no download attempted).
+- **Linux libc misclassification**: if libc detection falls back to `musl` on an otherwise glibc runtime, `linux/arm64` can map to the unpublished `linux-arm64-musl` and appear unsupported; retry with `DOCDEX_LIBC=gnu` to confirm.
+
+## Failure modes that should *not* be labeled “unsupported platform”
+
+- **Supported platform, missing artifact**: 404 for the expected asset (`DOCDEX_ASSET_MISSING`) → message must include detected OS/arch, expected `targetTriple`, and `docdexd-<platformKey>.tar.gz` naming pattern.
+- **Manifest present, but no entry for target**: `DOCDEX_ASSET_NO_MATCH` → treated as “missing artifact/version sync issue” (fails closed) and includes the expected triple + naming pattern.
 
 ## Published support matrix (what releases currently ship)
 

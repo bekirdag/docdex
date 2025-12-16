@@ -343,6 +343,11 @@ fn best_effort_abort_sync(inner: &Inner) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tier2::{
+        classify_browser_session_failure, run_with_fallback, Tier2Config, Tier2Limiter,
+        Tier2UnavailableReason,
+    };
+    use anyhow::anyhow;
     use std::time::Instant;
     use tempfile::TempDir;
 
@@ -507,5 +512,132 @@ mod tests {
         }
         assert!(!process_group_alive(pgid), "process group still alive");
         assert!(!pid_alive(child_pid), "child process still alive");
+    }
+
+    #[test]
+    fn tier2_reason_codes_cover_browser_session_failures() {
+        let cases: Vec<(BrowserSessionError, Option<Tier2UnavailableReason>)> = vec![
+            (
+                BrowserSessionError::LaunchFailed("nope".to_string()),
+                Some(Tier2UnavailableReason::StartupFailed),
+            ),
+            (
+                BrowserSessionError::TimedOut(Duration::from_millis(5)),
+                Some(Tier2UnavailableReason::Timeout),
+            ),
+            (
+                BrowserSessionError::WorkFailed("boom".to_string()),
+                Some(Tier2UnavailableReason::Crashed),
+            ),
+            (
+                BrowserSessionError::CleanupFailed("boom".to_string()),
+                Some(Tier2UnavailableReason::Crashed),
+            ),
+            (BrowserSessionError::Cancelled, None),
+        ];
+
+        for (err, expected) in cases {
+            assert_eq!(
+                classify_browser_session_failure(&err).map(|u| u.reason),
+                expected,
+                "case={err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn tier2_unavailable_triggers_fallback_without_crashing() {
+        async fn expect_reason<T2Fut>(
+            request_id: &str,
+            config: Tier2Config,
+            limiter: Option<&Tier2Limiter>,
+            tier2: impl FnOnce() -> T2Fut,
+            expected: Tier2UnavailableReason,
+        ) where
+            T2Fut: Future<Output = Result<String, anyhow::Error>>,
+        {
+            let result = run_with_fallback(
+                request_id,
+                config,
+                limiter,
+                tier2,
+                || async { Ok::<_, anyhow::Error>("tier3".to_string()) },
+            )
+            .await
+            .expect("run");
+            assert_eq!(result.value, "tier3");
+            assert_eq!(result.tier2_unavailable.unwrap().reason, expected);
+        }
+
+        expect_reason(
+            "req-disabled",
+            Tier2Config { enabled: false },
+            None,
+            || async { Ok::<_, anyhow::Error>("tier2".to_string()) },
+            Tier2UnavailableReason::Disabled,
+        )
+        .await;
+
+        let limiter = Tier2Limiter::new(1, Duration::from_millis(0));
+        let _hold = limiter.acquire().await.expect("hold permit");
+        expect_reason(
+            "req-overload",
+            Tier2Config::enabled(),
+            Some(&limiter),
+            || async { Ok::<_, anyhow::Error>("tier2".to_string()) },
+            Tier2UnavailableReason::Overload,
+        )
+        .await;
+
+        expect_reason(
+            "req-timeout",
+            Tier2Config::enabled(),
+            None,
+            || async {
+                Err::<String, anyhow::Error>(
+                    BrowserSessionError::TimedOut(Duration::from_millis(1)).into(),
+                )
+            },
+            Tier2UnavailableReason::Timeout,
+        )
+        .await;
+
+        expect_reason(
+            "req-crashed",
+            Tier2Config::enabled(),
+            None,
+            || async {
+                Err::<String, anyhow::Error>(BrowserSessionError::WorkFailed("boom".to_string()).into())
+            },
+            Tier2UnavailableReason::Crashed,
+        )
+        .await;
+
+        expect_reason(
+            "req-startup",
+            Tier2Config::enabled(),
+            None,
+            || async {
+                let cmd = Command::new("docdexd-definitely-not-a-real-command");
+                let _session = BrowserSession::spawn(cmd, BrowserSessionOptions::default()).await?;
+                Ok::<_, anyhow::Error>("tier2".to_string())
+            },
+            Tier2UnavailableReason::StartupFailed,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn tier2_does_not_swallow_non_browser_errors() {
+        let err = run_with_fallback(
+            "req-bug",
+            Tier2Config::enabled(),
+            None,
+            || async { Err::<String, anyhow::Error>(anyhow!("boom")) },
+            || async { Ok::<_, anyhow::Error>("tier3".to_string()) },
+        )
+        .await
+        .expect_err("should fail");
+        assert!(err.to_string().contains("boom"));
     }
 }

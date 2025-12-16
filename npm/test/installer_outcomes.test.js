@@ -21,39 +21,45 @@ async function ensureDir(dirPath) {
   await fs.promises.mkdir(dirPath, { recursive: true });
 }
 
-async function writeInstalledBinary({ distDir, isWin32, bytes }) {
-  await ensureDir(distDir);
-  const binaryPath = path.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+async function writeInstalledBinary({ installDir, isWin32, bytes }) {
+  await ensureDir(installDir);
+  const binaryPath = path.join(installDir, isWin32 ? "docdexd.exe" : "docdexd");
   await fs.promises.writeFile(binaryPath, bytes);
   return binaryPath;
 }
 
 async function writeInstallMetadata({
-  distDir,
+  installDir,
   platformKey,
-  version,
+  installedVersion,
+  expectedVersion,
   targetTriple,
+  binaryPath,
   binarySha256,
-  repoSlug = "owner/repo"
+  repoSlug = "owner/repo",
+  assetUrl = null
 }) {
-  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const metadataPath = path.join(installDir, "docdexd-install.json");
+  const installedAt = new Date().toISOString();
   const payload = {
-    schemaVersion: 1,
-    installedAt: new Date().toISOString(),
-    version,
-    repoSlug,
+    schemaVersion: 2,
+    installedVersion,
+    expectedVersion,
     platformKey,
     targetTriple,
-    binary: {
-      filename: "docdexd",
-      sha256: binarySha256
+    binaryPath,
+    binaryHash: binarySha256,
+    provenance: {
+      repoSlug,
+      releaseTag: `v${expectedVersion}`,
+      releaseId: null,
+      assetName: null,
+      assetUrl,
+      assetSha256: null,
+      source: "test"
     },
-    archive: {
-      name: null,
-      sha256: null,
-      source: null,
-      downloadUrl: null
-    }
+    installedAt,
+    lastVerifiedAt: installedAt
   };
   await fs.promises.writeFile(metadataPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   return metadataPath;
@@ -71,12 +77,20 @@ test("installer outcome: no-op skips plan/download when local install is verifie
     await fs.promises.rm(tmpRoot, { recursive: true, force: true });
   });
 
-  const distBaseDir = path.join(tmpRoot, "dist");
-  const distDir = path.join(distBaseDir, platformKey);
+  const stateRootDir = path.join(tmpRoot, "state");
+  const installDir = path.join(stateRootDir, "daemon", platformKey);
 
-  const binaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "verified-binary\n" });
+  const binaryPath = await writeInstalledBinary({ installDir, isWin32, bytes: "verified-binary\n" });
   const binarySha = await sha256File(binaryPath);
-  await writeInstallMetadata({ distDir, platformKey, version, targetTriple, binarySha256: binarySha });
+  await writeInstallMetadata({
+    installDir,
+    platformKey,
+    installedVersion: version,
+    expectedVersion: version,
+    targetTriple,
+    binaryPath,
+    binarySha256: binarySha
+  });
 
   let parseRepoSlugCalls = 0;
   let planCalls = 0;
@@ -87,7 +101,7 @@ test("installer outcome: no-op skips plan/download when local install is verifie
     logger: createNoopLogger(),
     platform: "linux",
     arch: "x64",
-    distBaseDir,
+    stateRootDir,
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
     getVersionFn: () => version,
@@ -133,18 +147,20 @@ test("installer outcome: update installs when version differs and writes fresh m
     await fs.promises.rm(tmpRoot, { recursive: true, force: true });
   });
 
-  const distBaseDir = path.join(tmpRoot, "dist");
-  const distDir = path.join(distBaseDir, platformKey);
+  const stateRootDir = path.join(tmpRoot, "state");
+  const installDir = path.join(stateRootDir, "daemon", platformKey);
   const tmpDir = path.join(tmpRoot, "tmp");
   await ensureDir(tmpDir);
 
-  const oldBinaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "old-binary\n" });
+  const oldBinaryPath = await writeInstalledBinary({ installDir, isWin32, bytes: "old-binary\n" });
   const oldSha = await sha256File(oldBinaryPath);
   await writeInstallMetadata({
-    distDir,
+    installDir,
     platformKey,
-    version: installedVersion,
+    installedVersion,
+    expectedVersion: installedVersion,
     targetTriple,
+    binaryPath: oldBinaryPath,
     binarySha256: oldSha
   });
 
@@ -159,7 +175,7 @@ test("installer outcome: update installs when version differs and writes fresh m
     platform: "linux",
     arch: "x64",
     tmpDir,
-    distBaseDir,
+    stateRootDir,
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
     getVersionFn: () => expectedVersion,
@@ -193,13 +209,14 @@ test("installer outcome: update installs when version differs and writes fresh m
   assert.equal(result.outcome, "update");
   assert.equal(result.outcomeCode, "updated");
 
-  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const metadataPath = path.join(installDir, "docdexd-install.json");
   assert.ok(fs.existsSync(metadataPath));
   const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
-  assert.equal(meta.version, expectedVersion);
+  assert.equal(meta.installedVersion, expectedVersion);
+  assert.equal(meta.expectedVersion, expectedVersion);
   assert.equal(meta.platformKey, platformKey);
-  assert.equal(typeof meta.binary?.sha256, "string");
-  assert.equal(meta.binary.sha256.length, 64);
+  assert.equal(typeof meta.binaryHash, "string");
+  assert.equal(meta.binaryHash.length, 64);
 });
 
 test("installer outcome: repair reinstalls when binary hash mismatches metadata", async (t) => {
@@ -214,14 +231,22 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
     await fs.promises.rm(tmpRoot, { recursive: true, force: true });
   });
 
-  const distBaseDir = path.join(tmpRoot, "dist");
-  const distDir = path.join(distBaseDir, platformKey);
+  const stateRootDir = path.join(tmpRoot, "state");
+  const installDir = path.join(stateRootDir, "daemon", platformKey);
   const tmpDir = path.join(tmpRoot, "tmp");
   await ensureDir(tmpDir);
 
-  const binaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "original\n" });
+  const binaryPath = await writeInstalledBinary({ installDir, isWin32, bytes: "original\n" });
   const originalSha = await sha256File(binaryPath);
-  await writeInstallMetadata({ distDir, platformKey, version, targetTriple, binarySha256: originalSha });
+  await writeInstallMetadata({
+    installDir,
+    platformKey,
+    installedVersion: version,
+    expectedVersion: version,
+    targetTriple,
+    binaryPath,
+    binarySha256: originalSha
+  });
 
   await fs.promises.writeFile(binaryPath, "corrupted\n");
 
@@ -232,7 +257,7 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
     platform: "linux",
     arch: "x64",
     tmpDir,
-    distBaseDir,
+    stateRootDir,
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
     getVersionFn: () => version,
@@ -257,13 +282,17 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
   });
 
   assert.equal(result.outcome, "repair");
+<<<<<<< HEAD
   assert.equal(result.outcomeCode, "repaired");
   const metadataPath = path.join(distDir, "docdexd-install.json");
+=======
+  const metadataPath = path.join(installDir, "docdexd-install.json");
+>>>>>>> mcoda/task/ops-01-us-06-t45
   const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
-  assert.equal(meta.version, version);
-  const repairedBinaryPath = path.join(distDir, "docdexd");
+  assert.equal(meta.installedVersion, version);
+  const repairedBinaryPath = path.join(installDir, "docdexd");
   const repairedSha = await sha256File(repairedBinaryPath);
-  assert.equal(meta.binary.sha256, repairedSha);
+  assert.equal(meta.binaryHash, repairedSha);
 });
 
 test("installer outcome: reinstall_unknown reinstalls when metadata is missing", async (t) => {
@@ -278,13 +307,13 @@ test("installer outcome: reinstall_unknown reinstalls when metadata is missing",
     await fs.promises.rm(tmpRoot, { recursive: true, force: true });
   });
 
-  const distBaseDir = path.join(tmpRoot, "dist");
-  const distDir = path.join(distBaseDir, platformKey);
+  const stateRootDir = path.join(tmpRoot, "state");
+  const installDir = path.join(stateRootDir, "daemon", platformKey);
   const tmpDir = path.join(tmpRoot, "tmp");
   await ensureDir(tmpDir);
 
-  await writeInstalledBinary({ distDir, isWin32, bytes: "no-metadata\n" });
-  assert.ok(!fs.existsSync(path.join(distDir, "docdexd-install.json")));
+  await writeInstalledBinary({ installDir, isWin32, bytes: "no-metadata\n" });
+  assert.ok(!fs.existsSync(path.join(installDir, "docdexd-install.json")));
 
   const archive = "docdexd-linux-x64-gnu.tar.gz";
 
@@ -293,7 +322,7 @@ test("installer outcome: reinstall_unknown reinstalls when metadata is missing",
     platform: "linux",
     arch: "x64",
     tmpDir,
-    distBaseDir,
+    stateRootDir,
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
     getVersionFn: () => version,
@@ -318,10 +347,15 @@ test("installer outcome: reinstall_unknown reinstalls when metadata is missing",
   });
 
   assert.equal(result.outcome, "reinstall_unknown");
+<<<<<<< HEAD
   assert.equal(result.outcomeCode, "reinstalled_unknown");
   const metadataPath = path.join(distDir, "docdexd-install.json");
+=======
+  const metadataPath = path.join(installDir, "docdexd-install.json");
+>>>>>>> mcoda/task/ops-01-us-06-t45
   const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
-  assert.equal(meta.version, version);
+  assert.equal(meta.installedVersion, version);
+  assert.equal(meta.expectedVersion, version);
   assert.equal(meta.platformKey, platformKey);
   assert.equal(meta.targetTriple, targetTriple);
 });
@@ -346,17 +380,30 @@ test("installer outputFormat=json emits a single JSON outcome report", async (t)
     await fs.promises.rm(tmpRoot, { recursive: true, force: true });
   });
 
+<<<<<<< HEAD
   const distBaseDir = path.join(tmpRoot, "dist");
   const distDir = path.join(distBaseDir, platformKey);
 <<<<<<< HEAD
+=======
+  const stateRootDir = path.join(tmpRoot, "state");
+  const installDir = path.join(stateRootDir, "daemon", platformKey);
+>>>>>>> mcoda/task/ops-01-us-06-t45
   const tmpDir = path.join(tmpRoot, "tmp");
   await ensureDir(tmpDir);
 =======
 >>>>>>> mcoda/task/ops-01-us-06-t47
 
-  const binaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "verified-binary\n" });
+  const binaryPath = await writeInstalledBinary({ installDir, isWin32, bytes: "verified-binary\n" });
   const binarySha = await sha256File(binaryPath);
-  await writeInstallMetadata({ distDir, platformKey, version, targetTriple, binarySha256: binarySha });
+  await writeInstallMetadata({
+    installDir,
+    platformKey,
+    installedVersion: version,
+    expectedVersion: version,
+    targetTriple,
+    binaryPath,
+    binarySha256: binarySha
+  });
 
 <<<<<<< HEAD
   const archive = "docdexd-linux-x64-gnu.tar.gz";
@@ -370,6 +417,7 @@ test("installer outputFormat=json emits a single JSON outcome report", async (t)
     platform: "linux",
     arch: "x64",
     tmpDir,
+<<<<<<< HEAD
 =======
   const logs = [];
   const captureLogger = {
@@ -385,6 +433,9 @@ test("installer outputFormat=json emits a single JSON outcome report", async (t)
     arch: "x64",
 >>>>>>> mcoda/task/ops-01-us-06-t47
     distBaseDir,
+=======
+    stateRootDir,
+>>>>>>> mcoda/task/ops-01-us-06-t45
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
     getVersionFn: () => version,
@@ -420,9 +471,9 @@ test("installer outputFormat=json emits a single JSON outcome report", async (t)
   assert.equal(extractCalls, 1);
   assert.ok(shaCalls >= 2, "expected sha256 to be attempted for local check and after install");
 
-  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const metadataPath = path.join(installDir, "docdexd-install.json");
   const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
-  assert.equal(meta.version, version);
+  assert.equal(meta.installedVersion, version);
   assert.equal(meta.platformKey, platformKey);
   assert.equal(meta.targetTriple, targetTriple);
 =======

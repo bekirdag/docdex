@@ -33,8 +33,8 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
     await fs.promises.rm(tmpRoot, { recursive: true, force: true });
   });
 
-  const distBaseDir = path.join(tmpRoot, "dist");
-  const distDir = path.join(distBaseDir, platformKey);
+  const stateRootDir = path.join(tmpRoot, "state");
+  const installDir = path.join(stateRootDir, "daemon", platformKey);
   const tmpDir = path.join(tmpRoot, "tmp");
   await ensureDir(tmpDir);
 
@@ -46,7 +46,7 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
     platform: "linux",
     arch: "x64",
     tmpDir,
-    distBaseDir,
+    stateRootDir,
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
     getVersionFn: () => version,
@@ -76,8 +76,8 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
   assert.equal(firstDownloadCalls, 1);
   assert.equal(firstExtractCalls, 1);
 
-  const metadataPath = path.join(distDir, "docdexd-install.json");
-  const binaryPath = path.join(distDir, "docdexd");
+  const metadataPath = path.join(installDir, "docdexd-install.json");
+  const binaryPath = path.join(installDir, "docdexd");
   const metadataAfterFirst = await fs.promises.readFile(metadataPath, "utf8");
   const binaryAfterFirst = await fs.promises.readFile(binaryPath, "utf8");
 
@@ -92,7 +92,7 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
     platform: "linux",
     arch: "x64",
     tmpDir,
-    distBaseDir,
+    stateRootDir,
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
     getVersionFn: () => version,
@@ -131,4 +131,3 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
   assert.equal(metadataAfterSecond, metadataAfterFirst);
   assert.equal(binaryAfterSecond, binaryAfterFirst);
 });
-

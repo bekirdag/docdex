@@ -1222,7 +1222,8 @@ function describeFatalError(err) {
       lines: [
         `[docdex] install failed: unsupported platform (${detected})`,
         `[docdex] error code: ${err.code}`,
-        "[docdex] No download was attempted for this platform.",
+        `[docdex] Detected platform: ${detected}`,
+        "[docdex] No download was attempted for this platform (and no binary was installed).",
         libc ? `[docdex] Detected libc: ${libc}` : null,
         candidatePlatformKey ? `[docdex] Platform key: ${candidatePlatformKey}` : null,
         candidateTargetTriple ? `[docdex] Target triple: ${candidateTargetTriple}` : null,
@@ -1254,8 +1255,26 @@ function describeFatalError(err) {
   }
 
   if (err instanceof MissingArtifactError) {
-    const detected = err.details?.detected ? `${err.details.detected.os}/${err.details.detected.arch}` : null;
+    const detectedOs =
+      err.details?.detected && typeof err.details.detected === "object"
+        ? err.details.detected.os ?? err.details.detected.platform
+        : null;
+    const detectedArch =
+      err.details?.detected && typeof err.details.detected === "object" ? err.details.detected.arch : null;
+    const detected =
+      typeof detectedOs === "string" && detectedOs && typeof detectedArch === "string" && detectedArch
+        ? `${detectedOs}/${detectedArch}`
+        : null;
     const platformKey = typeof err.details?.platformKey === "string" ? err.details.platformKey : null;
+    let expectedTargetTriple =
+      typeof err.details?.targetTriple === "string" && err.details.targetTriple.trim()
+        ? err.details.targetTriple.trim()
+        : null;
+    if (!expectedTargetTriple && platformKey) {
+      try {
+        expectedTargetTriple = targetTripleForPlatformKey(platformKey);
+      } catch {}
+    }
     const expectedAsset =
       typeof err.details?.expectedAsset === "string" && err.details.expectedAsset.trim()
         ? err.details.expectedAsset.trim()
@@ -1275,7 +1294,7 @@ function describeFatalError(err) {
         `[docdex] error code: ${err.code}`,
         detected ? `[docdex] Detected platform: ${detected}` : null,
         err.details?.platformKey ? `[docdex] Platform key: ${err.details.platformKey}` : null,
-        err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
+        expectedTargetTriple ? `[docdex] Expected target triple: ${expectedTargetTriple}` : null,
         err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,
         err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,
         fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,

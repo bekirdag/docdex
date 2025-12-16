@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { pipeline } = require("node:stream/promises");
 const crypto = require("node:crypto");
+const { execFile } = require("node:child_process");
 
 const pkg = require("../package.json");
 const {
@@ -327,6 +328,45 @@ function normalizeSha256Hex(value) {
   return trimmed;
 }
 
+function parseDocdexdVersionOutput(text) {
+  const match = String(text || "").match(/\bv?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/);
+  return match ? match[1] : null;
+}
+
+function execFileText(execFileFn, file, args, opts) {
+  return new Promise((resolve, reject) => {
+    execFileFn(file, args, opts, (err, stdout, stderr) => {
+      if (err) {
+        err.stdout = stdout;
+        err.stderr = stderr;
+        return reject(err);
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
+async function readInstalledDocdexdVersion({ binaryPath, timeoutMs = 1500, execFileFn = execFile } = {}) {
+  const attempts = [["--version"], ["-V"]];
+  const opts = { timeout: timeoutMs, windowsHide: true, maxBuffer: 64 * 1024 };
+  const errors = [];
+
+  for (const args of attempts) {
+    try {
+      const { stdout, stderr } = await execFileText(execFileFn, binaryPath, args, opts);
+      const parsed = parseDocdexdVersionOutput(`${stdout || ""}\n${stderr || ""}`);
+      if (parsed) return { version: parsed, error: null, attemptedArgs: args };
+      errors.push(`no_version_in_output(${args.join(" ")})`);
+    } catch (err) {
+      const parsed = parseDocdexdVersionOutput(`${err?.stdout || ""}\n${err?.stderr || ""}`);
+      if (parsed) return { version: parsed, error: null, attemptedArgs: args };
+      errors.push(err?.code ? `${err.code}(${args.join(" ")})` : `exec_failed(${args.join(" ")})`);
+    }
+  }
+
+  return { version: null, error: errors.length ? errors.join(";") : "unavailable", attemptedArgs: null };
+}
+
 function integrityUnverifiable(reason, { expectedSha256, actualSha256, expectedSource, error } = {}) {
   return {
     status: "unverifiable",
@@ -576,7 +616,8 @@ async function determineLocalInstallerOutcome({
   expectedVersion,
   isWin32,
   sha256FileFn = sha256File,
-  expectedBinarySha256 = null
+  expectedBinarySha256 = null,
+  readInstalledBinaryVersionFn = null
 }) {
   const discoveredInstalledState = await discoverInstalledState({
     fsModule,
@@ -612,15 +653,35 @@ async function determineLocalInstallerOutcome({
       })
     : null;
 
-  const decision = decideInstallAction({
+  let decision = decideInstallAction({
     expectedVersion,
     expectedIntegrityMaterial,
     discoveredInstalledState,
     integrityResult
   });
 
-  const installedVersion =
+  let installedVersion =
     typeof discoveredInstalledState.installedVersion === "string" ? discoveredInstalledState.installedVersion : null;
+
+  let binaryVersion = null;
+  let binaryVersionError = null;
+  if (
+    decision.outcome === "no-op" &&
+    integrityResult?.status === "verified_ok" &&
+    typeof readInstalledBinaryVersionFn === "function"
+  ) {
+    try {
+      const maybe = await readInstalledBinaryVersionFn({ binaryPath: discoveredInstalledState.binaryPath });
+      if (typeof maybe === "string" && maybe) binaryVersion = maybe;
+    } catch (err) {
+      binaryVersionError = err?.message || String(err);
+    }
+  }
+
+  if (binaryVersion && binaryVersion !== expectedVersion) {
+    decision = { outcome: "update", reason: "version_mismatch" };
+    installedVersion = binaryVersion;
+  }
 
   return {
     outcome: decision.outcome,
@@ -628,7 +689,9 @@ async function determineLocalInstallerOutcome({
     binaryPath: discoveredInstalledState.binaryPath,
     metadataPath: discoveredInstalledState.metadataPath,
     installedVersion,
-    integrityResult
+    integrityResult,
+    binaryVersion,
+    binaryVersionError
   };
 }
 
@@ -1009,6 +1072,13 @@ async function runInstaller(options) {
   const artifactNameFn = opts.artifactNameFn || artifactName;
   const assetPatternForPlatformKeyFn = opts.assetPatternForPlatformKeyFn || assetPatternForPlatformKey;
   const sha256FileFn = opts.sha256FileFn || sha256File;
+  const execFileFn = opts.execFileFn || execFile;
+  const readInstalledBinaryVersionFn =
+    opts.readInstalledBinaryVersionFn ||
+    (async ({ binaryPath }) => {
+      const result = await readInstalledDocdexdVersion({ binaryPath, execFileFn });
+      return result.version;
+    });
 
   const detectedPlatform = opts.platform || process.platform;
   const detectedArch = opts.arch || process.arch;
@@ -1055,7 +1125,8 @@ async function runInstaller(options) {
     platformKey,
     expectedVersion: version,
     isWin32,
-    sha256FileFn
+    sha256FileFn,
+    readInstalledBinaryVersionFn
   });
 
   if (local.outcome === "no-op") {
@@ -1438,6 +1509,8 @@ module.exports = {
   resolveInstallerDownloadPlan,
   parseSha256File,
   sha256File,
+  readInstalledDocdexdVersion,
+  parseDocdexdVersionOutput,
   verifyInstalledDocdexdIntegrity,
   decideInstallAction,
   determineLocalInstallerOutcome,

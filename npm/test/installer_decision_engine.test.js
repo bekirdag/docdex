@@ -267,6 +267,53 @@ test("decision engine: verified => no-op (verified)", async () => {
   assert.equal(shaCalls, 1);
 });
 
+test("decision engine: verified hash but binary version differs => update (version_mismatch)", async () => {
+  const platformKey = "linux-x64-gnu";
+  const distDir = path.posix.join("/dist", platformKey);
+  const binaryPath = path.posix.join(distDir, "docdexd");
+  const metadataPath = path.posix.join(distDir, "docdexd-install.json");
+
+  const fsModule = createMockFs({
+    existingPaths: [binaryPath],
+    filesByPath: {
+      [metadataPath]: JSON.stringify(
+        validInstallMetadata({ platformKey, version: "0.1.0", binarySha256: "a".repeat(64) }),
+        null,
+        2
+      )
+    }
+  });
+
+  let shaCalls = 0;
+  let versionCalls = 0;
+  const outcome = await determineLocalInstallerOutcome({
+    fsModule,
+    pathModule: path.posix,
+    distDir,
+    platformKey,
+    expectedVersion: "0.1.0",
+    isWin32: false,
+    sha256FileFn: async (filePath) => {
+      shaCalls += 1;
+      assert.equal(filePath, binaryPath);
+      return "a".repeat(64);
+    },
+    readInstalledBinaryVersionFn: async ({ binaryPath: seen }) => {
+      versionCalls += 1;
+      assert.equal(seen, binaryPath);
+      return "0.0.9";
+    }
+  });
+
+  assert.equal(outcome.outcome, "update");
+  assert.equal(outcome.reason, "version_mismatch");
+  assert.equal(outcome.installedVersion, "0.0.9");
+  assert.equal(outcome.binaryVersion, "0.0.9");
+  assert.equal(outcome.integrityResult.status, "verified_ok");
+  assert.equal(shaCalls, 1);
+  assert.equal(versionCalls, 1);
+});
+
 test("decision engine: integrity check throws => reinstall_unknown (integrity_unverifiable)", async () => {
   const platformKey = "linux-x64-gnu";
   const distDir = path.posix.join("/dist", platformKey);

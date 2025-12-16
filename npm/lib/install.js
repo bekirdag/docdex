@@ -29,6 +29,8 @@ const INSTALL_OUTCOME_SCHEMA_VERSION = 1;
 
 const INSTALL_OUTCOME_CODE_BY_DECISION_OUTCOME = Object.freeze({
   "no-op": "skipped_noop",
+  // Back-compat alias: some earlier design docs used `no_op`.
+  no_op: "skipped_noop",
   update: "updated",
   repair: "repaired",
   reinstall_unknown: "reinstalled_unknown"
@@ -309,6 +311,10 @@ function installOutcomeCodeForDecisionOutcome(decisionOutcome) {
   return INSTALL_OUTCOME_CODE_BY_DECISION_OUTCOME[decisionOutcome] || "reinstalled_unknown";
 }
 
+function isNoopDecisionOutcome(decisionOutcome) {
+  return decisionOutcome === "no-op" || decisionOutcome === "no_op";
+}
+
 function buildInstallOutcomeMessage({ code, decisionReason, expectedVersion, installedVersion }) {
   const expected = expectedVersion ? `v${expectedVersion}` : "the expected version";
   const installed = installedVersion ? `v${installedVersion}` : null;
@@ -365,7 +371,7 @@ function buildInstallOutcomeReport({
     repoSlug: repoSlug || null,
     binaryPath: decision?.binaryPath || null,
     metadataPath: decision?.metadataPath || null,
-    downloaded: legacyOutcome === "no-op" ? false : true,
+    downloaded: isNoopDecisionOutcome(legacyOutcome) ? false : true,
     archive: archive || null,
     downloadUrl: downloadUrl || null,
     source: source || null

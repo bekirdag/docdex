@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { runInstaller, sha256File } = require("../lib/install");
+const { runInstaller, sha256File, buildInstallOutcomeReport } = require("../lib/install");
 const { targetTripleForPlatformKey } = require("../lib/platform");
 
 function createNoopLogger() {
@@ -373,4 +373,20 @@ test("installer outputFormat=json emits a single JSON outcome report", async (t)
   assert.equal(payload.code, "skipped_noop");
   assert.equal(payload.legacyOutcome, "no-op");
   assert.equal(payload.expectedVersion, version);
+});
+
+test("installer outcome code: supports `no_op` alias for `no-op`", () => {
+  const report = buildInstallOutcomeReport({
+    decision: { outcome: "no_op", reason: "verified", installedVersion: "0.0.0" },
+    expectedVersion: "0.0.0",
+    platformKey: null,
+    targetTriple: null,
+    repoSlug: null,
+    archive: null,
+    downloadUrl: null,
+    source: null
+  });
+
+  assert.equal(report.code, "skipped_noop");
+  assert.equal(report.downloaded, false);
 });

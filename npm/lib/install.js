@@ -8,10 +8,14 @@ const path = require("node:path");
 const { pipeline } = require("node:stream/promises");
 const crypto = require("node:crypto");
 <<<<<<< HEAD
+<<<<<<< HEAD
 const util = require("node:util");
 =======
 const { execFile } = require("node:child_process");
 >>>>>>> mcoda/task/ops-01-us-06-t41
+=======
+const childProcess = require("node:child_process");
+>>>>>>> mcoda/task/ops-01-us-06-t20
 
 const pkg = require("../package.json");
 const {
@@ -332,6 +336,7 @@ function nowIso() {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 function normalizeInstallerOutputFormat(raw) {
   const value = String(raw || "")
     .trim()
@@ -437,11 +442,54 @@ function computeCanonicalSourceUriForPlatform({
     const archive = artifactNameFn(platformKey);
     if (typeof archive !== "string" || !archive.trim()) return null;
     return `${base}/v${expectedVersion}/${archive}`;
+=======
+function uniqueSuffix() {
+  return `${process.pid}.${Date.now()}`;
+}
+
+function envRestartCommand(env = process.env) {
+  const value = env.DOCDEXD_RESTART_CMD || env.DOCDEX_RESTART_CMD;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+async function restartDaemonIfConfigured({ logger, env = process.env } = {}) {
+  const cmd = envRestartCommand(env);
+  if (!cmd) {
+    return { attempted: false, status: "skipped", reason: "no_restart_cmd" };
+  }
+
+  const child = childProcess.spawn(cmd, {
+    shell: true,
+    stdio: "inherit"
+  });
+
+  const exitCode = await new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("exit", (code) => resolve(typeof code === "number" ? code : 1));
+  });
+
+  if (exitCode !== 0) {
+    const message = `Restart command failed (exit ${exitCode}): ${cmd}`;
+    if (logger?.warn) logger.warn(`[docdex] ${message}`);
+    return { attempted: true, status: "failed", reason: "restart_cmd_failed", exitCode, cmd };
+  }
+
+  if (logger?.log) logger.log(`[docdex] Restart command succeeded: ${cmd}`);
+  return { attempted: true, status: "ok", reason: "restart_cmd_ok", exitCode, cmd };
+}
+
+async function tryStatMode({ fsModule, filePath }) {
+  try {
+    const stat = await fsModule.promises.stat(filePath);
+    if (!stat || typeof stat.mode !== "number") return null;
+    return stat.mode & 0o777;
+>>>>>>> mcoda/task/ops-01-us-06-t20
   } catch {
     return null;
   }
 }
 
+<<<<<<< HEAD
 function applyNoopInstallMetadataBackfill({
   meta,
   expectedVersion,
@@ -554,6 +602,85 @@ function applyNoopInstallMetadataBackfill({
 
   return changed;
 >>>>>>> mcoda/task/ops-01-us-06-t29
+=======
+function applyExecuteBitsIfMissing(mode) {
+  if (typeof mode !== "number") return null;
+  // If no execute bits are set, fall back to a sane executable default.
+  // This preserves permissions for typical installs while avoiding a non-executable daemon.
+  if ((mode & 0o111) === 0) return 0o755;
+  return mode;
+}
+
+async function installDocdexdBinaryAtomically({
+  fsModule,
+  pathModule,
+  extractTarballFn,
+  archivePath,
+  distDir,
+  isWin32,
+  logger,
+  errorDetails
+}) {
+  const filename = isWin32 ? "docdexd.exe" : "docdexd";
+  const binaryPath = pathModule.join(distDir, filename);
+
+  await fsModule.promises.mkdir(distDir, { recursive: true });
+
+  const stageDir = pathModule.join(distDir, `.installing-${uniqueSuffix()}`);
+  const incomingPath = pathModule.join(distDir, `${filename}.incoming-${uniqueSuffix()}`);
+  const backupPath = pathModule.join(distDir, `${filename}.backup-${uniqueSuffix()}`);
+
+  await fsModule.promises.rm(stageDir, { recursive: true, force: true }).catch(() => {});
+  await fsModule.promises.rm(incomingPath, { force: true }).catch(() => {});
+  await fsModule.promises.rm(backupPath, { force: true }).catch(() => {});
+
+  try {
+    await extractTarballFn(archivePath, stageDir);
+
+    const extractedBinaryPath = pathModule.join(stageDir, filename);
+    if (!fsModule.existsSync(extractedBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${extractedBinaryPath}`, {
+        ...(errorDetails || {}),
+        binaryPath: extractedBinaryPath
+      });
+    }
+
+    if (!isWin32) {
+      const existingMode = await tryStatMode({ fsModule, filePath: binaryPath });
+      const desiredMode = applyExecuteBitsIfMissing(existingMode ?? 0o755) ?? 0o755;
+      await fsModule.promises.chmod(extractedBinaryPath, desiredMode).catch(() => {});
+    }
+
+    // Move the extracted binary into the dist dir first so subsequent renames stay within the same directory.
+    await fsModule.promises.rename(extractedBinaryPath, incomingPath);
+
+    const hadExisting = fsModule.existsSync(binaryPath);
+    if (hadExisting) {
+      await fsModule.promises.rename(binaryPath, backupPath);
+    }
+
+    try {
+      await fsModule.promises.rename(incomingPath, binaryPath);
+    } catch (err) {
+      // Attempt rollback: restore previous binary if we moved it aside.
+      if (hadExisting && fsModule.existsSync(backupPath) && !fsModule.existsSync(binaryPath)) {
+        await fsModule.promises.rename(backupPath, binaryPath).catch(() => {});
+      }
+      throw err;
+    }
+
+    // Clean up the backup only after the new binary is in place.
+    if (hadExisting) {
+      await fsModule.promises.rm(backupPath, { force: true }).catch(() => {});
+    }
+
+    if (logger?.log) logger.log(`[docdex] Installed binary to ${binaryPath}`);
+    return { binaryPath, replacedExisting: hadExisting };
+  } finally {
+    await fsModule.promises.rm(stageDir, { recursive: true, force: true }).catch(() => {});
+    await fsModule.promises.rm(incomingPath, { force: true }).catch(() => {});
+  }
+>>>>>>> mcoda/task/ops-01-us-06-t20
 }
 
 async function readJsonFileIfPossible({ fsModule, filePath }) {
@@ -2007,13 +2134,28 @@ async function runInstaller(options) {
     });
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     // Only replace an existing installation after we have successfully fetched + verified the archive.
     await fsModule.promises.rm(distDir, { recursive: true, force: true });
     await extractTarballFn(tmpFile, distDir);
+=======
+    const filename = isWin32 ? "docdexd.exe" : "docdexd";
+    const finalBinaryPath = pathModule.join(distDir, filename);
+    const previousBinarySha256 = fsModule.existsSync(finalBinaryPath)
+      ? await sha256FileFn(finalBinaryPath).catch(() => null)
+      : null;
+>>>>>>> mcoda/task/ops-01-us-06-t20
 
-    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
-    if (!fsModule.existsSync(binaryPath)) {
-      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
+    // Only replace an existing installation after we have successfully fetched + verified the archive.
+    const installResult = await installDocdexdBinaryAtomically({
+      fsModule,
+      pathModule,
+      extractTarballFn,
+      archivePath: tmpFile,
+      distDir,
+      isWin32,
+      logger,
+      errorDetails: {
         platformKey,
         targetTriple,
         version,
@@ -2023,16 +2165,17 @@ async function runInstaller(options) {
         source,
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
-        fallbackAttempted: source === "fallback",
-        binaryPath
-      });
-    }
+        fallbackAttempted: source === "fallback"
+      }
+    });
 
-    await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
-    logger.log(`[docdex] Installed binary to ${binaryPath}`);
-
+    const binaryPath = installResult.binaryPath;
     const binarySha256 = await sha256FileFn(binaryPath);
+<<<<<<< HEAD
     const installedAt = nowIso();
+=======
+    const binaryChanged = previousBinarySha256 ? previousBinarySha256 !== binarySha256 : true;
+>>>>>>> mcoda/task/ops-01-us-06-t20
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
 <<<<<<< HEAD
@@ -2102,6 +2245,7 @@ async function runInstaller(options) {
     });
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     const report = buildInstallOutcomeReport({
       decision: local,
       expectedVersion: version,
@@ -2135,6 +2279,26 @@ async function runInstaller(options) {
       finalVersion: version
     };
 >>>>>>> mcoda/task/ops-01-us-06-t40
+=======
+    const restartDaemonFn = opts.restartDaemonFn;
+    const restartResult =
+      binaryChanged && typeof restartDaemonFn === "function"
+        ? await restartDaemonFn({
+            logger,
+            binaryPath,
+            platformKey,
+            targetTriple,
+            version,
+            repoSlug,
+            outcome: local.outcome
+          })
+        : binaryChanged
+          ? await restartDaemonIfConfigured({ logger, env: opts.env || process.env })
+          : { attempted: false, status: "skipped", reason: "binary_unchanged" };
+
+    logger.log(`[docdex] Install outcome: ${local.outcome}`);
+    return { binaryPath, outcome: local.outcome, restart: restartResult };
+>>>>>>> mcoda/task/ops-01-us-06-t20
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
   }

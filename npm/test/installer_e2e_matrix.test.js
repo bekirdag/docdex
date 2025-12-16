@@ -105,6 +105,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
       assert.equal(downloadUrl, expectedDownloadUrl);
       assert.equal(extractArchive, downloadDest);
 <<<<<<< HEAD
+<<<<<<< HEAD
       assert.equal(extractDir, path.join(stateRootDir, "daemon", platformKey));
 =======
       const expectedDistDir = path.join(distBaseDir, platformKey);
@@ -113,6 +114,9 @@ test("installer e2e: supported platform matrix installs expected binary layout",
         `expected extract into staging dir under ${expectedDistDir}`
       );
 >>>>>>> mcoda/task/ops-01-us-06-t35
+=======
+      assert.equal(path.dirname(extractDir), path.join(distBaseDir, platformKey));
+>>>>>>> mcoda/task/ops-01-us-06-t20
       assert.equal(result.binaryPath, expectedBinaryPath);
       assert.ok(!fs.existsSync(extractDir), "staging dir should have been swapped into place");
       assert.ok(fs.existsSync(expectedBinaryPath));

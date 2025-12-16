@@ -2,9 +2,10 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const path = require("node:path");
 
 const { detectPlatformKey } = require("../lib/platform");
-const { MissingArtifactError, describeFatalError } = require("../lib/install");
+const { MissingArtifactError, describeFatalError, verifyDownloadedFileIntegrity } = require("../lib/install");
 const { ManifestResolutionError } = require("../lib/release_manifest");
 
 test("describeFatalError: unsupported platform includes detected OS/arch and no-download note", () => {
@@ -79,4 +80,42 @@ test("describeFatalError: manifest errors report whether fallback was attempted 
   assert.ok(report.lines.some((l) => l.includes("Fallback was not attempted")));
   assert.ok(report.lines.some((l) => l.includes("supported targets: x86_64-unknown-linux-gnu")));
   assert.ok(report.lines.some((l) => l.includes("matched assets: a.tar.gz, b.tar.gz")));
+});
+
+test("describeFatalError: integrity mismatch includes expected/actual sha256 and next steps", async () => {
+  const archiveName = "docdexd-linux-x64-gnu.tar.gz";
+  const filePath = path.join(__dirname, "fixtures", "archive", "fake-archive.bin");
+
+  let err;
+  try {
+    await verifyDownloadedFileIntegrity({
+      filePath,
+      expectedSha256: "a".repeat(64),
+      archiveName,
+      details: {
+        platformKey: "linux-x64-gnu",
+        targetTriple: "x86_64-unknown-linux-gnu",
+        version: "0.0.0",
+        repoSlug: "owner/repo",
+        downloadUrl: `https://example.test/releases/download/v0.0.0/${archiveName}`,
+        source: "manifest:docdexd-manifest.json",
+        manifestName: "docdexd-manifest.json",
+        manifestVersion: 1,
+        fallbackAttempted: false
+      }
+    });
+  } catch (e) {
+    err = e;
+  }
+
+  assert.ok(err, "expected an integrity mismatch error");
+
+  const report = describeFatalError(err);
+  assert.equal(report.code, "DOCDEX_INTEGRITY_MISMATCH");
+  assert.equal(report.exitCode, 22);
+  assert.equal(report.details.assetName, archiveName);
+  assert.ok(report.lines.some((l) => l.includes("Expected sha256:")));
+  assert.ok(report.lines.some((l) => l.includes("Actual sha256:")));
+  assert.ok(report.lines.some((l) => l.includes("Next steps")));
+  assert.ok(report.lines.some((l) => l.includes("DOCDEX_DOWNLOAD_REPO")));
 });

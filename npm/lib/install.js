@@ -667,14 +667,29 @@ function describeFatalError(err) {
   }
 
   if (err instanceof IntegrityMismatchError) {
+    const expectedSha256 = typeof err.details?.expectedSha256 === "string" ? err.details.expectedSha256 : null;
+    const actualSha256 = typeof err.details?.actualSha256 === "string" ? err.details.actualSha256 : null;
     return {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
       lines: [
         `[docdex] install failed: ${err.message}`,
-        `[docdex] error code: ${err.code}`
-      ]
+        `[docdex] error code: ${err.code}`,
+        err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
+        err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
+        expectedSha256 ? `[docdex] Expected sha256: ${expectedSha256}` : null,
+        actualSha256 ? `[docdex] Actual sha256:   ${actualSha256}` : null,
+        err.details?.source ? `[docdex] Source: ${err.details.source}` : null,
+        err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,
+        err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,
+        fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,
+        "[docdex] Next steps:",
+        "[docdex] - Re-run the install; transient network/caching issues can corrupt downloads.",
+        "[docdex] - Ensure you are installing from the intended repo/version (DOCDEX_DOWNLOAD_REPO, DOCDEX_VERSION).",
+        "[docdex] - If behind a proxy or cache, bypass it; integrity mismatches can indicate tampering.",
+        "[docdex] - If it still fails, build from source (`cargo build --release --locked`)."
+      ].filter(Boolean)
     };
   }
 

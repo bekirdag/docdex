@@ -27,6 +27,7 @@ Inputs (Node runtime):
 Outputs:
 - `platformKey` — the installer’s platform identifier (used in artifact names), e.g. `linux-x64-gnu`
 - `targetTriple` — Rust target triple for the platform, e.g. `x86_64-unknown-linux-gnu`
+- Offline diagnostics (no download): `docdex doctor` (or `docdex diagnostics`) prints detected OS/arch(/libc), whether the platform is supported, and the expected `targetTriple` + release asset naming pattern.
 
 Release asset naming (expected):
 - Archive: `docdexd-<platformKey>.tar.gz`
@@ -87,7 +88,7 @@ If your platform is supported but the expected release artifact is missing (e.g.
 
 1) Build `docdexd` from source (same as above).
 2) Determine your `platformKey`:
-   - Prefer the installer/wrapper output (it prints `Platform key: ...` or `Missing binary for <platformKey>`), or use the support table above.
+   - Prefer `docdex doctor` (offline), or use the support table above.
 3) Copy the built binary into the installed package:
    - Target directory: `dist/<platformKey>/`
    - Expected filename: `docdexd` (or `docdexd.exe` on Windows)

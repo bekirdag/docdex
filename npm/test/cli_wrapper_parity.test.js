@@ -11,6 +11,7 @@ function runScriptWithMocks(scriptPath, { mocks, argv }) {
   const realRequire = createRequire(scriptPath);
   const code = fs.readFileSync(scriptPath, "utf8").replace(/^#!.*\n/, "");
 
+  const stdout = [];
   const stderr = [];
   let exitCode = null;
 
@@ -20,6 +21,7 @@ function runScriptWithMocks(scriptPath, { mocks, argv }) {
     module: { exports: {} },
     exports: {},
     console: {
+      log: (msg) => stdout.push(String(msg)),
       error: (msg) => stderr.push(String(msg))
     },
     process: {
@@ -45,7 +47,7 @@ function runScriptWithMocks(scriptPath, { mocks, argv }) {
     if (!err || err.__EXIT__ !== true) throw err;
   }
 
-  return { exitCode, stderr: stderr.join("\n") };
+  return { exitCode, stdout: stdout.join("\n"), stderr: stderr.join("\n") };
 }
 
 test("docdex CLI wrapper: unsupported platform exits non-zero and does not attempt to run binaries", () => {
@@ -133,4 +135,116 @@ test("docdex CLI wrapper: supported platform with missing local binary exits non
   assert.ok(result.stderr.includes("[docdex] Missing binary for darwin-arm64."));
   assert.ok(!result.stderr.includes("unsupported platform"));
   assert.equal(spawnCalls, 0);
+});
+
+test("docdex CLI wrapper: `doctor` prints platform diagnostics without checking local binaries", () => {
+  let spawnCalls = 0;
+  let existsCalls = 0;
+
+  const platformModule = {
+    UnsupportedPlatformError: class UnsupportedPlatformError extends Error {},
+    detectLibcFromRuntime: () => null,
+    detectPlatformKey: () => "darwin-arm64",
+    targetTripleForPlatformKey: () => "aarch64-apple-darwin",
+    artifactName: () => "docdexd-darwin-arm64.tar.gz",
+    assetPatternForPlatformKey: () => "docdexd-<platformKey>.tar.gz (e.g. docdexd-darwin-arm64.tar.gz)"
+  };
+
+  const scriptPath = path.join(__dirname, "..", "bin", "docdex.js");
+  const result = runScriptWithMocks(scriptPath, {
+    mocks: {
+      "../lib/platform": platformModule,
+      "node:child_process": {
+        spawn: () => {
+          spawnCalls += 1;
+          throw new Error("unexpected spawn");
+        }
+      },
+      "node:fs": {
+        existsSync: () => {
+          existsCalls += 1;
+          throw new Error("unexpected fs.existsSync");
+        }
+      },
+      "node:path": require("node:path")
+    },
+    argv: ["node", scriptPath, "doctor"]
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.ok(result.stdout.includes("[docdex] doctor"));
+  assert.ok(result.stdout.includes("[docdex] Supported: yes"));
+  assert.ok(result.stdout.includes("[docdex] Platform key: darwin-arm64"));
+  assert.ok(result.stdout.includes("[docdex] Expected target triple: aarch64-apple-darwin"));
+  assert.ok(result.stdout.includes("[docdex] Expected release asset: docdexd-darwin-arm64.tar.gz"));
+  assert.ok(result.stdout.includes("[docdex] Asset naming pattern: docdexd-<platformKey>.tar.gz"));
+  assert.equal(spawnCalls, 0);
+  assert.equal(existsCalls, 0);
+});
+
+test("docdex CLI wrapper: `doctor` exits non-zero and reports unsupported platform", () => {
+  let spawnCalls = 0;
+  let existsCalls = 0;
+
+  class UnsupportedPlatformError extends Error {
+    constructor(details) {
+      super(`Unsupported platform: ${details.platform}/${details.arch}`);
+      this.name = "UnsupportedPlatformError";
+      this.code = "DOCDEX_UNSUPPORTED_PLATFORM";
+      this.exitCode = 3;
+      this.details = details;
+    }
+  }
+
+  const platformModule = {
+    UnsupportedPlatformError,
+    detectLibcFromRuntime: () => null,
+    artifactName: (platformKey) => `docdexd-${platformKey}.tar.gz`,
+    assetPatternForPlatformKey: (platformKey) =>
+      `docdexd-<platformKey>.tar.gz (e.g. docdexd-${platformKey}.tar.gz)`,
+    detectPlatformKey: () => {
+      throw new UnsupportedPlatformError({
+        platform: "linux",
+        arch: "arm64",
+        libc: "musl",
+        candidatePlatformKey: "linux-arm64-musl",
+        candidateTargetTriple: "aarch64-unknown-linux-musl",
+        supportedPlatformKeys: ["darwin-arm64", "linux-x64-gnu"],
+        supportedTargetTriples: ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+      });
+    }
+  };
+
+  const scriptPath = path.join(__dirname, "..", "bin", "docdex.js");
+  const result = runScriptWithMocks(scriptPath, {
+    mocks: {
+      "../lib/platform": platformModule,
+      "node:child_process": {
+        spawn: () => {
+          spawnCalls += 1;
+          throw new Error("unexpected spawn");
+        }
+      },
+      "node:fs": {
+        existsSync: () => {
+          existsCalls += 1;
+          throw new Error("unexpected fs.existsSync");
+        }
+      },
+      "node:path": require("node:path")
+    },
+    argv: ["node", scriptPath, "doctor"]
+  });
+
+  assert.equal(result.exitCode, 3);
+  assert.ok(result.stderr.includes("[docdex] doctor"));
+  assert.ok(result.stderr.includes("[docdex] Supported: no"));
+  assert.ok(result.stderr.includes("[docdex] Detected platform: linux/arm64/musl"));
+  assert.ok(result.stderr.includes("[docdex] error code: DOCDEX_UNSUPPORTED_PLATFORM"));
+  assert.ok(result.stderr.includes("[docdex] No download/install is attempted for this platform."));
+  assert.ok(result.stderr.includes("[docdex] Platform key: linux-arm64-musl"));
+  assert.ok(result.stderr.includes("[docdex] Target triple: aarch64-unknown-linux-musl"));
+  assert.ok(result.stderr.includes("[docdex] Asset naming pattern: docdexd-<platformKey>.tar.gz"));
+  assert.equal(spawnCalls, 0);
+  assert.equal(existsCalls, 0);
 });

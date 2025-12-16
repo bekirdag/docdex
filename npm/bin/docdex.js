@@ -6,13 +6,124 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 const {
+  artifactName,
+  detectLibcFromRuntime,
   detectPlatformKey,
   targetTripleForPlatformKey,
   assetPatternForPlatformKey,
   UnsupportedPlatformError
 } = require("../lib/platform");
 
+function isDoctorCommand(argv) {
+  const sub = argv[0];
+  return sub === "doctor" || sub === "diagnostics";
+}
+
+function printLines(lines, { stderr } = {}) {
+  for (const line of lines) {
+    if (!line) continue;
+    if (stderr) console.error(line);
+    else console.log(line);
+  }
+}
+
+function runDoctor() {
+  const platform = process.platform;
+  const arch = process.arch;
+
+  let libc = null;
+  if (platform === "linux") {
+    try {
+      libc = detectLibcFromRuntime();
+    } catch (err) {
+      printLines(
+        [
+          "[docdex] doctor failed: could not detect libc",
+          `[docdex] Detected platform: ${platform}/${arch}`,
+          `[docdex] Error: ${err?.message || String(err)}`
+        ],
+        { stderr: true }
+      );
+      process.exit(1);
+      return;
+    }
+  }
+
+  let report;
+  try {
+    const platformKey = detectPlatformKey();
+    const targetTriple = targetTripleForPlatformKey(platformKey);
+    const expectedAssetName = artifactName(platformKey);
+    const expectedAssetPattern = assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAssetName });
+
+    report = {
+      exitCode: 0,
+      stderr: false,
+      lines: [
+        "[docdex] doctor",
+        `[docdex] Detected platform: ${platform}/${arch}${libc ? `/${libc}` : ""}`,
+        "[docdex] Supported: yes",
+        `[docdex] Platform key: ${platformKey}`,
+        `[docdex] Expected target triple: ${targetTriple}`,
+        `[docdex] Expected release asset: ${expectedAssetName}`,
+        `[docdex] Asset naming pattern: ${expectedAssetPattern}`
+      ]
+    };
+  } catch (err) {
+    if (err instanceof UnsupportedPlatformError) {
+      const detected = `${err.details?.platform ?? platform}/${err.details?.arch ?? arch}`;
+      const libcSuffix = err.details?.libc ? `/${err.details.libc}` : "";
+      const candidatePlatformKey =
+        typeof err.details?.candidatePlatformKey === "string" ? err.details.candidatePlatformKey : null;
+      const candidateTargetTriple =
+        typeof err.details?.candidateTargetTriple === "string" ? err.details.candidateTargetTriple : null;
+      const supportedKeys = Array.isArray(err.details?.supportedPlatformKeys) ? err.details.supportedPlatformKeys : [];
+
+      const candidateAssetName = candidatePlatformKey ? artifactName(candidatePlatformKey) : null;
+      const candidateAssetPattern = candidatePlatformKey
+        ? assetPatternForPlatformKey(candidatePlatformKey, { exampleAssetName: candidateAssetName })
+        : null;
+
+      report = {
+        exitCode: err.exitCode || 3,
+        stderr: true,
+        lines: [
+          "[docdex] doctor",
+          `[docdex] Detected platform: ${detected}${libcSuffix}`,
+          "[docdex] Supported: no",
+          `[docdex] error code: ${err.code}`,
+          "[docdex] No download/install is attempted for this platform.",
+          candidatePlatformKey ? `[docdex] Platform key: ${candidatePlatformKey}` : null,
+          candidateTargetTriple ? `[docdex] Target triple: ${candidateTargetTriple}` : null,
+          candidateAssetPattern ? `[docdex] Asset naming pattern: ${candidateAssetPattern}` : null,
+          supportedKeys.length ? `[docdex] Supported platforms: ${supportedKeys.join(", ")}` : null,
+          "[docdex] Next steps: use a supported platform or build from source (Rust)."
+        ]
+      };
+    } else {
+      report = {
+        exitCode: 1,
+        stderr: true,
+        lines: [
+          "[docdex] doctor failed: unexpected error",
+          `[docdex] Detected platform: ${platform}/${arch}${libc ? `/${libc}` : ""}`,
+          `[docdex] Error: ${err?.message || String(err)}`
+        ]
+      };
+    }
+  }
+
+  printLines(report.lines, { stderr: report.stderr });
+  process.exit(report.exitCode);
+}
+
 function run() {
+  const argv = process.argv.slice(2);
+  if (isDoctorCommand(argv)) {
+    runDoctor();
+    return;
+  }
+
   let platformKey;
   try {
     platformKey = detectPlatformKey();

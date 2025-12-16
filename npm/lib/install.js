@@ -13,6 +13,7 @@ const {
   artifactName,
   assetPatternForPlatformKey,
   detectPlatformKey,
+  resolvePlatformPolicy,
   targetTripleForPlatformKey,
   UnsupportedPlatformError
 } = require("./platform");
@@ -875,12 +876,43 @@ async function runInstaller(options) {
   const assetPatternForPlatformKeyFn = opts.assetPatternForPlatformKeyFn || assetPatternForPlatformKey;
   const sha256FileFn = opts.sha256FileFn || sha256File;
 
-  const platformKey = detectPlatformKeyFn();
-  const targetTriple = targetTripleForPlatformKeyFn(platformKey);
+  const detectedPlatform = opts.platform || process.platform;
+  const detectedArch = opts.arch || process.arch;
+
+  const resolvePlatformPolicyFn =
+    opts.resolvePlatformPolicyFn ||
+    (opts.detectPlatformKeyFn || opts.targetTripleForPlatformKeyFn
+      ? () => {
+          const platformKey = detectPlatformKeyFn();
+          const targetTriple = targetTripleForPlatformKeyFn(platformKey);
+          const expectedAssetName = artifactNameFn(platformKey);
+          const expectedAssetPattern = assetPatternForPlatformKeyFn(platformKey, {
+            exampleAssetName: expectedAssetName
+          });
+          return {
+            detected: { platform: detectedPlatform, arch: detectedArch },
+            platformKey,
+            targetTriple,
+            expectedAssetName,
+            expectedAssetPattern
+          };
+        }
+      : resolvePlatformPolicy);
+
+  const platformPolicy = resolvePlatformPolicyFn({
+    platform: detectedPlatform,
+    arch: detectedArch,
+    env: opts.env,
+    report: opts.report,
+    execPath: opts.execPath
+  });
+
+  const platformKey = platformPolicy.platformKey;
+  const targetTriple = platformPolicy.targetTriple;
   const version = getVersionFn();
   const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
   const distDir = pathModule.join(distBaseDir, platformKey);
-  const isWin32 = (opts.platform || process.platform) === "win32";
+  const isWin32 = detectedPlatform === "win32";
 
   const local = await determineLocalInstallerOutcome({
     fsModule,
@@ -919,7 +951,7 @@ async function runInstaller(options) {
       if (err && typeof err.statusCode === "number" && err.statusCode === 404) {
         const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
         throw new MissingArtifactError({
-          detected: { os: opts.platform || process.platform, arch: opts.arch || process.arch },
+          detected: { os: detectedPlatform, arch: detectedArch },
           platformKey,
           targetTriple,
           assetName: archive,

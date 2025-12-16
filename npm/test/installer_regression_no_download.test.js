@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { detectPlatformKey } = require("../lib/platform");
+const { resolvePlatformPolicy } = require("../lib/platform");
 const { describeFatalError, runInstaller, resolveInstallerDownloadPlan } = require("../lib/install");
 
 function createNoopLogger() {
@@ -32,7 +32,9 @@ test("installer: unsupported OS/arch fails before any plan resolution or downloa
   try {
     await runInstaller({
       logger: createNoopLogger(),
-      detectPlatformKeyFn: () => detectPlatformKey({ platform: "freebsd", arch: "x64" }),
+      platform: "freebsd",
+      arch: "x64",
+      resolvePlatformPolicyFn: (args) => resolvePlatformPolicy(args),
       targetTripleForPlatformKeyFn: () => {
         tripleCalls += 1;
         throw new Error("unexpected target triple resolution");
@@ -88,8 +90,11 @@ test("installer: unpublished linux arm64 musl fails before any plan resolution o
   try {
     await runInstaller({
       logger: createNoopLogger(),
-      detectPlatformKeyFn: () =>
-        detectPlatformKey({ platform: "linux", arch: "arm64", env: { DOCDEX_LIBC: "musl" }, report: null }),
+      platform: "linux",
+      arch: "arm64",
+      env: { DOCDEX_LIBC: "musl" },
+      report: null,
+      resolvePlatformPolicyFn: (args) => resolvePlatformPolicy(args),
       targetTripleForPlatformKeyFn: () => {
         tripleCalls += 1;
         throw new Error("unexpected target triple resolution");
@@ -147,7 +152,9 @@ test("installer: unpublished win32 arm64 fails before any plan resolution or dow
   try {
     await runInstaller({
       logger: createNoopLogger(),
-      detectPlatformKeyFn: () => detectPlatformKey({ platform: "win32", arch: "arm64" }),
+      platform: "win32",
+      arch: "arm64",
+      resolvePlatformPolicyFn: (args) => resolvePlatformPolicy(args),
       targetTripleForPlatformKeyFn: () => {
         tripleCalls += 1;
         throw new Error("unexpected target triple resolution");

@@ -315,6 +315,12 @@ enum Command {
         query: String,
         #[arg(long, default_value_t = 8)]
         limit: usize,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Only search the repo index (ignore any repo-scoped libs index, if present)"
+        )]
+        repo_only: bool,
     },
     /// Ingest library documentation sources into the repo-scoped libs index.
     LibsIngest {
@@ -762,7 +768,12 @@ async fn run() -> Result<()> {
                 .ingest_file(file)
                 .await?;
         }
-        Command::Query { repo, query, limit } => {
+        Command::Query {
+            repo,
+            query,
+            limit,
+            repo_only,
+        } => {
             let repo_root = repo.repo_root();
             let index_config = index::IndexConfig::with_overrides(
                 &repo_root,
@@ -773,8 +784,12 @@ async fn run() -> Result<()> {
             );
             util::init_logging("warn")?;
             let server = index::Indexer::with_config_read_only(repo_root, index_config)?;
-            let libs_dir = libs::libs_state_dir_from_index_state_dir(server.state_dir());
-            let libs_indexer = libs::LibsIndexer::open_read_only(libs_dir).ok().flatten();
+            let libs_indexer = if repo_only {
+                None
+            } else {
+                let libs_dir = libs::libs_state_dir_from_index_state_dir(server.state_dir());
+                libs::LibsIndexer::open_read_only(libs_dir).ok().flatten()
+            };
             let hits = search::run_query(&server, libs_indexer.as_ref(), &query, limit).await?;
             println!("{}", serde_json::to_string_pretty(&hits)?);
         }

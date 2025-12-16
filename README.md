@@ -63,10 +63,11 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - Serve with watcher: `docdexd serve --repo <path> --host 127.0.0.1 --port 46137 --log warn --auth-token <token>` (secure mode also allowlists loopback and rate-limits by default; add `--allow-ip`/`--secure-mode=false`/`--rate-limit-per-min` as needed for remote use).
 - Secure serving: add `--auth-token <token>` (required by default); use TLS with `--tls-cert/--tls-key` or `--certbot-domain <domain>`.
 - Single-file ingest: `docdexd ingest --repo <path> --file docs/new.md` (honors excludes).
-- Query via CLI: `docdexd query --repo <path> --query "term" --limit 4`.
+- Query via CLI: `docdexd query --repo <path> --query "term" --limit 4` (add `--repo-only` to ignore libs index hits).
 - Git hygiene: add `.docdex/` (and especially `.docdex/index/`) to your repo's `.gitignore` so index artifacts never get committed.
 - Health check: `curl http://127.0.0.1:46137/healthz`.
 - Summary-only search responses: `curl "http://127.0.0.1:46137/search?q=foo&snippets=false"`; fetch snippets only for top hits.
+- Repo-only HTTP search (ignore libs index hits): `curl "http://127.0.0.1:46137/search?q=foo&include_libs=false"`.
 - Token budgets: `curl "http://127.0.0.1:46137/search?q=foo&max_tokens=800"` to drop hits that would exceed your prompt budget; pair with `snippets=false` then fetch 1–2 snippets you keep.
 - Text-only snippets: append `text_only=true` to `/snippet/:doc_id` or start `serve` with `--strip-snippet-html` (or `--disable-snippet-text` to return metadata only).
 - Keep requests compact: defaults enforce `max_query_bytes=4096` and `max_request_bytes=16384`; keep queries short and leave `--max-limit` low (default 8) to avoid oversized responses.
@@ -127,7 +128,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 
 ## HTTP API
 - `GET /healthz` — returns `ok`; this endpoint is unauthenticated and not rate-limited (IP allowlist still applies).
-- `GET /search?q=<text>&limit=<n>&snippets=<bool>&max_tokens=<u64>` — returns `{ hits: [...] }` with doc id, rel path, summary, snippet, score, token estimate. Set `snippets=false` for summary-only responses; set `max_tokens` to drop hits above your budget.
+- `GET /search?q=<text>&limit=<n>&snippets=<bool>&max_tokens=<u64>&include_libs=<bool>` — returns `{ hits: [...] }` with doc id, rel path, summary, snippet, score, token estimate. Set `snippets=false` for summary-only responses; set `max_tokens` to drop hits above your budget. `include_libs` defaults to `true` when a libs index exists; set `include_libs=false` to search repo-only.
 - `GET /snippet/:doc_id?window=<lines>&q=<query>&text_only=<bool>&max_tokens=<u64>` — returns `{ doc, snippet }` with optional highlighted snippet; falls back to preview when query highlighting is empty (default window: 40 lines). Set `text_only=true` to drop HTML and shrink payloads; set `max_tokens` to omit the snippet if the doc exceeds your budget.
 - `GET /ai-help` — returns a JSON quickstart for agents (endpoints, CLI commands, limits, best practices).
 - `GET /metrics` — returns Prometheus-style counters for rate-limit/auth/error metrics.
@@ -137,8 +138,11 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - `serve --repo <path> [--host 127.0.0.1] [--port 46137] [--log info]` — start HTTP API with file watching for incremental updates.
 - `index --repo <path>` — rebuild the entire index.
 - `ingest --repo <path> --file <file>` — reindex a single file.
-- `query --repo <path> --query "<text>" [--limit 8]` — run a search and print JSON hits.
+- `query --repo <path> --query "<text>" [--limit 8] [--repo-only]` — run a search and print JSON hits.
 - `self-check --repo <path> --terms "foo,bar" [--limit 5]` — scan the index for sensitive terms before enabling access (fails with non-zero exit if any are found; reports sample hits and if more exist). Includes built-in token/password patterns by default; disable with `--include-default-patterns=false` if you only want your provided terms.
+
+## Perf checks
+- Repo-only search latency (p95 < 50ms; see `docs/sds/sds.md`): `cargo test --release repo_only_search_p95_under_50ms_with_libs_index_present -- --ignored --nocapture`.
 
 ## Help and command discovery
 - List all commands/flags: `docdexd --help`.

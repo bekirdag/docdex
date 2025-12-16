@@ -891,6 +891,7 @@ struct SearchParams {
     limit: Option<usize>,
     snippets: Option<bool>,
     max_tokens: Option<u64>,
+    include_libs: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -1068,6 +1069,137 @@ mod rate_limit_contract_tests {
     }
 }
 
+#[cfg(test)]
+mod latency_perf_tests {
+    use crate::{index, libs};
+    use std::fs;
+    use std::time::Instant;
+    use tempfile::TempDir;
+
+    fn percentile(sorted: &[u128], p: f64) -> u128 {
+        if sorted.is_empty() {
+            return 0;
+        }
+        let p = p.clamp(0.0, 1.0);
+        let idx = ((p * ((sorted.len() - 1) as f64)).ceil() as usize).min(sorted.len() - 1);
+        sorted[idx]
+    }
+
+    fn summarize(mut samples_us: Vec<u128>) -> (u128, u128, u128) {
+        samples_us.sort_unstable();
+        let p50 = percentile(&samples_us, 0.50);
+        let p95 = percentile(&samples_us, 0.95);
+        let max = *samples_us.last().unwrap_or(&0);
+        (p50, p95, max)
+    }
+
+    /// NFR check: repo-only search p95 should remain under 50ms even when a libs index exists.
+    /// See `docs/sds/sds.md` (latency: local search p95 < 50ms, < 20ms typical).
+    #[tokio::test]
+    #[ignore]
+    async fn repo_only_search_p95_under_50ms_with_libs_index_present() -> anyhow::Result<()> {
+        let repo = TempDir::new()?;
+        let repo_root = repo.path();
+
+        fs::write(
+            repo_root.join("readme.md"),
+            "# Repo\n\nThis repo contains REPO_NEEDLE_ABC.\n",
+        )?;
+
+        let docs_dir = repo_root.join("docs");
+        fs::create_dir_all(&docs_dir)?;
+        for i in 0..250usize {
+            let body = if i % 9 == 0 {
+                format!(
+                    "# Doc {i}\n\nREPO_NEEDLE_ABC appears in this document.\n\nMore text.\n"
+                )
+            } else {
+                format!("# Doc {i}\n\nFiller content for indexing.\n")
+            };
+            fs::write(docs_dir.join(format!("doc_{i}.md")), body)?;
+        }
+
+        let index_config =
+            index::IndexConfig::with_overrides(repo_root, None, Vec::new(), Vec::new(), false);
+        let indexer = index::Indexer::with_config(repo_root.to_path_buf(), index_config)?;
+        indexer.reindex_all().await?;
+
+        let libs_doc_path = repo_root.join("vendor").join("serde").join("README.md");
+        fs::create_dir_all(libs_doc_path.parent().expect("libs doc parent"))?;
+        fs::write(
+            &libs_doc_path,
+            "# Serde\n\nLIBS_ONLY_TERM_123 appears only in library docs.\n",
+        )?;
+
+        let libs_dir = libs::libs_state_dir_from_index_state_dir(indexer.state_dir());
+        let libs_writer = libs::LibsIndexer::open_or_create(libs_dir.clone())?;
+        let sources = [libs::LibSource {
+            library: "serde".to_string(),
+            version: Some("1.0.0".to_string()),
+            source: "local_file".to_string(),
+            path: libs_doc_path,
+            title: Some("Serde".to_string()),
+        }];
+        let report = libs_writer.ingest_sources(&sources)?;
+        drop(libs_writer);
+        assert!(
+            report.succeeded_sources >= 1,
+            "expected libs ingestion to succeed (report: {})",
+            serde_json::to_string(&report).unwrap_or_default()
+        );
+        let libs_indexer = libs::LibsIndexer::open_read_only(libs_dir)?.expect("libs indexer");
+
+        let query = "REPO_NEEDLE_ABC";
+        let limit = 8usize;
+        for _ in 0..20usize {
+            let _ = indexer.search_with_query_meta(query, limit)?;
+            let _ = super::search_with_optional_libs(&indexer, Some(&libs_indexer), query, limit)?;
+        }
+
+        let iterations = 250usize;
+        let mut repo_only_us = Vec::with_capacity(iterations);
+        for _ in 0..iterations {
+            let start = Instant::now();
+            let _ = indexer.search_with_query_meta(query, limit)?;
+            repo_only_us.push(start.elapsed().as_micros());
+        }
+
+        let mut combined_us = Vec::with_capacity(iterations);
+        for _ in 0..iterations {
+            let start = Instant::now();
+            let _ = super::search_with_optional_libs(&indexer, Some(&libs_indexer), query, limit)?;
+            combined_us.push(start.elapsed().as_micros());
+        }
+
+        let (repo_p50, repo_p95, repo_max) = summarize(repo_only_us);
+        let (combined_p50, combined_p95, combined_max) = summarize(combined_us);
+
+        eprintln!(
+            "repo-only search: p50={}us p95={}us max={}us (libs index exists)",
+            repo_p50, repo_p95, repo_max
+        );
+        eprintln!(
+            "combined search:  p50={}us p95={}us max={}us (repo + libs)",
+            combined_p50, combined_p95, combined_max
+        );
+
+        if cfg!(debug_assertions) {
+            eprintln!(
+                "note: perf assertions are enforced in release builds; re-run with `cargo test --release ... -- --ignored --nocapture`"
+            );
+            return Ok(());
+        }
+
+        assert!(
+            repo_p95 < 50_000,
+            "repo-only search p95 {}us exceeds 50ms (see docs/sds/sds.md)",
+            repo_p95
+        );
+
+        Ok(())
+    }
+}
+
 pub async fn run_query(
     indexer: &Indexer,
     libs_indexer: Option<&LibsIndexer>,
@@ -1189,12 +1321,14 @@ async fn search_handler(
             .into_response();
     }
 
-    match search_with_optional_libs(
-        state.indexer.as_ref(),
-        state.libs_indexer.as_deref(),
-        query,
-        limit,
-    ) {
+    let include_libs = params.include_libs.unwrap_or(true);
+    let libs_indexer = if include_libs {
+        state.libs_indexer.as_deref()
+    } else {
+        None
+    };
+
+    match search_with_optional_libs(state.indexer.as_ref(), libs_indexer, query, limit) {
         Ok((mut hits, query_meta)) => {
             let max_tokens = params.max_tokens;
             let snippet_policy = if state.security.disable_snippet_text {

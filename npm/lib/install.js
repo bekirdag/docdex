@@ -310,6 +310,170 @@ async function writeJsonFileAtomic({ fsModule, pathModule, filePath, value }) {
   await fsModule.promises.rename(tmp, filePath);
 }
 
+function isExecutableMode(mode) {
+  if (typeof mode !== "number") return false;
+  return (mode & 0o111) !== 0;
+}
+
+async function ensureExecutableBinary({ fsModule, binaryPath, isWin32 }) {
+  if (isWin32) return;
+
+  try {
+    await fsModule.promises.chmod(binaryPath, 0o755);
+  } catch {
+    // Best-effort: fall through to stat-based verification.
+  }
+
+  const stat = await fsModule.promises.stat(binaryPath);
+  if (!isExecutableMode(stat.mode)) {
+    const err = new Error(`Installed binary is not executable: ${binaryPath}`);
+    err.code = "DOCDEX_BINARY_NOT_EXECUTABLE";
+    throw err;
+  }
+}
+
+function createArchiveDetails({ platformKey, targetTriple, version, repoSlug, archiveName, downloadUrl, source, binaryPath }) {
+  return {
+    platformKey,
+    targetTriple,
+    version,
+    repoSlug,
+    assetName: archiveName,
+    downloadUrl,
+    source,
+    fallbackAttempted: source === "fallback",
+    binaryPath
+  };
+}
+
+async function installVerifiedArchiveAtomically({
+  fsModule,
+  pathModule,
+  logger,
+  archivePath,
+  distDir,
+  platformKey,
+  targetTriple,
+  version,
+  repoSlug,
+  archiveName,
+  expectedSha256,
+  source,
+  downloadUrl,
+  manifestAttempt,
+  isWin32,
+  extractTarballFn,
+  sha256FileFn
+}) {
+  const parentDir = pathModule.dirname(distDir);
+  await fsModule.promises.mkdir(parentDir, { recursive: true });
+
+  const stagingDir = await fsModule.promises.mkdtemp(`${distDir}.staging-`);
+  const stagedBinaryPath = pathModule.join(stagingDir, isWin32 ? "docdexd.exe" : "docdexd");
+
+  try {
+    await extractTarballFn(archivePath, stagingDir);
+
+    if (!fsModule.existsSync(stagedBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagedBinaryPath}`, {
+        ...createArchiveDetails({
+          platformKey,
+          targetTriple,
+          version,
+          repoSlug,
+          archiveName,
+          downloadUrl,
+          source,
+          binaryPath: stagedBinaryPath
+        }),
+        manifestName: manifestAttempt?.manifestName ?? null,
+        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null
+      });
+    }
+
+    await ensureExecutableBinary({ fsModule, binaryPath: stagedBinaryPath, isWin32 });
+
+    const binarySha256 = await sha256FileFn(stagedBinaryPath);
+    const metadata = {
+      schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
+      installedAt: nowIso(),
+      version,
+      repoSlug,
+      platformKey,
+      targetTriple,
+      binary: {
+        filename: isWin32 ? "docdexd.exe" : "docdexd",
+        sha256: binarySha256
+      },
+      archive: {
+        name: archiveName,
+        sha256: expectedSha256 || null,
+        source,
+        downloadUrl
+      }
+    };
+
+    await writeJsonFileAtomic({
+      fsModule,
+      pathModule,
+      filePath: installMetadataPath(stagingDir, pathModule),
+      value: metadata
+    });
+
+    const backupDir = `${distDir}.backup.${process.pid}.${Date.now()}`;
+    let movedExisting = false;
+
+    try {
+      if (fsModule.existsSync(distDir)) {
+        await fsModule.promises.rename(distDir, backupDir);
+        movedExisting = true;
+      }
+
+      await fsModule.promises.rename(stagingDir, distDir);
+
+      if (movedExisting) {
+        await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch((err) => {
+          const msg = err?.message || String(err);
+          if (logger && typeof logger.warn === "function") {
+            logger.warn(`[docdex] Warning: failed to remove backup dir ${backupDir}: ${msg}`);
+          }
+        });
+      }
+    } catch (err) {
+      if (movedExisting && fsModule.existsSync(backupDir) && !fsModule.existsSync(distDir)) {
+        await fsModule.promises.rename(backupDir, distDir).catch(() => {});
+      }
+      await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+      throw err;
+    }
+
+    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+    logger.log(`[docdex] Installed binary to ${binaryPath}`);
+    return { binaryPath };
+  } catch (err) {
+    if (err && err.code === "DOCDEX_BINARY_NOT_EXECUTABLE") {
+      await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+      throw new ArchiveInvalidError(err.message, {
+        ...createArchiveDetails({
+          platformKey,
+          targetTriple,
+          version,
+          repoSlug,
+          archiveName,
+          downloadUrl,
+          source,
+          binaryPath: stagedBinaryPath
+        }),
+        manifestName: manifestAttempt?.manifestName ?? null,
+        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null
+      });
+    }
+
+    await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    throw err;
+  }
+}
+
 function isValidInstallMetadata(meta) {
   if (!meta || typeof meta !== "object") return false;
   if (meta.schemaVersion !== INSTALL_METADATA_SCHEMA_VERSION) return false;
@@ -1138,54 +1302,25 @@ async function runInstaller(options) {
       }
     });
 
-    // Only replace an existing installation after we have successfully fetched + verified the archive.
-    await fsModule.promises.rm(distDir, { recursive: true, force: true });
-    await extractTarballFn(tmpFile, distDir);
-
-    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
-    if (!fsModule.existsSync(binaryPath)) {
-      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
-        platformKey,
-        targetTriple,
-        version,
-        repoSlug,
-        assetName: archive,
-        downloadUrl,
-        source,
-        manifestName: manifestAttempt?.manifestName ?? null,
-        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
-        fallbackAttempted: source === "fallback",
-        binaryPath
-      });
-    }
-
-    await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
-    logger.log(`[docdex] Installed binary to ${binaryPath}`);
-
-    const binarySha256 = await sha256FileFn(binaryPath);
-    const metadata = {
-      schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
-      installedAt: nowIso(),
-      version,
-      repoSlug,
-      platformKey,
-      targetTriple,
-      binary: {
-        filename: isWin32 ? "docdexd.exe" : "docdexd",
-        sha256: binarySha256
-      },
-      archive: {
-        name: archive,
-        sha256: expectedSha256 || null,
-        source,
-        downloadUrl
-      }
-    };
-    await writeJsonFileAtomic({
+    // Do not touch the existing install until we have a fully-extracted, verified, ready-to-swap staging directory.
+    const { binaryPath } = await installVerifiedArchiveAtomically({
       fsModule,
       pathModule,
-      filePath: installMetadataPath(distDir, pathModule),
-      value: metadata
+      logger,
+      archivePath: tmpFile,
+      distDir,
+      platformKey,
+      targetTriple,
+      version,
+      repoSlug,
+      archiveName: archive,
+      expectedSha256,
+      source,
+      downloadUrl,
+      manifestAttempt,
+      isWin32,
+      extractTarballFn,
+      sha256FileFn
     });
 
     logger.log(`[docdex] Install outcome: ${local.outcome}`);

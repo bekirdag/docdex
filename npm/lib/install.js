@@ -1147,6 +1147,7 @@ module.exports = {
   resolveInstallerDownloadPlan,
   parseSha256File,
   sha256File,
+  determineLocalInstallerOutcome,
   verifyDownloadedFileIntegrity,
   MissingArtifactError,
   ChecksumResolutionError,

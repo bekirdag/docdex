@@ -17,6 +17,7 @@ Related contracts:
 - `docs/contracts/installer_error_contract_v1.md`
 - `docs/contracts/release_manifest_schema_v1.md`
 - `docs/ops/installer_platform_audit.md`
+- `docs/ops/installer_supported_platforms.md`
 
 ---
 
@@ -60,7 +61,7 @@ Legend:
 | Error code | Exit | Meaning | Fallback attempted | Remediation (user) | Remediation (publisher) |
 |---|---:|---|---|---|---|
 | `DOCDEX_INSTALLER_CONFIG` | 2 | Installer cannot determine repo/version/config (e.g., missing `repository.url` and no `DOCDEX_DOWNLOAD_REPO`). | N/A | Set `DOCDEX_DOWNLOAD_REPO=<owner/repo>`; avoid installing from an incomplete local package folder. | Ensure `package.json.repository.url` is set and not a placeholder. |
-| `DOCDEX_UNSUPPORTED_PLATFORM` | 3 | Current OS/arch/libc is not supported or not published. No download occurs. | N/A | Use a supported platform; or build from source: `cargo build --release --locked`. On Linux, set `DOCDEX_LIBC=gnu|musl` to override detection. | Publish binaries for the missing `platformKey`/target triple (see `docs/ops/installer_platform_audit.md`). |
+| `DOCDEX_UNSUPPORTED_PLATFORM` | 3 | Current OS/arch/libc is not supported or not published. No download occurs. | N/A | Use a supported platform from `docs/ops/installer_supported_platforms.md`; or build from source: `cargo build --release --locked`. On Linux, set `DOCDEX_LIBC=gnu|musl` to override detection. | Publish binaries for the missing `platformKey`/target triple (see `docs/ops/installer_platform_audit.md`). |
 | `DOCDEX_ASSET_NO_MATCH` | 12 | A manifest was present, but it contains **no entry** for the detected `targetTriple`. Installer fails closed. | `false` | Install a version that supports your platform; or build from source. If installing from a fork, ensure you’re pointing at the correct repo. | Fix the release manifest to include the missing target triple and asset mapping for that release. |
 | `DOCDEX_ASSET_MULTI_MATCH` | 13 | A manifest was present, but it contains **multiple entries** for the same `targetTriple`. Installer fails closed. | `false` | Install a different version; or build from source. | Deduplicate the manifest so each `targetTriple` resolves to exactly one asset. |
 | `DOCDEX_DOWNLOAD_FAILED` | 20 | Download failed for the selected asset (non-404 HTTP status or transport failure). | `true/false` (printed when available) | Check network/proxy/firewall; retry; set `DOCDEX_GITHUB_TOKEN` if rate limited; verify `DOCDEX_DOWNLOAD_REPO` and (if set) `DOCDEX_DOWNLOAD_BASE`. | Ensure release assets are publicly readable (or document token usage for private releases). |
@@ -93,4 +94,3 @@ Checksum fallback events:
 - `DOCDEX_CHECKSUM_ENTRY_MISSING` (checksum file exists but lacks an entry for the desired asset)
 
 If a fatal error includes `fallbackAttempted`/`fallbackReason`, use those fields first; they’re intended to be the stable “did fallback happen?” signal.
-

@@ -2,6 +2,9 @@
 
 Task: `ops-01-us-07-t34`
 
+Operator-facing platform support + troubleshooting:
+- `docs/ops/installer_supported_platforms.md`
+
 Single source of truth:
 - `npm/lib/platform_matrix.js` (runtime detection → `platformKey` → Rust target triple → release asset naming)
 

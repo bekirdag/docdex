@@ -36,6 +36,21 @@ The installer logs both legacy and automation-friendly outcomes:
 Optional structured output (for automation):
 - Set `DOCDEX_INSTALLER_OUTPUT=json` to emit a single JSON object to stdout (and suppress other installer logs).
 
+## Install plan (normalized action)
+
+For operators who want a single 4-way “what will happen” decision (including upgrade vs downgrade), the installer also computes an install plan action:
+
+| Plan | Meaning |
+|---|---|
+| `no-op` | Already at the expected version and locally verified; installer does not download. |
+| `upgrade` | Replace the currently installed binary with the expected version (includes first install and version increases). |
+| `downgrade` | Replace the currently installed binary with the expected version (version decreases). |
+| `repair` | Replace the currently installed binary because the local state is corrupted or cannot be verified deterministically. |
+
+Notes:
+- This plan is derived from local state + versions and is intended for convergent behavior. It does not change the stable `outcome` strings above; it adds upgrade/downgrade signal on top of them.
+- Internally, `update` maps to `upgrade`/`downgrade` depending on version comparison, and `repair`/`reinstall_unknown` both map to `repair`.
+
 ## Upgrade vs downgrade
 
 The installer does not treat “upgrade” and “downgrade” differently. It always targets the expected version for the current npm package install:

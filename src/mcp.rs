@@ -1,8 +1,8 @@
 use crate::error::{
     AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_RATE_LIMITED, ERR_STALE_INDEX,
-    ERR_UNKNOWN_REPO,
+    repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
+    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
 };
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
@@ -35,13 +35,6 @@ const FILES_MAX_OFFSET: usize = 50_000;
 const OPEN_MAX_BYTES: usize = 512 * 1024; // guard rail for returning file content
 const MAX_ERROR_MESSAGE_BYTES: usize = 256;
 const MAX_ERROR_REASON_BYTES: usize = 768;
-
-#[derive(Error, Debug)]
-#[error("project_root mismatch (started for {expected}; got {got})")]
-struct RepoMismatchError {
-    expected: String,
-    got: String,
-}
 
 #[derive(Error, Debug)]
 #[error("path must be relative and not contain parent components")]
@@ -206,12 +199,14 @@ fn default_message_for_code(code: &str) -> &'static str {
         ERR_EMBEDDING_MODEL_NOT_FOUND => "embedding model not found",
         ERR_EMBEDDING_FAILED => "embedding failed",
         ERR_MISSING_REPO => "missing repo",
+        ERR_MISSING_REPO_PATH => "repo path not found",
         ERR_UNKNOWN_REPO => "unknown repo",
         ERR_MISSING_INDEX => "missing index",
         ERR_STALE_INDEX => "stale index",
         ERR_MISSING_DEPENDENCY => "missing dependency",
         ERR_RATE_LIMITED => "rate limited",
         ERR_BACKOFF_REQUIRED => "backoff required",
+        ERR_REPO_STATE_MISMATCH => "repo state mismatch",
         ERR_INTERNAL_ERROR => "internal error",
         _ => "error",
     }
@@ -222,21 +217,12 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
         return (rate.code, Some(mcp_rate_limited_data(rate)));
     }
     if let Some(app) = err.downcast_ref::<AppError>() {
-        return (app.code, None);
+        return (app.code, app.details.clone());
     }
     if let Some(search_err) = err.downcast_ref::<crate::index::SearchError>() {
         match search_err {
             crate::index::SearchError::InvalidQuery { .. } => return ("invalid_query", None),
         }
-    }
-    if let Some(mismatch) = err.downcast_ref::<RepoMismatchError>() {
-        return (
-            ERR_UNKNOWN_REPO,
-            Some(json!({
-                "expected": mismatch.expected.clone(),
-                "got": mismatch.got.clone(),
-            })),
-        );
     }
     if err.downcast_ref::<InvalidPathError>().is_some() {
         return ("invalid_path", None);
@@ -1538,23 +1524,49 @@ impl McpServer {
     }
 
     fn ensure_same_repo(&self, candidate: &Path) -> Result<()> {
-        let normalized = match candidate.canonicalize() {
-            Ok(path) => path,
-            Err(_) => {
-                return Err(RepoMismatchError {
-                    expected: self.repo_root.display().to_string(),
-                    got: candidate.display().to_string(),
-                }
-                .into())
-            }
-        };
-        if normalized != self.repo_root {
-            return Err(RepoMismatchError {
-                expected: self.repo_root.display().to_string(),
-                got: normalized.display().to_string(),
-            }
-            .into());
+        if !candidate.exists() {
+            let normalized_path = candidate.to_string_lossy().replace('\\', "/");
+            let details = repo_resolution_details(
+                normalized_path,
+                None,
+                Some(self.repo_root.to_string_lossy().replace('\\', "/")),
+                vec![
+                    "Repo may have moved or been renamed.".to_string(),
+                    "Pass the current repo path (or omit `project_root` to use the MCP server default)."
+                        .to_string(),
+                    "If the MCP server is pointed at the wrong path, restart it with `docdexd mcp --repo <repo>`."
+                        .to_string(),
+                ],
+            );
+            return Err(
+                AppError::new(ERR_MISSING_REPO_PATH, "repo path not found")
+                    .with_details(details)
+                    .into(),
+            );
         }
+
+        let normalized = candidate.canonicalize().unwrap_or_else(|_| candidate.to_path_buf());
+        if normalized != self.repo_root {
+            let attempted_fingerprint = crate::repo_identity::repo_fingerprint_sha256(&normalized).ok();
+            let details = repo_resolution_details(
+                normalized.to_string_lossy().replace('\\', "/"),
+                attempted_fingerprint,
+                Some(self.repo_root.to_string_lossy().replace('\\', "/")),
+                vec![
+                    "Repo may have moved or been renamed.".to_string(),
+                    "Restart the MCP server with `docdexd mcp --repo <repo>` matching the repo you want to use."
+                        .to_string(),
+                    "Alternatively, omit `project_root` in tool arguments to use the MCP server default."
+                        .to_string(),
+                ],
+            );
+            return Err(
+                AppError::new(ERR_UNKNOWN_REPO, "unknown repo")
+                    .with_details(details)
+                    .into(),
+            );
+        }
+
         Ok(())
     }
 

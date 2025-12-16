@@ -254,11 +254,15 @@ pub async fn serve(
     })?;
 
     let indexer = Arc::new(Indexer::with_config(repo, config).map_err(|err| {
+        if err.downcast_ref::<crate::error::AppError>().is_some() {
+            return err;
+        }
         StartupError::new(
             "startup_state_invalid",
             format!("failed to initialize state directory/index: {err}"),
         )
         .with_hint("Verify repo/state-dir paths and permissions; consider `--state-dir <path>`.")
+        .into()
     })?);
     let libs_indexer = {
         let libs_dir = libs::libs_state_dir_from_index_state_dir(indexer.state_dir());

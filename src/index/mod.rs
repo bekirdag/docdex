@@ -16,7 +16,10 @@ use tantivy::{
 };
 use thiserror::Error;
 use tracing::warn;
-use crate::error::{AppError, ERR_BACKOFF_REQUIRED, ERR_MISSING_INDEX};
+use crate::error::{
+    repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
+    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+};
 use crate::symbols;
 use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
 use walkdir::WalkDir;
@@ -344,12 +347,32 @@ impl IndexConfig {
 impl Indexer {
     #[allow(dead_code)]
     pub fn new(repo_root: PathBuf) -> Result<Self> {
+        if !repo_root.exists() {
+            return Err(missing_repo_path_error(&repo_root).into());
+        }
+        if !repo_root.is_dir() {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                format!("repo root is not a directory: {}", repo_root.display()),
+            )
+            .into());
+        }
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
         let config = IndexConfig::for_repo(&repo_root)?;
         Self::with_config(repo_root, config)
     }
 
     pub fn with_config(repo_root: PathBuf, config: IndexConfig) -> Result<Self> {
+        if !repo_root.exists() {
+            return Err(missing_repo_path_error(&repo_root).into());
+        }
+        if !repo_root.is_dir() {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                format!("repo root is not a directory: {}", repo_root.display()),
+            )
+            .into());
+        }
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
         ensure_state_dir_secure(config.state_dir())?;
         let (schema, doc_id_field, path_field, body_field, summary_field, token_field) =
@@ -374,8 +397,12 @@ impl Indexer {
         } else {
             None
         };
-        crate::repo_identity::record_repo_opened(&repo_root, config.state_dir())
-            .context("record repo identity metadata")?;
+        if let Err(err) = crate::repo_identity::record_repo_opened(&repo_root, config.state_dir()) {
+            if let Some(identity) = err.downcast_ref::<crate::repo_identity::RepoIdentityError>() {
+                return Err(repo_state_mismatch_error(&repo_root, Some(config.state_dir()), identity).into());
+            }
+            return Err(err).context("record repo identity metadata");
+        }
         Ok(Self {
             repo_root,
             config,
@@ -392,6 +419,16 @@ impl Indexer {
     }
 
     pub fn with_config_read_only(repo_root: PathBuf, config: IndexConfig) -> Result<Self> {
+        if !repo_root.exists() {
+            return Err(missing_repo_path_error(&repo_root).into());
+        }
+        if !repo_root.is_dir() {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                format!("repo root is not a directory: {}", repo_root.display()),
+            )
+            .into());
+        }
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
         if !config.state_dir().exists() {
             return Err(AppError::new(
@@ -419,8 +456,12 @@ impl Indexer {
         } else {
             None
         };
-        crate::repo_identity::validate_repo_state_dir(&repo_root, config.state_dir())
-            .context("validate repo identity metadata")?;
+        if let Err(err) = crate::repo_identity::validate_repo_state_dir(&repo_root, config.state_dir()) {
+            if let Some(identity) = err.downcast_ref::<crate::repo_identity::RepoIdentityError>() {
+                return Err(repo_state_mismatch_error(&repo_root, Some(config.state_dir()), identity).into());
+            }
+            return Err(err).context("validate repo identity metadata");
+        }
         Ok(Self {
             repo_root,
             config,
@@ -1384,7 +1425,83 @@ pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn normalize_for_error(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn known_canonical_path_from_repo_meta(index_state_dir: &Path) -> Option<String> {
+    if index_state_dir.file_name().and_then(|s| s.to_str())? != "index" {
+        return None;
+    }
+    let state_key_dir = index_state_dir.parent()?;
+    let state_key = state_key_dir.file_name()?.to_string_lossy().to_string();
+    let repos_dir = state_key_dir.parent()?;
+    if repos_dir.file_name().and_then(|s| s.to_str())? != "repos" {
+        return None;
+    }
+    let base_dir = repos_dir.parent()?;
+    let meta_path = base_dir.join("repos").join(state_key).join("repo_meta.json");
+    let raw = fs::read_to_string(&meta_path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    parsed
+        .get("canonical_path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+fn missing_repo_path_error(repo_root: &Path) -> AppError {
+    AppError::new(ERR_MISSING_REPO_PATH, "repo path not found").with_details(repo_resolution_details(
+        normalize_for_error(repo_root),
+        None,
+        None,
+        vec![
+            "Repo may have moved or been renamed.".to_string(),
+            "Re-run with the repo's current path.".to_string(),
+            "If you previously indexed this repo, you may need to reindex after moving it: `docdexd index --repo <repo>`."
+                .to_string(),
+        ],
+    ))
+}
+
+fn repo_state_mismatch_error(
+    repo_root: &Path,
+    index_state_dir: Option<&Path>,
+    identity: &crate::repo_identity::RepoIdentityError,
+) -> AppError {
+    let attempted_fingerprint = crate::repo_identity::repo_fingerprint_sha256(repo_root).ok();
+    let mut known_canonical_path = index_state_dir.and_then(known_canonical_path_from_repo_meta);
+    if let crate::repo_identity::RepoIdentityError::CanonicalPathCollision { canonical_path, .. } = identity {
+        known_canonical_path = Some(canonical_path.clone());
+    }
+    AppError::new(
+        ERR_REPO_STATE_MISMATCH,
+        "repo state mismatch; refusing to associate this repo with the existing state directory",
+    )
+    .with_details(repo_resolution_details(
+        normalize_for_error(repo_root),
+        attempted_fingerprint,
+        known_canonical_path,
+        vec![
+            "Repo may have moved or been renamed.".to_string(),
+            "Verify you are using the correct `--repo` and `--state-dir` combination.".to_string(),
+            "Do not reuse a shared `--state-dir` across unrelated repos; choose a different state dir or clear the conflicting state."
+                .to_string(),
+        ],
+    ))
+}
+
 fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<PathBuf> {
+    if !repo_root.exists() {
+        return Err(missing_repo_path_error(repo_root).into());
+    }
+    if !repo_root.is_dir() {
+        return Err(AppError::new(
+            ERR_INVALID_ARGUMENT,
+            format!("repo root is not a directory: {}", repo_root.display()),
+        )
+        .into());
+    }
+
     match state_dir {
         Some(custom) if custom.is_absolute() => {
             // Guardrail: when an absolute state dir is provided outside the repo root,
@@ -1397,7 +1514,27 @@ fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<Pat
             if custom.starts_with(&repo_root) {
                 return Ok(custom);
             }
-            crate::repo_identity::resolve_shared_index_state_dir(&repo_root, &custom)
+            match crate::repo_identity::resolve_shared_index_state_dir(&repo_root, &custom) {
+                Ok(path) => Ok(path),
+                Err(err) => {
+                    if let Some(identity) = err.downcast_ref::<crate::repo_identity::RepoIdentityError>() {
+                        let index_dir_hint = match identity {
+                            crate::repo_identity::RepoIdentityError::StateMetaFingerprintMismatch { state_key, .. } => {
+                                Some(custom.join("repos").join(state_key).join("index"))
+                            }
+                            crate::repo_identity::RepoIdentityError::StateKeyConflict {
+                                existing_state_key,
+                                ..
+                            } => Some(custom.join("repos").join(existing_state_key).join("index")),
+                            _ => None,
+                        };
+                        return Err(
+                            repo_state_mismatch_error(&repo_root, index_dir_hint.as_deref(), identity).into(),
+                        );
+                    }
+                    Err(err)
+                }
+            }
         }
         Some(custom) => Ok(repo_root.join(custom)),
         None => {

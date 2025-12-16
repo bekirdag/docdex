@@ -442,6 +442,69 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
         Some("unknown_repo"),
         "repo mismatches should be machine-coded as unknown_repo"
     );
+    let details = mismatch
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("details"))
+        .ok_or("mismatch error should include details")?;
+    let expected = repo
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| repo.path().to_path_buf())
+        .to_string_lossy()
+        .replace('\\', "/");
+    assert_eq!(
+        details.get("knownCanonicalPath").and_then(|v| v.as_str()),
+        Some(expected.as_str()),
+        "mismatch details should include known canonical path"
+    );
+    assert!(
+        details
+            .get("recoverySteps")
+            .and_then(|v| v.as_array())
+            .map(|v| !v.is_empty())
+            .unwrap_or(false),
+        "mismatch details should include recovery steps"
+    );
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_missing_project_root_path_is_missing_repo_path() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let mut mcp = McpHarness::spawn(repo.path())?;
+
+    let missing = repo.path().join("does-not-exist");
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": {
+                    "query": "MCP_ROADMAP",
+                    "project_root": missing.to_string_lossy()
+                }
+            }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("missing_repo_path"));
+    let details = resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("details"))
+        .ok_or("missing repo path error should include details")?;
+    let expected = missing.to_string_lossy().replace('\\', "/");
+    assert_eq!(
+        details.get("normalizedPath").and_then(|v| v.as_str()),
+        Some(expected.as_str())
+    );
 
     mcp.shutdown();
     Ok(())

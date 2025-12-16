@@ -3,6 +3,7 @@ use std::fmt;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use serde_json::Value;
 use thiserror::Error;
 
 pub const ERR_EMBEDDING_TIMEOUT: &str = "embedding_timeout";
@@ -11,12 +12,14 @@ pub const ERR_EMBEDDING_FAILED: &str = "embedding_failed";
 pub const ERR_MEMORY_DISABLED: &str = "memory_disabled";
 pub const ERR_INVALID_ARGUMENT: &str = "invalid_argument";
 pub const ERR_MISSING_REPO: &str = "missing_repo";
+pub const ERR_MISSING_REPO_PATH: &str = "missing_repo_path";
 pub const ERR_UNKNOWN_REPO: &str = "unknown_repo";
 pub const ERR_MISSING_INDEX: &str = "missing_index";
 pub const ERR_STALE_INDEX: &str = "stale_index";
 pub const ERR_MISSING_DEPENDENCY: &str = "missing_dependency";
 pub const ERR_RATE_LIMITED: &str = "rate_limited";
 pub const ERR_BACKOFF_REQUIRED: &str = "backoff_required";
+pub const ERR_REPO_STATE_MISMATCH: &str = "repo_state_mismatch";
 pub const ERR_INTERNAL_ERROR: &str = "internal_error";
 
 #[derive(Debug, Clone)]
@@ -63,6 +66,7 @@ impl Error for StartupError {}
 pub struct AppError {
     pub code: &'static str,
     pub message: String,
+    pub details: Option<Value>,
 }
 
 impl AppError {
@@ -70,8 +74,35 @@ impl AppError {
         Self {
             code,
             message: message.into(),
+            details: None,
         }
     }
+
+    pub fn with_details(mut self, details: Value) -> Self {
+        self.details = Some(details);
+        self
+    }
+}
+
+pub fn repo_resolution_details(
+    normalized_path: String,
+    attempted_fingerprint: Option<String>,
+    known_canonical_path: Option<String>,
+    recovery_steps: Vec<String>,
+) -> Value {
+    let mut details = serde_json::Map::new();
+    details.insert("normalizedPath".to_string(), Value::String(normalized_path));
+    if let Some(fp) = attempted_fingerprint {
+        details.insert("attemptedFingerprint".to_string(), Value::String(fp));
+    }
+    if let Some(path) = known_canonical_path {
+        details.insert("knownCanonicalPath".to_string(), Value::String(path));
+    }
+    details.insert(
+        "recoverySteps".to_string(),
+        Value::Array(recovery_steps.into_iter().map(Value::String).collect()),
+    );
+    Value::Object(details)
 }
 
 #[derive(Debug, Clone, Error)]

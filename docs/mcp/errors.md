@@ -27,7 +27,7 @@ On failure, the MCP server returns a JSON-RPC error response:
 - `message` (string, required): short summary message (often mirrors `error.message`).
 - `reason` (string, optional): a more specific reason (typically an underlying error string).
 - `tool` (string, optional): tool name (for `tools/call` failures), e.g. `docdex_search`.
-- `details` (object, optional): structured context (limits, fields, expected/got, etc).
+- `details` (object, optional): structured context (limits, fields, expected/got, etc). For repo move/rename/mismatch errors, `details` may include `normalizedPath`, `attemptedFingerprint`, `knownCanonicalPath`, and `recoverySteps`.
 - `error` (object, required): the canonical envelope, containing the same fields as above (`code/message/reason/tool/details`).
 
 Compatibility guidance for clients:
@@ -51,7 +51,9 @@ These codes appear in `error.data.code` for JSON-RPC/MCP protocol failures (not 
 These codes are the **required** set for repo/index/dependency failures and are intended to be stable across MCP/HTTP/CLI for the same underlying failure:
 
 - `missing_repo`: required repo context is absent (primarily relevant for multi-repo surfaces).
+- `missing_repo_path`: the provided repo path does not exist on disk (often after a move/rename).
 - `unknown_repo`: provided repo context does not match the server’s configured repo root.
+- `repo_state_mismatch`: per-repo state cannot be safely associated (fingerprint/meta/registry mismatch); Docdex must fast-fail to prevent cross-repo mixing.
 - `missing_index`: on-disk index is not present (e.g. `docdexd query` before indexing).
 - `stale_index`: index exists but is known to be stale (reserved for future use).
 - `missing_dependency`: a required optional feature/dependency is disabled (e.g. symbols extraction disabled).
@@ -93,7 +95,9 @@ Docdex presents the same underlying failures in three different wrappers:
 | Underlying failure | Docdex code (`error.data.code`) | MCP JSON-RPC `error.code` | HTTP daemon behavior | CLI behavior |
 | --- | --- | --- | --- | --- |
 | Missing repo context | `missing_repo` | `-32602` | N/A for per-repo daemon (repo is configured at startup) | N/A for per-repo CLI (repo is required via `--repo`) |
+| Repo path missing on disk | `missing_repo_path` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"missing_repo_path",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"missing_repo_path",...}}` |
 | Repo mismatch (`project_root` does not match server repo) | `unknown_repo` | `-32602` | N/A (daemon is started per-repo) | N/A (CLI always has `--repo`; mismatch is not represented) |
+| Repo state mismatch (unsafe to associate state) | `repo_state_mismatch` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"repo_state_mismatch",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"repo_state_mismatch",...}}` |
 | Index missing (query/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
 | Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Not currently emitted by the per-repo CLI |
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |

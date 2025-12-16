@@ -1039,11 +1039,16 @@ fn render_error_and_exit(err: anyhow::Error) -> ! {
         std::process::exit(1);
     }
     if let Some(app) = err.downcast_ref::<crate::error::AppError>() {
-        let payload = serde_json::json!({
-            "error": {
-                "code": app.code,
-                "message": app.message
-            }
+        let mut body = serde_json::Map::new();
+        body.insert("code".to_string(), json!(app.code));
+        body.insert("message".to_string(), json!(app.message.as_str()));
+        if let Some(details) = app.details.as_ref() {
+            body.insert("details".to_string(), details.clone());
+        }
+        let payload = serde_json::Value::Object({
+            let mut root = serde_json::Map::new();
+            root.insert("error".to_string(), serde_json::Value::Object(body));
+            root
         });
         match serde_json::to_string(&payload) {
             Ok(line) => eprintln!("{line}"),

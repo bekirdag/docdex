@@ -775,6 +775,7 @@ function describeFatalError(err) {
     const candidateTargetTriple =
       typeof err.details?.candidateTargetTriple === "string" ? err.details.candidateTargetTriple : null;
     const unpublished = err.details?.reason === "target_not_published";
+    const candidateAssetPattern = candidatePlatformKey ? assetPatternForPlatformKey(candidatePlatformKey) : null;
 
     return {
       code: err.code,
@@ -787,6 +788,7 @@ function describeFatalError(err) {
         libc ? `[docdex] Detected libc: ${libc}` : null,
         candidatePlatformKey ? `[docdex] Platform key: ${candidatePlatformKey}` : null,
         candidateTargetTriple ? `[docdex] Target triple: ${candidateTargetTriple}` : null,
+        candidateAssetPattern ? `[docdex] Asset naming pattern: ${candidateAssetPattern}` : null,
         unpublished ? "[docdex] Note: this platform is recognized but no published binary is available yet." : null,
         supportedKeys ? `[docdex] Supported platforms: ${supportedKeys}` : null,
         supportedTriples ? `[docdex] Supported target triples: ${supportedTriples}` : null,
@@ -815,6 +817,17 @@ function describeFatalError(err) {
 
   if (err instanceof MissingArtifactError) {
     const detected = err.details?.detected ? `${err.details.detected.os}/${err.details.detected.arch}` : null;
+    const platformKey = typeof err.details?.platformKey === "string" ? err.details.platformKey : null;
+    const expectedAsset =
+      typeof err.details?.expectedAsset === "string" && err.details.expectedAsset.trim()
+        ? err.details.expectedAsset.trim()
+        : typeof err.details?.assetName === "string" && err.details.assetName.trim()
+          ? err.details.assetName.trim()
+          : null;
+    const expectedAssetPattern =
+      typeof err.details?.expectedAssetPattern === "string" && err.details.expectedAssetPattern.trim()
+        ? err.details.expectedAssetPattern.trim()
+        : assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset || undefined });
     return {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
@@ -832,7 +845,7 @@ function describeFatalError(err) {
         err.details?.version ? `[docdex] Version: v${err.details.version}` : null,
         err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
         err.details?.expectedAsset ? `[docdex] Expected asset: ${err.details.expectedAsset}` : null,
-        err.details?.expectedAssetPattern ? `[docdex] Asset naming pattern: ${err.details.expectedAssetPattern}` : null,
+        expectedAssetPattern ? `[docdex] Asset naming pattern: ${expectedAssetPattern}` : null,
         err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
         err.details?.note ? `[docdex] Note: ${err.details.note}` : null,
         "[docdex] Next steps:",

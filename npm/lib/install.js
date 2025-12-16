@@ -622,33 +622,52 @@ async function verifyDownloadedFileIntegrity({
   return actual;
 }
 
-async function main() {
-  const platformKey = detectPlatformKey();
-  const targetTriple = targetTripleForPlatformKey(platformKey);
-  const version = getVersion();
-  const repoSlug = parseRepoSlug();
+async function runInstaller(options) {
+  const opts = options || {};
+  const logger = opts.logger || console;
 
-  const { archive, expectedSha256, source, manifestAttempt } = await resolveInstallerDownloadPlan({
+  const detectPlatformKeyFn = opts.detectPlatformKeyFn || detectPlatformKey;
+  const targetTripleForPlatformKeyFn = opts.targetTripleForPlatformKeyFn || targetTripleForPlatformKey;
+  const getVersionFn = opts.getVersionFn || getVersion;
+  const parseRepoSlugFn = opts.parseRepoSlugFn || parseRepoSlug;
+  const resolveInstallerDownloadPlanFn = opts.resolveInstallerDownloadPlanFn || resolveInstallerDownloadPlan;
+  const getDownloadBaseFn = opts.getDownloadBaseFn || getDownloadBase;
+  const downloadFn = opts.downloadFn || download;
+  const verifyDownloadedFileIntegrityFn = opts.verifyDownloadedFileIntegrityFn || verifyDownloadedFileIntegrity;
+  const extractTarballFn = opts.extractTarballFn || extractTarball;
+  const fsModule = opts.fsModule || fs;
+  const pathModule = opts.pathModule || path;
+  const osModule = opts.osModule || os;
+  const artifactNameFn = opts.artifactNameFn || artifactName;
+
+  const platformKey = detectPlatformKeyFn();
+  const targetTriple = targetTripleForPlatformKeyFn(platformKey);
+  const version = getVersionFn();
+  const repoSlug = parseRepoSlugFn();
+
+  const { archive, expectedSha256, source, manifestAttempt } = await resolveInstallerDownloadPlanFn({
     repoSlug,
     version,
     platformKey,
     targetTriple,
-    logger: console
+    logger
   });
 
-  const downloadUrl = `${getDownloadBase(repoSlug)}/v${version}/${archive}`;
-  const distDir = path.join(__dirname, "..", "dist", platformKey);
-  const tmpFile = path.join(os.tmpdir(), `${archive}.${process.pid}.tgz`);
+  const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
+  const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
+  const distDir = pathModule.join(distBaseDir, platformKey);
+  const tmpDir = opts.tmpDir || osModule.tmpdir();
+  const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
 
-  console.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
+  logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   try {
     try {
-      await download(downloadUrl, tmpFile);
+      await downloadFn(downloadUrl, tmpFile);
     } catch (err) {
       if (err && typeof err.statusCode === "number" && err.statusCode === 404) {
         const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
         throw new MissingArtifactError({
-          detected: { os: process.platform, arch: process.arch },
+          detected: { os: opts.platform || process.platform, arch: opts.arch || process.arch },
           platformKey,
           targetTriple,
           assetName: archive,
@@ -661,7 +680,7 @@ async function main() {
           repoSlug,
           downloadUrl,
           expectedAsset: archive,
-          expectedAssetPattern: `docdexd-<platformKey>.tar.gz (e.g. ${artifactName(platformKey)})`,
+          expectedAssetPattern: `docdexd-<platformKey>.tar.gz (e.g. ${artifactNameFn(platformKey)})`,
           note: "This usually means the GitHub release assets are missing or the npm version is out of sync with the release."
         });
       }
@@ -684,7 +703,7 @@ async function main() {
       );
     }
 
-    await verifyDownloadedFileIntegrity({
+    await verifyDownloadedFileIntegrityFn({
       filePath: tmpFile,
       expectedSha256,
       archiveName: archive,
@@ -702,11 +721,12 @@ async function main() {
     });
 
     // Only replace an existing installation after we have successfully fetched + verified the archive.
-    await fs.promises.rm(distDir, { recursive: true, force: true });
-    await extractTarball(tmpFile, distDir);
+    await fsModule.promises.rm(distDir, { recursive: true, force: true });
+    await extractTarballFn(tmpFile, distDir);
 
-    const binaryPath = path.join(distDir, process.platform === "win32" ? "docdexd.exe" : "docdexd");
-    if (!fs.existsSync(binaryPath)) {
+    const isWin32 = (opts.platform || process.platform) === "win32";
+    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+    if (!fsModule.existsSync(binaryPath)) {
       throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
         platformKey,
         targetTriple,
@@ -722,11 +742,16 @@ async function main() {
       });
     }
 
-    await fs.promises.chmod(binaryPath, 0o755).catch(() => {});
-    console.log(`[docdex] Installed binary to ${binaryPath}`);
+    await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
+    logger.log(`[docdex] Installed binary to ${binaryPath}`);
+    return { binaryPath };
   } finally {
-    await fs.promises.rm(tmpFile, { force: true }).catch(() => {});
+    await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
   }
+}
+
+async function main() {
+  await runInstaller();
 }
 
 function describeFatalError(err) {
@@ -958,6 +983,7 @@ module.exports = {
   verifyDownloadedFileIntegrity,
   MissingArtifactError,
   ChecksumResolutionError,
+  runInstaller,
   describeFatalError,
   handleFatal
 };

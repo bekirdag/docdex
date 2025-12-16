@@ -11,6 +11,8 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
+use crate::metrics;
+
 #[derive(Clone, Debug)]
 pub struct ChromeWatchdogConfig {
     pub scan_interval: Duration,
@@ -97,6 +99,7 @@ pub struct ChromeProcessTracker {
 impl ChromeProcessTracker {
     pub fn register(&self, session_id: impl Into<String>, process: TrackedProcess) -> ChromeSessionHandle {
         let session_id = session_id.into();
+        let process_for_log = process.clone();
         let token;
         {
             let mut state = self.inner.state.lock();
@@ -129,6 +132,16 @@ impl ChromeProcessTracker {
             );
         }
 
+        info!(
+            target: "docdexd_browser_guard",
+            event = "chrome_watchdog_session_started",
+            session_id = session_id.as_str(),
+            token,
+            pid = process_for_log.pid,
+            pgid = process_for_log.process_group_id,
+            "chrome watchdog tracking session"
+        );
+
         ChromeSessionHandle {
             session_id,
             token,
@@ -146,6 +159,16 @@ impl ChromeProcessTracker {
                 record.active = false;
                 record.ended_at = Some(Instant::now());
                 record.end_reason = Some(SessionEndReason::Ended);
+                info!(
+                    target: "docdexd_browser_guard",
+                    event = "chrome_watchdog_session_ended",
+                    session_id = record.session_id.as_str(),
+                    token = record.token,
+                    pid = record.process.pid,
+                    pgid = record.process.process_group_id,
+                    reason = ?SessionEndReason::Ended,
+                    "chrome watchdog session ended"
+                );
             }
         }
     }
@@ -200,6 +223,16 @@ impl ChromeSessionHandle {
                 record.active = false;
                 record.ended_at = Some(Instant::now());
                 record.end_reason = Some(SessionEndReason::Ended);
+                info!(
+                    target: "docdexd_browser_guard",
+                    event = "chrome_watchdog_session_ended",
+                    session_id = record.session_id.as_str(),
+                    token = record.token,
+                    pid = record.process.pid,
+                    pgid = record.process.process_group_id,
+                    reason = ?SessionEndReason::Ended,
+                    "chrome watchdog session ended"
+                );
             }
         }
     }
@@ -213,6 +246,16 @@ impl Drop for ChromeSessionHandle {
                 record.active = false;
                 record.ended_at = Some(Instant::now());
                 record.end_reason = Some(SessionEndReason::Dropped);
+                debug!(
+                    target: "docdexd_browser_guard",
+                    event = "chrome_watchdog_session_dropped",
+                    session_id = record.session_id.as_str(),
+                    token = record.token,
+                    pid = record.process.pid,
+                    pgid = record.process.process_group_id,
+                    reason = ?SessionEndReason::Dropped,
+                    "chrome watchdog session dropped"
+                );
             }
         }
     }
@@ -363,6 +406,7 @@ async fn run_scan(inner: &Arc<Inner>) {
             }
 
             if !is_process_alive(&record.process) {
+                metrics::global().inc_chrome_watchdog_reaped();
                 debug!(
                     target: "docdexd",
                     session_id = record.session_id.as_str(),
@@ -438,8 +482,10 @@ async fn reap_one(
     let pid = process.pid;
     let pgid = process.process_group_id;
 
+    metrics::global().inc_chrome_watchdog_reap_attempt();
     info!(
         target: "docdexd",
+        event = "chrome_watchdog_reap_start",
         session_id,
         pid,
         pgid,
@@ -457,16 +503,18 @@ async fn reap_one(
     match result {
         Ok(()) => debug!(
             target: "docdexd",
+            event = "chrome_watchdog_reap_done",
             session_id,
             pid,
-            "watchdog: reaped Chrome process"
+            "watchdog: terminate attempt complete"
         ),
         Err(err) => warn!(
             target: "docdexd",
+            event = "chrome_watchdog_reap_done",
             session_id,
             pid,
             error = %err,
-            "watchdog: failed to reap Chrome process"
+            "watchdog: terminate attempt failed"
         ),
     }
 
@@ -476,6 +524,7 @@ async fn reap_one(
     };
 
     if !is_process_alive(&record.process) {
+        metrics::global().inc_chrome_watchdog_reaped();
         let record = state.records.remove(&token).expect("present");
         if state
             .session_current
@@ -485,6 +534,7 @@ async fn reap_one(
             state.session_current.remove(&record.session_id);
         }
     } else {
+        metrics::global().inc_chrome_watchdog_reap_failure();
         record.reaping = false;
     }
 }
@@ -518,6 +568,13 @@ async fn terminate_process(
                 return Ok(());
             }
 
+            debug!(
+                target: "docdexd",
+                event = "chrome_watchdog_kill_escalation",
+                pid = process.pid,
+                pgid,
+                "watchdog escalating to SIGKILL"
+            );
             signal_process_group(pgid, nix::libc::SIGKILL);
             if wait_until_dead(process, kill_timeout).await {
                 return Ok(());
@@ -529,6 +586,12 @@ async fn terminate_process(
         if wait_until_dead(process, graceful_timeout).await {
             return Ok(());
         }
+        debug!(
+            target: "docdexd",
+            event = "chrome_watchdog_kill_escalation",
+            pid = process.pid,
+            "watchdog escalating to SIGKILL"
+        );
         signal_pid(process.pid as i32, nix::libc::SIGKILL);
         if wait_until_dead(process, kill_timeout).await {
             return Ok(());
@@ -643,12 +706,28 @@ async fn terminate_windows(pid: u32, force: bool) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    fn prometheus_counter(text: &str, name: &str) -> u64 {
+        for line in text.lines() {
+            if line.starts_with(name) {
+                if let Some(value) = line.split_whitespace().nth(1) {
+                    if let Ok(parsed) = value.parse::<u64>() {
+                        return parsed;
+                    }
+                }
+            }
+        }
+        0
+    }
+
     #[tokio::test]
     #[cfg(unix)]
     async fn reaps_orphaned_process_after_grace() {
         use tempfile::TempDir;
         use std::io;
         use tokio::process::Command;
+
+        let before = crate::metrics::global().render_prometheus();
+        let before_reaped = prometheus_counter(&before, "docdex_chrome_watchdog_reaped_total");
 
         let watchdog = ChromeWatchdog::start(ChromeWatchdogConfig {
             scan_interval: Duration::from_millis(50),
@@ -717,6 +796,20 @@ mod tests {
         assert!(
             !process_group_alive(pgid),
             "expected orphaned process group to be reaped"
+        );
+
+        let metrics_deadline = Instant::now() + Duration::from_secs(2);
+        let after_reaped = loop {
+            let snapshot = crate::metrics::global().render_prometheus();
+            let value = prometheus_counter(&snapshot, "docdex_chrome_watchdog_reaped_total");
+            if value >= before_reaped + 1 || Instant::now() > metrics_deadline {
+                break value;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        assert!(
+            after_reaped >= before_reaped + 1,
+            "expected watchdog reaped counter to increment"
         );
 
         watchdog.shutdown().await;

@@ -24,7 +24,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::warn;
@@ -161,7 +160,7 @@ pub struct AppState {
     pub security: SecurityConfig,
     pub access_log: bool,
     pub audit: Option<crate::audit::AuditLogger>,
-    pub metrics: Arc<Metrics>,
+    pub metrics: Arc<crate::metrics::Metrics>,
     pub memory: Option<MemoryState>,
 }
 
@@ -172,44 +171,6 @@ pub struct RequestId(pub String);
 pub struct MemoryState {
     pub store: MemoryStore,
     pub embedder: OllamaEmbedder,
-}
-
-#[derive(Default)]
-pub struct Metrics {
-    pub rate_limit_denies: AtomicU64,
-    pub auth_denies: AtomicU64,
-    pub error_count: AtomicU64,
-}
-
-impl Metrics {
-    fn inc_rate_limit(&self) {
-        self.rate_limit_denies.fetch_add(1, Ordering::Relaxed);
-    }
-    fn inc_auth_deny(&self) {
-        self.auth_denies.fetch_add(1, Ordering::Relaxed);
-    }
-    fn inc_error(&self) {
-        self.error_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn render_prometheus(&self) -> String {
-        format!(
-            concat!(
-                "# HELP docdex_rate_limit_denies_total Rate limit denials\n",
-                "# TYPE docdex_rate_limit_denies_total counter\n",
-                "docdex_rate_limit_denies_total {}\n",
-                "# HELP docdex_auth_denies_total Auth denials\n",
-                "# TYPE docdex_auth_denies_total counter\n",
-                "docdex_auth_denies_total {}\n",
-                "# HELP docdex_errors_total Handler errors\n",
-                "# TYPE docdex_errors_total counter\n",
-                "docdex_errors_total {}\n",
-            ),
-            self.rate_limit_denies.load(Ordering::Relaxed),
-            self.auth_denies.load(Ordering::Relaxed),
-            self.error_count.load(Ordering::Relaxed)
-        )
-    }
 }
 
 pub fn router(state: AppState) -> Router {

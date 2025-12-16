@@ -4,6 +4,7 @@ mod chrome_watchdog;
 mod config;
 mod daemon;
 mod error;
+mod metrics;
 mod tier2;
 mod impact;
 mod index;

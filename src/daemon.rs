@@ -3,6 +3,7 @@ use crate::error::StartupError;
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
 use crate::memory::MemoryStore;
+use crate::metrics;
 use crate::ollama::OllamaEmbedder;
 use crate::search::{self, AppState, SecurityConfig};
 use crate::util;
@@ -291,7 +292,8 @@ pub async fn serve(
     } else {
         None
     };
-    let metrics = Arc::new(crate::search::Metrics::default());
+    let metrics = Arc::new(metrics::Metrics::default());
+    metrics::set_global(metrics.clone());
     let state = AppState {
         indexer: indexer.clone(),
         libs_indexer,

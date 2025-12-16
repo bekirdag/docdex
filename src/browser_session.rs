@@ -13,6 +13,8 @@ use thiserror::Error;
 use tokio::process::Command;
 use tokio::sync::Notify;
 
+use crate::metrics;
+
 #[derive(Debug, Clone)]
 pub struct BrowserSessionOptions {
     pub lock_file: Option<PathBuf>,
@@ -71,8 +73,19 @@ pub struct BrowserSession {
 
 impl BrowserSession {
     pub async fn spawn(mut command: Command, opts: BrowserSessionOptions) -> Result<Self, BrowserSessionError> {
+        let lock_path = opts.lock_file.clone();
         let lock = match opts.lock_file {
-            Some(path) => Some(create_lock_file(&path)?),
+            Some(path) => Some(create_lock_file(&path).map_err(|err| {
+                metrics::global().inc_browser_session_launch_failure();
+                tracing::warn!(
+                    target: "docdexd_browser_guard",
+                    event = "browser_session_lock_failed",
+                    lock_file = %path.display(),
+                    error = %err,
+                    "browser session lock failed"
+                );
+                err
+            })?),
             None => None,
         };
 
@@ -90,12 +103,40 @@ impl BrowserSession {
             }
         }
 
-        let child = command
-            .spawn()
-            .map_err(|err| BrowserSessionError::LaunchFailed(err.to_string()))?;
+        let child = command.spawn().map_err(|err| {
+            metrics::global().inc_browser_session_launch_failure();
+            tracing::warn!(
+                target: "docdexd_browser_guard",
+                event = "browser_session_launch_failed",
+                lock_file = ?lock_path.as_ref().map(|p| p.display().to_string()),
+                error = %err,
+                "browser session launch failed"
+            );
+            BrowserSessionError::LaunchFailed(err.to_string())
+        })?;
         let pid = child.id().ok_or_else(|| {
+            metrics::global().inc_browser_session_launch_failure();
             BrowserSessionError::LaunchFailed("spawned process did not expose a PID".to_string())
         })?;
+
+        metrics::global().inc_browser_session_active();
+        #[cfg(unix)]
+        tracing::info!(
+            target: "docdexd_browser_guard",
+            event = "browser_session_started",
+            pid,
+            pgid = pid as i32,
+            lock_file = ?lock_path.as_ref().map(|p| p.display().to_string()),
+            "browser session started"
+        );
+        #[cfg(not(unix))]
+        tracing::info!(
+            target: "docdexd_browser_guard",
+            event = "browser_session_started",
+            pid,
+            lock_file = ?lock_path.as_ref().map(|p| p.display().to_string()),
+            "browser session started"
+        );
 
         Ok(Self {
             inner: Arc::new(Inner {
@@ -243,19 +284,40 @@ fn create_lock_file(path: &PathBuf) -> Result<LockFile, BrowserSessionError> {
 }
 
 async fn cleanup_inner(inner: &Inner, force_kill: bool) -> Result<(), BrowserSessionError> {
+    metrics::global().dec_browser_session_active();
+    let pid = inner.pid;
+    #[cfg(unix)]
+    tracing::info!(
+        target: "docdexd_browser_guard",
+        event = "browser_session_cleanup_start",
+        pid,
+        pgid = inner.pgid,
+        force_kill,
+        graceful_timeout_ms = inner.graceful_shutdown_timeout.as_millis() as u64,
+        kill_timeout_ms = inner.kill_timeout.as_millis() as u64,
+        "browser session cleanup starting"
+    );
+    #[cfg(not(unix))]
+    tracing::info!(
+        target: "docdexd_browser_guard",
+        event = "browser_session_cleanup_start",
+        pid,
+        force_kill,
+        graceful_timeout_ms = inner.graceful_shutdown_timeout.as_millis() as u64,
+        kill_timeout_ms = inner.kill_timeout.as_millis() as u64,
+        "browser session cleanup starting"
+    );
+
     let child = inner.child.lock().take();
     let Some(mut child) = child else {
         cleanup_lock(inner);
         return Ok(());
     };
 
-    #[cfg(unix)]
-    let pgid = inner.pgid;
-
     let terminate = async {
         if force_kill {
             #[cfg(unix)]
-            signal_process_group(pgid, nix::libc::SIGKILL);
+            signal_process_group(inner.pgid, nix::libc::SIGKILL);
             #[cfg(not(unix))]
             {
                 let _ = child.start_kill();
@@ -264,7 +326,7 @@ async fn cleanup_inner(inner: &Inner, force_kill: bool) -> Result<(), BrowserSes
         }
 
         #[cfg(unix)]
-        signal_process_group(pgid, nix::libc::SIGTERM);
+        signal_process_group(inner.pgid, nix::libc::SIGTERM);
         #[cfg(not(unix))]
         {
             let _ = child.start_kill();
@@ -272,9 +334,26 @@ async fn cleanup_inner(inner: &Inner, force_kill: bool) -> Result<(), BrowserSes
 
         match wait_with_timeout(&mut child, inner.graceful_shutdown_timeout).await {
             Ok(()) => Ok(()),
-            Err(_) => {
+            Err(err) => {
                 #[cfg(unix)]
-                signal_process_group(pgid, nix::libc::SIGKILL);
+                tracing::info!(
+                    target: "docdexd_browser_guard",
+                    event = "browser_session_kill_escalation",
+                    pid,
+                    pgid = inner.pgid,
+                    error = %err,
+                    "browser session escalating to SIGKILL"
+                );
+                #[cfg(not(unix))]
+                tracing::info!(
+                    target: "docdexd_browser_guard",
+                    event = "browser_session_kill_escalation",
+                    pid,
+                    error = %err,
+                    "browser session escalating to SIGKILL"
+                );
+                #[cfg(unix)]
+                signal_process_group(inner.pgid, nix::libc::SIGKILL);
                 #[cfg(not(unix))]
                 {
                     let _ = child.start_kill();
@@ -288,9 +367,48 @@ async fn cleanup_inner(inner: &Inner, force_kill: bool) -> Result<(), BrowserSes
     match result {
         Ok(()) => {
             cleanup_lock(inner);
+            #[cfg(unix)]
+            tracing::info!(
+                target: "docdexd_browser_guard",
+                event = "browser_session_cleanup_done",
+                pid,
+                pgid = inner.pgid,
+                result = "ok",
+                "browser session cleanup complete"
+            );
+            #[cfg(not(unix))]
+            tracing::info!(
+                target: "docdexd_browser_guard",
+                event = "browser_session_cleanup_done",
+                pid,
+                result = "ok",
+                "browser session cleanup complete"
+            );
             Ok(())
         }
-        Err(err) => Err(BrowserSessionError::CleanupFailed(err.to_string())),
+        Err(err) => {
+            metrics::global().inc_browser_session_cleanup_failure();
+            #[cfg(unix)]
+            tracing::warn!(
+                target: "docdexd_browser_guard",
+                event = "browser_session_cleanup_done",
+                pid,
+                pgid = inner.pgid,
+                result = "error",
+                error = %err,
+                "browser session cleanup failed"
+            );
+            #[cfg(not(unix))]
+            tracing::warn!(
+                target: "docdexd_browser_guard",
+                event = "browser_session_cleanup_done",
+                pid,
+                result = "error",
+                error = %err,
+                "browser session cleanup failed"
+            );
+            Err(BrowserSessionError::CleanupFailed(err.to_string()))
+        }
     }
 }
 
@@ -313,7 +431,15 @@ fn cleanup_lock(inner: &Inner) {
     let Some(lock) = lock else { return };
     let path = lock.path.clone();
     drop(lock);
-    let _ = fs::remove_file(&path);
+    if let Err(err) = fs::remove_file(&path) {
+        tracing::debug!(
+            target: "docdexd_browser_guard",
+            event = "browser_session_lock_cleanup_failed",
+            lock_file = %path.display(),
+            error = %err,
+            "browser session lock cleanup failed"
+        );
+    }
 }
 
 #[cfg(unix)]
@@ -329,6 +455,7 @@ fn signal_process_group(pgid: i32, signal: i32) {
 }
 
 fn best_effort_abort_sync(inner: &Inner) {
+    metrics::global().dec_browser_session_active();
     #[cfg(unix)]
     signal_process_group(inner.pgid, nix::libc::SIGKILL);
     #[cfg(not(unix))]
@@ -347,8 +474,13 @@ mod tests {
         classify_browser_session_failure, run_with_fallback, Tier2Config, Tier2Limiter,
         Tier2UnavailableReason,
     };
+    use tracing::Subscriber;
+    use tracing_subscriber::layer::{Context, Layer};
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::{registry::LookupSpan, Registry};
     use anyhow::anyhow;
     use std::time::Instant;
+    use std::{collections::BTreeMap, sync::Mutex};
     use tempfile::TempDir;
 
     #[cfg(unix)]
@@ -639,5 +771,134 @@ mod tests {
         .await
         .expect_err("should fail");
         assert!(err.to_string().contains("boom"));
+    }
+
+    fn prometheus_counter(text: &str, name: &str) -> u64 {
+        for line in text.lines() {
+            if line.starts_with(name) {
+                if let Some(value) = line.split_whitespace().nth(1) {
+                    if let Ok(parsed) = value.parse::<u64>() {
+                        return parsed;
+                    }
+                }
+            }
+        }
+        0
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn launch_failure_increments_metric() {
+        let before = crate::metrics::global().render_prometheus();
+        let before_val = prometheus_counter(
+            &before,
+            "docdex_browser_session_launch_failures_total",
+        );
+
+        let cmd = Command::new("docdexd-definitely-not-a-real-command");
+        let err = BrowserSession::spawn(cmd, BrowserSessionOptions::default())
+            .await
+            .expect_err("expected launch failure");
+        assert!(matches!(err, BrowserSessionError::LaunchFailed(_)));
+
+        let after = crate::metrics::global().render_prometheus();
+        let after_val = prometheus_counter(
+            &after,
+            "docdex_browser_session_launch_failures_total",
+        );
+        assert!(
+            after_val >= before_val + 1,
+            "expected launch failures counter to increment"
+        );
+    }
+
+    #[derive(Default)]
+    struct Captured {
+        events: Mutex<Vec<BTreeMap<String, String>>>,
+    }
+
+    struct CaptureLayer(std::sync::Arc<Captured>);
+
+    impl<S> Layer<S> for CaptureLayer
+    where
+        S: Subscriber + for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut fields = BTreeMap::new();
+            fields.insert("target".to_string(), event.metadata().target().to_string());
+            struct Visitor<'a>(&'a mut BTreeMap<String, String>);
+            impl tracing::field::Visit for Visitor<'_> {
+                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                    self.0.insert(field.name().to_string(), value.to_string());
+                }
+
+                fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+                    self.0
+                        .insert(field.name().to_string(), value.to_string());
+                }
+
+                fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+                    self.0
+                        .insert(field.name().to_string(), value.to_string());
+                }
+
+                fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+                    self.0
+                        .insert(field.name().to_string(), value.to_string());
+                }
+
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0
+                        .insert(field.name().to_string(), format!("{value:?}"));
+                }
+            }
+            event.record(&mut Visitor(&mut fields));
+            self.0.events.lock().unwrap().push(fields);
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn emits_structured_session_lifecycle_logs() {
+        let captured = std::sync::Arc::new(Captured::default());
+        let subscriber = Registry::default().with(CaptureLayer(captured.clone()));
+        let dispatch = tracing::Dispatch::new(subscriber);
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::callsite::rebuild_interest_cache();
+            tracing::info!(
+                target: "docdexd_browser_guard",
+                event = "test_capture",
+                "capture layer smoke check"
+            );
+
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            rt.block_on(async {
+                let mut cmd = Command::new("sh");
+                cmd.arg("-c").arg("sleep 1000");
+                let session = BrowserSession::spawn(cmd, BrowserSessionOptions::default())
+                    .await
+                    .expect("spawn");
+                session.close().await.expect("close");
+            });
+        });
+
+        let events = captured.events.lock().unwrap();
+        let capture_ok = events
+            .iter()
+            .any(|fields| fields.get("event").is_some_and(|v| v == "test_capture"));
+        assert!(capture_ok, "capture layer did not record test event");
+        let started = events
+            .iter()
+            .any(|fields| fields.get("event").is_some_and(|v| v == "browser_session_started"));
+        let cleaned = events
+            .iter()
+            .any(|fields| fields.get("event").is_some_and(|v| v == "browser_session_cleanup_done"));
+        assert!(started && cleaned, "expected lifecycle logs in tracing events");
     }
 }

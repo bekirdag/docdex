@@ -125,12 +125,7 @@ pub fn language_for_path(rel_path: &str) -> Option<SourceLanguage> {
 }
 
 pub fn repo_id_for_root(repo_root: &Path) -> Result<String> {
-    let normalized = repo_root
-        .canonicalize()
-        .unwrap_or_else(|_| repo_root.to_path_buf())
-        .to_string_lossy()
-        .replace('\\', "/");
-    Ok(hex::encode(Sha256::digest(normalized.as_bytes())))
+    crate::repo_identity::repo_fingerprint_sha256(repo_root)
 }
 
 fn file_key(rel_path: &str) -> String {

@@ -14,6 +14,7 @@ mod memory;
 mod mcp;
 mod ollama;
 mod ratelimit;
+mod repo_identity;
 mod search;
 mod symbols;
 mod util;
@@ -556,7 +557,14 @@ async fn run() -> Result<()> {
                 repo.exclude_dir_overrides(),
                 repo.exclude_prefix_overrides(),
                 repo.symbols_enabled(),
-            );
+            )
+            .map_err(|err| {
+                StartupError::new(
+                    "startup_state_invalid",
+                    format!("failed to resolve state directory/identity: {err}"),
+                )
+                .with_hint("Verify repo/state-dir paths and permissions; consider removing --state-dir or running `docdexd index` once to initialize metadata.")
+            })?;
             let tls = daemon::TlsConfig::from_options(
                 tls_cert,
                 tls_key,
@@ -644,7 +652,7 @@ async fn run() -> Result<()> {
                 repo.exclude_dir_overrides(),
                 repo.exclude_prefix_overrides(),
                 repo.symbols_enabled(),
-            );
+            )?;
             util::init_logging("warn")?;
             let indexer =
                 index::Indexer::with_config_read_only(repo_root.clone(), index_config.clone())?;
@@ -748,7 +756,7 @@ async fn run() -> Result<()> {
                 repo.exclude_dir_overrides(),
                 repo.exclude_prefix_overrides(),
                 repo.symbols_enabled(),
-            );
+            )?;
             util::init_logging("info")?;
             info!("Rebuilding index for {}", repo_root.display());
             index::Indexer::with_config(repo_root, index_config)?
@@ -763,7 +771,7 @@ async fn run() -> Result<()> {
                 repo.exclude_dir_overrides(),
                 repo.exclude_prefix_overrides(),
                 repo.symbols_enabled(),
-            );
+            )?;
             util::init_logging("warn")?;
             let _ = index::Indexer::with_config(repo_root, index_config)?
                 .ingest_file(file)
@@ -782,7 +790,7 @@ async fn run() -> Result<()> {
                 repo.exclude_dir_overrides(),
                 repo.exclude_prefix_overrides(),
                 repo.symbols_enabled(),
-            );
+            )?;
             util::init_logging("warn")?;
             let server = index::Indexer::with_config_read_only(repo_root, index_config)?;
             let libs_indexer = if repo_only {
@@ -802,7 +810,7 @@ async fn run() -> Result<()> {
                 repo.exclude_dir_overrides(),
                 repo.exclude_prefix_overrides(),
                 repo.symbols_enabled(),
-            );
+            )?;
             util::init_logging("warn")?;
             let libs_dir = libs::libs_state_dir_from_index_state_dir(index_config.state_dir());
             let indexer = libs::LibsIndexer::open_or_create(libs_dir)?;
@@ -846,7 +854,7 @@ async fn run() -> Result<()> {
                 repo.exclude_dir_overrides(),
                 repo.exclude_prefix_overrides(),
                 repo.symbols_enabled(),
-            );
+            )?;
             util::init_logging("warn")?;
             index::ensure_state_dir_secure(index_config.state_dir())?;
 
@@ -904,7 +912,7 @@ async fn run() -> Result<()> {
                 repo.exclude_dir_overrides(),
                 repo.exclude_prefix_overrides(),
                 repo.symbols_enabled(),
-            );
+            )?;
             util::init_logging("warn")?;
             index::ensure_state_dir_secure(index_config.state_dir())?;
 
@@ -948,7 +956,7 @@ async fn run() -> Result<()> {
                 repo.exclude_dir_overrides(),
                 repo.exclude_prefix_overrides(),
                 repo.symbols_enabled(),
-            );
+            )?;
             util::init_logging(&log)?;
             let _ = chrome_watchdog::init_global_from_env();
             mcp::serve(

@@ -1,5 +1,4 @@
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,15 +7,6 @@ use tempfile::TempDir;
 
 fn docdex_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
-}
-
-fn repo_id_for_root(repo_root: &Path) -> String {
-    let normalized = repo_root
-        .canonicalize()
-        .unwrap_or_else(|_| repo_root.to_path_buf())
-        .to_string_lossy()
-        .replace('\\', "/");
-    hex::encode(Sha256::digest(normalized.as_bytes()))
 }
 
 fn run_docdex<I, S>(args: I) -> Result<Vec<u8>, Box<dyn Error>>
@@ -41,6 +31,7 @@ where
 
 fn write_repo(repo_root: &Path, filename: &str, token: &str) -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(repo_root)?;
+    fs::create_dir_all(repo_root.join(".git"))?;
     fs::write(
         repo_root.join(filename),
         format!(
@@ -82,24 +73,28 @@ fn absolute_state_dir_is_repo_scoped_and_prevents_cross_repo_mixing() -> Result<
     run_docdex(["index", "--repo", repo_a_str.as_str(), "--state-dir", &state_root_str])?;
     run_docdex(["index", "--repo", repo_b_str.as_str(), "--state-dir", &state_root_str])?;
 
-    let repo_a_id = repo_id_for_root(repo_a.path());
-    let repo_b_id = repo_id_for_root(repo_b.path());
-    assert!(
-        state_root
-            .join("repos")
-            .join(&repo_a_id)
-            .join("index")
-            .exists(),
-        "expected repo A state dir to exist under base state dir"
+    let repos_dir = state_root.join("repos");
+    let mut repo_dirs: Vec<PathBuf> = fs::read_dir(&repos_dir)?
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            let file_type = entry.file_type().ok()?;
+            if file_type.is_dir() { Some(path) } else { None }
+        })
+        .collect();
+    repo_dirs.sort();
+    assert_eq!(
+        repo_dirs.len(),
+        2,
+        "expected exactly 2 repo state dirs under shared base state dir"
     );
-    assert!(
-        state_root
-            .join("repos")
-            .join(&repo_b_id)
-            .join("index")
-            .exists(),
-        "expected repo B state dir to exist under base state dir"
-    );
+    for dir in &repo_dirs {
+        assert!(
+            dir.join("index").exists(),
+            "expected {dir} to contain index subdir",
+            dir = dir.display()
+        );
+    }
 
     let out_a = run_docdex([
         "query",
@@ -142,6 +137,92 @@ fn absolute_state_dir_is_repo_scoped_and_prevents_cross_repo_mixing() -> Result<
             .ends_with("b-only.md")),
         "repo B query must not return docs from repo A"
     );
+
+    Ok(())
+}
+
+#[test]
+fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), Box<dyn Error>> {
+    let state_root = TempDir::new()?;
+    let state_root = state_root.path().canonicalize()?;
+
+    let workspace = TempDir::new()?;
+    let repo_a = workspace.path().join("repo-a");
+    let repo_b = workspace.path().join("repo-moved");
+    write_repo(&repo_a, "doc.md", "move_token")?;
+
+    let state_root_str = state_root.to_string_lossy().to_string();
+    let repo_a_str = repo_a.to_string_lossy().to_string();
+    let repo_b_str = repo_b.to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_a_str.as_str(), "--state-dir", &state_root_str])?;
+
+    let repos_dir = state_root.join("repos");
+    let repo_dirs: Vec<PathBuf> = fs::read_dir(&repos_dir)?
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            let file_type = entry.file_type().ok()?;
+            if file_type.is_dir() { Some(path) } else { None }
+        })
+        .collect();
+    assert_eq!(repo_dirs.len(), 1, "expected one repo state dir after first index");
+    let state_key = repo_dirs[0]
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("state dir missing name")?
+        .to_string();
+
+    fs::rename(&repo_a, &repo_b)?;
+    run_docdex(["index", "--repo", repo_b_str.as_str(), "--state-dir", &state_root_str])?;
+
+    let repo_dirs_after: Vec<PathBuf> = fs::read_dir(&repos_dir)?
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            let file_type = entry.file_type().ok()?;
+            if file_type.is_dir() { Some(path) } else { None }
+        })
+        .collect();
+    assert_eq!(
+        repo_dirs_after.len(),
+        1,
+        "expected repo move to reuse existing state dir (no new state key)"
+    );
+    let state_key_after = repo_dirs_after[0]
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("state dir missing name")?
+        .to_string();
+    assert_eq!(state_key_after, state_key);
+
+    let registry_path = state_root.join("repos").join("repo_registry.json");
+    let registry_raw = fs::read_to_string(&registry_path)?;
+    let registry_json: Value = serde_json::from_str(&registry_raw)?;
+    let repos = registry_json
+        .get("repos")
+        .and_then(|value| value.as_object())
+        .ok_or("registry missing repos object")?;
+    let entry = repos
+        .values()
+        .find(|value| {
+            value
+                .get("state_key")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                == state_key
+        })
+        .ok_or("registry entry missing for state_key")?;
+    let canonical = entry
+        .get("canonical_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let expected = repo_b
+        .canonicalize()
+        .unwrap_or_else(|_| repo_b.clone())
+        .to_string_lossy()
+        .replace('\\', "/");
+    assert_eq!(canonical, expected, "expected registry canonical path to update after move");
 
     Ok(())
 }

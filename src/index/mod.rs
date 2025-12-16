@@ -266,7 +266,7 @@ pub struct IndexStats {
 
 impl IndexConfig {
     #[allow(dead_code)]
-    pub fn for_repo(repo_root: &Path) -> Self {
+    pub fn for_repo(repo_root: &Path) -> Result<Self> {
         Self::with_overrides(
             repo_root,
             None,
@@ -282,8 +282,8 @@ impl IndexConfig {
         extra_excluded_dirs: Vec<String>,
         extra_excluded_prefixes: Vec<String>,
         symbols_enabled: bool,
-    ) -> Self {
-        let state_dir = resolve_state_dir(repo_root, state_dir);
+    ) -> Result<Self> {
+        let state_dir = resolve_state_dir(repo_root, state_dir)?;
         let mut excluded_dir_names: Vec<String> = DEFAULT_EXCLUDED_DIR_NAMES
             .iter()
             .map(|value| value.to_string())
@@ -316,12 +316,12 @@ impl IndexConfig {
                 excluded_relative_prefixes.push(normalized);
             }
         }
-        Self {
+        Ok(Self {
             state_dir,
             excluded_dir_names,
             excluded_relative_prefixes,
             symbols_enabled,
-        }
+        })
     }
 
     pub fn state_dir(&self) -> &Path {
@@ -345,7 +345,7 @@ impl Indexer {
     #[allow(dead_code)]
     pub fn new(repo_root: PathBuf) -> Result<Self> {
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
-        let config = IndexConfig::for_repo(&repo_root);
+        let config = IndexConfig::for_repo(&repo_root)?;
         Self::with_config(repo_root, config)
     }
 
@@ -374,6 +374,8 @@ impl Indexer {
         } else {
             None
         };
+        crate::repo_identity::record_repo_opened(&repo_root, config.state_dir())
+            .context("record repo identity metadata")?;
         Ok(Self {
             repo_root,
             config,
@@ -417,6 +419,8 @@ impl Indexer {
         } else {
             None
         };
+        crate::repo_identity::validate_repo_state_dir(&repo_root, config.state_dir())
+            .context("validate repo identity metadata")?;
         Ok(Self {
             repo_root,
             config,
@@ -1259,7 +1263,8 @@ mod file_decision_tests {
             Vec::new(),
             vec!["docs/".into(), "docs/private/".into()],
             false,
-        );
+        )
+        .expect("config");
         let file = repo_root.join("docs/private/a.md");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
         fs::write(&file, "# test\n").expect("write file");
@@ -1278,7 +1283,8 @@ mod file_decision_tests {
     fn decide_file_excludes_state_dir_before_prefix_rules() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false);
+        let config =
+            IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false).expect("config");
         let file = config.state_dir().join("doc.md");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
         fs::write(&file, "# state dir\n").expect("write file");
@@ -1292,7 +1298,8 @@ mod file_decision_tests {
     fn decide_file_excludes_default_vendor_dir() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false);
+        let config =
+            IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false).expect("config");
         let file = repo_root.join("vendor/doc.md");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
         fs::write(&file, "# vendor\n").expect("write file");
@@ -1311,7 +1318,8 @@ mod file_decision_tests {
     fn decide_file_excludes_outside_repo() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false);
+        let config =
+            IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false).expect("config");
 
         let other = TempDir::new().expect("other repo");
         let outside = other.path().join("note.md");
@@ -1326,7 +1334,8 @@ mod file_decision_tests {
     fn decide_file_includes_supported_extensions() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false);
+        let config =
+            IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false).expect("config");
         let file = repo_root.join("docs/notes.txt");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
         fs::write(&file, "hello\n").expect("write file");
@@ -1375,7 +1384,7 @@ pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> PathBuf {
+fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<PathBuf> {
     match state_dir {
         Some(custom) if custom.is_absolute() => {
             // Guardrail: when an absolute state dir is provided outside the repo root,
@@ -1386,21 +1395,11 @@ fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> PathBuf {
                 .canonicalize()
                 .unwrap_or_else(|_| repo_root.to_path_buf());
             if custom.starts_with(&repo_root) {
-                return custom;
+                return Ok(custom);
             }
-            let repo_id = crate::symbols::repo_id_for_root(&repo_root)
-                .unwrap_or_else(|_| "unknown".to_string());
-            let suffix = PathBuf::from("repos").join(&repo_id).join("index");
-            if custom.ends_with(&suffix) {
-                return custom;
-            }
-            let suffix = PathBuf::from("repos").join(&repo_id);
-            if custom.ends_with(&suffix) {
-                return custom.join("index");
-            }
-            custom.join("repos").join(repo_id).join("index")
+            crate::repo_identity::resolve_shared_index_state_dir(&repo_root, &custom)
         }
-        Some(custom) => repo_root.join(custom),
+        Some(custom) => Ok(repo_root.join(custom)),
         None => {
             let default_dir = repo_root.join(".docdex").join("index");
             let legacy_dir = repo_root.join(".gpt-creator").join("docdex").join("index");
@@ -1411,9 +1410,9 @@ fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> PathBuf {
                     default = %default_dir.display(),
                     "using legacy docdex index path; consider migrating to the new default"
                 );
-                legacy_dir
+                Ok(legacy_dir)
             } else {
-                default_dir
+                Ok(default_dir)
             }
         }
     }

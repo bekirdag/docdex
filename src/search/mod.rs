@@ -1081,7 +1081,7 @@ mod latency_perf_tests {
         }
 
         let index_config =
-            index::IndexConfig::with_overrides(repo_root, None, Vec::new(), Vec::new(), false);
+            index::IndexConfig::with_overrides(repo_root, None, Vec::new(), Vec::new(), false)?;
         let indexer = index::Indexer::with_config(repo_root.to_path_buf(), index_config)?;
         indexer.reindex_all().await?;
 

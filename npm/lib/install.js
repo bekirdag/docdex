@@ -282,12 +282,22 @@ function nowIso() {
 }
 
 async function readJsonFileIfPossible({ fsModule, filePath }) {
-  if (!fsModule?.promises?.readFile) return { value: null, error: "readFile_unavailable" };
+  if (!fsModule?.promises?.readFile) {
+    return { value: null, error: "readFile_unavailable", errorCode: "READFILE_UNAVAILABLE" };
+  }
   try {
     const raw = await fsModule.promises.readFile(filePath, "utf8");
-    return { value: JSON.parse(raw), error: null };
+    try {
+      return { value: JSON.parse(raw), error: null, errorCode: null };
+    } catch (err) {
+      return { value: null, error: err?.message || String(err), errorCode: "INVALID_JSON" };
+    }
   } catch (err) {
-    return { value: null, error: err?.message || String(err) };
+    return {
+      value: null,
+      error: err?.message || String(err),
+      errorCode: typeof err?.code === "string" && err.code ? err.code : "READ_ERROR"
+    };
   }
 }
 
@@ -315,6 +325,97 @@ function normalizeSha256Hex(value) {
   const trimmed = value.trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(trimmed)) return null;
   return trimmed;
+}
+
+function integrityUnverifiable(reason, { expectedSha256, actualSha256, expectedSource, error } = {}) {
+  return {
+    status: "unverifiable",
+    reason,
+    expectedSha256: expectedSha256 ?? null,
+    actualSha256: actualSha256 ?? null,
+    expectedSource: expectedSource ?? null,
+    error: error ?? null
+  };
+}
+
+function integrityMismatch({ expectedSha256, actualSha256, expectedSource }) {
+  return {
+    status: "mismatch",
+    reason: "hash_mismatch",
+    expectedSha256: expectedSha256 ?? null,
+    actualSha256: actualSha256 ?? null,
+    expectedSource: expectedSource ?? null,
+    error: null
+  };
+}
+
+function integrityVerified({ expectedSha256, actualSha256, expectedSource }) {
+  return {
+    status: "verified_ok",
+    reason: "hash_match",
+    expectedSha256: expectedSha256 ?? null,
+    actualSha256: actualSha256 ?? null,
+    expectedSource: expectedSource ?? null,
+    error: null
+  };
+}
+
+async function verifyInstalledDocdexdIntegrity({
+  fsModule,
+  sha256FileFn,
+  binaryPath,
+  expectedBinarySha256,
+  installedMetadata,
+  installedMetadataStatus,
+  installedMetadataStatusReason
+}) {
+  const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+  if (!existsSync) {
+    return integrityUnverifiable("fs_unavailable", { expectedSource: null, error: "existsSync_unavailable" });
+  }
+
+  if (!existsSync(binaryPath)) {
+    return integrityUnverifiable("missing_file", { expectedSource: null });
+  }
+
+  const expectedFromRelease = expectedBinarySha256 != null ? normalizeSha256Hex(expectedBinarySha256) : null;
+  if (expectedBinarySha256 != null && !expectedFromRelease) {
+    return integrityUnverifiable("expected_hash_invalid", { expectedSource: "release" });
+  }
+
+  const expectedFromMetadata =
+    installedMetadataStatus === "valid" ? normalizeSha256Hex(installedMetadata?.binary?.sha256) : null;
+
+  const expectedSha256 = expectedFromRelease || expectedFromMetadata;
+  const expectedSource = expectedFromRelease ? "release" : expectedFromMetadata ? "metadata" : null;
+
+  if (!expectedSha256) {
+    if (installedMetadataStatus && installedMetadataStatus !== "valid") {
+      const reason =
+        typeof installedMetadataStatusReason === "string" && installedMetadataStatusReason
+          ? installedMetadataStatusReason
+          : "metadata_missing";
+      return integrityUnverifiable(reason, { expectedSource });
+    }
+    return integrityUnverifiable("expected_hash_unavailable", { expectedSource });
+  }
+
+  try {
+    const actualSha256 = normalizeSha256Hex(await sha256FileFn(binaryPath));
+    if (!actualSha256) {
+      return integrityUnverifiable("hash_unreadable", { expectedSha256, expectedSource });
+    }
+    if (actualSha256 !== expectedSha256) {
+      return integrityMismatch({ expectedSha256, actualSha256, expectedSource });
+    }
+    return integrityVerified({ expectedSha256, actualSha256, expectedSource });
+  } catch (err) {
+    return integrityUnverifiable("unreadable", {
+      expectedSha256,
+      expectedSource,
+      error: err?.message || String(err)
+    });
+  }
 }
 
 /**
@@ -357,7 +458,7 @@ function decideInstallAction({
     return { outcome: "repair", reason: "binary_integrity_mismatch" };
   }
 
-  if (integrityResult?.status === "verified") {
+  if (integrityResult?.status === "verified_ok") {
     return { outcome: "no-op", reason: "verified" };
   }
 
@@ -404,8 +505,18 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
       binaryPresent: true,
       installedVersion: typeof meta?.version === "string" ? meta.version : null,
       metadata: null,
-      metadataStatus: metaResult.error ? "unreadable" : "invalid",
-      metadataStatusReason: metaResult.error ? "metadata_unreadable" : "metadata_invalid",
+      metadataStatus:
+        metaResult.errorCode === "ENOENT"
+          ? "missing"
+          : metaResult.errorCode
+            ? "unreadable"
+            : "invalid",
+      metadataStatusReason:
+        metaResult.errorCode === "ENOENT"
+          ? "metadata_missing"
+          : metaResult.errorCode
+            ? "metadata_unreadable"
+            : "metadata_invalid",
       platformMismatch: false
     };
   }
@@ -424,22 +535,36 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
 
 async function verifyInstalledBinaryIntegrity({ sha256FileFn, binaryPath, expectedBinarySha256 }) {
   const expected = normalizeSha256Hex(expectedBinarySha256);
-  if (!expected) return { status: "unknown", expectedSha256: null, actualSha256: null, error: "expected_missing" };
+  if (!expected) {
+    return integrityUnverifiable("expected_hash_unavailable", {
+      expectedSha256: null,
+      actualSha256: null,
+      expectedSource: null,
+      error: "expected_missing"
+    });
+  }
 
   try {
     const actual = normalizeSha256Hex(await sha256FileFn(binaryPath));
-    if (!actual) return { status: "unknown", expectedSha256: expected, actualSha256: null, error: "actual_invalid" };
-    if (actual !== expected) {
-      return { status: "mismatch", expectedSha256: expected, actualSha256: actual, error: null };
+    if (!actual) {
+      return integrityUnverifiable("hash_unreadable", {
+        expectedSha256: expected,
+        actualSha256: null,
+        expectedSource: null,
+        error: "actual_invalid"
+      });
     }
-    return { status: "verified", expectedSha256: expected, actualSha256: actual, error: null };
+    if (actual !== expected) {
+      return integrityMismatch({ expectedSha256: expected, actualSha256: actual, expectedSource: null });
+    }
+    return integrityVerified({ expectedSha256: expected, actualSha256: actual, expectedSource: null });
   } catch (err) {
-    return {
-      status: "unknown",
+    return integrityUnverifiable("unreadable", {
       expectedSha256: expected,
       actualSha256: null,
+      expectedSource: null,
       error: err?.message || String(err)
-    };
+    });
   }
 }
 
@@ -450,7 +575,8 @@ async function determineLocalInstallerOutcome({
   platformKey,
   expectedVersion,
   isWin32,
-  sha256FileFn = sha256File
+  sha256FileFn = sha256File,
+  expectedBinarySha256 = null
 }) {
   const discoveredInstalledState = await discoverInstalledState({
     fsModule,
@@ -461,23 +587,30 @@ async function determineLocalInstallerOutcome({
   });
 
   const expectedIntegrityMaterial = {
-    binarySha256:
-      discoveredInstalledState.metadataStatus === "valid" ? discoveredInstalledState.metadata.binary.sha256 : null
+    binarySha256: normalizeSha256Hex(expectedBinarySha256)
+      ? expectedBinarySha256
+      : discoveredInstalledState.metadataStatus === "valid"
+        ? discoveredInstalledState.metadata.binary.sha256
+        : null
   };
 
   const shouldVerifyIntegrity =
     discoveredInstalledState.binaryPresent &&
-    discoveredInstalledState.metadataStatus === "valid" &&
     !discoveredInstalledState.platformMismatch &&
-    discoveredInstalledState.installedVersion === expectedVersion;
+    discoveredInstalledState.installedVersion === expectedVersion &&
+    (normalizeSha256Hex(expectedBinarySha256) || discoveredInstalledState.metadataStatus === "valid");
 
   const integrityResult = shouldVerifyIntegrity
-    ? await verifyInstalledBinaryIntegrity({
+    ? await verifyInstalledDocdexdIntegrity({
+        fsModule,
         sha256FileFn,
         binaryPath: discoveredInstalledState.binaryPath,
-        expectedBinarySha256: expectedIntegrityMaterial.binarySha256
+        expectedBinarySha256: expectedBinarySha256,
+        installedMetadata: discoveredInstalledState.metadata,
+        installedMetadataStatus: discoveredInstalledState.metadataStatus,
+        installedMetadataStatusReason: discoveredInstalledState.metadataStatusReason
       })
-    : { status: "skipped" };
+    : null;
 
   const decision = decideInstallAction({
     expectedVersion,
@@ -494,7 +627,8 @@ async function determineLocalInstallerOutcome({
     reason: decision.reason,
     binaryPath: discoveredInstalledState.binaryPath,
     metadataPath: discoveredInstalledState.metadataPath,
-    installedVersion
+    installedVersion,
+    integrityResult
   };
 }
 
@@ -926,7 +1060,7 @@ async function runInstaller(options) {
 
   if (local.outcome === "no-op") {
     logger.log("[docdex] Install outcome: no-op");
-    return { binaryPath: local.binaryPath, outcome: local.outcome };
+    return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
   }
 
   const repoSlug = parseRepoSlugFn();
@@ -1304,6 +1438,7 @@ module.exports = {
   resolveInstallerDownloadPlan,
   parseSha256File,
   sha256File,
+  verifyInstalledDocdexdIntegrity,
   decideInstallAction,
   determineLocalInstallerOutcome,
   verifyDownloadedFileIntegrity,

@@ -66,7 +66,7 @@ test("decision engine: missing binary => update (binary_missing)", async () => {
   assert.equal(outcome.installedVersion, null);
 });
 
-test("decision engine: metadata missing/unreadable => reinstall_unknown (metadata_unreadable)", async () => {
+test("decision engine: metadata missing => reinstall_unknown (metadata_missing)", async () => {
   const platformKey = "linux-x64-gnu";
   const distDir = path.posix.join("/dist", platformKey);
   const binaryPath = path.posix.join(distDir, "docdexd");
@@ -87,7 +87,8 @@ test("decision engine: metadata missing/unreadable => reinstall_unknown (metadat
   });
 
   assert.equal(outcome.outcome, "reinstall_unknown");
-  assert.equal(outcome.reason, "metadata_unreadable");
+  assert.equal(outcome.reason, "metadata_missing");
+  assert.equal(outcome.integrityResult, null);
 });
 
 test("decision engine: metadata invalid => reinstall_unknown (metadata_invalid)", async () => {
@@ -221,6 +222,8 @@ test("decision engine: binary hash mismatch => repair (binary_integrity_mismatch
 
   assert.equal(outcome.outcome, "repair");
   assert.equal(outcome.reason, "binary_integrity_mismatch");
+  assert.equal(outcome.integrityResult.status, "mismatch");
+  assert.equal(outcome.integrityResult.reason, "hash_mismatch");
   assert.equal(shaCalls, 1);
 });
 
@@ -258,6 +261,8 @@ test("decision engine: verified => no-op (verified)", async () => {
 
   assert.equal(outcome.outcome, "no-op");
   assert.equal(outcome.reason, "verified");
+  assert.equal(outcome.integrityResult.status, "verified_ok");
+  assert.equal(outcome.integrityResult.reason, "hash_match");
   assert.equal(outcome.installedVersion, "0.1.0");
   assert.equal(shaCalls, 1);
 });
@@ -297,5 +302,7 @@ test("decision engine: integrity check throws => reinstall_unknown (integrity_un
   assert.equal(outcome.outcome, "reinstall_unknown");
   assert.equal(outcome.reason, "integrity_unverifiable");
   assert.equal(outcome.installedVersion, "0.1.0");
+  assert.equal(outcome.integrityResult.status, "unverifiable");
+  assert.equal(outcome.integrityResult.reason, "unreadable");
   assert.equal(shaCalls, 1);
 });

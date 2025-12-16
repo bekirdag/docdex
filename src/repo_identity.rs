@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use crate::error::{repo_resolution_details, AppError, ERR_INVALID_ARGUMENT, ERR_MISSING_REPO_PATH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -66,6 +67,55 @@ pub struct RepoReassociateResult {
     pub prior_canonical_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoInspectReport {
+    pub repo_root: String,
+    pub normalized_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub computed_fingerprint: Option<String>,
+    pub resolved_index_state_dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shared_state_base_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mapping: Option<RepoInspectMapping>,
+    pub status: RepoInspectStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<RepoInspectDiagnostics>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoInspectMapping {
+    pub fingerprint: String,
+    pub state_key: String,
+    pub canonical_path: String,
+    pub aliases: Vec<String>,
+    pub last_seen_at_epoch_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepoInspectStatus {
+    LocalStateDir,
+    Unmapped,
+    Ok,
+    ReassociationRequired,
+    CanonicalPathCollision,
+    RepoStateMismatch,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoInspectDiagnostics {
+    pub code: &'static str,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct RepoRegistryFile {
     version: u32,
@@ -112,6 +162,133 @@ pub fn repo_fingerprint_sha256(repo_root: &Path) -> Result<String> {
         )
     })?;
     Ok(hex::encode(Sha256::digest(payload.as_bytes())))
+}
+
+pub fn inspect_repo(repo_root: &Path, state_dir_override: Option<&Path>) -> Result<RepoInspectReport> {
+    if !repo_root.exists() {
+        return Err(AppError::new(ERR_MISSING_REPO_PATH, "repo path not found")
+            .with_details(repo_resolution_details(
+                repo_root.to_string_lossy().replace('\\', "/"),
+                None,
+                None,
+                vec![
+                    "Repo may have moved or been renamed.".to_string(),
+                    "Re-run with the repo's current path.".to_string(),
+                ],
+            ))
+            .into());
+    }
+    if !repo_root.is_dir() {
+        return Err(AppError::new(
+            ERR_INVALID_ARGUMENT,
+            format!("repo root is not a directory: {}", repo_root.display()),
+        )
+        .into());
+    }
+
+    let repo_root = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    let repo_root_str = repo_root.display().to_string();
+    let normalized_path = normalize_path(&repo_root);
+    let computed_fingerprint = repo_fingerprint_sha256(&repo_root).ok();
+
+    let resolved = resolve_state_dir_for_inspect(&repo_root, state_dir_override);
+    let mut report = RepoInspectReport {
+        repo_root: repo_root_str,
+        normalized_path,
+        computed_fingerprint: computed_fingerprint.clone(),
+        resolved_index_state_dir: resolved.resolved_index_dir.display().to_string(),
+        shared_state_base_dir: resolved.shared_base_dir.as_ref().map(|p| p.display().to_string()),
+        state_key: resolved.state_key.clone(),
+        mapping: None,
+        status: RepoInspectStatus::LocalStateDir,
+        diagnostics: None,
+    };
+
+    let Some(shared_base_dir) = resolved.shared_base_dir else {
+        return Ok(report);
+    };
+
+    let Some(fingerprint) = computed_fingerprint else {
+        report.status = RepoInspectStatus::Unmapped;
+        report.diagnostics = Some(RepoInspectDiagnostics {
+            code: "fingerprint_unavailable",
+            message: "failed to compute repo fingerprint".to_string(),
+            details: None,
+        });
+        return Ok(report);
+    };
+
+    let registry_path = repo_registry_path(&shared_base_dir);
+    let registry = load_registry(&registry_path)?;
+    if let Some(entry) = registry.repos.get(&fingerprint) {
+        report.mapping = Some(RepoInspectMapping {
+            fingerprint: fingerprint.clone(),
+            state_key: entry.state_key.clone(),
+            canonical_path: entry.canonical_path.clone(),
+            aliases: entry.prior_paths.clone(),
+            last_seen_at_epoch_ms: entry.last_seen_at_epoch_ms,
+        });
+    }
+
+    let canonical_new = normalize_path(&repo_root);
+    if let Some((other_fp, _)) = registry.repos.iter().find(|(fp, entry)| {
+        fp.as_str() != fingerprint.as_str() && entry.canonical_path == canonical_new
+    }) {
+        report.status = RepoInspectStatus::CanonicalPathCollision;
+        report.diagnostics = Some(RepoInspectDiagnostics {
+            code: "canonical_path_collision",
+            message: "canonical path is already associated with a different fingerprint".to_string(),
+            details: Some(serde_json::json!({
+                "canonicalPath": canonical_new,
+                "otherFingerprint": other_fp,
+            })),
+        });
+        return Ok(report);
+    }
+
+    if let Some(mapping) = report.mapping.as_ref() {
+        if mapping.canonical_path != canonical_new {
+            report.status = RepoInspectStatus::ReassociationRequired;
+            report.diagnostics = Some(RepoInspectDiagnostics {
+                code: "reassociation_required",
+                message: "repo fingerprint is registered for a different canonical path".to_string(),
+                details: Some(serde_json::json!({
+                    "fingerprint": fingerprint,
+                    "registeredCanonicalPath": mapping.canonical_path,
+                    "requestedCanonicalPath": canonical_new,
+                })),
+            });
+            return Ok(report);
+        }
+    }
+
+    if let Some(state_key) = report.state_key.as_deref() {
+        if let Some(meta) = read_repo_meta(&shared_base_dir, state_key) {
+            if meta.fingerprint_sha256 != fingerprint {
+                report.status = RepoInspectStatus::RepoStateMismatch;
+                report.diagnostics = Some(RepoInspectDiagnostics {
+                    code: "state_meta_fingerprint_mismatch",
+                    message: "repo state metadata fingerprint mismatch".to_string(),
+                    details: Some(serde_json::json!({
+                        "stateKey": state_key,
+                        "expectedFingerprint": fingerprint,
+                        "foundFingerprint": meta.fingerprint_sha256,
+                        "metaCanonicalPath": meta.canonical_path,
+                    })),
+                });
+                return Ok(report);
+            }
+        }
+    }
+
+    report.status = if report.mapping.is_some() {
+        RepoInspectStatus::Ok
+    } else {
+        RepoInspectStatus::Unmapped
+    };
+    Ok(report)
 }
 
 pub fn resolve_shared_state_key(repo_root: &Path, shared_base_dir: &Path) -> Result<RepoStateKeyResolution> {
@@ -396,6 +573,101 @@ fn normalize_path(path: &Path) -> String {
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+struct InspectStateDirResolution {
+    resolved_index_dir: PathBuf,
+    shared_base_dir: Option<PathBuf>,
+    state_key: Option<String>,
+}
+
+fn resolve_state_dir_for_inspect(repo_root: &Path, state_dir_override: Option<&Path>) -> InspectStateDirResolution {
+    match state_dir_override {
+        Some(custom) if custom.is_absolute() => {
+            let repo_root_canon = repo_root
+                .canonicalize()
+                .unwrap_or_else(|_| repo_root.to_path_buf());
+            if custom.starts_with(&repo_root_canon) {
+                return InspectStateDirResolution {
+                    resolved_index_dir: custom.to_path_buf(),
+                    shared_base_dir: None,
+                    state_key: None,
+                };
+            }
+
+            let (base_dir, maybe_scoped_key, scoped_has_index) =
+                split_scoped_state_dir(custom).unwrap_or_else(|| (custom.to_path_buf(), None, false));
+            let fingerprint = repo_fingerprint_sha256(repo_root).ok();
+            let state_key = fingerprint.clone().and_then(|fp| {
+                let registry = load_registry(&repo_registry_path(&base_dir)).ok()?;
+                if let Some(entry) = registry.repos.get(&fp) {
+                    return Some(entry.state_key.clone());
+                }
+
+                let preferred = shared_repo_root_dir(&base_dir, &fp).join("index");
+                let legacy = legacy_repo_id_for_root(repo_root);
+                let legacy_dir = shared_repo_root_dir(&base_dir, &legacy).join("index");
+                if preferred.exists() {
+                    Some(fp)
+                } else if legacy_dir.exists() {
+                    Some(legacy)
+                } else {
+                    Some(fp)
+                }
+            });
+
+            let expected_key = state_key.clone().unwrap_or_else(|| "<unknown>".to_string());
+            if let Some(scoped_key) = maybe_scoped_key {
+                if scoped_key == expected_key {
+                    let resolved_index_dir = if scoped_has_index {
+                        custom.to_path_buf()
+                    } else {
+                        custom.join("index")
+                    };
+                    return InspectStateDirResolution {
+                        resolved_index_dir,
+                        shared_base_dir: Some(base_dir),
+                        state_key,
+                    };
+                }
+            }
+
+            let resolved_index_dir = shared_repo_root_dir(&base_dir, &expected_key).join("index");
+            InspectStateDirResolution {
+                resolved_index_dir,
+                shared_base_dir: Some(base_dir),
+                state_key,
+            }
+        }
+        Some(custom) => InspectStateDirResolution {
+            resolved_index_dir: repo_root.join(custom),
+            shared_base_dir: None,
+            state_key: None,
+        },
+        None => {
+            let default_dir = repo_root.join(".docdex").join("index");
+            let legacy_dir = repo_root.join(".gpt-creator").join("docdex").join("index");
+            if !default_dir.exists() && legacy_dir.exists() {
+                InspectStateDirResolution {
+                    resolved_index_dir: legacy_dir,
+                    shared_base_dir: None,
+                    state_key: None,
+                }
+            } else {
+                InspectStateDirResolution {
+                    resolved_index_dir: default_dir,
+                    shared_base_dir: None,
+                    state_key: None,
+                }
+            }
+        }
+    }
+}
+
+fn read_repo_meta(shared_base_dir: &Path, state_key: &str) -> Option<RepoStateMetaV1> {
+    let path = repo_meta_path(shared_base_dir, state_key);
+    let raw = fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&raw).ok()
 }
 
 fn repo_registry_path(shared_base_dir: &Path) -> PathBuf {
@@ -713,6 +985,62 @@ mod tests {
             msg.contains("canonical path") && msg.contains("already associated"),
             "unexpected error: {msg}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn inspect_reports_reassociation_required_after_repo_move() -> Result<()> {
+        let base = TempDir::new()?;
+        let shared = base.path().join("state");
+        fs::create_dir_all(shared.join("repos"))?;
+
+        let repo_root = base.path().join("repo-a");
+        create_git_repo(&repo_root)?;
+        let fingerprint = repo_fingerprint_sha256(&repo_root)?;
+        let resolution = resolve_shared_state_key(&repo_root, &shared)?;
+        let state_key = resolution.state_key.clone();
+        fs::create_dir_all(shared_repo_root_dir(&shared, &state_key).join("index"))?;
+        record_repo_opened(&repo_root, &shared_repo_root_dir(&shared, &state_key).join("index"))?;
+
+        let moved = base.path().join("repo-moved");
+        fs::rename(&repo_root, &moved)?;
+
+        let report = inspect_repo(&moved, Some(shared.as_path()))?;
+        assert_eq!(report.computed_fingerprint.as_deref(), Some(fingerprint.as_str()));
+        assert!(matches!(report.status, RepoInspectStatus::ReassociationRequired));
+        let mapping = report.mapping.expect("mapping");
+        assert_ne!(mapping.canonical_path, report.normalized_path);
+        Ok(())
+    }
+
+    #[test]
+    fn inspect_missing_path_returns_app_error() {
+        let base = tempfile::TempDir::new().expect("tempdir");
+        let missing = base.path().join("missing-repo");
+        let err = inspect_repo(&missing, None).unwrap_err();
+        let app = err
+            .downcast_ref::<AppError>()
+            .expect("expected AppError");
+        assert_eq!(app.code, ERR_MISSING_REPO_PATH);
+    }
+
+    #[test]
+    fn inspect_serializes_expected_top_level_fields() -> Result<()> {
+        let base = TempDir::new()?;
+        let repo_root = base.path().join("repo");
+        create_git_repo(&repo_root)?;
+
+        let report = inspect_repo(&repo_root, None)?;
+        let value = serde_json::to_value(&report)?;
+        let obj = value.as_object().expect("object");
+        for key in [
+            "repoRoot",
+            "normalizedPath",
+            "resolvedIndexStateDir",
+            "status",
+        ] {
+            assert!(obj.contains_key(key), "missing key: {key}");
+        }
         Ok(())
     }
 }

@@ -7,7 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { runInstaller, sha256File } = require("../lib/install");
-const { targetTripleForPlatformKey } = require("../lib/platform");
+const { artifactName, targetTripleForPlatformKey } = require("../lib/platform");
 
 function createNoopLogger() {
   return {
@@ -64,6 +64,7 @@ test("installer outcome: no-op skips plan/download when local install is verifie
   const version = "0.0.0";
   const platformKey = "linux-x64-gnu";
   const targetTriple = targetTripleForPlatformKey(platformKey);
+  const archive = artifactName(platformKey);
   const isWin32 = false;
 
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-outcome-noop-"));
@@ -116,6 +117,17 @@ test("installer outcome: no-op skips plan/download when local install is verifie
   assert.equal(planCalls, 0);
   assert.equal(downloadCalls, 0);
   assert.equal(extractCalls, 0);
+
+  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
+  assert.equal(meta.expectedVersion, version);
+  assert.equal(meta.installedVersion, version);
+  assert.equal(meta.lastOutcome, "no-op");
+  assert.equal(meta.lastOutcomeReason, "verified");
+  assert.equal(meta.lastOutcomeAt, meta.installedAt);
+  assert.equal(meta.sourceUri, `${base}/v${version}/${archive}`);
+  assert.equal(meta.archive?.name, archive);
+  assert.equal(meta.archive?.downloadUrl, `${base}/v${version}/${archive}`);
 });
 
 test("installer outcome: update installs when version differs and writes fresh metadata", async (t) => {

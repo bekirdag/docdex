@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { pipeline } = require("node:stream/promises");
 const crypto = require("node:crypto");
+const util = require("node:util");
 
 const pkg = require("../package.json");
 const {
@@ -281,6 +282,138 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function computeCanonicalSourceUriForPlatform({
+  repoSlug,
+  expectedVersion,
+  platformKey,
+  getDownloadBaseFn,
+  artifactNameFn
+}) {
+  if (typeof repoSlug !== "string" || !repoSlug.trim()) return null;
+  try {
+    const base = getDownloadBaseFn(repoSlug);
+    if (typeof base !== "string" || !base.trim()) return null;
+    const archive = artifactNameFn(platformKey);
+    if (typeof archive !== "string" || !archive.trim()) return null;
+    return `${base}/v${expectedVersion}/${archive}`;
+  } catch {
+    return null;
+  }
+}
+
+function applyNoopInstallMetadataBackfill({
+  meta,
+  expectedVersion,
+  platformKey,
+  targetTriple,
+  isWin32,
+  integrityResult,
+  getDownloadBaseFn,
+  artifactNameFn
+}) {
+  let changed = false;
+
+  const expectedBinaryFilename = isWin32 ? "docdexd.exe" : "docdexd";
+
+  if (typeof meta.installedAt !== "string" || !meta.installedAt) {
+    meta.installedAt = nowIso();
+    changed = true;
+  }
+
+  if (typeof meta.expectedVersion !== "string" || !meta.expectedVersion) {
+    meta.expectedVersion = expectedVersion;
+    changed = true;
+  }
+
+  if (typeof meta.installedVersion !== "string" || !meta.installedVersion) {
+    meta.installedVersion = typeof meta.version === "string" && meta.version ? meta.version : expectedVersion;
+    changed = true;
+  }
+
+  if (typeof meta.targetTriple !== "string" || !meta.targetTriple) {
+    meta.targetTriple = targetTriple;
+    changed = true;
+  }
+
+  if (!meta.binary || typeof meta.binary !== "object") {
+    meta.binary = {};
+    changed = true;
+  }
+
+  if (typeof meta.binary.filename !== "string" || !meta.binary.filename) {
+    meta.binary.filename = expectedBinaryFilename;
+    changed = true;
+  }
+
+  if (integrityResult?.status === "verified_ok") {
+    const actualSha256 = normalizeSha256Hex(integrityResult.actualSha256);
+    if (actualSha256 && meta.binary.sha256 !== actualSha256) {
+      meta.binary.sha256 = actualSha256;
+      changed = true;
+    }
+  }
+
+  if (typeof meta.lastOutcome !== "string" || !meta.lastOutcome) {
+    meta.lastOutcome = "no-op";
+    changed = true;
+  }
+
+  if (typeof meta.lastOutcomeReason !== "string" || !meta.lastOutcomeReason) {
+    meta.lastOutcomeReason = "verified";
+    changed = true;
+  }
+
+  if (typeof meta.lastOutcomeAt !== "string" || !meta.lastOutcomeAt) {
+    meta.lastOutcomeAt = meta.installedAt;
+    changed = true;
+  }
+
+  if (!meta.archive || typeof meta.archive !== "object") {
+    meta.archive = {};
+    changed = true;
+  }
+
+  const candidateSourceUri =
+    (typeof meta.sourceUri === "string" && meta.sourceUri.trim() ? meta.sourceUri.trim() : null) ||
+    (typeof meta.archive.downloadUrl === "string" && meta.archive.downloadUrl.trim()
+      ? meta.archive.downloadUrl.trim()
+      : null) ||
+    computeCanonicalSourceUriForPlatform({
+      repoSlug: meta.repoSlug,
+      expectedVersion,
+      platformKey,
+      getDownloadBaseFn,
+      artifactNameFn
+    });
+
+  if (candidateSourceUri && (typeof meta.sourceUri !== "string" || !meta.sourceUri.trim())) {
+    meta.sourceUri = candidateSourceUri;
+    changed = true;
+  }
+
+  const candidateArchiveName =
+    (typeof meta.archive.name === "string" && meta.archive.name.trim() ? meta.archive.name.trim() : null) ||
+    (typeof meta.sourceUri === "string" && meta.sourceUri.trim() ? meta.sourceUri.trim().split("/").pop() : null) ||
+    (typeof meta.binary.filename === "string" && meta.binary.filename
+      ? artifactNameFn(platformKey)
+      : artifactNameFn(platformKey));
+
+  if (candidateArchiveName && (typeof meta.archive.name !== "string" || !meta.archive.name.trim())) {
+    meta.archive.name = candidateArchiveName;
+    changed = true;
+  }
+
+  if (
+    candidateSourceUri &&
+    (typeof meta.archive.downloadUrl !== "string" || !meta.archive.downloadUrl.trim())
+  ) {
+    meta.archive.downloadUrl = candidateSourceUri;
+    changed = true;
+  }
+
+  return changed;
+}
+
 async function readJsonFileIfPossible({ fsModule, filePath }) {
   if (!fsModule?.promises?.readFile) {
     return { value: null, error: "readFile_unavailable", errorCode: "READFILE_UNAVAILABLE" };
@@ -307,7 +440,19 @@ async function writeJsonFileAtomic({ fsModule, pathModule, filePath, value }) {
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   const payload = `${JSON.stringify(value, null, 2)}\n`;
   await fsModule.promises.writeFile(tmp, payload, "utf8");
-  await fsModule.promises.rename(tmp, filePath);
+  try {
+    await fsModule.promises.rename(tmp, filePath);
+  } catch (err) {
+    const code = typeof err?.code === "string" ? err.code : null;
+    if (code === "EEXIST" || code === "EPERM") {
+      await fsModule.promises.rm(filePath, { force: true }).catch(() => {});
+      await fsModule.promises.rename(tmp, filePath);
+    } else {
+      throw err;
+    }
+  } finally {
+    await fsModule.promises.rm(tmp, { force: true }).catch(() => {});
+  }
 }
 
 function isValidInstallMetadata(meta) {
@@ -318,6 +463,47 @@ function isValidInstallMetadata(meta) {
   if (!meta.binary || typeof meta.binary !== "object") return false;
   if (typeof meta.binary.sha256 !== "string" || meta.binary.sha256.length !== 64) return false;
   return true;
+}
+
+async function maybeBackfillInstallMetadataForNoop({
+  fsModule,
+  pathModule,
+  metadataPath,
+  expectedVersion,
+  platformKey,
+  targetTriple,
+  isWin32,
+  integrityResult,
+  getDownloadBaseFn,
+  artifactNameFn,
+  logger
+}) {
+  const metaResult = await readJsonFileIfPossible({ fsModule, filePath: metadataPath });
+  const meta = metaResult.value;
+  if (!isValidInstallMetadata(meta)) return false;
+  if (meta.platformKey !== platformKey) return false;
+
+  const before = JSON.parse(JSON.stringify(meta));
+  const changed = applyNoopInstallMetadataBackfill({
+    meta,
+    expectedVersion,
+    platformKey,
+    targetTriple,
+    isWin32,
+    integrityResult,
+    getDownloadBaseFn,
+    artifactNameFn
+  });
+  if (!changed) return false;
+  if (util.isDeepStrictEqual(before, meta)) return false;
+
+  try {
+    await writeJsonFileAtomic({ fsModule, pathModule, filePath: metadataPath, value: meta });
+    return true;
+  } catch (err) {
+    logger?.warn?.(`[docdex] Install metadata backfill failed: ${err?.message || String(err)}`);
+    return false;
+  }
 }
 
 function normalizeSha256Hex(value) {
@@ -1059,6 +1245,21 @@ async function runInstaller(options) {
   });
 
   if (local.outcome === "no-op") {
+    if (local.metadataPath) {
+      await maybeBackfillInstallMetadataForNoop({
+        fsModule,
+        pathModule,
+        metadataPath: local.metadataPath,
+        expectedVersion: version,
+        platformKey,
+        targetTriple,
+        isWin32,
+        integrityResult: local.integrityResult,
+        getDownloadBaseFn,
+        artifactNameFn,
+        logger
+      });
+    }
     logger.log("[docdex] Install outcome: no-op");
     return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
   }

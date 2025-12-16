@@ -2,6 +2,23 @@
 
 const fs = require("node:fs");
 
+class UnsupportedPlatformError extends Error {
+  /**
+   * @param {{platform: string, arch: string, supportedPlatformKeys: string[], supportedTargetTriples: string[]}} options
+   */
+  constructor({ platform, arch, supportedPlatformKeys, supportedTargetTriples }) {
+    super(`Unsupported platform: ${platform}/${arch}`);
+    this.name = "UnsupportedPlatformError";
+    this.code = "DOCDEX_UNSUPPORTED_PLATFORM";
+    this.details = {
+      platform,
+      arch,
+      supportedPlatformKeys: supportedPlatformKeys || [],
+      supportedTargetTriples: supportedTargetTriples || []
+    };
+  }
+}
+
 const PLATFORM_KEY_TO_TARGET_TRIPLE = Object.freeze({
   "darwin-arm64": "aarch64-apple-darwin",
   "darwin-x64": "x86_64-apple-darwin",
@@ -14,6 +31,9 @@ const PLATFORM_KEY_TO_TARGET_TRIPLE = Object.freeze({
 });
 
 const SUPPORTED_PLATFORM_KEYS = Object.freeze(Object.keys(PLATFORM_KEY_TO_TARGET_TRIPLE).sort());
+const SUPPORTED_TARGET_TRIPLES = Object.freeze(
+  [...new Set(Object.values(PLATFORM_KEY_TO_TARGET_TRIPLE))].sort()
+);
 
 function normalizeLibc(value) {
   if (value == null) return null;
@@ -163,9 +183,12 @@ function detectPlatformKey(options) {
     if (arch === "arm64") return "win32-arm64";
   }
 
-  throw new Error(
-    `Unsupported platform: ${platform}/${arch}. Supported: ${SUPPORTED_PLATFORM_KEYS.join(", ")}`
-  );
+  throw new UnsupportedPlatformError({
+    platform,
+    arch,
+    supportedPlatformKeys: SUPPORTED_PLATFORM_KEYS,
+    supportedTargetTriples: SUPPORTED_TARGET_TRIPLES
+  });
 }
 
 function artifactName(platformKey) {
@@ -186,6 +209,7 @@ module.exports = {
   detectLibc,
   detectLibcFromRuntime,
   detectPlatformKey,
+  UnsupportedPlatformError,
   artifactName,
   targetTripleForPlatformKey,
   detectTargetTriple

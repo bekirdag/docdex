@@ -6,7 +6,13 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { detectLibcFromRuntime, detectTargetTriple, targetTripleForPlatformKey } = require("../lib/platform");
+const {
+  detectLibcFromRuntime,
+  detectPlatformKey,
+  detectTargetTriple,
+  targetTripleForPlatformKey,
+  UnsupportedPlatformError
+} = require("../lib/platform");
 
 function writeElf64WithInterpreter(filePath, interpreter) {
   const interpBytes = Buffer.from(`${interpreter}\0`, "utf8");
@@ -103,5 +109,20 @@ test("Linux libc detection can use ELF interpreter deterministically", () => {
   assert.equal(
     detectLibcFromRuntime({ env: {}, report: null, execPath: gnuPath, fs: fsProxy }),
     "gnu"
+  );
+});
+
+test("unsupported OS/arch throws typed error with detected platform details", () => {
+  assert.throws(
+    () => detectPlatformKey({ platform: "freebsd", arch: "x64" }),
+    (err) => {
+      assert.ok(err instanceof UnsupportedPlatformError);
+      assert.equal(err.code, "DOCDEX_UNSUPPORTED_PLATFORM");
+      assert.equal(err.details.platform, "freebsd");
+      assert.equal(err.details.arch, "x64");
+      assert.ok(Array.isArray(err.details.supportedPlatformKeys));
+      assert.ok(Array.isArray(err.details.supportedTargetTriples));
+      return true;
+    }
   );
 });

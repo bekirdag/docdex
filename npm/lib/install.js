@@ -9,7 +9,7 @@ const { pipeline } = require("node:stream/promises");
 const crypto = require("node:crypto");
 
 const pkg = require("../package.json");
-const { artifactName, detectPlatformKey, detectTargetTriple } = require("./platform");
+const { artifactName, detectPlatformKey, detectTargetTriple, UnsupportedPlatformError } = require("./platform");
 const { ManifestResolutionError, resolveCanonicalAssetForTargetTriple } = require("./release_manifest");
 
 const MAX_REDIRECTS = 5;
@@ -17,6 +17,18 @@ const USER_AGENT = "docdex-installer";
 const PLACEHOLDER_REPO_TOKEN = /OWNER|REPO/i;
 const MAX_MANIFEST_BYTES = 1024 * 1024; // 1 MiB cap for safety
 const INVALID_JSON_ERROR = "invalid JSON";
+
+class MissingArtifactError extends Error {
+  /**
+   * @param {object} details
+   */
+  constructor(details) {
+    super("Missing release artifact for detected platform");
+    this.name = "MissingArtifactError";
+    this.code = "DOCDEX_ASSET_MISSING";
+    this.details = details || {};
+  }
+}
 
 function parseRepoSlug() {
   const envRepo = process.env.DOCDEX_DOWNLOAD_REPO;
@@ -71,6 +83,7 @@ function downloadText(url, redirects = 0) {
           res.resume();
           const err = new Error(`Download failed (${res.statusCode}) from ${url}`);
           err.statusCode = res.statusCode;
+          err.url = url;
           return reject(err);
         }
 
@@ -106,7 +119,10 @@ function download(url, dest, redirects = 0) {
 
         if (res.statusCode !== 200) {
           res.resume();
-          return reject(new Error(`Download failed (${res.statusCode}) from ${url}`));
+          const err = new Error(`Download failed (${res.statusCode}) from ${url}`);
+          err.statusCode = res.statusCode;
+          err.url = url;
+          return reject(err);
         }
 
         const file = fs.createWriteStream(dest);
@@ -289,38 +305,109 @@ async function main() {
   const tmpFile = path.join(os.tmpdir(), `${archive}.${process.pid}.tgz`);
 
   console.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
-  await fs.promises.rm(distDir, { recursive: true, force: true });
-  await download(downloadUrl, tmpFile);
+  try {
+    try {
+      await download(downloadUrl, tmpFile);
+    } catch (err) {
+      if (err && typeof err.statusCode === "number" && err.statusCode === 404) {
+        throw new MissingArtifactError({
+          detected: { os: process.platform, arch: process.arch },
+          platformKey,
+          targetTriple,
+          version,
+          repoSlug,
+          downloadUrl,
+          expectedAsset: archive,
+          expectedAssetPattern: `docdexd-<platform>.tar.gz (e.g. ${artifactName(platformKey)})`,
+          note: "This usually means the GitHub release assets are missing or the npm version is out of sync with the release."
+        });
+      }
+      throw err;
+    }
 
-  await verifyDownloadedFileIntegrity({ filePath: tmpFile, expectedSha256, archiveName: archive });
+    await verifyDownloadedFileIntegrity({ filePath: tmpFile, expectedSha256, archiveName: archive });
 
-  await extractTarball(tmpFile, distDir);
+    // Only replace an existing installation after we have successfully fetched + verified the archive.
+    await fs.promises.rm(distDir, { recursive: true, force: true });
+    await extractTarball(tmpFile, distDir);
 
-  const binaryPath = path.join(distDir, process.platform === "win32" ? "docdexd.exe" : "docdexd");
-  if (!fs.existsSync(binaryPath)) {
-    throw new Error(`Downloaded archive missing binary at ${binaryPath}`);
+    const binaryPath = path.join(distDir, process.platform === "win32" ? "docdexd.exe" : "docdexd");
+    if (!fs.existsSync(binaryPath)) {
+      throw new Error(`Downloaded archive missing binary at ${binaryPath}`);
+    }
+
+    await fs.promises.chmod(binaryPath, 0o755).catch(() => {});
+    console.log(`[docdex] Installed binary to ${binaryPath}`);
+  } finally {
+    await fs.promises.rm(tmpFile, { force: true }).catch(() => {});
+  }
+}
+
+function describeFatalError(err) {
+  if (err instanceof UnsupportedPlatformError) {
+    const detected = `${err.details.platform}/${err.details.arch}`;
+    const supportedKeys = (err.details.supportedPlatformKeys || []).join(", ");
+    const supportedTriples = (err.details.supportedTargetTriples || []).join(", ");
+
+    return {
+      exitCode: 1,
+      lines: [
+        `[docdex] install failed: unsupported platform (${detected})`,
+        "[docdex] No download was attempted for this platform.",
+        supportedKeys ? `[docdex] Supported platforms: ${supportedKeys}` : null,
+        supportedTriples ? `[docdex] Supported target triples: ${supportedTriples}` : null,
+        "[docdex] Next steps:",
+        "[docdex] - Use a supported OS/arch (macOS/Linux/Windows on arm64/x64).",
+        "[docdex] - Or build from source (requires Rust): `cargo build --release --locked`.",
+        "[docdex] - If you are on Linux and unsure of libc, set `DOCDEX_LIBC=gnu` or `DOCDEX_LIBC=musl`."
+      ].filter(Boolean)
+    };
   }
 
-  await fs.promises.chmod(binaryPath, 0o755).catch(() => {});
-  await fs.promises.rm(tmpFile, { force: true });
-  console.log(`[docdex] Installed binary to ${binaryPath}`);
+  if (err instanceof MissingArtifactError) {
+    const detected = err.details?.detected ? `${err.details.detected.os}/${err.details.detected.arch}` : null;
+    return {
+      exitCode: 1,
+      lines: [
+        "[docdex] install failed: missing release artifact for this platform",
+        detected ? `[docdex] Detected platform: ${detected}` : null,
+        err.details?.platformKey ? `[docdex] Platform key: ${err.details.platformKey}` : null,
+        err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
+        err.details?.version ? `[docdex] Version: v${err.details.version}` : null,
+        err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
+        err.details?.expectedAsset ? `[docdex] Expected asset: ${err.details.expectedAsset}` : null,
+        err.details?.expectedAssetPattern ? `[docdex] Asset naming pattern: ${err.details.expectedAssetPattern}` : null,
+        err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
+        err.details?.note ? `[docdex] Note: ${err.details.note}` : null,
+        "[docdex] Next steps:",
+        "[docdex] - Confirm the GitHub Release for this version contains the expected asset for your target.",
+        "[docdex] - If installing from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` to the repo that hosts the assets.",
+        "[docdex] - Workaround: install a version with matching assets, or build from source (`cargo build --release --locked`)."
+      ].filter(Boolean)
+    };
+  }
+
+  if (err instanceof ManifestResolutionError) {
+    const lines = [
+      `[docdex] install failed: ${err.message}`,
+      `[docdex] error code: ${err.code}`
+    ];
+    if (Array.isArray(err.details?.supported) && err.details.supported.length) {
+      lines.push(`[docdex] supported targets: ${err.details.supported.join(", ")}`);
+    }
+    if (Array.isArray(err.details?.matches) && err.details.matches.length) {
+      lines.push(`[docdex] matched assets: ${err.details.matches.join(", ")}`);
+    }
+    return { exitCode: 1, lines };
+  }
+
+  return { exitCode: 1, lines: [`[docdex] install failed: ${err.message}`] };
 }
 
 function handleFatal(err) {
-  if (err instanceof ManifestResolutionError) {
-    console.error(`[docdex] install failed: ${err.message}`);
-    console.error(`[docdex] error code: ${err.code}`);
-    if (Array.isArray(err.details?.supported) && err.details.supported.length) {
-      console.error(`[docdex] supported targets: ${err.details.supported.join(", ")}`);
-    }
-    if (Array.isArray(err.details?.matches) && err.details.matches.length) {
-      console.error(`[docdex] matched assets: ${err.details.matches.join(", ")}`);
-    }
-    process.exit(1);
-  }
-
-  console.error(`[docdex] install failed: ${err.message}`);
-  process.exit(1);
+  const report = describeFatalError(err);
+  for (const line of report.lines) console.error(line);
+  process.exit(report.exitCode || 1);
 }
 
 if (require.main === module) {
@@ -334,5 +421,7 @@ module.exports = {
   parseSha256File,
   sha256File,
   verifyDownloadedFileIntegrity,
+  MissingArtifactError,
+  describeFatalError,
   handleFatal
 };

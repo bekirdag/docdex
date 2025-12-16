@@ -175,6 +175,86 @@ fn snippet_signature(payload: &Value) -> Value {
     })
 }
 
+fn capture_determinism_signatures(client: &Client, host: &str, port: u16) -> Result<Value, Box<dyn Error>> {
+    let search_url = format!("http://{host}:{port}/search");
+
+    let ordering_payload: Value = client
+        .get(&search_url)
+        .query(&[("q", "commonterm"), ("limit", "10"), ("snippets", "false")])
+        .send()?
+        .error_for_status()?
+        .json()?;
+    let ordering = search_signature(&ordering_payload);
+
+    let pruning_payload: Value = client
+        .get(&search_url)
+        .query(&[
+            ("q", "prune_term"),
+            ("limit", "10"),
+            ("snippets", "false"),
+            ("max_tokens", "50"),
+        ])
+        .send()?
+        .error_for_status()?
+        .json()?;
+    let pruning = search_signature(&pruning_payload);
+
+    let empty_array: Vec<Value> = Vec::new();
+    let pruned = pruning_payload
+        .get("meta")
+        .and_then(|v| v.get("context_assembly"))
+        .and_then(|v| v.get("pruned"))
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty_array)
+        .iter()
+        .filter_map(|entry| entry.get("rel_path").and_then(|v| v.as_str()))
+        .collect::<Vec<_>>();
+    assert!(
+        pruned.iter().any(|path| path.ends_with("docs/huge.md")),
+        "expected docs/huge.md to be pruned under max_tokens=50"
+    );
+
+    let snippet_url = format!("http://{host}:{port}/snippet/docs/chunk.md");
+    let chunk_payload: Value = client
+        .get(&snippet_url)
+        .query(&[("window", "20"), ("text_only", "true")])
+        .send()?
+        .error_for_status()?
+        .json()?;
+    let chunk = snippet_signature(&chunk_payload);
+
+    let snippet = chunk_payload.get("snippet").cloned().unwrap_or(Value::Null);
+    assert!(
+        snippet.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false),
+        "expected preview snippet to be truncated for docs/chunk.md"
+    );
+    let text = snippet.get("text").and_then(|v| v.as_str()).unwrap_or_default();
+    assert!(
+        text.ends_with('…'),
+        "expected truncated preview snippet text to end with ellipsis"
+    );
+
+    let chunk_too_small_payload: Value = client
+        .get(&snippet_url)
+        .query(&[("window", "20"), ("text_only", "true"), ("max_tokens", "5")])
+        .send()?
+        .error_for_status()?
+        .json()?;
+    let chunk_too_small = snippet_signature(&chunk_too_small_payload);
+    assert!(
+        chunk_too_small_payload.get("snippet").is_none()
+            || chunk_too_small_payload.get("snippet").unwrap().is_null(),
+        "expected snippet to be omitted when doc token_estimate exceeds max_tokens"
+    );
+
+    Ok(json!({
+        "ordering": ordering,
+        "pruning": pruning,
+        "chunk": chunk,
+        "chunk_too_small": chunk_too_small,
+    }))
+}
+
 #[test]
 fn e2e_context_assembly_ordering_is_deterministic() -> Result<(), Box<dyn Error>> {
     let repo = setup_determinism_repo()?;
@@ -206,6 +286,39 @@ fn e2e_context_assembly_ordering_is_deterministic() -> Result<(), Box<dyn Error>
 
     child.kill().ok();
     child.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn e2e_context_assembly_is_deterministic_across_reindex_and_restart() -> Result<(), Box<dyn Error>> {
+    let repo = setup_determinism_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut child = spawn_server(repo.path(), host, port)?;
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let baseline = capture_determinism_signatures(&client, host, port)?;
+
+    child.kill().ok();
+    child.wait().ok();
+
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let mut child = spawn_server(repo.path(), host, port)?;
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let after = capture_determinism_signatures(&client, host, port)?;
+
+    child.kill().ok();
+    child.wait().ok();
+
+    assert_eq!(after, baseline);
     Ok(())
 }
 

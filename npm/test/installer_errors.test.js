@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 
 const { detectPlatformKey } = require("../lib/platform");
 const { MissingArtifactError, describeFatalError } = require("../lib/install");
+const { ManifestResolutionError } = require("../lib/release_manifest");
 
 test("describeFatalError: unsupported platform includes detected OS/arch and no-download note", () => {
   let err;
@@ -47,4 +48,18 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
   assert.ok(report.lines.some((l) => l.includes("missing release artifact")));
   assert.ok(report.lines.some((l) => l.includes("Expected target triple: aarch64-unknown-linux-musl")));
   assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platform>.tar.gz")));
+});
+
+test("describeFatalError: manifest errors report whether fallback was attempted and include supported/matches", () => {
+  const err = new ManifestResolutionError("DOCDEX_ASSET_MULTI_MATCH", "Manifest docdexd-manifest.json: boom", {
+    fallbackAttempted: false,
+    supported: ["x86_64-unknown-linux-gnu"],
+    matches: ["a.tar.gz", "b.tar.gz"]
+  });
+
+  const report = describeFatalError(err);
+  assert.equal(report.code, "DOCDEX_ASSET_MULTI_MATCH");
+  assert.ok(report.lines.some((l) => l.includes("Fallback was not attempted")));
+  assert.ok(report.lines.some((l) => l.includes("supported targets: x86_64-unknown-linux-gnu")));
+  assert.ok(report.lines.some((l) => l.includes("matched assets: a.tar.gz, b.tar.gz")));
 });

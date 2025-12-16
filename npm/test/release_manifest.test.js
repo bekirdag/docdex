@@ -113,3 +113,195 @@ test("missing sha256 throws actionable error", () => {
     }
   );
 });
+
+test("non-object manifest throws schema error deterministically", () => {
+  assert.throws(
+    () => resolveCanonicalAssetForTargetTriple([], "x86_64-unknown-linux-gnu"),
+    (err) => {
+      assert.ok(err instanceof ManifestResolutionError);
+      assert.equal(err.code, "DOCDEX_MANIFEST_MALFORMED");
+      assert.match(err.message, /^Malformed manifest: expected a JSON object at top-level/);
+      assert.equal(err.details.manifestVersion, null);
+      return true;
+    }
+  );
+});
+
+test("manifestVersion is surfaced in errors (schemaVersion/version aliases)", () => {
+  assert.throws(
+    () =>
+      resolveCanonicalAssetForTargetTriple(
+        {
+          schemaVersion: 7,
+          targets: {}
+        },
+        "x86_64-unknown-linux-gnu"
+      ),
+    (err) => {
+      assert.ok(err instanceof ManifestResolutionError);
+      assert.equal(err.code, "DOCDEX_ASSET_NO_MATCH");
+      assert.equal(err.details.manifestVersion, 7);
+      return true;
+    }
+  );
+
+  assert.throws(
+    () =>
+      resolveCanonicalAssetForTargetTriple(
+        {
+          version: "v2",
+          assets: []
+        },
+        "x86_64-unknown-linux-gnu"
+      ),
+    (err) => {
+      assert.ok(err instanceof ManifestResolutionError);
+      assert.equal(err.code, "DOCDEX_ASSET_NO_MATCH");
+      assert.equal(err.details.manifestVersion, "v2");
+      return true;
+    }
+  );
+});
+
+test("malformed sha256 is treated as missing integrity metadata", () => {
+  assert.throws(
+    () =>
+      resolveCanonicalAssetForTargetTriple(
+        {
+          targets: {
+            "x86_64-unknown-linux-gnu": {
+              asset: "docdexd-linux-x64-gnu.tar.gz",
+              integrity: { sha256: "NOT_A_SHA" }
+            }
+          }
+        },
+        "x86_64-unknown-linux-gnu"
+      ),
+    (err) => {
+      assert.ok(err instanceof ManifestResolutionError);
+      assert.equal(err.code, "DOCDEX_ASSET_MALFORMED");
+      assert.equal(err.details.assetName, "docdexd-linux-x64-gnu.tar.gz");
+      return true;
+    }
+  );
+});
+
+test("missing canonical asset identifier triggers actionable schema error", () => {
+  assert.throws(
+    () =>
+      resolveCanonicalAssetForTargetTriple(
+        {
+          targets: {
+            "x86_64-unknown-linux-gnu": {
+              asset: { id: 123 },
+              integrity: { sha256: "a".repeat(64) }
+            }
+          }
+        },
+        "x86_64-unknown-linux-gnu"
+      ),
+    (err) => {
+      assert.ok(err instanceof ManifestResolutionError);
+      assert.equal(err.code, "DOCDEX_ASSET_MALFORMED");
+      assert.match(err.message, /missing a canonical asset name\/identifier/);
+      assert.equal(err.details.assetName, null);
+      return true;
+    }
+  );
+});
+
+test("non-object manifest throws schema error deterministically", () => {
+  assert.throws(
+    () => resolveCanonicalAssetForTargetTriple([], "x86_64-unknown-linux-gnu"),
+    (err) => {
+      assert.ok(err instanceof ManifestResolutionError);
+      assert.equal(err.code, "DOCDEX_MANIFEST_MALFORMED");
+      assert.match(err.message, /^Malformed manifest: expected a JSON object at top-level/);
+      assert.equal(err.details.manifestVersion, null);
+      return true;
+    }
+  );
+});
+
+test("manifestVersion is surfaced in errors (schemaVersion/version aliases)", () => {
+  assert.throws(
+    () =>
+      resolveCanonicalAssetForTargetTriple(
+        {
+          schemaVersion: 7,
+          targets: {}
+        },
+        "x86_64-unknown-linux-gnu"
+      ),
+    (err) => {
+      assert.ok(err instanceof ManifestResolutionError);
+      assert.equal(err.code, "DOCDEX_ASSET_NO_MATCH");
+      assert.equal(err.details.manifestVersion, 7);
+      return true;
+    }
+  );
+
+  assert.throws(
+    () =>
+      resolveCanonicalAssetForTargetTriple(
+        {
+          version: "v2",
+          assets: []
+        },
+        "x86_64-unknown-linux-gnu"
+      ),
+    (err) => {
+      assert.ok(err instanceof ManifestResolutionError);
+      assert.equal(err.code, "DOCDEX_ASSET_NO_MATCH");
+      assert.equal(err.details.manifestVersion, "v2");
+      return true;
+    }
+  );
+});
+
+test("malformed sha256 is treated as missing integrity metadata", () => {
+  assert.throws(
+    () =>
+      resolveCanonicalAssetForTargetTriple(
+        {
+          targets: {
+            "x86_64-unknown-linux-gnu": {
+              asset: "docdexd-linux-x64-gnu.tar.gz",
+              integrity: { sha256: "NOT_A_SHA" }
+            }
+          }
+        },
+        "x86_64-unknown-linux-gnu"
+      ),
+    (err) => {
+      assert.ok(err instanceof ManifestResolutionError);
+      assert.equal(err.code, "DOCDEX_ASSET_MALFORMED");
+      assert.equal(err.details.assetName, "docdexd-linux-x64-gnu.tar.gz");
+      return true;
+    }
+  );
+});
+
+test("missing canonical asset identifier triggers actionable schema error", () => {
+  assert.throws(
+    () =>
+      resolveCanonicalAssetForTargetTriple(
+        {
+          targets: {
+            "x86_64-unknown-linux-gnu": {
+              asset: { id: 123 },
+              integrity: { sha256: "a".repeat(64) }
+            }
+          }
+        },
+        "x86_64-unknown-linux-gnu"
+      ),
+    (err) => {
+      assert.ok(err instanceof ManifestResolutionError);
+      assert.equal(err.code, "DOCDEX_ASSET_MALFORMED");
+      assert.match(err.message, /missing a canonical asset name\/identifier/);
+      assert.equal(err.details.assetName, null);
+      return true;
+    }
+  );
+});

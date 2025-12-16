@@ -74,6 +74,13 @@ test("generateReleaseManifest: emits targets mapping with sha256 and validates c
     assert.equal(targetEntry.integrity.sha256, expected.tarSha);
   }
 
+  assert.ok(Array.isArray(manifest.publishedAssets));
+  assert.equal(manifest.publishedAssets.length, DEFAULT_TARGETS.length * 2);
+  for (const entry of manifest.publishedAssets) {
+    assert.equal(typeof entry.name, "string");
+    assert.match(entry.sha256, /^[0-9a-f]{64}$/);
+  }
+
   const manifestShaLine = fs.readFileSync(`${outPath}.sha256`, "utf8").trim();
   assert.match(manifestShaLine, /^[0-9a-f]{64}\s+docdexd-manifest\.json$/);
   assert.equal(manifestShaLine.split(/\s+/)[0], sha256(fs.readFileSync(outPath)));
@@ -98,3 +105,55 @@ test("generateReleaseManifest: missing assets fails with stable exitCode", () =>
   );
 });
 
+test("generateReleaseManifest: checksum mismatch fails with stable exitCode", () => {
+  const dir = mkTmpDir();
+  const outPath = path.join(dir, "docdexd-manifest.json");
+
+  const entry = DEFAULT_TARGETS[0];
+  const tarName = `${entry.archiveBase}.tar.gz`;
+  const tarPath = path.join(dir, tarName);
+  fs.writeFileSync(tarPath, Buffer.from("payload", "utf8"));
+
+  const declared = sha256(Buffer.from("different", "utf8"));
+  fs.writeFileSync(path.join(dir, `${tarName}.sha256`), `${declared}  ${tarName}\n`, "utf8");
+
+  assert.throws(
+    () =>
+      generateReleaseManifest({
+        assetsDir: dir,
+        outPath,
+        targets: [entry]
+      }),
+    (err) => {
+      assert.equal(err.exitCode, 4);
+      assert.match(err.message, new RegExp(`^Checksum mismatch for ${tarName}: declared sha256=`));
+      return true;
+    }
+  );
+});
+
+test("generateReleaseManifest: unparseable checksum file fails with stable exitCode", () => {
+  const dir = mkTmpDir();
+  const outPath = path.join(dir, "docdexd-manifest.json");
+
+  const entry = DEFAULT_TARGETS[0];
+  const tarName = `${entry.archiveBase}.tar.gz`;
+  const tarPath = path.join(dir, tarName);
+  fs.writeFileSync(tarPath, Buffer.from("payload", "utf8"));
+
+  fs.writeFileSync(path.join(dir, `${tarName}.sha256`), `not a checksum file\n`, "utf8");
+
+  assert.throws(
+    () =>
+      generateReleaseManifest({
+        assetsDir: dir,
+        outPath,
+        targets: [entry]
+      }),
+    (err) => {
+      assert.equal(err.exitCode, 4);
+      assert.equal(err.message, `Could not parse SHA-256 file: ${tarName}.sha256`);
+      return true;
+    }
+  );
+});

@@ -327,6 +327,45 @@ function normalizeSha256Hex(value) {
   return trimmed;
 }
 
+function parseSemverLike(version) {
+  if (typeof version !== "string") return null;
+  const trimmed = version.trim().replace(/^v/i, "");
+  if (!trimmed) return null;
+  const core = trimmed.split("+")[0].split("-")[0];
+  const parts = core.split(".").map((p) => Number.parseInt(p, 10));
+  if (!parts.length || parts.some((n) => !Number.isFinite(n))) return null;
+  while (parts.length < 3) parts.push(0);
+  return parts.slice(0, 3);
+}
+
+function compareSemverLike(a, b) {
+  const av = parseSemverLike(a);
+  const bv = parseSemverLike(b);
+  if (!av || !bv) return null;
+  for (let i = 0; i < 3; i += 1) {
+    if (av[i] < bv[i]) return -1;
+    if (av[i] > bv[i]) return 1;
+  }
+  return 0;
+}
+
+function planFromOutcome({ outcome, installedVersion, expectedVersion, binaryPresent }) {
+  if (outcome === "no-op") return "no-op";
+  if (outcome === "repair") return "repair";
+
+  const cmp = compareSemverLike(installedVersion, expectedVersion);
+
+  if (outcome === "update") {
+    if (cmp === 1) return "downgrade";
+    return "upgrade";
+  }
+
+  // Any other reinstall path is treated as a repair-like convergence step.
+  if (cmp === 1) return "downgrade";
+  if (cmp === -1) return "upgrade";
+  return binaryPresent ? "repair" : "upgrade";
+}
+
 function integrityUnverifiable(reason, { expectedSha256, actualSha256, expectedSource, error } = {}) {
   return {
     status: "unverifiable",
@@ -623,6 +662,12 @@ async function determineLocalInstallerOutcome({
     typeof discoveredInstalledState.installedVersion === "string" ? discoveredInstalledState.installedVersion : null;
 
   return {
+    plan: planFromOutcome({
+      outcome: decision.outcome,
+      installedVersion,
+      expectedVersion,
+      binaryPresent: Boolean(discoveredInstalledState.binaryPresent)
+    }),
     outcome: decision.outcome,
     reason: decision.reason,
     binaryPath: discoveredInstalledState.binaryPath,
@@ -1060,7 +1105,12 @@ async function runInstaller(options) {
 
   if (local.outcome === "no-op") {
     logger.log("[docdex] Install outcome: no-op");
-    return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
+    return {
+      binaryPath: local.binaryPath,
+      outcome: local.outcome,
+      plan: local.plan,
+      integrityResult: local.integrityResult
+    };
   }
 
   const repoSlug = parseRepoSlugFn();
@@ -1189,7 +1239,7 @@ async function runInstaller(options) {
     });
 
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
-    return { binaryPath, outcome: local.outcome };
+    return { binaryPath, outcome: local.outcome, plan: local.plan };
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
   }

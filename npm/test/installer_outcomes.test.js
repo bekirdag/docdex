@@ -112,6 +112,7 @@ test("installer outcome: no-op skips plan/download when local install is verifie
 
   assert.equal(result.binaryPath, binaryPath);
   assert.equal(result.outcome, "no-op");
+  assert.equal(result.plan, "no-op");
   assert.equal(parseRepoSlugCalls, 0);
   assert.equal(planCalls, 0);
   assert.equal(downloadCalls, 0);
@@ -189,6 +190,7 @@ test("installer outcome: update installs when version differs and writes fresh m
 
   assert.equal(downloadUrl, expectedDownloadUrl);
   assert.equal(result.outcome, "update");
+  assert.equal(result.plan, "upgrade");
 
   const metadataPath = path.join(distDir, "docdexd-install.json");
   assert.ok(fs.existsSync(metadataPath));
@@ -254,6 +256,7 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
   });
 
   assert.equal(result.outcome, "repair");
+  assert.equal(result.plan, "repair");
   const metadataPath = path.join(distDir, "docdexd-install.json");
   const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
   assert.equal(meta.version, version);
@@ -314,6 +317,7 @@ test("installer outcome: reinstall_unknown reinstalls when metadata is missing",
   });
 
   assert.equal(result.outcome, "reinstall_unknown");
+  assert.equal(result.plan, "repair");
   const metadataPath = path.join(distDir, "docdexd-install.json");
   const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
   assert.equal(meta.version, version);
@@ -384,6 +388,7 @@ test("installer outcome: reinstall_unknown reinstalls when integrity cannot be v
   });
 
   assert.equal(result.outcome, "reinstall_unknown");
+  assert.equal(result.plan, "repair");
   assert.equal(downloadCalls, 1);
   assert.equal(extractCalls, 1);
   assert.ok(shaCalls >= 2, "expected sha256 to be attempted for local check and after install");

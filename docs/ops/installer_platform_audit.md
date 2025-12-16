@@ -34,6 +34,7 @@ If a platform is supported but an artifact is missing, install exits non-zero wi
 Contracts:
 - `docs/contracts/installer_error_contract_v1.md`
 - `docs/contracts/release_manifest_schema_v1.md`
+- Remediation playbook: `docs/ops/installer_error_codes.md`
 
 ## Published support matrix (what releases currently ship)
 

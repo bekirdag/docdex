@@ -35,3 +35,8 @@ This repo publishes `targets`.
 - `version` (string, `X.Y.Z`)
 - `generatedAt` (string, ISO-8601)
 - `publishedAssets` (array): `{name, sha256}` for release automation auditing (installer ignores this)
+
+## See also
+
+- Installer error codes + remediation: `docs/ops/installer_error_codes.md`
+- Installer error contract: `docs/contracts/installer_error_contract_v1.md`

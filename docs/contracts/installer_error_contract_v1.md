@@ -13,6 +13,7 @@ Assumptions (explicit):
 - Stable, machine-readable error `code` plus deterministic `exitCode`.
 - Actionable user-facing messages that indicate whether manifest fallback was attempted and why.
 - Minimum structured fields on every fatal error: `targetTriple`, `manifestVersion`, `assetName` (may be `null` when unknown).
+- Concrete remediation guidance lives in `docs/ops/installer_error_codes.md`.
 
 ## Canonical error envelope
 
@@ -69,20 +70,30 @@ These are emitted as structured “events” on the resolution attempt and may a
 - `DOCDEX_MANIFEST_FETCH_FAILED` (non-404 failure fetching a manifest candidate)
 - `DOCDEX_MANIFEST_JSON_INVALID` (invalid JSON in a fetched manifest candidate)
 - `DOCDEX_MANIFEST_TOO_LARGE` (manifest response exceeds size cap)
+- `DOCDEX_MANIFEST_UNUSABLE` (manifest was present but missing required fields; installer continues to next candidate or falls back)
 - `DOCDEX_FALLBACK_USED` (fallback selected; includes `fallbackReason`)
 
-### Manifest validation / target resolution (fatal)
+### Manifest target resolution (fail-closed)
 
-- `DOCDEX_MANIFEST_MALFORMED` → exit `10`
-  - A manifest was fetched and parsed, but its shape is not supported (`targets`/`assets` missing).
-- `DOCDEX_TARGET_TRIPLE_INVALID` → exit `11`
-  - Internal/contract violation: target triple is missing/empty.
 - `DOCDEX_ASSET_NO_MATCH` → exit `12`
   - Manifest does not contain an entry for the detected `targetTriple`.
 - `DOCDEX_ASSET_MULTI_MATCH` → exit `13`
   - Manifest contains multiple entries for the same `targetTriple`.
+
+Rationale: if a manifest is present but resolution is unsupported/ambiguous for the current target, the installer fails closed (no fallback), because a “fallback” would be non-deterministic relative to a present-but-contradictory manifest.
+
+### Manifest schema/entry issues (fallbackable)
+
+These codes exist in the manifest resolver (`npm/lib/release_manifest.js`) and map to stable exit codes, but in the installer’s current behavior they are treated as “manifest unusable” and trigger a documented fallback path when possible:
+
+- `DOCDEX_MANIFEST_MALFORMED` → exit `10`
+  - Manifest JSON object is present but has an unsupported top-level shape.
 - `DOCDEX_ASSET_MALFORMED` → exit `14`
-  - Manifest entry is missing required fields (canonical asset name and/or SHA-256).
+  - Manifest entry exists for the target but is missing required fields (canonical asset name and/or SHA-256).
+- `DOCDEX_TARGET_TRIPLE_INVALID` → exit `11`
+  - Contract violation: target triple is missing/empty.
+
+If all fallback paths fail (e.g., checksums are also unavailable), the resulting fatal error is typically `DOCDEX_CHECKSUM_UNUSABLE` (exit `24`) with `details.fallbackAttempted=true`.
 
 ### Download / verification (fatal)
 

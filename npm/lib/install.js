@@ -24,8 +24,10 @@ const USER_AGENT = "docdex-installer";
 const PLACEHOLDER_REPO_TOKEN = /OWNER|REPO/i;
 const MAX_MANIFEST_BYTES = 1024 * 1024; // 1 MiB cap for safety
 const INVALID_JSON_ERROR = "invalid JSON";
-const INSTALL_METADATA_SCHEMA_VERSION = 1;
+const INSTALL_METADATA_SCHEMA_VERSION = 2;
 const INSTALL_METADATA_FILENAME = "docdexd-install.json";
+const INSTALL_STATE_DIRNAME = "daemon";
+const DEFAULT_STATE_ROOT_RELATIVE = [".docdex", "state"];
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -277,6 +279,28 @@ function installMetadataPath(distDir, pathModule = path) {
   return pathModule.join(distDir, INSTALL_METADATA_FILENAME);
 }
 
+function resolveInstallerStateRootDir({ osModule, pathModule, env }) {
+  const override =
+    typeof env?.DOCDEX_INSTALL_STATE_DIR === "string" && env.DOCDEX_INSTALL_STATE_DIR.trim()
+      ? env.DOCDEX_INSTALL_STATE_DIR.trim()
+      : null;
+
+  const homeDir = typeof osModule?.homedir === "function" ? osModule.homedir() : null;
+  const base = override || (homeDir ? pathModule.join(homeDir, ...DEFAULT_STATE_ROOT_RELATIVE) : null);
+  if (!base) {
+    const err = new InstallerConfigError("Unable to resolve a writable install state directory", {
+      repoSlug: null
+    });
+    err.code = "DOCDEX_INSTALLER_CONFIG";
+    throw err;
+  }
+  return pathModule.resolve(base);
+}
+
+function resolveInstallerInstallDir({ stateRootDir, platformKey, pathModule }) {
+  return pathModule.join(stateRootDir, INSTALL_STATE_DIRNAME, platformKey);
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -310,14 +334,65 @@ async function writeJsonFileAtomic({ fsModule, pathModule, filePath, value }) {
   await fsModule.promises.rename(tmp, filePath);
 }
 
-function isValidInstallMetadata(meta) {
+function isValidInstallMetadataV2(meta) {
   if (!meta || typeof meta !== "object") return false;
   if (meta.schemaVersion !== INSTALL_METADATA_SCHEMA_VERSION) return false;
-  if (typeof meta.version !== "string" || !meta.version) return false;
+  if (typeof meta.installedVersion !== "string" || !meta.installedVersion) return false;
+  if (typeof meta.expectedVersion !== "string" || !meta.expectedVersion) return false;
   if (typeof meta.platformKey !== "string" || !meta.platformKey) return false;
-  if (!meta.binary || typeof meta.binary !== "object") return false;
-  if (typeof meta.binary.sha256 !== "string" || meta.binary.sha256.length !== 64) return false;
+  if (typeof meta.binaryPath !== "string" || !meta.binaryPath) return false;
+  if (typeof meta.binaryHash !== "string" || meta.binaryHash.length !== 64) return false;
+  if (typeof meta.provenance !== "object" || !meta.provenance) return false;
+  if (typeof meta.installedAt !== "string" || !meta.installedAt) return false;
+  if (typeof meta.lastVerifiedAt !== "string" || !meta.lastVerifiedAt) return false;
   return true;
+}
+
+function normalizeInstallMetadata(meta, { binaryPath }) {
+  if (!meta || typeof meta !== "object") return null;
+
+  if (meta.schemaVersion === INSTALL_METADATA_SCHEMA_VERSION) {
+    return isValidInstallMetadataV2(meta) ? meta : null;
+  }
+
+  // Legacy schema (v1) lived in the package dist folder; normalize it for decision-making and migration.
+  if (meta.schemaVersion === 1) {
+    const version = typeof meta.version === "string" ? meta.version : null;
+    const platformKey = typeof meta.platformKey === "string" ? meta.platformKey : null;
+    const binarySha256 = normalizeSha256Hex(meta.binary?.sha256);
+    const installedAt = typeof meta.installedAt === "string" ? meta.installedAt : null;
+    if (!version || !platformKey || !binarySha256 || !installedAt) return null;
+
+    const targetTriple = typeof meta.targetTriple === "string" ? meta.targetTriple : null;
+    const repoSlug = typeof meta.repoSlug === "string" ? meta.repoSlug : null;
+    const assetName = typeof meta.archive?.name === "string" ? meta.archive.name : null;
+    const assetUrl = typeof meta.archive?.downloadUrl === "string" ? meta.archive.downloadUrl : null;
+    const source = typeof meta.archive?.source === "string" ? meta.archive.source : null;
+    const assetSha256 = normalizeSha256Hex(meta.archive?.sha256);
+
+    return {
+      schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
+      installedVersion: version,
+      expectedVersion: version,
+      platformKey,
+      targetTriple,
+      binaryPath,
+      binaryHash: binarySha256,
+      provenance: {
+        repoSlug,
+        releaseTag: `v${version}`,
+        releaseId: null,
+        assetName,
+        assetUrl,
+        assetSha256,
+        source
+      },
+      installedAt,
+      lastVerifiedAt: installedAt
+    };
+  }
+
+  return null;
 }
 
 function normalizeSha256Hex(value) {
@@ -384,7 +459,7 @@ async function verifyInstalledDocdexdIntegrity({
   }
 
   const expectedFromMetadata =
-    installedMetadataStatus === "valid" ? normalizeSha256Hex(installedMetadata?.binary?.sha256) : null;
+    installedMetadataStatus === "valid" ? normalizeSha256Hex(installedMetadata?.binaryHash) : null;
 
   const expectedSha256 = expectedFromRelease || expectedFromMetadata;
   const expectedSource = expectedFromRelease ? "release" : expectedFromMetadata ? "metadata" : null;
@@ -498,12 +573,18 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
 
   const metaResult = await readJsonFileIfPossible({ fsModule, filePath: metadataPath });
   const meta = metaResult.value;
-  if (!isValidInstallMetadata(meta)) {
+  const normalized = normalizeInstallMetadata(meta, { binaryPath });
+  if (!normalized) {
     return {
       binaryPath,
       metadataPath,
       binaryPresent: true,
-      installedVersion: typeof meta?.version === "string" ? meta.version : null,
+      installedVersion:
+        typeof meta?.installedVersion === "string"
+          ? meta.installedVersion
+          : typeof meta?.version === "string"
+            ? meta.version
+            : null,
       metadata: null,
       metadataStatus:
         metaResult.errorCode === "ENOENT"
@@ -525,11 +606,11 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
     binaryPath,
     metadataPath,
     binaryPresent: true,
-    installedVersion: meta.version,
-    metadata: meta,
+    installedVersion: normalized.installedVersion,
+    metadata: normalized,
     metadataStatus: "valid",
     metadataStatusReason: null,
-    platformMismatch: meta.platformKey !== platformKey
+    platformMismatch: normalized.platformKey !== platformKey
   };
 }
 
@@ -590,7 +671,7 @@ async function determineLocalInstallerOutcome({
     binarySha256: normalizeSha256Hex(expectedBinarySha256)
       ? expectedBinarySha256
       : discoveredInstalledState.metadataStatus === "valid"
-        ? discoveredInstalledState.metadata.binary.sha256
+        ? discoveredInstalledState.metadata.binaryHash
         : null
   };
 
@@ -1012,6 +1093,7 @@ async function runInstaller(options) {
 
   const detectedPlatform = opts.platform || process.platform;
   const detectedArch = opts.arch || process.arch;
+  const env = opts.env || process.env;
 
   const resolvePlatformPolicyFn =
     opts.resolvePlatformPolicyFn ||
@@ -1044,8 +1126,10 @@ async function runInstaller(options) {
   const platformKey = platformPolicy.platformKey;
   const targetTriple = platformPolicy.targetTriple;
   const version = getVersionFn();
-  const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
-  const distDir = pathModule.join(distBaseDir, platformKey);
+  const stateRootDir = opts.stateRootDir || resolveInstallerStateRootDir({ osModule, pathModule, env });
+  const distDir = resolveInstallerInstallDir({ stateRootDir, platformKey, pathModule });
+  const legacyDistBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
+  const legacyDistDir = pathModule.join(legacyDistBaseDir, platformKey);
   const isWin32 = detectedPlatform === "win32";
 
   const local = await determineLocalInstallerOutcome({
@@ -1061,6 +1145,65 @@ async function runInstaller(options) {
   if (local.outcome === "no-op") {
     logger.log("[docdex] Install outcome: no-op");
     return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
+  }
+
+  // Backward-compatible migration path: older installers stored the verified binary + metadata under package dist/.
+  // If the state-root install dir is missing but the legacy one is verified, migrate without redownloading.
+  if (local.reason === "binary_missing" || local.reason === "metadata_missing") {
+    const legacy = await determineLocalInstallerOutcome({
+      fsModule,
+      pathModule,
+      distDir: legacyDistDir,
+      platformKey,
+      expectedVersion: version,
+      isWin32,
+      sha256FileFn
+    });
+
+    if (legacy.outcome === "no-op") {
+      const legacyMetadataPath = installMetadataPath(legacyDistDir, pathModule);
+      const legacyMetaResult = await readJsonFileIfPossible({ fsModule, filePath: legacyMetadataPath });
+      const legacyNormalized = normalizeInstallMetadata(legacyMetaResult.value, { binaryPath: legacy.binaryPath });
+
+      const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+      await fsModule.promises.mkdir(distDir, { recursive: true });
+      await fsModule.promises.copyFile(legacy.binaryPath, binaryPath);
+      await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
+
+      const binarySha256 = await sha256FileFn(binaryPath);
+      const installedAt = legacyNormalized?.installedAt || nowIso();
+      const lastVerifiedAt = legacyNormalized?.lastVerifiedAt || installedAt;
+      const metadata = {
+        schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
+        installedVersion: legacyNormalized?.installedVersion || version,
+        expectedVersion: version,
+        platformKey,
+        targetTriple,
+        binaryPath,
+        binaryHash: binarySha256,
+        provenance: legacyNormalized?.provenance || {
+          repoSlug: null,
+          releaseTag: `v${version}`,
+          releaseId: null,
+          assetName: null,
+          assetUrl: null,
+          assetSha256: null,
+          source: "legacy-dist"
+        },
+        installedAt,
+        lastVerifiedAt
+      };
+
+      await writeJsonFileAtomic({
+        fsModule,
+        pathModule,
+        filePath: installMetadataPath(distDir, pathModule),
+        value: metadata
+      });
+
+      logger.log("[docdex] Install outcome: no-op");
+      return { binaryPath, outcome: "no-op", integrityResult: legacy.integrityResult };
+    }
   }
 
   const repoSlug = parseRepoSlugFn();
@@ -1163,23 +1306,28 @@ async function runInstaller(options) {
     logger.log(`[docdex] Installed binary to ${binaryPath}`);
 
     const binarySha256 = await sha256FileFn(binaryPath);
+    const installedAt = nowIso();
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
-      installedAt: nowIso(),
-      version,
-      repoSlug,
+      installedVersion: version,
+      expectedVersion: version,
       platformKey,
       targetTriple,
-      binary: {
-        filename: isWin32 ? "docdexd.exe" : "docdexd",
-        sha256: binarySha256
-      },
-      archive: {
-        name: archive,
-        sha256: expectedSha256 || null,
+      binaryPath,
+      binaryHash: binarySha256,
+      provenance: {
+        repoSlug,
+        releaseTag: `v${version}`,
+        releaseId: null,
+        assetName: archive,
+        assetUrl: downloadUrl,
+        assetSha256: normalizeSha256Hex(expectedSha256),
         source,
-        downloadUrl
-      }
+        manifestName: manifestAttempt?.manifestName ?? null,
+        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null
+      },
+      installedAt,
+      lastVerifiedAt: installedAt
     };
     await writeJsonFileAtomic({
       fsModule,

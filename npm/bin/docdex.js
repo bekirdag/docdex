@@ -2,6 +2,7 @@
 "use strict";
 
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
@@ -147,13 +148,34 @@ function run() {
     process.exit(1);
   }
 
-  const basePath = path.join(__dirname, "..", "dist", platformKey);
-  const binaryPath = path.join(
-    basePath,
+  const env = process.env || {};
+  const stateRootDir =
+    typeof env.DOCDEX_INSTALL_STATE_DIR === "string" && env.DOCDEX_INSTALL_STATE_DIR.trim()
+      ? path.resolve(env.DOCDEX_INSTALL_STATE_DIR.trim())
+      : path.join(os.homedir(), ".docdex", "state");
+
+  const stateBinaryPath = path.join(
+    stateRootDir,
+    "daemon",
+    platformKey,
     process.platform === "win32" ? "docdexd.exe" : "docdexd"
   );
 
-  if (!fs.existsSync(binaryPath)) {
+  const distBinaryPath = path.join(
+    __dirname,
+    "..",
+    "dist",
+    platformKey,
+    process.platform === "win32" ? "docdexd.exe" : "docdexd"
+  );
+
+  const binaryPath = fs.existsSync(stateBinaryPath)
+    ? stateBinaryPath
+    : fs.existsSync(distBinaryPath)
+      ? distBinaryPath
+      : null;
+
+  if (!binaryPath) {
     console.error(`[docdex] Missing binary for ${platformKey}. Try reinstalling or set DOCDEX_DOWNLOAD_REPO to a repo with release assets.`);
     try {
       console.error(`[docdex] Expected target triple: ${targetTripleForPlatformKey(platformKey)}`);

@@ -38,7 +38,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 
       const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), `docdex-installer-e2e-${platformKey}-`));
       const tmpDir = path.join(tmpRoot, "tmp");
-      const distBaseDir = path.join(tmpRoot, "dist");
+      const stateRootDir = path.join(tmpRoot, "state");
       await fs.promises.mkdir(tmpDir, { recursive: true });
 
       st.after(async () => {
@@ -58,7 +58,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
         platform: entry.platform,
         arch: entry.arch,
         tmpDir,
-        distBaseDir,
+        stateRootDir,
         detectPlatformKeyFn: () => platformKey,
         targetTripleForPlatformKeyFn: (key) => targetTripleForPlatformKey(key),
         getVersionFn: () => version,
@@ -100,14 +100,13 @@ test("installer e2e: supported platform matrix installs expected binary layout",
       });
 
       const isWin32 = entry.platform === "win32";
-      const expectedBinaryPath = path.join(distBaseDir, platformKey, isWin32 ? "docdexd.exe" : "docdexd");
+      const expectedBinaryPath = path.join(stateRootDir, "daemon", platformKey, isWin32 ? "docdexd.exe" : "docdexd");
 
       assert.equal(downloadUrl, expectedDownloadUrl);
       assert.equal(extractArchive, downloadDest);
-      assert.equal(extractDir, path.join(distBaseDir, platformKey));
+      assert.equal(extractDir, path.join(stateRootDir, "daemon", platformKey));
       assert.equal(result.binaryPath, expectedBinaryPath);
       assert.ok(fs.existsSync(expectedBinaryPath));
     });
   }
 });
-

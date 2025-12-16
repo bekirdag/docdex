@@ -28,17 +28,26 @@ function createMockFs({ existingPaths = [], filesByPath = {}, readFileErrorByPat
 }
 
 function validInstallMetadata({ platformKey, version, binarySha256 }) {
+  const binaryPath = path.posix.join("/dist", platformKey, "docdexd");
   return {
-    schemaVersion: 1,
-    installedAt: "2025-01-01T00:00:00.000Z",
-    version,
-    repoSlug: "owner/repo",
+    schemaVersion: 2,
+    installedVersion: version,
+    expectedVersion: version,
     platformKey,
     targetTriple: "x86_64-unknown-linux-gnu",
-    binary: {
-      filename: "docdexd",
-      sha256: binarySha256
-    }
+    binaryPath,
+    binaryHash: binarySha256,
+    provenance: {
+      repoSlug: "owner/repo",
+      releaseTag: `v${version}`,
+      releaseId: null,
+      assetName: null,
+      assetUrl: null,
+      assetSha256: null,
+      source: "test"
+    },
+    installedAt: "2025-01-01T00:00:00.000Z",
+    lastVerifiedAt: "2025-01-01T00:00:00.000Z"
   };
 }
 
@@ -100,7 +109,7 @@ test("decision engine: metadata invalid => reinstall_unknown (metadata_invalid)"
   const fsModule = createMockFs({
     existingPaths: [binaryPath],
     filesByPath: {
-      [metadataPath]: JSON.stringify({ schemaVersion: 1 }, null, 2)
+      [metadataPath]: JSON.stringify({ schemaVersion: 2 }, null, 2)
     }
   });
 

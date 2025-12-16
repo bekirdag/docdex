@@ -199,6 +199,31 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - Port conflicts: change `--host/--port`.
 - Installer failures (`npm i -g docdex`): use the printed `DOCDEX_*` error code; see `docs/ops/installer_error_codes.md`.
 
+### Repo moved/renamed
+
+Docdex is safety-first: it will not silently “cross-associate” an existing on-disk state directory with a different repo path when doing so could mix data between repos.
+
+If you use the default in-repo state dir (`<repo>/.docdex/index`), moves/renames typically require only updating `--repo` to the new location (because the state moves with the repo). The stricter “explicit re-association” flow below applies when you use an absolute shared `--state-dir` outside the repo root.
+
+Deterministic failures and what they mean:
+
+- `missing_repo_path` (`"repo path not found"`): the `--repo` path (or MCP `project_root`) does not exist on disk (common after a move/rename, or when a client is still pointing at the old location).
+  - Recovery: re-run with the repo’s current path; for HTTP, restart `docdexd serve --repo <repo>` with the correct path; for MCP, either omit `project_root` to use the MCP server’s default or restart `docdexd mcp --repo <repo>` with the correct path.
+  - If the repo moved but you did not move its state with it, reindex: `docdexd index --repo <repo>`.
+- `unknown_repo` (`"unknown repo"`): MCP-only — `project_root` does not match the MCP server’s configured `--repo`. This is a fast-fail guardrail to prevent accidental cross-repo access.
+  - Recovery: restart the MCP server with `docdexd mcp --repo <repo>` matching the repo you want, or omit `project_root` in tool arguments to use the MCP server default.
+- `repo_state_mismatch` (`"repo state mismatch; refusing to associate this repo with the existing state directory"`): Docdex detected that an existing *shared* `--state-dir` cannot be safely associated with the current `--repo` without an explicit user action (common when a repo moved/renamed while using an absolute shared `--state-dir` outside the repo root).
+  - Why it fast-fails: reusing shared state across repos is a data-mixing risk; Docdex fails closed by default.
+  - Recovery: either explicitly re-associate the moved repo to the existing shared state, or choose a different (empty) `--state-dir` and reindex.
+
+Step-by-step recovery (shared `--state-dir` scenario):
+
+1. Re-run the failing command and capture the JSON error `details` fields (notably `knownCanonicalPath` and `attemptedFingerprint`).
+2. Explicitly re-associate the moved repo path to the existing shared state:
+   - `docdexd repo reassociate --repo <new_path> --state-dir <shared_state_dir> --old-path <knownCanonicalPath>`
+   - Or: `docdexd repo reassociate --repo <new_path> --state-dir <shared_state_dir> --fingerprint <attemptedFingerprint>`
+3. Retry the original operation with the same `--repo <new_path>` and `--state-dir <shared_state_dir>`; reindex if needed: `docdexd index --repo <new_path> --state-dir <shared_state_dir>`.
+
 ## Security considerations
 - Default bind is `127.0.0.1`; keep it unless you are behind a trusted reverse proxy/firewall. Avoid `--host 0.0.0.0` on untrusted networks.
 - By default, non-loopback binds require TLS; opt out only with `--require-tls=false` or `--insecure` when traffic is already terminating at a trusted proxy.

@@ -82,6 +82,23 @@ Docdex also uses feature-specific codes in some tools:
 - `embedding_model_not_found`
 - `embedding_failed`
 
+## Repo moved/renamed (deterministic behavior + recovery)
+
+Docdex intentionally **fails closed** on repo identity changes to prevent cross-repo state mixing (no silent cross-association).
+
+You may see these repo-related codes during moves/renames:
+
+- `missing_repo_path`: the path passed as `project_root` (or otherwise used to resolve repo context) does not exist on disk.
+  - Recovery: pass the repo’s current path, or omit `project_root` to use the MCP server default; restart the MCP server with `docdexd mcp --repo <repo>` if it is pointed at the wrong path.
+- `unknown_repo`: `project_root` exists but does not match the MCP server’s configured `--repo` (fast-fail guardrail).
+  - Recovery: restart the MCP server with `docdexd mcp --repo <repo>` matching the repo you intend to use, or omit `project_root`.
+- `repo_state_mismatch`: the server cannot safely associate an existing on-disk state directory with the current repo without an explicit user action (common when using an absolute shared `--state-dir` across repos and the repo path changes).
+  - Recovery: either reindex into a fresh `--state-dir`, or explicitly re-associate the moved repo to the existing shared state with `docdexd repo reassociate --repo <new_path> --state-dir <shared_state_dir> --old-path <knownCanonicalPath>` (or `--fingerprint <attemptedFingerprint>`).
+
+Diagnostics:
+
+- For these errors, `error.data.details` may include `normalizedPath`, `attemptedFingerprint`, `knownCanonicalPath`, and a `recoverySteps` array intended to be directly actionable in UX.
+
 ## Parity mapping (HTTP / CLI / MCP)
 
 Docdex presents the same underlying failures in three different wrappers:

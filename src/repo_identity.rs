@@ -94,6 +94,8 @@ pub struct RepoInspectMapping {
     pub canonical_path: String,
     pub aliases: Vec<String>,
     pub last_seen_at_epoch_ms: i64,
+    #[serde(rename = "lastSeen")]
+    pub last_seen: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -229,6 +231,7 @@ pub fn inspect_repo(repo_root: &Path, state_dir_override: Option<&Path>) -> Resu
             canonical_path: entry.canonical_path.clone(),
             aliases: entry.prior_paths.clone(),
             last_seen_at_epoch_ms: entry.last_seen_at_epoch_ms,
+            last_seen: entry.last_seen_at_epoch_ms,
         });
     }
 
@@ -1036,11 +1039,50 @@ mod tests {
         for key in [
             "repoRoot",
             "normalizedPath",
+            "computedFingerprint",
             "resolvedIndexStateDir",
             "status",
         ] {
             assert!(obj.contains_key(key), "missing key: {key}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn inspect_includes_shared_mapping_and_last_seen() -> Result<()> {
+        let base = TempDir::new()?;
+        let shared = base.path().join("state");
+        fs::create_dir_all(shared.join("repos"))?;
+
+        let repo_root = base.path().join("repo-a");
+        create_git_repo(&repo_root)?;
+        let fingerprint = repo_fingerprint_sha256(&repo_root)?;
+        let resolution = resolve_shared_state_key(&repo_root, &shared)?;
+        let state_key = resolution.state_key.clone();
+        let state_index = shared_repo_root_dir(&shared, &state_key).join("index");
+        fs::create_dir_all(&state_index)?;
+
+        record_repo_opened(&repo_root, &state_index)?;
+
+        let report = inspect_repo(&repo_root, Some(shared.as_path()))?;
+        assert!(matches!(report.status, RepoInspectStatus::Ok));
+        assert_eq!(report.computed_fingerprint.as_deref(), Some(fingerprint.as_str()));
+        let mapping = report.mapping.as_ref().expect("mapping");
+        assert_eq!(mapping.fingerprint, fingerprint);
+        assert_eq!(mapping.state_key, state_key);
+        assert_eq!(mapping.canonical_path, report.normalized_path);
+        assert!(mapping.last_seen_at_epoch_ms > 0);
+
+        let value = serde_json::to_value(&report)?;
+        let obj = value.as_object().expect("object");
+        let mapping_obj = obj
+            .get("mapping")
+            .and_then(|v| v.as_object())
+            .expect("mapping object");
+        for key in ["fingerprint", "stateKey", "canonicalPath", "aliases", "lastSeen"] {
+            assert!(mapping_obj.contains_key(key), "missing mapping key: {key}");
+        }
+        assert!(mapping_obj.contains_key("lastSeenAtEpochMs"));
         Ok(())
     }
 }

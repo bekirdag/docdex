@@ -139,6 +139,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - `index --repo <path>` — rebuild the entire index.
 - `ingest --repo <path> --file <file>` — reindex a single file.
 - `query --repo <path> --query "<text>" [--limit 8] [--repo-only]` — run a search and print JSON hits.
+- `repo inspect --repo <path> [--state-dir <state_dir>]` — show normalized path, computed fingerprint, and any shared-state mapping (canonical + aliases + lastSeen) for move/rename recovery.
 - `repo reassociate --repo <new_path> --state-dir <shared_state_dir> (--old-path <old_path> | --fingerprint <sha256>)` — explicitly re-associate a moved/renamed repo path to existing state under a shared base state directory.
 - `self-check --repo <path> --terms "foo,bar" [--limit 5]` — scan the index for sensitive terms before enabling access (fails with non-zero exit if any are found; reports sample hits and if more exist). Includes built-in token/password patterns by default; disable with `--include-default-patterns=false` if you only want your provided terms.
 

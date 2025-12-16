@@ -52,6 +52,12 @@ test("generateReleaseManifest: emits targets mapping with sha256 and validates c
   assert.equal(result.sha256Path, `${outPath}.sha256`);
   assert.ok(fs.existsSync(outPath));
   assert.ok(fs.existsSync(`${outPath}.sha256`));
+  assert.ok(fs.existsSync(result.checksumsPath));
+  assert.ok(fs.existsSync(result.checksumsTxtPath));
+  assert.equal(
+    fs.readFileSync(result.checksumsPath, "utf8"),
+    fs.readFileSync(result.checksumsTxtPath, "utf8")
+  );
 
   const manifest = JSON.parse(fs.readFileSync(outPath, "utf8"));
   assert.equal(manifest.manifestVersion, 1);
@@ -84,6 +90,15 @@ test("generateReleaseManifest: emits targets mapping with sha256 and validates c
   const manifestShaLine = fs.readFileSync(`${outPath}.sha256`, "utf8").trim();
   assert.match(manifestShaLine, /^[0-9a-f]{64}\s+docdexd-manifest\.json$/);
   assert.equal(manifestShaLine.split(/\s+/)[0], sha256(fs.readFileSync(outPath)));
+
+  const checksums = fs.readFileSync(result.checksumsPath, "utf8");
+  for (const { tarName, tarSha } of expectedByTriple.values()) {
+    assert.match(checksums, new RegExp(`^${tarSha}\\s+${tarName}$`, "m"));
+  }
+  const manifestSha = sha256(fs.readFileSync(outPath));
+  assert.match(checksums, new RegExp(`^${manifestSha}\\s+docdexd-manifest\\.json$`, "m"));
+  const manifestShaFileSha = sha256(fs.readFileSync(`${outPath}.sha256`));
+  assert.match(checksums, new RegExp(`^${manifestShaFileSha}\\s+docdexd-manifest\\.json\\.sha256$`, "m"));
 });
 
 test("generateReleaseManifest: missing assets fails with stable exitCode", () => {

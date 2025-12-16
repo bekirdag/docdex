@@ -195,18 +195,20 @@ jobs:
         run: |
           node scripts/generate_release_manifest.cjs \
             --dir artifacts \
-            --out artifacts/docdexd-manifest.json \
+            --out artifacts/docdex-release-manifest.json \
             --tag "${GITHUB_REF_NAME}" \
             --repo "${GITHUB_REPOSITORY}"
 
-      - name: Upload release manifest assets
+      - name: Upload release manifest + checksums
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.ref_name }}
           fail_on_unmatched_files: true
           files: |
-            artifacts/docdexd-manifest.json
-            artifacts/docdexd-manifest.json.sha256
+            artifacts/docdex-release-manifest.json
+            artifacts/docdex-release-manifest.json.sha256
+            artifacts/SHA256SUMS
+            artifacts/SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

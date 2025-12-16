@@ -15,7 +15,8 @@ function usage() {
     "Usage: node scripts/generate_release_manifest.cjs --dir <assets_dir> --out <manifest_path> [--tag vX.Y.Z] [--repo owner/repo]",
     "",
     "Generates a machine-readable release manifest with per-target SHA-256 integrity metadata,",
-    "and writes a sibling .sha256 file for the manifest itself.",
+    "writes a sibling .sha256 file for the manifest itself, and writes SHA256SUMS (+ SHA256SUMS.txt)",
+    "in the assets directory for deterministic installer fallback.",
     "",
     "Exit codes:",
     "  1  generic failure",
@@ -169,7 +170,31 @@ function generateReleaseManifest(options) {
   const shaOutPath = `${outPath}.sha256`;
   fs.writeFileSync(shaOutPath, `${manifestSha}  ${path.basename(outPath)}\n`);
 
-  return { manifestPath: outPath, manifestSha256: manifestSha, sha256Path: shaOutPath, manifest };
+  const checksumEntries = publishedAssets
+    .slice()
+    .concat([
+      { name: path.basename(outPath), sha256: manifestSha },
+      { name: path.basename(shaOutPath), sha256: sha256FileSync(shaOutPath) }
+    ]);
+
+  const checksumLines = checksumEntries
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((entry) => `${entry.sha256}  ${entry.name}`)
+    .join("\n");
+
+  const checksumsPath = path.join(assetsDir, "SHA256SUMS");
+  const checksumsTxtPath = path.join(assetsDir, "SHA256SUMS.txt");
+  fs.writeFileSync(checksumsPath, checksumLines + "\n");
+  fs.writeFileSync(checksumsTxtPath, checksumLines + "\n");
+
+  return {
+    manifestPath: outPath,
+    manifestSha256: manifestSha,
+    sha256Path: shaOutPath,
+    checksumsPath,
+    checksumsTxtPath,
+    manifest
+  };
 }
 
 if (require.main === module) {

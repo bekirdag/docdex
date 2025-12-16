@@ -4,8 +4,14 @@ Scope: the machine-readable manifest attached to each GitHub Release and consume
 
 ## Artifact names
 
-- Manifest filename (recommended / default): `docdexd-manifest.json`
-- Manifest checksum filename: `docdexd-manifest.json.sha256`
+- Manifest filename (recommended / default): `docdex-release-manifest.json`
+- Manifest checksum filename: `docdex-release-manifest.json.sha256`
+- Fallback checksums (when manifest is missing): `SHA256SUMS` (or `SHA256SUMS.txt`)
+
+Legacy/compatibility (installer still supports these manifest names when configured/needed):
+- `docdexd-manifest.json`
+- `docdex-manifest.json`
+- `manifest.json`
 
 ## Required shape
 
@@ -29,4 +35,3 @@ This repo publishes `targets`.
 - `version` (string, `X.Y.Z`)
 - `generatedAt` (string, ISO-8601)
 - `publishedAssets` (array): `{name, sha256}` for release automation auditing (installer ignores this)
-

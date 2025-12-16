@@ -7,6 +7,7 @@ const path = require("node:path");
 
 const { ManifestResolutionError } = require("../lib/release_manifest");
 const {
+  ChecksumResolutionError,
   resolveInstallerDownloadPlan,
   parseSha256File,
   sha256File,
@@ -42,7 +43,7 @@ test("installer resolves asset + sha256 via first available manifest candidate d
 
   const manifestText = fixture("manifest/valid-targets.json");
   const downloadTextFn = async (url) => {
-    if (url === `${base}/v${version}/docdexd-manifest.json`) return manifestText;
+    if (url === `${base}/v${version}/docdex-release-manifest.json`) return manifestText;
     throw httpError(404, `not found: ${url}`);
   };
 
@@ -53,13 +54,13 @@ test("installer resolves asset + sha256 via first available manifest candidate d
     targetTriple: "x86_64-unknown-linux-gnu",
     downloadTextFn,
     getDownloadBaseFn: () => base,
-    manifestCandidateNamesFn: () => ["docdexd-manifest.json", "manifest.json"],
+    manifestCandidateNamesFn: () => ["docdex-release-manifest.json", "docdexd-manifest.json"],
     logger: createCapturingLogger().logger
   });
 
   assert.equal(plan.archive, "docdexd-linux-x64-gnu.tar.gz");
   assert.equal(plan.expectedSha256, "a".repeat(64));
-  assert.equal(plan.source, "manifest:docdexd-manifest.json");
+  assert.equal(plan.source, "manifest:docdex-release-manifest.json");
 });
 
 test("installer resolves from manifest.assets array shape deterministically", async () => {
@@ -97,7 +98,7 @@ test("installer falls back deterministically when no manifest candidates exist",
 
   const downloadTextFn = async (url) => {
     if (url.endsWith(".json")) throw httpError(404, `not found: ${url}`);
-    if (url === `${base}/v${version}/docdexd-linux-x64-gnu.tar.gz.sha256`) {
+    if (url === `${base}/v${version}/SHA256SUMS`) {
       return `${sha}  docdexd-linux-x64-gnu.tar.gz\n`;
     }
     throw httpError(404, `not found: ${url}`);
@@ -110,7 +111,7 @@ test("installer falls back deterministically when no manifest candidates exist",
     targetTriple: "x86_64-unknown-linux-gnu",
     downloadTextFn,
     getDownloadBaseFn: () => base,
-    manifestCandidateNamesFn: () => ["docdexd-manifest.json"],
+    manifestCandidateNamesFn: () => ["docdex-release-manifest.json"],
     logger
   });
 
@@ -131,7 +132,7 @@ test("installer falls back deterministically on invalid JSON manifests with stab
   const downloadTextFn = async (url) => {
     if (url === `${base}/v${version}/docdexd-manifest.json`) return fixture("manifest/invalid-json.txt");
     if (url.endsWith(".json")) throw httpError(404, `not found: ${url}`);
-    if (url === `${base}/v${version}/docdexd-linux-x64-gnu.tar.gz.sha256`) {
+    if (url === `${base}/v${version}/SHA256SUMS`) {
       return `${sha}  docdexd-linux-x64-gnu.tar.gz\n`;
     }
     throw httpError(404, `not found: ${url}`);
@@ -315,7 +316,7 @@ test("installer falls back deterministically when manifest fetch fails with non-
 
   const downloadTextFn = async (url) => {
     if (url.endsWith(".json")) throw httpError(500, `upstream error: ${url}`);
-    if (url === `${base}/v${version}/docdexd-linux-x64-gnu.tar.gz.sha256`) {
+    if (url === `${base}/v${version}/SHA256SUMS`) {
       return `${sha}  docdexd-linux-x64-gnu.tar.gz\n`;
     }
     throw httpError(404, `not found: ${url}`);
@@ -353,7 +354,7 @@ test("installer falls back deterministically when manifest is too large and logs
       err.actualBytes = 2048;
       throw err;
     }
-    if (url === `${base}/v${version}/docdexd-linux-x64-gnu.tar.gz.sha256`) {
+    if (url === `${base}/v${version}/SHA256SUMS`) {
       return `${sha}  docdexd-linux-x64-gnu.tar.gz\n`;
     }
     throw httpError(404, `not found: ${url}`);
@@ -376,53 +377,37 @@ test("installer falls back deterministically when manifest is too large and logs
   assert.match(warns[0], /^\[docdex\] Manifest unavailable; falling back\. Details: \[DOCDEX_MANIFEST_TOO_LARGE\]/);
 });
 
-test("fallback checksum warnings are deterministic for missing and unparseable .sha256", async () => {
+test("installer fails deterministically when fallback checksums are missing", async () => {
   const base = "https://example.test/releases/download";
   const version = "0.0.0";
 
-  const { logger, warns: warnsMissing } = createCapturingLogger();
-  const downloadTextMissing = async (url) => {
+  const downloadTextFn = async (url) => {
     if (url.endsWith(".json")) throw httpError(404, `not found: ${url}`);
+    if (url.endsWith("SHA256SUMS") || url.endsWith("SHA256SUMS.txt")) throw httpError(404, `not found: ${url}`);
     if (url.endsWith(".sha256")) throw httpError(404, `not found: ${url}`);
     throw httpError(404, `not found: ${url}`);
   };
 
-  const planMissing = await resolveInstallerDownloadPlan({
-    repoSlug: "owner/repo",
-    version,
-    platformKey: "linux-x64-gnu",
-    targetTriple: "x86_64-unknown-linux-gnu",
-    downloadTextFn: downloadTextMissing,
-    getDownloadBaseFn: () => base,
-    manifestCandidateNamesFn: () => ["docdexd-manifest.json"],
-    logger
-  });
-
-  assert.equal(planMissing.source, "fallback");
-  assert.equal(planMissing.expectedSha256, null);
-  assert.ok(warnsMissing.some((w) => w.includes("[DOCDEX_CHECKSUM_MISSING]")));
-
-  const { logger: logger2, warns: warnsParse } = createCapturingLogger();
-  const downloadTextParseFail = async (url) => {
-    if (url.endsWith(".json")) throw httpError(404, `not found: ${url}`);
-    if (url.endsWith(".sha256")) return "not a sha256 file\n";
-    throw httpError(404, `not found: ${url}`);
-  };
-
-  const planParse = await resolveInstallerDownloadPlan({
-    repoSlug: "owner/repo",
-    version,
-    platformKey: "linux-x64-gnu",
-    targetTriple: "x86_64-unknown-linux-gnu",
-    downloadTextFn: downloadTextParseFail,
-    getDownloadBaseFn: () => base,
-    manifestCandidateNamesFn: () => ["docdexd-manifest.json"],
-    logger: logger2
-  });
-
-  assert.equal(planParse.source, "fallback");
-  assert.equal(planParse.expectedSha256, null);
-  assert.ok(warnsParse.some((w) => w.includes("[DOCDEX_CHECKSUM_PARSE_FAILED]")));
+  await assert.rejects(
+    () =>
+      resolveInstallerDownloadPlan({
+        repoSlug: "owner/repo",
+        version,
+        platformKey: "linux-x64-gnu",
+        targetTriple: "x86_64-unknown-linux-gnu",
+        downloadTextFn,
+        getDownloadBaseFn: () => base,
+        manifestCandidateNamesFn: () => ["docdex-release-manifest.json"]
+      }),
+    (err) => {
+      assert.ok(err instanceof ChecksumResolutionError);
+      assert.equal(err.code, "DOCDEX_CHECKSUM_UNUSABLE");
+      assert.equal(err.details.assetName, "docdexd-linux-x64-gnu.tar.gz");
+      assert.ok(Array.isArray(err.details.checksumCandidates));
+      assert.ok(err.message.includes("Missing SHA-256 integrity metadata"));
+      return true;
+    }
+  );
 });
 
 test("parseSha256File handles common sha256 file formats deterministically", () => {

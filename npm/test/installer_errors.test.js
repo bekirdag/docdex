@@ -5,7 +5,12 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 
 const { detectPlatformKey } = require("../lib/platform");
-const { MissingArtifactError, describeFatalError, verifyDownloadedFileIntegrity } = require("../lib/install");
+const {
+  ChecksumResolutionError,
+  MissingArtifactError,
+  describeFatalError,
+  verifyDownloadedFileIntegrity
+} = require("../lib/install");
 const { ManifestResolutionError } = require("../lib/release_manifest");
 
 test("describeFatalError: unsupported platform includes detected OS/arch and no-download note", () => {
@@ -118,4 +123,20 @@ test("describeFatalError: integrity mismatch includes expected/actual sha256 and
   assert.ok(report.lines.some((l) => l.includes("Actual sha256:")));
   assert.ok(report.lines.some((l) => l.includes("Next steps")));
   assert.ok(report.lines.some((l) => l.includes("DOCDEX_DOWNLOAD_REPO")));
+});
+
+test("describeFatalError: checksum unusable includes candidates and next steps", () => {
+  const err = new ChecksumResolutionError("Missing SHA-256 integrity metadata for docdexd-linux-x64-gnu.tar.gz", {
+    assetName: "docdexd-linux-x64-gnu.tar.gz",
+    targetTriple: "x86_64-unknown-linux-gnu",
+    checksumCandidates: ["SHA256SUMS", "SHA256SUMS.txt"],
+    fallbackReason: "manifest_not_found"
+  });
+
+  const report = describeFatalError(err);
+  assert.equal(report.code, "DOCDEX_CHECKSUM_UNUSABLE");
+  assert.equal(report.exitCode, 24);
+  assert.equal(report.details.assetName, "docdexd-linux-x64-gnu.tar.gz");
+  assert.ok(report.lines.some((l) => l.includes("Checksum candidates tried: SHA256SUMS, SHA256SUMS.txt")));
+  assert.ok(report.lines.some((l) => l.includes("Next steps")));
 });

@@ -4,7 +4,7 @@ Scope: the npm postinstall downloader (`npm/lib/install.js`) that resolves a pla
 
 Assumptions (explicit):
 - The installer runs in Node.js >= 18 and exits with a single process exit code (0–255).
-- A “manifest” is a JSON file attached to the GitHub Release (candidate names are installer-configurable).
+- A “manifest” is a JSON file attached to the GitHub Release (candidate names are installer-configurable; default is `docdex-release-manifest.json`).
 - `manifestVersion` is optional in current manifests; when absent it is reported as `null`.
 
 ## Goals
@@ -94,6 +94,8 @@ These are emitted as structured “events” on the resolution attempt and may a
   - SHA-256 verification failed for the downloaded archive.
 - `DOCDEX_ARCHIVE_INVALID` → exit `23`
   - Archive extracted but the expected binary is missing.
+- `DOCDEX_CHECKSUM_UNUSABLE` → exit `24`
+  - The installer could not obtain SHA-256 integrity metadata for the selected asset (manifest missing/unusable and checksum fallback missing/malformed).
 
 ### Installer configuration (fatal)
 
@@ -107,4 +109,3 @@ All fatal reports:
 - Start with `[docdex] install failed: ...`
 - Include `[docdex] error code: <CODE>` and (when helpful) a short “Next steps” section.
 - For manifest-related failures, include whether fallback was attempted (`details.fallbackAttempted`) and why it was not used.
-

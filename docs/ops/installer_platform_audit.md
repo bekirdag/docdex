@@ -24,8 +24,9 @@ Output:
 
 The npm postinstall installer (`npm/lib/install.js`) expects GitHub Release assets:
 - Binary archive: `docdexd-<platformKey>.tar.gz`
-- Optional checksum: `docdexd-<platformKey>.tar.gz.sha256`
-- Optional release manifest: `docdexd-manifest.json` (+ `docdexd-manifest.json.sha256`)
+- Release checksums (fallback when manifest missing): `SHA256SUMS` (or `SHA256SUMS.txt`)
+- Legacy per-asset checksum (compat): `docdexd-<platformKey>.tar.gz.sha256`
+- Release manifest (preferred): `docdex-release-manifest.json` (+ `docdex-release-manifest.json.sha256`)
 
 If a platform is unsupported, install exits non-zero and does not download.
 If a platform is supported but an artifact is missing, install exits non-zero with a “missing artifact/version sync issue” message (not “unsupported platform”) and includes the expected triple and asset pattern.
@@ -58,4 +59,3 @@ These mappings exist (to keep the intent explicit) but are marked `published: fa
 
 Implication:
 - These targets should either be added to `.github/workflows/release.yml` (and `scripts/generate_release_manifest.cjs` will pick them up automatically), or remain unsupported with actionable guidance.
-

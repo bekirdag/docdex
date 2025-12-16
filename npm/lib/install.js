@@ -26,6 +26,7 @@ const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_ASSET_NO_MATCH: 12,
   DOCDEX_ASSET_MULTI_MATCH: 13,
   DOCDEX_ASSET_MALFORMED: 14,
+  DOCDEX_CHECKSUM_UNUSABLE: 24,
   DOCDEX_DOWNLOAD_FAILED: 20,
   DOCDEX_ASSET_MISSING: 21,
   DOCDEX_INTEGRITY_MISMATCH: 22,
@@ -115,6 +116,20 @@ class ArchiveInvalidError extends Error {
     super(message);
     this.name = "ArchiveInvalidError";
     this.code = "DOCDEX_ARCHIVE_INVALID";
+    this.exitCode = EXIT_CODE_BY_ERROR_CODE[this.code];
+    this.details = withBaseDetails(details);
+  }
+}
+
+class ChecksumResolutionError extends Error {
+  /**
+   * @param {string} message
+   * @param {object} [details]
+   */
+  constructor(message, details) {
+    super(message);
+    this.name = "ChecksumResolutionError";
+    this.code = "DOCDEX_CHECKSUM_UNUSABLE";
     this.exitCode = EXIT_CODE_BY_ERROR_CODE[this.code];
     this.details = withBaseDetails(details);
   }
@@ -262,6 +277,19 @@ function parseSha256File(text, expectedFilename) {
   return null;
 }
 
+function checksumCandidateNames() {
+  const envNames = process.env.DOCDEX_CHECKSUMS_NAMES || process.env.DOCDEX_CHECKSUMS_NAME;
+  if (envNames) {
+    return envNames
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  // Documented fallback (ops-01-us-08): SHA256SUMS from the same GitHub Release.
+  return ["SHA256SUMS", "SHA256SUMS.txt"];
+}
+
 function manifestCandidateNames() {
   const envNames = process.env.DOCDEX_MANIFEST_NAMES || process.env.DOCDEX_MANIFEST_NAME;
   if (envNames) {
@@ -272,7 +300,80 @@ function manifestCandidateNames() {
   }
 
   // Assumption (documented by code): release attaches one of these filenames.
-  return ["docdexd-manifest.json", "docdex-manifest.json", "manifest.json"];
+  return [
+    "docdex-release-manifest.json",
+    // Legacy/compat candidates:
+    "docdexd-manifest.json",
+    "docdex-manifest.json",
+    "manifest.json"
+  ];
+}
+
+async function tryResolveSha256ViaChecksumFiles({
+  repoSlug,
+  version,
+  archive,
+  downloadTextFn = downloadText,
+  getDownloadBaseFn = getDownloadBase,
+  checksumCandidateNamesFn = checksumCandidateNames
+}) {
+  const base = getDownloadBaseFn(repoSlug);
+  const candidates = checksumCandidateNamesFn();
+  const errors = [];
+  const events = [];
+
+  for (const name of candidates) {
+    const url = `${base}/v${version}/${name}`;
+    try {
+      const text = await downloadTextFn(url);
+      const parsed = parseSha256File(text, archive);
+      if (parsed) {
+        return { checksumName: name, checksumUrl: url, sha256: parsed, errors, events, attempted: true };
+      }
+
+      const message = `Checksum file (${name}) is missing an entry for ${archive}`;
+      errors.push(`[DOCDEX_CHECKSUM_ENTRY_MISSING] ${message}`);
+      events.push({ code: "DOCDEX_CHECKSUM_ENTRY_MISSING", message, details: { checksumName: name, url, archive } });
+      continue;
+    } catch (e) {
+      // 404 => missing candidate; try next.
+      if (e && typeof e.statusCode === "number" && e.statusCode === 404) {
+        events.push({
+          code: "DOCDEX_CHECKSUM_NOT_FOUND",
+          message: `Checksum candidate not found (${name})`,
+          details: { checksumName: name, url, archive, statusCode: 404 }
+        });
+        continue;
+      }
+
+      if (e && e.code === "DOCDEX_DOWNLOAD_TOO_LARGE") {
+        const message = `Checksum file too large (${name}): exceeded ${e.maxBytes} bytes`;
+        errors.push(`[DOCDEX_CHECKSUM_TOO_LARGE] ${message}`);
+        events.push({
+          code: "DOCDEX_CHECKSUM_TOO_LARGE",
+          message,
+          details: { checksumName: name, url, archive, maxBytes: e.maxBytes, actualBytes: e.actualBytes }
+        });
+        continue;
+      }
+
+      const message = `Failed to fetch checksum file (${name}): ${e.message}`;
+      errors.push(`[DOCDEX_CHECKSUM_FETCH_FAILED] ${message}`);
+      events.push({
+        code: "DOCDEX_CHECKSUM_FETCH_FAILED",
+        message,
+        details: {
+          checksumName: name,
+          url,
+          archive,
+          statusCode: typeof e?.statusCode === "number" ? e.statusCode : null
+        }
+      });
+      continue;
+    }
+  }
+
+  return { checksumName: null, checksumUrl: null, sha256: null, errors, events, attempted: true, candidates };
 }
 
 async function tryResolveAssetViaManifest({
@@ -388,7 +489,8 @@ async function resolveInstallerDownloadPlan({
   downloadTextFn = downloadText,
   artifactNameFn = artifactName,
   getDownloadBaseFn = getDownloadBase,
-  manifestCandidateNamesFn = manifestCandidateNames
+  manifestCandidateNamesFn = manifestCandidateNames,
+  checksumCandidateNamesFn = checksumCandidateNames
 }) {
   let archive = null;
   let expectedSha256 = null;
@@ -429,23 +531,52 @@ async function resolveInstallerDownloadPlan({
 
   if (!archive) {
     archive = artifactNameFn(platformKey);
-    const shaUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}.sha256`;
-    try {
-      const shaText = await downloadTextFn(shaUrl);
-      expectedSha256 = parseSha256File(shaText, archive);
-      if (!expectedSha256) {
-        logger.warn(
-          `[docdex] [DOCDEX_CHECKSUM_PARSE_FAILED] Could not parse SHA-256 from ${archive}.sha256; continuing without integrity check.`
-        );
+
+    const checksumAttempt = await tryResolveSha256ViaChecksumFiles({
+      repoSlug,
+      version,
+      archive,
+      downloadTextFn,
+      getDownloadBaseFn,
+      checksumCandidateNamesFn
+    });
+
+    if (checksumAttempt.sha256) {
+      expectedSha256 = checksumAttempt.sha256;
+    } else {
+      // Legacy fallback: per-asset .sha256 sidecar.
+      const shaUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}.sha256`;
+      try {
+        const shaText = await downloadTextFn(shaUrl);
+        expectedSha256 = parseSha256File(shaText, archive);
+      } catch {
+        expectedSha256 = null;
       }
-    } catch (e) {
-      if (e && typeof e.statusCode === "number" && e.statusCode === 404) {
-        logger.warn(`[docdex] [DOCDEX_CHECKSUM_MISSING] Missing ${archive}.sha256; continuing without integrity check.`);
-      } else {
-        logger.warn(
-          `[docdex] [DOCDEX_CHECKSUM_FETCH_FAILED] Failed to fetch ${archive}.sha256; continuing without integrity check: ${e.message}`
-        );
-      }
+    }
+
+    if (!expectedSha256) {
+      const manifestCandidates = manifestCandidateNamesFn();
+      const checksumCandidates = checksumCandidateNamesFn();
+      throw new ChecksumResolutionError(
+        `Missing SHA-256 integrity metadata for ${archive} (tried manifest ${manifestCandidates.join(
+          ", "
+        )} and checksums ${checksumCandidates.join(", ")})`,
+        {
+          platformKey,
+          targetTriple,
+          version,
+          repoSlug,
+          assetName: archive,
+          source: "fallback",
+          manifestName: manifestAttempt?.manifestName ?? null,
+          manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+          fallbackAttempted: true,
+          fallbackReason: manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found",
+          checksumCandidates,
+          checksumErrors: checksumAttempt?.errors ?? null,
+          checksumEvents: checksumAttempt?.events ?? null
+        }
+      );
     }
   }
 
@@ -661,6 +792,31 @@ function describeFatalError(err) {
     };
   }
 
+  if (err instanceof ChecksumResolutionError) {
+    const checksumCandidates = Array.isArray(err.details?.checksumCandidates) ? err.details.checksumCandidates : [];
+    return {
+      code: err.code,
+      exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
+      details: withBaseDetails(err.details),
+      lines: [
+        `[docdex] install failed: ${err.message}`,
+        `[docdex] error code: ${err.code}`,
+        err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
+        err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
+        err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,
+        err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,
+        checksumCandidates.length
+          ? `[docdex] Checksum candidates tried: ${checksumCandidates.join(", ")}`
+          : null,
+        err.details?.fallbackReason ? `[docdex] Fallback reason: ${err.details.fallbackReason}` : null,
+        "[docdex] Next steps:",
+        "[docdex] - Ensure the GitHub Release includes `docdex-release-manifest.json` or `SHA256SUMS` with a line for this asset.",
+        "[docdex] - If installing from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` to the repo that hosts the release assets.",
+        "[docdex] - If you cannot publish checksums, build from source (`cargo build --release --locked`)."
+      ].filter(Boolean)
+    };
+  }
+
   if (err instanceof DownloadError) {
     return {
       code: err.code,
@@ -773,13 +929,16 @@ if (require.main === module) {
 }
 
 module.exports = {
+  checksumCandidateNames,
   manifestCandidateNames,
   tryResolveAssetViaManifest,
+  tryResolveSha256ViaChecksumFiles,
   resolveInstallerDownloadPlan,
   parseSha256File,
   sha256File,
   verifyDownloadedFileIntegrity,
   MissingArtifactError,
+  ChecksumResolutionError,
   describeFatalError,
   handleFatal
 };

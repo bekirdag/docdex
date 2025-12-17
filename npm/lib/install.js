@@ -779,6 +779,7 @@ async function tryResolveAssetViaManifest({
       try {
         return {
           manifestName: name,
+          manifestUrl: url,
           resolved: resolveCanonicalAssetForTargetTriple(manifest, targetTriple),
           errors,
           events,
@@ -864,7 +865,7 @@ async function tryResolveAssetViaManifest({
     });
   }
 
-  return { manifestName: null, resolved: null, errors, events, attempted: true };
+  return { manifestName: null, manifestUrl: null, resolved: null, errors, events, attempted: true };
 }
 
 async function resolveInstallerDownloadPlan({
@@ -882,6 +883,10 @@ async function resolveInstallerDownloadPlan({
   let archive = null;
   let expectedSha256 = null;
   let source = "fallback";
+  let assetId = null;
+  let integritySourceType = null;
+  let integritySourceName = null;
+  let integritySourceUrl = null;
 
   let manifestAttempt;
   try {
@@ -909,7 +914,11 @@ async function resolveInstallerDownloadPlan({
   if (manifestAttempt.resolved) {
     archive = manifestAttempt.resolved.asset.name;
     expectedSha256 = manifestAttempt.resolved.integrity.sha256;
+    assetId = manifestAttempt.resolved.asset.id ?? null;
     source = `manifest:${manifestAttempt.manifestName}`;
+    integritySourceType = "manifest";
+    integritySourceName = manifestAttempt.manifestName;
+    integritySourceUrl = manifestAttempt.manifestUrl;
   } else if (manifestAttempt.errors && manifestAttempt.errors.length) {
     logger.warn(`[docdex] Manifest unavailable; falling back. Details: ${manifestAttempt.errors.join(" | ")}`);
   } else {
@@ -930,12 +939,20 @@ async function resolveInstallerDownloadPlan({
 
     if (checksumAttempt.sha256) {
       expectedSha256 = checksumAttempt.sha256;
+      integritySourceType = "sha256sums";
+      integritySourceName = checksumAttempt.checksumName;
+      integritySourceUrl = checksumAttempt.checksumUrl;
     } else {
       // Legacy fallback: per-asset .sha256 sidecar.
       const shaUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}.sha256`;
       try {
         const shaText = await downloadTextFn(shaUrl);
         expectedSha256 = parseSha256File(shaText, archive);
+        if (expectedSha256) {
+          integritySourceType = "sidecar";
+          integritySourceName = `${archive}.sha256`;
+          integritySourceUrl = shaUrl;
+        }
       } catch {
         expectedSha256 = null;
       }
@@ -971,6 +988,14 @@ async function resolveInstallerDownloadPlan({
     archive,
     expectedSha256,
     source,
+    assetId,
+    integrity: {
+      method: expectedSha256 ? "sha256" : null,
+      expectedSha256: expectedSha256 || null,
+      sourceType: integritySourceType,
+      sourceName: integritySourceName,
+      sourceUrl: integritySourceUrl
+    },
     manifestAttempt: { ...manifestAttempt, fallbackAttempted: !manifestAttempt.resolved }
   };
 }
@@ -1065,7 +1090,14 @@ async function runInstaller(options) {
 
   const repoSlug = parseRepoSlugFn();
 
-  const { archive, expectedSha256, source, manifestAttempt } = await resolveInstallerDownloadPlanFn({
+  const {
+    archive,
+    expectedSha256,
+    source,
+    assetId = null,
+    integrity: resolvedIntegrityPlan = null,
+    manifestAttempt
+  } = await resolveInstallerDownloadPlanFn({
     repoSlug,
     version,
     platformKey,
@@ -1121,7 +1153,8 @@ async function runInstaller(options) {
       );
     }
 
-    await verifyDownloadedFileIntegrityFn({
+    const verifiedArchiveSha256 =
+      (await verifyDownloadedFileIntegrityFn({
       filePath: tmpFile,
       expectedSha256,
       archiveName: archive,
@@ -1136,7 +1169,7 @@ async function runInstaller(options) {
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
         fallbackAttempted: source === "fallback"
       }
-    });
+    })) || null;
 
     // Only replace an existing installation after we have successfully fetched + verified the archive.
     await fsModule.promises.rm(distDir, { recursive: true, force: true });
@@ -1163,6 +1196,7 @@ async function runInstaller(options) {
     logger.log(`[docdex] Installed binary to ${binaryPath}`);
 
     const binarySha256 = await sha256FileFn(binaryPath);
+    const resolvedIntegrity = typeof expectedSha256 === "string" ? expectedSha256 : null;
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
       installedAt: nowIso(),
@@ -1175,10 +1209,20 @@ async function runInstaller(options) {
         sha256: binarySha256
       },
       archive: {
+        assetId,
         name: archive,
-        sha256: expectedSha256 || null,
+        sha256: resolvedIntegrity,
         source,
-        downloadUrl
+        downloadUrl,
+        integrity: {
+          method: resolvedIntegrity ? "sha256" : null,
+          expectedSha256: resolvedIntegrity,
+          actualSha256: verifiedArchiveSha256,
+          verifiedAt: resolvedIntegrity ? nowIso() : null,
+          sourceType: resolvedIntegrityPlan?.sourceType ?? null,
+          sourceName: resolvedIntegrityPlan?.sourceName ?? null,
+          sourceUrl: resolvedIntegrityPlan?.sourceUrl ?? null
+        }
       }
     };
     await writeJsonFileAtomic({

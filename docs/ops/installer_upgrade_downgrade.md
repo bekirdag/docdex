@@ -23,6 +23,33 @@ Outcomes (stable strings):
 The installer logs the outcome as a single line:
 - `[docdex] Install outcome: <outcome>`
 
+## Installer observability (structured events)
+
+The installer also emits **structured local log events** (no remote telemetry) as JSON lines prefixed with:
+- `[docdex] event `
+
+These events support deterministic troubleshooting and include decisioning + integrity results + actions taken.
+
+### Stable outcome codes (support-facing)
+
+For supportability, structured events include `details.outcomeCode` with stable values:
+
+| Outcome code | Meaning | Maps from installer `outcome` |
+|---|---|---|
+| `noop` | No changes; no download attempted. | `no-op` |
+| `repair` | Replaced due to local integrity mismatch. | `repair` |
+| `replace` | Installed/reinstalled expected version. | `update`, `reinstall_unknown` |
+
+### Key event codes
+
+- `DOCDEX_INSTALL_START` (computed platform/version/paths)
+- `DOCDEX_INSTALL_DECISION` (local state + decision outcome/reason)
+- `DOCDEX_INSTALL_INTEGRITY_LOCAL` (local binary verification result when checked)
+- `DOCDEX_INSTALL_PLAN` (resolved asset + integrity metadata source)
+- `DOCDEX_INSTALL_INTEGRITY_ARCHIVE` (downloaded archive verification result)
+- `DOCDEX_INSTALL_REPLACE_START` / `DOCDEX_INSTALL_REPLACE_OK` (replacement performed)
+- `DOCDEX_INSTALL_OUTCOME` (final outcome with stable `outcomeCode`)
+
 ## Upgrade vs downgrade
 
 The installer does not treat “upgrade” and “downgrade” differently. It always targets the expected version for the current npm package install:
@@ -114,4 +141,3 @@ This is usually a repo state issue, not an installer issue:
 - Installer error codes + remediation: `docs/ops/installer_error_codes.md`
 - Release manifest contract: `docs/contracts/release_manifest_schema_v1.md`
 - Installer error contract: `docs/contracts/installer_error_contract_v1.md`
-

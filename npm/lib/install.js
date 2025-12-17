@@ -26,6 +26,53 @@ const MAX_MANIFEST_BYTES = 1024 * 1024; // 1 MiB cap for safety
 const INVALID_JSON_ERROR = "invalid JSON";
 const INSTALL_METADATA_SCHEMA_VERSION = 1;
 const INSTALL_METADATA_FILENAME = "docdexd-install.json";
+const INSTALL_EVENT_SCHEMA_VERSION = 1;
+const INSTALL_EVENT_PREFIX = "[docdex] event ";
+
+function normalizeOutcomeCode(outcome) {
+  // Stable support-facing outcome codes (ops-01-us-06-t15).
+  if (outcome === "no-op") return "noop";
+  if (outcome === "repair") return "repair";
+  // Includes: "update", "reinstall_unknown", and any future non-noop actions.
+  return "replace";
+}
+
+function emitInstallerEvent({ logger, level = "info", code, message, details }) {
+  const sink =
+    level === "error"
+      ? logger?.error || logger?.log || console.error
+      : level === "warn"
+        ? logger?.warn || logger?.log || console.warn
+        : logger?.log || console.log;
+
+  const payload = {
+    schemaVersion: INSTALL_EVENT_SCHEMA_VERSION,
+    ts: nowIso(),
+    level,
+    code,
+    message: message || null,
+    details: details || null
+  };
+
+  // Keep the human-facing prefix stable while allowing machine parsing via JSON.
+  try {
+    sink(`${INSTALL_EVENT_PREFIX}${JSON.stringify(payload)}`);
+  } catch (_err) {
+    // Never fail installs due to logging/telemetry serialization issues.
+  }
+}
+
+function summarizeIntegrityResult(integrityResult) {
+  if (!integrityResult || typeof integrityResult !== "object") return null;
+  return {
+    status: typeof integrityResult.status === "string" ? integrityResult.status : null,
+    reason: typeof integrityResult.reason === "string" ? integrityResult.reason : null,
+    expectedSource: typeof integrityResult.expectedSource === "string" ? integrityResult.expectedSource : null,
+    expectedSha256: typeof integrityResult.expectedSha256 === "string" ? integrityResult.expectedSha256 : null,
+    actualSha256: typeof integrityResult.actualSha256 === "string" ? integrityResult.actualSha256 : null,
+    error: typeof integrityResult.error === "string" ? integrityResult.error : null
+  };
+}
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -586,6 +633,11 @@ async function determineLocalInstallerOutcome({
     isWin32
   });
 
+  const binaryPresent = Boolean(discoveredInstalledState.binaryPresent);
+  const metadataStatus = discoveredInstalledState.metadataStatus;
+  const metadataStatusReason = discoveredInstalledState.metadataStatusReason;
+  const platformMismatch = Boolean(discoveredInstalledState.platformMismatch);
+
   const expectedIntegrityMaterial = {
     binarySha256: normalizeSha256Hex(expectedBinarySha256)
       ? expectedBinarySha256
@@ -595,8 +647,8 @@ async function determineLocalInstallerOutcome({
   };
 
   const shouldVerifyIntegrity =
-    discoveredInstalledState.binaryPresent &&
-    !discoveredInstalledState.platformMismatch &&
+    binaryPresent &&
+    !platformMismatch &&
     discoveredInstalledState.installedVersion === expectedVersion &&
     (normalizeSha256Hex(expectedBinarySha256) || discoveredInstalledState.metadataStatus === "valid");
 
@@ -628,7 +680,12 @@ async function determineLocalInstallerOutcome({
     binaryPath: discoveredInstalledState.binaryPath,
     metadataPath: discoveredInstalledState.metadataPath,
     installedVersion,
-    integrityResult
+    integrityResult,
+    integrityChecked: shouldVerifyIntegrity,
+    binaryPresent,
+    metadataStatus,
+    metadataStatusReason,
+    platformMismatch
   };
 }
 
@@ -993,6 +1050,7 @@ async function verifyDownloadedFileIntegrity({
 async function runInstaller(options) {
   const opts = options || {};
   const logger = opts.logger || console;
+  const attemptId = `${process.pid}-${Date.now()}`;
 
   const detectPlatformKeyFn = opts.detectPlatformKeyFn || detectPlatformKey;
   const targetTripleForPlatformKeyFn = opts.targetTripleForPlatformKeyFn || targetTripleForPlatformKey;
@@ -1048,6 +1106,13 @@ async function runInstaller(options) {
   const distDir = pathModule.join(distBaseDir, platformKey);
   const isWin32 = detectedPlatform === "win32";
 
+  emitInstallerEvent({
+    logger,
+    code: "DOCDEX_INSTALL_START",
+    message: "Installer started",
+    details: { attemptId, expectedVersion: version, platformKey, targetTriple, distDir }
+  });
+
   const local = await determineLocalInstallerOutcome({
     fsModule,
     pathModule,
@@ -1058,9 +1123,65 @@ async function runInstaller(options) {
     sha256FileFn
   });
 
+  const localOutcomeCode = normalizeOutcomeCode(local.outcome);
+  emitInstallerEvent({
+    logger,
+    code: "DOCDEX_INSTALL_DECISION",
+    message: "Local state evaluated",
+    details: {
+      attemptId,
+      expectedVersion: version,
+      platformKey,
+      targetTriple,
+      distDir,
+      installedVersion: local.installedVersion,
+      binaryPresent: local.binaryPresent,
+      metadataStatus: local.metadataStatus,
+      metadataStatusReason: local.metadataStatusReason,
+      platformMismatch: local.platformMismatch,
+      integrityChecked: Boolean(local.integrityChecked),
+      integrity: summarizeIntegrityResult(local.integrityResult),
+      decision: { outcome: local.outcome, outcomeCode: localOutcomeCode, reason: local.reason }
+    }
+  });
+
+  if (local.integrityChecked) {
+    emitInstallerEvent({
+      logger,
+      code: "DOCDEX_INSTALL_INTEGRITY_LOCAL",
+      message: "Local binary integrity verification result",
+      details: {
+        attemptId,
+        binaryPath: local.binaryPath,
+        metadataPath: local.metadataPath,
+        integrity: summarizeIntegrityResult(local.integrityResult)
+      }
+    });
+  }
+
   if (local.outcome === "no-op") {
     logger.log("[docdex] Install outcome: no-op");
-    return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
+    emitInstallerEvent({
+      logger,
+      code: "DOCDEX_INSTALL_OUTCOME",
+      message: "Install completed",
+      details: {
+        attemptId,
+        outcome: local.outcome,
+        outcomeCode: localOutcomeCode,
+        reason: local.reason,
+        binaryPath: local.binaryPath,
+        metadataPath: local.metadataPath,
+        downloadAttempted: false,
+        integrity: summarizeIntegrityResult(local.integrityResult)
+      }
+    });
+    return {
+      binaryPath: local.binaryPath,
+      outcome: local.outcome,
+      outcomeCode: localOutcomeCode,
+      integrityResult: local.integrityResult
+    };
   }
 
   const repoSlug = parseRepoSlugFn();
@@ -1077,10 +1198,53 @@ async function runInstaller(options) {
   const tmpDir = opts.tmpDir || osModule.tmpdir();
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
 
+  emitInstallerEvent({
+    logger,
+    code: "DOCDEX_INSTALL_PLAN",
+    message: "Resolved download plan",
+    details: {
+      attemptId,
+      expectedVersion: version,
+      platformKey,
+      targetTriple,
+      repoSlug,
+      archive,
+      source,
+      downloadUrl,
+      expectedSha256Present: Boolean(normalizeSha256Hex(expectedSha256)),
+      manifestName: manifestAttempt?.manifestName ?? null,
+      manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+      fallbackAttempted: Boolean(manifestAttempt?.fallbackAttempted)
+    }
+  });
+
+  const resolutionEvents = Array.isArray(manifestAttempt?.events) ? manifestAttempt.events : [];
+  for (const ev of resolutionEvents) {
+    emitInstallerEvent({
+      logger,
+      level: typeof ev?.code === "string" && /(_FAILED|_UNUSABLE|_TOO_LARGE)$/.test(ev.code) ? "warn" : "info",
+      code: typeof ev?.code === "string" ? ev.code : "DOCDEX_INSTALL_EVENT",
+      message: typeof ev?.message === "string" ? ev.message : null,
+      details: { attemptId, ...(ev?.details || {}) }
+    });
+  }
+
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   try {
     try {
+      emitInstallerEvent({
+        logger,
+        code: "DOCDEX_INSTALL_DOWNLOAD_START",
+        message: "Downloading release archive",
+        details: { attemptId, downloadUrl, tmpFile, archive, source }
+      });
       await downloadFn(downloadUrl, tmpFile);
+      emitInstallerEvent({
+        logger,
+        code: "DOCDEX_INSTALL_DOWNLOAD_OK",
+        message: "Downloaded release archive",
+        details: { attemptId, downloadUrl, tmpFile, archive, source }
+      });
     } catch (err) {
       if (err && typeof err.statusCode === "number" && err.statusCode === 404) {
         const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
@@ -1121,7 +1285,7 @@ async function runInstaller(options) {
       );
     }
 
-    await verifyDownloadedFileIntegrityFn({
+    const verifiedArchiveSha256 = await verifyDownloadedFileIntegrityFn({
       filePath: tmpFile,
       expectedSha256,
       archiveName: archive,
@@ -1138,9 +1302,36 @@ async function runInstaller(options) {
       }
     });
 
+    emitInstallerEvent({
+      logger,
+      code: "DOCDEX_INSTALL_INTEGRITY_ARCHIVE",
+      message: "Downloaded archive integrity verification result",
+      details: {
+        attemptId,
+        archive,
+        downloadUrl,
+        source,
+        status: normalizeSha256Hex(expectedSha256) ? "verified_ok" : "skipped",
+        expectedSha256: normalizeSha256Hex(expectedSha256) ? expectedSha256 : null,
+        actualSha256: typeof verifiedArchiveSha256 === "string" ? verifiedArchiveSha256 : null
+      }
+    });
+
     // Only replace an existing installation after we have successfully fetched + verified the archive.
+    emitInstallerEvent({
+      logger,
+      code: "DOCDEX_INSTALL_REPLACE_START",
+      message: "Replacing existing installation",
+      details: { attemptId, distDir }
+    });
     await fsModule.promises.rm(distDir, { recursive: true, force: true });
     await extractTarballFn(tmpFile, distDir);
+    emitInstallerEvent({
+      logger,
+      code: "DOCDEX_INSTALL_REPLACE_OK",
+      message: "Extracted archive into dist directory",
+      details: { attemptId, distDir }
+    });
 
     const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
     if (!fsModule.existsSync(binaryPath)) {
@@ -1189,7 +1380,37 @@ async function runInstaller(options) {
     });
 
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
-    return { binaryPath, outcome: local.outcome };
+    emitInstallerEvent({
+      logger,
+      code: "DOCDEX_INSTALL_METADATA_WRITTEN",
+      message: "Wrote install metadata",
+      details: {
+        attemptId,
+        metadataPath: installMetadataPath(distDir, pathModule),
+        binaryPath,
+        version,
+        platformKey,
+        targetTriple,
+        binarySha256
+      }
+    });
+
+    emitInstallerEvent({
+      logger,
+      code: "DOCDEX_INSTALL_OUTCOME",
+      message: "Install completed",
+      details: {
+        attemptId,
+        outcome: local.outcome,
+        outcomeCode: localOutcomeCode,
+        reason: local.reason,
+        binaryPath,
+        metadataPath: installMetadataPath(distDir, pathModule),
+        downloadAttempted: true
+      }
+    });
+
+    return { binaryPath, outcome: local.outcome, outcomeCode: localOutcomeCode };
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
   }

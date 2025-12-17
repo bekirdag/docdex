@@ -310,6 +310,74 @@ async function writeJsonFileAtomic({ fsModule, pathModule, filePath, value }) {
   await fsModule.promises.rename(tmp, filePath);
 }
 
+function createInstallerEphemeralDirName({ platformKey, kind }) {
+  const safeKind = String(kind || "tmp").replace(/[^a-z0-9_-]/gi, "");
+  return `${platformKey}.${safeKind}.${Date.now()}.${process.pid}`;
+}
+
+async function recoverAndCleanInstallerArtifacts({ fsModule, pathModule, distBaseDir, platformKey, distDir, logger }) {
+  const log = typeof logger?.log === "function" ? logger.log.bind(logger) : () => {};
+  const readdir = fsModule?.promises?.readdir;
+  const rm = fsModule?.promises?.rm;
+  const rename = fsModule?.promises?.rename;
+  if (!readdir || !rm || !rename) return;
+
+  let entries;
+  try {
+    entries = await readdir(distBaseDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  const dirNames = entries
+    .filter((entry) => entry && entry.isDirectory && entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter(Boolean);
+
+  const stagePrefix = `${platformKey}.stage.`;
+  const backupPrefix = `${platformKey}.backup.`;
+  const failedPrefix = `${platformKey}.failed.`;
+
+  const stageDirs = dirNames.filter((name) => name.startsWith(stagePrefix));
+  const backupDirs = dirNames.filter((name) => name.startsWith(backupPrefix));
+  const failedDirs = dirNames.filter((name) => name.startsWith(failedPrefix));
+
+  const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+  let distDirExists = existsSync ? existsSync(distDir) : false;
+
+  if (!distDirExists && backupDirs.length) {
+    const sorted = [...backupDirs].sort().reverse();
+    const chosen = sorted[0];
+    const chosenPath = pathModule.join(distBaseDir, chosen);
+    try {
+      await rename(chosenPath, distDir);
+      log(`[docdex] Recovered prior install from ${chosen}`);
+      distDirExists = true;
+    } catch {
+      // If recovery fails, keep going; a fresh install can still proceed.
+    }
+  }
+
+  // Remove stale artifacts left behind by interrupted runs.
+  const toRemove = [...stageDirs, ...failedDirs];
+  // If distDir is present, all backups are safe to remove. If distDir is missing, preserve at most one backup.
+  if (distDirExists) {
+    toRemove.push(...backupDirs);
+  } else if (backupDirs.length > 1) {
+    const sorted = [...backupDirs].sort().reverse();
+    toRemove.push(...sorted.slice(1));
+  }
+
+  for (const name of toRemove) {
+    const fullPath = pathModule.join(distBaseDir, name);
+    try {
+      await rm(fullPath, { recursive: true, force: true });
+    } catch {
+      // best effort cleanup
+    }
+  }
+}
+
 function isValidInstallMetadata(meta) {
   if (!meta || typeof meta !== "object") return false;
   if (meta.schemaVersion !== INSTALL_METADATA_SCHEMA_VERSION) return false;
@@ -1048,6 +1116,8 @@ async function runInstaller(options) {
   const distDir = pathModule.join(distBaseDir, platformKey);
   const isWin32 = detectedPlatform === "win32";
 
+  await recoverAndCleanInstallerArtifacts({ fsModule, pathModule, distBaseDir, platformKey, distDir, logger });
+
   const local = await determineLocalInstallerOutcome({
     fsModule,
     pathModule,
@@ -1078,6 +1148,22 @@ async function runInstaller(options) {
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
+  const restartFn = typeof opts.restartFn === "function" ? opts.restartFn : null;
+  const stageDir = pathModule.join(
+    distBaseDir,
+    createInstallerEphemeralDirName({ platformKey, kind: "stage" })
+  );
+  const backupDir = pathModule.join(
+    distBaseDir,
+    createInstallerEphemeralDirName({ platformKey, kind: "backup" })
+  );
+  const failedDir = pathModule.join(
+    distBaseDir,
+    createInstallerEphemeralDirName({ platformKey, kind: "failed" })
+  );
+  let backupCreated = false;
+  let swapped = false;
+
   try {
     try {
       await downloadFn(downloadUrl, tmpFile);
@@ -1138,13 +1224,13 @@ async function runInstaller(options) {
       }
     });
 
-    // Only replace an existing installation after we have successfully fetched + verified the archive.
-    await fsModule.promises.rm(distDir, { recursive: true, force: true });
-    await extractTarballFn(tmpFile, distDir);
+    // Extract into a staging directory first, then swap atomically.
+    await fsModule.promises.rm(stageDir, { recursive: true, force: true }).catch(() => {});
+    await extractTarballFn(tmpFile, stageDir);
 
-    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
-    if (!fsModule.existsSync(binaryPath)) {
-      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
+    const stagedBinaryPath = pathModule.join(stageDir, isWin32 ? "docdexd.exe" : "docdexd");
+    if (!fsModule.existsSync(stagedBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagedBinaryPath}`, {
         platformKey,
         targetTriple,
         version,
@@ -1155,14 +1241,13 @@ async function runInstaller(options) {
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
         fallbackAttempted: source === "fallback",
-        binaryPath
+        binaryPath: stagedBinaryPath
       });
     }
 
-    await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
-    logger.log(`[docdex] Installed binary to ${binaryPath}`);
+    await fsModule.promises.chmod(stagedBinaryPath, 0o755).catch(() => {});
+    const stagedSha256 = await sha256FileFn(stagedBinaryPath);
 
-    const binarySha256 = await sha256FileFn(binaryPath);
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
       installedAt: nowIso(),
@@ -1172,7 +1257,7 @@ async function runInstaller(options) {
       targetTriple,
       binary: {
         filename: isWin32 ? "docdexd.exe" : "docdexd",
-        sha256: binarySha256
+        sha256: stagedSha256
       },
       archive: {
         name: archive,
@@ -1184,12 +1269,66 @@ async function runInstaller(options) {
     await writeJsonFileAtomic({
       fsModule,
       pathModule,
-      filePath: installMetadataPath(distDir, pathModule),
+      filePath: installMetadataPath(stageDir, pathModule),
       value: metadata
     });
 
+    // Swap into place after the staged directory is fully verified and metadata is written.
+    if (fsModule.existsSync(distDir)) {
+      await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+      await fsModule.promises.rename(distDir, backupDir);
+      backupCreated = true;
+    }
+
+    await fsModule.promises.rename(stageDir, distDir);
+    swapped = true;
+
+    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+    logger.log(`[docdex] Installed binary to ${binaryPath}`);
+
+    if (restartFn) {
+      await restartFn({ binaryPath, distDir, platformKey, targetTriple, version, repoSlug });
+    }
+
+    if (backupCreated) {
+      try {
+        await fsModule.promises.rm(backupDir, { recursive: true, force: true });
+        backupCreated = false;
+      } catch {
+        // best effort cleanup; future runs can remove it if distDir is healthy
+      }
+    }
+
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
     return { binaryPath, outcome: local.outcome };
+  } catch (err) {
+    // If the swap failed after creating a backup, restore the previous installation.
+    if (!swapped && backupCreated) {
+      try {
+        await fsModule.promises.rename(backupDir, distDir);
+        backupCreated = false;
+      } catch {
+        // Preserve the backup directory; do not delete it in cleanup.
+      }
+    }
+
+    // If restart failed after swapping, roll back by swapping the backup back in.
+    if (swapped && backupCreated) {
+      await fsModule.promises.rm(failedDir, { recursive: true, force: true }).catch(() => {});
+      await fsModule.promises
+        .rename(distDir, failedDir)
+        .catch(() => {});
+      try {
+        await fsModule.promises.rename(backupDir, distDir);
+        backupCreated = false;
+      } catch {
+        // Preserve the backup directory; do not delete it in cleanup.
+      }
+      await fsModule.promises.rm(failedDir, { recursive: true, force: true }).catch(() => {});
+    }
+
+    await fsModule.promises.rm(stageDir, { recursive: true, force: true }).catch(() => {});
+    throw err;
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
   }

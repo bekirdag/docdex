@@ -21,6 +21,47 @@ async function ensureDir(dirPath) {
   await fs.promises.mkdir(dirPath, { recursive: true });
 }
 
+function createCapturingLogger() {
+  const logs = [];
+  const warns = [];
+  const errors = [];
+  return {
+    logger: {
+      log: (...args) => logs.push(args.join(" ")),
+      warn: (...args) => warns.push(args.join(" ")),
+      error: (...args) => errors.push(args.join(" "))
+    },
+    logs,
+    warns,
+    errors
+  };
+}
+
+async function writeInstalledBinary({ distDir, isWin32, bytes }) {
+  await ensureDir(distDir);
+  const binaryPath = path.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+  await fs.promises.writeFile(binaryPath, bytes);
+  return binaryPath;
+}
+
+async function writeInstallMetadata({ distDir, platformKey, version, targetTriple, binarySha256, repoSlug = "owner/repo" }) {
+  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const payload = {
+    schemaVersion: 1,
+    installedAt: new Date().toISOString(),
+    version,
+    repoSlug,
+    platformKey,
+    targetTriple,
+    binary: {
+      filename: "docdexd",
+      sha256: binarySha256
+    }
+  };
+  await fs.promises.writeFile(metadataPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  return metadataPath;
+}
+
 test("installer: repeated runs converge idempotently (no-op is verified and does not download)", async (t) => {
   const base = "https://example.test/releases/download";
   const version = "0.0.0";
@@ -135,6 +176,7 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
 <<<<<<< HEAD
 =======
 
+<<<<<<< HEAD
 test("installer: upgrade replaces mismatched version and converges idempotently", async (t) => {
   const base = "https://example.test/releases/download";
   const initialVersion = "0.0.1";
@@ -142,6 +184,16 @@ test("installer: upgrade replaces mismatched version and converges idempotently"
   const platformKey = "linux-x64-gnu";
   const targetTriple = targetTripleForPlatformKey(platformKey);
   const archive = "docdexd-linux-x64-gnu.tar.gz";
+=======
+test("installer: upgrade (older->newer) replaces binary then converges to no-op without re-download", async (t) => {
+  const base = "https://example.test/releases/download";
+  const expectedVersion = "0.0.2";
+  const installedVersion = "0.0.1";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+  const isWin32 = false;
+>>>>>>> mcoda/task/ops-01-us-06-t14
 
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-upgrade-idempotent-"));
   t.after(async () => {
@@ -153,15 +205,36 @@ test("installer: upgrade replaces mismatched version and converges idempotently"
   const tmpDir = path.join(tmpRoot, "tmp");
   await ensureDir(tmpDir);
 
+<<<<<<< HEAD
   const first = await runInstaller({
     logger: createNoopLogger(),
+=======
+  const oldBinaryPath = await writeInstalledBinary({
+    distDir,
+    isWin32,
+    bytes: `docdexd-${installedVersion}\n`
+  });
+  const oldSha = await sha256File(oldBinaryPath);
+  await writeInstallMetadata({ distDir, platformKey, version: installedVersion, targetTriple, binarySha256: oldSha });
+
+  let downloadCalls = 0;
+  let extractCalls = 0;
+  const { logger, logs } = createCapturingLogger();
+
+  const first = await runInstaller({
+    logger,
+>>>>>>> mcoda/task/ops-01-us-06-t14
     platform: "linux",
     arch: "x64",
     tmpDir,
     distBaseDir,
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
+<<<<<<< HEAD
     getVersionFn: () => initialVersion,
+=======
+    getVersionFn: () => expectedVersion,
+>>>>>>> mcoda/task/ops-01-us-06-t14
     parseRepoSlugFn: () => "owner/repo",
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
@@ -171,12 +244,18 @@ test("installer: upgrade replaces mismatched version and converges idempotently"
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
     downloadFn: async (url, dest) => {
+<<<<<<< HEAD
       assert.equal(url, `${base}/v${initialVersion}/${archive}`);
+=======
+      downloadCalls += 1;
+      assert.equal(url, `${base}/v${expectedVersion}/${archive}`);
+>>>>>>> mcoda/task/ops-01-us-06-t14
       await ensureDir(path.dirname(dest));
       await fs.promises.writeFile(dest, "fake-archive-bytes");
     },
     verifyDownloadedFileIntegrityFn: async () => null,
     extractTarballFn: async (_archivePath, targetDir) => {
+<<<<<<< HEAD
       await ensureDir(targetDir);
       await fs.promises.writeFile(path.join(targetDir, "docdexd"), `docdexd-${initialVersion}\n`, "utf8");
     }
@@ -237,13 +316,48 @@ test("installer: upgrade replaces mismatched version and converges idempotently"
 
   const third = await runInstaller({
     logger: createNoopLogger(),
+=======
+      extractCalls += 1;
+      await ensureDir(targetDir);
+      await fs.promises.writeFile(path.join(targetDir, "docdexd"), `docdexd-${expectedVersion}\n`, "utf8");
+    }
+  });
+
+  assert.equal(first.outcome, "update");
+  assert.equal(downloadCalls, 1);
+  assert.equal(extractCalls, 1);
+  assert.ok(logs.some((line) => line.includes("[docdex] Install outcome: update")));
+
+  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const binaryPath = path.join(distDir, "docdexd");
+  const metadataAfterFirst = await fs.promises.readFile(metadataPath, "utf8");
+  const binaryAfterFirst = await fs.promises.readFile(binaryPath, "utf8");
+  assert.equal(binaryAfterFirst, `docdexd-${expectedVersion}\n`);
+
+  const meta = JSON.parse(metadataAfterFirst);
+  assert.equal(meta.version, expectedVersion);
+  assert.equal(meta.platformKey, platformKey);
+
+  let repoSlugCalls = 0;
+  let planCalls = 0;
+  let noOpDownloadCalls = 0;
+  let noOpExtractCalls = 0;
+
+  const secondLogger = createCapturingLogger();
+  const second = await runInstaller({
+    logger: secondLogger.logger,
+>>>>>>> mcoda/task/ops-01-us-06-t14
     platform: "linux",
     arch: "x64",
     tmpDir,
     distBaseDir,
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
+<<<<<<< HEAD
     getVersionFn: () => targetVersion,
+=======
+    getVersionFn: () => expectedVersion,
+>>>>>>> mcoda/task/ops-01-us-06-t14
     parseRepoSlugFn: () => {
       repoSlugCalls += 1;
       throw new Error("unexpected repo slug resolution");
@@ -253,6 +367,7 @@ test("installer: upgrade replaces mismatched version and converges idempotently"
       throw new Error("unexpected plan resolution");
     },
     downloadFn: async () => {
+<<<<<<< HEAD
       downloadCalls += 1;
       throw new Error("unexpected download");
     },
@@ -290,6 +405,38 @@ test("installer: downgrade replaces mismatched version and converges idempotentl
   const platformKey = "linux-x64-gnu";
   const targetTriple = targetTripleForPlatformKey(platformKey);
   const archive = "docdexd-linux-x64-gnu.tar.gz";
+=======
+      noOpDownloadCalls += 1;
+      throw new Error("unexpected download");
+    },
+    extractTarballFn: async () => {
+      noOpExtractCalls += 1;
+      throw new Error("unexpected extract");
+    }
+  });
+
+  assert.equal(second.outcome, "no-op");
+  assert.equal(repoSlugCalls, 0);
+  assert.equal(planCalls, 0);
+  assert.equal(noOpDownloadCalls, 0);
+  assert.equal(noOpExtractCalls, 0);
+  assert.ok(secondLogger.logs.some((line) => line.includes("[docdex] Install outcome: no-op")));
+
+  const metadataAfterSecond = await fs.promises.readFile(metadataPath, "utf8");
+  const binaryAfterSecond = await fs.promises.readFile(binaryPath, "utf8");
+  assert.equal(metadataAfterSecond, metadataAfterFirst);
+  assert.equal(binaryAfterSecond, binaryAfterFirst);
+});
+
+test("installer: downgrade (newer->older) replaces binary then converges to no-op without re-download", async (t) => {
+  const base = "https://example.test/releases/download";
+  const expectedVersion = "0.0.1";
+  const installedVersion = "0.0.2";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+  const isWin32 = false;
+>>>>>>> mcoda/task/ops-01-us-06-t14
 
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-downgrade-idempotent-"));
   t.after(async () => {
@@ -301,6 +448,20 @@ test("installer: downgrade replaces mismatched version and converges idempotentl
   const tmpDir = path.join(tmpRoot, "tmp");
   await ensureDir(tmpDir);
 
+<<<<<<< HEAD
+=======
+  const oldBinaryPath = await writeInstalledBinary({
+    distDir,
+    isWin32,
+    bytes: `docdexd-${installedVersion}\n`
+  });
+  const oldSha = await sha256File(oldBinaryPath);
+  await writeInstallMetadata({ distDir, platformKey, version: installedVersion, targetTriple, binarySha256: oldSha });
+
+  let downloadCalls = 0;
+  let extractCalls = 0;
+
+>>>>>>> mcoda/task/ops-01-us-06-t14
   const first = await runInstaller({
     logger: createNoopLogger(),
     platform: "linux",
@@ -309,7 +470,11 @@ test("installer: downgrade replaces mismatched version and converges idempotentl
     distBaseDir,
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
+<<<<<<< HEAD
     getVersionFn: () => initialVersion,
+=======
+    getVersionFn: () => expectedVersion,
+>>>>>>> mcoda/task/ops-01-us-06-t14
     parseRepoSlugFn: () => "owner/repo",
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
@@ -318,13 +483,19 @@ test("installer: downgrade replaces mismatched version and converges idempotentl
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
+<<<<<<< HEAD
     downloadFn: async (url, dest) => {
       assert.equal(url, `${base}/v${initialVersion}/${archive}`);
+=======
+    downloadFn: async (_url, dest) => {
+      downloadCalls += 1;
+>>>>>>> mcoda/task/ops-01-us-06-t14
       await ensureDir(path.dirname(dest));
       await fs.promises.writeFile(dest, "fake-archive-bytes");
     },
     verifyDownloadedFileIntegrityFn: async () => null,
     extractTarballFn: async (_archivePath, targetDir) => {
+<<<<<<< HEAD
       await ensureDir(targetDir);
       await fs.promises.writeFile(path.join(targetDir, "docdexd"), `docdexd-${initialVersion}\n`, "utf8");
     }
@@ -337,6 +508,27 @@ test("installer: downgrade replaces mismatched version and converges idempotentl
   assert.equal(binaryAfterFirst, `docdexd-${initialVersion}\n`);
 
   let downgradeDownloadCalls = 0;
+=======
+      extractCalls += 1;
+      await ensureDir(targetDir);
+      await fs.promises.writeFile(path.join(targetDir, "docdexd"), `docdexd-${expectedVersion}\n`, "utf8");
+    }
+  });
+
+  assert.equal(first.outcome, "update");
+  assert.equal(downloadCalls, 1);
+  assert.equal(extractCalls, 1);
+
+  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const binaryPath = path.join(distDir, "docdexd");
+  const metadataAfterFirst = await fs.promises.readFile(metadataPath, "utf8");
+  const binaryAfterFirst = await fs.promises.readFile(binaryPath, "utf8");
+  assert.equal(binaryAfterFirst, `docdexd-${expectedVersion}\n`);
+
+  const meta = JSON.parse(metadataAfterFirst);
+  assert.equal(meta.version, expectedVersion);
+
+>>>>>>> mcoda/task/ops-01-us-06-t14
   const second = await runInstaller({
     logger: createNoopLogger(),
     platform: "linux",
@@ -345,6 +537,7 @@ test("installer: downgrade replaces mismatched version and converges idempotentl
     distBaseDir,
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
+<<<<<<< HEAD
     getVersionFn: () => targetVersion,
     parseRepoSlugFn: () => "owner/repo",
     getDownloadBaseFn: () => base,
@@ -408,10 +601,24 @@ test("installer: downgrade replaces mismatched version and converges idempotentl
     },
     extractTarballFn: async () => {
       extractCalls += 1;
+=======
+    getVersionFn: () => expectedVersion,
+    parseRepoSlugFn: () => {
+      throw new Error("unexpected repo slug resolution");
+    },
+    resolveInstallerDownloadPlanFn: async () => {
+      throw new Error("unexpected plan resolution");
+    },
+    downloadFn: async () => {
+      throw new Error("unexpected download");
+    },
+    extractTarballFn: async () => {
+>>>>>>> mcoda/task/ops-01-us-06-t14
       throw new Error("unexpected extract");
     }
   });
 
+<<<<<<< HEAD
   assert.equal(third.outcome, "no-op");
   assert.equal(repoSlugCalls, 0);
   assert.equal(planCalls, 0);
@@ -425,11 +632,25 @@ test("installer: downgrade replaces mismatched version and converges idempotentl
 });
 
 test("installer: repair replaces corrupted binary and converges idempotently", async (t) => {
+=======
+  assert.equal(second.outcome, "no-op");
+  const metadataAfterSecond = await fs.promises.readFile(metadataPath, "utf8");
+  const binaryAfterSecond = await fs.promises.readFile(binaryPath, "utf8");
+  assert.equal(metadataAfterSecond, metadataAfterFirst);
+  assert.equal(binaryAfterSecond, binaryAfterFirst);
+});
+
+test("installer: repair then converges to no-op without re-download", async (t) => {
+>>>>>>> mcoda/task/ops-01-us-06-t14
   const base = "https://example.test/releases/download";
   const version = "0.0.0";
   const platformKey = "linux-x64-gnu";
   const targetTriple = targetTripleForPlatformKey(platformKey);
   const archive = "docdexd-linux-x64-gnu.tar.gz";
+<<<<<<< HEAD
+=======
+  const isWin32 = false;
+>>>>>>> mcoda/task/ops-01-us-06-t14
 
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-repair-idempotent-"));
   t.after(async () => {
@@ -441,6 +662,18 @@ test("installer: repair replaces corrupted binary and converges idempotently", a
   const tmpDir = path.join(tmpRoot, "tmp");
   await ensureDir(tmpDir);
 
+<<<<<<< HEAD
+=======
+  const binaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "docdexd-original\n" });
+  const originalSha = await sha256File(binaryPath);
+  await writeInstallMetadata({ distDir, platformKey, version, targetTriple, binarySha256: originalSha });
+
+  await fs.promises.writeFile(binaryPath, "docdexd-corrupted\n");
+
+  let downloadCalls = 0;
+  let extractCalls = 0;
+
+>>>>>>> mcoda/task/ops-01-us-06-t14
   const first = await runInstaller({
     logger: createNoopLogger(),
     platform: "linux",
@@ -458,13 +691,19 @@ test("installer: repair replaces corrupted binary and converges idempotently", a
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
+<<<<<<< HEAD
     downloadFn: async (url, dest) => {
       assert.equal(url, `${base}/v${version}/${archive}`);
+=======
+    downloadFn: async (_url, dest) => {
+      downloadCalls += 1;
+>>>>>>> mcoda/task/ops-01-us-06-t14
       await ensureDir(path.dirname(dest));
       await fs.promises.writeFile(dest, "fake-archive-bytes");
     },
     verifyDownloadedFileIntegrityFn: async () => null,
     extractTarballFn: async (_archivePath, targetDir) => {
+<<<<<<< HEAD
       await ensureDir(targetDir);
       await fs.promises.writeFile(path.join(targetDir, "docdexd"), `docdexd-${version}\n`, "utf8");
     }
@@ -476,6 +715,24 @@ test("installer: repair replaces corrupted binary and converges idempotently", a
   await fs.promises.writeFile(binaryPath, "corrupted\n", "utf8");
 
   let repairDownloadCalls = 0;
+=======
+      extractCalls += 1;
+      await ensureDir(targetDir);
+      await fs.promises.writeFile(path.join(targetDir, "docdexd"), `docdexd-${version}-repaired\n`, "utf8");
+    }
+  });
+
+  assert.equal(first.outcome, "repair");
+  assert.equal(downloadCalls, 1);
+  assert.equal(extractCalls, 1);
+
+  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const repairedBinaryPath = path.join(distDir, "docdexd");
+  const metadataAfterFirst = await fs.promises.readFile(metadataPath, "utf8");
+  const binaryAfterFirst = await fs.promises.readFile(repairedBinaryPath, "utf8");
+  assert.equal(binaryAfterFirst, `docdexd-${version}-repaired\n`);
+
+>>>>>>> mcoda/task/ops-01-us-06-t14
   const second = await runInstaller({
     logger: createNoopLogger(),
     platform: "linux",
@@ -485,6 +742,7 @@ test("installer: repair replaces corrupted binary and converges idempotently", a
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
     getVersionFn: () => version,
+<<<<<<< HEAD
     parseRepoSlugFn: () => "owner/repo",
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
@@ -546,10 +804,23 @@ test("installer: repair replaces corrupted binary and converges idempotently", a
     },
     extractTarballFn: async () => {
       extractCalls += 1;
+=======
+    parseRepoSlugFn: () => {
+      throw new Error("unexpected repo slug resolution");
+    },
+    resolveInstallerDownloadPlanFn: async () => {
+      throw new Error("unexpected plan resolution");
+    },
+    downloadFn: async () => {
+      throw new Error("unexpected download");
+    },
+    extractTarballFn: async () => {
+>>>>>>> mcoda/task/ops-01-us-06-t14
       throw new Error("unexpected extract");
     }
   });
 
+<<<<<<< HEAD
   assert.equal(third.outcome, "no-op");
   assert.equal(repoSlugCalls, 0);
   assert.equal(planCalls, 0);
@@ -564,3 +835,11 @@ test("installer: repair replaces corrupted binary and converges idempotently", a
 >>>>>>> mcoda/task/ops-01-us-06-t32
 =======
 >>>>>>> mcoda/task/ops-01-us-06-t40
+=======
+  assert.equal(second.outcome, "no-op");
+  const metadataAfterSecond = await fs.promises.readFile(metadataPath, "utf8");
+  const binaryAfterSecond = await fs.promises.readFile(repairedBinaryPath, "utf8");
+  assert.equal(metadataAfterSecond, metadataAfterFirst);
+  assert.equal(binaryAfterSecond, binaryAfterFirst);
+});
+>>>>>>> mcoda/task/ops-01-us-06-t14

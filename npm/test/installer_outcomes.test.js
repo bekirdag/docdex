@@ -5,9 +5,14 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 const { runInstaller, sha256File, buildInstallOutcomeReport } = require("../lib/install");
+=======
+const { runInstaller, sha256File, verifyDownloadedFileIntegrity } = require("../lib/install");
+>>>>>>> mcoda/task/ops-01-us-06-t21
 const { targetTripleForPlatformKey } = require("../lib/platform");
 =======
 const { runInstaller, sha256File } = require("../lib/install");
@@ -276,6 +281,8 @@ test("installer outcome: downgrade installs when expected version is older and w
 
   const archive = "docdexd-linux-x64-gnu.tar.gz";
   const expectedDownloadUrl = `${base}/v${expectedVersion}/${archive}`;
+  const archiveBytes = "fake-archive-bytes";
+  const archiveSha256 = crypto.createHash("sha256").update(archiveBytes).digest("hex");
 
   let downloadUrl = null;
   let downloadDest = null;
@@ -293,21 +300,25 @@ test("installer outcome: downgrade installs when expected version is older and w
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: archiveSha256,
       source: "fallback",
+      assetId: null,
+      integrity: {
+        method: "sha256",
+        expectedSha256: archiveSha256,
+        sourceType: "sha256sums",
+        sourceName: "SHA256SUMS",
+        sourceUrl: `${base}/v${expectedVersion}/SHA256SUMS`
+      },
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
     downloadFn: async (url, dest) => {
       downloadUrl = url;
       downloadDest = dest;
       await ensureDir(path.dirname(dest));
-      await fs.promises.writeFile(dest, "fake-archive-bytes");
+      await fs.promises.writeFile(dest, archiveBytes);
     },
-    verifyDownloadedFileIntegrityFn: async ({ filePath }) => {
-      assert.equal(filePath, downloadDest);
-      assert.ok(fs.existsSync(filePath));
-      return null;
-    },
+    verifyDownloadedFileIntegrityFn: verifyDownloadedFileIntegrity,
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
       const newBinaryPath = path.join(targetDir, "docdexd");
@@ -325,8 +336,20 @@ test("installer outcome: downgrade installs when expected version is older and w
   assert.equal(meta.installedVersion, expectedVersion);
   assert.equal(meta.expectedVersion, expectedVersion);
   assert.equal(meta.platformKey, platformKey);
+<<<<<<< HEAD
   assert.equal(typeof meta.binaryHash, "string");
   assert.equal(meta.binaryHash.length, 64);
+=======
+  assert.equal(meta.archive.downloadUrl, expectedDownloadUrl);
+  assert.equal(meta.archive.name, archive);
+  assert.equal(meta.archive.sha256, archiveSha256);
+  assert.equal(meta.archive.integrity.method, "sha256");
+  assert.equal(meta.archive.integrity.expectedSha256, archiveSha256);
+  assert.equal(meta.archive.integrity.actualSha256, archiveSha256);
+  assert.equal(meta.archive.integrity.sourceType, "sha256sums");
+  assert.equal(typeof meta.binary?.sha256, "string");
+  assert.equal(meta.binary.sha256.length, 64);
+>>>>>>> mcoda/task/ops-01-us-06-t21
 });
 
 test("installer outcome: repair reinstalls when binary hash mismatches metadata", async (t) => {
@@ -361,6 +384,8 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
   await fs.promises.writeFile(binaryPath, "corrupted\n");
 
   const archive = "docdexd-linux-x64-gnu.tar.gz";
+  const archiveBytes = "fake-archive-bytes";
+  const archiveSha256 = crypto.createHash("sha256").update(archiveBytes).digest("hex");
 
   const result = await runInstaller({
     logger: createNoopLogger(),
@@ -375,15 +400,23 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: archiveSha256,
       source: "fallback",
+      assetId: null,
+      integrity: {
+        method: "sha256",
+        expectedSha256: archiveSha256,
+        sourceType: "sha256sums",
+        sourceName: "SHA256SUMS",
+        sourceUrl: `${base}/v${version}/SHA256SUMS`
+      },
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
     downloadFn: async (_url, dest) => {
       await ensureDir(path.dirname(dest));
-      await fs.promises.writeFile(dest, "fake-archive-bytes");
+      await fs.promises.writeFile(dest, archiveBytes);
     },
-    verifyDownloadedFileIntegrityFn: async () => null,
+    verifyDownloadedFileIntegrityFn: verifyDownloadedFileIntegrity,
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
       const repaired = path.join(targetDir, "docdexd");
@@ -403,8 +436,17 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
   const metadataPath = path.join(installDir, "docdexd-install.json");
 >>>>>>> mcoda/task/ops-01-us-06-t45
   const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
+<<<<<<< HEAD
   assert.equal(meta.installedVersion, version);
   const repairedBinaryPath = path.join(installDir, "docdexd");
+=======
+  assert.equal(meta.version, version);
+  assert.equal(meta.archive.downloadUrl, `${base}/v${version}/${archive}`);
+  assert.equal(meta.archive.sha256, archiveSha256);
+  assert.equal(meta.archive.integrity.method, "sha256");
+  assert.equal(meta.archive.integrity.actualSha256, archiveSha256);
+  const repairedBinaryPath = path.join(distDir, "docdexd");
+>>>>>>> mcoda/task/ops-01-us-06-t21
   const repairedSha = await sha256File(repairedBinaryPath);
   assert.equal(meta.binaryHash, repairedSha);
 });

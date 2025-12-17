@@ -61,6 +61,11 @@ test("installer resolves asset + sha256 via first available manifest candidate d
   assert.equal(plan.archive, "docdexd-linux-x64-gnu.tar.gz");
   assert.equal(plan.expectedSha256, "a".repeat(64));
   assert.equal(plan.source, "manifest:docdex-release-manifest.json");
+  assert.equal(plan.assetId, 123);
+  assert.equal(plan.integrity.method, "sha256");
+  assert.equal(plan.integrity.sourceType, "manifest");
+  assert.equal(plan.integrity.sourceName, "docdex-release-manifest.json");
+  assert.equal(plan.integrity.sourceUrl, `${base}/v${version}/docdex-release-manifest.json`);
 });
 
 test("installer resolves from manifest.assets array shape deterministically", async () => {
@@ -87,6 +92,9 @@ test("installer resolves from manifest.assets array shape deterministically", as
   assert.equal(plan.archive, "docdexd-darwin-arm64.tar.gz");
   assert.equal(plan.expectedSha256, "b".repeat(64));
   assert.equal(plan.source, "manifest:docdex-manifest.json");
+  assert.equal(plan.integrity.sourceType, "manifest");
+  assert.equal(plan.integrity.sourceName, "docdex-manifest.json");
+  assert.equal(plan.integrity.sourceUrl, `${base}/v${version}/docdex-manifest.json`);
 });
 
 test("installer falls back deterministically when no manifest candidates exist", async () => {
@@ -118,6 +126,9 @@ test("installer falls back deterministically when no manifest candidates exist",
   assert.equal(plan.archive, "docdexd-linux-x64-gnu.tar.gz");
   assert.equal(plan.expectedSha256, sha);
   assert.equal(plan.source, "fallback");
+  assert.equal(plan.integrity.sourceType, "sha256sums");
+  assert.equal(plan.integrity.sourceName, "SHA256SUMS");
+  assert.equal(plan.integrity.sourceUrl, `${base}/v${version}/SHA256SUMS`);
   assert.deepEqual(logs, ["[docdex] No manifest found; falling back to deterministic asset naming."]);
   assert.deepEqual(warns, []);
 });
@@ -152,6 +163,9 @@ test("installer falls back deterministically on invalid JSON manifests with stab
   assert.equal(plan.archive, "docdexd-linux-x64-gnu.tar.gz");
   assert.equal(plan.expectedSha256, sha);
   assert.equal(plan.source, "fallback");
+  assert.equal(plan.integrity.sourceType, "sha256sums");
+  assert.equal(plan.integrity.sourceName, "SHA256SUMS");
+  assert.equal(plan.integrity.sourceUrl, `${base}/v${version}/SHA256SUMS`);
   assert.deepEqual(logs, []);
   assert.deepEqual(warns, [
     "[docdex] Manifest unavailable; falling back. Details: [DOCDEX_MANIFEST_JSON_INVALID] Malformed manifest (docdexd-manifest.json): invalid JSON"
@@ -185,6 +199,9 @@ test("installer falls back deterministically when a manifest exists but is malfo
   assert.equal(plan.archive, "docdexd-linux-x64-gnu.tar.gz");
   assert.equal(plan.expectedSha256, sha);
   assert.equal(plan.source, "fallback");
+  assert.equal(plan.integrity.sourceType, "sha256sums");
+  assert.equal(plan.integrity.sourceName, "SHA256SUMS");
+  assert.equal(plan.integrity.sourceUrl, `${base}/v${version}/SHA256SUMS`);
   assert.deepEqual(logs, []);
   assert.deepEqual(warns, [
     "[docdex] Manifest unavailable; falling back. Details: [DOCDEX_MANIFEST_UNUSABLE] Manifest unusable (docdexd-manifest.json): DOCDEX_MANIFEST_MALFORMED Malformed manifest: expected `targets` object or `assets` array"

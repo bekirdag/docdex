@@ -101,13 +101,16 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 
       const isWin32 = entry.platform === "win32";
       const expectedBinaryPath = path.join(distBaseDir, platformKey, isWin32 ? "docdexd.exe" : "docdexd");
+      const expectedStagingPrefix = `${path.join(distBaseDir, platformKey)}.staging.`;
 
       assert.equal(downloadUrl, expectedDownloadUrl);
       assert.equal(extractArchive, downloadDest);
-      assert.equal(extractDir, path.join(distBaseDir, platformKey));
+      assert.ok(
+        typeof extractDir === "string" && extractDir.startsWith(expectedStagingPrefix),
+        `expected extract dir to start with ${expectedStagingPrefix} but got ${extractDir}`
+      );
       assert.equal(result.binaryPath, expectedBinaryPath);
       assert.ok(fs.existsSync(expectedBinaryPath));
     });
   }
 });
-

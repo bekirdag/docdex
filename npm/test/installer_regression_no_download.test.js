@@ -271,6 +271,7 @@ test("installer: supported runtime with missing manifest target triple never dow
 test("installer: supported runtime with missing release asset (404) exits non-zero and does not install", async () => {
   let downloadCalls = 0;
   let tmpCleanupRmCalls = 0;
+  let stagingCleanupRmCalls = 0;
   let installRmCalls = 0;
   let extractCalls = 0;
 
@@ -280,7 +281,12 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
 
   const fsModule = {
     promises: {
-      rm: async (_path, options) => {
+      rm: async (targetPath, options) => {
+        const value = String(targetPath || "");
+        if (value.includes(".staging.")) {
+          stagingCleanupRmCalls += 1;
+          return;
+        }
         if (options && options.recursive) installRmCalls += 1;
         else tmpCleanupRmCalls += 1;
       }
@@ -339,5 +345,6 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
   assert.equal(downloadCalls, 1);
   assert.equal(extractCalls, 0);
   assert.equal(installRmCalls, 0, "should not remove existing install on 404");
-  assert.equal(tmpCleanupRmCalls, 1, "should still attempt tmp cleanup");
+  assert.equal(tmpCleanupRmCalls, 2, "should still attempt tmp cleanup");
+  assert.equal(stagingCleanupRmCalls, 1, "should still attempt staging cleanup");
 });

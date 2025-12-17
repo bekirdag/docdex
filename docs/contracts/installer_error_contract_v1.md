@@ -108,6 +108,11 @@ If all fallback paths fail (e.g., checksums are also unavailable), the resulting
 - `DOCDEX_CHECKSUM_UNUSABLE` → exit `24`
   - The installer could not obtain SHA-256 integrity metadata for the selected asset (manifest missing/unusable and checksum fallback missing/malformed).
 
+### Install finalization (fatal)
+
+- `DOCDEX_REPLACE_FAILED` → exit `25`
+  - The installer fetched/verified/extracted successfully, but could not safely place the verified binary into its final location (common causes: permission denied, or `docdexd.exe` locked/running on Windows).
+
 ### Installer configuration (fatal)
 
 - `DOCDEX_INSTALLER_CONFIG` → exit `2`
@@ -120,3 +125,8 @@ All fatal reports:
 - Start with `[docdex] install failed: ...`
 - Include `[docdex] error code: <CODE>` and (when helpful) a short “Next steps” section.
 - For manifest-related failures, include whether fallback was attempted (`details.fallbackAttempted`) and why it was not used.
+### Install finalization (fatal)
+
+- `DOCDEX_REPLACE_FAILED` → exit `25`
+  - The installer fetched/verified/extracted successfully, but could not safely place the verified binary into its final location (common causes: permission denied, or `docdexd.exe` locked/running on Windows).
+

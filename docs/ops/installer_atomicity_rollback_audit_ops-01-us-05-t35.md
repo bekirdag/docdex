@@ -20,9 +20,24 @@ Notes:
 - Linux chooses `gnu` vs `musl` via runtime detection + `DOCDEX_LIBC` override (`npm/lib/platform.js`).
 - The wrapper expects `docdexd` on POSIX and `docdexd.exe` on Windows (`npm/bin/docdex.js`).
 
+### Per-platform install targets (current contract)
+
+All platforms use the same installer flow; what varies is the resolved `platformKey`, Rust target triple, and the expected binary filename.
+
+| OS | `platformKey` | Rust `targetTriple` | Release asset (archive) | Expected binary | Final location (package-local) |
+|---|---|---|---|---|---|
+| macOS (arm64) | `darwin-arm64` | `aarch64-apple-darwin` | `docdexd-darwin-arm64.tar.gz` | `docdexd` | `dist/darwin-arm64/` |
+| macOS (x64) | `darwin-x64` | `x86_64-apple-darwin` | `docdexd-darwin-x64.tar.gz` | `docdexd` | `dist/darwin-x64/` |
+| Linux (x64, glibc) | `linux-x64-gnu` | `x86_64-unknown-linux-gnu` | `docdexd-linux-x64-gnu.tar.gz` | `docdexd` | `dist/linux-x64-gnu/` |
+| Linux (x64, musl) | `linux-x64-musl` | `x86_64-unknown-linux-musl` | `docdexd-linux-x64-musl.tar.gz` | `docdexd` | `dist/linux-x64-musl/` |
+| Linux (arm64, glibc) | `linux-arm64-gnu` | `aarch64-unknown-linux-gnu` | `docdexd-linux-arm64-gnu.tar.gz` | `docdexd` | `dist/linux-arm64-gnu/` |
+| Windows (x64) | `win32-x64` | `x86_64-pc-windows-msvc` | `docdexd-win32-x64.tar.gz` | `docdexd.exe` | `dist/win32-x64/` |
+
 ## Current end-to-end flow (download → verify → replace → run)
 
 The installer logic is shared across platforms; the only platform-specific differences are platform detection, target triple selection, and the expected binary filename.
+
+Important: the current npm installer does **not** manage `docdexd` as a system service. There is no stop/restart/start step for any currently supported platform.
 
 ### 0) Resolve platform + local state
 
@@ -65,6 +80,10 @@ After the archive is downloaded + verified, the installer:
 3. Verifies `dist/<platformKey>/docdexd*` exists.
 4. `chmod 755` best-effort (POSIX).
 5. Computes the installed binary SHA-256 and writes `dist/<platformKey>/docdexd-install.json` via an atomic rename.
+
+### 4b) Stop daemon / start daemon (not implemented)
+
+The current workflow does not stop or restart a running `docdexd serve` process. It only updates the on-disk binary under `dist/<platformKey>/`. Any already-running process continues to run until it is restarted by the operator.
 
 ### 5) Run the installed binary (wrapper behavior)
 
@@ -130,6 +149,13 @@ Missing behaviors that would reduce user risk:
 - Detect and remove stale staging directories (if introduced) and stale temp artifacts under the package.
 - Detect “half-swapped” installs (e.g., backup exists, final missing) and restore the last known-good binary automatically.
 
+### E) No daemon restart coordination (low severity, but operator-impacting)
+
+Because `docdexd` is not installed as a managed service by this workflow, the installer cannot ensure that an existing running process is restarted onto the newly installed binary.
+
+Impact:
+- Does not directly violate the story acceptance criteria (which are about rollback/cleanup and keeping the system no-worse-off), but it can surprise users who expect an upgrade to affect an already-running daemon without a restart.
+
 ## Recommended staged/atomic approach (aligned to acceptance)
 
 This section describes a staged install design that keeps behavior backward-compatible (same final on-disk location and wrapper interface) while meeting the acceptance criteria.
@@ -152,7 +178,9 @@ Algorithm:
 
 1) Create a unique staging directory on the same filesystem as `dist/`, e.g.:
    - `dist/.staging/<platformKey>.<pid>.<timestamp>/`
-2) Download the archive to a temp file (same as current), verify SHA-256 (same as current).
+2) Download the archive into the staging directory (or a package-local temp dir), then verify SHA-256.
+   - Example: `dist/.staging/<platformKey>.<pid>.<timestamp>/<archive>.tgz`
+   - Rationale: makes cleanup/recovery deterministic on subsequent installs (no reliance on shared OS temp dirs).
 3) Extract into the staging directory (not the final directory).
 4) Validate staging contents:
    - Ensure `docdexd`/`docdexd.exe` exists in staging.
@@ -164,7 +192,7 @@ Algorithm:
    - Rename the staging directory to `dist/<platformKey>/`.
    - After promotion succeeds, delete the backup directory (best-effort).
 7) Cleanup:
-   - Always delete the downloaded temp archive (as current).
+   - Always delete the downloaded archive (from staging/package-local temp) (best-effort).
    - Always delete any leftover staging directories for this platform (best-effort).
 
 Why this aligns to acceptance:
@@ -174,6 +202,11 @@ Why this aligns to acceptance:
 - (3) The old install remains intact until promotion succeeds; on any failure before promotion, nothing changes.
 - (4) If an install is interrupted after the old dir was renamed to backup but before the new dir is promoted, the next installer run can restore the backup automatically (see next section).
 
+Daemon stop/start (if/when added in the future):
+
+- Do not stop a running daemon until the new binary is fully downloaded and verified (to avoid turning transient failures into downtime).
+- If a service manager integration is added later, restart should happen only after a successful promotion (directory swap), and failures should keep the previous binary available for immediate restart/rollback.
+
 ### Required “recovery sweep” at installer start
 
 To satisfy (4) and harden (3) in the presence of process kills, add an early recovery step before any download:
@@ -181,6 +214,7 @@ To satisfy (4) and harden (3) in the presence of process kills, add an early rec
 - If `dist/<platformKey>/` is missing but `dist/.backup/<platformKey>.*` exists:
   - Restore the most recent backup back to `dist/<platformKey>/` (best-effort), then continue normal installer flow.
 - Remove stale `dist/.staging/<platformKey>.*` directories (best-effort).
+- Remove any stale `.tgz` files left under `dist/.staging/` (best-effort).
 - Remove stale `dist/.backup/<platformKey>.*` directories after a successful verified install (best-effort, keep at most one most-recent backup if operator debugging is desired).
 
 ### Windows-specific risk note
@@ -211,4 +245,3 @@ This is offline and deterministic (no network), and it makes “partial install 
 - Tests (`npm/test/*`)
   - Add a failure injection test where extraction throws and assert the old binary remains present and runnable.
   - Add an interrupted-promotion recovery test (simulate existing backup + missing final) and assert the installer restores the backup without manual cleanup.
-

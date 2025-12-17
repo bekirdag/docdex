@@ -36,6 +36,7 @@ const INVALID_JSON_ERROR = "invalid JSON";
 const INSTALL_METADATA_SCHEMA_VERSION = 2;
 const INSTALL_METADATA_FILENAME = "docdexd-install.json";
 <<<<<<< HEAD
+<<<<<<< HEAD
 const INSTALL_OUTCOME_SCHEMA_VERSION = 1;
 
 const INSTALL_OUTCOME_CODE_BY_DECISION_OUTCOME = Object.freeze({
@@ -50,6 +51,55 @@ const INSTALL_OUTCOME_CODE_BY_DECISION_OUTCOME = Object.freeze({
 const INSTALL_STATE_DIRNAME = "daemon";
 const DEFAULT_STATE_ROOT_RELATIVE = [".docdex", "state"];
 >>>>>>> mcoda/task/ops-01-us-06-t45
+=======
+const INSTALL_EVENT_SCHEMA_VERSION = 1;
+const INSTALL_EVENT_PREFIX = "[docdex] event ";
+
+function normalizeOutcomeCode(outcome) {
+  // Stable support-facing outcome codes (ops-01-us-06-t15).
+  if (outcome === "no-op") return "noop";
+  if (outcome === "repair") return "repair";
+  // Includes: "update", "reinstall_unknown", and any future non-noop actions.
+  return "replace";
+}
+
+function emitInstallerEvent({ logger, level = "info", code, message, details }) {
+  const sink =
+    level === "error"
+      ? logger?.error || logger?.log || console.error
+      : level === "warn"
+        ? logger?.warn || logger?.log || console.warn
+        : logger?.log || console.log;
+
+  const payload = {
+    schemaVersion: INSTALL_EVENT_SCHEMA_VERSION,
+    ts: nowIso(),
+    level,
+    code,
+    message: message || null,
+    details: details || null
+  };
+
+  // Keep the human-facing prefix stable while allowing machine parsing via JSON.
+  try {
+    sink(`${INSTALL_EVENT_PREFIX}${JSON.stringify(payload)}`);
+  } catch (_err) {
+    // Never fail installs due to logging/telemetry serialization issues.
+  }
+}
+
+function summarizeIntegrityResult(integrityResult) {
+  if (!integrityResult || typeof integrityResult !== "object") return null;
+  return {
+    status: typeof integrityResult.status === "string" ? integrityResult.status : null,
+    reason: typeof integrityResult.reason === "string" ? integrityResult.reason : null,
+    expectedSource: typeof integrityResult.expectedSource === "string" ? integrityResult.expectedSource : null,
+    expectedSha256: typeof integrityResult.expectedSha256 === "string" ? integrityResult.expectedSha256 : null,
+    actualSha256: typeof integrityResult.actualSha256 === "string" ? integrityResult.actualSha256 : null,
+    error: typeof integrityResult.error === "string" ? integrityResult.error : null
+  };
+}
+>>>>>>> mcoda/task/ops-01-us-06-t15
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -1556,6 +1606,11 @@ async function determineLocalInstallerOutcome({
     isWin32
   });
 
+  const binaryPresent = Boolean(discoveredInstalledState.binaryPresent);
+  const metadataStatus = discoveredInstalledState.metadataStatus;
+  const metadataStatusReason = discoveredInstalledState.metadataStatusReason;
+  const platformMismatch = Boolean(discoveredInstalledState.platformMismatch);
+
   const expectedIntegrityMaterial = {
     binarySha256: normalizeSha256Hex(expectedBinarySha256)
       ? expectedBinarySha256
@@ -1565,8 +1620,8 @@ async function determineLocalInstallerOutcome({
   };
 
   const shouldVerifyIntegrity =
-    discoveredInstalledState.binaryPresent &&
-    !discoveredInstalledState.platformMismatch &&
+    binaryPresent &&
+    !platformMismatch &&
     discoveredInstalledState.installedVersion === expectedVersion &&
     (normalizeSha256Hex(expectedBinarySha256) || discoveredInstalledState.metadataStatus === "valid");
 
@@ -1640,8 +1695,16 @@ async function determineLocalInstallerOutcome({
     metadataPath: discoveredInstalledState.metadataPath,
     installedVersion,
     integrityResult,
+<<<<<<< HEAD
     binaryVersion,
     binaryVersionError
+=======
+    integrityChecked: shouldVerifyIntegrity,
+    binaryPresent,
+    metadataStatus,
+    metadataStatusReason,
+    platformMismatch
+>>>>>>> mcoda/task/ops-01-us-06-t15
   };
 }
 
@@ -2030,9 +2093,14 @@ async function verifyDownloadedFileIntegrity({
 
 async function runInstaller(options) {
   const opts = options || {};
+<<<<<<< HEAD
   const noisyLogger = opts.logger || console;
   const outputFormat = normalizeInstallerOutputFormat(opts.outputFormat || process.env.DOCDEX_INSTALLER_OUTPUT);
   const logger = outputFormat === "json" ? createNoopLogger() : noisyLogger;
+=======
+  const logger = opts.logger || console;
+  const attemptId = `${process.pid}-${Date.now()}`;
+>>>>>>> mcoda/task/ops-01-us-06-t15
 
   const detectPlatformKeyFn = opts.detectPlatformKeyFn || detectPlatformKey;
   const targetTripleForPlatformKeyFn = opts.targetTripleForPlatformKeyFn || targetTripleForPlatformKey;
@@ -2098,6 +2166,13 @@ async function runInstaller(options) {
   const legacyDistDir = pathModule.join(legacyDistBaseDir, platformKey);
   const isWin32 = detectedPlatform === "win32";
 
+  emitInstallerEvent({
+    logger,
+    code: "DOCDEX_INSTALL_START",
+    message: "Installer started",
+    details: { attemptId, expectedVersion: version, platformKey, targetTriple, distDir }
+  });
+
   const local = await determineLocalInstallerOutcome({
     fsModule,
     pathModule,
@@ -2108,6 +2183,46 @@ async function runInstaller(options) {
     sha256FileFn,
     readInstalledBinaryVersionFn
   });
+
+  const localOutcomeCode = normalizeOutcomeCode(local.outcome);
+  emitInstallerEvent({
+    logger,
+    code: "DOCDEX_INSTALL_DECISION",
+    message: "Local state evaluated",
+    details: {
+      attemptId,
+      expectedVersion: version,
+      platformKey,
+      targetTriple,
+      distDir,
+      installedVersion: local.installedVersion,
+      binaryPresent: local.binaryPresent,
+      metadataStatus: local.metadataStatus,
+      metadataStatusReason: local.metadataStatusReason,
+      platformMismatch: local.platformMismatch,
+      integrityChecked: Boolean(local.integrityChecked),
+      integrity: summarizeIntegrityResult(local.integrityResult),
+      // Stable support-facing fields (in addition to the nested `decision` object).
+      outcome: local.outcome,
+      outcomeCode: localOutcomeCode,
+      outcomeReason: local.reason,
+      decision: { outcome: local.outcome, outcomeCode: localOutcomeCode, reason: local.reason }
+    }
+  });
+
+  if (local.integrityChecked) {
+    emitInstallerEvent({
+      logger,
+      code: "DOCDEX_INSTALL_INTEGRITY_LOCAL",
+      message: "Local binary integrity verification result",
+      details: {
+        attemptId,
+        binaryPath: local.binaryPath,
+        metadataPath: local.metadataPath,
+        integrity: summarizeIntegrityResult(local.integrityResult)
+      }
+    });
+  }
 
   if (local.outcome === "no-op") {
 <<<<<<< HEAD
@@ -2133,6 +2248,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
 =======
     const report = buildInstallOutcomeReport({
@@ -2154,6 +2270,29 @@ async function runInstaller(options) {
       decisionReason: local.reason
     };
 >>>>>>> mcoda/task/ops-01-us-06-t47
+=======
+    emitInstallerEvent({
+      logger,
+      code: "DOCDEX_INSTALL_OUTCOME",
+      message: "Install completed",
+      details: {
+        attemptId,
+        outcome: local.outcome,
+        outcomeCode: localOutcomeCode,
+        reason: local.reason,
+        binaryPath: local.binaryPath,
+        metadataPath: local.metadataPath,
+        downloadAttempted: false,
+        integrity: summarizeIntegrityResult(local.integrityResult)
+      }
+    });
+    return {
+      binaryPath: local.binaryPath,
+      outcome: local.outcome,
+      outcomeCode: localOutcomeCode,
+      integrityResult: local.integrityResult
+    };
+>>>>>>> mcoda/task/ops-01-us-06-t15
   }
 
   // Backward-compatible migration path: older installers stored the verified binary + metadata under package dist/.
@@ -2281,6 +2420,37 @@ async function runInstaller(options) {
   let installExtractDir = null;
 >>>>>>> mcoda/task/ops-01-us-05-t36
 
+  emitInstallerEvent({
+    logger,
+    code: "DOCDEX_INSTALL_PLAN",
+    message: "Resolved download plan",
+    details: {
+      attemptId,
+      expectedVersion: version,
+      platformKey,
+      targetTriple,
+      repoSlug,
+      archive,
+      source,
+      downloadUrl,
+      expectedSha256Present: Boolean(normalizeSha256Hex(expectedSha256)),
+      manifestName: manifestAttempt?.manifestName ?? null,
+      manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+      fallbackAttempted: Boolean(manifestAttempt?.fallbackAttempted)
+    }
+  });
+
+  const resolutionEvents = Array.isArray(manifestAttempt?.events) ? manifestAttempt.events : [];
+  for (const ev of resolutionEvents) {
+    emitInstallerEvent({
+      logger,
+      level: typeof ev?.code === "string" && /(_FAILED|_UNUSABLE|_TOO_LARGE)$/.test(ev.code) ? "warn" : "info",
+      code: typeof ev?.code === "string" ? ev.code : "DOCDEX_INSTALL_EVENT",
+      message: typeof ev?.message === "string" ? ev.message : null,
+      details: { attemptId, ...(ev?.details || {}) }
+    });
+  }
+
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   try {
     if (typeof fsModule?.promises?.mkdtemp === "function") {
@@ -2295,7 +2465,23 @@ async function runInstaller(options) {
       : pathModule.join(tmpDir, `${archive}.${process.pid}.${Date.now()}.tgz`);
 
     try {
+<<<<<<< HEAD
       await downloadFn(downloadUrl, downloadFilePath);
+=======
+      emitInstallerEvent({
+        logger,
+        code: "DOCDEX_INSTALL_DOWNLOAD_START",
+        message: "Downloading release archive",
+        details: { attemptId, downloadUrl, tmpFile, archive, source }
+      });
+      await downloadFn(downloadUrl, tmpFile);
+      emitInstallerEvent({
+        logger,
+        code: "DOCDEX_INSTALL_DOWNLOAD_OK",
+        message: "Downloaded release archive",
+        details: { attemptId, downloadUrl, tmpFile, archive, source }
+      });
+>>>>>>> mcoda/task/ops-01-us-06-t15
     } catch (err) {
       if (err && typeof err.statusCode === "number" && err.statusCode === 404) {
         const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
@@ -2338,6 +2524,7 @@ async function runInstaller(options) {
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     const verifiedArchiveSha256 = await verifyDownloadedFileIntegrityFn({
 =======
     const verifiedArchiveSha256 =
@@ -2362,14 +2549,80 @@ async function runInstaller(options) {
         fallbackAttempted: source === "fallback"
       }
     })) || null;
+=======
+    let verifiedArchiveSha256 = null;
+    try {
+      verifiedArchiveSha256 = await verifyDownloadedFileIntegrityFn({
+        filePath: tmpFile,
+        expectedSha256,
+        archiveName: archive,
+        details: {
+          platformKey,
+          targetTriple,
+          version,
+          repoSlug,
+          downloadUrl,
+          source,
+          manifestName: manifestAttempt?.manifestName ?? null,
+          manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+          fallbackAttempted: source === "fallback"
+        }
+      });
+
+      emitInstallerEvent({
+        logger,
+        code: "DOCDEX_INSTALL_INTEGRITY_ARCHIVE",
+        message: "Downloaded archive integrity verification result",
+        details: {
+          attemptId,
+          archive,
+          downloadUrl,
+          source,
+          status: normalizeSha256Hex(expectedSha256) ? "verified_ok" : "skipped",
+          expectedSha256: normalizeSha256Hex(expectedSha256) ? expectedSha256 : null,
+          actualSha256: typeof verifiedArchiveSha256 === "string" ? verifiedArchiveSha256 : null,
+          error: null
+        }
+      });
+    } catch (err) {
+      const isMismatch = err && err.code === "DOCDEX_INTEGRITY_MISMATCH";
+      const expectedFromErr = normalizeSha256Hex(err?.details?.expectedSha256);
+      const expectedFromInput = normalizeSha256Hex(expectedSha256);
+      const actualFromErr = normalizeSha256Hex(err?.details?.actualSha256);
+      emitInstallerEvent({
+        logger,
+        level: isMismatch ? "error" : "warn",
+        code: "DOCDEX_INSTALL_INTEGRITY_ARCHIVE",
+        message: "Downloaded archive integrity verification result",
+        details: {
+          attemptId,
+          archive,
+          downloadUrl,
+          source,
+          status: isMismatch ? "mismatch" : "unverifiable",
+          expectedSha256: expectedFromErr ? err.details.expectedSha256 : expectedFromInput ? expectedSha256 : null,
+          actualSha256: actualFromErr ? err.details.actualSha256 : null,
+          error: err?.message || String(err)
+        }
+      });
+      throw err;
+    }
+>>>>>>> mcoda/task/ops-01-us-06-t15
 
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
     // Only replace an existing installation after we have successfully fetched + verified the archive.
+    emitInstallerEvent({
+      logger,
+      code: "DOCDEX_INSTALL_REPLACE_START",
+      message: "Replacing existing installation",
+      details: { attemptId, distDir }
+    });
     await fsModule.promises.rm(distDir, { recursive: true, force: true });
     await extractTarballFn(tmpFile, distDir);
+<<<<<<< HEAD
 =======
     const filename = isWin32 ? "docdexd.exe" : "docdexd";
     const finalBinaryPath = pathModule.join(distDir, filename);
@@ -2377,6 +2630,14 @@ async function runInstaller(options) {
       ? await sha256FileFn(finalBinaryPath).catch(() => null)
       : null;
 >>>>>>> mcoda/task/ops-01-us-06-t20
+=======
+    emitInstallerEvent({
+      logger,
+      code: "DOCDEX_INSTALL_REPLACE_OK",
+      message: "Extracted archive into dist directory",
+      details: { attemptId, distDir }
+    });
+>>>>>>> mcoda/task/ops-01-us-06-t15
 
     // Only replace an existing installation after we have successfully fetched + verified the archive.
     const installResult = await installDocdexdBinaryAtomically({
@@ -2639,7 +2900,41 @@ async function runInstaller(options) {
     logger.log(`[docdex] Installed binary to ${finalBinaryPath}`);
 
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
+<<<<<<< HEAD
     return { binaryPath: finalBinaryPath, outcome: local.outcome };
+=======
+    emitInstallerEvent({
+      logger,
+      code: "DOCDEX_INSTALL_METADATA_WRITTEN",
+      message: "Wrote install metadata",
+      details: {
+        attemptId,
+        metadataPath: installMetadataPath(distDir, pathModule),
+        binaryPath,
+        version,
+        platformKey,
+        targetTriple,
+        binarySha256
+      }
+    });
+
+    emitInstallerEvent({
+      logger,
+      code: "DOCDEX_INSTALL_OUTCOME",
+      message: "Install completed",
+      details: {
+        attemptId,
+        outcome: local.outcome,
+        outcomeCode: localOutcomeCode,
+        reason: local.reason,
+        binaryPath,
+        metadataPath: installMetadataPath(distDir, pathModule),
+        downloadAttempted: true
+      }
+    });
+
+    return { binaryPath, outcome: local.outcome, outcomeCode: localOutcomeCode };
+>>>>>>> mcoda/task/ops-01-us-06-t15
   } finally {
     if (installStagingDir) {
       await fsModule.promises.rm(installStagingDir, { recursive: true, force: true }).catch(() => {});

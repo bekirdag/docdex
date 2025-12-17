@@ -104,10 +104,14 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 
       assert.equal(downloadUrl, expectedDownloadUrl);
       assert.equal(extractArchive, downloadDest);
-      assert.equal(extractDir, path.join(distBaseDir, platformKey));
+      assert.ok(extractDir, "expected a staging extract dir");
+      assert.equal(path.basename(extractDir), "extract");
+      assert.ok(
+        path.basename(path.dirname(extractDir)).startsWith(`.docdex-install-staging-${platformKey}-`),
+        `unexpected staging directory name: ${extractDir}`
+      );
       assert.equal(result.binaryPath, expectedBinaryPath);
       assert.ok(fs.existsSync(expectedBinaryPath));
     });
   }
 });
-

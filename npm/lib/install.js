@@ -310,6 +310,38 @@ async function writeJsonFileAtomic({ fsModule, pathModule, filePath, value }) {
   await fsModule.promises.rename(tmp, filePath);
 }
 
+async function cleanupStaleInstallerStagingDirs({ fsModule, pathModule, distBaseDir, platformKey, maxAgeMs }) {
+  const readdir = fsModule?.promises?.readdir ? fsModule.promises.readdir.bind(fsModule.promises) : null;
+  const stat = fsModule?.promises?.stat ? fsModule.promises.stat.bind(fsModule.promises) : null;
+  const rm = fsModule?.promises?.rm ? fsModule.promises.rm.bind(fsModule.promises) : null;
+  if (!readdir || !stat || !rm) return;
+
+  const prefix = `.docdex-install-staging-${platformKey}-`;
+  let entries;
+  try {
+    entries = await readdir(distBaseDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  const now = Date.now();
+  await Promise.all(
+    entries
+      .filter((e) => e.isDirectory() && typeof e.name === "string" && e.name.startsWith(prefix))
+      .map(async (e) => {
+        const fullPath = pathModule.join(distBaseDir, e.name);
+        try {
+          const info = await stat(fullPath);
+          const ageMs = now - info.mtimeMs;
+          if (ageMs < maxAgeMs) return;
+          await rm(fullPath, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup only
+        }
+      })
+  );
+}
+
 function isValidInstallMetadata(meta) {
   if (!meta || typeof meta !== "object") return false;
   if (meta.schemaVersion !== INSTALL_METADATA_SCHEMA_VERSION) return false;
@@ -1075,12 +1107,31 @@ async function runInstaller(options) {
 
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
   const tmpDir = opts.tmpDir || osModule.tmpdir();
-  const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
+  const installStagingPrefix = pathModule.join(distBaseDir, `.docdex-install-staging-${platformKey}-`);
+  const downloadStagingPrefix = pathModule.join(tmpDir, `.docdex-download-staging-`);
+  const extractDirName = "extract";
+  const binaryFilename = isWin32 ? "docdexd.exe" : "docdexd";
+
+  let downloadStagingDir = null;
+  let downloadFilePath = null;
+  let installStagingDir = null;
+  let installExtractDir = null;
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   try {
+    if (typeof fsModule?.promises?.mkdtemp === "function") {
+      try {
+        downloadStagingDir = await fsModule.promises.mkdtemp(downloadStagingPrefix);
+      } catch {
+        downloadStagingDir = null;
+      }
+    }
+    downloadFilePath = downloadStagingDir
+      ? pathModule.join(downloadStagingDir, archive)
+      : pathModule.join(tmpDir, `${archive}.${process.pid}.${Date.now()}.tgz`);
+
     try {
-      await downloadFn(downloadUrl, tmpFile);
+      await downloadFn(downloadUrl, downloadFilePath);
     } catch (err) {
       if (err && typeof err.statusCode === "number" && err.statusCode === 404) {
         const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
@@ -1122,7 +1173,7 @@ async function runInstaller(options) {
     }
 
     await verifyDownloadedFileIntegrityFn({
-      filePath: tmpFile,
+      filePath: downloadFilePath,
       expectedSha256,
       archiveName: archive,
       details: {
@@ -1138,13 +1189,25 @@ async function runInstaller(options) {
       }
     });
 
-    // Only replace an existing installation after we have successfully fetched + verified the archive.
-    await fsModule.promises.rm(distDir, { recursive: true, force: true });
-    await extractTarballFn(tmpFile, distDir);
+    await fsModule.promises.mkdir(distBaseDir, { recursive: true });
+    // Best-effort cleanup of stale staging dirs from interrupted installs.
+    await cleanupStaleInstallerStagingDirs({
+      fsModule,
+      pathModule,
+      distBaseDir,
+      platformKey,
+      maxAgeMs: 60 * 60 * 1000
+    });
 
-    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
-    if (!fsModule.existsSync(binaryPath)) {
-      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
+    installStagingDir = await fsModule.promises.mkdtemp(installStagingPrefix);
+    installExtractDir = pathModule.join(installStagingDir, extractDirName);
+
+    // Extract into a per-run staging directory; do not touch the final install location yet.
+    await extractTarballFn(downloadFilePath, installExtractDir);
+
+    const stagedBinaryPath = pathModule.join(installExtractDir, binaryFilename);
+    if (!fsModule.existsSync(stagedBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagedBinaryPath}`, {
         platformKey,
         targetTriple,
         version,
@@ -1155,14 +1218,12 @@ async function runInstaller(options) {
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
         fallbackAttempted: source === "fallback",
-        binaryPath
+        binaryPath: stagedBinaryPath
       });
     }
 
-    await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
-    logger.log(`[docdex] Installed binary to ${binaryPath}`);
-
-    const binarySha256 = await sha256FileFn(binaryPath);
+    await fsModule.promises.chmod(stagedBinaryPath, 0o755).catch(() => {});
+    const binarySha256 = await sha256FileFn(stagedBinaryPath);
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
       installedAt: nowIso(),
@@ -1171,7 +1232,7 @@ async function runInstaller(options) {
       platformKey,
       targetTriple,
       binary: {
-        filename: isWin32 ? "docdexd.exe" : "docdexd",
+        filename: binaryFilename,
         sha256: binarySha256
       },
       archive: {
@@ -1181,17 +1242,35 @@ async function runInstaller(options) {
         downloadUrl
       }
     };
+    const stagedMetadataPath = installMetadataPath(installExtractDir, pathModule);
     await writeJsonFileAtomic({
       fsModule,
       pathModule,
-      filePath: installMetadataPath(distDir, pathModule),
+      filePath: stagedMetadataPath,
       value: metadata
     });
 
+    // Atomic commit: only after verification + staged extraction succeed do we update the final install location.
+    await fsModule.promises.mkdir(distDir, { recursive: true });
+    const finalBinaryPath = pathModule.join(distDir, binaryFilename);
+    const finalMetadataPath = installMetadataPath(distDir, pathModule);
+
+    await fsModule.promises.rename(stagedBinaryPath, finalBinaryPath);
+    await fsModule.promises.rename(stagedMetadataPath, finalMetadataPath);
+    await fsModule.promises.chmod(finalBinaryPath, 0o755).catch(() => {});
+    logger.log(`[docdex] Installed binary to ${finalBinaryPath}`);
+
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
-    return { binaryPath, outcome: local.outcome };
+    return { binaryPath: finalBinaryPath, outcome: local.outcome };
   } finally {
-    await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
+    if (installStagingDir) {
+      await fsModule.promises.rm(installStagingDir, { recursive: true, force: true }).catch(() => {});
+    }
+    if (downloadStagingDir) {
+      await fsModule.promises.rm(downloadStagingDir, { recursive: true, force: true }).catch(() => {});
+    } else if (downloadFilePath) {
+      await fsModule.promises.rm(downloadFilePath, { force: true }).catch(() => {});
+    }
   }
 }
 

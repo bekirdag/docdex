@@ -122,7 +122,11 @@ There are two relevant integrity checks:
 
    The downloaded archive is verified against the expected SHA-256. If verification fails, installation fails closed with:
    - Error code: `DOCDEX_INTEGRITY_MISMATCH` (see `docs/ops/installer_error_codes.md`)
+<<<<<<< HEAD
    - Safety property: the existing `dist/<platformKey>/docdexd` (or `docdexd.exe`) is not modified until a new binary has been downloaded, verified, extracted, and is ready to be atomically swapped into place.
+=======
+   - Safety property: the installer performs a staged install and only replaces the final `docdexd` path after the archive is successfully fetched, verified, and extracted into a staging directory (see `docs/ops/installer_atomic_replace.md`).
+>>>>>>> mcoda/task/ops-01-us-05-t22
 
 <<<<<<< HEAD
 2) **Local binary integrity (no-op vs repair)**  
@@ -175,6 +179,9 @@ Reinstalling updates the on-disk binary, but it does not replace a currently run
 
 Low-risk approach:
 - Stop the process you started (e.g., terminate the terminal/service that launched `docdexd serve`), then start it again.
+
+Windows note:
+- Upgrading `docdexd.exe` while it is running commonly fails because the binary is locked. Stop `docdexd.exe` first, then reinstall.
 
 ### 3) If installs keep “repairing” or look inconsistent, reset only installer state
 

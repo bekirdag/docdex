@@ -122,7 +122,8 @@ const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_DOWNLOAD_FAILED: 20,
   DOCDEX_ASSET_MISSING: 21,
   DOCDEX_INTEGRITY_MISMATCH: 22,
-  DOCDEX_ARCHIVE_INVALID: 23
+  DOCDEX_ARCHIVE_INVALID: 23,
+  DOCDEX_REPLACE_FAILED: 25
 });
 
 function createNoopLogger() {
@@ -230,6 +231,21 @@ class ChecksumResolutionError extends Error {
     super(message);
     this.name = "ChecksumResolutionError";
     this.code = "DOCDEX_CHECKSUM_UNUSABLE";
+    this.exitCode = EXIT_CODE_BY_ERROR_CODE[this.code];
+    this.details = withBaseDetails(details);
+  }
+}
+
+class ReplaceBinaryError extends Error {
+  /**
+   * @param {string} message
+   * @param {object} details
+   * @param {Error} [cause]
+   */
+  constructor(message, details, cause) {
+    super(message, cause ? { cause } : undefined);
+    this.name = "ReplaceBinaryError";
+    this.code = "DOCDEX_REPLACE_FAILED";
     this.exitCode = EXIT_CODE_BY_ERROR_CODE[this.code];
     this.details = withBaseDetails(details);
   }
@@ -369,6 +385,193 @@ async function sha256File(filePath) {
     stream.on("error", reject);
     stream.on("end", () => resolve(hash.digest("hex")));
   });
+}
+
+function docdexBinaryFilename(isWin32) {
+  return isWin32 ? "docdexd.exe" : "docdexd";
+}
+
+function docdexBinaryPath({ pathModule, distDir, isWin32 }) {
+  return pathModule.join(distDir, docdexBinaryFilename(isWin32));
+}
+
+function windowsSwapBinaryPaths({ pathModule, distDir }) {
+  const finalBinaryPath = pathModule.join(distDir, "docdexd.exe");
+  return {
+    finalBinaryPath,
+    newBinaryPath: pathModule.join(distDir, "docdexd.exe.__docdex_new__"),
+    oldBinaryPath: pathModule.join(distDir, "docdexd.exe.__docdex_old__")
+  };
+}
+
+async function rmForce(fsModule, targetPath, opts) {
+  if (!fsModule?.promises?.rm) return;
+  await fsModule.promises.rm(targetPath, { force: true, ...(opts || {}) }).catch(() => {});
+}
+
+async function cleanupStagingDirs({ fsModule, pathModule, distBaseDir, platformKey }) {
+  if (!fsModule?.promises?.readdir || !fsModule?.promises?.rm) return;
+  let entries;
+  try {
+    entries = await fsModule.promises.readdir(distBaseDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  const prefix = `${platformKey}.staging.`;
+  const removals = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry.name !== "string") continue;
+    if (!entry.isDirectory()) continue;
+    if (!entry.name.startsWith(prefix)) continue;
+    removals.push(rmForce(fsModule, pathModule.join(distBaseDir, entry.name), { recursive: true }));
+  }
+  await Promise.all(removals);
+}
+
+async function recoverInterruptedWindowsSwap({ fsModule, pathModule, distDir, logger }) {
+  const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+  if (!existsSync) return;
+
+  const { finalBinaryPath, newBinaryPath, oldBinaryPath } = windowsSwapBinaryPaths({ pathModule, distDir });
+
+  const finalExists = existsSync(finalBinaryPath);
+  const newExists = existsSync(newBinaryPath);
+  const oldExists = existsSync(oldBinaryPath);
+
+  if (finalExists) {
+    await rmForce(fsModule, newBinaryPath);
+    await rmForce(fsModule, oldBinaryPath);
+    return;
+  }
+
+  if (newExists) {
+    try {
+      await fsModule.promises.rename(newBinaryPath, finalBinaryPath);
+      logger?.log?.("[docdex] Recovered interrupted Windows install (activated pending binary).");
+    } catch {
+      // If activation fails, try to restore old below.
+    }
+  }
+
+  if (!existsSync(finalBinaryPath) && oldExists) {
+    try {
+      await fsModule.promises.rename(oldBinaryPath, finalBinaryPath);
+      logger?.log?.("[docdex] Recovered interrupted Windows install (restored previous binary).");
+    } catch {
+      // Leave artifacts for user/next run to handle; installer should not delete unknown-good binaries.
+    }
+  }
+
+  if (existsSync(finalBinaryPath)) {
+    await rmForce(fsModule, newBinaryPath);
+    await rmForce(fsModule, oldBinaryPath);
+  }
+}
+
+async function finalizeWindowsBinaryReplace({
+  fsModule,
+  pathModule,
+  distDir,
+  newBinaryPath,
+  platformKey,
+  targetTriple,
+  version,
+  repoSlug,
+  downloadUrl,
+  source,
+  manifestAttempt
+}) {
+  const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+  if (!existsSync) {
+    throw new ReplaceBinaryError("Cannot replace binary: fs.existsSync unavailable", {
+      platformKey,
+      targetTriple,
+      version,
+      repoSlug,
+      downloadUrl,
+      source,
+      manifestName: manifestAttempt?.manifestName ?? null,
+      manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+      fallbackAttempted: source === "fallback",
+      reason: "existsSync_unavailable"
+    });
+  }
+
+  const { finalBinaryPath, oldBinaryPath } = windowsSwapBinaryPaths({ pathModule, distDir });
+
+  // Clean up any stale backup from a previous interrupted attempt.
+  await rmForce(fsModule, oldBinaryPath);
+
+  if (!existsSync(finalBinaryPath)) {
+    try {
+      await fsModule.promises.rename(newBinaryPath, finalBinaryPath);
+      return finalBinaryPath;
+    } catch (err) {
+      throw new ReplaceBinaryError("Failed to place new binary into final location", {
+        platformKey,
+        targetTriple,
+        version,
+        repoSlug,
+        downloadUrl,
+        source,
+        manifestName: manifestAttempt?.manifestName ?? null,
+        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+        fallbackAttempted: source === "fallback",
+        distDir,
+        newBinaryPath,
+        finalBinaryPath,
+        reason: "final_missing_place_failed"
+      }, err);
+    }
+  }
+
+  try {
+    await fsModule.promises.rename(finalBinaryPath, oldBinaryPath);
+  } catch (err) {
+    throw new ReplaceBinaryError("Failed to replace existing docdexd.exe (likely running/locked)", {
+      platformKey,
+      targetTriple,
+      version,
+      repoSlug,
+      downloadUrl,
+      source,
+      manifestName: manifestAttempt?.manifestName ?? null,
+      manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+      fallbackAttempted: source === "fallback",
+      distDir,
+      newBinaryPath,
+      finalBinaryPath,
+      oldBinaryPath,
+      reason: "existing_binary_locked"
+    }, err);
+  }
+
+  try {
+    await fsModule.promises.rename(newBinaryPath, finalBinaryPath);
+  } catch (err) {
+    // Best-effort rollback.
+    await fsModule.promises.rename(oldBinaryPath, finalBinaryPath).catch(() => {});
+    throw new ReplaceBinaryError("Failed to activate new docdexd.exe; rolled back to previous binary", {
+      platformKey,
+      targetTriple,
+      version,
+      repoSlug,
+      downloadUrl,
+      source,
+      manifestName: manifestAttempt?.manifestName ?? null,
+      manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+      fallbackAttempted: source === "fallback",
+      distDir,
+      newBinaryPath,
+      finalBinaryPath,
+      oldBinaryPath,
+      reason: "activate_failed"
+    }, err);
+  }
+
+  await rmForce(fsModule, oldBinaryPath);
+  return finalBinaryPath;
 }
 
 function installMetadataPath(distDir, pathModule = path) {
@@ -852,6 +1055,7 @@ async function writeJsonFileAtomic({ fsModule, pathModule, filePath, value }) {
   try {
     await fsModule.promises.rename(tmp, filePath);
   } catch (err) {
+<<<<<<< HEAD
     const code = typeof err?.code === "string" ? err.code : null;
     if (code === "EEXIST" || code === "EPERM") {
       await fsModule.promises.rm(filePath, { force: true }).catch(() => {});
@@ -1210,6 +1414,16 @@ async function recoverInterruptedInstallIfNeeded({ fsModule, pathModule, distBas
     error: restore.error,
     errorCode: restore.errorCode
   };
+=======
+    // Windows cannot rename over an existing file; best-effort remove then rename.
+    if (err && (err.code === "EEXIST" || err.code === "EPERM" || err.code === "EACCES")) {
+      await fsModule.promises.rm(filePath, { force: true }).catch(() => {});
+      await fsModule.promises.rename(tmp, filePath);
+      return;
+    }
+    throw err;
+  }
+>>>>>>> mcoda/task/ops-01-us-05-t22
 }
 
 function isValidInstallMetadata(meta) {
@@ -2774,6 +2988,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   emitInstallerEvent({
     logger,
     code: "DOCDEX_INSTALL_START",
@@ -2840,6 +3055,13 @@ async function runInstaller(options) {
   await recoverInterruptedInstall({ fsModule, pathModule, distDir, isWin32, logger }).catch(() => {});
 
 >>>>>>> mcoda/task/ops-01-us-05-t05
+=======
+  await cleanupStagingDirs({ fsModule, pathModule, distBaseDir, platformKey });
+  if (isWin32) {
+    await recoverInterruptedWindowsSwap({ fsModule, pathModule, distDir, logger });
+  }
+
+>>>>>>> mcoda/task/ops-01-us-05-t22
   const local = await determineLocalInstallerOutcome({
     fsModule,
     pathModule,
@@ -3156,6 +3378,7 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-05-t05
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
+<<<<<<< HEAD
   const abortController = new AbortController();
   let stageDir = null;
   let backupDir = null;
@@ -3208,6 +3431,14 @@ async function runInstaller(options) {
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   let thrownError = null;
+=======
+  const stagingDir = `${distDir}.staging.${process.pid}.${Date.now()}`;
+  const extractedBinaryPath = pathModule.join(stagingDir, docdexBinaryFilename(isWin32));
+  const tmpInstalledBinaryPath = pathModule.join(
+    distDir,
+    `.${docdexBinaryFilename(isWin32)}.tmp.${process.pid}.${Date.now()}`
+  );
+>>>>>>> mcoda/task/ops-01-us-05-t22
   try {
 >>>>>>> mcoda/task/ops-01-us-05-t39
     try {
@@ -3420,6 +3651,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
     // Only replace an existing installation after we have successfully fetched + verified the archive.
+<<<<<<< HEAD
     emitInstallerEvent({
       logger,
       code: "DOCDEX_INSTALL_REPLACE_START",
@@ -3528,6 +3760,13 @@ async function runInstaller(options) {
     if (!fsModule.existsSync(stagedBinaryPath)) {
       throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagedBinaryPath}`, {
 >>>>>>> mcoda/task/ops-01-us-05-t05
+=======
+    await rmForce(fsModule, stagingDir, { recursive: true });
+    await extractTarballFn(tmpFile, stagingDir);
+
+    if (!fsModule.existsSync(extractedBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${extractedBinaryPath}`, {
+>>>>>>> mcoda/task/ops-01-us-05-t22
         platformKey,
         targetTriple,
         version,
@@ -3556,6 +3795,7 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-06-t21
 =======
         fallbackAttempted: source === "fallback",
+<<<<<<< HEAD
         binaryPath: stagedBinaryPath
 <<<<<<< HEAD
 =======
@@ -3645,6 +3885,42 @@ async function runInstaller(options) {
     }
 
     await fsModule.promises.chmod(stagedBinaryPath, 0o755).catch(() => {});
+=======
+        binaryPath: extractedBinaryPath
+      });
+    }
+
+    await fsModule.promises.mkdir(distDir, { recursive: true });
+    await rmForce(fsModule, tmpInstalledBinaryPath);
+    await fsModule.promises.copyFile(extractedBinaryPath, tmpInstalledBinaryPath);
+    await fsModule.promises.chmod(tmpInstalledBinaryPath, 0o755).catch(() => {});
+
+    let binaryPath = docdexBinaryPath({ pathModule, distDir, isWin32 });
+    if (isWin32) {
+      const { newBinaryPath } = windowsSwapBinaryPaths({ pathModule, distDir });
+      await rmForce(fsModule, newBinaryPath);
+      await fsModule.promises.rename(tmpInstalledBinaryPath, newBinaryPath);
+      binaryPath = await finalizeWindowsBinaryReplace({
+        fsModule,
+        pathModule,
+        distDir,
+        newBinaryPath,
+        platformKey,
+        targetTriple,
+        version,
+        repoSlug,
+        downloadUrl,
+        source,
+        manifestAttempt
+      });
+    } else {
+      // POSIX: rename is atomic and replaces the existing file in-place.
+      await fsModule.promises.rename(tmpInstalledBinaryPath, binaryPath);
+    }
+
+    await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
+    logger.log(`[docdex] Installed binary to ${binaryPath}`);
+>>>>>>> mcoda/task/ops-01-us-05-t22
 
     const binarySha256 = await sha256FileFn(stagedBinaryPath);
 <<<<<<< HEAD
@@ -4045,6 +4321,7 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-05-t05
     throw err;
   } finally {
+<<<<<<< HEAD
     installAttempt.cleanup.tmpFile = await safeRm({ fsModule, targetPath: tmpFile, options: { force: true } });
 
     const backupBinaryPath = pathModule.join(backupDir, binaryFilename);
@@ -4091,6 +4368,11 @@ async function runInstaller(options) {
       thrownError.details.installAttempt = installAttempt;
     }
 >>>>>>> mcoda/task/ops-01-us-05-t39
+=======
+    await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
+    await rmForce(fsModule, stagingDir, { recursive: true });
+    await rmForce(fsModule, tmpInstalledBinaryPath);
+>>>>>>> mcoda/task/ops-01-us-05-t22
   }
 }
 
@@ -4373,6 +4655,30 @@ function describeFatalError(err) {
     });
   }
 
+  if (err instanceof ReplaceBinaryError) {
+    const isWindows = typeof err.details?.platformKey === "string" && err.details.platformKey.includes("win32");
+    const hint =
+      err.details?.reason === "existing_binary_locked" || isWindows
+        ? "[docdex] Hint: on Windows, you must stop any running docdexd.exe before upgrading."
+        : null;
+    return {
+      code: err.code,
+      exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
+      details: withBaseDetails(err.details),
+      lines: [
+        `[docdex] install failed: ${err.message}`,
+        `[docdex] error code: ${err.code}`,
+        err.details?.distDir ? `[docdex] Install dir: ${err.details.distDir}` : null,
+        err.details?.finalBinaryPath ? `[docdex] Final binary: ${err.details.finalBinaryPath}` : null,
+        hint,
+        "[docdex] Next steps:",
+        "[docdex] - Stop any running docdexd process and re-run the install.",
+        "[docdex] - Ensure the install location is writable (global npm installs may require elevated permissions).",
+        "[docdex] - If it persists, delete only `dist/<platformKey>/.staging.*` and retry (avoid deleting `docdexd` unless you have a backup)."
+      ].filter(Boolean)
+    };
+  }
+
   if (err instanceof ManifestResolutionError) {
     const platformKey = typeof err.details?.platformKey === "string" ? err.details.platformKey : null;
     const expectedAssetPattern =
@@ -4462,11 +4768,15 @@ module.exports = {
   MissingArtifactError,
   ChecksumResolutionError,
 <<<<<<< HEAD
+<<<<<<< HEAD
   buildInstallOutcomeReport,
 =======
   recoverInterruptedInstall,
   recoverInterruptedInstallSync,
 >>>>>>> mcoda/task/ops-01-us-05-t05
+=======
+  ReplaceBinaryError,
+>>>>>>> mcoda/task/ops-01-us-05-t22
   runInstaller,
   describeFatalError,
   handleFatal

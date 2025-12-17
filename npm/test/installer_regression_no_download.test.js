@@ -271,6 +271,7 @@ test("installer: supported runtime with missing manifest target triple never dow
 test("installer: supported runtime with missing release asset (404) exits non-zero and does not install", async () => {
   let downloadCalls = 0;
   let tmpCleanupRmCalls = 0;
+  let stagingCleanupRmCalls = 0;
   let installRmCalls = 0;
   let stagingRmCalls = 0;
   let extractCalls = 0;
@@ -283,6 +284,7 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
 
   const fsModule = {
     promises: {
+<<<<<<< HEAD
       rm: async (_path, options) => {
         if (options && options.recursive) {
 <<<<<<< HEAD
@@ -291,6 +293,15 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
           else stagingRmCalls += 1;
           return;
         }
+=======
+      rm: async (targetPath, options) => {
+        const value = String(targetPath || "");
+        if (value.includes(".staging.")) {
+          stagingCleanupRmCalls += 1;
+          return;
+        }
+        if (options && options.recursive) installRmCalls += 1;
+>>>>>>> mcoda/task/ops-01-us-05-t22
         else tmpCleanupRmCalls += 1;
 =======
           if (_path === distDir) installRmCalls += 1;
@@ -357,9 +368,14 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
   assert.equal(extractCalls, 0);
   assert.equal(installRmCalls, 0, "should not remove existing install on 404");
 <<<<<<< HEAD
+<<<<<<< HEAD
   assert.equal(stagingRmCalls, 1, "should still attempt staging cleanup");
 =======
   assert.equal(stagingRmCalls, 1, "should still attempt staged cleanup");
 >>>>>>> mcoda/task/ops-01-us-05-t39
   assert.equal(tmpCleanupRmCalls, 1, "should still attempt tmp cleanup");
+=======
+  assert.equal(tmpCleanupRmCalls, 2, "should still attempt tmp cleanup");
+  assert.equal(stagingCleanupRmCalls, 1, "should still attempt staging cleanup");
+>>>>>>> mcoda/task/ops-01-us-05-t22
 });

@@ -109,6 +109,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 
       const isWin32 = entry.platform === "win32";
 <<<<<<< HEAD
+<<<<<<< HEAD
       const expectedBinaryPath = path.join(stateRootDir, "daemon", platformKey, isWin32 ? "docdexd.exe" : "docdexd");
 
       assert.equal(downloadUrl, expectedDownloadUrl);
@@ -170,6 +171,17 @@ test("installer e2e: supported platform matrix installs expected binary layout",
       assert.equal(extractDir, expectedExtractDir);
       assert.ok(!fs.existsSync(expectedExtractDir));
 >>>>>>> mcoda/task/ops-01-us-05-t05
+=======
+      const expectedBinaryPath = path.join(distBaseDir, platformKey, isWin32 ? "docdexd.exe" : "docdexd");
+      const expectedStagingPrefix = `${path.join(distBaseDir, platformKey)}.staging.`;
+
+      assert.equal(downloadUrl, expectedDownloadUrl);
+      assert.equal(extractArchive, downloadDest);
+      assert.ok(
+        typeof extractDir === "string" && extractDir.startsWith(expectedStagingPrefix),
+        `expected extract dir to start with ${expectedStagingPrefix} but got ${extractDir}`
+      );
+>>>>>>> mcoda/task/ops-01-us-05-t22
       assert.equal(result.binaryPath, expectedBinaryPath);
       assert.ok(!fs.existsSync(extractDir), "staging dir should have been swapped into place");
       assert.ok(fs.existsSync(expectedBinaryPath));

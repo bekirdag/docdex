@@ -2,6 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const path = require("node:path");
 
 const { resolvePlatformPolicy } = require("../lib/platform");
 const { describeFatalError, runInstaller, resolveInstallerDownloadPlan } = require("../lib/install");
@@ -270,20 +271,19 @@ test("installer: supported runtime with missing manifest target triple never dow
 
 test("installer: supported runtime with missing release asset (404) exits non-zero and does not install", async () => {
   let downloadCalls = 0;
-  let tmpCleanupRmCalls = 0;
-  let installRmCalls = 0;
   let extractCalls = 0;
 
   const base = "https://example.test/releases/download";
   const version = "0.0.0";
   const platformKey = "linux-x64-gnu";
+  const distBaseDir = "/tmp/docdex-installer-test-dist";
+  const distDir = path.join(distBaseDir, platformKey);
 
+  const rmCalls = [];
   const fsModule = {
     promises: {
-      rm: async (_path, options) => {
-        if (options && options.recursive) installRmCalls += 1;
-        else tmpCleanupRmCalls += 1;
-      }
+      mkdir: async () => {},
+      rm: async (rmPath, options) => rmCalls.push({ rmPath, options })
     },
     existsSync: () => true
   };
@@ -295,6 +295,7 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
       platform: "linux",
       arch: "x64",
       tmpDir: "/tmp/docdex-installer-test",
+      distBaseDir,
       detectPlatformKeyFn: () => platformKey,
       getVersionFn: () => version,
       parseRepoSlugFn: () => "owner/repo",
@@ -338,6 +339,10 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
 
   assert.equal(downloadCalls, 1);
   assert.equal(extractCalls, 0);
-  assert.equal(installRmCalls, 0, "should not remove existing install on 404");
-  assert.equal(tmpCleanupRmCalls, 1, "should still attempt tmp cleanup");
+  assert.equal(
+    rmCalls.filter((c) => c.options && c.options.recursive).length,
+    1,
+    "should still attempt to clean up the per-run staging directory"
+  );
+  assert.ok(!rmCalls.some((c) => c.rmPath === distDir), "should not remove existing install on 404");
 });

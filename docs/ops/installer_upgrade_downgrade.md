@@ -15,7 +15,7 @@ Outcomes (stable strings):
 
 | Outcome | Meaning | Deterministic trigger (local state) |
 |---|---|---|
-| `no-op` | Nothing changes. | A previous verified install metadata file exists and its recorded `binary.sha256` matches the currently installed binary for the expected version. |
+| `no-op` | Nothing changes. | A previous install metadata file exists for the expected version, the recorded `binary.sha256` matches the currently installed binary, **and** the metadata’s recorded `archive.sha256` matches the release-provided SHA-256 for the expected platform archive (resolved via manifest/checksum metadata without downloading the archive). |
 | `update` | Install/reinstall the expected version. (Includes first install, upgrade, downgrade.) | No binary exists, or install metadata indicates a different version than expected. |
 | `repair` | Reinstall the expected version due to a local integrity mismatch. | Metadata exists for the expected version, but the current binary’s SHA-256 does not match the recorded `binary.sha256`. |
 | `reinstall_unknown` | Reinstall because current state can’t be verified deterministically. | Binary exists but install metadata is missing/unreadable/invalid, or metadata does not match the detected `platformKey`. |
@@ -45,9 +45,12 @@ There are two relevant integrity checks:
    - Error code: `DOCDEX_INTEGRITY_MISMATCH` (see `docs/ops/installer_error_codes.md`)
    - Safety property: the existing `dist/<platformKey>/` is only removed after the archive is successfully fetched and verified.
 
-2) **Local binary integrity (no-op vs repair)**  
-   For a `no-op`, the installer verifies the existing binary by hashing it and comparing to the recorded `binary.sha256` from the last successful, verified install.
-   - If this local check fails, the outcome becomes `repair` and the installer reinstalls a verified binary.
+2) **Installed binary integrity (no-op vs repair)**  
+   For a `no-op`, the installer verifies the existing installation using two checks:
+   - **Binary hash check (local):** hash the installed `docdexd` and compare to the recorded `binary.sha256` from the last successful install.
+   - **Release provenance check (metadata vs release):** resolve the expected platform archive SHA-256 for the current version (manifest → checksum fallback) and compare it to the recorded `archive.sha256` in `docdexd-install.json`.
+
+   If either check fails (or can’t be performed deterministically), the installer re-installs a verified binary (`repair` when a mismatch is detected; otherwise `reinstall_unknown`).
 
 ## Install metadata: what it is and where it lives
 
@@ -55,6 +58,7 @@ The installer writes a small JSON metadata file next to the installed binary:
 - `dist/<platformKey>/docdexd-install.json`
 
 This metadata enables deterministic `no-op` and `repair` decisions without downloading a new asset.
+Note: the installer may still fetch release metadata (manifest/checksums) to verify the recorded `archive.sha256`, but it does not re-download the platform archive when the outcome is `no-op`.
 
 ### Locate it (safe, cross-platform)
 
@@ -114,4 +118,3 @@ This is usually a repo state issue, not an installer issue:
 - Installer error codes + remediation: `docs/ops/installer_error_codes.md`
 - Release manifest contract: `docs/contracts/release_manifest_schema_v1.md`
 - Installer error contract: `docs/contracts/installer_error_contract_v1.md`
-

@@ -28,6 +28,8 @@ function createMockFs({ existingPaths = [], filesByPath = {}, readFileErrorByPat
 }
 
 function validInstallMetadata({ platformKey, version, binarySha256 }) {
+  const archiveName = `docdexd-${platformKey}.tar.gz`;
+  const archiveSha256 = "c".repeat(64);
   return {
     schemaVersion: 1,
     installedAt: "2025-01-01T00:00:00.000Z",
@@ -38,6 +40,12 @@ function validInstallMetadata({ platformKey, version, binarySha256 }) {
     binary: {
       filename: "docdexd",
       sha256: binarySha256
+    },
+    archive: {
+      name: archiveName,
+      sha256: archiveSha256,
+      source: "manifest:docdex-release-manifest.json",
+      downloadUrl: `https://example.test/releases/download/v${version}/${archiveName}`
     }
   };
 }
@@ -193,6 +201,8 @@ test("decision engine: binary hash mismatch => repair (binary_integrity_mismatch
   const distDir = path.posix.join("/dist", platformKey);
   const binaryPath = path.posix.join(distDir, "docdexd");
   const metadataPath = path.posix.join(distDir, "docdexd-install.json");
+  const expectedArchiveName = `docdexd-${platformKey}.tar.gz`;
+  const expectedArchiveSha256 = "c".repeat(64);
 
   const fsModule = createMockFs({
     existingPaths: [binaryPath],
@@ -213,6 +223,9 @@ test("decision engine: binary hash mismatch => repair (binary_integrity_mismatch
     platformKey,
     expectedVersion: "0.1.0",
     isWin32: false,
+    expectedArchiveName,
+    expectedArchiveSha256,
+    expectedArchiveSource: "manifest:docdex-release-manifest.json",
     sha256FileFn: async (filePath) => {
       shaCalls += 1;
       assert.equal(filePath, binaryPath);
@@ -232,6 +245,8 @@ test("decision engine: verified => no-op (verified)", async () => {
   const distDir = path.posix.join("/dist", platformKey);
   const binaryPath = path.posix.join(distDir, "docdexd");
   const metadataPath = path.posix.join(distDir, "docdexd-install.json");
+  const expectedArchiveName = `docdexd-${platformKey}.tar.gz`;
+  const expectedArchiveSha256 = "c".repeat(64);
 
   const fsModule = createMockFs({
     existingPaths: [binaryPath],
@@ -252,6 +267,9 @@ test("decision engine: verified => no-op (verified)", async () => {
     platformKey,
     expectedVersion: "0.1.0",
     isWin32: false,
+    expectedArchiveName,
+    expectedArchiveSha256,
+    expectedArchiveSource: "manifest:docdex-release-manifest.json",
     sha256FileFn: async (filePath) => {
       shaCalls += 1;
       assert.equal(filePath, binaryPath);
@@ -272,6 +290,8 @@ test("decision engine: integrity check throws => reinstall_unknown (integrity_un
   const distDir = path.posix.join("/dist", platformKey);
   const binaryPath = path.posix.join(distDir, "docdexd");
   const metadataPath = path.posix.join(distDir, "docdexd-install.json");
+  const expectedArchiveName = `docdexd-${platformKey}.tar.gz`;
+  const expectedArchiveSha256 = "c".repeat(64);
 
   const fsModule = createMockFs({
     existingPaths: [binaryPath],
@@ -292,6 +312,9 @@ test("decision engine: integrity check throws => reinstall_unknown (integrity_un
     platformKey,
     expectedVersion: "0.1.0",
     isWin32: false,
+    expectedArchiveName,
+    expectedArchiveSha256,
+    expectedArchiveSource: "manifest:docdex-release-manifest.json",
     sha256FileFn: async (filePath) => {
       shaCalls += 1;
       assert.equal(filePath, binaryPath);

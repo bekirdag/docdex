@@ -475,21 +475,26 @@ test("verifyDownloadedFileIntegrity is deterministic when integrity check is abs
   const filePath = path.join(__dirname, "fixtures", "archive", "fake-archive.bin");
   const actual = await sha256File(filePath);
 
-  assert.equal(
-    await verifyDownloadedFileIntegrity({
-      filePath,
-      expectedSha256: null,
-      archiveName: "docdexd-linux-x64-gnu.tar.gz"
-    }),
-    null
+  await assert.rejects(
+    () =>
+      verifyDownloadedFileIntegrity({
+        filePath,
+        expectedSha256: null,
+        archiveName: "docdexd-linux-x64-gnu.tar.gz"
+      }),
+    (err) => {
+      assert.equal(err.code, "DOCDEX_CHECKSUM_UNUSABLE");
+      return true;
+    }
   );
 
-  assert.equal(
-    await verifyDownloadedFileIntegrity({
-      filePath,
-      expectedSha256: actual,
-      archiveName: "docdexd-linux-x64-gnu.tar.gz"
-    }),
-    actual
-  );
+  const res = await verifyDownloadedFileIntegrity({
+    filePath,
+    expectedSha256: actual,
+    archiveName: "docdexd-linux-x64-gnu.tar.gz",
+    details: { source: "fallback" }
+  });
+  assert.equal(res.status, "verified_ok");
+  assert.equal(res.expectedSha256, actual);
+  assert.equal(res.actualSha256, actual);
 });

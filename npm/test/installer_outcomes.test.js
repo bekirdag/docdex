@@ -34,9 +34,15 @@ async function writeInstallMetadata({
   version,
   targetTriple,
   binarySha256,
-  repoSlug = "owner/repo"
+  repoSlug = "owner/repo",
+  archiveName = null,
+  archiveSha256 = null,
+  archiveSource = "fallback",
+  archiveDownloadUrl = null
 }) {
   const metadataPath = path.join(distDir, "docdexd-install.json");
+  const resolvedArchiveName =
+    typeof archiveName === "string" && archiveName.trim() ? archiveName.trim() : `docdexd-${platformKey}.tar.gz`;
   const payload = {
     schemaVersion: 1,
     installedAt: new Date().toISOString(),
@@ -49,10 +55,10 @@ async function writeInstallMetadata({
       sha256: binarySha256
     },
     archive: {
-      name: null,
-      sha256: null,
-      source: null,
-      downloadUrl: null
+      name: resolvedArchiveName,
+      sha256: archiveSha256,
+      source: archiveSource,
+      downloadUrl: archiveDownloadUrl
     }
   };
   await fs.promises.writeFile(metadataPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
@@ -65,6 +71,8 @@ test("installer outcome: no-op skips plan/download when local install is verifie
   const platformKey = "linux-x64-gnu";
   const targetTriple = targetTripleForPlatformKey(platformKey);
   const isWin32 = false;
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+  const archiveSha256 = "a".repeat(64);
 
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-outcome-noop-"));
   t.after(async () => {
@@ -76,7 +84,15 @@ test("installer outcome: no-op skips plan/download when local install is verifie
 
   const binaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "verified-binary\n" });
   const binarySha = await sha256File(binaryPath);
-  await writeInstallMetadata({ distDir, platformKey, version, targetTriple, binarySha256: binarySha });
+  await writeInstallMetadata({
+    distDir,
+    platformKey,
+    version,
+    targetTriple,
+    binarySha256: binarySha,
+    archiveName: archive,
+    archiveSha256
+  });
 
   let parseRepoSlugCalls = 0;
   let planCalls = 0;
@@ -93,11 +109,16 @@ test("installer outcome: no-op skips plan/download when local install is verifie
     getVersionFn: () => version,
     parseRepoSlugFn: () => {
       parseRepoSlugCalls += 1;
-      throw new Error("unexpected repo slug resolution");
+      return "owner/repo";
     },
     resolveInstallerDownloadPlanFn: async () => {
       planCalls += 1;
-      throw new Error("unexpected plan resolution");
+      return {
+        archive,
+        expectedSha256: archiveSha256,
+        source: "fallback",
+        manifestAttempt: { errors: [], resolved: null, manifestName: null }
+      };
     },
     downloadFn: async () => {
       downloadCalls += 1;
@@ -112,8 +133,8 @@ test("installer outcome: no-op skips plan/download when local install is verifie
 
   assert.equal(result.binaryPath, binaryPath);
   assert.equal(result.outcome, "no-op");
-  assert.equal(parseRepoSlugCalls, 0);
-  assert.equal(planCalls, 0);
+  assert.equal(parseRepoSlugCalls, 1);
+  assert.equal(planCalls, 1);
   assert.equal(downloadCalls, 0);
   assert.equal(extractCalls, 0);
 });
@@ -125,6 +146,8 @@ test("installer outcome: update installs when version differs and writes fresh m
   const platformKey = "linux-x64-gnu";
   const targetTriple = targetTripleForPlatformKey(platformKey);
   const isWin32 = false;
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+  const expectedSha256 = "b".repeat(64);
 
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-outcome-update-"));
   t.after(async () => {
@@ -143,10 +166,11 @@ test("installer outcome: update installs when version differs and writes fresh m
     platformKey,
     version: installedVersion,
     targetTriple,
-    binarySha256: oldSha
+    binarySha256: oldSha,
+    archiveName: archive,
+    archiveSha256: "a".repeat(64)
   });
 
-  const archive = "docdexd-linux-x64-gnu.tar.gz";
   const expectedDownloadUrl = `${base}/v${expectedVersion}/${archive}`;
 
   let downloadUrl = null;
@@ -165,7 +189,7 @@ test("installer outcome: update installs when version differs and writes fresh m
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256,
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -175,10 +199,18 @@ test("installer outcome: update installs when version differs and writes fresh m
       await ensureDir(path.dirname(dest));
       await fs.promises.writeFile(dest, "fake-archive-bytes");
     },
-    verifyDownloadedFileIntegrityFn: async ({ filePath }) => {
+    verifyDownloadedFileIntegrityFn: async ({ filePath, expectedSha256: sha }) => {
       assert.equal(filePath, downloadDest);
+      assert.equal(sha, expectedSha256);
       assert.ok(fs.existsSync(filePath));
-      return null;
+      return {
+        status: "verified_ok",
+        reason: "hash_match",
+        expectedSha256: sha,
+        actualSha256: sha,
+        expectedSource: "fallback",
+        error: null
+      };
     },
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
@@ -195,6 +227,7 @@ test("installer outcome: update installs when version differs and writes fresh m
   const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
   assert.equal(meta.version, expectedVersion);
   assert.equal(meta.platformKey, platformKey);
+  assert.equal(meta.archive.sha256, expectedSha256);
   assert.equal(typeof meta.binary?.sha256, "string");
   assert.equal(meta.binary.sha256.length, 64);
 });
@@ -205,6 +238,8 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
   const platformKey = "linux-x64-gnu";
   const targetTriple = targetTripleForPlatformKey(platformKey);
   const isWin32 = false;
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+  const expectedSha256 = "c".repeat(64);
 
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-outcome-repair-"));
   t.after(async () => {
@@ -218,11 +253,17 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
 
   const binaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "original\n" });
   const originalSha = await sha256File(binaryPath);
-  await writeInstallMetadata({ distDir, platformKey, version, targetTriple, binarySha256: originalSha });
+  await writeInstallMetadata({
+    distDir,
+    platformKey,
+    version,
+    targetTriple,
+    binarySha256: originalSha,
+    archiveName: archive,
+    archiveSha256: expectedSha256
+  });
 
   await fs.promises.writeFile(binaryPath, "corrupted\n");
-
-  const archive = "docdexd-linux-x64-gnu.tar.gz";
 
   const result = await runInstaller({
     logger: createNoopLogger(),
@@ -237,7 +278,7 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256,
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -245,7 +286,14 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
       await ensureDir(path.dirname(dest));
       await fs.promises.writeFile(dest, "fake-archive-bytes");
     },
-    verifyDownloadedFileIntegrityFn: async () => null,
+    verifyDownloadedFileIntegrityFn: async ({ expectedSha256: sha }) => ({
+      status: "verified_ok",
+      reason: "hash_match",
+      expectedSha256: sha,
+      actualSha256: sha,
+      expectedSource: "fallback",
+      error: null
+    }),
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
       const repaired = path.join(targetDir, "docdexd");
@@ -268,6 +316,8 @@ test("installer outcome: reinstall_unknown reinstalls when metadata is missing",
   const platformKey = "linux-x64-gnu";
   const targetTriple = targetTripleForPlatformKey(platformKey);
   const isWin32 = false;
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+  const expectedSha256 = "d".repeat(64);
 
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-outcome-unknown-"));
   t.after(async () => {
@@ -282,8 +332,6 @@ test("installer outcome: reinstall_unknown reinstalls when metadata is missing",
   await writeInstalledBinary({ distDir, isWin32, bytes: "no-metadata\n" });
   assert.ok(!fs.existsSync(path.join(distDir, "docdexd-install.json")));
 
-  const archive = "docdexd-linux-x64-gnu.tar.gz";
-
   const result = await runInstaller({
     logger: createNoopLogger(),
     platform: "linux",
@@ -297,7 +345,7 @@ test("installer outcome: reinstall_unknown reinstalls when metadata is missing",
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256,
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -305,7 +353,14 @@ test("installer outcome: reinstall_unknown reinstalls when metadata is missing",
       await ensureDir(path.dirname(dest));
       await fs.promises.writeFile(dest, "fake-archive-bytes");
     },
-    verifyDownloadedFileIntegrityFn: async () => null,
+    verifyDownloadedFileIntegrityFn: async ({ expectedSha256: sha }) => ({
+      status: "verified_ok",
+      reason: "hash_match",
+      expectedSha256: sha,
+      actualSha256: sha,
+      expectedSource: "fallback",
+      error: null
+    }),
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
       const repaired = path.join(targetDir, "docdexd");
@@ -327,6 +382,8 @@ test("installer outcome: reinstall_unknown reinstalls when integrity cannot be v
   const platformKey = "linux-x64-gnu";
   const targetTriple = targetTripleForPlatformKey(platformKey);
   const isWin32 = false;
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+  const expectedSha256 = "e".repeat(64);
 
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-outcome-unverifiable-"));
   t.after(async () => {
@@ -340,9 +397,15 @@ test("installer outcome: reinstall_unknown reinstalls when integrity cannot be v
 
   const binaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "verified-binary\n" });
   const binarySha = await sha256File(binaryPath);
-  await writeInstallMetadata({ distDir, platformKey, version, targetTriple, binarySha256: binarySha });
-
-  const archive = "docdexd-linux-x64-gnu.tar.gz";
+  await writeInstallMetadata({
+    distDir,
+    platformKey,
+    version,
+    targetTriple,
+    binarySha256: binarySha,
+    archiveName: archive,
+    archiveSha256: expectedSha256
+  });
 
   let shaCalls = 0;
   let downloadCalls = 0;
@@ -361,7 +424,7 @@ test("installer outcome: reinstall_unknown reinstalls when integrity cannot be v
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256,
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -370,7 +433,14 @@ test("installer outcome: reinstall_unknown reinstalls when integrity cannot be v
       await ensureDir(path.dirname(dest));
       await fs.promises.writeFile(dest, "fake-archive-bytes");
     },
-    verifyDownloadedFileIntegrityFn: async () => null,
+    verifyDownloadedFileIntegrityFn: async ({ expectedSha256: sha }) => ({
+      status: "verified_ok",
+      reason: "hash_match",
+      expectedSha256: sha,
+      actualSha256: sha,
+      expectedSource: "fallback",
+      error: null
+    }),
     extractTarballFn: async (_archivePath, targetDir) => {
       extractCalls += 1;
       await ensureDir(targetDir);

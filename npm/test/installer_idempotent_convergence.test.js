@@ -27,6 +27,7 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
   const platformKey = "linux-x64-gnu";
   const targetTriple = targetTripleForPlatformKey(platformKey);
   const archive = "docdexd-linux-x64-gnu.tar.gz";
+  const expectedArchiveSha256 = "a".repeat(64);
 
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-idempotent-"));
   t.after(async () => {
@@ -54,7 +55,7 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: expectedArchiveSha256,
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -64,7 +65,14 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
       await ensureDir(path.dirname(dest));
       await fs.promises.writeFile(dest, "fake-archive-bytes");
     },
-    verifyDownloadedFileIntegrityFn: async () => null,
+    verifyDownloadedFileIntegrityFn: async ({ expectedSha256 }) => ({
+      status: "verified_ok",
+      reason: "hash_match",
+      expectedSha256,
+      actualSha256: expectedSha256,
+      expectedSource: "fallback",
+      error: null
+    }),
     extractTarballFn: async (_archivePath, targetDir) => {
       firstExtractCalls += 1;
       await ensureDir(targetDir);
@@ -98,11 +106,16 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
     getVersionFn: () => version,
     parseRepoSlugFn: () => {
       repoSlugCalls += 1;
-      throw new Error("unexpected repo slug resolution");
+      return "owner/repo";
     },
     resolveInstallerDownloadPlanFn: async () => {
       planCalls += 1;
-      throw new Error("unexpected plan resolution");
+      return {
+        archive,
+        expectedSha256: expectedArchiveSha256,
+        source: "fallback",
+        manifestAttempt: { errors: [], resolved: null, manifestName: null }
+      };
     },
     downloadFn: async () => {
       downloadCalls += 1;
@@ -120,8 +133,8 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
 
   assert.equal(second.outcome, "no-op");
   assert.equal(second.binaryPath, first.binaryPath);
-  assert.equal(repoSlugCalls, 0);
-  assert.equal(planCalls, 0);
+  assert.equal(repoSlugCalls, 1);
+  assert.equal(planCalls, 1);
   assert.equal(downloadCalls, 0);
   assert.equal(verifyCalls, 0);
   assert.equal(extractCalls, 0);
@@ -131,4 +144,3 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
   assert.equal(metadataAfterSecond, metadataAfterFirst);
   assert.equal(binaryAfterSecond, binaryAfterFirst);
 });
-

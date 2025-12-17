@@ -165,7 +165,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 ## Troubleshooting
 - Stale index: re-run `docdexd index --repo <path>`.
 - Port conflicts: change `--host/--port`.
-- Installer failures (`npm i -g docdex`): use the printed `DOCDEX_*` error code; see `docs/ops/installer_error_codes.md`.
+- Installer failures (`npm i -g docdex`): use the printed `DOCDEX_*` error code; see `docs/ops/installer_error_codes.md` and `docs/ops/installer_rollback_guarantees.md`.
 
 ## Security considerations
 - Default bind is `127.0.0.1`; keep it unless you are behind a trusted reverse proxy/firewall. Avoid `--host 0.0.0.0` on untrusted networks.

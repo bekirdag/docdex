@@ -26,10 +26,15 @@ The installer logs the outcome as a single line:
 ## Upgrade vs downgrade
 
 The installer does not treat “upgrade” and “downgrade” differently. It always targets the expected version for the current npm package install:
-- If the installed version differs, the installer replaces `dist/<platformKey>/` so the final state equals the expected version.
+- If the installed version differs, the installer replaces the `docdexd` binary under `dist/<platformKey>/` so the final state equals the expected version.
 - If the expected version is already installed and verified, the installer is a `no-op`.
 
 This makes repeated installs idempotent: running the installer multiple times converges to the same installed binary and the same metadata for a given version/platform.
+
+## Rollback-safe staged install (what changes, when)
+
+Docdex installs `docdexd` using a staged/atomic approach so that a previously working `docdexd` is not removed during a failed install attempt. Details (including cleanup + interrupted install expectations) are in:
+- `docs/ops/installer_rollback_guarantees.md`
 
 ## Integrity verification and repair behavior
 
@@ -43,7 +48,7 @@ There are two relevant integrity checks:
 
    The downloaded archive is verified against the expected SHA-256. If verification fails, installation fails closed with:
    - Error code: `DOCDEX_INTEGRITY_MISMATCH` (see `docs/ops/installer_error_codes.md`)
-   - Safety property: the existing `dist/<platformKey>/` is only removed after the archive is successfully fetched and verified.
+   - Safety property: the existing `dist/<platformKey>/docdexd` (or `docdexd.exe`) is not modified until a new binary has been downloaded, verified, extracted, and is ready to be atomically swapped into place.
 
 2) **Local binary integrity (no-op vs repair)**  
    For a `no-op`, the installer verifies the existing binary by hashing it and comparing to the recorded `binary.sha256` from the last successful, verified install.
@@ -88,7 +93,7 @@ Low-risk approach:
 
 ### 3) If installs keep “repairing” or look inconsistent, reset only installer state
 
-Safe reset options (in increasing destructiveness):
+Safe reset options (in increasing destructiveness). Note: interrupted installs should not require manual cleanup; prefer re-running the install first (see `docs/ops/installer_rollback_guarantees.md`).
 
 1) Delete only install metadata (forces `reinstall_unknown` next run):
    - Remove: `dist/<platformKey>/docdexd-install.json`
@@ -114,4 +119,3 @@ This is usually a repo state issue, not an installer issue:
 - Installer error codes + remediation: `docs/ops/installer_error_codes.md`
 - Release manifest contract: `docs/contracts/release_manifest_schema_v1.md`
 - Installer error contract: `docs/contracts/installer_error_contract_v1.md`
-

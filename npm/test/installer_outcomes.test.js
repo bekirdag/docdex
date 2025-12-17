@@ -394,3 +394,115 @@ test("installer outcome: reinstall_unknown reinstalls when integrity cannot be v
   assert.equal(meta.platformKey, platformKey);
   assert.equal(meta.targetTriple, targetTriple);
 });
+
+test("installer rollback: failed extract keeps prior binary and rerun succeeds without manual cleanup", async (t) => {
+  const base = "https://example.test/releases/download";
+  const expectedVersion = "0.0.2";
+  const installedVersion = "0.0.1";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const isWin32 = false;
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-rollback-"));
+  t.after(async () => {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  const distBaseDir = path.join(tmpRoot, "dist");
+  const distDir = path.join(distBaseDir, platformKey);
+  const tmpDir = path.join(tmpRoot, "tmp");
+  await ensureDir(tmpDir);
+
+  const oldBinaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "old-binary\n" });
+  const oldSha = await sha256File(oldBinaryPath);
+  await writeInstallMetadata({
+    distDir,
+    platformKey,
+    version: installedVersion,
+    targetTriple,
+    binarySha256: oldSha
+  });
+
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+
+  let firstError = null;
+  try {
+    await runInstaller({
+      logger: createNoopLogger(),
+      platform: "linux",
+      arch: "x64",
+      tmpDir,
+      distBaseDir,
+      detectPlatformKeyFn: () => platformKey,
+      targetTripleForPlatformKeyFn: () => targetTriple,
+      getVersionFn: () => expectedVersion,
+      parseRepoSlugFn: () => "owner/repo",
+      getDownloadBaseFn: () => base,
+      resolveInstallerDownloadPlanFn: async () => ({
+        archive,
+        expectedSha256: null,
+        source: "fallback",
+        manifestAttempt: { errors: [], resolved: null, manifestName: null }
+      }),
+      downloadFn: async (_url, dest) => {
+        await ensureDir(path.dirname(dest));
+        await fs.promises.writeFile(dest, "fake-archive-bytes");
+      },
+      verifyDownloadedFileIntegrityFn: async () => null,
+      extractTarballFn: async () => {
+        throw new Error("extract failed");
+      }
+    });
+    assert.fail("expected install to fail");
+  } catch (err) {
+    firstError = err;
+  }
+
+  assert.ok(firstError, "expected failure");
+
+  // Old binary + metadata remain intact (the system is not left in a worse state).
+  assert.equal(await fs.promises.readFile(oldBinaryPath, "utf8"), "old-binary\n");
+  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const metaAfterFail = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
+  assert.equal(metaAfterFail.version, installedVersion);
+
+  // No leftover staging artifacts are required to be cleaned up manually.
+  const baseEntries = await fs.promises.readdir(distBaseDir);
+  assert.equal(baseEntries.filter((n) => n.startsWith(`${platformKey}.staging.`)).length, 0);
+  const distEntries = await fs.promises.readdir(distDir);
+  assert.equal(distEntries.filter((n) => n.endsWith(".new")).length, 0);
+
+  // Re-run converges successfully.
+  const result = await runInstaller({
+    logger: createNoopLogger(),
+    platform: "linux",
+    arch: "x64",
+    tmpDir,
+    distBaseDir,
+    detectPlatformKeyFn: () => platformKey,
+    targetTripleForPlatformKeyFn: () => targetTriple,
+    getVersionFn: () => expectedVersion,
+    parseRepoSlugFn: () => "owner/repo",
+    getDownloadBaseFn: () => base,
+    resolveInstallerDownloadPlanFn: async () => ({
+      archive,
+      expectedSha256: null,
+      source: "fallback",
+      manifestAttempt: { errors: [], resolved: null, manifestName: null }
+    }),
+    downloadFn: async (_url, dest) => {
+      await ensureDir(path.dirname(dest));
+      await fs.promises.writeFile(dest, "fake-archive-bytes");
+    },
+    verifyDownloadedFileIntegrityFn: async () => null,
+    extractTarballFn: async (_archivePath, targetDir) => {
+      await ensureDir(targetDir);
+      await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n");
+    }
+  });
+
+  assert.equal(result.outcome, "update");
+  assert.equal(await fs.promises.readFile(path.join(distDir, "docdexd"), "utf8"), "new-binary\n");
+  const metaAfterSuccess = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
+  assert.equal(metaAfterSuccess.version, expectedVersion);
+});

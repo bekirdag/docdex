@@ -19,6 +19,7 @@ Related contracts:
 - `docs/ops/installer_platform_audit.md`
 - `docs/ops/installer_supported_platforms.md`
 - `docs/ops/installer_upgrade_downgrade.md`
+- `docs/ops/installer_rollback_guarantees.md`
 
 ---
 

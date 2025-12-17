@@ -310,6 +310,41 @@ async function writeJsonFileAtomic({ fsModule, pathModule, filePath, value }) {
   await fsModule.promises.rename(tmp, filePath);
 }
 
+async function cleanupInterruptedInstallArtifacts({ fsModule, pathModule, distBaseDir, distDir, platformKey, isWin32 }) {
+  // Best-effort cleanup for artifacts from interrupted installs. This is intentionally narrow and only
+  // removes files/dirs that match the installer’s own naming patterns within `dist/`.
+  const cutoffMs = Date.now() - 10 * 60 * 1000;
+  try {
+    const entries = await fsModule.promises.readdir(distBaseDir, { withFileTypes: true });
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue;
+      if (!ent.name.startsWith(`${platformKey}.staging.`)) continue;
+      const fullPath = pathModule.join(distBaseDir, ent.name);
+      const stat = await fsModule.promises.stat(fullPath).catch(() => null);
+      if (stat && typeof stat.mtimeMs === "number" && stat.mtimeMs > cutoffMs) continue;
+      await fsModule.promises.rm(fullPath, { recursive: true, force: true }).catch(() => {});
+    }
+  } catch (err) {
+    if (err && err.code === "ENOENT") return;
+  }
+
+  try {
+    const entries = await fsModule.promises.readdir(distDir, { withFileTypes: true });
+    const expectedPrefix = `${isWin32 ? "docdexd.exe" : "docdexd"}.`;
+    for (const ent of entries) {
+      if (!ent.isFile()) continue;
+      if (!ent.name.startsWith(expectedPrefix)) continue;
+      if (!ent.name.endsWith(".new")) continue;
+      const fullPath = pathModule.join(distDir, ent.name);
+      const stat = await fsModule.promises.stat(fullPath).catch(() => null);
+      if (stat && typeof stat.mtimeMs === "number" && stat.mtimeMs > cutoffMs) continue;
+      await fsModule.promises.rm(fullPath, { force: true }).catch(() => {});
+    }
+  } catch (err) {
+    if (err && err.code === "ENOENT") return;
+  }
+}
+
 function isValidInstallMetadata(meta) {
   if (!meta || typeof meta !== "object") return false;
   if (meta.schemaVersion !== INSTALL_METADATA_SCHEMA_VERSION) return false;
@@ -1063,6 +1098,8 @@ async function runInstaller(options) {
     return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
   }
 
+  await cleanupInterruptedInstallArtifacts({ fsModule, pathModule, distBaseDir, distDir, platformKey, isWin32 });
+
   const repoSlug = parseRepoSlugFn();
 
   const { archive, expectedSha256, source, manifestAttempt } = await resolveInstallerDownloadPlanFn({
@@ -1076,6 +1113,8 @@ async function runInstaller(options) {
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
   const tmpDir = opts.tmpDir || osModule.tmpdir();
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
+  const stageDir = pathModule.join(distBaseDir, `${platformKey}.staging.${process.pid}.${Date.now()}`);
+  let tmpBinaryPath = null;
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   try {
@@ -1138,13 +1177,21 @@ async function runInstaller(options) {
       }
     });
 
-    // Only replace an existing installation after we have successfully fetched + verified the archive.
-    await fsModule.promises.rm(distDir, { recursive: true, force: true });
-    await extractTarballFn(tmpFile, distDir);
-
+    // Staged/atomic install:
+    // - Extract into a staging directory (not runnable via the wrapper)
+    // - Validate expected binary exists
+    // - Atomically rename into final location
+    const stagedBinaryPath = pathModule.join(stageDir, isWin32 ? "docdexd.exe" : "docdexd");
     const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
-    if (!fsModule.existsSync(binaryPath)) {
-      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
+    tmpBinaryPath = pathModule.join(
+      distDir,
+      `${pathModule.basename(binaryPath)}.${process.pid}.${Date.now()}.new`
+    );
+
+    await extractTarballFn(tmpFile, stageDir);
+
+    if (!fsModule.existsSync(stagedBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagedBinaryPath}`, {
         platformKey,
         targetTriple,
         version,
@@ -1155,14 +1202,20 @@ async function runInstaller(options) {
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
         fallbackAttempted: source === "fallback",
-        binaryPath
+        binaryPath: stagedBinaryPath
       });
     }
 
+    await fsModule.promises.chmod(stagedBinaryPath, 0o755).catch(() => {});
+    const binarySha256 = await sha256FileFn(stagedBinaryPath);
+
+    await fsModule.promises.mkdir(distDir, { recursive: true });
+    await fsModule.promises.rename(stagedBinaryPath, tmpBinaryPath);
+    await fsModule.promises.rename(tmpBinaryPath, binaryPath);
     await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
+    tmpBinaryPath = null;
     logger.log(`[docdex] Installed binary to ${binaryPath}`);
 
-    const binarySha256 = await sha256FileFn(binaryPath);
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
       installedAt: nowIso(),
@@ -1192,6 +1245,10 @@ async function runInstaller(options) {
     return { binaryPath, outcome: local.outcome };
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
+    await fsModule.promises.rm(stageDir, { recursive: true, force: true }).catch(() => {});
+    if (tmpBinaryPath) {
+      await fsModule.promises.rm(tmpBinaryPath, { force: true }).catch(() => {});
+    }
   }
 }
 

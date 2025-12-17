@@ -52,6 +52,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 
       const expectedArchive = artifactName(platformKey);
       const expectedDownloadUrl = `${base}/v${version}/${expectedArchive}`;
+      const expectedSha256 = "a".repeat(64);
 
       const result = await runInstaller({
         logger: createNoopLogger(),
@@ -69,7 +70,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
           assert.equal(triple, targetTriple);
           return {
             archive: expectedArchive,
-            expectedSha256: null,
+            expectedSha256,
             source: "fallback",
             manifestAttempt: { errors: [], resolved: null, manifestName: null }
           };
@@ -82,12 +83,19 @@ test("installer e2e: supported platform matrix installs expected binary layout",
         },
         verifyDownloadedFileIntegrityFn: async ({ filePath, expectedSha256, archiveName, details }) => {
           assert.equal(filePath, downloadDest);
-          assert.equal(expectedSha256, null);
+          assert.equal(expectedSha256, "a".repeat(64));
           assert.equal(archiveName, expectedArchive);
           assert.ok(fs.existsSync(filePath));
           assert.equal(details.platformKey, platformKey);
           assert.equal(details.targetTriple, targetTriple);
-          return null;
+          return {
+            status: "verified_ok",
+            reason: "hash_match",
+            expectedSha256,
+            actualSha256: expectedSha256,
+            expectedSource: "fallback",
+            error: null
+          };
         },
         extractTarballFn: async (archivePath, targetDir) => {
           extractArchive = archivePath;

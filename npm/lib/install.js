@@ -1308,25 +1308,27 @@ function integrityUnverifiable(reason, { expectedSha256, actualSha256, expectedS
   };
 }
 
-function integrityMismatch({ expectedSha256, actualSha256, expectedSource }) {
+function integrityMismatch({ expectedSha256, actualSha256, expectedSource, ...extra }) {
   return {
     status: "mismatch",
     reason: "hash_mismatch",
     expectedSha256: expectedSha256 ?? null,
     actualSha256: actualSha256 ?? null,
     expectedSource: expectedSource ?? null,
-    error: null
+    error: null,
+    ...extra
   };
 }
 
-function integrityVerified({ expectedSha256, actualSha256, expectedSource }) {
+function integrityVerified({ expectedSha256, actualSha256, expectedSource, ...extra }) {
   return {
     status: "verified_ok",
     reason: "hash_match",
     expectedSha256: expectedSha256 ?? null,
     actualSha256: actualSha256 ?? null,
     expectedSource: expectedSource ?? null,
-    error: null
+    error: null,
+    ...extra
   };
 }
 
@@ -1388,24 +1390,105 @@ async function verifyInstalledDocdexdIntegrity({
   }
 }
 
+function verifyInstalledArchiveRecordIntegrity({
+  installedMetadata,
+  installedMetadataStatus,
+  installedMetadataStatusReason,
+  expectedArchiveName,
+  expectedArchiveSha256,
+  expectedArchiveSource
+}) {
+  if (installedMetadataStatus !== "valid") {
+    const reason =
+      typeof installedMetadataStatusReason === "string" && installedMetadataStatusReason
+        ? installedMetadataStatusReason
+        : "metadata_invalid";
+    return integrityUnverifiable(reason, { expectedSource: expectedArchiveSource ?? null });
+  }
+
+  const expectedSha256 = normalizeSha256Hex(expectedArchiveSha256);
+  if (!expectedSha256) {
+    return integrityUnverifiable("expected_hash_unavailable", {
+      expectedSource: expectedArchiveSource ?? null,
+      error: expectedArchiveSha256 == null ? "expected_missing" : "expected_invalid"
+    });
+  }
+
+  const recordedName =
+    typeof installedMetadata?.archive?.name === "string" && installedMetadata.archive.name.trim()
+      ? installedMetadata.archive.name.trim()
+      : null;
+  const recordedSha256 = normalizeSha256Hex(installedMetadata?.archive?.sha256);
+
+  if (!recordedName) {
+    return integrityUnverifiable("metadata_missing_archive_name", {
+      expectedSha256,
+      expectedSource: expectedArchiveSource ?? null
+    });
+  }
+
+  if (!recordedSha256) {
+    return integrityUnverifiable("metadata_missing_archive_sha256", {
+      expectedSha256,
+      expectedSource: expectedArchiveSource ?? null
+    });
+  }
+
+  if (typeof expectedArchiveName === "string" && expectedArchiveName.trim() && recordedName !== expectedArchiveName) {
+    return integrityMismatch({
+      expectedSha256,
+      actualSha256: recordedSha256,
+      expectedSource: expectedArchiveSource ?? null,
+      reason: "archive_name_mismatch",
+      expectedArchiveName: expectedArchiveName,
+      actualArchiveName: recordedName
+    });
+  }
+
+  if (recordedSha256 !== expectedSha256) {
+    return integrityMismatch({
+      expectedSha256,
+      actualSha256: recordedSha256,
+      expectedSource: expectedArchiveSource ?? null,
+      reason: "archive_sha256_mismatch",
+      expectedArchiveName: expectedArchiveName ?? null,
+      actualArchiveName: recordedName
+    });
+  }
+
+  return integrityVerified({
+    expectedSha256,
+    actualSha256: recordedSha256,
+    expectedSource: expectedArchiveSource ?? null,
+    expectedArchiveName: expectedArchiveName ?? null,
+    actualArchiveName: recordedName
+  });
+}
+
 /**
  * @param {object} args
  * @param {string} args.expectedVersion
- * @param {{binarySha256: (string|null)}} args.expectedIntegrityMaterial
+ * @param {{binarySha256: (string|null), archiveSha256: (string|null)}} args.expectedIntegrityMaterial
  * @param {object} args.discoveredInstalledState
  * @param {object} args.integrityResult
+<<<<<<< HEAD
  * @returns {{
  *   outcome: string,
  *   reason: string,
  *   action: string,
  *   versionComparison: { expected: object|null, installed: object|null, cmp: (number|null) }
  * }}
+=======
+ * @param {object} args.archiveRecordResult
+ * @returns {{outcome: string, reason: string}}
+>>>>>>> mcoda/task/ops-01-us-06-t03
  */
 function decideInstallDecision({
   expectedVersion,
   expectedIntegrityMaterial,
   discoveredInstalledState,
-  integrityResult
+  integrityResult,
+  archiveRecordResult
 }) {
 <<<<<<< HEAD
   if (!discoveredInstalledState?.binaryPresent) return { outcome: "install", reason: "binary_missing" };
@@ -1470,8 +1553,28 @@ function decideInstallDecision({
   } else action = "repair";
 >>>>>>> mcoda/task/ops-01-us-06-t02
 
+<<<<<<< HEAD
   return { outcome, reason, action, versionComparison };
 }
+=======
+  const expectedArchiveSha256 = normalizeSha256Hex(expectedIntegrityMaterial?.archiveSha256);
+  if (!expectedArchiveSha256) {
+    return { outcome: "reinstall_unknown", reason: "expected_archive_integrity_missing" };
+  }
+
+  if (archiveRecordResult?.status === "mismatch") {
+    return { outcome: "repair", reason: archiveRecordResult.reason || "archive_integrity_mismatch" };
+  }
+
+  if (archiveRecordResult?.status !== "verified_ok") {
+    return { outcome: "reinstall_unknown", reason: "archive_integrity_unverifiable" };
+  }
+
+  const expectedBinarySha256 = normalizeSha256Hex(expectedIntegrityMaterial?.binarySha256);
+  if (!expectedBinarySha256) {
+    return { outcome: "reinstall_unknown", reason: "expected_integrity_missing" };
+  }
+>>>>>>> mcoda/task/ops-01-us-06-t03
 
 function decideInstallAction(args) {
   const decision = decideInstallDecision(args);
@@ -1596,15 +1699,24 @@ async function determineLocalInstallerOutcome({
   isWin32,
   sha256FileFn = sha256File,
   expectedBinarySha256 = null,
+<<<<<<< HEAD
   readInstalledBinaryVersionFn = null
+=======
+  expectedArchiveName = null,
+  expectedArchiveSha256 = null,
+  expectedArchiveSource = null,
+  discoveredInstalledState = null
+>>>>>>> mcoda/task/ops-01-us-06-t03
 }) {
-  const discoveredInstalledState = await discoverInstalledState({
-    fsModule,
-    pathModule,
-    distDir,
-    platformKey,
-    isWin32
-  });
+  const state =
+    discoveredInstalledState ||
+    (await discoverInstalledState({
+      fsModule,
+      pathModule,
+      distDir,
+      platformKey,
+      isWin32
+    }));
 
   const binaryPresent = Boolean(discoveredInstalledState.binaryPresent);
   const metadataStatus = discoveredInstalledState.metadataStatus;
@@ -1612,28 +1724,58 @@ async function determineLocalInstallerOutcome({
   const platformMismatch = Boolean(discoveredInstalledState.platformMismatch);
 
   const expectedIntegrityMaterial = {
+    archiveSha256: normalizeSha256Hex(expectedArchiveSha256) ? expectedArchiveSha256 : null,
     binarySha256: normalizeSha256Hex(expectedBinarySha256)
       ? expectedBinarySha256
+<<<<<<< HEAD
       : discoveredInstalledState.metadataStatus === "valid"
         ? discoveredInstalledState.metadata.binaryHash
+=======
+      : state.metadataStatus === "valid"
+        ? state.metadata.binary.sha256
+>>>>>>> mcoda/task/ops-01-us-06-t03
         : null
   };
 
   const shouldVerifyIntegrity =
+<<<<<<< HEAD
     binaryPresent &&
     !platformMismatch &&
     discoveredInstalledState.installedVersion === expectedVersion &&
     (normalizeSha256Hex(expectedBinarySha256) || discoveredInstalledState.metadataStatus === "valid");
+=======
+    state.binaryPresent &&
+    !state.platformMismatch &&
+    state.installedVersion === expectedVersion &&
+    (normalizeSha256Hex(expectedBinarySha256) || state.metadataStatus === "valid");
+>>>>>>> mcoda/task/ops-01-us-06-t03
 
   const integrityResult = shouldVerifyIntegrity
     ? await verifyInstalledDocdexdIntegrity({
         fsModule,
         sha256FileFn,
-        binaryPath: discoveredInstalledState.binaryPath,
+        binaryPath: state.binaryPath,
         expectedBinarySha256: expectedBinarySha256,
-        installedMetadata: discoveredInstalledState.metadata,
-        installedMetadataStatus: discoveredInstalledState.metadataStatus,
-        installedMetadataStatusReason: discoveredInstalledState.metadataStatusReason
+        installedMetadata: state.metadata,
+        installedMetadataStatus: state.metadataStatus,
+        installedMetadataStatusReason: state.metadataStatusReason
+      })
+    : null;
+
+  const shouldVerifyArchiveRecord =
+    state.binaryPresent &&
+    !state.platformMismatch &&
+    state.installedVersion === expectedVersion &&
+    state.metadataStatus === "valid";
+
+  const archiveRecordResult = shouldVerifyArchiveRecord
+    ? verifyInstalledArchiveRecordIntegrity({
+        installedMetadata: state.metadata,
+        installedMetadataStatus: state.metadataStatus,
+        installedMetadataStatusReason: state.metadataStatusReason,
+        expectedArchiveName,
+        expectedArchiveSha256,
+        expectedArchiveSource
       })
     : null;
 
@@ -1644,12 +1786,18 @@ async function determineLocalInstallerOutcome({
 >>>>>>> mcoda/task/ops-01-us-06-t02
     expectedVersion,
     expectedIntegrityMaterial,
-    discoveredInstalledState,
-    integrityResult
+    discoveredInstalledState: state,
+    integrityResult,
+    archiveRecordResult
   });
 
+<<<<<<< HEAD
   let installedVersion =
     typeof discoveredInstalledState.installedVersion === "string" ? discoveredInstalledState.installedVersion : null;
+=======
+  const installedVersion =
+    typeof state.installedVersion === "string" ? state.installedVersion : null;
+>>>>>>> mcoda/task/ops-01-us-06-t03
 
   let binaryVersion = null;
   let binaryVersionError = null;
@@ -1680,6 +1828,7 @@ async function determineLocalInstallerOutcome({
     }),
     outcome: decision.outcome,
     reason: decision.reason,
+<<<<<<< HEAD
     action: decision.action,
     decision: {
       schemaVersion: 1,
@@ -1705,6 +1854,16 @@ async function determineLocalInstallerOutcome({
     metadataStatusReason,
     platformMismatch
 >>>>>>> mcoda/task/ops-01-us-06-t15
+=======
+    binaryPath: state.binaryPath,
+    metadataPath: state.metadataPath,
+    installedVersion,
+    integrityResult,
+    verification: {
+      installedBinary: integrityResult,
+      installedArchiveRecord: archiveRecordResult
+    }
+>>>>>>> mcoda/task/ops-01-us-06-t03
   };
 }
 
@@ -2083,12 +2242,36 @@ async function verifyDownloadedFileIntegrity({
   sha256FileFn = sha256File,
   details
 }) {
-  if (!expectedSha256) return null;
-  const actual = await sha256FileFn(filePath);
-  if (actual.toLowerCase() !== expectedSha256.toLowerCase()) {
-    throw new IntegrityMismatchError(archiveName, expectedSha256, actual, details);
+  const expected = normalizeSha256Hex(expectedSha256);
+  if (!expected) {
+    throw new ChecksumResolutionError(`Missing SHA-256 integrity metadata for ${archiveName}`, {
+      ...(details || {}),
+      assetName: archiveName,
+      expectedSha256: null,
+      actualSha256: null
+    });
   }
-  return actual;
+
+  const rawActual = await sha256FileFn(filePath);
+  const actual = normalizeSha256Hex(rawActual);
+  if (!actual) {
+    throw new IntegrityMismatchError(archiveName, expected, String(rawActual), {
+      ...(details || {}),
+      error: typeof rawActual === "string" ? `invalid_sha256:${rawActual}` : "invalid_sha256"
+    });
+  }
+
+  if (actual !== expected) {
+    throw new IntegrityMismatchError(archiveName, expected, actual, details);
+  }
+
+  return integrityVerified({
+    expectedSha256: expected,
+    actualSha256: actual,
+    expectedSource: typeof details?.source === "string" ? details.source : null,
+    filePath,
+    assetName: archiveName
+  });
 }
 
 async function runInstaller(options) {
@@ -2166,6 +2349,7 @@ async function runInstaller(options) {
   const legacyDistDir = pathModule.join(legacyDistBaseDir, platformKey);
   const isWin32 = detectedPlatform === "win32";
 
+<<<<<<< HEAD
   emitInstallerEvent({
     logger,
     code: "DOCDEX_INSTALL_START",
@@ -2173,6 +2357,35 @@ async function runInstaller(options) {
     details: { attemptId, expectedVersion: version, platformKey, targetTriple, distDir }
   });
 
+=======
+  const discoveredInstalledState = await discoverInstalledState({
+    fsModule,
+    pathModule,
+    distDir,
+    platformKey,
+    isWin32
+  });
+
+  const needsReleaseIntegrityForLocal =
+    discoveredInstalledState.binaryPresent &&
+    discoveredInstalledState.metadataStatus === "valid" &&
+    !discoveredInstalledState.platformMismatch &&
+    discoveredInstalledState.installedVersion === version;
+
+  let preflightRepoSlug = null;
+  let preflightPlan = null;
+  if (needsReleaseIntegrityForLocal) {
+    preflightRepoSlug = parseRepoSlugFn();
+    preflightPlan = await resolveInstallerDownloadPlanFn({
+      repoSlug: preflightRepoSlug,
+      version,
+      platformKey,
+      targetTriple,
+      logger
+    });
+  }
+
+>>>>>>> mcoda/task/ops-01-us-06-t03
   const local = await determineLocalInstallerOutcome({
     fsModule,
     pathModule,
@@ -2181,6 +2394,7 @@ async function runInstaller(options) {
     expectedVersion: version,
     isWin32,
     sha256FileFn,
+<<<<<<< HEAD
     readInstalledBinaryVersionFn
   });
 
@@ -2401,6 +2615,35 @@ async function runInstaller(options) {
     targetTriple,
     logger
   });
+=======
+    expectedArchiveName: preflightPlan?.archive ?? null,
+    expectedArchiveSha256: preflightPlan?.expectedSha256 ?? null,
+    expectedArchiveSource: preflightPlan?.source ?? null,
+    discoveredInstalledState
+  });
+
+  if (local.outcome === "no-op") {
+    logger.log("[docdex] Install outcome: no-op");
+    return {
+      binaryPath: local.binaryPath,
+      outcome: local.outcome,
+      integrityResult: local.integrityResult,
+      verification: local.verification
+    };
+  }
+
+  const repoSlug = preflightRepoSlug || parseRepoSlugFn();
+
+  const { archive, expectedSha256, source, manifestAttempt } =
+    preflightPlan ||
+    (await resolveInstallerDownloadPlanFn({
+      repoSlug,
+      version,
+      platformKey,
+      targetTriple,
+      logger
+    }));
+>>>>>>> mcoda/task/ops-01-us-06-t03
 
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
   const tmpDir = opts.tmpDir || osModule.tmpdir();
@@ -2525,11 +2768,15 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     const verifiedArchiveSha256 = await verifyDownloadedFileIntegrityFn({
 =======
     const verifiedArchiveSha256 =
       (await verifyDownloadedFileIntegrityFn({
 >>>>>>> mcoda/task/ops-01-us-06-t21
+=======
+    const candidateArchiveVerification = await verifyDownloadedFileIntegrityFn({
+>>>>>>> mcoda/task/ops-01-us-06-t03
       filePath: tmpFile,
 =======
     await verifyDownloadedFileIntegrityFn({
@@ -2769,8 +3016,15 @@ async function runInstaller(options) {
         name: archive,
 <<<<<<< HEAD
         sha256: expectedSha256 || null,
+<<<<<<< HEAD
         verifiedSha256: typeof verifiedArchiveSha256 === "string" ? verifiedArchiveSha256 : null,
 >>>>>>> mcoda/task/ops-01-us-06-t29
+=======
+        verifiedSha256:
+          candidateArchiveVerification && typeof candidateArchiveVerification.actualSha256 === "string"
+            ? candidateArchiveVerification.actualSha256
+            : null,
+>>>>>>> mcoda/task/ops-01-us-06-t03
         source,
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null
@@ -2901,6 +3155,7 @@ async function runInstaller(options) {
 
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
 <<<<<<< HEAD
+<<<<<<< HEAD
     return { binaryPath: finalBinaryPath, outcome: local.outcome };
 =======
     emitInstallerEvent({
@@ -2935,6 +3190,16 @@ async function runInstaller(options) {
 
     return { binaryPath, outcome: local.outcome, outcomeCode: localOutcomeCode };
 >>>>>>> mcoda/task/ops-01-us-06-t15
+=======
+    return {
+      binaryPath,
+      outcome: local.outcome,
+      verification: {
+        ...local.verification,
+        candidateArchive: candidateArchiveVerification
+      }
+    };
+>>>>>>> mcoda/task/ops-01-us-06-t03
   } finally {
     if (installStagingDir) {
       await fsModule.promises.rm(installStagingDir, { recursive: true, force: true }).catch(() => {});

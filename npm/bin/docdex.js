@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
+const { recoverInterruptedInstallSync } = require("../lib/install");
 const {
   artifactName,
   detectLibcFromRuntime,
@@ -148,6 +149,14 @@ function run() {
   }
 
   const basePath = path.join(__dirname, "..", "dist", platformKey);
+  try {
+    recoverInterruptedInstallSync({
+      fsModule: fs,
+      pathModule: path,
+      distDir: basePath,
+      isWin32: process.platform === "win32"
+    });
+  } catch {}
   const binaryPath = path.join(
     basePath,
     process.platform === "win32" ? "docdexd.exe" : "docdexd"

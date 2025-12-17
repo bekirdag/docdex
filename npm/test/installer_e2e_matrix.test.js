@@ -100,14 +100,16 @@ test("installer e2e: supported platform matrix installs expected binary layout",
       });
 
       const isWin32 = entry.platform === "win32";
-      const expectedBinaryPath = path.join(distBaseDir, platformKey, isWin32 ? "docdexd.exe" : "docdexd");
+      const distDir = path.join(distBaseDir, platformKey);
+      const expectedExtractDir = `${distDir}.__docdexd_install_staging`;
+      const expectedBinaryPath = path.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
 
       assert.equal(downloadUrl, expectedDownloadUrl);
       assert.equal(extractArchive, downloadDest);
-      assert.equal(extractDir, path.join(distBaseDir, platformKey));
+      assert.equal(extractDir, expectedExtractDir);
+      assert.ok(!fs.existsSync(expectedExtractDir));
       assert.equal(result.binaryPath, expectedBinaryPath);
       assert.ok(fs.existsSync(expectedBinaryPath));
     });
   }
 });
-

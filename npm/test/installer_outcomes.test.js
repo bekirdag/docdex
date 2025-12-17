@@ -138,11 +138,18 @@ test("installer outcome: no-op skips plan/download when local install is verifie
   assert.equal(result.binaryPath, binaryPath);
   assert.equal(result.outcome, "no-op");
 <<<<<<< HEAD
+<<<<<<< HEAD
   assert.equal(result.outcomeCode, "skipped_noop");
   assert.equal(typeof result.outcomeMessage, "string");
 =======
   assert.equal(result.plan, "no-op");
 >>>>>>> mcoda/task/ops-01-us-06-t37
+=======
+  assert.equal(result.action, "no-op");
+  assert.equal(result.decision.schemaVersion, 1);
+  assert.equal(result.decision.outcome, "no-op");
+  assert.equal(result.decision.action, "no-op");
+>>>>>>> mcoda/task/ops-01-us-06-t02
   assert.equal(parseRepoSlugCalls, 0);
   assert.equal(planCalls, 0);
   assert.equal(downloadCalls, 0);
@@ -235,12 +242,16 @@ test("installer outcome: upgrade installs when expected version is newer and wri
 <<<<<<< HEAD
   assert.equal(result.outcome, "update");
 <<<<<<< HEAD
+<<<<<<< HEAD
   assert.equal(result.outcomeCode, "updated");
 =======
   assert.equal(result.plan, "upgrade");
 >>>>>>> mcoda/task/ops-01-us-06-t37
 =======
   assert.equal(result.outcome, "upgrade");
+=======
+  assert.equal(result.action, "upgrade");
+>>>>>>> mcoda/task/ops-01-us-06-t02
 
   const metadataPath = path.join(distDir, "docdexd-install.json");
   assert.ok(fs.existsSync(metadataPath));
@@ -427,10 +438,14 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
   assert.equal(result.outcome, "repair");
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   assert.equal(result.outcomeCode, "repaired");
 =======
   assert.equal(result.plan, "repair");
 >>>>>>> mcoda/task/ops-01-us-06-t37
+=======
+  assert.equal(result.action, "repair");
+>>>>>>> mcoda/task/ops-01-us-06-t02
   const metadataPath = path.join(distDir, "docdexd-install.json");
 =======
   const metadataPath = path.join(installDir, "docdexd-install.json");

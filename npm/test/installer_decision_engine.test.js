@@ -70,7 +70,12 @@ test("decision engine: missing binary => install (binary_missing)", async () => 
     sha256FileFn
   });
 
+<<<<<<< HEAD
   assert.equal(outcome.outcome, "install");
+=======
+  assert.equal(outcome.outcome, "update");
+  assert.equal(outcome.action, "upgrade");
+>>>>>>> mcoda/task/ops-01-us-06-t02
   assert.equal(outcome.reason, "binary_missing");
   assert.equal(outcome.plan, "upgrade");
   assert.equal(outcome.installedVersion, null);
@@ -97,6 +102,7 @@ test("decision engine: metadata missing => reinstall_unknown (metadata_missing)"
   });
 
   assert.equal(outcome.outcome, "reinstall_unknown");
+  assert.equal(outcome.action, "repair");
   assert.equal(outcome.reason, "metadata_missing");
   assert.equal(outcome.plan, "repair");
   assert.equal(outcome.integrityResult, null);
@@ -128,6 +134,7 @@ test("decision engine: metadata invalid => reinstall_unknown (metadata_invalid)"
   });
 
   assert.equal(outcome.outcome, "reinstall_unknown");
+  assert.equal(outcome.action, "repair");
   assert.equal(outcome.reason, "metadata_invalid");
   assert.equal(outcome.plan, "repair");
 });
@@ -162,6 +169,7 @@ test("decision engine: platform mismatch => reinstall_unknown (platform_mismatch
   });
 
   assert.equal(outcome.outcome, "reinstall_unknown");
+  assert.equal(outcome.action, "repair");
   assert.equal(outcome.reason, "platform_mismatch");
   assert.equal(outcome.plan, "repair");
   assert.equal(outcome.installedVersion, "0.1.0");
@@ -237,6 +245,7 @@ test("decision engine: version mismatch => downgrade (version_mismatch)", async 
 
 <<<<<<< HEAD
   assert.equal(outcome.outcome, "update");
+  assert.equal(outcome.action, "upgrade");
   assert.equal(outcome.reason, "version_mismatch");
   assert.equal(outcome.plan, "downgrade");
 =======
@@ -244,6 +253,41 @@ test("decision engine: version mismatch => downgrade (version_mismatch)", async 
   assert.equal(outcome.reason, "version_mismatch");
 >>>>>>> mcoda/task/ops-01-us-06-t40
   assert.equal(outcome.installedVersion, "0.2.0");
+});
+
+test("decision engine: downgrade when expected version is lower", async () => {
+  const platformKey = "linux-x64-gnu";
+  const distDir = path.posix.join("/dist", platformKey);
+  const binaryPath = path.posix.join(distDir, "docdexd");
+  const metadataPath = path.posix.join(distDir, "docdexd-install.json");
+
+  const fsModule = createMockFs({
+    existingPaths: [binaryPath],
+    filesByPath: {
+      [metadataPath]: JSON.stringify(
+        validInstallMetadata({ platformKey, version: "0.1.1", binarySha256: "a".repeat(64) }),
+        null,
+        2
+      )
+    }
+  });
+
+  const outcome = await determineLocalInstallerOutcome({
+    fsModule,
+    pathModule: path.posix,
+    distDir,
+    platformKey,
+    expectedVersion: "0.1.0",
+    isWin32: false,
+    sha256FileFn: async () => {
+      throw new Error("unexpected sha256");
+    }
+  });
+
+  assert.equal(outcome.outcome, "update");
+  assert.equal(outcome.action, "downgrade");
+  assert.equal(outcome.reason, "version_mismatch");
+  assert.equal(outcome.installedVersion, "0.1.1");
 });
 
 test("decision engine: binary hash mismatch => repair (binary_integrity_mismatch)", async () => {
@@ -279,6 +323,7 @@ test("decision engine: binary hash mismatch => repair (binary_integrity_mismatch
   });
 
   assert.equal(outcome.outcome, "repair");
+  assert.equal(outcome.action, "repair");
   assert.equal(outcome.reason, "binary_integrity_mismatch");
   assert.equal(outcome.plan, "repair");
   assert.equal(outcome.integrityResult.status, "mismatch");
@@ -319,6 +364,7 @@ test("decision engine: verified => no-op (verified)", async () => {
   });
 
   assert.equal(outcome.outcome, "no-op");
+  assert.equal(outcome.action, "no-op");
   assert.equal(outcome.reason, "verified");
   assert.equal(outcome.plan, "no-op");
   assert.equal(outcome.integrityResult.status, "verified_ok");
@@ -407,6 +453,7 @@ test("decision engine: integrity check throws => reinstall_unknown (integrity_un
   });
 
   assert.equal(outcome.outcome, "reinstall_unknown");
+  assert.equal(outcome.action, "repair");
   assert.equal(outcome.reason, "integrity_unverifiable");
   assert.equal(outcome.plan, "repair");
   assert.equal(outcome.installedVersion, "0.1.0");

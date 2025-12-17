@@ -1004,6 +1004,7 @@ function normalizeSha256Hex(value) {
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 function parseSemverLike(version) {
   if (typeof version !== "string") return null;
   const trimmed = version.trim().replace(/^v/i, "");
@@ -1152,6 +1153,33 @@ async function readInstalledDocdexdVersion({ binaryPath, timeoutMs = 1500, execF
 }
 
 >>>>>>> mcoda/task/ops-01-us-06-t41
+=======
+function parseVersionTriplet(version) {
+  if (typeof version !== "string") return null;
+  const trimmed = version.trim().replace(/^v/i, "");
+  if (!trimmed) return null;
+
+  const core = trimmed.split(/[+-]/)[0];
+  const parts = core.split(".");
+  if (parts.length < 2 || parts.length > 3) return null;
+
+  const major = Number(parts[0]);
+  const minor = Number(parts[1]);
+  const patch = parts.length === 3 ? Number(parts[2]) : 0;
+  if (![major, minor, patch].every((n) => Number.isInteger(n) && n >= 0)) return null;
+
+  return { major, minor, patch };
+}
+
+function compareVersionTriplets(a, b) {
+  if (!a || !b) return null;
+  if (a.major !== b.major) return a.major < b.major ? -1 : 1;
+  if (a.minor !== b.minor) return a.minor < b.minor ? -1 : 1;
+  if (a.patch !== b.patch) return a.patch < b.patch ? -1 : 1;
+  return 0;
+}
+
+>>>>>>> mcoda/task/ops-01-us-06-t02
 function integrityUnverifiable(reason, { expectedSha256, actualSha256, expectedSource, error } = {}) {
   return {
     status: "unverifiable",
@@ -1249,48 +1277,88 @@ async function verifyInstalledDocdexdIntegrity({
  * @param {{binarySha256: (string|null)}} args.expectedIntegrityMaterial
  * @param {object} args.discoveredInstalledState
  * @param {object} args.integrityResult
- * @returns {{outcome: string, reason: string}}
+ * @returns {{
+ *   outcome: string,
+ *   reason: string,
+ *   action: string,
+ *   versionComparison: { expected: object|null, installed: object|null, cmp: (number|null) }
+ * }}
  */
-function decideInstallAction({
+function decideInstallDecision({
   expectedVersion,
   expectedIntegrityMaterial,
   discoveredInstalledState,
   integrityResult
 }) {
+<<<<<<< HEAD
   if (!discoveredInstalledState?.binaryPresent) return { outcome: "install", reason: "binary_missing" };
+=======
+  let outcome;
+  let reason;
+>>>>>>> mcoda/task/ops-01-us-06-t02
 
-  if (discoveredInstalledState.metadataStatus !== "valid") {
-    return {
-      outcome: "reinstall_unknown",
-      reason: discoveredInstalledState.metadataStatusReason || "metadata_invalid"
-    };
+  if (!discoveredInstalledState?.binaryPresent) {
+    outcome = "update";
+    reason = "binary_missing";
+  } else if (discoveredInstalledState.metadataStatus !== "valid") {
+    outcome = "reinstall_unknown";
+    reason = discoveredInstalledState.metadataStatusReason || "metadata_invalid";
+  } else if (discoveredInstalledState.platformMismatch) {
+    outcome = "reinstall_unknown";
+    reason = "platform_mismatch";
+  } else if (discoveredInstalledState.installedVersion !== expectedVersion) {
+    outcome = "update";
+    reason = "version_mismatch";
+  } else {
+    const expectedBinarySha256 = normalizeSha256Hex(expectedIntegrityMaterial?.binarySha256);
+    if (!expectedBinarySha256) {
+      outcome = "reinstall_unknown";
+      reason = "expected_integrity_missing";
+    } else if (integrityResult?.status === "mismatch") {
+      outcome = "repair";
+      reason = "binary_integrity_mismatch";
+    } else if (integrityResult?.status === "verified_ok") {
+      outcome = "no-op";
+      reason = "verified";
+    } else {
+      outcome = "reinstall_unknown";
+      reason = "integrity_unverifiable";
+    }
   }
 
-  if (discoveredInstalledState.platformMismatch) {
-    return { outcome: "reinstall_unknown", reason: "platform_mismatch" };
-  }
+  const installedVersion =
+    discoveredInstalledState && typeof discoveredInstalledState.installedVersion === "string"
+      ? discoveredInstalledState.installedVersion
+      : null;
+  const expectedParsed = parseVersionTriplet(expectedVersion);
+  const installedParsed = parseVersionTriplet(installedVersion);
+  const cmp = compareVersionTriplets(expectedParsed, installedParsed);
+  const versionComparison = { expected: expectedParsed, installed: installedParsed, cmp };
 
+<<<<<<< HEAD
   if (discoveredInstalledState.installedVersion !== expectedVersion) {
     const comparison = compareSemverLoose(discoveredInstalledState.installedVersion, expectedVersion);
     if (comparison === -1) return { outcome: "upgrade", reason: "version_mismatch" };
     if (comparison === 1) return { outcome: "downgrade", reason: "version_mismatch" };
     return { outcome: "replace", reason: "version_mismatch" };
   }
+=======
+  const direction = cmp === -1 ? "downgrade" : "upgrade";
+  let action;
+  if (outcome === "no-op") action = "no-op";
+  else if (outcome === "repair") action = "repair";
+  else if (outcome === "update") action = direction;
+  else if (outcome === "reinstall_unknown") {
+    action = installedVersion && installedVersion !== expectedVersion ? direction : "repair";
+  } else action = "repair";
+>>>>>>> mcoda/task/ops-01-us-06-t02
 
-  const expectedBinarySha256 = normalizeSha256Hex(expectedIntegrityMaterial?.binarySha256);
-  if (!expectedBinarySha256) {
-    return { outcome: "reinstall_unknown", reason: "expected_integrity_missing" };
-  }
+  return { outcome, reason, action, versionComparison };
+}
 
-  if (integrityResult?.status === "mismatch") {
-    return { outcome: "repair", reason: "binary_integrity_mismatch" };
-  }
-
-  if (integrityResult?.status === "verified_ok") {
-    return { outcome: "no-op", reason: "verified" };
-  }
-
-  return { outcome: "reinstall_unknown", reason: "integrity_unverifiable" };
+function decideInstallAction(args) {
+  const decision = decideInstallDecision(args);
+  return { outcome: decision.outcome, reason: decision.reason };
 }
 
 async function discoverInstalledState({ fsModule, pathModule, distDir, platformKey, isWin32 }) {
@@ -1447,7 +1515,11 @@ async function determineLocalInstallerOutcome({
       })
     : null;
 
+<<<<<<< HEAD
   let decision = decideInstallAction({
+=======
+  const decision = decideInstallDecision({
+>>>>>>> mcoda/task/ops-01-us-06-t02
     expectedVersion,
     expectedIntegrityMaterial,
     discoveredInstalledState,
@@ -1486,6 +1558,17 @@ async function determineLocalInstallerOutcome({
     }),
     outcome: decision.outcome,
     reason: decision.reason,
+    action: decision.action,
+    decision: {
+      schemaVersion: 1,
+      outcome: decision.outcome,
+      action: decision.action,
+      reason: decision.reason,
+      expectedVersion,
+      installedVersion,
+      platformKey,
+      versionComparison: decision.versionComparison
+    },
     binaryPath: discoveredInstalledState.binaryPath,
     metadataPath: discoveredInstalledState.metadataPath,
     installedVersion,
@@ -1982,6 +2065,7 @@ async function runInstaller(options) {
     logger.log("[docdex] Install outcome: no-op");
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
 =======
     const report = buildInstallOutcomeReport({
@@ -2081,6 +2165,16 @@ async function runInstaller(options) {
       integrityResult: local.integrityResult
     };
 >>>>>>> mcoda/task/ops-01-us-06-t40
+=======
+    logger.log(`[docdex] Install decision: ${JSON.stringify(local.decision)}`);
+    return {
+      binaryPath: local.binaryPath,
+      outcome: local.outcome,
+      action: local.action,
+      decision: local.decision,
+      integrityResult: local.integrityResult
+    };
+>>>>>>> mcoda/task/ops-01-us-06-t02
   }
 
   const repoSlug = parseRepoSlugFn();
@@ -2325,6 +2419,7 @@ async function runInstaller(options) {
 =======
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
 <<<<<<< HEAD
+<<<<<<< HEAD
     return { binaryPath, outcome: local.outcome, plan: local.plan };
 >>>>>>> mcoda/task/ops-01-us-06-t37
 =======
@@ -2357,6 +2452,10 @@ async function runInstaller(options) {
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
     return { binaryPath, outcome: local.outcome, restart: restartResult };
 >>>>>>> mcoda/task/ops-01-us-06-t20
+=======
+    logger.log(`[docdex] Install decision: ${JSON.stringify(local.decision)}`);
+    return { binaryPath, outcome: local.outcome, action: local.action, decision: local.decision };
+>>>>>>> mcoda/task/ops-01-us-06-t02
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
   }
@@ -2642,6 +2741,7 @@ module.exports = {
   readInstalledDocdexdVersion,
   parseDocdexdVersionOutput,
   verifyInstalledDocdexdIntegrity,
+  decideInstallDecision,
   decideInstallAction,
   determineLocalInstallerOutcome,
   verifyDownloadedFileIntegrity,

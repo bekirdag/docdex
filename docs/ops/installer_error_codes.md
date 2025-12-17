@@ -71,7 +71,11 @@ Legend:
 | `DOCDEX_INTEGRITY_MISMATCH` | 22 | SHA-256 verification failed for the downloaded archive. | `true/false` (printed when available) | Re-run install; bypass/disable proxies/caches; verify you are using the intended repo/version. Treat as a potential tampering signal; do not “work around” integrity failures by manual extraction. | Regenerate and re-upload correct checksums/manifest for the release; invalidate any cached/mirrored corrupted artifacts. |
 | `DOCDEX_ARCHIVE_INVALID` | 23 | Archive extracted, but the expected `docdexd` binary was missing from the extracted directory. | `true/false` (printed when available) | Install a different version; or build from source. | Fix packaging (ensure tarball contains `docdexd`/`docdexd.exe` at the expected path). |
 | `DOCDEX_CHECKSUM_UNUSABLE` | 24 | Installer could not obtain SHA-256 integrity metadata (no usable manifest + no usable checksum fallback). | `true` | Install a different version; or build from source. If installing from a fork, confirm the fork’s releases publish checksums/manifest. | Ensure the release includes `docdex-release-manifest.json` (with `integrity.sha256`) or `SHA256SUMS`/`SHA256SUMS.txt` with an entry for the asset; see `scripts/generate_release_manifest.cjs`. |
+<<<<<<< HEAD
 | `DOCDEX_REPLACE_FAILED` | 25 | Installer could not safely place the verified binary into the final install location (e.g., permission denied, or `docdexd.exe` locked/running on Windows). | `true/false` (printed when available) | Stop any running `docdexd` process and retry; ensure the install directory is writable (global installs may require elevation). On Windows, upgrading while the daemon is running commonly fails. | If packaging for a service/daemon, stop the service before replacing binaries; ensure installer uses staged install + atomic finalization (`docs/ops/installer_atomic_replace.md`). |
+=======
+| `DOCDEX_INSTALL_SWAP_FAILED` | 25 | Installer could not atomically swap the verified staged install into `dist/<platformKey>/` (permissions or a locked/running binary). | `true/false` (printed when available) | Stop any running `docdexd` processes, ensure the install directory is writable (global installs may require elevated permissions), then retry. | Avoid shipping release packaging that requires in-place mutation while the binary is running; document stop/restart procedures for upgrades if needed. |
+>>>>>>> mcoda/task/ops-01-us-05-t07
 
 Notes:
 - If you see an unknown `DOCDEX_*` code, treat it as a bug/regression; capture the full install log and open an issue with the code + platform details.
@@ -97,4 +101,8 @@ Checksum fallback events:
 - `DOCDEX_CHECKSUM_ENTRY_MISSING` (checksum file exists but lacks an entry for the desired asset)
 
 If a fatal error includes `fallbackAttempted`/`fallbackReason`, use those fields first; they’re intended to be the stable “did fallback happen?” signal.
+<<<<<<< HEAD
 | `DOCDEX_REPLACE_FAILED` | 25 | Installer could not safely place the verified binary into the final install location (e.g., permission denied, or `docdexd.exe` locked/running on Windows). | `true/false` (printed when available) | Stop any running `docdexd` process and retry; ensure the install directory is writable (global installs may require elevation). On Windows, upgrading while the daemon is running commonly fails. | If packaging for a service/daemon, stop the service before replacing binaries; ensure installer uses staged install + atomic finalization (`docs/ops/installer_atomic_replace.md`). |
+=======
+| `DOCDEX_INSTALL_SWAP_FAILED` | 25 | Installer could not atomically swap the verified staged install into `dist/<platformKey>/` (permissions or a locked/running binary). | `true/false` (printed when available) | Stop any running `docdexd` processes, ensure the install directory is writable (global installs may require elevated permissions), then retry. | Avoid shipping release packaging that requires in-place mutation while the binary is running; document stop/restart procedures for upgrades if needed. |
+>>>>>>> mcoda/task/ops-01-us-05-t07

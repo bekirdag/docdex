@@ -107,6 +107,8 @@ If all fallback paths fail (e.g., checksums are also unavailable), the resulting
   - Archive extracted but the expected binary is missing.
 - `DOCDEX_CHECKSUM_UNUSABLE` → exit `24`
   - The installer could not obtain SHA-256 integrity metadata for the selected asset (manifest missing/unusable and checksum fallback missing/malformed).
+- `DOCDEX_INSTALL_SWAP_FAILED` → exit `25`
+  - The installer fetched + verified + extracted successfully, but could not atomically swap the staged install directory into `dist/<platformKey>/` (e.g., permissions or the directory/binary is locked by a running process).
 
 ### Install finalization (fatal)
 
@@ -125,8 +127,13 @@ All fatal reports:
 - Start with `[docdex] install failed: ...`
 - Include `[docdex] error code: <CODE>` and (when helpful) a short “Next steps” section.
 - For manifest-related failures, include whether fallback was attempted (`details.fallbackAttempted`) and why it was not used.
+<<<<<<< HEAD
 ### Install finalization (fatal)
 
 - `DOCDEX_REPLACE_FAILED` → exit `25`
   - The installer fetched/verified/extracted successfully, but could not safely place the verified binary into its final location (common causes: permission denied, or `docdexd.exe` locked/running on Windows).
 
+=======
+- `DOCDEX_INSTALL_SWAP_FAILED` → exit `25`
+  - The installer fetched + verified + extracted successfully, but could not atomically swap the staged install directory into `dist/<platformKey>/` (e.g., permissions or the directory/binary is locked by a running process).
+>>>>>>> mcoda/task/ops-01-us-05-t07

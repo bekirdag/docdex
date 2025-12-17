@@ -124,6 +124,7 @@ There are two relevant integrity checks:
    - Error code: `DOCDEX_INTEGRITY_MISMATCH` (see `docs/ops/installer_error_codes.md`)
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
    - Safety property: the existing `dist/<platformKey>/docdexd` (or `docdexd.exe`) is not modified until a new binary has been downloaded, verified, extracted, and is ready to be atomically swapped into place.
 =======
    - Safety property: the installer performs a staged install and only replaces the final `docdexd` path after the archive is successfully fetched, verified, and extracted into a staging directory (see `docs/ops/installer_atomic_replace.md`).
@@ -131,6 +132,9 @@ There are two relevant integrity checks:
 =======
    - Safety property: the existing `dist/<platformKey>/` is not replaced until after the archive is fetched + verified **and** fully extracted into a staging directory (with install metadata written), at which point the installer swaps directories via rename (rollback-safe).
 >>>>>>> mcoda/task/ops-01-us-05-t27
+=======
+   - Safety property: the installer stages downloads/extraction under `dist/.staging/<platformKey>/...` and only swaps the verified staging directory into `dist/<platformKey>/` after extraction + verification complete (atomic rename). If install fails, the previous `dist/<platformKey>/` remains runnable.
+>>>>>>> mcoda/task/ops-01-us-05-t07
 
 <<<<<<< HEAD
 2) **Local binary integrity (no-op vs repair)**  

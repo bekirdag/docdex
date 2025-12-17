@@ -123,10 +123,14 @@ There are two relevant integrity checks:
    The downloaded archive is verified against the expected SHA-256. If verification fails, installation fails closed with:
    - Error code: `DOCDEX_INTEGRITY_MISMATCH` (see `docs/ops/installer_error_codes.md`)
 <<<<<<< HEAD
+<<<<<<< HEAD
    - Safety property: the existing `dist/<platformKey>/docdexd` (or `docdexd.exe`) is not modified until a new binary has been downloaded, verified, extracted, and is ready to be atomically swapped into place.
 =======
    - Safety property: the installer performs a staged install and only replaces the final `docdexd` path after the archive is successfully fetched, verified, and extracted into a staging directory (see `docs/ops/installer_atomic_replace.md`).
 >>>>>>> mcoda/task/ops-01-us-05-t22
+=======
+   - Safety property: the existing `dist/<platformKey>/` is not replaced until after the archive is fetched + verified **and** fully extracted into a staging directory (with install metadata written), at which point the installer swaps directories via rename (rollback-safe).
+>>>>>>> mcoda/task/ops-01-us-05-t27
 
 <<<<<<< HEAD
 2) **Local binary integrity (no-op vs repair)**  
@@ -208,6 +212,7 @@ This is usually a repo state issue, not an installer issue:
 ## See also
 
 - Installer supported platforms + safe cleanup: `docs/ops/installer_supported_platforms.md`
+- Atomic staged install + rollback behavior: `docs/ops/installer_atomic_install_and_rollback.md`
 - Installer error codes + remediation: `docs/ops/installer_error_codes.md`
 - Release manifest contract: `docs/contracts/release_manifest_schema_v1.md`
 - Installer error contract: `docs/contracts/installer_error_contract_v1.md`

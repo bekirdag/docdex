@@ -152,6 +152,15 @@ See also:
 The wrapper looks for the binary under the installed package at:
 - `dist/<platformKey>/docdexd` (or `docdexd.exe` on Windows) — see `npm/bin/docdex.js`
 
+Staged/atomic install behavior (what “partial install” means here):
+- The installer extracts into `dist/<platformKey>.stage.*` and only swaps into `dist/<platformKey>/` after verification + staging complete.
+- If a previous install existed, the installer may temporarily rename it to `dist/<platformKey>.backup.*` during the final swap.
+- The installer cleans up `.stage.*` and `.backup.*` best-effort; if an interruption leaves a `.backup.*` behind, the next installer run restores the newest backup automatically.
+
+See also:
+- Atomic staged installs + rollback guarantees: `docs/ops/installer_atomic_install_and_rollback.md`
+- QA checklist for interrupted installs: `docs/ops/installer_atomic_install_qa_checklist.md`
+
 Low-risk recovery steps:
 1) Remove the installed package (global or local), then reinstall:
    - Global: `npm uninstall -g docdex && npm i -g docdex`

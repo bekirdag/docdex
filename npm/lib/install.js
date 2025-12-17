@@ -990,6 +990,48 @@ async function verifyDownloadedFileIntegrity({
   return actual;
 }
 
+function incomingInstallDir(distDir) {
+  return `${distDir}.incoming`;
+}
+
+function backupInstallDir(distDir) {
+  return `${distDir}.backup`;
+}
+
+async function rmTreeQuiet(fsModule, targetPath) {
+  if (!targetPath) return;
+  await fsModule.promises.rm(targetPath, { recursive: true, force: true }).catch(() => {});
+}
+
+async function recoverInterruptedInstall({ fsModule, distDir, incomingDir, backupDir }) {
+  const rmFn = fsModule?.promises?.rm;
+  const renameFn = fsModule?.promises?.rename;
+  if (typeof rmFn !== "function" || typeof renameFn !== "function") return;
+
+  const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+  if (!existsSync) return;
+
+  const distExists = existsSync(distDir);
+  const backupExists = existsSync(backupDir);
+  const incomingExists = existsSync(incomingDir);
+
+  if (!distExists && backupExists) {
+    try {
+      await fsModule.promises.rename(backupDir, distDir);
+    } catch {
+      // Best-effort only.
+    }
+  }
+
+  if (incomingExists) {
+    await rmTreeQuiet(fsModule, incomingDir);
+  }
+
+  if (existsSync(distDir) && existsSync(backupDir)) {
+    await rmTreeQuiet(fsModule, backupDir);
+  }
+}
+
 async function runInstaller(options) {
   const opts = options || {};
   const logger = opts.logger || console;
@@ -1003,6 +1045,7 @@ async function runInstaller(options) {
   const downloadFn = opts.downloadFn || download;
   const verifyDownloadedFileIntegrityFn = opts.verifyDownloadedFileIntegrityFn || verifyDownloadedFileIntegrity;
   const extractTarballFn = opts.extractTarballFn || extractTarball;
+  const writeJsonFileAtomicFn = opts.writeJsonFileAtomicFn || writeJsonFileAtomic;
   const fsModule = opts.fsModule || fs;
   const pathModule = opts.pathModule || path;
   const osModule = opts.osModule || os;
@@ -1046,7 +1089,11 @@ async function runInstaller(options) {
   const version = getVersionFn();
   const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
   const distDir = pathModule.join(distBaseDir, platformKey);
+  const incomingDir = incomingInstallDir(distDir);
+  const backupDir = backupInstallDir(distDir);
   const isWin32 = detectedPlatform === "win32";
+
+  await recoverInterruptedInstall({ fsModule, distDir, incomingDir, backupDir });
 
   const local = await determineLocalInstallerOutcome({
     fsModule,
@@ -1138,58 +1185,89 @@ async function runInstaller(options) {
       }
     });
 
-    // Only replace an existing installation after we have successfully fetched + verified the archive.
-    await fsModule.promises.rm(distDir, { recursive: true, force: true });
-    await extractTarballFn(tmpFile, distDir);
+    let swappedIntoPlace = false;
+    try {
+      await rmTreeQuiet(fsModule, incomingDir);
+      await rmTreeQuiet(fsModule, backupDir);
 
-    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
-    if (!fsModule.existsSync(binaryPath)) {
-      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
-        platformKey,
-        targetTriple,
+      await extractTarballFn(tmpFile, incomingDir);
+
+      const incomingBinaryPath = pathModule.join(incomingDir, isWin32 ? "docdexd.exe" : "docdexd");
+      if (!fsModule.existsSync(incomingBinaryPath)) {
+        throw new ArchiveInvalidError(`Downloaded archive missing binary at ${incomingBinaryPath}`, {
+          platformKey,
+          targetTriple,
+          version,
+          repoSlug,
+          assetName: archive,
+          downloadUrl,
+          source,
+          manifestName: manifestAttempt?.manifestName ?? null,
+          manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+          fallbackAttempted: source === "fallback",
+          binaryPath: incomingBinaryPath
+        });
+      }
+
+      await fsModule.promises.chmod(incomingBinaryPath, 0o755).catch(() => {});
+
+      const binarySha256 = await sha256FileFn(incomingBinaryPath);
+      const metadata = {
+        schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
+        installedAt: nowIso(),
         version,
         repoSlug,
-        assetName: archive,
-        downloadUrl,
-        source,
-        manifestName: manifestAttempt?.manifestName ?? null,
-        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
-        fallbackAttempted: source === "fallback",
-        binaryPath
+        platformKey,
+        targetTriple,
+        binary: {
+          filename: isWin32 ? "docdexd.exe" : "docdexd",
+          sha256: binarySha256
+        },
+        archive: {
+          name: archive,
+          sha256: expectedSha256 || null,
+          source,
+          downloadUrl
+        }
+      };
+      await writeJsonFileAtomicFn({
+        fsModule,
+        pathModule,
+        filePath: installMetadataPath(incomingDir, pathModule),
+        value: metadata
       });
-    }
 
-    await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
-    logger.log(`[docdex] Installed binary to ${binaryPath}`);
-
-    const binarySha256 = await sha256FileFn(binaryPath);
-    const metadata = {
-      schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
-      installedAt: nowIso(),
-      version,
-      repoSlug,
-      platformKey,
-      targetTriple,
-      binary: {
-        filename: isWin32 ? "docdexd.exe" : "docdexd",
-        sha256: binarySha256
-      },
-      archive: {
-        name: archive,
-        sha256: expectedSha256 || null,
-        source,
-        downloadUrl
+      await rmTreeQuiet(fsModule, backupDir);
+      if (fsModule.existsSync(distDir)) {
+        await fsModule.promises.rename(distDir, backupDir);
       }
-    };
-    await writeJsonFileAtomic({
-      fsModule,
-      pathModule,
-      filePath: installMetadataPath(distDir, pathModule),
-      value: metadata
-    });
 
-    logger.log(`[docdex] Install outcome: ${local.outcome}`);
-    return { binaryPath, outcome: local.outcome };
+      try {
+        await fsModule.promises.rename(incomingDir, distDir);
+        swappedIntoPlace = true;
+      } catch (err) {
+        try {
+          if (fsModule.existsSync(backupDir) && !fsModule.existsSync(distDir)) {
+            await fsModule.promises.rename(backupDir, distDir);
+          }
+        } catch {
+          // Best-effort rollback only.
+        }
+        throw err;
+      }
+
+      await rmTreeQuiet(fsModule, backupDir);
+
+      const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+      logger.log(`[docdex] Installed binary to ${binaryPath}`);
+      logger.log(`[docdex] Install outcome: ${local.outcome}`);
+      return { binaryPath, outcome: local.outcome };
+    } catch (err) {
+      if (!swappedIntoPlace) {
+        await rmTreeQuiet(fsModule, incomingDir);
+      }
+      throw err;
+    }
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
   }

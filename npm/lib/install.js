@@ -1141,6 +1141,10 @@ async function runInstaller(options) {
       platformMismatch: local.platformMismatch,
       integrityChecked: Boolean(local.integrityChecked),
       integrity: summarizeIntegrityResult(local.integrityResult),
+      // Stable support-facing fields (in addition to the nested `decision` object).
+      outcome: local.outcome,
+      outcomeCode: localOutcomeCode,
+      outcomeReason: local.reason,
       decision: { outcome: local.outcome, outcomeCode: localOutcomeCode, reason: local.reason }
     }
   });
@@ -1285,37 +1289,63 @@ async function runInstaller(options) {
       );
     }
 
-    const verifiedArchiveSha256 = await verifyDownloadedFileIntegrityFn({
-      filePath: tmpFile,
-      expectedSha256,
-      archiveName: archive,
-      details: {
-        platformKey,
-        targetTriple,
-        version,
-        repoSlug,
-        downloadUrl,
-        source,
-        manifestName: manifestAttempt?.manifestName ?? null,
-        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
-        fallbackAttempted: source === "fallback"
-      }
-    });
+    let verifiedArchiveSha256 = null;
+    try {
+      verifiedArchiveSha256 = await verifyDownloadedFileIntegrityFn({
+        filePath: tmpFile,
+        expectedSha256,
+        archiveName: archive,
+        details: {
+          platformKey,
+          targetTriple,
+          version,
+          repoSlug,
+          downloadUrl,
+          source,
+          manifestName: manifestAttempt?.manifestName ?? null,
+          manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+          fallbackAttempted: source === "fallback"
+        }
+      });
 
-    emitInstallerEvent({
-      logger,
-      code: "DOCDEX_INSTALL_INTEGRITY_ARCHIVE",
-      message: "Downloaded archive integrity verification result",
-      details: {
-        attemptId,
-        archive,
-        downloadUrl,
-        source,
-        status: normalizeSha256Hex(expectedSha256) ? "verified_ok" : "skipped",
-        expectedSha256: normalizeSha256Hex(expectedSha256) ? expectedSha256 : null,
-        actualSha256: typeof verifiedArchiveSha256 === "string" ? verifiedArchiveSha256 : null
-      }
-    });
+      emitInstallerEvent({
+        logger,
+        code: "DOCDEX_INSTALL_INTEGRITY_ARCHIVE",
+        message: "Downloaded archive integrity verification result",
+        details: {
+          attemptId,
+          archive,
+          downloadUrl,
+          source,
+          status: normalizeSha256Hex(expectedSha256) ? "verified_ok" : "skipped",
+          expectedSha256: normalizeSha256Hex(expectedSha256) ? expectedSha256 : null,
+          actualSha256: typeof verifiedArchiveSha256 === "string" ? verifiedArchiveSha256 : null,
+          error: null
+        }
+      });
+    } catch (err) {
+      const isMismatch = err && err.code === "DOCDEX_INTEGRITY_MISMATCH";
+      const expectedFromErr = normalizeSha256Hex(err?.details?.expectedSha256);
+      const expectedFromInput = normalizeSha256Hex(expectedSha256);
+      const actualFromErr = normalizeSha256Hex(err?.details?.actualSha256);
+      emitInstallerEvent({
+        logger,
+        level: isMismatch ? "error" : "warn",
+        code: "DOCDEX_INSTALL_INTEGRITY_ARCHIVE",
+        message: "Downloaded archive integrity verification result",
+        details: {
+          attemptId,
+          archive,
+          downloadUrl,
+          source,
+          status: isMismatch ? "mismatch" : "unverifiable",
+          expectedSha256: expectedFromErr ? err.details.expectedSha256 : expectedFromInput ? expectedSha256 : null,
+          actualSha256: actualFromErr ? err.details.actualSha256 : null,
+          error: err?.message || String(err)
+        }
+      });
+      throw err;
+    }
 
     // Only replace an existing installation after we have successfully fetched + verified the archive.
     emitInstallerEvent({

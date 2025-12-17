@@ -236,3 +236,60 @@ test("installer telemetry: repair emits stable outcomeCode=repair", async (t) =>
   assert.equal(outcome.details.outcomeCode, "repair");
 });
 
+test("installer telemetry: archive integrity mismatch emits DOCDEX_INSTALL_INTEGRITY_ARCHIVE status=mismatch", async (t) => {
+  const base = "https://example.test/releases/download";
+  const version = "0.0.0";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-telemetry-archive-mismatch-"));
+  t.after(async () => {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  const distBaseDir = path.join(tmpRoot, "dist");
+  const tmpDir = path.join(tmpRoot, "tmp");
+  await ensureDir(tmpDir);
+
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+  const logger = createCaptureLogger();
+
+  let err;
+  try {
+    await runInstaller({
+      logger,
+      platform: "linux",
+      arch: "x64",
+      tmpDir,
+      distBaseDir,
+      detectPlatformKeyFn: () => platformKey,
+      targetTripleForPlatformKeyFn: () => targetTriple,
+      getVersionFn: () => version,
+      parseRepoSlugFn: () => "owner/repo",
+      getDownloadBaseFn: () => base,
+      resolveInstallerDownloadPlanFn: async () => ({
+        archive,
+        expectedSha256: "a".repeat(64),
+        source: "fallback",
+        manifestAttempt: { errors: [], resolved: null, manifestName: null, fallbackAttempted: true }
+      }),
+      downloadFn: async (_url, dest) => {
+        await ensureDir(path.dirname(dest));
+        await fs.promises.writeFile(dest, "fake-archive-bytes");
+      }
+    });
+  } catch (e) {
+    err = e;
+  }
+
+  assert.ok(err, "expected an install error");
+  assert.equal(err.code, "DOCDEX_INTEGRITY_MISMATCH");
+
+  const events = parseInstallerEvents(logger);
+  const integrity = events.find((e) => e.code === "DOCDEX_INSTALL_INTEGRITY_ARCHIVE");
+  assert.ok(integrity, "expected DOCDEX_INSTALL_INTEGRITY_ARCHIVE event");
+  assert.equal(integrity.details.status, "mismatch");
+  assert.equal(integrity.details.expectedSha256, "a".repeat(64));
+  assert.equal(typeof integrity.details.actualSha256, "string");
+  assert.equal(integrity.details.actualSha256.length, 64);
+});

@@ -38,6 +38,7 @@ const INSTALL_METADATA_FILENAME = "docdexd-install.json";
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 const INSTALL_OUTCOME_SCHEMA_VERSION = 1;
 
 const INSTALL_OUTCOME_CODE_BY_DECISION_OUTCOME = Object.freeze({
@@ -104,6 +105,10 @@ function summarizeIntegrityResult(integrityResult) {
 =======
 const INSTALL_ATTEMPT_SCHEMA_VERSION = 1;
 >>>>>>> mcoda/task/ops-01-us-05-t39
+=======
+const INSTALL_STAGING_SUFFIX = ".__docdexd_install_staging";
+const INSTALL_BACKUP_SUFFIX = ".__docdexd_install_backup";
+>>>>>>> mcoda/task/ops-01-us-05-t05
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -370,6 +375,7 @@ function installMetadataPath(distDir, pathModule = path) {
   return pathModule.join(distDir, INSTALL_METADATA_FILENAME);
 }
 
+<<<<<<< HEAD
 function resolveInstallerStateRootDir({ osModule, pathModule, env }) {
   const override =
     typeof env?.DOCDEX_INSTALL_STATE_DIR === "string" && env.DOCDEX_INSTALL_STATE_DIR.trim()
@@ -390,6 +396,17 @@ function resolveInstallerStateRootDir({ osModule, pathModule, env }) {
 
 function resolveInstallerInstallDir({ stateRootDir, platformKey, pathModule }) {
   return pathModule.join(stateRootDir, INSTALL_STATE_DIRNAME, platformKey);
+=======
+function installSwapDirs(distDir) {
+  return {
+    stagingDir: `${distDir}${INSTALL_STAGING_SUFFIX}`,
+    backupDir: `${distDir}${INSTALL_BACKUP_SUFFIX}`
+  };
+}
+
+function binaryPathInDir({ pathModule, dirPath, isWin32 }) {
+  return pathModule.join(dirPath, isWin32 ? "docdexd.exe" : "docdexd");
+>>>>>>> mcoda/task/ops-01-us-05-t05
 }
 
 function nowIso() {
@@ -1211,6 +1228,7 @@ function isValidInstallMetadata(meta) {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 function normalizeInstallMetadata(meta, { binaryPath }) {
   if (!meta || typeof meta !== "object") return null;
 
@@ -1297,6 +1315,178 @@ async function maybeBackfillInstallMetadataForNoop({
     return false;
   }
 >>>>>>> mcoda/task/ops-01-us-06-t29
+=======
+async function recoverInterruptedInstall({ fsModule, pathModule, distDir, isWin32, logger }) {
+  const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+  const rm = fsModule?.promises?.rm;
+  const rename = fsModule?.promises?.rename;
+
+  if (!existsSync || typeof rm !== "function" || typeof rename !== "function") {
+    return { recovered: false, actions: [] };
+  }
+
+  const { stagingDir, backupDir } = installSwapDirs(distDir);
+  const actions = [];
+
+  const distExists = existsSync(distDir);
+  const stagingExists = existsSync(stagingDir);
+  const backupExists = existsSync(backupDir);
+
+  const distBinaryPath = binaryPathInDir({ pathModule, dirPath: distDir, isWin32 });
+  const backupBinaryPath = binaryPathInDir({ pathModule, dirPath: backupDir, isWin32 });
+  const stagingBinaryPath = binaryPathInDir({ pathModule, dirPath: stagingDir, isWin32 });
+
+  const distBinaryExists = distExists && existsSync(distBinaryPath);
+  const backupBinaryExists = backupExists && existsSync(backupBinaryPath);
+  const stagingBinaryExists = stagingExists && existsSync(stagingBinaryPath);
+
+  async function rmDir(dirPath) {
+    await rm(dirPath, { recursive: true, force: true }).catch(() => {});
+  }
+
+  // If a previous install renamed the old directory aside but never swapped the new one in, restore the backup.
+  if (!distExists && backupExists) {
+    if (stagingExists) {
+      await rmDir(stagingDir);
+      actions.push("removed_staging");
+    }
+    await rename(backupDir, distDir);
+    actions.push("restored_backup");
+    if (logger?.log) logger.log("[docdex] Recovered interrupted install (restored backup).");
+    return { recovered: true, actions };
+  }
+
+  // If the current directory exists but is missing the binary while a backup exists, prefer the known-good backup.
+  if (distExists && !distBinaryExists && backupBinaryExists) {
+    await rmDir(distDir);
+    actions.push("removed_incomplete_dist");
+    if (stagingExists) {
+      await rmDir(stagingDir);
+      actions.push("removed_staging");
+    }
+    await rename(backupDir, distDir);
+    actions.push("restored_backup");
+    if (logger?.log) logger.log("[docdex] Recovered interrupted install (rolled back to backup).");
+    return { recovered: true, actions };
+  }
+
+  // If we extracted into staging but never swapped, discard the staging candidate and keep the existing install.
+  if (stagingExists && distExists) {
+    await rmDir(stagingDir);
+    actions.push("removed_staging");
+  }
+
+  // If the swap succeeded but cleanup did not, remove the backup once the current install has a runnable binary.
+  if (backupExists && distBinaryExists) {
+    await rmDir(backupDir);
+    actions.push("removed_backup");
+  }
+
+  // If there's no current install but a staging directory exists, only promote it if it looks complete.
+  if (!distExists && !backupExists && stagingExists) {
+    const metaPath = installMetadataPath(stagingDir, pathModule);
+    const metaResult = await readJsonFileIfPossible({ fsModule, filePath: metaPath });
+    if (stagingBinaryExists && isValidInstallMetadata(metaResult.value)) {
+      await rename(stagingDir, distDir);
+      actions.push("promoted_staging");
+      if (logger?.log) logger.log("[docdex] Recovered interrupted install (promoted staged install).");
+      return { recovered: true, actions };
+    }
+    await rmDir(stagingDir);
+    actions.push("removed_staging");
+  }
+
+  return { recovered: actions.length > 0, actions };
+}
+
+function recoverInterruptedInstallSync({ fsModule, pathModule, distDir, isWin32 }) {
+  const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+  const rmSync = typeof fsModule?.rmSync === "function" ? fsModule.rmSync.bind(fsModule) : null;
+  const renameSync = typeof fsModule?.renameSync === "function" ? fsModule.renameSync.bind(fsModule) : null;
+
+  if (!existsSync || !rmSync || !renameSync) return { recovered: false, actions: [] };
+
+  const { stagingDir, backupDir } = installSwapDirs(distDir);
+  const actions = [];
+
+  const distExists = existsSync(distDir);
+  const stagingExists = existsSync(stagingDir);
+  const backupExists = existsSync(backupDir);
+
+  const distBinaryPath = binaryPathInDir({ pathModule, dirPath: distDir, isWin32 });
+  const backupBinaryPath = binaryPathInDir({ pathModule, dirPath: backupDir, isWin32 });
+  const stagingBinaryPath = binaryPathInDir({ pathModule, dirPath: stagingDir, isWin32 });
+
+  const distBinaryExists = distExists && existsSync(distBinaryPath);
+  const backupBinaryExists = backupExists && existsSync(backupBinaryPath);
+  const stagingBinaryExists = stagingExists && existsSync(stagingBinaryPath);
+
+  function rmDirSync(dirPath) {
+    try {
+      rmSync(dirPath, { recursive: true, force: true });
+    } catch {}
+  }
+
+  // Restore backup when swap was interrupted.
+  if (!distExists && backupExists) {
+    if (stagingExists) {
+      rmDirSync(stagingDir);
+      actions.push("removed_staging");
+    }
+    try {
+      renameSync(backupDir, distDir);
+      actions.push("restored_backup");
+      return { recovered: true, actions };
+    } catch {
+      return { recovered: actions.length > 0, actions };
+    }
+  }
+
+  // Prefer backup when current install looks incomplete.
+  if (distExists && !distBinaryExists && backupBinaryExists) {
+    rmDirSync(distDir);
+    actions.push("removed_incomplete_dist");
+    if (stagingExists) {
+      rmDirSync(stagingDir);
+      actions.push("removed_staging");
+    }
+    try {
+      renameSync(backupDir, distDir);
+      actions.push("restored_backup");
+      return { recovered: true, actions };
+    } catch {
+      return { recovered: actions.length > 0, actions };
+    }
+  }
+
+  // Discard abandoned staging dir when current install is present.
+  if (stagingExists && distExists) {
+    rmDirSync(stagingDir);
+    actions.push("removed_staging");
+  }
+
+  // Remove leftover backup after successful swap.
+  if (backupExists && distBinaryExists) {
+    rmDirSync(backupDir);
+    actions.push("removed_backup");
+  }
+
+  // Promote staging only if it looks complete enough (binary + metadata file present).
+  if (!distExists && !backupExists && stagingExists) {
+    const metaPath = installMetadataPath(stagingDir, pathModule);
+    if (stagingBinaryExists && existsSync(metaPath)) {
+      try {
+        renameSync(stagingDir, distDir);
+        actions.push("promoted_staging");
+        return { recovered: true, actions };
+      } catch {}
+    }
+    rmDirSync(stagingDir);
+    actions.push("removed_staging");
+  }
+
+  return { recovered: actions.length > 0, actions };
+>>>>>>> mcoda/task/ops-01-us-05-t05
 }
 
 function normalizeSha256Hex(value) {
@@ -2583,6 +2773,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   emitInstallerEvent({
     logger,
     code: "DOCDEX_INSTALL_START",
@@ -2645,6 +2836,10 @@ async function runInstaller(options) {
   });
 
 >>>>>>> mcoda/task/ops-01-us-05-t39
+=======
+  await recoverInterruptedInstall({ fsModule, pathModule, distDir, isWin32, logger }).catch(() => {});
+
+>>>>>>> mcoda/task/ops-01-us-05-t05
   const local = await determineLocalInstallerOutcome({
     fsModule,
     pathModule,
@@ -2909,6 +3104,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
 <<<<<<< HEAD
+<<<<<<< HEAD
   const stageDir = pathModule.join(distBaseDir, `${platformKey}.staging.${process.pid}.${Date.now()}`);
   let tmpBinaryPath = null;
 =======
@@ -2953,6 +3149,11 @@ async function runInstaller(options) {
       details: { attemptId, ...(ev?.details || {}) }
     });
   }
+=======
+  const { stagingDir, backupDir } = installSwapDirs(distDir);
+  let stagingPrepared = false;
+  let backupRenamed = false;
+>>>>>>> mcoda/task/ops-01-us-05-t05
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   const abortController = new AbortController();
@@ -3173,6 +3374,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
       emitInstallerEvent({
         logger,
         code: "DOCDEX_INSTALL_INTEGRITY_ARCHIVE",
@@ -3315,6 +3517,17 @@ async function runInstaller(options) {
     if (!fsModule.existsSync(stagedBinaryPath)) {
       throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagedBinaryPath}`, {
 >>>>>>> mcoda/task/ops-01-us-05-t39
+=======
+    // Stage into a sentinel directory and only swap into place once the staged install is verified.
+    await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    await fsModule.promises.mkdir(stagingDir, { recursive: true });
+    stagingPrepared = true;
+    await extractTarballFn(tmpFile, stagingDir);
+
+    const stagedBinaryPath = binaryPathInDir({ pathModule, dirPath: stagingDir, isWin32 });
+    if (!fsModule.existsSync(stagedBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagedBinaryPath}`, {
+>>>>>>> mcoda/task/ops-01-us-05-t05
         platformKey,
         targetTriple,
         version,
@@ -3344,6 +3557,7 @@ async function runInstaller(options) {
 =======
         fallbackAttempted: source === "fallback",
         binaryPath: stagedBinaryPath
+<<<<<<< HEAD
 =======
     let swappedIntoPlace = false;
     try {
@@ -3425,13 +3639,18 @@ async function runInstaller(options) {
 =======
         fallbackAttempted: source === "fallback",
         binaryPath: stagedBinaryPath
+=======
+>>>>>>> mcoda/task/ops-01-us-05-t05
       });
     }
 
     await fsModule.promises.chmod(stagedBinaryPath, 0o755).catch(() => {});
 
     const binarySha256 = await sha256FileFn(stagedBinaryPath);
+<<<<<<< HEAD
 >>>>>>> mcoda/task/ops-01-us-05-t39
+=======
+>>>>>>> mcoda/task/ops-01-us-05-t05
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
 <<<<<<< HEAD
@@ -3508,6 +3727,7 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-06-t35
       fsModule,
       pathModule,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -3789,6 +4009,40 @@ async function runInstaller(options) {
     return { binaryPath, outcome: local.outcome };
   } catch (err) {
     thrownError = err;
+=======
+      filePath: installMetadataPath(stagingDir, pathModule),
+      value: metadata
+    });
+
+    await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+    if (fsModule.existsSync(distDir)) {
+      await fsModule.promises.rename(distDir, backupDir);
+      backupRenamed = true;
+    }
+    try {
+      await fsModule.promises.rename(stagingDir, distDir);
+    } catch (err) {
+      await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+      if (fsModule.existsSync(backupDir) && !fsModule.existsSync(distDir)) {
+        await fsModule.promises.rename(backupDir, distDir).catch(() => {});
+      }
+      throw err;
+    }
+    await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+
+    const binaryPath = binaryPathInDir({ pathModule, dirPath: distDir, isWin32 });
+    logger.log(`[docdex] Installed binary to ${binaryPath}`);
+
+    logger.log(`[docdex] Install outcome: ${local.outcome}`);
+    return { binaryPath, outcome: local.outcome };
+  } catch (err) {
+    if (stagingPrepared) {
+      await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    }
+    if (backupRenamed && fsModule.existsSync(backupDir) && !fsModule.existsSync(distDir)) {
+      await fsModule.promises.rename(backupDir, distDir).catch(() => {});
+    }
+>>>>>>> mcoda/task/ops-01-us-05-t05
     throw err;
   } finally {
     installAttempt.cleanup.tmpFile = await safeRm({ fsModule, targetPath: tmpFile, options: { force: true } });
@@ -4207,7 +4461,12 @@ module.exports = {
   verifyDownloadedFileIntegrity,
   MissingArtifactError,
   ChecksumResolutionError,
+<<<<<<< HEAD
   buildInstallOutcomeReport,
+=======
+  recoverInterruptedInstall,
+  recoverInterruptedInstallSync,
+>>>>>>> mcoda/task/ops-01-us-05-t05
   runInstaller,
   describeFatalError,
   handleFatal

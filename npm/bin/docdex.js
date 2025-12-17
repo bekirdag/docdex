@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
+const { recoverInterruptedInstallSync } = require("../lib/install");
 const {
   artifactName,
   detectLibcFromRuntime,
@@ -148,6 +149,7 @@ function run() {
     process.exit(1);
   }
 
+<<<<<<< HEAD
   const env = process.env || {};
   const stateRootDir =
     typeof env.DOCDEX_INSTALL_STATE_DIR === "string" && env.DOCDEX_INSTALL_STATE_DIR.trim()
@@ -158,6 +160,19 @@ function run() {
     stateRootDir,
     "daemon",
     platformKey,
+=======
+  const basePath = path.join(__dirname, "..", "dist", platformKey);
+  try {
+    recoverInterruptedInstallSync({
+      fsModule: fs,
+      pathModule: path,
+      distDir: basePath,
+      isWin32: process.platform === "win32"
+    });
+  } catch {}
+  const binaryPath = path.join(
+    basePath,
+>>>>>>> mcoda/task/ops-01-us-05-t05
     process.platform === "win32" ? "docdexd.exe" : "docdexd"
   );
 

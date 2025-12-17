@@ -37,6 +37,7 @@ const INSTALL_METADATA_SCHEMA_VERSION = 2;
 const INSTALL_METADATA_FILENAME = "docdexd-install.json";
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 const INSTALL_OUTCOME_SCHEMA_VERSION = 1;
 
 const INSTALL_OUTCOME_CODE_BY_DECISION_OUTCOME = Object.freeze({
@@ -100,6 +101,9 @@ function summarizeIntegrityResult(integrityResult) {
   };
 }
 >>>>>>> mcoda/task/ops-01-us-06-t15
+=======
+const INSTALL_ATTEMPT_SCHEMA_VERSION = 1;
+>>>>>>> mcoda/task/ops-01-us-05-t39
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -1075,6 +1079,120 @@ async function cleanupStaleInstallerStagingDirs({ fsModule, pathModule, distBase
         }
       })
   );
+}
+
+function yesNoUnknown(value) {
+  if (value === true) return "yes";
+  if (value === false) return "no";
+  return "unknown";
+}
+
+function describeBinaryRunnability({ fsModule, binaryPath, isWin32 }) {
+  const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+  const accessSync = typeof fsModule?.accessSync === "function" ? fsModule.accessSync.bind(fsModule) : null;
+
+  if (!existsSync) return { exists: null, runnable: null, reason: "existsSync_unavailable" };
+  const exists = existsSync(binaryPath);
+  if (!exists) return { exists: false, runnable: false, reason: "missing" };
+  if (isWin32) return { exists: true, runnable: true, reason: "present_win32" };
+
+  if (!accessSync) return { exists: true, runnable: null, reason: "accessSync_unavailable" };
+  try {
+    accessSync(binaryPath, fs.constants.X_OK);
+    return { exists: true, runnable: true, reason: "executable" };
+  } catch (err) {
+    return { exists: true, runnable: false, reason: `access:${err?.code || err?.message || "denied"}` };
+  }
+}
+
+async function safeRm({ fsModule, targetPath, options }) {
+  if (!targetPath) return { attempted: false, removed: null, error: null };
+  try {
+    await fsModule.promises.rm(targetPath, options);
+    return { attempted: true, removed: true, error: null };
+  } catch (err) {
+    return {
+      attempted: true,
+      removed: false,
+      error: err?.message || String(err),
+      errorCode: typeof err?.code === "string" ? err.code : null
+    };
+  }
+}
+
+async function safeRename({ fsModule, from, to }) {
+  try {
+    await fsModule.promises.rename(from, to);
+    return { attempted: true, ok: true, error: null };
+  } catch (err) {
+    return {
+      attempted: true,
+      ok: false,
+      error: err?.message || String(err),
+      errorCode: typeof err?.code === "string" ? err.code : null
+    };
+  }
+}
+
+async function recoverInterruptedInstallIfNeeded({ fsModule, pathModule, distBaseDir, distDir, platformKey, logger }) {
+  const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+  const readdir = typeof fsModule?.promises?.readdir === "function" ? fsModule.promises.readdir.bind(fsModule.promises) : null;
+
+  if (!existsSync || !readdir) {
+    return { attempted: false, restored: false, reason: "fs_unavailable", from: null, error: null, errorCode: null };
+  }
+
+  if (existsSync(distDir)) {
+    return { attempted: true, restored: false, reason: "dist_present", from: null, error: null, errorCode: null };
+  }
+
+  let entries;
+  try {
+    entries = await readdir(distBaseDir, { withFileTypes: true });
+  } catch (err) {
+    return {
+      attempted: true,
+      restored: false,
+      reason: "readdir_failed",
+      from: null,
+      error: err?.message || String(err),
+      errorCode: typeof err?.code === "string" ? err.code : null
+    };
+  }
+
+  const prefix = `.${platformKey}.backup.`;
+  const candidates = entries
+    .filter((entry) => entry?.isDirectory?.() && typeof entry.name === "string" && entry.name.startsWith(prefix))
+    .map((entry) => entry.name);
+
+  if (!candidates.length) {
+    return { attempted: true, restored: false, reason: "no_backup_candidates", from: null, error: null, errorCode: null };
+  }
+
+  const pickNewest = candidates
+    .map((name) => {
+      const parts = name.split(".");
+      const last = parts[parts.length - 1];
+      const timestamp = Number.isFinite(Number(last)) ? Number(last) : 0;
+      return { name, timestamp };
+    })
+    .sort((a, b) => b.timestamp - a.timestamp)[0]?.name;
+
+  const from = pathModule.join(distBaseDir, pickNewest || candidates[0]);
+  const restore = await safeRename({ fsModule, from, to: distDir });
+  if (restore.ok) {
+    logger?.warn?.(`[docdex] Restored previous installation from ${from}`);
+    return { attempted: true, restored: true, reason: "restored", from, error: null, errorCode: null };
+  }
+
+  return {
+    attempted: true,
+    restored: false,
+    reason: "restore_failed",
+    from,
+    error: restore.error,
+    errorCode: restore.errorCode
+  };
 }
 
 function isValidInstallMetadata(meta) {
@@ -2464,6 +2582,7 @@ async function runInstaller(options) {
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   emitInstallerEvent({
     logger,
     code: "DOCDEX_INSTALL_START",
@@ -2515,6 +2634,17 @@ async function runInstaller(options) {
   await recoverInterruptedInstall({ fsModule, distDir, incomingDir, backupDir });
 
 >>>>>>> mcoda/task/ops-01-us-05-t40
+=======
+  const preflightRecovery = await recoverInterruptedInstallIfNeeded({
+    fsModule,
+    pathModule,
+    distBaseDir,
+    distDir,
+    platformKey,
+    logger
+  });
+
+>>>>>>> mcoda/task/ops-01-us-05-t39
   const local = await determineLocalInstallerOutcome({
     fsModule,
     pathModule,
@@ -2778,6 +2908,7 @@ async function runInstaller(options) {
   const tmpDir = opts.tmpDir || osModule.tmpdir();
 <<<<<<< HEAD
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
+<<<<<<< HEAD
   const stageDir = pathModule.join(distBaseDir, `${platformKey}.staging.${process.pid}.${Date.now()}`);
   let tmpBinaryPath = null;
 =======
@@ -2849,6 +2980,35 @@ async function runInstaller(options) {
       await rmRf(fsModule, failedDir);
     }
 
+=======
+  const binaryFilename = isWin32 ? "docdexd.exe" : "docdexd";
+  const installAttemptId = `${process.pid}.${Date.now()}`;
+  const stagingDir = pathModule.join(distBaseDir, `.${platformKey}.staging.${installAttemptId}`);
+  const backupDir = pathModule.join(distBaseDir, `.${platformKey}.backup.${installAttemptId}`);
+
+  const installAttempt = {
+    schemaVersion: INSTALL_ATTEMPT_SCHEMA_VERSION,
+    platformKey,
+    targetTriple,
+    distDir,
+    binaryPath: pathModule.join(distDir, binaryFilename),
+    tmpFile,
+    stagingDir,
+    backupDir,
+    preflightRecovery,
+    priorBinaryPath: local.binaryPath,
+    priorBinaryAtStart: describeBinaryRunnability({ fsModule, binaryPath: local.binaryPath, isWin32 }),
+    swap: { attempted: false, backupCreated: false, promoted: false },
+    rollback: { attempted: false, restored: false, error: null, errorCode: null },
+    cleanup: { tmpFile: null, stagingDir: null, backupDir: null },
+    priorBinaryAfter: null,
+    backupBinaryAfter: null
+  };
+
+  logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
+  let thrownError = null;
+  try {
+>>>>>>> mcoda/task/ops-01-us-05-t39
     try {
       await fsModule.promises.rename(backupDir, distDir);
     } catch {
@@ -3012,6 +3172,7 @@ async function runInstaller(options) {
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
       emitInstallerEvent({
         logger,
         code: "DOCDEX_INSTALL_INTEGRITY_ARCHIVE",
@@ -3143,6 +3304,17 @@ async function runInstaller(options) {
     if (!fsModule.existsSync(stagedBinaryPath)) {
       throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagedBinaryPath}`, {
 >>>>>>> mcoda/task/ops-01-us-05-t37
+=======
+    // Extract into a sibling staging directory first, then atomically swap into place.
+    // This ensures a failed install does not remove a previously-working `docdexd`.
+    await fsModule.promises.mkdir(distBaseDir, { recursive: true });
+    await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    await extractTarballFn(tmpFile, stagingDir);
+
+    const stagedBinaryPath = pathModule.join(stagingDir, binaryFilename);
+    if (!fsModule.existsSync(stagedBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagedBinaryPath}`, {
+>>>>>>> mcoda/task/ops-01-us-05-t39
         platformKey,
         targetTriple,
         version,
@@ -3152,6 +3324,7 @@ async function runInstaller(options) {
         source,
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+<<<<<<< HEAD
 <<<<<<< HEAD
         fallbackAttempted: source === "fallback"
       }
@@ -3249,6 +3422,16 @@ async function runInstaller(options) {
 
     const binarySha256 = await sha256FileFn(stagedBinaryPath);
 >>>>>>> mcoda/task/ops-01-us-05-t37
+=======
+        fallbackAttempted: source === "fallback",
+        binaryPath: stagedBinaryPath
+      });
+    }
+
+    await fsModule.promises.chmod(stagedBinaryPath, 0o755).catch(() => {});
+
+    const binarySha256 = await sha256FileFn(stagedBinaryPath);
+>>>>>>> mcoda/task/ops-01-us-05-t39
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
 <<<<<<< HEAD
@@ -3325,6 +3508,7 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-06-t35
       fsModule,
       pathModule,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
       logger,
@@ -3562,6 +3746,97 @@ async function runInstaller(options) {
     }
     await cleanupArtifacts().catch(() => {});
 >>>>>>> mcoda/task/ops-01-us-05-t37
+=======
+      filePath: installMetadataPath(stagingDir, pathModule),
+      value: metadata
+    });
+
+    const distDirExists = typeof fsModule?.existsSync === "function" ? fsModule.existsSync(distDir) : false;
+    installAttempt.swap.attempted = true;
+    if (distDirExists) {
+      await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+      const backupMove = await safeRename({ fsModule, from: distDir, to: backupDir });
+      if (!backupMove.ok) {
+        const err = new Error(`Failed to move existing installation into backup: ${backupMove.error}`);
+        err.code = backupMove.errorCode || "DOCDEX_INSTALL_SWAP_FAILED";
+        throw err;
+      }
+      installAttempt.swap.backupCreated = true;
+    }
+
+    const promote = await safeRename({ fsModule, from: stagingDir, to: distDir });
+    if (!promote.ok) {
+      const err = new Error(`Failed to promote staged installation: ${promote.error}`);
+      err.code = promote.errorCode || "DOCDEX_INSTALL_SWAP_FAILED";
+      throw err;
+    }
+    installAttempt.swap.promoted = true;
+
+    const binaryPath = pathModule.join(distDir, binaryFilename);
+    logger.log(`[docdex] Installed binary to ${binaryPath}`);
+
+    if (installAttempt.swap.backupCreated) {
+      const removed = await safeRm({ fsModule, targetPath: backupDir, options: { recursive: true, force: true } });
+      installAttempt.cleanup.backupDir = removed;
+      if (!removed.removed) {
+        logger.warn(
+          `[docdex] Warning: could not remove installer backup dir (${backupDir}): ${removed.error || "unknown error"}`
+        );
+      }
+    }
+
+    logger.log(`[docdex] Install outcome: ${local.outcome}`);
+    return { binaryPath, outcome: local.outcome };
+  } catch (err) {
+    thrownError = err;
+    throw err;
+  } finally {
+    installAttempt.cleanup.tmpFile = await safeRm({ fsModule, targetPath: tmpFile, options: { force: true } });
+
+    const backupBinaryPath = pathModule.join(backupDir, binaryFilename);
+
+    if (thrownError && installAttempt.swap.backupCreated && !installAttempt.swap.promoted) {
+      // If we moved the existing install to backup but failed to promote the staged install,
+      // try to restore the previous installation back to its original location.
+      installAttempt.rollback.attempted = true;
+      const distMissing = typeof fsModule?.existsSync === "function" ? !fsModule.existsSync(distDir) : true;
+      const backupExists = typeof fsModule?.existsSync === "function" ? fsModule.existsSync(backupDir) : false;
+      if (distMissing && backupExists) {
+        const rollback = await safeRename({ fsModule, from: backupDir, to: distDir });
+        installAttempt.rollback.restored = rollback.ok;
+        installAttempt.rollback.error = rollback.ok ? null : rollback.error;
+        installAttempt.rollback.errorCode = rollback.ok ? null : rollback.errorCode;
+      } else {
+        installAttempt.rollback.restored = false;
+        if (!distMissing) {
+          installAttempt.rollback.error = "rollback_skipped_dist_present";
+        } else if (!backupExists) {
+          installAttempt.rollback.error = "rollback_skipped_backup_missing";
+        } else {
+          installAttempt.rollback.error = "rollback_skipped_unknown";
+        }
+        installAttempt.rollback.errorCode = null;
+      }
+    }
+
+    // Cleanup staged artifacts on failure so partially-extracted binaries are not left runnable.
+    if (thrownError) {
+      installAttempt.cleanup.stagingDir = await safeRm({
+        fsModule,
+        targetPath: stagingDir,
+        options: { recursive: true, force: true }
+      });
+    }
+
+    // Record final state for error reporting.
+    installAttempt.priorBinaryAfter = describeBinaryRunnability({ fsModule, binaryPath: local.binaryPath, isWin32 });
+    installAttempt.backupBinaryAfter = describeBinaryRunnability({ fsModule, binaryPath: backupBinaryPath, isWin32 });
+
+    if (thrownError) {
+      if (!thrownError.details || typeof thrownError.details !== "object") thrownError.details = {};
+      thrownError.details.installAttempt = installAttempt;
+    }
+>>>>>>> mcoda/task/ops-01-us-05-t39
   }
 }
 
@@ -3572,6 +3847,87 @@ async function main() {
 function describeFatalError(err) {
   const fallbackAttempted =
     err && typeof err.details?.fallbackAttempted === "boolean" ? err.details.fallbackAttempted : null;
+
+  function withInstallAttemptLines(report) {
+    const attempt = err && err.details && err.details.installAttempt;
+    if (!attempt || typeof attempt !== "object") return report;
+
+    const lines = Array.isArray(report.lines) ? report.lines.slice() : [];
+
+    const priorAtStart = attempt.priorBinaryAtStart || null;
+    const priorAfter = attempt.priorBinaryAfter || null;
+    const priorBinaryPath =
+      typeof attempt.priorBinaryPath === "string" && attempt.priorBinaryPath ? attempt.priorBinaryPath : null;
+
+    const backupAfter = attempt.backupBinaryAfter || null;
+
+    function preflightLabel() {
+      const r = attempt.preflightRecovery;
+      if (!r || typeof r !== "object") return "unknown";
+      if (r.attempted === false) return r.reason ? `not attempted (${r.reason})` : "not attempted";
+      if (r.restored) return r.from ? `restored from ${r.from}` : "restored";
+      if (r.reason === "dist_present") return "not needed";
+      if (r.reason === "no_backup_candidates") return "no backup found";
+      if (r.reason === "restore_failed") {
+        const bits = [];
+        bits.push("restore failed");
+        if (r.errorCode) bits.push(String(r.errorCode));
+        if (r.from) bits.push(`from ${r.from}`);
+        return bits.join(" ");
+      }
+      if (typeof r.reason === "string" && r.reason) return r.reason;
+      return "unknown";
+    }
+
+    function rollbackLabel() {
+      const r = attempt.rollback;
+      if (!r || typeof r !== "object") return "unknown";
+      if (r.attempted === false) return attempt.swap?.backupCreated ? "not attempted" : "not needed";
+      if (r.restored) return "restored previous installation";
+      if (typeof r.error === "string" && r.error.startsWith("rollback_skipped_")) {
+        if (r.error === "rollback_skipped_dist_present") return "skipped (install dir already present)";
+        if (r.error === "rollback_skipped_backup_missing") return "skipped (backup dir missing)";
+        return "skipped";
+      }
+      const bits = ["failed"];
+      if (r.errorCode) bits.push(`(${r.errorCode})`);
+      return bits.join(" ");
+    }
+
+    function cleanupLabel(kind, record, fallbackPath) {
+      if (!record || typeof record !== "object" || record.attempted !== true) return null;
+      if (record.removed) return `${kind}: cleaned`;
+      const bits = [`${kind}: left at ${fallbackPath || "unknown"}`];
+      if (record.errorCode) bits.push(`(${record.errorCode})`);
+      return bits.join(" ");
+    }
+
+    const cleanupBits = [
+      cleanupLabel("download temp", attempt.cleanup?.tmpFile, attempt.tmpFile),
+      cleanupLabel("staging dir", attempt.cleanup?.stagingDir, attempt.stagingDir)
+    ].filter(Boolean);
+
+    const backupHint =
+      backupAfter?.exists === true && attempt.backupDir
+        ? `[docdex] - Backup dir still present: ${attempt.backupDir} (prior docdexd runnable: ${yesNoUnknown(
+            backupAfter?.runnable
+          )})`
+        : null;
+
+    lines.push("[docdex] Install safety status:");
+    lines.push(`[docdex] - Preflight recovery: ${preflightLabel()}`);
+    lines.push(`[docdex] - Rollback: ${rollbackLabel()}`);
+    lines.push(`[docdex] - Prior docdexd runnable at start: ${yesNoUnknown(priorAtStart?.runnable)}`);
+    lines.push(
+      priorBinaryPath
+        ? `[docdex] - Prior docdexd runnable after failure: ${yesNoUnknown(priorAfter?.runnable)} (path: ${priorBinaryPath})`
+        : `[docdex] - Prior docdexd runnable after failure: ${yesNoUnknown(priorAfter?.runnable)}`
+    );
+    if (cleanupBits.length) lines.push(`[docdex] - Cleanup: ${cleanupBits.join("; ")}`);
+    if (backupHint) lines.push(backupHint);
+
+    return { ...report, lines };
+  }
 
   if (err instanceof UnsupportedPlatformError) {
     const detected = `${err.details.platform}/${err.details.arch}`;
@@ -3585,7 +3941,7 @@ function describeFatalError(err) {
     const unpublished = err.details?.reason === "target_not_published";
     const candidateAssetPattern = candidatePlatformKey ? assetPatternForPlatformKey(candidatePlatformKey) : null;
 
-    return {
+    return withInstallAttemptLines({
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
@@ -3606,11 +3962,11 @@ function describeFatalError(err) {
         "[docdex] - Or build from source (requires Rust): `cargo build --release --locked`.",
         "[docdex] - If you are on Linux and unsure of libc, set `DOCDEX_LIBC=gnu` or `DOCDEX_LIBC=musl`."
       ].filter(Boolean)
-    };
+    });
   }
 
   if (err instanceof InstallerConfigError) {
-    return {
+    return withInstallAttemptLines({
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
@@ -3621,7 +3977,7 @@ function describeFatalError(err) {
         "[docdex] - Ensure you are installing a published npm package version (not a local folder missing metadata).",
         "[docdex] - If installing from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` to the repo that hosts the release assets."
       ]
-    };
+    });
   }
 
   if (err instanceof MissingArtifactError) {
@@ -3655,7 +4011,7 @@ function describeFatalError(err) {
       typeof err.details?.expectedAssetPattern === "string" && err.details.expectedAssetPattern.trim()
         ? err.details.expectedAssetPattern.trim()
         : assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset || undefined });
-    return {
+    return withInstallAttemptLines({
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
@@ -3680,12 +4036,12 @@ function describeFatalError(err) {
         "[docdex] - If installing from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` to the repo that hosts the assets.",
         "[docdex] - Workaround: install a version with matching assets, or build from source (`cargo build --release --locked`)."
       ].filter(Boolean)
-    };
+    });
   }
 
   if (err instanceof ChecksumResolutionError) {
     const checksumCandidates = Array.isArray(err.details?.checksumCandidates) ? err.details.checksumCandidates : [];
-    return {
+    return withInstallAttemptLines({
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
@@ -3705,11 +4061,11 @@ function describeFatalError(err) {
         "[docdex] - If installing from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` to the repo that hosts the release assets.",
         "[docdex] - If you cannot publish checksums, build from source (`cargo build --release --locked`)."
       ].filter(Boolean)
-    };
+    });
   }
 
   if (err instanceof DownloadError) {
-    return {
+    return withInstallAttemptLines({
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
@@ -3720,13 +4076,13 @@ function describeFatalError(err) {
         err.details?.statusCode != null ? `[docdex] HTTP status: ${err.details.statusCode}` : null,
         err.cause?.message ? `[docdex] Cause: ${err.cause.message}` : null
       ].filter(Boolean)
-    };
+    });
   }
 
   if (err instanceof IntegrityMismatchError) {
     const expectedSha256 = typeof err.details?.expectedSha256 === "string" ? err.details.expectedSha256 : null;
     const actualSha256 = typeof err.details?.actualSha256 === "string" ? err.details.actualSha256 : null;
-    return {
+    return withInstallAttemptLines({
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
@@ -3747,11 +4103,11 @@ function describeFatalError(err) {
         "[docdex] - If behind a proxy or cache, bypass it; integrity mismatches can indicate tampering.",
         "[docdex] - If it still fails, build from source (`cargo build --release --locked`)."
       ].filter(Boolean)
-    };
+    });
   }
 
   if (err instanceof ArchiveInvalidError) {
-    return {
+    return withInstallAttemptLines({
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
@@ -3760,7 +4116,7 @@ function describeFatalError(err) {
         `[docdex] error code: ${err.code}`,
         err.details?.binaryPath ? `[docdex] Expected binary path: ${err.details.binaryPath}` : null
       ].filter(Boolean)
-    };
+    });
   }
 
   if (err instanceof ManifestResolutionError) {
@@ -3792,21 +4148,21 @@ function describeFatalError(err) {
     if (Array.isArray(err.details?.matches) && err.details.matches.length) {
       lines.push(`[docdex] matched assets: ${err.details.matches.join(", ")}`);
     }
-    return {
+    return withInstallAttemptLines({
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
       lines
-    };
+    });
   }
 
   const code = (err && typeof err.code === "string" && err.code) || "DOCDEX_INSTALL_FAILED";
-  return {
+  return withInstallAttemptLines({
     code,
     exitCode: (err && typeof err.exitCode === "number" && err.exitCode) || EXIT_CODE_BY_ERROR_CODE[code] || 1,
     details: withBaseDetails(err && err.details),
     lines: [`[docdex] install failed: ${err?.message || "unknown error"}`, `[docdex] error code: ${code}`]
-  };
+  });
 }
 
 function handleFatal(err) {

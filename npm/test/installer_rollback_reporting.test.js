@@ -45,7 +45,8 @@ test("installer failure reports rollback/cleanup and preserves prior docdexd", a
 
     let failPromoteOnce = true;
     const wrappedFs = Object.create(fs);
-    wrappedFs.promises = Object.create(fs.promises);
+    const wrappedPromises = Object.create(fs.promises);
+    Object.defineProperty(wrappedFs, "promises", { value: wrappedPromises });
     wrappedFs.promises.rename = async (from, to) => {
       if (failPromoteOnce && to === distDir) {
         failPromoteOnce = false;
@@ -100,8 +101,10 @@ test("installer failure reports rollback/cleanup and preserves prior docdexd", a
 
     const report = describeFatalError(err);
     assert.ok(report.lines.some((l) => l.includes("Install safety status:")));
+    assert.ok(report.lines.some((l) => l.includes("Preflight recovery: not needed")));
     assert.ok(report.lines.some((l) => l.includes("Rollback: restored previous installation")));
-    assert.ok(report.lines.some((l) => l.includes("Prior docdexd runnable: yes")));
+    assert.ok(report.lines.some((l) => l.includes("Prior docdexd runnable at start: yes")));
+    assert.ok(report.lines.some((l) => l.includes("Prior docdexd runnable after failure: yes")));
     assert.ok(report.lines.some((l) => l.includes("Cleanup:")));
 
     const attempt = err.details?.installAttempt;
@@ -111,4 +114,3 @@ test("installer failure reports rollback/cleanup and preserves prior docdexd", a
     await fs.promises.rm(baseDir, { recursive: true, force: true });
   }
 });
-

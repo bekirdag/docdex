@@ -1394,7 +1394,13 @@ async function runInstaller(options) {
         installAttempt.rollback.errorCode = rollback.ok ? null : rollback.errorCode;
       } else {
         installAttempt.rollback.restored = false;
-        installAttempt.rollback.error = "rollback_skipped_missing_paths";
+        if (!distMissing) {
+          installAttempt.rollback.error = "rollback_skipped_dist_present";
+        } else if (!backupExists) {
+          installAttempt.rollback.error = "rollback_skipped_backup_missing";
+        } else {
+          installAttempt.rollback.error = "rollback_skipped_unknown";
+        }
         installAttempt.rollback.errorCode = null;
       }
     }
@@ -1433,46 +1439,74 @@ function describeFatalError(err) {
 
     const lines = Array.isArray(report.lines) ? report.lines.slice() : [];
 
-    const rollbackLabel = attempt.rollback?.attempted
-      ? attempt.rollback?.restored
-        ? "restored previous installation"
-        : `failed (${attempt.rollback?.errorCode || "unknown"})`
-      : attempt.swap?.backupCreated
-        ? "not attempted"
-        : "not needed";
-
-    const priorStatus = attempt.priorBinaryAfter || null;
+    const priorAtStart = attempt.priorBinaryAtStart || null;
+    const priorAfter = attempt.priorBinaryAfter || null;
     const priorBinaryPath =
       typeof attempt.priorBinaryPath === "string" && attempt.priorBinaryPath ? attempt.priorBinaryPath : null;
 
-    const cleanupBits = [];
-    if (attempt.cleanup?.tmpFile?.attempted) {
-      cleanupBits.push(
-        attempt.cleanup.tmpFile.removed
-          ? "download temp cleaned"
-          : `download temp left at ${attempt.tmpFile || "unknown"}`
-      );
-    }
-    if (attempt.cleanup?.stagingDir?.attempted) {
-      cleanupBits.push(
-        attempt.cleanup.stagingDir.removed
-          ? "staging dir cleaned"
-          : `staging dir left at ${attempt.stagingDir || "unknown"}`
-      );
+    const backupAfter = attempt.backupBinaryAfter || null;
+
+    function preflightLabel() {
+      const r = attempt.preflightRecovery;
+      if (!r || typeof r !== "object") return "unknown";
+      if (r.attempted === false) return r.reason ? `not attempted (${r.reason})` : "not attempted";
+      if (r.restored) return r.from ? `restored from ${r.from}` : "restored";
+      if (r.reason === "dist_present") return "not needed";
+      if (r.reason === "no_backup_candidates") return "no backup found";
+      if (r.reason === "restore_failed") {
+        const bits = [];
+        bits.push("restore failed");
+        if (r.errorCode) bits.push(String(r.errorCode));
+        if (r.from) bits.push(`from ${r.from}`);
+        return bits.join(" ");
+      }
+      if (typeof r.reason === "string" && r.reason) return r.reason;
+      return "unknown";
     }
 
-    const backupAfter = attempt.backupBinaryAfter || null;
+    function rollbackLabel() {
+      const r = attempt.rollback;
+      if (!r || typeof r !== "object") return "unknown";
+      if (r.attempted === false) return attempt.swap?.backupCreated ? "not attempted" : "not needed";
+      if (r.restored) return "restored previous installation";
+      if (typeof r.error === "string" && r.error.startsWith("rollback_skipped_")) {
+        if (r.error === "rollback_skipped_dist_present") return "skipped (install dir already present)";
+        if (r.error === "rollback_skipped_backup_missing") return "skipped (backup dir missing)";
+        return "skipped";
+      }
+      const bits = ["failed"];
+      if (r.errorCode) bits.push(`(${r.errorCode})`);
+      return bits.join(" ");
+    }
+
+    function cleanupLabel(kind, record, fallbackPath) {
+      if (!record || typeof record !== "object" || record.attempted !== true) return null;
+      if (record.removed) return `${kind}: cleaned`;
+      const bits = [`${kind}: left at ${fallbackPath || "unknown"}`];
+      if (record.errorCode) bits.push(`(${record.errorCode})`);
+      return bits.join(" ");
+    }
+
+    const cleanupBits = [
+      cleanupLabel("download temp", attempt.cleanup?.tmpFile, attempt.tmpFile),
+      cleanupLabel("staging dir", attempt.cleanup?.stagingDir, attempt.stagingDir)
+    ].filter(Boolean);
+
     const backupHint =
       backupAfter?.exists === true && attempt.backupDir
-        ? `[docdex] - Backup dir still present: ${attempt.backupDir}`
+        ? `[docdex] - Backup dir still present: ${attempt.backupDir} (prior docdexd runnable: ${yesNoUnknown(
+            backupAfter?.runnable
+          )})`
         : null;
 
     lines.push("[docdex] Install safety status:");
-    lines.push(`[docdex] - Rollback: ${rollbackLabel}`);
+    lines.push(`[docdex] - Preflight recovery: ${preflightLabel()}`);
+    lines.push(`[docdex] - Rollback: ${rollbackLabel()}`);
+    lines.push(`[docdex] - Prior docdexd runnable at start: ${yesNoUnknown(priorAtStart?.runnable)}`);
     lines.push(
       priorBinaryPath
-        ? `[docdex] - Prior docdexd runnable: ${yesNoUnknown(priorStatus?.runnable)} (path: ${priorBinaryPath})`
-        : `[docdex] - Prior docdexd runnable: ${yesNoUnknown(priorStatus?.runnable)}`
+        ? `[docdex] - Prior docdexd runnable after failure: ${yesNoUnknown(priorAfter?.runnable)} (path: ${priorBinaryPath})`
+        : `[docdex] - Prior docdexd runnable after failure: ${yesNoUnknown(priorAfter?.runnable)}`
     );
     if (cleanupBits.length) lines.push(`[docdex] - Cleanup: ${cleanupBits.join("; ")}`);
     if (backupHint) lines.push(backupHint);

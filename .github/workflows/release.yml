@@ -192,6 +192,8 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Generate release manifest
+        env:
+          DOCDEX_RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.DOCDEX_RELEASE_SIGNING_PRIVATE_KEY }}
         run: |
           node scripts/generate_release_manifest.cjs \
             --dir artifacts \
@@ -209,6 +211,19 @@ jobs:
             artifacts/docdex-release-manifest.json.sha256
             artifacts/SHA256SUMS
             artifacts/SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload release integrity signatures
+        if: ${{ secrets.DOCDEX_RELEASE_SIGNING_PRIVATE_KEY != '' }}
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/docdex-release-manifest.json.sig
+            artifacts/SHA256SUMS.sig
+            artifacts/SHA256SUMS.txt.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

@@ -119,7 +119,9 @@ test("installer falls back deterministically when no manifest candidates exist",
   assert.equal(plan.expectedSha256, sha);
   assert.equal(plan.source, "fallback");
   assert.deepEqual(logs, ["[docdex] No manifest found; falling back to deterministic asset naming."]);
-  assert.deepEqual(warns, []);
+  assert.deepEqual(warns, [
+    "[docdex] Signature not found for SHA256SUMS; proceeding without signature (policy: optional)."
+  ]);
 });
 
 test("installer falls back deterministically on invalid JSON manifests with stable warning output", async () => {
@@ -154,7 +156,8 @@ test("installer falls back deterministically on invalid JSON manifests with stab
   assert.equal(plan.source, "fallback");
   assert.deepEqual(logs, []);
   assert.deepEqual(warns, [
-    "[docdex] Manifest unavailable; falling back. Details: [DOCDEX_MANIFEST_JSON_INVALID] Malformed manifest (docdexd-manifest.json): invalid JSON"
+    "[docdex] Manifest unavailable; falling back. Details: [DOCDEX_MANIFEST_JSON_INVALID] Malformed manifest (docdexd-manifest.json): invalid JSON",
+    "[docdex] Signature not found for SHA256SUMS; proceeding without signature (policy: optional)."
   ]);
 });
 
@@ -187,7 +190,8 @@ test("installer falls back deterministically when a manifest exists but is malfo
   assert.equal(plan.source, "fallback");
   assert.deepEqual(logs, []);
   assert.deepEqual(warns, [
-    "[docdex] Manifest unavailable; falling back. Details: [DOCDEX_MANIFEST_UNUSABLE] Manifest unusable (docdexd-manifest.json): DOCDEX_MANIFEST_MALFORMED Malformed manifest: expected `targets` object or `assets` array"
+    "[docdex] Manifest unavailable; falling back. Details: [DOCDEX_MANIFEST_UNUSABLE] Manifest unusable (docdexd-manifest.json): DOCDEX_MANIFEST_MALFORMED Malformed manifest: expected `targets` object or `assets` array",
+    "[docdex] Signature not found for SHA256SUMS; proceeding without signature (policy: optional)."
   ]);
 });
 
@@ -296,9 +300,10 @@ test("installer falls back deterministically when manifest entry is missing sha2
   assert.equal(plan.archive, "docdexd-linux-x64-gnu.tar.gz");
   assert.equal(plan.expectedSha256, sha);
   assert.equal(plan.source, "fallback");
-  assert.equal(warns.length, 1);
+  assert.equal(warns.length, 2);
   assert.match(warns[0], /\[DOCDEX_MANIFEST_UNUSABLE\]/);
   assert.match(warns[0], /DOCDEX_ASSET_MALFORMED/);
+  assert.equal(warns[1], "[docdex] Signature not found for SHA256SUMS; proceeding without signature (policy: optional).");
 });
 
 test("installer fails deterministically when manifest has multiple assets for a target triple (no fallback)", async () => {
@@ -383,8 +388,9 @@ test("installer falls back deterministically when manifest fetch fails with non-
 
   assert.equal(plan.source, "fallback");
   assert.equal(plan.expectedSha256, sha);
-  assert.equal(warns.length, 1);
+  assert.equal(warns.length, 2);
   assert.match(warns[0], /^\[docdex\] Manifest unavailable; falling back\. Details: \[DOCDEX_MANIFEST_FETCH_FAILED\]/);
+  assert.equal(warns[1], "[docdex] Signature not found for SHA256SUMS; proceeding without signature (policy: optional).");
 });
 
 test("installer falls back deterministically when manifest is too large and logs stable warning", async () => {
@@ -421,8 +427,130 @@ test("installer falls back deterministically when manifest is too large and logs
 
   assert.equal(plan.source, "fallback");
   assert.equal(plan.expectedSha256, sha);
-  assert.equal(warns.length, 1);
+  assert.equal(warns.length, 2);
   assert.match(warns[0], /^\[docdex\] Manifest unavailable; falling back\. Details: \[DOCDEX_MANIFEST_TOO_LARGE\]/);
+  assert.equal(warns[1], "[docdex] Signature not found for SHA256SUMS; proceeding without signature (policy: optional).");
+});
+
+test("installer verifies manifest signature when required and signature is present", async () => {
+  const base = "https://example.test/releases/download";
+  const version = "0.0.0";
+
+  const originalPolicy = process.env.DOCDEX_SIGNATURE_POLICY;
+  const originalKey = process.env.DOCDEX_RELEASE_SIGNING_PUBLIC_KEY;
+
+  try {
+    const { generateKeyPairSync, sign } = require("node:crypto");
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    process.env.DOCDEX_SIGNATURE_POLICY = "required";
+    process.env.DOCDEX_RELEASE_SIGNING_PUBLIC_KEY = publicKey.export({ format: "pem", type: "spki" });
+
+    const manifestText = fixture("manifest/valid-targets.json");
+    const signatureB64 = sign(null, Buffer.from(manifestText, "utf8"), privateKey).toString("base64");
+
+    const { logger, logs, warns } = createCapturingLogger();
+    const downloadTextFn = async (url) => {
+      if (url === `${base}/v${version}/docdex-release-manifest.json`) return manifestText;
+      if (url === `${base}/v${version}/docdex-release-manifest.json.sig`) return signatureB64 + "\n";
+      throw httpError(404, `not found: ${url}`);
+    };
+
+    const plan = await resolveInstallerDownloadPlan({
+      repoSlug: "owner/repo",
+      version,
+      platformKey: "linux-x64-gnu",
+      targetTriple: "x86_64-unknown-linux-gnu",
+      downloadTextFn,
+      getDownloadBaseFn: () => base,
+      manifestCandidateNamesFn: () => ["docdex-release-manifest.json"],
+      logger
+    });
+
+    assert.equal(plan.source, "manifest:docdex-release-manifest.json");
+    assert.deepEqual(warns, []);
+    assert.ok(logs.some((l) => l.includes("Verified signature for docdex-release-manifest.json")));
+  } finally {
+    if (originalPolicy === undefined) delete process.env.DOCDEX_SIGNATURE_POLICY;
+    else process.env.DOCDEX_SIGNATURE_POLICY = originalPolicy;
+    if (originalKey === undefined) delete process.env.DOCDEX_RELEASE_SIGNING_PUBLIC_KEY;
+    else process.env.DOCDEX_RELEASE_SIGNING_PUBLIC_KEY = originalKey;
+  }
+});
+
+test("installer fails closed when required signature is missing", async () => {
+  const base = "https://example.test/releases/download";
+  const version = "0.0.0";
+
+  const originalPolicy = process.env.DOCDEX_SIGNATURE_POLICY;
+  try {
+    process.env.DOCDEX_SIGNATURE_POLICY = "required";
+
+    const manifestText = fixture("manifest/valid-targets.json");
+    const downloadTextFn = async (url) => {
+      if (url === `${base}/v${version}/docdex-release-manifest.json`) return manifestText;
+      if (url === `${base}/v${version}/docdex-release-manifest.json.sig`) throw httpError(404, `not found: ${url}`);
+      throw httpError(404, `not found: ${url}`);
+    };
+
+    await assert.rejects(
+      () =>
+        resolveInstallerDownloadPlan({
+          repoSlug: "owner/repo",
+          version,
+          platformKey: "linux-x64-gnu",
+          targetTriple: "x86_64-unknown-linux-gnu",
+          downloadTextFn,
+          getDownloadBaseFn: () => base,
+          manifestCandidateNamesFn: () => ["docdex-release-manifest.json"],
+          logger: createCapturingLogger().logger
+        }),
+      (err) => {
+        assert.equal(err.code, "DOCDEX_INTEGRITY_SIGNATURE_MISSING");
+        return true;
+      }
+    );
+  } finally {
+    if (originalPolicy === undefined) delete process.env.DOCDEX_SIGNATURE_POLICY;
+    else process.env.DOCDEX_SIGNATURE_POLICY = originalPolicy;
+  }
+});
+
+test("installer fails closed when signature is present but invalid", async () => {
+  const base = "https://example.test/releases/download";
+  const version = "0.0.0";
+
+  const originalPolicy = process.env.DOCDEX_SIGNATURE_POLICY;
+  try {
+    process.env.DOCDEX_SIGNATURE_POLICY = "optional";
+
+    const manifestText = fixture("manifest/valid-targets.json");
+    const downloadTextFn = async (url) => {
+      if (url === `${base}/v${version}/docdex-release-manifest.json`) return manifestText;
+      if (url === `${base}/v${version}/docdex-release-manifest.json.sig`) return "not-a-real-signature\n";
+      throw httpError(404, `not found: ${url}`);
+    };
+
+    await assert.rejects(
+      () =>
+        resolveInstallerDownloadPlan({
+          repoSlug: "owner/repo",
+          version,
+          platformKey: "linux-x64-gnu",
+          targetTriple: "x86_64-unknown-linux-gnu",
+          downloadTextFn,
+          getDownloadBaseFn: () => base,
+          manifestCandidateNamesFn: () => ["docdex-release-manifest.json"],
+          logger: createCapturingLogger().logger
+        }),
+      (err) => {
+        assert.equal(err.code, "DOCDEX_INTEGRITY_SIGNATURE_INVALID");
+        return true;
+      }
+    );
+  } finally {
+    if (originalPolicy === undefined) delete process.env.DOCDEX_SIGNATURE_POLICY;
+    else process.env.DOCDEX_SIGNATURE_POLICY = originalPolicy;
+  }
 });
 
 test("installer fails deterministically when fallback checksums are missing", async () => {

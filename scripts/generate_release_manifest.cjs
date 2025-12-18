@@ -18,6 +18,13 @@ function usage() {
     "writes a sibling .sha256 file for the manifest itself, and writes SHA256SUMS (+ SHA256SUMS.txt)",
     "in the assets directory for deterministic installer fallback.",
     "",
+    "Optional signing:",
+    "  Set DOCDEX_RELEASE_SIGNING_PRIVATE_KEY to a PEM-encoded Ed25519 private key to write",
+    "  detached signature files alongside integrity metadata:",
+    "    - <manifest>.sig",
+    "    - SHA256SUMS.sig",
+    "    - SHA256SUMS.txt.sig",
+    "",
     "Exit codes:",
     "  1  generic failure",
     "  2  invalid arguments",
@@ -45,6 +52,13 @@ function sha256FileSync(filePath) {
   const hash = crypto.createHash("sha256");
   hash.update(fs.readFileSync(filePath));
   return hash.digest("hex");
+}
+
+function signFileDetachedBase64({ filePath, privateKeyPem }) {
+  const key = crypto.createPrivateKey(privateKeyPem);
+  const data = fs.readFileSync(filePath);
+  const signature = crypto.sign(null, data, key);
+  return signature.toString("base64");
 }
 
 function parseSha256File(text, expectedFilename) {
@@ -187,12 +201,25 @@ function generateReleaseManifest(options) {
   fs.writeFileSync(checksumsPath, checksumLines + "\n");
   fs.writeFileSync(checksumsTxtPath, checksumLines + "\n");
 
+  const signingKeyPem = String(process.env.DOCDEX_RELEASE_SIGNING_PRIVATE_KEY || "").trim() || null;
+  const signatures = {};
+  if (signingKeyPem) {
+    const toSign = [outPath, checksumsPath, checksumsTxtPath];
+    for (const filePath of toSign) {
+      const sigB64 = signFileDetachedBase64({ filePath, privateKeyPem: signingKeyPem });
+      const sigPath = `${filePath}.sig`;
+      fs.writeFileSync(sigPath, sigB64 + "\n");
+      signatures[path.basename(filePath)] = path.basename(sigPath);
+    }
+  }
+
   return {
     manifestPath: outPath,
     manifestSha256: manifestSha,
     sha256Path: shaOutPath,
     checksumsPath,
     checksumsTxtPath,
+    signatures,
     manifest
   };
 }

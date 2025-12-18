@@ -263,7 +263,7 @@ test("installer: supported runtime with missing manifest target triple never dow
   assert.ok(report.lines.some((l) => l.includes("Expected target triple: x86_64-unknown-linux-gnu")));
   assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platformKey>.tar.gz")));
 
-  assert.equal(downloadTextCalls, 1, "expected a metadata fetch (manifest) but no asset download");
+  assert.ok(downloadTextCalls >= 1, "expected metadata fetches (manifest/signature) but no asset download");
   assert.equal(assetDownloadCalls, 0);
   assert.equal(extractCalls, 0);
 });

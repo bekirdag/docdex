@@ -12,6 +12,7 @@ Assumptions (explicit):
 - You are installing via `npm i -g docdex` (or `npx docdex --version`) with Node.js `>= 18`.
 - The installer is allowed to reach GitHub Releases for the target repo (`DOCDEX_DOWNLOAD_REPO`).
 - Integrity verification is **always enforced** when SHA-256 metadata is available (manifest or checksum fallback).
+- Signature verification for integrity metadata is optional and policy-driven; see `docs/contracts/release_integrity_signatures_v1.md`.
 
 Related contracts:
 - `docs/contracts/installer_error_contract_v1.md`
@@ -27,10 +28,12 @@ Related contracts:
 1) Detect runtime → `platformKey` + Rust `targetTriple` (see `npm/lib/platform.js`).
 2) Try a release manifest (defaults to `docdex-release-manifest.json` plus legacy candidates).
    - If the manifest deterministically resolves **exactly one** asset and includes `integrity.sha256`, use it.
+   - If the release provides a detached signature for the selected manifest (`<manifest>.sig`), the installer verifies it **before** trusting any checksums.
    - If a manifest is present but **does not support** the current `targetTriple` (or is ambiguous), the installer **fails closed** (no fallback).
    - Otherwise, the installer falls back.
 3) Fallback: deterministic asset naming `docdexd-<platformKey>.tar.gz` and checksum discovery:
    - Prefer `SHA256SUMS` / `SHA256SUMS.txt` from the same release.
+   - If the release provides a detached signature for the selected checksums file (`SHA256SUMS.sig` / `SHA256SUMS.txt.sig`), the installer verifies it **before** trusting any checksum entries.
    - Legacy fallback: `docdexd-<platformKey>.tar.gz.sha256` sidecar.
 4) Download, verify SHA-256 (when available), extract, and verify the expected `docdexd` binary exists.
 
@@ -63,6 +66,9 @@ Legend:
 |---|---:|---|---|---|---|
 | `DOCDEX_INSTALLER_CONFIG` | 2 | Installer cannot determine repo/version/config (e.g., missing `repository.url` and no `DOCDEX_DOWNLOAD_REPO`). | N/A | Set `DOCDEX_DOWNLOAD_REPO=<owner/repo>`; avoid installing from an incomplete local package folder. | Ensure `package.json.repository.url` is set and not a placeholder. |
 | `DOCDEX_UNSUPPORTED_PLATFORM` | 3 | Current OS/arch/libc is not supported or not published. No download occurs. | N/A | Use a supported platform from `docs/ops/installer_supported_platforms.md`; or build from source: `cargo build --release --locked`. On Linux, set `DOCDEX_LIBC=gnu|musl` to override detection. | Publish binaries for the missing `platformKey`/target triple (see `docs/ops/installer_platform_audit.md`). |
+| `DOCDEX_INTEGRITY_SIGNATURE_MISSING` | 15 | Signature policy is `required` and the release did not include the expected `.sig` file for integrity metadata (manifest/checksums). | `true/false` (printed when available) | Retry; confirm you are using the intended repo/version; if you trust unsigned releases, set `DOCDEX_SIGNATURE_POLICY=optional` or `DOCDEX_SIGNATURE_POLICY=disabled`. | Enable release signing and upload the expected `.sig` assets (see `docs/contracts/release_integrity_signatures_v1.md`). |
+| `DOCDEX_INTEGRITY_SIGNATURE_INVALID` | 16 | A `.sig` file was present but signature verification failed (possible tampering or wrong key). | `true/false` (printed when available) | Retry; bypass proxies/mirrors; treat as a tampering signal. If you control the releases, re-sign and re-upload integrity metadata; otherwise install from a trusted source/version. | Ensure the pinned public key and release signing private key match; regenerate and upload the `.sig` files alongside `SHA256SUMS`/manifest. |
+| `DOCDEX_INTEGRITY_SIGNATURE_FETCH_FAILED` | 17 | Signature policy is `required` and fetching the `.sig` file failed (non-404). | `true/false` (printed when available) | Check network/proxy/firewall and retry; set `DOCDEX_GITHUB_TOKEN` if rate limited. | Ensure `.sig` assets are publicly readable and uploaded for the release; avoid transient upload race conditions. |
 | `DOCDEX_ASSET_NO_MATCH` | 12 | A manifest was present, but it contains **no entry** for the detected `targetTriple`. Installer fails closed. | `false` | Install a version that supports your platform; or build from source. If installing from a fork, ensure you’re pointing at the correct repo. | Fix the release manifest to include the missing target triple and asset mapping for that release. |
 | `DOCDEX_ASSET_MULTI_MATCH` | 13 | A manifest was present, but it contains **multiple entries** for the same `targetTriple`. Installer fails closed. | `false` | Install a different version; or build from source. | Deduplicate the manifest so each `targetTriple` resolves to exactly one asset. |
 | `DOCDEX_DOWNLOAD_FAILED` | 20 | Download failed for the selected asset (non-404 HTTP status or transport failure). | `true/false` (printed when available) | Check network/proxy/firewall; retry; set `DOCDEX_GITHUB_TOKEN` if rate limited; verify `DOCDEX_DOWNLOAD_REPO` and (if set) `DOCDEX_DOWNLOAD_BASE`. | Ensure release assets are publicly readable (or document token usage for private releases). |

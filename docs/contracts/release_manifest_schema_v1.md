@@ -13,6 +13,7 @@ For each tag `vX.Y.Z`, the release workflow uploads the manifest and checksums a
 - Manifest: `docdex-release-manifest.json`
 - Manifest checksum: `docdex-release-manifest.json.sha256`
 - Fallback checksums bundle: `SHA256SUMS` and `SHA256SUMS.txt`
+- Optional detached signatures over integrity metadata (when enabled): `*.sig` (see `docs/contracts/release_integrity_signatures_v1.md`)
 
 The release workflow that generates and uploads these is `.github/workflows/release.yml` (step “Generate release manifest”, implemented by `scripts/generate_release_manifest.cjs`).
 
@@ -125,10 +126,12 @@ The npm installer resolves an install plan deterministically (see `npm/lib/insta
    - `targetTriple` (e.g. `x86_64-unknown-linux-gnu`)
 2) Try to fetch and parse the manifest using the candidate list above.
    - If a candidate returns HTTP 200 and resolves exactly one entry for `targetTriple` with `integrity.sha256`, the installer uses that asset name and SHA-256.
+   - If the release provides a detached signature for the selected manifest (`<manifest>.sig`), the installer verifies it **before** trusting any `integrity.sha256` values.
    - If a manifest is present (HTTP 200) but does not support the target triple (`DOCDEX_ASSET_NO_MATCH`) or is ambiguous (`DOCDEX_ASSET_MULTI_MATCH`), the installer fails closed and does not attempt fallback.
    - If a candidate is missing (404), invalid JSON, too large, or missing required fields, the installer continues to the next candidate; if none are usable, it falls back.
 3) Fallback (when no usable manifest exists): use the deterministic archive name `docdexd-<platformKey>.tar.gz` and attempt to obtain integrity metadata by:
    - Prefer `SHA256SUMS` / `SHA256SUMS.txt` entries for that filename.
+   - If the release provides a detached signature for the selected checksums file (`SHA256SUMS.sig` / `SHA256SUMS.txt.sig`), the installer verifies it **before** trusting any checksum entries.
    - Legacy fallback: `<archive>.sha256` sidecar for that filename.
 4) Download, verify SHA-256 (fatal on mismatch), extract, and confirm the expected `docdexd` binary exists.
 

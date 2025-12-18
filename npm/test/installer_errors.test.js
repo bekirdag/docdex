@@ -7,6 +7,7 @@ const path = require("node:path");
 const { detectPlatformKey } = require("../lib/platform");
 const {
   ChecksumResolutionError,
+  IntegritySignatureError,
   MissingArtifactError,
   describeFatalError,
   verifyDownloadedFileIntegrity
@@ -139,4 +140,24 @@ test("describeFatalError: checksum unusable includes candidates and next steps",
   assert.equal(report.details.assetName, "docdexd-linux-x64-gnu.tar.gz");
   assert.ok(report.lines.some((l) => l.includes("Checksum candidates tried: SHA256SUMS, SHA256SUMS.txt")));
   assert.ok(report.lines.some((l) => l.includes("Next steps")));
+});
+
+test("describeFatalError: integrity signature errors include method and remediation", () => {
+  const err = new IntegritySignatureError(
+    "DOCDEX_INTEGRITY_SIGNATURE_INVALID",
+    "Signature verification failed for SHA256SUMS (SHA256SUMS.sig)",
+    {
+      signedName: "SHA256SUMS",
+      signatureName: "SHA256SUMS.sig",
+      signatureUrl: "https://example.test/releases/download/v0.0.0/SHA256SUMS.sig",
+      signatureAlgorithm: "ed25519",
+      signaturePolicy: "optional"
+    }
+  );
+
+  const report = describeFatalError(err);
+  assert.equal(report.code, "DOCDEX_INTEGRITY_SIGNATURE_INVALID");
+  assert.equal(report.exitCode, 16);
+  assert.ok(report.lines.some((l) => l.includes("detached signature (ed25519)")));
+  assert.ok(report.lines.some((l) => l.includes("DOCDEX_SIGNATURE_POLICY=disabled")));
 });

@@ -52,6 +52,12 @@ Additional common keys (when available):
 - `statusCode` (number|null)
 - `expectedSha256` (string|null)
 - `actualSha256` (string|null)
+- `signedName` (string|null) — integrity metadata filename whose signature was checked (e.g. `SHA256SUMS`)
+- `signatureName` (string|null) — detached signature filename (e.g. `SHA256SUMS.sig`)
+- `signatureUrl` (string|null)
+- `signatureAlgorithm` (string|null) — currently `ed25519`
+- `signaturePolicy` (string|null) — `optional|required|disabled`
+- `signatureFailureReason` (string|null) — verifier-specific reason (when available)
 
 ## Canonical codes + exit codes
 
@@ -107,6 +113,17 @@ If all fallback paths fail (e.g., checksums are also unavailable), the resulting
   - Archive extracted but the expected binary is missing.
 - `DOCDEX_CHECKSUM_UNUSABLE` → exit `24`
   - The installer could not obtain SHA-256 integrity metadata for the selected asset (manifest missing/unusable and checksum fallback missing/malformed).
+
+### Integrity metadata signature verification (fatal when enforced)
+
+These errors apply to detached signatures over integrity metadata (manifest/checksums). Signature verification, when attempted, happens before trusting any checksum values.
+
+- `DOCDEX_INTEGRITY_SIGNATURE_MISSING` → exit `15`
+  - Signature policy is `required` and the release did not include the expected `.sig` asset for the selected integrity metadata.
+- `DOCDEX_INTEGRITY_SIGNATURE_INVALID` → exit `16`
+  - A `.sig` asset was present but signature verification failed.
+- `DOCDEX_INTEGRITY_SIGNATURE_FETCH_FAILED` → exit `17`
+  - Signature policy is `required` and the `.sig` asset could not be fetched (non-404 failure).
 
 ### Installer configuration (fatal)
 

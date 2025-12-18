@@ -18,6 +18,13 @@ const {
   UnsupportedPlatformError
 } = require("./platform");
 const { ManifestResolutionError, resolveCanonicalAssetForTargetTriple } = require("./release_manifest");
+const {
+  SIGNATURE_ALGORITHM,
+  SIGNATURE_SUFFIX,
+  signaturePolicy,
+  getReleaseSigningPublicKeyPem,
+  verifyDetachedSignatureEd25519
+} = require("./release_signing");
 
 const MAX_REDIRECTS = 5;
 const USER_AGENT = "docdex-installer";
@@ -35,6 +42,9 @@ const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_ASSET_NO_MATCH: 12,
   DOCDEX_ASSET_MULTI_MATCH: 13,
   DOCDEX_ASSET_MALFORMED: 14,
+  DOCDEX_INTEGRITY_SIGNATURE_MISSING: 15,
+  DOCDEX_INTEGRITY_SIGNATURE_INVALID: 16,
+  DOCDEX_INTEGRITY_SIGNATURE_FETCH_FAILED: 17,
   DOCDEX_CHECKSUM_UNUSABLE: 24,
   DOCDEX_DOWNLOAD_FAILED: 20,
   DOCDEX_ASSET_MISSING: 21,
@@ -88,6 +98,22 @@ class DownloadError extends Error {
     super(message, cause ? { cause } : undefined);
     this.name = "DownloadError";
     this.code = "DOCDEX_DOWNLOAD_FAILED";
+    this.exitCode = EXIT_CODE_BY_ERROR_CODE[this.code];
+    this.details = withBaseDetails(details);
+  }
+}
+
+class IntegritySignatureError extends Error {
+  /**
+   * @param {"DOCDEX_INTEGRITY_SIGNATURE_MISSING"|"DOCDEX_INTEGRITY_SIGNATURE_INVALID"|"DOCDEX_INTEGRITY_SIGNATURE_FETCH_FAILED"} code
+   * @param {string} message
+   * @param {object} details
+   * @param {Error} [cause]
+   */
+  constructor(code, message, details, cause) {
+    super(message, cause ? { cause } : undefined);
+    this.name = "IntegritySignatureError";
+    this.code = code;
     this.exitCode = EXIT_CODE_BY_ERROR_CODE[this.code];
     this.details = withBaseDetails(details);
   }
@@ -677,6 +703,151 @@ function manifestCandidateNames() {
   ];
 }
 
+function getSignaturePolicyOrThrow() {
+  const policy = signaturePolicy();
+  if (policy === "invalid") {
+    throw new InstallerConfigError(
+      "Invalid DOCDEX_SIGNATURE_POLICY (expected optional|required|disabled)",
+      { signaturePolicy: String(process.env.DOCDEX_SIGNATURE_POLICY || "").trim() || null }
+    );
+  }
+  return policy;
+}
+
+async function verifyIntegrityMetadataSignature({
+  repoSlug,
+  version,
+  signedName,
+  signedUrl,
+  signedText,
+  source,
+  downloadTextFn
+}) {
+  const policy = getSignaturePolicyOrThrow();
+  if (policy === "disabled") {
+    return {
+      status: "disabled",
+      policy,
+      signatureAlgorithm: SIGNATURE_ALGORITHM,
+      signedName,
+      signatureName: null,
+      signatureUrl: null,
+      source
+    };
+  }
+
+  const signatureName = `${signedName}${SIGNATURE_SUFFIX}`;
+  const signatureUrl = `${signedUrl}${SIGNATURE_SUFFIX}`;
+
+  let signatureText;
+  try {
+    signatureText = await downloadTextFn(signatureUrl);
+  } catch (e) {
+    if (e && typeof e.statusCode === "number" && e.statusCode === 404) {
+      if (policy === "required") {
+        throw new IntegritySignatureError(
+          "DOCDEX_INTEGRITY_SIGNATURE_MISSING",
+          `Missing signature for ${signedName} (${signatureName})`,
+          {
+            repoSlug,
+            version,
+            source,
+            assetName: signedName,
+            signedName,
+            signatureName,
+            signatureUrl,
+            signatureAlgorithm: SIGNATURE_ALGORITHM,
+            signaturePolicy: policy
+          }
+        );
+      }
+      return { status: "missing", policy, signatureAlgorithm: SIGNATURE_ALGORITHM, signedName, signatureName, signatureUrl, source };
+    }
+
+    if (policy === "required") {
+      throw new IntegritySignatureError(
+        "DOCDEX_INTEGRITY_SIGNATURE_FETCH_FAILED",
+        `Failed to fetch signature for ${signedName} (${signatureName}): ${e?.message || String(e)}`,
+        {
+          repoSlug,
+          version,
+          source,
+          assetName: signedName,
+          signedName,
+          signatureName,
+          signatureUrl,
+          signatureAlgorithm: SIGNATURE_ALGORITHM,
+          signaturePolicy: policy,
+          statusCode: typeof e?.statusCode === "number" ? e.statusCode : null
+        },
+        e
+      );
+    }
+
+    return {
+      status: "unavailable",
+      policy,
+      signatureAlgorithm: SIGNATURE_ALGORITHM,
+      signedName,
+      signatureName,
+      signatureUrl,
+      source,
+      note: e?.message || String(e)
+    };
+  }
+
+  const publicKeyPem = getReleaseSigningPublicKeyPem();
+  const verification = verifyDetachedSignatureEd25519({
+    data: Buffer.from(String(signedText), "utf8"),
+    signatureText,
+    publicKeyPem
+  });
+
+  if (!verification.ok) {
+    // If a signature exists but cannot be verified, fail closed (even in optional mode).
+    if (verification.reason === "public_key_invalid") {
+      throw new InstallerConfigError("Release signing public key is invalid (DOCDEX_RELEASE_SIGNING_PUBLIC_KEY)", {
+        repoSlug,
+        version,
+        source,
+        assetName: signedName,
+        signedName,
+        signatureName,
+        signatureUrl,
+        signatureAlgorithm: SIGNATURE_ALGORITHM,
+        signaturePolicy: policy
+      });
+    }
+
+    throw new IntegritySignatureError(
+      "DOCDEX_INTEGRITY_SIGNATURE_INVALID",
+      `Signature verification failed for ${signedName} (${signatureName})`,
+      {
+        repoSlug,
+        version,
+        source,
+        assetName: signedName,
+        signedName,
+        signatureName,
+        signatureUrl,
+        signatureAlgorithm: SIGNATURE_ALGORITHM,
+        signaturePolicy: policy,
+        signatureFailureReason: verification.reason || null
+      }
+    );
+  }
+
+  return {
+    status: "verified",
+    policy,
+    signatureAlgorithm: SIGNATURE_ALGORITHM,
+    signedName,
+    signatureName,
+    signatureUrl,
+    source
+  };
+}
+
 async function tryResolveSha256ViaChecksumFiles({
   repoSlug,
   version,
@@ -694,9 +865,19 @@ async function tryResolveSha256ViaChecksumFiles({
     const url = `${base}/v${version}/${name}`;
     try {
       const text = await downloadTextFn(url);
+      const signature = await verifyIntegrityMetadataSignature({
+        repoSlug,
+        version,
+        signedName: name,
+        signedUrl: url,
+        signedText: text,
+        source: "fallback",
+        downloadTextFn
+      });
+
       const parsed = parseSha256File(text, archive);
       if (parsed) {
-        return { checksumName: name, checksumUrl: url, sha256: parsed, errors, events, attempted: true };
+        return { checksumName: name, checksumUrl: url, sha256: parsed, signature, errors, events, attempted: true };
       }
 
       const message = `Checksum file (${name}) is missing an entry for ${archive}`;
@@ -704,6 +885,7 @@ async function tryResolveSha256ViaChecksumFiles({
       events.push({ code: "DOCDEX_CHECKSUM_ENTRY_MISSING", message, details: { checksumName: name, url, archive } });
       continue;
     } catch (e) {
+      if (e instanceof IntegritySignatureError || e instanceof InstallerConfigError) throw e;
       // 404 => missing candidate; try next.
       if (e && typeof e.statusCode === "number" && e.statusCode === 404) {
         events.push({
@@ -741,7 +923,16 @@ async function tryResolveSha256ViaChecksumFiles({
     }
   }
 
-  return { checksumName: null, checksumUrl: null, sha256: null, errors, events, attempted: true, candidates };
+  return {
+    checksumName: null,
+    checksumUrl: null,
+    sha256: null,
+    signature: null,
+    errors,
+    events,
+    attempted: true,
+    candidates
+  };
 }
 
 async function tryResolveAssetViaManifest({
@@ -761,6 +952,15 @@ async function tryResolveAssetViaManifest({
     const url = `${base}/v${version}/${name}`;
     try {
       const text = await downloadTextFn(url);
+      const signature = await verifyIntegrityMetadataSignature({
+        repoSlug,
+        version,
+        signedName: name,
+        signedUrl: url,
+        signedText: text,
+        source: `manifest:${name}`,
+        downloadTextFn
+      });
       let manifest;
       try {
         manifest = JSON.parse(text);
@@ -780,6 +980,7 @@ async function tryResolveAssetViaManifest({
         return {
           manifestName: name,
           resolved: resolveCanonicalAssetForTargetTriple(manifest, targetTriple),
+          signature,
           errors,
           events,
           attempted: true
@@ -818,7 +1019,8 @@ async function tryResolveAssetViaManifest({
         throw e;
       }
     } catch (e) {
-      if (e instanceof ManifestResolutionError) throw e;
+      if (e instanceof ManifestResolutionError || e instanceof IntegritySignatureError || e instanceof InstallerConfigError)
+        throw e;
       // 404 => "missing manifest" candidate; try next. Anything else is recorded and we still try next.
       if (e && typeof e.statusCode === "number" && e.statusCode === 404) {
         events.push({
@@ -864,7 +1066,7 @@ async function tryResolveAssetViaManifest({
     });
   }
 
-  return { manifestName: null, resolved: null, errors, events, attempted: true };
+  return { manifestName: null, resolved: null, signature: null, errors, events, attempted: true };
 }
 
 async function resolveInstallerDownloadPlan({
@@ -882,6 +1084,26 @@ async function resolveInstallerDownloadPlan({
   let archive = null;
   let expectedSha256 = null;
   let source = "fallback";
+
+  function reportSignatureStatus(signature) {
+    if (!signature || signature.status === "disabled") return;
+    if (signature.status === "verified") {
+      logger.log(`[docdex] Verified signature for ${signature.signedName} (${signature.signatureAlgorithm}).`);
+      return;
+    }
+    if (signature.status === "missing") {
+      logger.warn(
+        `[docdex] Signature not found for ${signature.signedName}; proceeding without signature (policy: ${signature.policy}).`
+      );
+      return;
+    }
+    if (signature.status === "unavailable") {
+      logger.warn(
+        `[docdex] Signature check unavailable for ${signature.signedName}; proceeding without signature (policy: ${signature.policy}). Details: ${signature.note}`
+      );
+      return;
+    }
+  }
 
   let manifestAttempt;
   try {
@@ -910,16 +1132,18 @@ async function resolveInstallerDownloadPlan({
     archive = manifestAttempt.resolved.asset.name;
     expectedSha256 = manifestAttempt.resolved.integrity.sha256;
     source = `manifest:${manifestAttempt.manifestName}`;
+    reportSignatureStatus(manifestAttempt.signature);
   } else if (manifestAttempt.errors && manifestAttempt.errors.length) {
     logger.warn(`[docdex] Manifest unavailable; falling back. Details: ${manifestAttempt.errors.join(" | ")}`);
   } else {
     logger.log("[docdex] No manifest found; falling back to deterministic asset naming.");
   }
 
+  let checksumAttempt = null;
   if (!archive) {
     archive = artifactNameFn(platformKey);
 
-    const checksumAttempt = await tryResolveSha256ViaChecksumFiles({
+    checksumAttempt = await tryResolveSha256ViaChecksumFiles({
       repoSlug,
       version,
       archive,
@@ -930,11 +1154,22 @@ async function resolveInstallerDownloadPlan({
 
     if (checksumAttempt.sha256) {
       expectedSha256 = checksumAttempt.sha256;
+      reportSignatureStatus(checksumAttempt.signature);
     } else {
       // Legacy fallback: per-asset .sha256 sidecar.
       const shaUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}.sha256`;
       try {
         const shaText = await downloadTextFn(shaUrl);
+        const shaSignature = await verifyIntegrityMetadataSignature({
+          repoSlug,
+          version,
+          signedName: `${archive}.sha256`,
+          signedUrl: shaUrl,
+          signedText: shaText,
+          source: "fallback",
+          downloadTextFn
+        });
+        reportSignatureStatus(shaSignature);
         expectedSha256 = parseSha256File(shaText, archive);
       } catch {
         expectedSha256 = null;
@@ -971,7 +1206,8 @@ async function resolveInstallerDownloadPlan({
     archive,
     expectedSha256,
     source,
-    manifestAttempt: { ...manifestAttempt, fallbackAttempted: !manifestAttempt.resolved }
+    manifestAttempt: { ...manifestAttempt, fallbackAttempted: !manifestAttempt.resolved },
+    checksumAttempt
   };
 }
 
@@ -1334,6 +1570,38 @@ function describeFatalError(err) {
     };
   }
 
+  if (err instanceof IntegritySignatureError) {
+    const signedName = typeof err.details?.signedName === "string" ? err.details.signedName : null;
+    const signatureName = typeof err.details?.signatureName === "string" ? err.details.signatureName : null;
+    const signatureUrl = typeof err.details?.signatureUrl === "string" ? err.details.signatureUrl : null;
+    const algo = typeof err.details?.signatureAlgorithm === "string" ? err.details.signatureAlgorithm : SIGNATURE_ALGORITHM;
+    const policy = typeof err.details?.signaturePolicy === "string" ? err.details.signaturePolicy : null;
+    const failureReason =
+      typeof err.details?.signatureFailureReason === "string" ? err.details.signatureFailureReason : null;
+
+    return {
+      code: err.code,
+      exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
+      details: withBaseDetails(err.details),
+      lines: [
+        `[docdex] install failed: ${err.message}`,
+        `[docdex] error code: ${err.code}`,
+        signedName ? `[docdex] Signed metadata: ${signedName}` : null,
+        signatureName ? `[docdex] Signature file: ${signatureName}` : null,
+        signatureUrl ? `[docdex] Signature URL: ${signatureUrl}` : null,
+        `[docdex] Verification: detached signature (${algo})`,
+        policy ? `[docdex] Signature policy: ${policy}` : null,
+        failureReason ? `[docdex] Failure reason: ${failureReason}` : null,
+        "[docdex] Next steps:",
+        "[docdex] - Retry the install (transient network/caching issues can corrupt metadata downloads).",
+        "[docdex] - Ensure you are installing from the intended repo/version (DOCDEX_DOWNLOAD_REPO, DOCDEX_VERSION).",
+        "[docdex] - If behind a proxy or mirror, bypass it; signature failures can indicate tampering.",
+        "[docdex] - If you control the releases, regenerate and re-upload signed integrity metadata.",
+        "[docdex] - If you cannot obtain signed releases, set `DOCDEX_SIGNATURE_POLICY=disabled` (at your own risk)."
+      ].filter(Boolean)
+    };
+  }
+
   if (err instanceof IntegrityMismatchError) {
     const expectedSha256 = typeof err.details?.expectedSha256 === "string" ? err.details.expectedSha256 : null;
     const actualSha256 = typeof err.details?.actualSha256 === "string" ? err.details.actualSha256 : null;
@@ -1442,6 +1710,7 @@ module.exports = {
   decideInstallAction,
   determineLocalInstallerOutcome,
   verifyDownloadedFileIntegrity,
+  IntegritySignatureError,
   MissingArtifactError,
   ChecksumResolutionError,
   runInstaller,

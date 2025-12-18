@@ -101,6 +101,47 @@ test("generateReleaseManifest: emits targets mapping with sha256 and validates c
   assert.match(checksums, new RegExp(`^${manifestShaFileSha}\\s+docdexd-manifest\\.json\\.sha256$`, "m"));
 });
 
+test("generateReleaseManifest: signs integrity metadata when private key is provided", () => {
+  const dir = mkTmpDir();
+  const outPath = path.join(dir, "docdexd-manifest.json");
+
+  const originalKey = process.env.DOCDEX_RELEASE_SIGNING_PRIVATE_KEY;
+  try {
+    const { generateKeyPairSync, verify } = require("node:crypto");
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    process.env.DOCDEX_RELEASE_SIGNING_PRIVATE_KEY = privateKey.export({ format: "pem", type: "pkcs8" });
+
+    const entry = DEFAULT_TARGETS[0];
+    const tarName = `${entry.archiveBase}.tar.gz`;
+    const tarPath = path.join(dir, tarName);
+    const payload = Buffer.from("payload", "utf8");
+    fs.writeFileSync(tarPath, payload);
+    fs.writeFileSync(`${tarPath}.sha256`, `${sha256(payload)}  ${tarName}\n`, "utf8");
+
+    const result = generateReleaseManifest({
+      assetsDir: dir,
+      outPath,
+      targets: [entry]
+    });
+
+    assert.ok(fs.existsSync(`${outPath}.sig`));
+    assert.ok(fs.existsSync(`${result.checksumsPath}.sig`));
+    assert.ok(fs.existsSync(`${result.checksumsTxtPath}.sig`));
+
+    const sigB64 = fs.readFileSync(`${outPath}.sig`, "utf8").trim();
+    const ok = verify(
+      null,
+      fs.readFileSync(outPath),
+      publicKey,
+      Buffer.from(sigB64, "base64")
+    );
+    assert.equal(ok, true);
+  } finally {
+    if (originalKey === undefined) delete process.env.DOCDEX_RELEASE_SIGNING_PRIVATE_KEY;
+    else process.env.DOCDEX_RELEASE_SIGNING_PRIVATE_KEY = originalKey;
+  }
+});
+
 test("generateReleaseManifest: missing assets fails with stable exitCode", () => {
   const dir = mkTmpDir();
   const outPath = path.join(dir, "docdexd-manifest.json");

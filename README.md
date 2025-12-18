@@ -10,9 +10,12 @@ Docdex is a lightweight, local documentation indexer/search daemon. It runs per-
 - Commands: `docdex` (alias `docdexd`) downloads the right binary for your platform from the matching GitHub release.
 - Supported published binaries: macOS (arm64, x64), Linux glibc (arm64, x64), Linux musl (x64), Windows (x64); installer fetches the matching platform release asset.
 - Supported platforms + manual source build + troubleshooting: `docs/ops/installer_supported_platforms.md`.
+- Upgrade/downgrade/repair semantics (idempotent `no-op` / integrity-first): `docs/ops/installer_upgrade_downgrade.md`.
 - Release manifest schema (assets + checksums + fallback rules): `docs/contracts/release_manifest_schema_v1.md`.
+- Integrity policy: installs verify SHA-256 and fail closed if checksums are missing or mismatched; remediation: `docs/ops/installer_error_codes.md`.
 - If you publish from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` before installing so the downloader fetches your release assets.
 - Distribution: binaries stay in GitHub Releases (small npm package); postinstall fetches `docdexd-<platform>.tar.gz` matching the npm version.
+- Installer is idempotent: if the expected version is already installed and verified, it prints `[docdex] Install outcome: no-op` and does not re-download the asset.
 - Platform diagnostics (no download): `docdex doctor` (or `docdex diagnostics`) prints detected OS/arch(/libc), whether supported, and the expected Rust target triple + release asset naming pattern.
 - Publishing uses npm Trusted Publishing (OIDC) — no NPM token needed; see `.github/workflows/release.yml`.
 

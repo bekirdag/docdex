@@ -18,6 +18,7 @@ const {
   UnsupportedPlatformError
 } = require("./platform");
 const { ManifestResolutionError, resolveCanonicalAssetForTargetTriple } = require("./release_manifest");
+const { createInstallerStructuredLogger, parseBooleanEnv, redactUrl, redactValue } = require("./installer_logging");
 
 const MAX_REDIRECTS = 5;
 const USER_AGENT = "docdex-installer";
@@ -41,6 +42,12 @@ const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INTEGRITY_MISMATCH: 22,
   DOCDEX_ARCHIVE_INVALID: 23
 });
+
+function structuredLogsEnabled(explicit) {
+  if (typeof explicit === "boolean") return explicit;
+  // Default to on only for the actual postinstall script run (backwards-compatible for library/tests).
+  return parseBooleanEnv(process.env.DOCDEX_INSTALLER_STRUCTURED_LOG, require.main === module);
+}
 
 function withBaseDetails(details) {
   return {
@@ -873,12 +880,20 @@ async function resolveInstallerDownloadPlan({
   platformKey,
   targetTriple,
   logger = console,
+  structuredLogger = null,
   downloadTextFn = downloadText,
   artifactNameFn = artifactName,
   getDownloadBaseFn = getDownloadBase,
   manifestCandidateNamesFn = manifestCandidateNames,
   checksumCandidateNamesFn = checksumCandidateNames
 }) {
+  const structured =
+    structuredLogger ||
+    createInstallerStructuredLogger({
+      enabled: structuredLogsEnabled(),
+      baseFields: { repoSlug, version, platformKey, targetTriple, stage: "resolve" }
+    });
+
   let archive = null;
   let expectedSha256 = null;
   let source = "fallback";
@@ -906,12 +921,27 @@ async function resolveInstallerDownloadPlan({
     throw err;
   }
 
+  if (Array.isArray(manifestAttempt?.events) && manifestAttempt.events.length) {
+    for (const evt of manifestAttempt.events) {
+      const code = typeof evt?.code === "string" ? evt.code : "DOCDEX_MANIFEST_EVENT";
+      const message = typeof evt?.message === "string" ? evt.message : null;
+      const level = /NOT_FOUND|FALLBACK_USED/i.test(code) ? "info" : "warn";
+      structured.emit({
+        level,
+        event: code,
+        message,
+        fields: { ...evt?.details, stage: "manifest" }
+      });
+    }
+  }
+
   if (manifestAttempt.resolved) {
     archive = manifestAttempt.resolved.asset.name;
     expectedSha256 = manifestAttempt.resolved.integrity.sha256;
     source = `manifest:${manifestAttempt.manifestName}`;
   } else if (manifestAttempt.errors && manifestAttempt.errors.length) {
-    logger.warn(`[docdex] Manifest unavailable; falling back. Details: ${manifestAttempt.errors.join(" | ")}`);
+    const safeErrors = manifestAttempt.errors.map((err) => redactValue(err));
+    logger.warn(`[docdex] Manifest unavailable; falling back. Details: ${safeErrors.join(" | ")}`);
   } else {
     logger.log("[docdex] No manifest found; falling back to deterministic asset naming.");
   }
@@ -927,6 +957,20 @@ async function resolveInstallerDownloadPlan({
       getDownloadBaseFn,
       checksumCandidateNamesFn
     });
+
+    if (Array.isArray(checksumAttempt?.events) && checksumAttempt.events.length) {
+      for (const evt of checksumAttempt.events) {
+        const code = typeof evt?.code === "string" ? evt.code : "DOCDEX_CHECKSUM_EVENT";
+        const message = typeof evt?.message === "string" ? evt.message : null;
+        const level = /NOT_FOUND/i.test(code) ? "info" : "warn";
+        structured.emit({
+          level,
+          event: code,
+          message,
+          fields: { ...evt?.details, stage: "checksums" }
+        });
+      }
+    }
 
     if (checksumAttempt.sha256) {
       expectedSha256 = checksumAttempt.sha256;
@@ -960,12 +1004,25 @@ async function resolveInstallerDownloadPlan({
           fallbackAttempted: true,
           fallbackReason: manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found",
           checksumCandidates,
-          checksumErrors: checksumAttempt?.errors ?? null,
-          checksumEvents: checksumAttempt?.events ?? null
+          checksumErrors: Array.isArray(checksumAttempt?.errors) ? checksumAttempt.errors.map(redactValue) : null,
+          checksumEvents: Array.isArray(checksumAttempt?.events) ? redactValue(checksumAttempt.events) : null
         }
       );
     }
   }
+
+  structured.emit({
+    level: "info",
+    event: "DOCDEX_INSTALLER_PLAN_RESOLVED",
+    message: "Resolved installer download plan",
+    fields: {
+      stage: "resolve",
+      artifact: archive,
+      source,
+      verificationMethod: expectedSha256 ? "sha256" : null,
+      expectedSha256: expectedSha256 || null
+    }
+  });
 
   return {
     archive,
@@ -1044,6 +1101,12 @@ async function runInstaller(options) {
   const platformKey = platformPolicy.platformKey;
   const targetTriple = platformPolicy.targetTriple;
   const version = getVersionFn();
+  const structured =
+    opts.structuredLogger ||
+    createInstallerStructuredLogger({
+      enabled: structuredLogsEnabled(opts.structuredLogsEnabled),
+      baseFields: { os: detectedPlatform, arch: detectedArch, platformKey, targetTriple, version, stage: "install" }
+    });
   const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
   const distDir = pathModule.join(distBaseDir, platformKey);
   const isWin32 = detectedPlatform === "win32";
@@ -1060,17 +1123,30 @@ async function runInstaller(options) {
 
   if (local.outcome === "no-op") {
     logger.log("[docdex] Install outcome: no-op");
+    structured.emit({
+      level: "info",
+      event: "DOCDEX_INSTALLER_NOOP",
+      message: "Installer determined no-op; existing binary verified",
+      fields: { stage: "install", result: "no-op", outcome: local.outcome, integrityResult: redactValue(local.integrityResult) }
+    });
     return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
   }
 
   const repoSlug = parseRepoSlugFn();
+  structured.emit({
+    level: "info",
+    event: "DOCDEX_INSTALLER_START",
+    message: "Installer starting download/verify/install",
+    fields: { stage: "install", repoSlug }
+  });
 
   const { archive, expectedSha256, source, manifestAttempt } = await resolveInstallerDownloadPlanFn({
     repoSlug,
     version,
     platformKey,
     targetTriple,
-    logger
+    logger,
+    structuredLogger: structured
   });
 
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
@@ -1080,7 +1156,27 @@ async function runInstaller(options) {
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   try {
     try {
+      structured.emit({
+        level: "info",
+        event: "DOCDEX_INSTALLER_DOWNLOAD_START",
+        message: "Starting download",
+        fields: {
+          stage: "download",
+          artifact: archive,
+          version,
+          source,
+          repoSlug,
+          downloadUrl: redactUrl(downloadUrl),
+          dest: tmpFile
+        }
+      });
       await downloadFn(downloadUrl, tmpFile);
+      structured.emit({
+        level: "info",
+        event: "DOCDEX_INSTALLER_DOWNLOAD_OK",
+        message: "Download completed",
+        fields: { stage: "download", artifact: archive, version, source, repoSlug, result: "ok" }
+      });
     } catch (err) {
       if (err && typeof err.statusCode === "number" && err.statusCode === 404) {
         const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
@@ -1096,7 +1192,7 @@ async function runInstaller(options) {
           fallbackReason,
           version,
           repoSlug,
-          downloadUrl,
+          downloadUrl: redactUrl(downloadUrl),
           expectedAsset: archive,
           expectedAssetPattern: assetPatternForPlatformKeyFn(platformKey, { exampleAssetName: archive }),
           note: "This usually means the GitHub release assets are missing or the npm version is out of sync with the release."
@@ -1110,7 +1206,7 @@ async function runInstaller(options) {
           version,
           repoSlug,
           assetName: archive,
-          downloadUrl,
+          downloadUrl: redactUrl(downloadUrl),
           source,
           manifestName: manifestAttempt?.manifestName ?? null,
           manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
@@ -1121,26 +1217,93 @@ async function runInstaller(options) {
       );
     }
 
-    await verifyDownloadedFileIntegrityFn({
-      filePath: tmpFile,
-      expectedSha256,
-      archiveName: archive,
-      details: {
-        platformKey,
-        targetTriple,
-        version,
-        repoSlug,
-        downloadUrl,
+    structured.emit({
+      level: "info",
+      event: "DOCDEX_INSTALLER_VERIFY_START",
+      message: "Starting integrity verification",
+      fields: {
+        stage: "verify",
+        artifact: archive,
+        verificationMethod: expectedSha256 ? "sha256" : null,
+        expectedSha256: expectedSha256 || null,
         source,
-        manifestName: manifestAttempt?.manifestName ?? null,
-        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
-        fallbackAttempted: source === "fallback"
+        repoSlug
+      }
+    });
+
+    let actualArchiveSha256 = null;
+    try {
+      actualArchiveSha256 = await verifyDownloadedFileIntegrityFn({
+        filePath: tmpFile,
+        expectedSha256,
+        archiveName: archive,
+        details: {
+          platformKey,
+          targetTriple,
+          version,
+          repoSlug,
+          downloadUrl: redactUrl(downloadUrl),
+          source,
+          manifestName: manifestAttempt?.manifestName ?? null,
+          manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+          fallbackAttempted: source === "fallback"
+        }
+      });
+    } catch (err) {
+      if (err instanceof IntegrityMismatchError) {
+        structured.emit({
+          level: "error",
+          event: "DOCDEX_INSTALLER_VERIFY_FAIL",
+          message: "Integrity verification failed",
+          fields: {
+            stage: "verify",
+            artifact: archive,
+            verificationMethod: "sha256",
+            result: "mismatch",
+            expectedSha256: err.details?.expectedSha256 ?? null,
+            actualSha256: err.details?.actualSha256 ?? null,
+            source,
+            repoSlug,
+            downloadUrl: redactUrl(downloadUrl)
+          },
+          error: err
+        });
+      }
+      throw err;
+    }
+
+    structured.emit({
+      level: "info",
+      event: "DOCDEX_INSTALLER_VERIFY_OK",
+      message: "Integrity verification succeeded",
+      fields: {
+        stage: "verify",
+        artifact: archive,
+        verificationMethod: expectedSha256 ? "sha256" : null,
+        result: expectedSha256 ? "verified_ok" : "skipped",
+        expectedSha256: expectedSha256 || null,
+        actualSha256: actualArchiveSha256 || null,
+        version,
+        source,
+        repoSlug
       }
     });
 
     // Only replace an existing installation after we have successfully fetched + verified the archive.
+    structured.emit({
+      level: "info",
+      event: "DOCDEX_INSTALLER_EXTRACT_START",
+      message: "Extracting verified archive",
+      fields: { stage: "install", artifact: archive, version, source, repoSlug, result: "extract_start" }
+    });
     await fsModule.promises.rm(distDir, { recursive: true, force: true });
     await extractTarballFn(tmpFile, distDir);
+    structured.emit({
+      level: "info",
+      event: "DOCDEX_INSTALLER_EXTRACT_OK",
+      message: "Archive extracted",
+      fields: { stage: "install", artifact: archive, version, source, repoSlug, result: "extract_ok" }
+    });
 
     const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
     if (!fsModule.existsSync(binaryPath)) {
@@ -1150,7 +1313,7 @@ async function runInstaller(options) {
         version,
         repoSlug,
         assetName: archive,
-        downloadUrl,
+        downloadUrl: redactUrl(downloadUrl),
         source,
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
@@ -1161,6 +1324,12 @@ async function runInstaller(options) {
 
     await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
     logger.log(`[docdex] Installed binary to ${binaryPath}`);
+    structured.emit({
+      level: "info",
+      event: "DOCDEX_INSTALLER_INSTALL_OK",
+      message: "Installed binary",
+      fields: { stage: "install", result: "ok", artifact: archive, version, source, repoSlug, binaryPath }
+    });
 
     const binarySha256 = await sha256FileFn(binaryPath);
     const metadata = {
@@ -1178,7 +1347,7 @@ async function runInstaller(options) {
         name: archive,
         sha256: expectedSha256 || null,
         source,
-        downloadUrl
+        downloadUrl: redactUrl(downloadUrl)
       }
     };
     await writeJsonFileAtomic({
@@ -1189,6 +1358,12 @@ async function runInstaller(options) {
     });
 
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
+    structured.emit({
+      level: "info",
+      event: "DOCDEX_INSTALLER_DONE",
+      message: "Installer finished",
+      fields: { stage: "install", result: "ok", outcome: local.outcome, artifact: archive, version, source, repoSlug }
+    });
     return { binaryPath, outcome: local.outcome };
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
@@ -1284,7 +1459,7 @@ function describeFatalError(err) {
         err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
         err.details?.expectedAsset ? `[docdex] Expected asset: ${err.details.expectedAsset}` : null,
         expectedAssetPattern ? `[docdex] Asset naming pattern: ${expectedAssetPattern}` : null,
-        err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
+        err.details?.downloadUrl ? `[docdex] URL tried: ${redactUrl(err.details.downloadUrl)}` : null,
         err.details?.note ? `[docdex] Note: ${err.details.note}` : null,
         "[docdex] Next steps:",
         "[docdex] - Confirm the GitHub Release for this version contains the expected asset for your target.",
@@ -1327,7 +1502,7 @@ function describeFatalError(err) {
       lines: [
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
-        err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
+        err.details?.downloadUrl ? `[docdex] URL tried: ${redactUrl(err.details.downloadUrl)}` : null,
         err.details?.statusCode != null ? `[docdex] HTTP status: ${err.details.statusCode}` : null,
         err.cause?.message ? `[docdex] Cause: ${err.cause.message}` : null
       ].filter(Boolean)
@@ -1345,7 +1520,8 @@ function describeFatalError(err) {
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
         err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
-        err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
+        "[docdex] Verification: sha256",
+        err.details?.downloadUrl ? `[docdex] URL tried: ${redactUrl(err.details.downloadUrl)}` : null,
         expectedSha256 ? `[docdex] Expected sha256: ${expectedSha256}` : null,
         actualSha256 ? `[docdex] Actual sha256:   ${actualSha256}` : null,
         err.details?.source ? `[docdex] Source: ${err.details.source}` : null,
@@ -1421,6 +1597,22 @@ function describeFatalError(err) {
 }
 
 function handleFatal(err) {
+  const structured = createInstallerStructuredLogger({
+    enabled: structuredLogsEnabled(),
+    baseFields: {
+      stage: "fatal",
+      code: typeof err?.code === "string" ? err.code : "DOCDEX_INSTALL_FAILED",
+      exitCode: typeof err?.exitCode === "number" ? err.exitCode : null,
+      details: redactValue(err?.details || null)
+    }
+  });
+  structured.emit({
+    level: "error",
+    event: "DOCDEX_INSTALLER_FATAL",
+    message: "Installer fatal error",
+    error: err,
+    fields: { stage: "fatal" }
+  });
   const report = describeFatalError(err);
   for (const line of report.lines) console.error(line);
   process.exit(report.exitCode || 1);

@@ -6,6 +6,7 @@ mod daemon;
 mod error;
 mod metrics;
 mod tier2;
+mod waterfall_trace;
 mod impact;
 mod index;
 mod libs;

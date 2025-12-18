@@ -805,7 +805,13 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             AiHelpMcpTool {
                 name: "docdex_memory_recall",
                 description: "Recall memory items by semantic similarity (requires DOCDEX_ENABLE_MEMORY=1).",
-                args: &["query (string, required)", "top_k (int, optional)", "project_root (string, optional)"],
+                args: &[
+                    "query (string, required)",
+                    "top_k (int, optional)",
+                    "max_items (int, optional)",
+                    "max_tokens (int, optional)",
+                    "project_root (string, optional)",
+                ],
                 returns: &["results[]"],
             },
         ],

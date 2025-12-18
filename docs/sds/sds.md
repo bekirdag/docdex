@@ -1508,6 +1508,7 @@ Verification Strategy
 
 - Per-repo `memory.db` sqlite-vec table `memories(id UUID, content TEXT, embedding BLOB, created_at INT, metadata JSON)`.  
 - Ops: `memory_store(text, metadata, repo_id)`; `memory_recall(query, repo_id, top_k)` returning `{content, score, metadata}`. Uses Ollama embeddings; rejects when memory disabled.  
+- Memory context pruning/truncation (deterministic): order by `score` desc, then `created_at` desc, then `id` asc; apply `max_items`, then consume the memory token budget greedily; when the next item doesn’t fit, truncate it to the remaining token budget at whitespace-token boundaries (append `…` without adding a new token), then drop remaining items as `budget_exhausted`.  
 - Compaction: optional pragma `auto_vacuum=INCREMENTAL`; manual `memory_compact --repo` command planned; warn when rows exceed 50k (configurable).
 
 ### 3.8 Reasoning DAG

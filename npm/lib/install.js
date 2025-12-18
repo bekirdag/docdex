@@ -1076,6 +1076,7 @@ async function runInstaller(options) {
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
   const tmpDir = opts.tmpDir || osModule.tmpdir();
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
+  const stagingDir = pathModule.join(distBaseDir, `${platformKey}.staging.${process.pid}`);
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   try {
@@ -1139,12 +1140,13 @@ async function runInstaller(options) {
     });
 
     // Only replace an existing installation after we have successfully fetched + verified the archive.
-    await fsModule.promises.rm(distDir, { recursive: true, force: true });
-    await extractTarballFn(tmpFile, distDir);
+    // Extract into a staging directory first so failures never clobber a working install.
+    await fsModule.promises.rm(stagingDir, { recursive: true, force: true });
+    await extractTarballFn(tmpFile, stagingDir);
 
-    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
-    if (!fsModule.existsSync(binaryPath)) {
-      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
+    const stagingBinaryPath = pathModule.join(stagingDir, isWin32 ? "docdexd.exe" : "docdexd");
+    if (!fsModule.existsSync(stagingBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagingBinaryPath}`, {
         platformKey,
         targetTriple,
         version,
@@ -1155,14 +1157,12 @@ async function runInstaller(options) {
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
         fallbackAttempted: source === "fallback",
-        binaryPath
+        binaryPath: stagingBinaryPath
       });
     }
 
-    await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
-    logger.log(`[docdex] Installed binary to ${binaryPath}`);
-
-    const binarySha256 = await sha256FileFn(binaryPath);
+    await fsModule.promises.chmod(stagingBinaryPath, 0o755).catch(() => {});
+    const binarySha256 = await sha256FileFn(stagingBinaryPath);
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
       installedAt: nowIso(),
@@ -1184,14 +1184,20 @@ async function runInstaller(options) {
     await writeJsonFileAtomic({
       fsModule,
       pathModule,
-      filePath: installMetadataPath(distDir, pathModule),
+      filePath: installMetadataPath(stagingDir, pathModule),
       value: metadata
     });
 
+    await fsModule.promises.rm(distDir, { recursive: true, force: true });
+    await fsModule.promises.rename(stagingDir, distDir);
+
+    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+    logger.log(`[docdex] Installed binary to ${binaryPath}`);
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
     return { binaryPath, outcome: local.outcome };
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
+    await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -1303,6 +1309,7 @@ function describeFatalError(err) {
       lines: [
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
+        "[docdex] Verification method: SHA-256 (archive bytes)",
         err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
         err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
         err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,
@@ -1344,6 +1351,7 @@ function describeFatalError(err) {
       lines: [
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
+        "[docdex] Verification method: SHA-256 (archive bytes)",
         err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
         err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
         expectedSha256 ? `[docdex] Expected sha256: ${expectedSha256}` : null,

@@ -2,6 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const path = require("node:path");
 
 const { resolvePlatformPolicy } = require("../lib/platform");
 const { describeFatalError, runInstaller, resolveInstallerDownloadPlan } = require("../lib/install");
@@ -270,19 +271,18 @@ test("installer: supported runtime with missing manifest target triple never dow
 
 test("installer: supported runtime with missing release asset (404) exits non-zero and does not install", async () => {
   let downloadCalls = 0;
-  let tmpCleanupRmCalls = 0;
-  let installRmCalls = 0;
+  const rmCalls = [];
   let extractCalls = 0;
 
   const base = "https://example.test/releases/download";
   const version = "0.0.0";
   const platformKey = "linux-x64-gnu";
+  const expectedDistDir = path.join(__dirname, "..", "dist", platformKey);
 
   const fsModule = {
     promises: {
-      rm: async (_path, options) => {
-        if (options && options.recursive) installRmCalls += 1;
-        else tmpCleanupRmCalls += 1;
+      rm: async (rmPath, options) => {
+        rmCalls.push({ rmPath, options: options || null });
       }
     },
     existsSync: () => true
@@ -338,6 +338,18 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
 
   assert.equal(downloadCalls, 1);
   assert.equal(extractCalls, 0);
-  assert.equal(installRmCalls, 0, "should not remove existing install on 404");
-  assert.equal(tmpCleanupRmCalls, 1, "should still attempt tmp cleanup");
+
+  const recursiveRmPaths = rmCalls
+    .filter((c) => !!c.options?.recursive)
+    .map((c) => c.rmPath);
+  assert.ok(
+    !recursiveRmPaths.includes(expectedDistDir),
+    `should not remove existing install on 404 (rm calls: ${recursiveRmPaths.join(", ")})`
+  );
+
+  assert.ok(
+    rmCalls.some((c) => c.options?.recursive && String(c.rmPath).includes(`${platformKey}.staging.`)),
+    "should still attempt staging cleanup"
+  );
+  assert.ok(rmCalls.some((c) => !c.options?.recursive), "should still attempt tmp cleanup");
 });

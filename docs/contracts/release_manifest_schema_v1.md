@@ -16,6 +16,8 @@ For each tag `vX.Y.Z`, the release workflow uploads the manifest and checksums a
 
 The release workflow that generates and uploads these is `.github/workflows/release.yml` (step “Generate release manifest”, implemented by `scripts/generate_release_manifest.cjs`).
 
+Signature policy: this repo’s default integrity mechanism is SHA-256 checksums (no signature verification by the npm installer). If you need signatures in your environment/fork, see `docs/ops/release_integrity.md`.
+
 ## Asset naming (canonical identifiers)
 
 Docdex publishes one tarball per supported platform, named deterministically:

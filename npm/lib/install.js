@@ -4369,6 +4369,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   const stageDir = pathModule.join(distBaseDir, `${platformKey}.staging.${process.pid}.${Date.now()}`);
   let tmpBinaryPath = null;
 =======
@@ -4499,6 +4500,9 @@ async function runInstaller(options) {
     priorBinaryAfter: null,
     backupBinaryAfter: null
   };
+=======
+  const stagingDir = pathModule.join(distBaseDir, `${platformKey}.staging.${process.pid}`);
+>>>>>>> mcoda/task/ops-01-us-04-t13
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   let thrownError = null;
@@ -5044,6 +5048,7 @@ async function runInstaller(options) {
       }
     });
 
+<<<<<<< HEAD
     await extractTarballFn(tmpFile, stageDir);
 
     const stagedBinaryPath = pathModule.join(stageDir, isWin32 ? "docdexd.exe" : "docdexd");
@@ -5060,6 +5065,16 @@ async function runInstaller(options) {
     if (!fsModule.existsSync(stagedBinaryPath)) {
       throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagedBinaryPath}`, {
 >>>>>>> mcoda/task/ops-01-us-05-t14
+=======
+    // Only replace an existing installation after we have successfully fetched + verified the archive.
+    // Extract into a staging directory first so failures never clobber a working install.
+    await fsModule.promises.rm(stagingDir, { recursive: true, force: true });
+    await extractTarballFn(tmpFile, stagingDir);
+
+    const stagingBinaryPath = pathModule.join(stagingDir, isWin32 ? "docdexd.exe" : "docdexd");
+    if (!fsModule.existsSync(stagingBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagingBinaryPath}`, {
+>>>>>>> mcoda/task/ops-01-us-04-t13
         platformKey,
         targetTriple,
         version,
@@ -5088,6 +5103,7 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-06-t21
 =======
         fallbackAttempted: source === "fallback",
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5345,6 +5361,14 @@ async function runInstaller(options) {
     const stagedSha256 = await sha256FileFn(stagedBinaryPath);
 
 >>>>>>> mcoda/task/ops-01-us-05-t14
+=======
+        binaryPath: stagingBinaryPath
+      });
+    }
+
+    await fsModule.promises.chmod(stagingBinaryPath, 0o755).catch(() => {});
+    const binarySha256 = await sha256FileFn(stagingBinaryPath);
+>>>>>>> mcoda/task/ops-01-us-04-t13
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
 <<<<<<< HEAD
@@ -5453,6 +5477,7 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-06-t35
       fsModule,
       pathModule,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5821,6 +5846,17 @@ async function runInstaller(options) {
     const binaryPath = binaryPathInDir({ pathModule, dirPath: distDir, isWin32 });
     logger.log(`[docdex] Installed binary to ${binaryPath}`);
 
+=======
+      filePath: installMetadataPath(stagingDir, pathModule),
+      value: metadata
+    });
+
+    await fsModule.promises.rm(distDir, { recursive: true, force: true });
+    await fsModule.promises.rename(stagingDir, distDir);
+
+    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+    logger.log(`[docdex] Installed binary to ${binaryPath}`);
+>>>>>>> mcoda/task/ops-01-us-04-t13
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
     return { binaryPath, outcome: local.outcome };
   } catch (err) {
@@ -5982,6 +6018,7 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-05-t39
 =======
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
+<<<<<<< HEAD
     await rmForce(fsModule, stagingDir, { recursive: true });
     await rmForce(fsModule, tmpInstalledBinaryPath);
 >>>>>>> mcoda/task/ops-01-us-05-t22
@@ -5996,6 +6033,9 @@ async function runInstaller(options) {
       await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
     }
 >>>>>>> mcoda/task/ops-01-us-05-t07
+=======
+    await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+>>>>>>> mcoda/task/ops-01-us-04-t13
   }
 }
 
@@ -6215,11 +6255,15 @@ function describeFatalError(err) {
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
 <<<<<<< HEAD
+<<<<<<< HEAD
         `[docdex] Verification policy: require SHA-256 integrity metadata (fail closed when absent)`,
         `[docdex] Verification method: ${INTEGRITY_METHOD_LABEL}`,
 =======
         "[docdex] Verification method: sha256",
 >>>>>>> mcoda/task/ops-01-us-04-t21
+=======
+        "[docdex] Verification method: SHA-256 (archive bytes)",
+>>>>>>> mcoda/task/ops-01-us-04-t13
         err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
         "[docdex] Verification required: sha256(archive)",
         err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
@@ -6308,11 +6352,15 @@ function describeFatalError(err) {
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
 <<<<<<< HEAD
+<<<<<<< HEAD
         `[docdex] Verification method: ${INTEGRITY_METHOD_LABEL}`,
         "[docdex] Safety: installer aborted before activating a new binary.",
 =======
         verificationMethod ? `[docdex] Verification method: ${verificationMethod}` : "[docdex] Verification method: sha256",
 >>>>>>> mcoda/task/ops-01-us-04-t21
+=======
+        "[docdex] Verification method: SHA-256 (archive bytes)",
+>>>>>>> mcoda/task/ops-01-us-04-t13
         err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
 <<<<<<< HEAD
         "[docdex] Verification: sha256(archive)",

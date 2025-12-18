@@ -102,6 +102,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.ref_name }}
+          fail_on_unmatched_files: true
           files: |
             ${{ matrix.archive }}.tar.gz
             ${{ matrix.archive }}.tar.gz.sha256
@@ -112,6 +113,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.archive }}
+          if-no-files-found: error
           path: |
             ${{ matrix.archive }}.tar.gz
             ${{ matrix.archive }}.tar.gz.sha256
@@ -200,6 +202,15 @@ jobs:
             --out artifacts/docdex-release-manifest.json \
             --tag "${GITHUB_REF_NAME}" \
             --repo "${GITHUB_REPOSITORY}"
+
+      - name: Verify release manifest + checksum bundle
+        shell: bash
+        working-directory: artifacts
+        run: |
+          set -euo pipefail
+          shasum -a 256 -c docdex-release-manifest.json.sha256
+          shasum -a 256 -c SHA256SUMS
+          diff -q SHA256SUMS SHA256SUMS.txt
 
       - name: Upload release manifest + checksums
         uses: softprops/action-gh-release@v1

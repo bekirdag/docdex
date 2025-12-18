@@ -272,17 +272,22 @@ test("installer: supported runtime with missing manifest target triple never dow
 test("installer: supported runtime with missing release asset (404) exits non-zero and does not install", async () => {
   let downloadCalls = 0;
 <<<<<<< HEAD
+<<<<<<< HEAD
   let tmpCleanupRmCalls = 0;
   let stagingCleanupRmCalls = 0;
   let installRmCalls = 0;
   let stagingRmCalls = 0;
 =======
 >>>>>>> mcoda/task/ops-01-us-05-t07
+=======
+  const rmCalls = [];
+>>>>>>> mcoda/task/ops-01-us-04-t13
   let extractCalls = 0;
 
   const base = "https://example.test/releases/download";
   const version = "0.0.0";
   const platformKey = "linux-x64-gnu";
+<<<<<<< HEAD
 <<<<<<< HEAD
   const distBaseDir = "/tmp/docdex-installer-dist";
   const distDir = `${distBaseDir}/${platformKey}`;
@@ -290,10 +295,14 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
   const distBaseDir = "/tmp/docdex-installer-test-dist";
   const distDir = path.join(distBaseDir, platformKey);
 >>>>>>> mcoda/task/ops-01-us-05-t07
+=======
+  const expectedDistDir = path.join(__dirname, "..", "dist", platformKey);
+>>>>>>> mcoda/task/ops-01-us-04-t13
 
   const rmCalls = [];
   const fsModule = {
     promises: {
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
       rm: async (_path, options) => {
@@ -321,6 +330,10 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
         }
         tmpCleanupRmCalls += 1;
 >>>>>>> mcoda/task/ops-01-us-05-t39
+=======
+      rm: async (rmPath, options) => {
+        rmCalls.push({ rmPath, options: options || null });
+>>>>>>> mcoda/task/ops-01-us-04-t13
       }
 =======
       mkdir: async () => {},
@@ -382,6 +395,7 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
   assert.equal(downloadCalls, 1);
   assert.equal(extractCalls, 0);
 <<<<<<< HEAD
+<<<<<<< HEAD
   assert.equal(installRmCalls, 0, "should not remove existing install on 404");
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -402,4 +416,20 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
   );
   assert.ok(!rmCalls.some((c) => c.rmPath === distDir), "should not remove existing install on 404");
 >>>>>>> mcoda/task/ops-01-us-05-t07
+=======
+
+  const recursiveRmPaths = rmCalls
+    .filter((c) => !!c.options?.recursive)
+    .map((c) => c.rmPath);
+  assert.ok(
+    !recursiveRmPaths.includes(expectedDistDir),
+    `should not remove existing install on 404 (rm calls: ${recursiveRmPaths.join(", ")})`
+  );
+
+  assert.ok(
+    rmCalls.some((c) => c.options?.recursive && String(c.rmPath).includes(`${platformKey}.staging.`)),
+    "should still attempt staging cleanup"
+  );
+  assert.ok(rmCalls.some((c) => !c.options?.recursive), "should still attempt tmp cleanup");
+>>>>>>> mcoda/task/ops-01-us-04-t13
 });

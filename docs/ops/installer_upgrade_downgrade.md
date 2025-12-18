@@ -150,6 +150,7 @@ There are two relevant integrity checks:
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
    - Safety property: the existing `dist/<platformKey>/docdexd` (or `docdexd.exe`) is not modified until a new binary has been downloaded, verified, extracted, and is ready to be atomically swapped into place.
 =======
    - Safety property: the installer performs a staged install and only replaces the final `docdexd` path after the archive is successfully fetched, verified, and extracted into a staging directory (see `docs/ops/installer_atomic_replace.md`).
@@ -163,6 +164,9 @@ There are two relevant integrity checks:
 =======
    - Safety property: the installer stages extraction and only activates the new `dist/<platformKey>/` via atomic rename after download + verification + extraction succeed (so failures do not leave a partial runnable `docdexd` behind).
 >>>>>>> mcoda/task/ops-01-us-04-t40
+=======
+   - Safety property: the existing `dist/<platformKey>/` is only replaced after the archive is successfully fetched, SHA-256 verified, extracted to a staging directory, and the expected `docdexd` binary is present.
+>>>>>>> mcoda/task/ops-01-us-04-t13
 
 <<<<<<< HEAD
 <<<<<<< HEAD

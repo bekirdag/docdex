@@ -34,9 +34,10 @@ Related contracts:
 
 ---
 
-## How the installer resolves an asset (manifest → fallback)
+## How the installer resolves an asset (integrity sources → fallback)
 
 1) Detect runtime → `platformKey` + Rust `targetTriple` (see `npm/lib/platform.js`).
+<<<<<<< HEAD
 2) Try a release manifest (defaults to `docdex-release-manifest.json` plus legacy candidates).
    - If the manifest deterministically resolves **exactly one** asset and includes `integrity.sha256`, use it.
    - If the release provides a detached signature for the selected manifest (`<manifest>.sig`), the installer verifies it **before** trusting any checksums.
@@ -47,11 +48,24 @@ Related contracts:
    - If the release provides a detached signature for the selected checksums file (`SHA256SUMS.sig` / `SHA256SUMS.txt.sig`), the installer verifies it **before** trusting any checksum entries.
    - Legacy fallback: `docdexd-<platformKey>.tar.gz.sha256` sidecar.
 4) Download, verify SHA-256 (when available), extract, and verify the expected `docdexd` binary exists.
+=======
+2) Resolve integrity metadata by trying `DOCDEX_INTEGRITY_METADATA_SOURCES` in order (default: `manifest,checksums,sidecar`).
+   - `manifest`: try a release manifest (defaults to `docdex-release-manifest.json` plus legacy candidates).
+     - If the manifest deterministically resolves **exactly one** asset and includes `integrity.sha256`, use it.
+     - If a manifest is present but **does not support** the current `targetTriple` (or is ambiguous), the installer **fails closed** (no fallback).
+   - `checksums`: deterministic asset naming `docdexd-<platformKey>.tar.gz` and checksum discovery via `SHA256SUMS` / `SHA256SUMS.txt`.
+   - `sidecar`: legacy `<archive>.sha256` sidecar for the deterministic archive name.
+3) If integrity metadata is missing/unavailable, apply `DOCDEX_INTEGRITY_MISSING_POLICY`:
+   - `fallback` (default): try the next configured source.
+   - `abort`: fail deterministically without trying later sources.
+4) Download, verify SHA-256, extract, and verify the expected `docdexd` binary exists.
+>>>>>>> mcoda/task/ops-01-us-04-t21
 
 When install fails, output includes `[docdex] error code: <CODE>` and the process exits with a stable numeric exit code.
 
 ---
 
+<<<<<<< HEAD
 ## Integrity verification (download-time)
 
 Integrity verification is **mandatory** for `docdexd` downloads:
@@ -94,6 +108,30 @@ DOCDEX_MANIFEST_NAMES=docdex-release-manifest.json,docdexd-manifest.json,manifes
 # Restrict checksum discovery to a single filename
 DOCDEX_CHECKSUMS_NAME=SHA256SUMS npm i -g docdex
 ```
+=======
+## Integrity configuration (explicit)
+
+The installer’s integrity behavior is explicitly configurable via environment variables (defaults are safe and deterministic).
+
+Integrity metadata sources (order matters):
+- `DOCDEX_INTEGRITY_METADATA_SOURCES=manifest,checksums,sidecar`
+  - Allowed values: `manifest`, `checksums`, `sidecar`
+  - Default: `manifest,checksums,sidecar` (manifest first, then checksum files, then legacy `<archive>.sha256`)
+
+Missing/unavailable metadata policy:
+- `DOCDEX_INTEGRITY_MISSING_POLICY=fallback|abort`
+  - Default: `fallback` (try the next configured source if the current source cannot provide SHA-256 metadata)
+  - `abort`: do not try later sources; fail deterministically if the current source cannot provide SHA-256 metadata
+
+Related knobs (filename candidates):
+- `DOCDEX_MANIFEST_NAMES` / `DOCDEX_MANIFEST_NAME` — override manifest asset filename candidates (comma-separated).
+- `DOCDEX_CHECKSUMS_NAMES` / `DOCDEX_CHECKSUMS_NAME` — override checksum bundle filename candidates (comma-separated).
+
+Examples:
+- Require a manifest (no checksum/sidecar fallback): `DOCDEX_INTEGRITY_METADATA_SOURCES=manifest`
+- Use checksums only (skip manifest): `DOCDEX_INTEGRITY_METADATA_SOURCES=checksums,sidecar`
+- Abort on missing manifest rather than falling back: `DOCDEX_INTEGRITY_METADATA_SOURCES=manifest,checksums,sidecar DOCDEX_INTEGRITY_MISSING_POLICY=abort`
+>>>>>>> mcoda/task/ops-01-us-04-t21
 
 ---
 
@@ -131,12 +169,16 @@ Legend:
 | `DOCDEX_ASSET_MISSING` | 21 | The expected asset returned HTTP 404 (release is missing the artifact or version is out of sync). | `true/false` (printed when available) | Confirm you’re installing a version whose GitHub Release contains the expected asset name; set `DOCDEX_DOWNLOAD_REPO` if using a fork; consider installing a different version. | Upload the missing release asset(s) and ensure npm version ↔ release tag are in sync. |
 | `DOCDEX_INTEGRITY_MISMATCH` | 22 | SHA-256 verification failed for the downloaded archive. | `true/false` (printed when available) | Re-run install; bypass/disable proxies/caches; verify you are using the intended repo/version. Treat as a potential tampering signal; do not “work around” integrity failures by manual extraction. | Regenerate and re-upload correct checksums/manifest for the release; invalidate any cached/mirrored corrupted artifacts. |
 | `DOCDEX_ARCHIVE_INVALID` | 23 | Archive extracted, but the expected `docdexd` binary was missing from the extracted directory. | `true/false` (printed when available) | Install a different version; or build from source. | Fix packaging (ensure tarball contains `docdexd`/`docdexd.exe` at the expected path). |
+<<<<<<< HEAD
 | `DOCDEX_CHECKSUM_UNUSABLE` | 24 | Installer could not obtain SHA-256 integrity metadata (no usable manifest + no usable checksum fallback). | `true` | Install a different version; or build from source. If installing from a fork, confirm the fork’s releases publish checksums/manifest. | Ensure the release includes `docdex-release-manifest.json` (with `integrity.sha256`) or `SHA256SUMS`/`SHA256SUMS.txt` with an entry for the asset; see `scripts/generate_release_manifest.cjs`. |
 <<<<<<< HEAD
 | `DOCDEX_REPLACE_FAILED` | 25 | Installer could not safely place the verified binary into the final install location (e.g., permission denied, or `docdexd.exe` locked/running on Windows). | `true/false` (printed when available) | Stop any running `docdexd` process and retry; ensure the install directory is writable (global installs may require elevation). On Windows, upgrading while the daemon is running commonly fails. | If packaging for a service/daemon, stop the service before replacing binaries; ensure installer uses staged install + atomic finalization (`docs/ops/installer_atomic_replace.md`). |
 =======
 | `DOCDEX_INSTALL_SWAP_FAILED` | 25 | Installer could not atomically swap the verified staged install into `dist/<platformKey>/` (permissions or a locked/running binary). | `true/false` (printed when available) | Stop any running `docdexd` processes, ensure the install directory is writable (global installs may require elevated permissions), then retry. | Avoid shipping release packaging that requires in-place mutation while the binary is running; document stop/restart procedures for upgrades if needed. |
 >>>>>>> mcoda/task/ops-01-us-05-t07
+=======
+| `DOCDEX_CHECKSUM_UNUSABLE` | 24 | Installer could not obtain SHA-256 integrity metadata under the configured sources/policy. | `true/false` (printed when available) | Install a different version; or build from source. If installing from a fork, confirm the fork’s releases publish checksums/manifest. | Ensure the release includes `docdex-release-manifest.json` (with `integrity.sha256`) or `SHA256SUMS`/`SHA256SUMS.txt` with an entry for the asset; see `scripts/generate_release_manifest.cjs`. |
+>>>>>>> mcoda/task/ops-01-us-04-t21
 
 Notes:
 - If you see an unknown `DOCDEX_*` code, treat it as a bug/regression; capture the full install log and open an issue with the code + platform details.

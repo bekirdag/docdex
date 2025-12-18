@@ -56,6 +56,10 @@ The installer tries manifest candidates in a deterministic order (see `npm/lib/i
 
 The candidate list can be overridden by setting `DOCDEX_MANIFEST_NAMES` (comma-separated) or `DOCDEX_MANIFEST_NAME`.
 
+You can also control whether the installer uses the manifest at all (and whether it falls back to other integrity sources) via:
+- `DOCDEX_INTEGRITY_METADATA_SOURCES` (order matters; includes/excludes `manifest`)
+- `DOCDEX_INTEGRITY_MISSING_POLICY` (`fallback` or `abort`)
+
 ### Checksums filenames (fallback candidates)
 
 When no usable manifest is available, the installer can derive integrity metadata from checksum files in the same release (see `npm/lib/install.js:checksumCandidateNames()`):

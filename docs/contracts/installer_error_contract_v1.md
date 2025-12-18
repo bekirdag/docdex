@@ -56,12 +56,21 @@ Additional common keys (when available):
 - `statusCode` (number|null)
 - `expectedSha256` (string|null)
 - `actualSha256` (string|null)
+<<<<<<< HEAD
 - `signedName` (string|null) — integrity metadata filename whose signature was checked (e.g. `SHA256SUMS`)
 - `signatureName` (string|null) — detached signature filename (e.g. `SHA256SUMS.sig`)
 - `signatureUrl` (string|null)
 - `signatureAlgorithm` (string|null) — currently `ed25519`
 - `signaturePolicy` (string|null) — `optional|required|disabled`
 - `signatureFailureReason` (string|null) — verifier-specific reason (when available)
+=======
+- `verificationMethod` (string|null; currently `sha256`)
+- `integrityMetadataSource` (string|null; one of `manifest`, `checksums`, `sidecar`)
+- `integrityMetadataName` (string|null; e.g. `docdex-release-manifest.json`, `SHA256SUMS`, or `<archive>.sha256`)
+- `integrityMetadataSources` (string[]|null; configured list of sources in order)
+- `integrityMissingPolicy` (string|null; `fallback` or `abort`)
+- `integrityAttemptedSources` (string[]|null; sources actually attempted in order)
+>>>>>>> mcoda/task/ops-01-us-04-t21
 
 ## Canonical codes + exit codes
 

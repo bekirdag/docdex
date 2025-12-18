@@ -34,7 +34,7 @@ test("describeFatalError: unsupported platform includes detected OS/arch and no-
 
 test("describeFatalError: missing artifact distinguishes from unsupported and includes target triple + pattern", () => {
   const err = new MissingArtifactError({
-    detected: { os: "linux", arch: "arm64" },
+    detected: { os: "linux", arch: "arm64", libc: "gnu" },
     platformKey: "linux-arm64-gnu",
     targetTriple: "aarch64-unknown-linux-gnu",
     version: "0.1.11",
@@ -54,6 +54,7 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
   assert.ok(report.lines.some((l) => l.includes("missing artifact/version sync issue")));
   assert.ok(report.lines.some((l) => l.includes("Expected target triple: aarch64-unknown-linux-gnu")));
   assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platformKey>.tar.gz")));
+  assert.ok(report.lines.some((l) => l.includes("Detected platform: linux/arm64/gnu")));
 });
 
 test("describeFatalError: manifest no-match reads as missing artifact/version sync issue and includes triple + pattern", () => {
@@ -69,6 +70,7 @@ test("describeFatalError: manifest no-match reads as missing artifact/version sy
   const report = describeFatalError(err);
   assert.equal(report.code, "DOCDEX_ASSET_NO_MATCH");
   assert.ok(report.lines.some((l) => l.includes("missing artifact/version sync issue")));
+  assert.ok(report.lines.some((l) => l.includes("Platform key: linux-x64-gnu")));
   assert.ok(report.lines.some((l) => l.includes("Expected target triple: x86_64-unknown-linux-gnu")));
   assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platformKey>.tar.gz")));
 });

@@ -13,6 +13,7 @@ const {
   assetPatternForPlatformKey,
   resolvePlatformPolicy,
   targetTripleForPlatformKey,
+  libcForPlatformKey,
   UnsupportedPlatformError
 } = require("../lib/platform");
 
@@ -182,4 +183,18 @@ test("resolvePlatformPolicy returns platform key, target triple, and expected as
   assert.equal(policy.targetTriple, "aarch64-apple-darwin");
   assert.equal(policy.expectedAssetName, "docdexd-darwin-arm64.tar.gz");
   assert.equal(policy.expectedAssetPattern, "docdexd-<platformKey>.tar.gz (e.g. docdexd-darwin-arm64.tar.gz)");
+});
+
+test("resolvePlatformPolicy includes detected libc on Linux (derived from platformKey)", () => {
+  const policy = resolvePlatformPolicy({ platform: "linux", arch: "x64", env: { DOCDEX_LIBC: "gnu" } });
+  assert.equal(policy.detected.platform, "linux");
+  assert.equal(policy.detected.arch, "x64");
+  assert.equal(policy.detected.libc, "gnu");
+});
+
+test("libcForPlatformKey parses Linux platform keys deterministically", () => {
+  assert.equal(libcForPlatformKey("linux-x64-gnu"), "gnu");
+  assert.equal(libcForPlatformKey("linux-x64-musl"), "musl");
+  assert.equal(libcForPlatformKey("darwin-arm64"), null);
+  assert.equal(libcForPlatformKey(null), null);
 });

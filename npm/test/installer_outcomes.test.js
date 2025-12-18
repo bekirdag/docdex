@@ -165,7 +165,7 @@ test("installer outcome: update installs when version differs and writes fresh m
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: "a".repeat(64),
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -237,7 +237,7 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: "a".repeat(64),
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -297,7 +297,7 @@ test("installer outcome: reinstall_unknown reinstalls when metadata is missing",
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: "a".repeat(64),
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -361,7 +361,7 @@ test("installer outcome: reinstall_unknown reinstalls when integrity cannot be v
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: "a".repeat(64),
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),

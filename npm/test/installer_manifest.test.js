@@ -458,6 +458,33 @@ test("installer fails deterministically when fallback checksums are missing", as
   );
 });
 
+test("installer policy allow-missing permits missing integrity metadata deterministically", async () => {
+  const base = "https://example.test/releases/download";
+  const version = "0.0.0";
+  const { logger, warns } = createCapturingLogger();
+
+  const downloadTextFn = async (url) => {
+    throw httpError(404, `not found: ${url}`);
+  };
+
+  const plan = await resolveInstallerDownloadPlan({
+    repoSlug: "owner/repo",
+    version,
+    platformKey: "linux-x64-gnu",
+    targetTriple: "x86_64-unknown-linux-gnu",
+    integrityPolicy: "allow-missing",
+    downloadTextFn,
+    getDownloadBaseFn: () => base,
+    manifestCandidateNamesFn: () => ["docdex-release-manifest.json"],
+    logger
+  });
+
+  assert.equal(plan.archive, "docdexd-linux-x64-gnu.tar.gz");
+  assert.equal(plan.expectedSha256, null);
+  assert.equal(plan.source, "fallback");
+  assert.ok(warns.some((line) => line.includes("Missing SHA-256 integrity metadata")));
+});
+
 test("parseSha256File handles common sha256 file formats deterministically", () => {
   const expected = "a".repeat(64);
   const other = "b".repeat(64);
@@ -493,3 +520,30 @@ test("verifyDownloadedFileIntegrity is deterministic when integrity check is abs
     actual
   );
 });
+test("installer policy allow-missing permits missing integrity metadata deterministically", async () => {
+  const base = "https://example.test/releases/download";
+  const version = "0.0.0";
+  const { logger, warns } = createCapturingLogger();
+
+  const downloadTextFn = async (url) => {
+    throw httpError(404, `not found: ${url}`);
+  };
+
+  const plan = await resolveInstallerDownloadPlan({
+    repoSlug: "owner/repo",
+    version,
+    platformKey: "linux-x64-gnu",
+    targetTriple: "x86_64-unknown-linux-gnu",
+    integrityPolicy: "allow-missing",
+    downloadTextFn,
+    getDownloadBaseFn: () => base,
+    manifestCandidateNamesFn: () => ["docdex-release-manifest.json"],
+    logger
+  });
+
+  assert.equal(plan.archive, "docdexd-linux-x64-gnu.tar.gz");
+  assert.equal(plan.expectedSha256, null);
+  assert.equal(plan.source, "fallback");
+  assert.ok(warns.some((line) => line.includes("Missing SHA-256 integrity metadata")));
+});
+

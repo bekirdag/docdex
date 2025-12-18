@@ -26,6 +26,8 @@ const MAX_MANIFEST_BYTES = 1024 * 1024; // 1 MiB cap for safety
 const INVALID_JSON_ERROR = "invalid JSON";
 const INSTALL_METADATA_SCHEMA_VERSION = 1;
 const INSTALL_METADATA_FILENAME = "docdexd-install.json";
+const DEFAULT_INTEGRITY_POLICY = "required";
+const INTEGRITY_POLICY_ENV = "DOCDEX_INTEGRITY_POLICY";
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -142,6 +144,54 @@ class ChecksumResolutionError extends Error {
     this.exitCode = EXIT_CODE_BY_ERROR_CODE[this.code];
     this.details = withBaseDetails(details);
   }
+}
+
+function normalizeIntegrityPolicy(value) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return null;
+
+  if (normalized === "required" || normalized === "strict" || normalized === "on" || normalized === "true") {
+    return "required";
+  }
+  if (normalized === "allow-missing" || normalized === "allow_missing" || normalized === "warn") {
+    return "allow-missing";
+  }
+  if (normalized === "off" || normalized === "disabled" || normalized === "none" || normalized === "false") {
+    return "off";
+  }
+  return null;
+}
+
+function resolveIntegrityPolicy({ env, integrityPolicy, logger }) {
+  const resolvedEnv = env || process.env;
+  const raw = integrityPolicy != null ? integrityPolicy : resolvedEnv[INTEGRITY_POLICY_ENV];
+
+  if (raw != null && normalizeIntegrityPolicy(raw) == null) {
+    throw new InstallerConfigError(
+      `Invalid ${INTEGRITY_POLICY_ENV} value: ${String(
+        raw
+      )}. Allowed: required|allow-missing|off (aliases: strict,on,true / warn / disabled,none,false).`,
+      { integrityPolicy: null, integrityPolicyRaw: String(raw) }
+    );
+  }
+
+  const policy = normalizeIntegrityPolicy(raw) || DEFAULT_INTEGRITY_POLICY;
+
+  if (policy !== DEFAULT_INTEGRITY_POLICY) {
+    const source = integrityPolicy != null ? "options" : "env";
+    const note =
+      policy === "allow-missing"
+        ? "Missing integrity metadata becomes a warning (install proceeds unverified)."
+        : "Integrity verification is disabled (install proceeds without verification).";
+    logger?.warn?.(
+      `[docdex] WARNING: integrity policy override active (${policy}; source=${source}). ${note} (${INTEGRITY_POLICY_ENV}=${String(
+        raw
+      )})`
+    );
+  }
+
+  return policy;
 }
 
 function parseRepoSlug() {
@@ -430,7 +480,8 @@ function decideInstallAction({
   expectedVersion,
   expectedIntegrityMaterial,
   discoveredInstalledState,
-  integrityResult
+  integrityResult,
+  integrityPolicy = DEFAULT_INTEGRITY_POLICY
 }) {
   if (!discoveredInstalledState?.binaryPresent) return { outcome: "update", reason: "binary_missing" };
 
@@ -447,6 +498,10 @@ function decideInstallAction({
 
   if (discoveredInstalledState.installedVersion !== expectedVersion) {
     return { outcome: "update", reason: "version_mismatch" };
+  }
+
+  if (integrityPolicy === "off") {
+    return { outcome: "no-op", reason: "integrity_disabled" };
   }
 
   const expectedBinarySha256 = normalizeSha256Hex(expectedIntegrityMaterial?.binarySha256);
@@ -576,7 +631,8 @@ async function determineLocalInstallerOutcome({
   expectedVersion,
   isWin32,
   sha256FileFn = sha256File,
-  expectedBinarySha256 = null
+  expectedBinarySha256 = null,
+  integrityPolicy = DEFAULT_INTEGRITY_POLICY
 }) {
   const discoveredInstalledState = await discoverInstalledState({
     fsModule,
@@ -600,23 +656,27 @@ async function determineLocalInstallerOutcome({
     discoveredInstalledState.installedVersion === expectedVersion &&
     (normalizeSha256Hex(expectedBinarySha256) || discoveredInstalledState.metadataStatus === "valid");
 
-  const integrityResult = shouldVerifyIntegrity
-    ? await verifyInstalledDocdexdIntegrity({
-        fsModule,
-        sha256FileFn,
-        binaryPath: discoveredInstalledState.binaryPath,
-        expectedBinarySha256: expectedBinarySha256,
-        installedMetadata: discoveredInstalledState.metadata,
-        installedMetadataStatus: discoveredInstalledState.metadataStatus,
-        installedMetadataStatusReason: discoveredInstalledState.metadataStatusReason
-      })
-    : null;
+  const integrityResult =
+    integrityPolicy === "off"
+      ? null
+      : shouldVerifyIntegrity
+        ? await verifyInstalledDocdexdIntegrity({
+            fsModule,
+            sha256FileFn,
+            binaryPath: discoveredInstalledState.binaryPath,
+            expectedBinarySha256: expectedBinarySha256,
+            installedMetadata: discoveredInstalledState.metadata,
+            installedMetadataStatus: discoveredInstalledState.metadataStatus,
+            installedMetadataStatusReason: discoveredInstalledState.metadataStatusReason
+          })
+        : null;
 
   const decision = decideInstallAction({
     expectedVersion,
     expectedIntegrityMaterial,
     discoveredInstalledState,
-    integrityResult
+    integrityResult,
+    integrityPolicy
   });
 
   const installedVersion =
@@ -873,6 +933,7 @@ async function resolveInstallerDownloadPlan({
   platformKey,
   targetTriple,
   logger = console,
+  integrityPolicy = DEFAULT_INTEGRITY_POLICY,
   downloadTextFn = downloadText,
   artifactNameFn = artifactName,
   getDownloadBaseFn = getDownloadBase,
@@ -944,25 +1005,32 @@ async function resolveInstallerDownloadPlan({
     if (!expectedSha256) {
       const manifestCandidates = manifestCandidateNamesFn();
       const checksumCandidates = checksumCandidateNamesFn();
-      throw new ChecksumResolutionError(
-        `Missing SHA-256 integrity metadata for ${archive} (tried manifest ${manifestCandidates.join(
-          ", "
-        )} and checksums ${checksumCandidates.join(", ")})`,
-        {
-          platformKey,
-          targetTriple,
-          version,
-          repoSlug,
-          assetName: archive,
-          source: "fallback",
-          manifestName: manifestAttempt?.manifestName ?? null,
-          manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
-          fallbackAttempted: true,
-          fallbackReason: manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found",
-          checksumCandidates,
-          checksumErrors: checksumAttempt?.errors ?? null,
-          checksumEvents: checksumAttempt?.events ?? null
-        }
+      if (integrityPolicy === "required") {
+        throw new ChecksumResolutionError(
+          `Missing SHA-256 integrity metadata for ${archive} (tried manifest ${manifestCandidates.join(
+            ", "
+          )} and checksums ${checksumCandidates.join(", ")})`,
+          {
+            platformKey,
+            targetTriple,
+            version,
+            repoSlug,
+            assetName: archive,
+            source: "fallback",
+            manifestName: manifestAttempt?.manifestName ?? null,
+            manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+            fallbackAttempted: true,
+            fallbackReason: manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found",
+            checksumCandidates,
+            checksumErrors: checksumAttempt?.errors ?? null,
+            checksumEvents: checksumAttempt?.events ?? null,
+            integrityPolicy
+          }
+        );
+      }
+
+      logger?.warn?.(
+        `[docdex] WARNING: Missing SHA-256 integrity metadata for ${archive}; continuing without verification because ${INTEGRITY_POLICY_ENV}=${integrityPolicy}`
       );
     }
   }
@@ -993,6 +1061,7 @@ async function verifyDownloadedFileIntegrity({
 async function runInstaller(options) {
   const opts = options || {};
   const logger = opts.logger || console;
+  const integrityPolicy = resolveIntegrityPolicy({ env: opts.env, integrityPolicy: opts.integrityPolicy, logger });
 
   const detectPlatformKeyFn = opts.detectPlatformKeyFn || detectPlatformKey;
   const targetTripleForPlatformKeyFn = opts.targetTripleForPlatformKeyFn || targetTripleForPlatformKey;
@@ -1055,7 +1124,8 @@ async function runInstaller(options) {
     platformKey,
     expectedVersion: version,
     isWin32,
-    sha256FileFn
+    sha256FileFn,
+    integrityPolicy
   });
 
   if (local.outcome === "no-op") {
@@ -1070,8 +1140,32 @@ async function runInstaller(options) {
     version,
     platformKey,
     targetTriple,
-    logger
+    logger,
+    integrityPolicy
   });
+
+  const normalizedExpectedSha256 = normalizeSha256Hex(expectedSha256);
+  if (integrityPolicy === "required" && !normalizedExpectedSha256) {
+    throw new ChecksumResolutionError(
+      `Missing SHA-256 integrity metadata for ${archive} (integrity policy ${DEFAULT_INTEGRITY_POLICY} requires verification)`,
+      {
+        platformKey,
+        targetTriple,
+        version,
+        repoSlug,
+        assetName: archive,
+        source,
+        manifestName: manifestAttempt?.manifestName ?? null,
+        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+        fallbackAttempted: source === "fallback",
+        fallbackReason: manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found",
+        checksumCandidates: null,
+        checksumErrors: null,
+        checksumEvents: null,
+        integrityPolicy
+      }
+    );
+  }
 
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
   const tmpDir = opts.tmpDir || osModule.tmpdir();
@@ -1121,22 +1215,30 @@ async function runInstaller(options) {
       );
     }
 
-    await verifyDownloadedFileIntegrityFn({
-      filePath: tmpFile,
-      expectedSha256,
-      archiveName: archive,
-      details: {
-        platformKey,
-        targetTriple,
-        version,
-        repoSlug,
-        downloadUrl,
-        source,
-        manifestName: manifestAttempt?.manifestName ?? null,
-        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
-        fallbackAttempted: source === "fallback"
-      }
-    });
+    if (integrityPolicy === "off") {
+      logger.warn(`[docdex] WARNING: Skipping SHA-256 verification because ${INTEGRITY_POLICY_ENV}=off`);
+    } else if (!normalizedExpectedSha256) {
+      logger.warn(
+        `[docdex] WARNING: Missing SHA-256 integrity metadata for ${archive}; continuing without verification because ${INTEGRITY_POLICY_ENV}=${integrityPolicy}`
+      );
+    } else {
+      await verifyDownloadedFileIntegrityFn({
+        filePath: tmpFile,
+        expectedSha256: normalizedExpectedSha256,
+        archiveName: archive,
+        details: {
+          platformKey,
+          targetTriple,
+          version,
+          repoSlug,
+          downloadUrl,
+          source,
+          manifestName: manifestAttempt?.manifestName ?? null,
+          manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+          fallbackAttempted: source === "fallback"
+        }
+      });
+    }
 
     // Only replace an existing installation after we have successfully fetched + verified the archive.
     await fsModule.promises.rm(distDir, { recursive: true, force: true });
@@ -1170,15 +1272,17 @@ async function runInstaller(options) {
       repoSlug,
       platformKey,
       targetTriple,
+      integrityPolicy,
       binary: {
         filename: isWin32 ? "docdexd.exe" : "docdexd",
         sha256: binarySha256
       },
       archive: {
         name: archive,
-        sha256: expectedSha256 || null,
+        sha256: normalizedExpectedSha256 || null,
         source,
-        downloadUrl
+        downloadUrl,
+        verified: integrityPolicy !== "off" && !!normalizedExpectedSha256
       }
     };
     await writeJsonFileAtomic({

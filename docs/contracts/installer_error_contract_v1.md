@@ -6,6 +6,10 @@ Assumptions (explicit):
 - The installer runs in Node.js >= 18 and exits with a single process exit code (0–255).
 - A “manifest” is a JSON file attached to the GitHub Release (candidate names are installer-configurable; default is `docdex-release-manifest.json`).
 - `manifestVersion` is optional in current manifests; when absent it is reported as `null`.
+- Integrity policy is configurable via `DOCDEX_INTEGRITY_POLICY`:
+  - Default: `required` (fail closed on missing integrity metadata; verify archive SHA-256 before install).
+  - Overrides: `allow-missing` (continue unverified if metadata is missing) or `off` (disable verification).
+  - This error contract describes the default `required` behavior unless explicitly stated otherwise.
 
 ## Goals
 
@@ -107,6 +111,7 @@ If all fallback paths fail (e.g., checksums are also unavailable), the resulting
   - Archive extracted but the expected binary is missing.
 - `DOCDEX_CHECKSUM_UNUSABLE` → exit `24`
   - The installer could not obtain SHA-256 integrity metadata for the selected asset (manifest missing/unusable and checksum fallback missing/malformed).
+  - Note: with `DOCDEX_INTEGRITY_POLICY=allow-missing|off`, this condition is handled deterministically but may not be fatal (installer warns and proceeds unverified).
 
 ### Installer configuration (fatal)
 
@@ -120,3 +125,8 @@ All fatal reports:
 - Start with `[docdex] install failed: ...`
 - Include `[docdex] error code: <CODE>` and (when helpful) a short “Next steps” section.
 - For manifest-related failures, include whether fallback was attempted (`details.fallbackAttempted`) and why it was not used.
+- Integrity policy is configurable via `DOCDEX_INTEGRITY_POLICY`:
+  - Default: `required` (fail closed on missing integrity metadata; verify archive SHA-256 before install).
+  - Overrides: `allow-missing` (continue unverified if metadata is missing) or `off` (disable verification).
+  - This error contract describes the default `required` behavior unless explicitly stated otherwise.
+  - Note: with `DOCDEX_INTEGRITY_POLICY=allow-missing|off`, this condition is handled deterministically but may not be fatal (installer warns and proceeds unverified).

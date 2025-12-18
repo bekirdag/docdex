@@ -26,6 +26,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
   const base = "https://example.test/releases/download";
   const version = "0.0.0";
   const repoSlug = "owner/repo";
+  const expectedArchiveSha256 = "a".repeat(64);
 
   for (const platformKey of PUBLISHED_PLATFORM_KEYS) {
     await t.test(platformKey, async (st) => {
@@ -69,7 +70,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
           assert.equal(triple, targetTriple);
           return {
             archive: expectedArchive,
-            expectedSha256: null,
+            expectedSha256: expectedArchiveSha256,
             source: "fallback",
             manifestAttempt: { errors: [], resolved: null, manifestName: null }
           };
@@ -82,12 +83,12 @@ test("installer e2e: supported platform matrix installs expected binary layout",
         },
         verifyDownloadedFileIntegrityFn: async ({ filePath, expectedSha256, archiveName, details }) => {
           assert.equal(filePath, downloadDest);
-          assert.equal(expectedSha256, null);
+          assert.equal(expectedSha256, expectedArchiveSha256);
           assert.equal(archiveName, expectedArchive);
           assert.ok(fs.existsSync(filePath));
           assert.equal(details.platformKey, platformKey);
           assert.equal(details.targetTriple, targetTriple);
-          return null;
+          return expectedArchiveSha256;
         },
         extractTarballFn: async (archivePath, targetDir) => {
           extractArchive = archivePath;
@@ -110,4 +111,3 @@ test("installer e2e: supported platform matrix installs expected binary layout",
     });
   }
 });
-

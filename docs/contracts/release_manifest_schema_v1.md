@@ -130,7 +130,10 @@ The npm installer resolves an install plan deterministically (see `npm/lib/insta
 3) Fallback (when no usable manifest exists): use the deterministic archive name `docdexd-<platformKey>.tar.gz` and attempt to obtain integrity metadata by:
    - Prefer `SHA256SUMS` / `SHA256SUMS.txt` entries for that filename.
    - Legacy fallback: `<archive>.sha256` sidecar for that filename.
-4) Download, verify SHA-256 (fatal on mismatch), extract, and confirm the expected `docdexd` binary exists.
+   - If integrity metadata is still unavailable, behavior is controlled by `DOCDEX_INTEGRITY_POLICY`:
+     - Default (`required`): fail closed with `DOCDEX_CHECKSUM_UNUSABLE` (exit `24`).
+     - Overrides (`allow-missing|off`): warn and proceed unverified (insecure; never silent).
+4) Download, verify SHA-256 (fatal on mismatch unless `DOCDEX_INTEGRITY_POLICY=off`), extract, and confirm the expected `docdexd` binary exists.
 
 If installation fails, fatal errors are deterministic and include whether fallback was attempted; see `docs/contracts/installer_error_contract_v1.md` and `docs/ops/installer_error_codes.md`.
 

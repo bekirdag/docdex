@@ -128,7 +128,7 @@ Common fatal error codes:
 
 What to expect:
 - Message includes **expected target triple** and **asset naming pattern** (so you can verify the release).
-- Depending on failure point, the installer may have fetched metadata (manifest/checksums) but should not install a binary unless the archive was downloaded + verified.
+- Depending on failure point, the installer may have fetched metadata (manifest/checksums) but should not install a binary unless the archive was downloaded and (under the default `DOCDEX_INTEGRITY_POLICY=required`) verified.
 
 How to verify release assets (publisher/operator checklist):
 1) Confirm the repo slug and version the installer is using:

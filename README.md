@@ -11,6 +11,7 @@ Docdex is a lightweight, local documentation indexer/search daemon. It runs per-
 - Supported published binaries: macOS (arm64, x64), Linux glibc (arm64, x64), Linux musl (x64), Windows (x64); installer fetches the matching platform release asset.
 - Supported platforms + manual source build + troubleshooting: `docs/ops/installer_supported_platforms.md`.
 - Release manifest schema (assets + checksums + fallback rules): `docs/contracts/release_manifest_schema_v1.md`.
+- Installer integrity policy: `DOCDEX_INTEGRITY_POLICY=required|allow-missing|off` (default `required`). Overrides are insecure and never silent.
 - If you publish from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` before installing so the downloader fetches your release assets.
 - Distribution: binaries stay in GitHub Releases (small npm package); postinstall fetches `docdexd-<platform>.tar.gz` matching the npm version.
 - Platform diagnostics (no download): `docdex doctor` (or `docdex diagnostics`) prints detected OS/arch(/libc), whether supported, and the expected Rust target triple + release asset naming pattern.
@@ -312,3 +313,4 @@ Docdex can run as an MCP tool provider over stdio; it does not replace the HTTP 
 - Certbot helper: `docdexd serve --repo <repo> --host 0.0.0.0 --port 46137 --certbot-domain docs.example.com` (uses `/etc/letsencrypt/live/docs.example.com/{fullchain.pem,privkey.pem}`), or pass `--certbot-live-dir /custom/live/dir`.
 - When using Certbot, set a deploy hook to restart/reload docdex after renewals (e.g., `certbot renew --deploy-hook "systemctl restart docdexd.service"` or kill -HUP your process supervisor).
 - If binding to 443 directly, you need privileges; otherwise, keep docdex on 127.0.0.1 and let a reverse proxy terminate TLS.
+- Installer integrity policy: `DOCDEX_INTEGRITY_POLICY=required|allow-missing|off` (default `required`). Overrides are insecure and never silent.

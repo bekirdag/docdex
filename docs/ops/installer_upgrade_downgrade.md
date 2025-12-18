@@ -6,6 +6,7 @@ Assumptions (explicit):
 - You install via npm (`npm i -g docdex` or `npx docdex --version`) on Node.js >= 18.
 - “Expected version” is the npm package version (or `DOCDEX_VERSION` if set).
 - The installer uses the published release manifest/checksums contracts when it needs to fetch an archive; see `docs/contracts/release_manifest_schema_v1.md`.
+- Default integrity policy is `DOCDEX_INTEGRITY_POLICY=required` (fail closed on missing integrity metadata; verify archive SHA-256 before install). Explicit overrides (`allow-missing|off`) are insecure and never silent.
 
 ## Deterministic installer outcomes
 
@@ -41,9 +42,11 @@ There are two relevant integrity checks:
    - `SHA256SUMS`/`SHA256SUMS.txt`, then
    - legacy `<archive>.sha256` sidecar.
 
-   The downloaded archive is verified against the expected SHA-256. If verification fails, installation fails closed with:
+   With the default integrity policy (`DOCDEX_INTEGRITY_POLICY=required`), the installer requires SHA-256 integrity metadata and verifies the downloaded archive against the expected SHA-256. If verification fails, installation fails closed with:
    - Error code: `DOCDEX_INTEGRITY_MISMATCH` (see `docs/ops/installer_error_codes.md`)
    - Safety property: the existing `dist/<platformKey>/` is only removed after the archive is successfully fetched and verified.
+
+   If integrity metadata is missing, default behavior is a fatal `DOCDEX_CHECKSUM_UNUSABLE` (exit `24`). Explicit policy overrides (`allow-missing|off`) can proceed unverified (insecure; warnings are emitted).
 
 2) **Local binary integrity (no-op vs repair)**  
    For a `no-op`, the installer verifies the existing binary by hashing it and comparing to the recorded `binary.sha256` from the last successful, verified install.
@@ -114,4 +117,3 @@ This is usually a repo state issue, not an installer issue:
 - Installer error codes + remediation: `docs/ops/installer_error_codes.md`
 - Release manifest contract: `docs/contracts/release_manifest_schema_v1.md`
 - Installer error contract: `docs/contracts/installer_error_contract_v1.md`
-

@@ -2,6 +2,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const { detectPlatformKey } = require("../lib/platform");
@@ -9,7 +11,8 @@ const {
   ChecksumResolutionError,
   MissingArtifactError,
   describeFatalError,
-  verifyDownloadedFileIntegrity
+  verifyDownloadedFileIntegrity,
+  runInstaller
 } = require("../lib/install");
 const { ManifestResolutionError } = require("../lib/release_manifest");
 
@@ -139,4 +142,43 @@ test("describeFatalError: checksum unusable includes candidates and next steps",
   assert.equal(report.details.assetName, "docdexd-linux-x64-gnu.tar.gz");
   assert.ok(report.lines.some((l) => l.includes("Checksum candidates tried: SHA256SUMS, SHA256SUMS.txt")));
   assert.ok(report.lines.some((l) => l.includes("Next steps")));
+});
+
+test("runInstaller: required integrity policy fails closed when download plan has no sha256", async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-integrity-required-"));
+  try {
+    let downloadCalls = 0;
+    await assert.rejects(
+      () =>
+        runInstaller({
+          logger: { log: () => {}, warn: () => {}, error: () => {} },
+          platform: "linux",
+          arch: "x64",
+          distBaseDir: path.join(tmpRoot, "dist"),
+          tmpDir: path.join(tmpRoot, "tmp"),
+          detectPlatformKeyFn: () => "linux-x64-gnu",
+          targetTripleForPlatformKeyFn: () => "x86_64-unknown-linux-gnu",
+          getVersionFn: () => "0.0.0",
+          parseRepoSlugFn: () => "owner/repo",
+          getDownloadBaseFn: () => "https://example.test/releases/download",
+          resolveInstallerDownloadPlanFn: async () => ({
+            archive: "docdexd-linux-x64-gnu.tar.gz",
+            expectedSha256: null,
+            source: "fallback",
+            manifestAttempt: { errors: [], resolved: null, manifestName: null }
+          }),
+          downloadFn: async () => {
+            downloadCalls += 1;
+          }
+        }),
+      (err) => {
+        assert.equal(err.code, "DOCDEX_CHECKSUM_UNUSABLE");
+        assert.ok(String(err.message).includes("Missing SHA-256 integrity metadata"));
+        return true;
+      }
+    );
+    assert.equal(downloadCalls, 0);
+  } finally {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  }
 });

@@ -96,6 +96,7 @@ If your platform is supported but the expected release artifact is missing (e.g.
 
 Risk note:
 - This bypasses the installer’s download + integrity verification flow; only do this with binaries you built yourself (or otherwise fully trust). Prefer fixing the release assets for long-term correctness.
+- Do **not** use this as a workaround for `DOCDEX_INTEGRITY_MISMATCH`; an integrity mismatch means a downloaded archive did not match the published SHA-256 (potential cache corruption or tampering). Prefer a clean reinstall (without proxies/caches) or building from source.
 
 ---
 

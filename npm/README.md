@@ -6,6 +6,7 @@ Docdex is a lightweight, local documentation indexer/search daemon. It runs per-
 - Requires Node.js >= 18.
 - Install: `npm i -g docdex` (or run `npx docdex --version` to verify).
 - Commands: `docdex` (alias `docdexd`) downloads the right binary for your platform from the matching GitHub release.
+- Installer integrity verification (mandatory): resolves exactly one `docdexd` release asset plus an expected SHA-256 (via release manifest or `SHA256SUMS` fallback), verifies the download before extraction, and fails closed with a non-zero exit code without leaving a runnable `docdexd` in place on verification failure; see `docs/ops/installer_error_codes.md` (in the repo).
 - Supported published binaries: macOS (arm64, x64), Linux glibc (arm64, x64), Linux musl (x64), Windows (x64); installer fetches the matching platform release asset.
 - Supported platforms + manual source build + troubleshooting: `docs/ops/installer_supported_platforms.md` (in the repo).
 - Atomic staged installs + rollback guarantees: `docs/ops/installer_atomic_install_and_rollback.md`.

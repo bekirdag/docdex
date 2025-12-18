@@ -135,6 +135,10 @@ The npm installer resolves an install plan deterministically (see `npm/lib/insta
    - Legacy fallback: `<archive>.sha256` sidecar for that filename.
 4) Download, verify SHA-256 (fatal on mismatch), extract, and confirm the expected `docdexd` binary exists.
 
+Integrity policy (fail-closed):
+- If SHA-256 integrity metadata cannot be obtained from the manifest or fallback checksums, the installer aborts with `DOCDEX_CHECKSUM_UNUSABLE` (no “silent” install).
+- There is no supported mode that installs a downloaded `docdexd` archive without SHA-256 verification.
+
 If installation fails, fatal errors are deterministic and include whether fallback was attempted; see `docs/contracts/installer_error_contract_v1.md` and `docs/ops/installer_error_codes.md`.
 
 ## Manual checksum verification (audit / debugging)

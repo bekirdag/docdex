@@ -50,6 +50,7 @@ const INSTALL_METADATA_FILENAME = "docdexd-install.json";
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 const INSTALL_OUTCOME_SCHEMA_VERSION = 1;
 
 const INSTALL_OUTCOME_CODE_BY_DECISION_OUTCOME = Object.freeze({
@@ -120,6 +121,9 @@ const INSTALL_ATTEMPT_SCHEMA_VERSION = 1;
 const INSTALL_STAGING_SUFFIX = ".__docdexd_install_staging";
 const INSTALL_BACKUP_SUFFIX = ".__docdexd_install_backup";
 >>>>>>> mcoda/task/ops-01-us-05-t05
+=======
+const INTEGRITY_METHOD_LABEL = "SHA-256 checksum";
+>>>>>>> mcoda/task/ops-01-us-04-t40
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -666,6 +670,7 @@ function nowIso() {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 function normalizeInstallerOutputFormat(raw) {
   const value = String(raw || "")
     .trim()
@@ -1073,6 +1078,12 @@ async function cleanupTransientInstallerArtifacts({ fsModule, pathModule, distBa
 >>>>>>> mcoda/task/ops-01-us-05-t37
 }
 
+=======
+function uniqueInstallSuffix() {
+  return `${process.pid}.${Date.now()}`;
+}
+
+>>>>>>> mcoda/task/ops-01-us-04-t40
 async function readJsonFileIfPossible({ fsModule, filePath }) {
   if (!fsModule?.promises?.readFile) {
     return { value: null, error: "readFile_unavailable", errorCode: "READFILE_UNAVAILABLE" };
@@ -4081,6 +4092,21 @@ async function runInstaller(options) {
   let promoted = false;
 >>>>>>> mcoda/task/ops-01-us-05-t07
 
+  const normalizedExpectedSha256 = normalizeSha256Hex(expectedSha256);
+  if (!normalizedExpectedSha256) {
+    throw new ChecksumResolutionError(`Missing or invalid SHA-256 integrity metadata for ${archive} (expected by policy)`, {
+      platformKey,
+      targetTriple,
+      version,
+      repoSlug,
+      assetName: archive,
+      source,
+      manifestName: manifestAttempt?.manifestName ?? null,
+      manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+      fallbackAttempted: source === "fallback",
+      fallbackReason: manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found"
+    });
+  }
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -4314,6 +4340,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     const verifiedArchiveSha256 = await verifyDownloadedFileIntegrityFn({
 =======
     const verifiedArchiveSha256 =
@@ -4332,6 +4359,12 @@ async function runInstaller(options) {
       filePath: stagedArchivePath,
 >>>>>>> mcoda/task/ops-01-us-05-t07
       expectedSha256,
+=======
+    logger.log(`[docdex] Verifying integrity of ${archive} (${INTEGRITY_METHOD_LABEL})...`);
+    const actualArchiveSha256 = await verifyDownloadedFileIntegrityFn({
+      filePath: tmpFile,
+      expectedSha256: normalizedExpectedSha256,
+>>>>>>> mcoda/task/ops-01-us-04-t40
       archiveName: archive,
       details: {
         platformKey,
@@ -4355,6 +4388,7 @@ async function runInstaller(options) {
       }
     });
 
+<<<<<<< HEAD
     let actualArchiveSha256 = null;
     try {
       actualArchiveSha256 = await verifyDownloadedFileIntegrityFn({
@@ -4714,6 +4748,64 @@ async function runInstaller(options) {
         installedAt: nowIso(),
         version,
         repoSlug,
+=======
+    logger.log(
+      `[docdex] Integrity verified (${INTEGRITY_METHOD_LABEL}): ${archive} sha256=${
+        actualArchiveSha256 || normalizedExpectedSha256
+      }`
+    );
+
+    // Stage the extracted install under distBaseDir so activation can be an atomic rename.
+    await fsModule.promises.mkdir(distBaseDir, { recursive: true });
+    const stagingDir = await fsModule.promises.mkdtemp(pathModule.join(distBaseDir, `${platformKey}.staging-`));
+    const backupDir = pathModule.join(distBaseDir, `${platformKey}.backup.${uniqueInstallSuffix()}`);
+    const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+
+    try {
+      logger.log(`[docdex] Extracting ${archive}...`);
+      try {
+        await extractTarballFn(tmpFile, stagingDir);
+      } catch (err) {
+        throw new ArchiveInvalidError(`Failed to extract archive ${archive}: ${err?.message || String(err)}`, {
+          platformKey,
+          targetTriple,
+          version,
+          repoSlug,
+          assetName: archive,
+          downloadUrl,
+          source,
+          manifestName: manifestAttempt?.manifestName ?? null,
+          manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+          fallbackAttempted: source === "fallback"
+        });
+      }
+
+      const stagedBinaryPath = pathModule.join(stagingDir, isWin32 ? "docdexd.exe" : "docdexd");
+      if (!fsModule.existsSync(stagedBinaryPath)) {
+        throw new ArchiveInvalidError(`Downloaded archive missing binary (after extract): ${stagedBinaryPath}`, {
+          platformKey,
+          targetTriple,
+          version,
+          repoSlug,
+          assetName: archive,
+          downloadUrl,
+          source,
+          manifestName: manifestAttempt?.manifestName ?? null,
+          manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+          fallbackAttempted: source === "fallback",
+          binaryPath: stagedBinaryPath
+        });
+      }
+
+      await fsModule.promises.chmod(stagedBinaryPath, 0o755).catch(() => {});
+      const binarySha256 = await sha256FileFn(stagedBinaryPath);
+
+      const metadata = {
+        schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
+        installedAt: nowIso(),
+        version,
+        repoSlug,
+>>>>>>> mcoda/task/ops-01-us-04-t40
         platformKey,
         targetTriple,
         binary: {
@@ -4722,11 +4814,16 @@ async function runInstaller(options) {
         },
         archive: {
           name: archive,
+<<<<<<< HEAD
           sha256: expectedSha256 || null,
+=======
+          sha256: normalizedExpectedSha256,
+>>>>>>> mcoda/task/ops-01-us-04-t40
           source,
           downloadUrl
         }
       };
+<<<<<<< HEAD
       await writeJsonFileAtomicFn({
         fsModule,
         pathModule,
@@ -4770,9 +4867,16 @@ async function runInstaller(options) {
 =======
         binaryPath: stagedBinaryPath
 >>>>>>> mcoda/task/ops-01-us-05-t14
+=======
+      await writeJsonFileAtomic({
+        fsModule,
+        pathModule,
+        filePath: installMetadataPath(stagingDir, pathModule),
+        value: metadata
+>>>>>>> mcoda/task/ops-01-us-04-t40
       });
-    }
 
+<<<<<<< HEAD
     await fsModule.promises.chmod(stagedBinaryPath, 0o755).catch(() => {});
 <<<<<<< HEAD
 =======
@@ -5394,6 +5498,41 @@ async function runInstaller(options) {
     }
 >>>>>>> mcoda/task/ops-01-us-05-t14
     throw err;
+=======
+      // Activate: preserve any existing install until the staged install is complete.
+      const distDirExists = existsSync ? existsSync(distDir) : false;
+      if (distDirExists) {
+        await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+        await fsModule.promises.rename(distDir, backupDir);
+      }
+      try {
+        await fsModule.promises.rename(stagingDir, distDir);
+      } catch (err) {
+        if (distDirExists) {
+          try {
+            const restoredExists = existsSync ? existsSync(distDir) : false;
+            if (!restoredExists && existsSync && existsSync(backupDir)) {
+              await fsModule.promises.rename(backupDir, distDir);
+            }
+          } catch {
+            // Best-effort rollback only.
+          }
+        }
+        throw err;
+      }
+      if (distDirExists) {
+        await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+      }
+
+      const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+      logger.log(`[docdex] Installed binary to ${binaryPath}`);
+
+      logger.log(`[docdex] Install outcome: ${local.outcome}`);
+      return { binaryPath, outcome: local.outcome };
+    } finally {
+      await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    }
+>>>>>>> mcoda/task/ops-01-us-04-t40
   } finally {
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5671,6 +5810,8 @@ function describeFatalError(err) {
       lines: [
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
+        `[docdex] Verification policy: require SHA-256 integrity metadata (fail closed when absent)`,
+        `[docdex] Verification method: ${INTEGRITY_METHOD_LABEL}`,
         err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
         "[docdex] Verification required: sha256(archive)",
         err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
@@ -5745,6 +5886,8 @@ function describeFatalError(err) {
       lines: [
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
+        `[docdex] Verification method: ${INTEGRITY_METHOD_LABEL}`,
+        "[docdex] Safety: installer aborted before activating a new binary.",
         err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
 <<<<<<< HEAD
         "[docdex] Verification: sha256(archive)",
@@ -5776,7 +5919,15 @@ function describeFatalError(err) {
       lines: [
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
-        err.details?.binaryPath ? `[docdex] Expected binary path: ${err.details.binaryPath}` : null
+        err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
+        err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
+        err.details?.binaryPath ? `[docdex] Expected binary path: ${err.details.binaryPath}` : null,
+        err.details?.source ? `[docdex] Source: ${err.details.source}` : null,
+        fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,
+        "[docdex] Next steps:",
+        "[docdex] - Re-run the install; corrupted archives can occur from transient network/proxy issues.",
+        "[docdex] - Confirm the release asset is a gzip tarball containing `docdexd` (or `docdexd.exe` on Windows) at the archive root.",
+        "[docdex] - If it still fails, build from source (`cargo build --release --locked`)."
       ].filter(Boolean)
     });
   }

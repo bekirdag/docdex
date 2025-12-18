@@ -52,7 +52,11 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 
       const expectedArchive = artifactName(platformKey);
       const expectedDownloadUrl = `${base}/v${version}/${expectedArchive}`;
+<<<<<<< HEAD
       const expectedSha256 = "a".repeat(64);
+=======
+      const expectedSha256Hex = "a".repeat(64);
+>>>>>>> mcoda/task/ops-01-us-04-t40
 
       const result = await runInstaller({
         logger: createNoopLogger(),
@@ -70,7 +74,11 @@ test("installer e2e: supported platform matrix installs expected binary layout",
           assert.equal(triple, targetTriple);
           return {
             archive: expectedArchive,
+<<<<<<< HEAD
             expectedSha256,
+=======
+            expectedSha256: expectedSha256Hex,
+>>>>>>> mcoda/task/ops-01-us-04-t40
             source: "fallback",
             manifestAttempt: { errors: [], resolved: null, manifestName: null }
           };
@@ -83,7 +91,11 @@ test("installer e2e: supported platform matrix installs expected binary layout",
         },
         verifyDownloadedFileIntegrityFn: async ({ filePath, expectedSha256, archiveName, details }) => {
           assert.equal(filePath, downloadDest);
+<<<<<<< HEAD
           assert.equal(expectedSha256, "a".repeat(64));
+=======
+          assert.equal(expectedSha256, expectedSha256Hex);
+>>>>>>> mcoda/task/ops-01-us-04-t40
           assert.equal(archiveName, expectedArchive);
           assert.ok(fs.existsSync(filePath));
           assert.equal(details.platformKey, platformKey);
@@ -114,6 +126,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 
       assert.equal(downloadUrl, expectedDownloadUrl);
       assert.equal(extractArchive, downloadDest);
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -206,6 +219,12 @@ test("installer e2e: supported platform matrix installs expected binary layout",
         `expected extract dir to be a staging dir for ${platformKey}, got ${extractDir}`
       );
 >>>>>>> mcoda/task/ops-01-us-05-t14
+=======
+      assert.ok(
+        typeof extractDir === "string" && extractDir.startsWith(path.join(distBaseDir, `${platformKey}.staging-`)),
+        `expected extractDir to be a staging directory under distBaseDir, got: ${extractDir}`
+      );
+>>>>>>> mcoda/task/ops-01-us-04-t40
       assert.equal(result.binaryPath, expectedBinaryPath);
       assert.ok(!fs.existsSync(extractDir), "staging dir should have been swapped into place");
       assert.ok(fs.existsSync(expectedBinaryPath));

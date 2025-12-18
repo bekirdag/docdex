@@ -115,13 +115,18 @@ Docdex installs `docdexd` using a staged/atomic approach so that a previously wo
 There are two relevant integrity checks:
 
 1) **Remote archive integrity (when installing)**  
+<<<<<<< HEAD
    When the installer needs to install (`install`, `upgrade`, `downgrade`, `replace`, `repair`, `reinstall_unknown`), it resolves a single release asset and (when available) a SHA-256 for that asset via:
+=======
+   When the installer needs to install (`update`, `repair`, `reinstall_unknown`), it resolves a single release asset and a required SHA-256 for that asset via:
+>>>>>>> mcoda/task/ops-01-us-04-t40
    - Release manifest (preferred), then
    - `SHA256SUMS`/`SHA256SUMS.txt`, then
    - legacy `<archive>.sha256` sidecar.
 
    The downloaded archive is verified against the expected SHA-256. If verification fails, installation fails closed with:
    - Error code: `DOCDEX_INTEGRITY_MISMATCH` (see `docs/ops/installer_error_codes.md`)
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -135,6 +140,9 @@ There are two relevant integrity checks:
 =======
    - Safety property: the installer stages downloads/extraction under `dist/.staging/<platformKey>/...` and only swaps the verified staging directory into `dist/<platformKey>/` after extraction + verification complete (atomic rename). If install fails, the previous `dist/<platformKey>/` remains runnable.
 >>>>>>> mcoda/task/ops-01-us-05-t07
+=======
+   - Safety property: the installer stages extraction and only activates the new `dist/<platformKey>/` via atomic rename after download + verification + extraction succeed (so failures do not leave a partial runnable `docdexd` behind).
+>>>>>>> mcoda/task/ops-01-us-04-t40
 
 <<<<<<< HEAD
 2) **Local binary integrity (no-op vs repair)**  

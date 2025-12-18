@@ -369,6 +369,7 @@ test("installer outcome: downgrade installs when expected version is older and w
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
+<<<<<<< HEAD
       expectedSha256: archiveSha256,
       source: "fallback",
       assetId: null,
@@ -903,6 +904,157 @@ test("installer lifecycle: update calls restart hook when binary changes", async
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
+=======
+      expectedSha256: "a".repeat(64),
+      source: "fallback",
+      manifestAttempt: { errors: [], resolved: null, manifestName: null }
+    }),
+    downloadFn: async (url, dest) => {
+      downloadUrl = url;
+      downloadDest = dest;
+      await ensureDir(path.dirname(dest));
+      await fs.promises.writeFile(dest, "fake-archive-bytes");
+    },
+    verifyDownloadedFileIntegrityFn: async ({ filePath }) => {
+      assert.equal(filePath, downloadDest);
+      assert.ok(fs.existsSync(filePath));
+      return null;
+    },
+    extractTarballFn: async (_archivePath, targetDir) => {
+      await ensureDir(targetDir);
+      const newBinaryPath = path.join(targetDir, "docdexd");
+      await fs.promises.writeFile(newBinaryPath, "new-binary\n");
+    }
+  });
+
+  assert.equal(downloadUrl, expectedDownloadUrl);
+  assert.equal(result.outcome, "update");
+
+  const metadataPath = path.join(distDir, "docdexd-install.json");
+  assert.ok(fs.existsSync(metadataPath));
+  const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
+  assert.equal(meta.version, expectedVersion);
+  assert.equal(meta.platformKey, platformKey);
+  assert.equal(typeof meta.binary?.sha256, "string");
+  assert.equal(meta.binary.sha256.length, 64);
+});
+
+test("installer atomicity: extract failure preserves existing install and cleans staging", async (t) => {
+  const base = "https://example.test/releases/download";
+  const expectedVersion = "0.0.2";
+  const installedVersion = "0.0.1";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const isWin32 = false;
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-atomicity-extract-"));
+  t.after(async () => {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  const distBaseDir = path.join(tmpRoot, "dist");
+  const distDir = path.join(distBaseDir, platformKey);
+  const tmpDir = path.join(tmpRoot, "tmp");
+  await ensureDir(tmpDir);
+
+  const oldBinaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "old-binary\n" });
+  const oldSha = await sha256File(oldBinaryPath);
+  await writeInstallMetadata({
+    distDir,
+    platformKey,
+    version: installedVersion,
+    targetTriple,
+    binarySha256: oldSha
+  });
+
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+
+  await assert.rejects(
+    () =>
+      runInstaller({
+        logger: createNoopLogger(),
+        platform: "linux",
+        arch: "x64",
+        tmpDir,
+        distBaseDir,
+        detectPlatformKeyFn: () => platformKey,
+        targetTripleForPlatformKeyFn: () => targetTriple,
+        getVersionFn: () => expectedVersion,
+        parseRepoSlugFn: () => "owner/repo",
+        getDownloadBaseFn: () => base,
+        resolveInstallerDownloadPlanFn: async () => ({
+          archive,
+          expectedSha256: "a".repeat(64),
+          source: "fallback",
+          manifestAttempt: { errors: [], resolved: null, manifestName: null }
+        }),
+        downloadFn: async (_url, dest) => {
+          await ensureDir(path.dirname(dest));
+          await fs.promises.writeFile(dest, "fake-archive-bytes");
+        },
+        verifyDownloadedFileIntegrityFn: async () => "a".repeat(64),
+        extractTarballFn: async () => {
+          throw new Error("boom: extract failed");
+        }
+      }),
+    (err) => {
+      assert.equal(err.code, "DOCDEX_ARCHIVE_INVALID");
+      assert.ok(String(err.message).includes("Failed to extract archive"));
+      return true;
+    }
+  );
+
+  assert.equal(await fs.promises.readFile(oldBinaryPath, "utf8"), "old-binary\n");
+  const meta = JSON.parse(await fs.promises.readFile(path.join(distDir, "docdexd-install.json"), "utf8"));
+  assert.equal(meta.version, installedVersion);
+
+  const entries = await fs.promises.readdir(distBaseDir);
+  assert.ok(!entries.some((e) => e.startsWith(`${platformKey}.staging-`)), "expected staging dir cleanup");
+});
+
+test("installer outcome: repair reinstalls when binary hash mismatches metadata", async (t) => {
+  const base = "https://example.test/releases/download";
+  const version = "0.0.0";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const isWin32 = false;
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-outcome-repair-"));
+  t.after(async () => {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  const distBaseDir = path.join(tmpRoot, "dist");
+  const distDir = path.join(distBaseDir, platformKey);
+  const tmpDir = path.join(tmpRoot, "tmp");
+  await ensureDir(tmpDir);
+
+  const binaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "original\n" });
+  const originalSha = await sha256File(binaryPath);
+  await writeInstallMetadata({ distDir, platformKey, version, targetTriple, binarySha256: originalSha });
+
+  await fs.promises.writeFile(binaryPath, "corrupted\n");
+
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+
+  const result = await runInstaller({
+    logger: createNoopLogger(),
+    platform: "linux",
+    arch: "x64",
+    tmpDir,
+    distBaseDir,
+    detectPlatformKeyFn: () => platformKey,
+    targetTripleForPlatformKeyFn: () => targetTriple,
+    getVersionFn: () => version,
+    parseRepoSlugFn: () => "owner/repo",
+    getDownloadBaseFn: () => base,
+    resolveInstallerDownloadPlanFn: async () => ({
+      archive,
+      expectedSha256: "a".repeat(64),
+      source: "fallback",
+      manifestAttempt: { errors: [], resolved: null, manifestName: null }
+    }),
+>>>>>>> mcoda/task/ops-01-us-04-t40
     downloadFn: async (_url, dest) => {
       await ensureDir(path.dirname(dest));
       await fs.promises.writeFile(dest, "fake-archive-bytes");
@@ -963,7 +1115,7 @@ test("installer lifecycle: reinstall_unknown does not restart when binary is unc
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: "a".repeat(64),
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -1145,7 +1297,7 @@ test("installer rollback: failed extract keeps prior binary and rerun succeeds w
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: "a".repeat(64),
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),

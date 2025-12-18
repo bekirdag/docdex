@@ -701,7 +701,7 @@ test("installer: repair then converges to no-op without re-download", async (t) 
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: "a".repeat(64),
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -856,6 +856,9 @@ test("installer: repair then converges to no-op without re-download", async (t) 
   assert.equal(metadataAfterSecond, metadataAfterFirst);
   assert.equal(binaryAfterSecond, binaryAfterFirst);
 });
+<<<<<<< HEAD
 >>>>>>> mcoda/task/ops-01-us-06-t14
 =======
 >>>>>>> mcoda/task/ops-01-us-06-t03
+=======
+>>>>>>> mcoda/task/ops-01-us-04-t40

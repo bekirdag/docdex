@@ -27,6 +27,14 @@ const INVALID_JSON_ERROR = "invalid JSON";
 const INSTALL_METADATA_SCHEMA_VERSION = 1;
 const INSTALL_METADATA_FILENAME = "docdexd-install.json";
 
+function libcFromPlatformKey(platformKey) {
+  if (typeof platformKey !== "string") return null;
+  if (!platformKey.startsWith("linux-")) return null;
+  if (platformKey.endsWith("-gnu")) return "gnu";
+  if (platformKey.endsWith("-musl")) return "musl";
+  return null;
+}
+
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
   DOCDEX_UNSUPPORTED_PLATFORM: 3,
@@ -872,6 +880,7 @@ async function resolveInstallerDownloadPlan({
   version,
   platformKey,
   targetTriple,
+  detected = null,
   logger = console,
   downloadTextFn = downloadText,
   artifactNameFn = artifactName,
@@ -896,9 +905,13 @@ async function resolveInstallerDownloadPlan({
   } catch (err) {
     if (err instanceof ManifestResolutionError) {
       const expectedAsset = artifactNameFn(platformKey);
+      const detectedDetails = detected && typeof detected === "object" ? detected : null;
       err.details = {
         ...withBaseDetails(err.details),
+        detected: detectedDetails,
         platformKey,
+        repoSlug,
+        version,
         expectedAsset,
         expectedAssetPattern: assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset })
       };
@@ -1070,6 +1083,7 @@ async function runInstaller(options) {
     version,
     platformKey,
     targetTriple,
+    detected: { os: detectedPlatform, arch: detectedArch, libc: libcFromPlatformKey(platformKey) },
     logger
   });
 
@@ -1376,6 +1390,23 @@ function describeFatalError(err) {
 
   if (err instanceof ManifestResolutionError) {
     const platformKey = typeof err.details?.platformKey === "string" ? err.details.platformKey : null;
+    const detectedOs =
+      typeof err.details?.detected?.os === "string"
+        ? err.details.detected.os
+        : typeof err.details?.detected?.platform === "string"
+          ? err.details.detected.platform
+          : null;
+    const detectedArch = typeof err.details?.detected?.arch === "string" ? err.details.detected.arch : null;
+    const detected = detectedOs && detectedArch ? `${detectedOs}/${detectedArch}` : null;
+    const detectedLibc =
+      typeof err.details?.detected?.libc === "string" ? err.details.detected.libc : libcFromPlatformKey(platformKey);
+
+    const expectedAsset =
+      typeof err.details?.expectedAsset === "string" && err.details.expectedAsset.trim()
+        ? err.details.expectedAsset.trim()
+        : platformKey
+          ? artifactName(platformKey)
+          : null;
     const expectedAssetPattern =
       typeof err.details?.expectedAssetPattern === "string"
         ? err.details.expectedAssetPattern
@@ -1383,19 +1414,34 @@ function describeFatalError(err) {
           ? assetPatternForPlatformKey(platformKey)
           : assetPatternForPlatformKey(null);
 
-    const lines =
+    const title =
       err.code === "DOCDEX_ASSET_NO_MATCH"
-        ? [
-            "[docdex] install failed: missing artifact/version sync issue (manifest has no asset for this target)",
-            `[docdex] error code: ${err.code}`,
-            err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
-            `[docdex] Asset naming pattern: ${expectedAssetPattern}`,
-            `[docdex] Details: ${err.message}`
-          ].filter(Boolean)
-        : [`[docdex] install failed: ${err.message}`, `[docdex] error code: ${err.code}`];
+        ? "missing artifact/version sync issue (manifest has no asset for this target)"
+        : err.code === "DOCDEX_ASSET_MULTI_MATCH"
+          ? "missing artifact/version sync issue (manifest has multiple assets for this target)"
+          : err.message;
+
+    const lines = [
+      `[docdex] install failed: ${title}`,
+      `[docdex] error code: ${err.code}`,
+      detected ? `[docdex] Detected platform: ${detected}` : null,
+      detectedLibc ? `[docdex] Detected libc: ${detectedLibc}` : null,
+      platformKey ? `[docdex] Platform key: ${platformKey}` : null,
+      err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
+      err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,
+      err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,
+      err.details?.version ? `[docdex] Version: v${err.details.version}` : null,
+      err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
+      expectedAsset ? `[docdex] Expected asset: ${expectedAsset}` : null,
+      expectedAssetPattern ? `[docdex] Asset naming pattern: ${expectedAssetPattern}` : null,
+      err.details?.manifestUrl ? `[docdex] Manifest URL: ${err.details.manifestUrl}` : null,
+      err.message && err.code !== "DOCDEX_ASSET_NO_MATCH" ? `[docdex] Details: ${err.message}` : null
+    ].filter(Boolean);
 
     if (fallbackAttempted === false) {
-      lines.push("[docdex] Fallback was not attempted because a manifest was present but unusable.");
+      lines.push(
+        "[docdex] Fallback was not attempted because a manifest was present but did not deterministically resolve a single asset for this target."
+      );
     }
     if (Array.isArray(err.details?.supported) && err.details.supported.length) {
       lines.push(`[docdex] supported targets: ${err.details.supported.join(", ")}`);

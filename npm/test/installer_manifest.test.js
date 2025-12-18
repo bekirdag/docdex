@@ -239,6 +239,7 @@ test("installer fails deterministically when manifest exists but does not suppor
         version,
         platformKey: "linux-x64-gnu",
         targetTriple: "aarch64-unknown-linux-gnu",
+        detected: { os: "linux", arch: "x64", libc: "gnu" },
         downloadTextFn,
         getDownloadBaseFn: () => base,
         manifestCandidateNamesFn: () => ["docdexd-manifest.json"],
@@ -251,6 +252,9 @@ test("installer fails deterministically when manifest exists but does not suppor
       assert.equal(err.details.fallbackReason, "manifest_present_but_unusable");
       assert.equal(err.details.manifestName, "docdexd-manifest.json");
       assert.equal(err.details.manifestUrl, `${base}/v${version}/docdexd-manifest.json`);
+      assert.equal(err.details.repoSlug, "owner/repo");
+      assert.equal(err.details.version, version);
+      assert.deepEqual(err.details.detected, { os: "linux", arch: "x64", libc: "gnu" });
       return true;
     }
   );
@@ -336,6 +340,7 @@ test("installer fails deterministically when manifest has multiple assets for a 
         version,
         platformKey: "linux-x64-gnu",
         targetTriple: "x86_64-unknown-linux-gnu",
+        detected: { os: "linux", arch: "x64", libc: "gnu" },
         downloadTextFn,
         getDownloadBaseFn: () => base,
         manifestCandidateNamesFn: () => ["docdexd-manifest.json"],
@@ -346,6 +351,9 @@ test("installer fails deterministically when manifest has multiple assets for a 
       assert.equal(err.code, "DOCDEX_ASSET_MULTI_MATCH");
       assert.equal(err.details.fallbackAttempted, false);
       assert.equal(err.details.fallbackReason, "manifest_present_but_unusable");
+      assert.equal(err.details.repoSlug, "owner/repo");
+      assert.equal(err.details.version, version);
+      assert.deepEqual(err.details.detected, { os: "linux", arch: "x64", libc: "gnu" });
       assert.deepEqual(err.details.matches, [
         "docdexd-linux-x64-gnu-alt.tar.gz",
         "docdexd-linux-x64-gnu.tar.gz"

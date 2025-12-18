@@ -52,6 +52,12 @@ Additional common keys (when available):
 - `statusCode` (number|null)
 - `expectedSha256` (string|null)
 - `actualSha256` (string|null)
+- `verificationMethod` (string|null; currently `sha256`)
+- `integrityMetadataSource` (string|null; one of `manifest`, `checksums`, `sidecar`)
+- `integrityMetadataName` (string|null; e.g. `docdex-release-manifest.json`, `SHA256SUMS`, or `<archive>.sha256`)
+- `integrityMetadataSources` (string[]|null; configured list of sources in order)
+- `integrityMissingPolicy` (string|null; `fallback` or `abort`)
+- `integrityAttemptedSources` (string[]|null; sources actually attempted in order)
 
 ## Canonical codes + exit codes
 

@@ -12,6 +12,9 @@ Docdex is a lightweight, local documentation indexer/search daemon. It runs per-
 - Supported platforms + manual source build + troubleshooting: `docs/ops/installer_supported_platforms.md`.
 - Release manifest schema (assets + checksums + fallback rules): `docs/contracts/release_manifest_schema_v1.md`.
 - If you publish from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` before installing so the downloader fetches your release assets.
+- Integrity configuration (defaults are safe and deterministic):
+  - `DOCDEX_INTEGRITY_METADATA_SOURCES=manifest,checksums,sidecar` (order matters; default shown)
+  - `DOCDEX_INTEGRITY_MISSING_POLICY=fallback|abort` (default: `fallback`)
 - Distribution: binaries stay in GitHub Releases (small npm package); postinstall fetches `docdexd-<platform>.tar.gz` matching the npm version.
 - Platform diagnostics (no download): `docdex doctor` (or `docdex diagnostics`) prints detected OS/arch(/libc), whether supported, and the expected Rust target triple + release asset naming pattern.
 - Publishing uses npm Trusted Publishing (OIDC) — no NPM token needed; see `.github/workflows/release.yml`.

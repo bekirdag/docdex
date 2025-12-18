@@ -27,6 +27,11 @@ const INVALID_JSON_ERROR = "invalid JSON";
 const INSTALL_METADATA_SCHEMA_VERSION = 1;
 const INSTALL_METADATA_FILENAME = "docdexd-install.json";
 
+const DEFAULT_INTEGRITY_METADATA_SOURCES = Object.freeze(["manifest", "checksums", "sidecar"]);
+const DEFAULT_INTEGRITY_MISSING_POLICY = "fallback";
+const ALLOWED_INTEGRITY_METADATA_SOURCES = Object.freeze(["manifest", "checksums", "sidecar"]);
+const ALLOWED_INTEGRITY_MISSING_POLICIES = Object.freeze(["fallback", "abort"]);
+
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
   DOCDEX_UNSUPPORTED_PLATFORM: 3,
@@ -645,6 +650,59 @@ function parseSha256File(text, expectedFilename) {
   return null;
 }
 
+function parseCsvEnv(value) {
+  return String(value)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function resolveIntegrityConfigFromEnv(env = process.env) {
+  const sourcesRaw = env.DOCDEX_INTEGRITY_METADATA_SOURCES || env.DOCDEX_INTEGRITY_SOURCES;
+  const policyRaw = env.DOCDEX_INTEGRITY_MISSING_POLICY || env.DOCDEX_INTEGRITY_POLICY;
+
+  const metadataSources = sourcesRaw ? parseCsvEnv(sourcesRaw).map((s) => s.toLowerCase()) : null;
+  const missingPolicy = policyRaw ? String(policyRaw).trim().toLowerCase() : DEFAULT_INTEGRITY_MISSING_POLICY;
+
+  if (metadataSources && metadataSources.length === 0) {
+    throw new InstallerConfigError(
+      "Invalid DOCDEX_INTEGRITY_METADATA_SOURCES: list cannot be empty (allowed: manifest, checksums, sidecar)",
+      { integrityMetadataSources: [], integrityMissingPolicy: missingPolicy }
+    );
+  }
+
+  const resolvedSources = metadataSources || DEFAULT_INTEGRITY_METADATA_SOURCES.slice();
+  const invalid = resolvedSources.filter((s) => !ALLOWED_INTEGRITY_METADATA_SOURCES.includes(s));
+  if (invalid.length) {
+    throw new InstallerConfigError(
+      `Invalid DOCDEX_INTEGRITY_METADATA_SOURCES value(s): ${invalid.join(", ")} (allowed: ${ALLOWED_INTEGRITY_METADATA_SOURCES.join(
+        ", "
+      )})`,
+      { integrityMetadataSources: resolvedSources, integrityMissingPolicy: missingPolicy }
+    );
+  }
+
+  const uniqSources = [];
+  for (const s of resolvedSources) if (!uniqSources.includes(s)) uniqSources.push(s);
+  if (!uniqSources.length) {
+    throw new InstallerConfigError(
+      "Invalid DOCDEX_INTEGRITY_METADATA_SOURCES: must include at least one source (manifest, checksums, sidecar)",
+      { integrityMetadataSources: uniqSources, integrityMissingPolicy: missingPolicy }
+    );
+  }
+
+  if (!ALLOWED_INTEGRITY_MISSING_POLICIES.includes(missingPolicy)) {
+    throw new InstallerConfigError(
+      `Invalid DOCDEX_INTEGRITY_MISSING_POLICY value: ${missingPolicy} (allowed: ${ALLOWED_INTEGRITY_MISSING_POLICIES.join(
+        ", "
+      )})`,
+      { integrityMetadataSources: uniqSources, integrityMissingPolicy: missingPolicy }
+    );
+  }
+
+  return { metadataSources: uniqSources, missingPolicy };
+}
+
 function checksumCandidateNames() {
   const envNames = process.env.DOCDEX_CHECKSUMS_NAMES || process.env.DOCDEX_CHECKSUMS_NAME;
   if (envNames) {
@@ -877,100 +935,158 @@ async function resolveInstallerDownloadPlan({
   artifactNameFn = artifactName,
   getDownloadBaseFn = getDownloadBase,
   manifestCandidateNamesFn = manifestCandidateNames,
-  checksumCandidateNamesFn = checksumCandidateNames
+  checksumCandidateNamesFn = checksumCandidateNames,
+  integrityConfigFn = resolveIntegrityConfigFromEnv
 }) {
+  const integrityConfig = integrityConfigFn();
+  const configuredIntegritySources = integrityConfig.metadataSources || DEFAULT_INTEGRITY_METADATA_SOURCES.slice();
+  const integrityMissingPolicy = integrityConfig.missingPolicy || DEFAULT_INTEGRITY_MISSING_POLICY;
+
+  const defaultArchive = artifactNameFn(platformKey);
+
   let archive = null;
   let expectedSha256 = null;
   let source = "fallback";
 
-  let manifestAttempt;
-  try {
-    manifestAttempt = await tryResolveAssetViaManifest({
-      repoSlug,
-      version,
-      targetTriple,
-      downloadTextFn,
-      getDownloadBaseFn,
-      manifestCandidateNamesFn
-    });
-  } catch (err) {
-    if (err instanceof ManifestResolutionError) {
-      const expectedAsset = artifactNameFn(platformKey);
-      err.details = {
-        ...withBaseDetails(err.details),
-        platformKey,
-        expectedAsset,
-        expectedAssetPattern: assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset })
-      };
+  let integrityMetadataSource = null;
+  let integrityMetadataName = null;
+
+  let manifestAttempt = { manifestName: null, resolved: null, errors: [], events: [], attempted: false };
+  let checksumAttempt = null;
+  let sidecarAttempted = false;
+
+  const attemptedIntegritySources = [];
+
+  for (const configuredSource of configuredIntegritySources) {
+    if (configuredSource === "manifest") {
+      attemptedIntegritySources.push("manifest");
+      try {
+        manifestAttempt = await tryResolveAssetViaManifest({
+          repoSlug,
+          version,
+          targetTriple,
+          downloadTextFn,
+          getDownloadBaseFn,
+          manifestCandidateNamesFn
+        });
+      } catch (err) {
+        if (err instanceof ManifestResolutionError) {
+          const expectedAsset = artifactNameFn(platformKey);
+          err.details = {
+            ...withBaseDetails(err.details),
+            platformKey,
+            expectedAsset,
+            expectedAssetPattern: assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset })
+          };
+        }
+        throw err;
+      }
+
+      if (manifestAttempt.resolved) {
+        archive = manifestAttempt.resolved.asset.name;
+        expectedSha256 = manifestAttempt.resolved.integrity.sha256;
+        source = `manifest:${manifestAttempt.manifestName}`;
+        integrityMetadataSource = "manifest";
+        integrityMetadataName = manifestAttempt.manifestName;
+        break;
+      }
+
+      if (integrityMissingPolicy === "fallback") {
+        if (manifestAttempt.errors && manifestAttempt.errors.length) {
+          logger.warn(`[docdex] Manifest unavailable; falling back. Details: ${manifestAttempt.errors.join(" | ")}`);
+        } else {
+          logger.log("[docdex] No manifest found; falling back to deterministic asset naming.");
+        }
+      }
     }
-    throw err;
-  }
 
-  if (manifestAttempt.resolved) {
-    archive = manifestAttempt.resolved.asset.name;
-    expectedSha256 = manifestAttempt.resolved.integrity.sha256;
-    source = `manifest:${manifestAttempt.manifestName}`;
-  } else if (manifestAttempt.errors && manifestAttempt.errors.length) {
-    logger.warn(`[docdex] Manifest unavailable; falling back. Details: ${manifestAttempt.errors.join(" | ")}`);
-  } else {
-    logger.log("[docdex] No manifest found; falling back to deterministic asset naming.");
-  }
+    if (configuredSource === "checksums") {
+      attemptedIntegritySources.push("checksums");
+      if (!archive) archive = defaultArchive;
+      checksumAttempt = await tryResolveSha256ViaChecksumFiles({
+        repoSlug,
+        version,
+        archive,
+        downloadTextFn,
+        getDownloadBaseFn,
+        checksumCandidateNamesFn
+      });
+      if (checksumAttempt.sha256) {
+        expectedSha256 = checksumAttempt.sha256;
+        integrityMetadataSource = "checksums";
+        integrityMetadataName = checksumAttempt.checksumName;
+        break;
+      }
+    }
 
-  if (!archive) {
-    archive = artifactNameFn(platformKey);
-
-    const checksumAttempt = await tryResolveSha256ViaChecksumFiles({
-      repoSlug,
-      version,
-      archive,
-      downloadTextFn,
-      getDownloadBaseFn,
-      checksumCandidateNamesFn
-    });
-
-    if (checksumAttempt.sha256) {
-      expectedSha256 = checksumAttempt.sha256;
-    } else {
-      // Legacy fallback: per-asset .sha256 sidecar.
+    if (configuredSource === "sidecar") {
+      attemptedIntegritySources.push("sidecar");
+      sidecarAttempted = true;
+      if (!archive) archive = defaultArchive;
       const shaUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}.sha256`;
       try {
         const shaText = await downloadTextFn(shaUrl);
         expectedSha256 = parseSha256File(shaText, archive);
+        if (expectedSha256) {
+          integrityMetadataSource = "sidecar";
+          integrityMetadataName = `${archive}.sha256`;
+          break;
+        }
       } catch {
         expectedSha256 = null;
       }
     }
 
-    if (!expectedSha256) {
-      const manifestCandidates = manifestCandidateNamesFn();
-      const checksumCandidates = checksumCandidateNamesFn();
-      throw new ChecksumResolutionError(
-        `Missing SHA-256 integrity metadata for ${archive} (tried manifest ${manifestCandidates.join(
-          ", "
-        )} and checksums ${checksumCandidates.join(", ")})`,
-        {
-          platformKey,
-          targetTriple,
-          version,
-          repoSlug,
-          assetName: archive,
-          source: "fallback",
-          manifestName: manifestAttempt?.manifestName ?? null,
-          manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
-          fallbackAttempted: true,
-          fallbackReason: manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found",
-          checksumCandidates,
-          checksumErrors: checksumAttempt?.errors ?? null,
-          checksumEvents: checksumAttempt?.events ?? null
-        }
-      );
-    }
+    if (integrityMissingPolicy === "abort") break;
+  }
+
+  if (!expectedSha256) {
+    if (!archive) archive = defaultArchive;
+    const manifestCandidates = configuredIntegritySources.includes("manifest") ? manifestCandidateNamesFn() : [];
+    const checksumCandidates = configuredIntegritySources.includes("checksums") ? checksumCandidateNamesFn() : [];
+    const fallbackReason = attemptedIntegritySources.includes("manifest")
+      ? manifestAttempt?.errors?.length
+        ? "manifest_unavailable"
+        : "manifest_not_found"
+      : null;
+    throw new ChecksumResolutionError(
+      `Missing SHA-256 integrity metadata for ${archive} (sources=${configuredIntegritySources.join(
+        ", "
+      )}; policy=${integrityMissingPolicy})`,
+      {
+        platformKey,
+        targetTriple,
+        version,
+        repoSlug,
+        assetName: archive,
+        source: "fallback",
+        manifestName: manifestAttempt?.manifestName ?? null,
+        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+        fallbackAttempted: integrityMissingPolicy === "fallback" && configuredIntegritySources.length > 1,
+        fallbackReason,
+        integrityMetadataSources: configuredIntegritySources,
+        integrityMissingPolicy,
+        integrityAttemptedSources: attemptedIntegritySources.slice(),
+        manifestCandidates: manifestCandidates.length ? manifestCandidates : null,
+        checksumCandidates: checksumCandidates.length ? checksumCandidates : null,
+        checksumErrors: checksumAttempt?.errors ?? null,
+        checksumEvents: checksumAttempt?.events ?? null,
+        sidecarAttempted
+      }
+    );
   }
 
   return {
     archive,
     expectedSha256,
     source,
+    integrity: {
+      verificationMethod: "sha256",
+      metadataSource: integrityMetadataSource,
+      metadataName: integrityMetadataName,
+      metadataSourcesConfigured: configuredIntegritySources,
+      missingPolicy: integrityMissingPolicy
+    },
     manifestAttempt: { ...manifestAttempt, fallbackAttempted: !manifestAttempt.resolved }
   };
 }
@@ -1065,7 +1181,7 @@ async function runInstaller(options) {
 
   const repoSlug = parseRepoSlugFn();
 
-  const { archive, expectedSha256, source, manifestAttempt } = await resolveInstallerDownloadPlanFn({
+  const { archive, expectedSha256, source, integrity, manifestAttempt } = await resolveInstallerDownloadPlanFn({
     repoSlug,
     version,
     platformKey,
@@ -1132,6 +1248,11 @@ async function runInstaller(options) {
         repoSlug,
         downloadUrl,
         source,
+        verificationMethod: integrity?.verificationMethod || "sha256",
+        integrityMetadataSource: integrity?.metadataSource ?? null,
+        integrityMetadataName: integrity?.metadataName ?? null,
+        integrityMetadataSourcesConfigured: integrity?.metadataSourcesConfigured ?? null,
+        integrityMissingPolicy: integrity?.missingPolicy ?? null,
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
         fallbackAttempted: source === "fallback"
@@ -1178,6 +1299,10 @@ async function runInstaller(options) {
         name: archive,
         sha256: expectedSha256 || null,
         source,
+        integrityMetadataSource: integrity?.metadataSource ?? null,
+        integrityMetadataName: integrity?.metadataName ?? null,
+        integrityMetadataSourcesConfigured: integrity?.metadataSourcesConfigured ?? null,
+        integrityMissingPolicy: integrity?.missingPolicy ?? null,
         downloadUrl
       }
     };
@@ -1296,6 +1421,9 @@ function describeFatalError(err) {
 
   if (err instanceof ChecksumResolutionError) {
     const checksumCandidates = Array.isArray(err.details?.checksumCandidates) ? err.details.checksumCandidates : [];
+    const integritySources = Array.isArray(err.details?.integrityMetadataSources) ? err.details.integrityMetadataSources : [];
+    const integrityAttempted = Array.isArray(err.details?.integrityAttemptedSources) ? err.details.integrityAttemptedSources : [];
+    const integrityPolicy = typeof err.details?.integrityMissingPolicy === "string" ? err.details.integrityMissingPolicy : null;
     return {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
@@ -1303,8 +1431,12 @@ function describeFatalError(err) {
       lines: [
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
+        "[docdex] Verification method: sha256",
         err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
         err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
+        integritySources.length ? `[docdex] Integrity metadata sources: ${integritySources.join(", ")}` : null,
+        integrityPolicy ? `[docdex] Missing metadata policy: ${integrityPolicy}` : null,
+        integrityAttempted.length ? `[docdex] Sources attempted: ${integrityAttempted.join(", ")}` : null,
         err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,
         err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,
         checksumCandidates.length
@@ -1313,6 +1445,8 @@ function describeFatalError(err) {
         err.details?.fallbackReason ? `[docdex] Fallback reason: ${err.details.fallbackReason}` : null,
         "[docdex] Next steps:",
         "[docdex] - Ensure the GitHub Release includes `docdex-release-manifest.json` or `SHA256SUMS` with a line for this asset.",
+        "[docdex] - Configure integrity metadata sources with `DOCDEX_INTEGRITY_METADATA_SOURCES=manifest,checksums,sidecar` (order matters).",
+        "[docdex] - Configure missing-metadata behavior with `DOCDEX_INTEGRITY_MISSING_POLICY=fallback|abort` (default: fallback).",
         "[docdex] - If installing from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` to the repo that hosts the release assets.",
         "[docdex] - If you cannot publish checksums, build from source (`cargo build --release --locked`)."
       ].filter(Boolean)
@@ -1337,6 +1471,10 @@ function describeFatalError(err) {
   if (err instanceof IntegrityMismatchError) {
     const expectedSha256 = typeof err.details?.expectedSha256 === "string" ? err.details.expectedSha256 : null;
     const actualSha256 = typeof err.details?.actualSha256 === "string" ? err.details.actualSha256 : null;
+    const verificationMethod = typeof err.details?.verificationMethod === "string" ? err.details.verificationMethod : null;
+    const integrityMetadataSource =
+      typeof err.details?.integrityMetadataSource === "string" ? err.details.integrityMetadataSource : null;
+    const integrityMetadataName = typeof err.details?.integrityMetadataName === "string" ? err.details.integrityMetadataName : null;
     return {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
@@ -1344,10 +1482,13 @@ function describeFatalError(err) {
       lines: [
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
+        verificationMethod ? `[docdex] Verification method: ${verificationMethod}` : "[docdex] Verification method: sha256",
         err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
         err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
         expectedSha256 ? `[docdex] Expected sha256: ${expectedSha256}` : null,
         actualSha256 ? `[docdex] Actual sha256:   ${actualSha256}` : null,
+        integrityMetadataSource ? `[docdex] Integrity metadata source: ${integrityMetadataSource}` : null,
+        integrityMetadataName ? `[docdex] Integrity metadata name: ${integrityMetadataName}` : null,
         err.details?.source ? `[docdex] Source: ${err.details.source}` : null,
         err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,
         err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,

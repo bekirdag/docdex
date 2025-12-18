@@ -55,6 +55,14 @@ class UnsupportedPlatformError extends Error {
 const SUPPORTED_PLATFORM_KEYS = PUBLISHED_PLATFORM_KEYS;
 const SUPPORTED_TARGET_TRIPLES = PUBLISHED_TARGET_TRIPLES;
 
+function libcForPlatformKey(platformKey) {
+  if (!platformKey || typeof platformKey !== "string") return null;
+  if (!platformKey.startsWith("linux-")) return null;
+  if (platformKey.endsWith("-gnu")) return "gnu";
+  if (platformKey.endsWith("-musl")) return "musl";
+  return null;
+}
+
 function normalizeLibc(value) {
   if (value == null) return null;
   const libc = String(value).toLowerCase().trim();
@@ -281,8 +289,9 @@ function resolvePlatformPolicy(options) {
   const arch = options?.arch ?? process.arch;
   const platformKey = detectPlatformKey(options);
   const targetTriple = targetTripleForPlatformKey(platformKey);
+  const libc = platform === "linux" ? libcForPlatformKey(platformKey) : null;
   return {
-    detected: { platform, arch },
+    detected: { platform, arch, ...(libc ? { libc } : {}) },
     platformKey,
     targetTriple,
     expectedAssetName: artifactName(platformKey),
@@ -295,6 +304,7 @@ module.exports = {
   detectLibcFromRuntime,
   detectPlatformKey,
   UnsupportedPlatformError,
+  libcForPlatformKey,
   artifactName,
   assetPatternForPlatformKey,
   targetTripleForPlatformKey,

@@ -22,6 +22,7 @@ const {
   artifactName,
   assetPatternForPlatformKey,
   detectPlatformKey,
+  libcForPlatformKey,
   resolvePlatformPolicy,
   targetTripleForPlatformKey,
   UnsupportedPlatformError
@@ -3944,13 +3945,14 @@ async function runInstaller(options) {
     (opts.detectPlatformKeyFn || opts.targetTripleForPlatformKeyFn
       ? () => {
           const platformKey = detectPlatformKeyFn();
+          const libc = detectedPlatform === "linux" ? libcForPlatformKey(platformKey) : null;
           const targetTriple = targetTripleForPlatformKeyFn(platformKey);
           const expectedAssetName = artifactNameFn(platformKey);
           const expectedAssetPattern = assetPatternForPlatformKeyFn(platformKey, {
             exampleAssetName: expectedAssetName
           });
           return {
-            detected: { platform: detectedPlatform, arch: detectedArch },
+            detected: { platform: detectedPlatform, arch: detectedArch, ...(libc ? { libc } : {}) },
             platformKey,
             targetTriple,
             expectedAssetName,
@@ -3969,6 +3971,7 @@ async function runInstaller(options) {
 
   const platformKey = platformPolicy.platformKey;
   const targetTriple = platformPolicy.targetTriple;
+  const detectedLibc = platformPolicy?.detected?.libc ?? null;
   const version = getVersionFn();
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -4682,7 +4685,7 @@ async function runInstaller(options) {
       if (err && typeof err.statusCode === "number" && err.statusCode === 404) {
         const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
         throw new MissingArtifactError({
-          detected: { os: detectedPlatform, arch: detectedArch },
+          detected: { os: detectedPlatform, arch: detectedArch, ...(detectedLibc ? { libc: detectedLibc } : {}) },
           platformKey,
           targetTriple,
           assetName: archive,
@@ -6220,6 +6223,7 @@ function describeFatalError(err) {
   }
 
   if (err instanceof MissingArtifactError) {
+<<<<<<< HEAD
     const detectedOs =
       err.details?.detected && typeof err.details.detected === "object"
         ? err.details.detected.os ?? err.details.detected.platform
@@ -6229,6 +6233,15 @@ function describeFatalError(err) {
     const detected =
       typeof detectedOs === "string" && detectedOs && typeof detectedArch === "string" && detectedArch
         ? `${detectedOs}/${detectedArch}`
+=======
+    const detectedLibc =
+      err.details?.detected && typeof err.details.detected.libc === "string" && err.details.detected.libc.trim()
+        ? err.details.detected.libc.trim()
+        : null;
+    const detected =
+      err.details?.detected
+        ? `${err.details.detected.os}/${err.details.detected.arch}${detectedLibc ? `/${detectedLibc}` : ""}`
+>>>>>>> mcoda/task/ops-01-us-02-t40
         : null;
     const platformKey = typeof err.details?.platformKey === "string" ? err.details.platformKey : null;
     let expectedTargetTriple =
@@ -6521,6 +6534,7 @@ function describeFatalError(err) {
 
     const title =
       err.code === "DOCDEX_ASSET_NO_MATCH"
+<<<<<<< HEAD
         ? "missing artifact/version sync issue (manifest has no asset for this target)"
         : err.code === "DOCDEX_ASSET_MULTI_MATCH"
           ? "missing artifact/version sync issue (manifest has multiple assets for this target)"
@@ -6542,6 +6556,21 @@ function describeFatalError(err) {
       err.details?.manifestUrl ? `[docdex] Manifest URL: ${err.details.manifestUrl}` : null,
       err.message && err.code !== "DOCDEX_ASSET_NO_MATCH" ? `[docdex] Details: ${err.message}` : null
     ].filter(Boolean);
+=======
+        ? [
+            "[docdex] install failed: missing artifact/version sync issue (manifest has no asset for this target)",
+            `[docdex] error code: ${err.code}`,
+            platformKey ? `[docdex] Platform key: ${platformKey}` : null,
+            err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
+            `[docdex] Asset naming pattern: ${expectedAssetPattern}`,
+            `[docdex] Details: ${err.message}`
+          ].filter(Boolean)
+        : [
+            `[docdex] install failed: ${err.message}`,
+            `[docdex] error code: ${err.code}`,
+            platformKey ? `[docdex] Platform key: ${platformKey}` : null
+          ].filter(Boolean);
+>>>>>>> mcoda/task/ops-01-us-02-t40
 
     if (fallbackAttempted === false) {
       lines.push(

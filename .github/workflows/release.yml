@@ -96,7 +96,7 @@ jobs:
           fi
           cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${BIN_NAME}"
           tar -czf ${{ matrix.archive }}.tar.gz -C dist "${BIN_NAME}"
-          python -c "import hashlib, pathlib; p=pathlib.Path('${{ matrix.archive }}.tar.gz'); h=hashlib.sha256(p.read_bytes()).hexdigest(); pathlib.Path(f'{p}.sha256').write_text(f'{h}  {p.name}\n')"
+          node -e "const fs=require('fs'); const crypto=require('crypto'); const p='${{ matrix.archive }}.tar.gz'; const h=crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex'); fs.writeFileSync(p+'.sha256', h+'  '+p+'\\n');"
 
       - name: Upload GitHub release assets
         uses: softprops/action-gh-release@v1

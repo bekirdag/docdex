@@ -36,14 +36,14 @@ This makes repeated installs idempotent: running the installer multiple times co
 There are two relevant integrity checks:
 
 1) **Remote archive integrity (when installing)**  
-   When the installer needs to install (`update`, `repair`, `reinstall_unknown`), it resolves a single release asset and (when available) a SHA-256 for that asset via:
+   When the installer needs to install (`update`, `repair`, `reinstall_unknown`), it resolves a single release asset and a required SHA-256 for that asset via:
    - Release manifest (preferred), then
    - `SHA256SUMS`/`SHA256SUMS.txt`, then
    - legacy `<archive>.sha256` sidecar.
 
    The downloaded archive is verified against the expected SHA-256. If verification fails, installation fails closed with:
    - Error code: `DOCDEX_INTEGRITY_MISMATCH` (see `docs/ops/installer_error_codes.md`)
-   - Safety property: the existing `dist/<platformKey>/` is only removed after the archive is successfully fetched and verified.
+   - Safety property: the installer stages extraction and only activates the new `dist/<platformKey>/` via atomic rename after download + verification + extraction succeed (so failures do not leave a partial runnable `docdexd` behind).
 
 2) **Local binary integrity (no-op vs repair)**  
    For a `no-op`, the installer verifies the existing binary by hashing it and comparing to the recorded `binary.sha256` from the last successful, verified install.
@@ -114,4 +114,3 @@ This is usually a repo state issue, not an installer issue:
 - Installer error codes + remediation: `docs/ops/installer_error_codes.md`
 - Release manifest contract: `docs/contracts/release_manifest_schema_v1.md`
 - Installer error contract: `docs/contracts/installer_error_contract_v1.md`
-

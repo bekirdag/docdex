@@ -165,7 +165,7 @@ test("installer outcome: update installs when version differs and writes fresh m
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: "a".repeat(64),
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -197,6 +197,79 @@ test("installer outcome: update installs when version differs and writes fresh m
   assert.equal(meta.platformKey, platformKey);
   assert.equal(typeof meta.binary?.sha256, "string");
   assert.equal(meta.binary.sha256.length, 64);
+});
+
+test("installer atomicity: extract failure preserves existing install and cleans staging", async (t) => {
+  const base = "https://example.test/releases/download";
+  const expectedVersion = "0.0.2";
+  const installedVersion = "0.0.1";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const isWin32 = false;
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-atomicity-extract-"));
+  t.after(async () => {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  const distBaseDir = path.join(tmpRoot, "dist");
+  const distDir = path.join(distBaseDir, platformKey);
+  const tmpDir = path.join(tmpRoot, "tmp");
+  await ensureDir(tmpDir);
+
+  const oldBinaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "old-binary\n" });
+  const oldSha = await sha256File(oldBinaryPath);
+  await writeInstallMetadata({
+    distDir,
+    platformKey,
+    version: installedVersion,
+    targetTriple,
+    binarySha256: oldSha
+  });
+
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+
+  await assert.rejects(
+    () =>
+      runInstaller({
+        logger: createNoopLogger(),
+        platform: "linux",
+        arch: "x64",
+        tmpDir,
+        distBaseDir,
+        detectPlatformKeyFn: () => platformKey,
+        targetTripleForPlatformKeyFn: () => targetTriple,
+        getVersionFn: () => expectedVersion,
+        parseRepoSlugFn: () => "owner/repo",
+        getDownloadBaseFn: () => base,
+        resolveInstallerDownloadPlanFn: async () => ({
+          archive,
+          expectedSha256: "a".repeat(64),
+          source: "fallback",
+          manifestAttempt: { errors: [], resolved: null, manifestName: null }
+        }),
+        downloadFn: async (_url, dest) => {
+          await ensureDir(path.dirname(dest));
+          await fs.promises.writeFile(dest, "fake-archive-bytes");
+        },
+        verifyDownloadedFileIntegrityFn: async () => "a".repeat(64),
+        extractTarballFn: async () => {
+          throw new Error("boom: extract failed");
+        }
+      }),
+    (err) => {
+      assert.equal(err.code, "DOCDEX_ARCHIVE_INVALID");
+      assert.ok(String(err.message).includes("Failed to extract archive"));
+      return true;
+    }
+  );
+
+  assert.equal(await fs.promises.readFile(oldBinaryPath, "utf8"), "old-binary\n");
+  const meta = JSON.parse(await fs.promises.readFile(path.join(distDir, "docdexd-install.json"), "utf8"));
+  assert.equal(meta.version, installedVersion);
+
+  const entries = await fs.promises.readdir(distBaseDir);
+  assert.ok(!entries.some((e) => e.startsWith(`${platformKey}.staging-`)), "expected staging dir cleanup");
 });
 
 test("installer outcome: repair reinstalls when binary hash mismatches metadata", async (t) => {
@@ -237,7 +310,7 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: "a".repeat(64),
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -297,7 +370,7 @@ test("installer outcome: reinstall_unknown reinstalls when metadata is missing",
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: "a".repeat(64),
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -361,7 +434,7 @@ test("installer outcome: reinstall_unknown reinstalls when integrity cannot be v
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: "a".repeat(64),
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),

@@ -52,6 +52,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 
       const expectedArchive = artifactName(platformKey);
       const expectedDownloadUrl = `${base}/v${version}/${expectedArchive}`;
+      const expectedSha256Hex = "a".repeat(64);
 
       const result = await runInstaller({
         logger: createNoopLogger(),
@@ -69,7 +70,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
           assert.equal(triple, targetTriple);
           return {
             archive: expectedArchive,
-            expectedSha256: null,
+            expectedSha256: expectedSha256Hex,
             source: "fallback",
             manifestAttempt: { errors: [], resolved: null, manifestName: null }
           };
@@ -82,7 +83,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
         },
         verifyDownloadedFileIntegrityFn: async ({ filePath, expectedSha256, archiveName, details }) => {
           assert.equal(filePath, downloadDest);
-          assert.equal(expectedSha256, null);
+          assert.equal(expectedSha256, expectedSha256Hex);
           assert.equal(archiveName, expectedArchive);
           assert.ok(fs.existsSync(filePath));
           assert.equal(details.platformKey, platformKey);
@@ -104,10 +105,12 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 
       assert.equal(downloadUrl, expectedDownloadUrl);
       assert.equal(extractArchive, downloadDest);
-      assert.equal(extractDir, path.join(distBaseDir, platformKey));
+      assert.ok(
+        typeof extractDir === "string" && extractDir.startsWith(path.join(distBaseDir, `${platformKey}.staging-`)),
+        `expected extractDir to be a staging directory under distBaseDir, got: ${extractDir}`
+      );
       assert.equal(result.binaryPath, expectedBinaryPath);
       assert.ok(fs.existsSync(expectedBinaryPath));
     });
   }
 });
-

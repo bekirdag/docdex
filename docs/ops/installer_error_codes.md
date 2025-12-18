@@ -38,6 +38,51 @@ When install fails, output includes `[docdex] error code: <CODE>` and the proces
 
 ---
 
+## Integrity verification (download-time)
+
+Integrity verification is **mandatory** for `docdexd` downloads:
+
+- The installer only installs a downloaded archive after it obtains an expected SHA-256 (manifest → `SHA256SUMS` → legacy `.sha256`) and verifies the downloaded bytes against it.
+- If integrity metadata is missing/unusable, the installer fails closed with `DOCDEX_CHECKSUM_UNUSABLE` (exit `24`) and does not install a binary.
+- If the SHA-256 does not match, the installer fails closed with `DOCDEX_INTEGRITY_MISMATCH` (exit `22`) and prints:
+  - Which **asset** failed (archive filename),
+  - The **verification method/source** used (`Source: manifest:<name>` or `Source: fallback`),
+  - `Expected sha256` and `Actual sha256`,
+  - Whether a fallback path was attempted.
+
+Safety property (upgrade/repair): an existing `dist/<platformKey>/` is only removed **after** the archive is successfully downloaded and verified, so a verification failure does not replace an existing runnable `docdexd`.
+
+---
+
+## Configure sources and policy (safe defaults)
+
+The installer’s integrity policy is “fail closed”. Configuration only affects *where* it fetches assets/metadata and *which* manifest/checksum filenames it tries.
+
+Environment variables (all optional unless you’re installing from a fork/local copy):
+
+- `DOCDEX_DOWNLOAD_REPO=<owner/repo>`: repo that hosts the GitHub Release assets to download (recommended for forks).
+- `DOCDEX_DOWNLOAD_BASE=<full_base_url>`: full base URL for assets, including the repo slug and `releases/download`, e.g. `https://github.com/<owner/repo>/releases/download`. Use only for GitHub Enterprise/mirrors you trust.
+- `DOCDEX_GITHUB_TOKEN` (or `GITHUB_TOKEN`): token for rate limiting/private releases.
+- `DOCDEX_VERSION=<x.y.z>`: override the expected version/tag (`v<version>`).
+- `DOCDEX_MANIFEST_NAME` / `DOCDEX_MANIFEST_NAMES` (comma-separated): override manifest candidate asset names.
+- `DOCDEX_CHECKSUMS_NAME` / `DOCDEX_CHECKSUMS_NAMES` (comma-separated): override checksum candidate asset names.
+- `DOCDEX_LIBC=gnu|musl|glibc`: override Linux libc detection (glibc is normalized to `gnu`).
+
+Examples:
+
+```bash
+# Install from a fork that publishes releases
+DOCDEX_DOWNLOAD_REPO=myfork/docdex npm i -g docdex
+
+# Use custom/legacy manifest names (tried in order)
+DOCDEX_MANIFEST_NAMES=docdex-release-manifest.json,docdexd-manifest.json,manifest.json npm i -g docdex
+
+# Restrict checksum discovery to a single filename
+DOCDEX_CHECKSUMS_NAME=SHA256SUMS npm i -g docdex
+```
+
+---
+
 ## Quick triage (low-risk first)
 
 1) Re-run once to rule out transient network/cache corruption:
@@ -75,6 +120,51 @@ Notes:
 - If you see an unknown `DOCDEX_*` code, treat it as a bug/regression; capture the full install log and open an issue with the code + platform details.
 
 ---
+
+## Responding to verification failures (without unsafe workarounds)
+
+### `DOCDEX_INTEGRITY_MISMATCH` (exit `22`)
+
+What it means:
+- The downloaded archive’s SHA-256 did not match the expected SHA-256 from the manifest/checksums source.
+
+Example output excerpt:
+
+```text
+[docdex] install failed: Integrity check failed for docdexd-linux-x64-gnu.tar.gz: expected sha256=<expected> got sha256=<actual>
+[docdex] error code: DOCDEX_INTEGRITY_MISMATCH
+[docdex] Asset: docdexd-linux-x64-gnu.tar.gz
+[docdex] Source: manifest:docdex-release-manifest.json
+[docdex] Fallback attempted: false
+```
+
+What you should do:
+- Retry once (transient caches/proxies can corrupt downloads).
+- Verify you’re downloading from the intended repo/tag (`DOCDEX_DOWNLOAD_REPO`, `DOCDEX_VERSION`) and that any mirror/proxy is bypassed.
+- If needed, manually verify the release assets locally; see `docs/contracts/release_manifest_schema_v1.md`.
+- If it still fails, build from source (`cargo build --release --locked`).
+
+What you should *not* do:
+- Do not manually extract and run an unverified archive as a “workaround”.
+- Do not try to bypass postinstall integrity checks; if you can’t get a verified release asset, prefer building from source.
+
+### `DOCDEX_CHECKSUM_UNUSABLE` (exit `24`)
+
+What it means:
+- The installer could not obtain any expected SHA-256 for the selected archive (no usable manifest and no usable checksum fallback), so it will not install.
+
+Example output excerpt:
+
+```text
+[docdex] install failed: Missing SHA-256 integrity metadata for docdexd-linux-x64-gnu.tar.gz (...)
+[docdex] error code: DOCDEX_CHECKSUM_UNUSABLE
+[docdex] Asset: docdexd-linux-x64-gnu.tar.gz
+[docdex] Checksum candidates tried: SHA256SUMS, SHA256SUMS.txt
+```
+
+What you should do:
+- Install a different version with published manifest/checksums, or build from source.
+- If you control the release, ensure it publishes `docdex-release-manifest.json` (with `integrity.sha256`) or `SHA256SUMS` with an entry for the archive.
 
 ## Manifest/fallback diagnostics (when you need to know “why fallback happened”)
 

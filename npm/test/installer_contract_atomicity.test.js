@@ -221,6 +221,7 @@ test("installer contract: swap failure rolls back and leaves prior install runna
   const distDir = path.join(distBaseDir, platformKey);
   const tmpDir = path.join(tmpRoot, "tmp");
   await ensureDir(tmpDir);
+  const tmpFile = path.join(tmpDir, `${archive}.${process.pid}.tgz`);
 
   const oldBinaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "old-binary\n" });
   const oldSha = await sha256File(oldBinaryPath);
@@ -273,6 +274,7 @@ test("installer contract: swap failure rolls back and leaves prior install runna
   }
 
   assert.ok(err, "expected installer to fail");
+  assert.ok(!fs.existsSync(tmpFile), "expected temp archive to be cleaned");
   assert.deepEqual(listInstallerArtifacts(distBaseDir, platformKey), []);
 
   const oldBinaryAfter = await fs.promises.readFile(oldBinaryPath, "utf8");
@@ -296,6 +298,7 @@ test("installer contract: restart failure rolls back to previous install", async
   const distDir = path.join(distBaseDir, platformKey);
   const tmpDir = path.join(tmpRoot, "tmp");
   await ensureDir(tmpDir);
+  const tmpFile = path.join(tmpDir, `${archive}.${process.pid}.tgz`);
 
   const oldBinaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "old-binary\n" });
   const oldSha = await sha256File(oldBinaryPath);
@@ -337,6 +340,7 @@ test("installer contract: restart failure rolls back to previous install", async
   }
 
   assert.ok(err, "expected installer to fail");
+  assert.ok(!fs.existsSync(tmpFile), "expected temp archive to be cleaned");
   assert.deepEqual(listInstallerArtifacts(distBaseDir, platformKey), []);
 
   const oldBinaryAfter = await fs.promises.readFile(oldBinaryPath, "utf8");
@@ -412,3 +416,305 @@ test("installer contract: interrupted run artifacts do not block reinstall and a
   assert.equal(newBinary, "new-binary\n");
 });
 
+test("installer contract: interrupted artifacts are cleaned even when install is a no-op (no download)", async (t) => {
+  const version = "0.0.2";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const isWin32 = false;
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-contract-noop-cleans-"));
+  t.after(async () => {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  const distBaseDir = path.join(tmpRoot, "dist");
+  const distDir = path.join(distBaseDir, platformKey);
+
+  const binaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "verified-binary\n" });
+  const binarySha = await sha256File(binaryPath);
+  await writeInstallMetadata({ distDir, platformKey, version, targetTriple, binarySha256: binarySha });
+
+  const leftoverStage = path.join(distBaseDir, `${platformKey}.stage.0.0`);
+  const leftoverBackup = path.join(distBaseDir, `${platformKey}.backup.0.0`);
+  const leftoverFailed = path.join(distBaseDir, `${platformKey}.failed.0.0`);
+  await ensureDir(leftoverStage);
+  await ensureDir(leftoverBackup);
+  await ensureDir(leftoverFailed);
+
+  let planCalls = 0;
+  let downloadCalls = 0;
+
+  const result = await runInstaller({
+    logger: createNoopLogger(),
+    platform: "linux",
+    arch: "x64",
+    distBaseDir,
+    detectPlatformKeyFn: () => platformKey,
+    targetTripleForPlatformKeyFn: () => targetTriple,
+    getVersionFn: () => version,
+    parseRepoSlugFn: () => {
+      throw new Error("unexpected repo slug resolution");
+    },
+    resolveInstallerDownloadPlanFn: async () => {
+      planCalls += 1;
+      throw new Error("unexpected plan resolution");
+    },
+    downloadFn: async () => {
+      downloadCalls += 1;
+      throw new Error("unexpected download");
+    }
+  });
+
+  assert.equal(result.outcome, "no-op");
+  assert.equal(planCalls, 0);
+  assert.equal(downloadCalls, 0);
+  assert.deepEqual(listInstallerArtifacts(distBaseDir, platformKey), []);
+
+  const binaryAfter = await fs.promises.readFile(path.join(distDir, "docdexd"), "utf8");
+  assert.equal(binaryAfter, "verified-binary\n");
+});
+
+test("installer contract: interrupted run recovers latest backup then no-ops without download", async (t) => {
+  const version = "0.0.2";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const isWin32 = false;
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-contract-recover-backup-"));
+  t.after(async () => {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  const distBaseDir = path.join(tmpRoot, "dist");
+  const distDir = path.join(distBaseDir, platformKey);
+  await ensureDir(distBaseDir);
+
+  const olderBackup = path.join(distBaseDir, `${platformKey}.backup.0.0`);
+  const newerBackup = path.join(distBaseDir, `${platformKey}.backup.9.9`);
+
+  const olderBinary = await writeInstalledBinary({ distDir: olderBackup, isWin32, bytes: "older\n" });
+  const olderSha = await sha256File(olderBinary);
+  await writeInstallMetadata({ distDir: olderBackup, platformKey, version, targetTriple, binarySha256: olderSha });
+
+  const newerBinary = await writeInstalledBinary({ distDir: newerBackup, isWin32, bytes: "newer\n" });
+  const newerSha = await sha256File(newerBinary);
+  await writeInstallMetadata({ distDir: newerBackup, platformKey, version, targetTriple, binarySha256: newerSha });
+
+  const leftoverStage = path.join(distBaseDir, `${platformKey}.stage.0.0`);
+  const leftoverFailed = path.join(distBaseDir, `${platformKey}.failed.0.0`);
+  await ensureDir(leftoverStage);
+  await ensureDir(leftoverFailed);
+
+  let planCalls = 0;
+  let downloadCalls = 0;
+
+  const result = await runInstaller({
+    logger: createNoopLogger(),
+    platform: "linux",
+    arch: "x64",
+    distBaseDir,
+    detectPlatformKeyFn: () => platformKey,
+    targetTripleForPlatformKeyFn: () => targetTriple,
+    getVersionFn: () => version,
+    parseRepoSlugFn: () => {
+      throw new Error("unexpected repo slug resolution");
+    },
+    resolveInstallerDownloadPlanFn: async () => {
+      planCalls += 1;
+      throw new Error("unexpected plan resolution");
+    },
+    downloadFn: async () => {
+      downloadCalls += 1;
+      throw new Error("unexpected download");
+    }
+  });
+
+  assert.equal(result.outcome, "no-op");
+  assert.equal(planCalls, 0);
+  assert.equal(downloadCalls, 0);
+  assert.deepEqual(listInstallerArtifacts(distBaseDir, platformKey), []);
+
+  assert.ok(fs.existsSync(distDir), "expected backup to be recovered into distDir");
+  const recoveredBinary = await fs.promises.readFile(path.join(distDir, "docdexd"), "utf8");
+  assert.equal(recoveredBinary, "newer\n");
+});
+
+test("installer contract: initial download failure leaves no runnable binary and cleans temp archive", async (t) => {
+  const version = "0.0.2";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-contract-initial-download-fail-"));
+  t.after(async () => {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  const distBaseDir = path.join(tmpRoot, "dist");
+  const distDir = path.join(distBaseDir, platformKey);
+  const tmpDir = path.join(tmpRoot, "tmp");
+  await ensureDir(tmpDir);
+  const tmpFile = path.join(tmpDir, `${archive}.${process.pid}.tgz`);
+
+  let err;
+  try {
+    await runInstaller({
+      logger: createNoopLogger(),
+      platform: "linux",
+      arch: "x64",
+      tmpDir,
+      distBaseDir,
+      detectPlatformKeyFn: () => platformKey,
+      targetTripleForPlatformKeyFn: () => targetTriple,
+      getVersionFn: () => version,
+      parseRepoSlugFn: () => "owner/repo",
+      resolveInstallerDownloadPlanFn: async () => ({
+        archive,
+        expectedSha256: null,
+        source: "fallback",
+        manifestAttempt: { errors: [], resolved: null, manifestName: null }
+      }),
+      downloadFn: async (_url, dest) => {
+        await ensureDir(path.dirname(dest));
+        await fs.promises.writeFile(dest, "partial");
+        throw new Error("download boom");
+      },
+      verifyDownloadedFileIntegrityFn: async () => null,
+      extractTarballFn: async () => {
+        throw new Error("unexpected extract");
+      }
+    });
+  } catch (e) {
+    err = e;
+  }
+
+  assert.ok(err, "expected installer to fail");
+  assert.ok(!fs.existsSync(tmpFile), "expected temp archive to be cleaned");
+  assert.ok(!fs.existsSync(distDir), "expected no runnable binary in distDir");
+  assert.deepEqual(listInstallerArtifacts(distBaseDir, platformKey), []);
+});
+
+test("installer contract: initial verify failure leaves no runnable binary and cleans temp archive", async (t) => {
+  const version = "0.0.2";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-contract-initial-verify-fail-"));
+  t.after(async () => {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  const distBaseDir = path.join(tmpRoot, "dist");
+  const distDir = path.join(distBaseDir, platformKey);
+  const tmpDir = path.join(tmpRoot, "tmp");
+  await ensureDir(tmpDir);
+  const tmpFile = path.join(tmpDir, `${archive}.${process.pid}.tgz`);
+
+  let err;
+  try {
+    await runInstaller({
+      logger: createNoopLogger(),
+      platform: "linux",
+      arch: "x64",
+      tmpDir,
+      distBaseDir,
+      detectPlatformKeyFn: () => platformKey,
+      targetTripleForPlatformKeyFn: () => targetTriple,
+      getVersionFn: () => version,
+      parseRepoSlugFn: () => "owner/repo",
+      resolveInstallerDownloadPlanFn: async () => ({
+        archive,
+        expectedSha256: "a".repeat(64),
+        source: "fallback",
+        manifestAttempt: { errors: [], resolved: null, manifestName: null }
+      }),
+      downloadFn: async (_url, dest) => {
+        await ensureDir(path.dirname(dest));
+        await fs.promises.writeFile(dest, "fake-archive");
+      },
+      verifyDownloadedFileIntegrityFn: async () => {
+        throw new Error("verify boom");
+      },
+      extractTarballFn: async () => {
+        throw new Error("unexpected extract");
+      }
+    });
+  } catch (e) {
+    err = e;
+  }
+
+  assert.ok(err, "expected installer to fail");
+  assert.ok(!fs.existsSync(tmpFile), "expected temp archive to be cleaned");
+  assert.ok(!fs.existsSync(distDir), "expected no runnable binary in distDir");
+  assert.deepEqual(listInstallerArtifacts(distBaseDir, platformKey), []);
+});
+
+test("installer contract: initial swap failure leaves no runnable binary and cleans temp archive", async (t) => {
+  const version = "0.0.2";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-contract-initial-swap-fail-"));
+  t.after(async () => {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  const distBaseDir = path.join(tmpRoot, "dist");
+  const distDir = path.join(distBaseDir, platformKey);
+  const tmpDir = path.join(tmpRoot, "tmp");
+  await ensureDir(tmpDir);
+  const tmpFile = path.join(tmpDir, `${archive}.${process.pid}.tgz`);
+
+  const fsModule = {
+    ...fs,
+    promises: {
+      ...fs.promises,
+      rename: async (src, dest) => {
+        if (dest === distDir && src.includes(`${platformKey}.stage.`)) {
+          throw new Error("swap boom");
+        }
+        return fs.promises.rename(src, dest);
+      }
+    }
+  };
+
+  let err;
+  try {
+    await runInstaller({
+      logger: createNoopLogger(),
+      fsModule,
+      platform: "linux",
+      arch: "x64",
+      tmpDir,
+      distBaseDir,
+      detectPlatformKeyFn: () => platformKey,
+      targetTripleForPlatformKeyFn: () => targetTriple,
+      getVersionFn: () => version,
+      parseRepoSlugFn: () => "owner/repo",
+      resolveInstallerDownloadPlanFn: async () => ({
+        archive,
+        expectedSha256: null,
+        source: "fallback",
+        manifestAttempt: { errors: [], resolved: null, manifestName: null }
+      }),
+      downloadFn: async (_url, dest) => {
+        await ensureDir(path.dirname(dest));
+        await fs.promises.writeFile(dest, "fake-archive-bytes");
+      },
+      verifyDownloadedFileIntegrityFn: async () => null,
+      extractTarballFn: async (_archivePath, targetDir) => {
+        await ensureDir(targetDir);
+        await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n", "utf8");
+      }
+    });
+  } catch (e) {
+    err = e;
+  }
+
+  assert.ok(err, "expected installer to fail");
+  assert.ok(!fs.existsSync(tmpFile), "expected temp archive to be cleaned");
+  assert.ok(!fs.existsSync(distDir), "expected no runnable binary in distDir");
+  assert.deepEqual(listInstallerArtifacts(distBaseDir, platformKey), []);
+});

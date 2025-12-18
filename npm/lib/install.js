@@ -1163,6 +1163,7 @@ async function runInstaller(options) {
   );
   let backupCreated = false;
   let swapped = false;
+  let stagePrepared = false;
 
   try {
     try {
@@ -1225,6 +1226,7 @@ async function runInstaller(options) {
     });
 
     // Extract into a staging directory first, then swap atomically.
+    stagePrepared = true;
     await fsModule.promises.rm(stageDir, { recursive: true, force: true }).catch(() => {});
     await extractTarballFn(tmpFile, stageDir);
 
@@ -1327,7 +1329,9 @@ async function runInstaller(options) {
       await fsModule.promises.rm(failedDir, { recursive: true, force: true }).catch(() => {});
     }
 
-    await fsModule.promises.rm(stageDir, { recursive: true, force: true }).catch(() => {});
+    if (stagePrepared) {
+      await fsModule.promises.rm(stageDir, { recursive: true, force: true }).catch(() => {});
+    }
     throw err;
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});

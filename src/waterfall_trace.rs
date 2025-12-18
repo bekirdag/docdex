@@ -100,12 +100,17 @@ fn truncate_bytes(input: &str, max_bytes: usize) -> String {
     if input.len() <= max_bytes {
         return input.to_string();
     }
-    let mut end = max_bytes;
+    let ellipsis = "…";
+    let ellipsis_bytes = ellipsis.len();
+    if max_bytes < ellipsis_bytes {
+        return String::new();
+    }
+    let mut end = max_bytes - ellipsis_bytes;
     while end > 0 && !input.is_char_boundary(end) {
         end -= 1;
     }
     let mut out = input[..end].to_string();
-    out.push_str("…");
+    out.push_str(ellipsis);
     out
 }
 
@@ -147,9 +152,8 @@ mod tests {
             }),
         );
         let gate = trace.events[0].gate.as_ref().unwrap();
-        assert!(gate.decision.len() <= MAX_TRACE_DETAIL_BYTES + 1);
-        assert!(gate.reason.len() <= MAX_TRACE_DETAIL_BYTES + 1);
-        assert!(gate.detail.as_ref().unwrap().len() <= MAX_TRACE_DETAIL_BYTES + 1);
+        assert!(gate.decision.len() <= MAX_TRACE_DETAIL_BYTES);
+        assert!(gate.reason.len() <= MAX_TRACE_DETAIL_BYTES);
+        assert!(gate.detail.as_ref().unwrap().len() <= MAX_TRACE_DETAIL_BYTES);
     }
 }
-

@@ -12,6 +12,20 @@ use crate::metrics;
 use crate::waterfall_trace::{WaterfallGateInput, WaterfallOutcome, WaterfallTier, WaterfallTrace};
 
 pub const ERR_TIER2_UNAVAILABLE: &str = "tier2_unavailable";
+const TRACE_DECISION_ATTEMPT: &str = "attempt";
+const TRACE_DECISION_FALLBACK: &str = "fallback";
+const TRACE_DECISION_EXECUTE: &str = "execute";
+const TRACE_DECISION_SKIP: &str = "skip";
+const TRACE_DECISION_ABORT: &str = "abort";
+
+const TRACE_REASON_TIER2_ENABLED: &str = "tier2_enabled";
+const TRACE_REASON_TIER2_DISABLED: &str = "tier2_disabled";
+const TRACE_REASON_TIER2_OVERLOAD: &str = "tier2_overload";
+const TRACE_REASON_TIER2_UNAVAILABLE: &str = "tier2_unavailable";
+const TRACE_REASON_TIER2_ERROR: &str = "tier2_error";
+const TRACE_REASON_TIER3_FALLBACK: &str = "tier3_fallback";
+const TRACE_REASON_TIER3_ERROR: &str = "tier3_error";
+const TRACE_REASON_TIER3_SKIPPED: &str = "tier3_skipped";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -21,6 +35,18 @@ pub enum Tier2UnavailableReason {
     Timeout,
     Crashed,
     Disabled,
+}
+
+impl Tier2UnavailableReason {
+    fn as_trace_detail(&self) -> &'static str {
+        match self {
+            Tier2UnavailableReason::StartupFailed => "startup_failed",
+            Tier2UnavailableReason::Overload => "overload",
+            Tier2UnavailableReason::Timeout => "timeout",
+            Tier2UnavailableReason::Crashed => "crashed",
+            Tier2UnavailableReason::Disabled => "disabled",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -182,7 +208,7 @@ pub async fn run_with_fallback<T, Tier2Future, Tier3Future>(
     request_id: &str,
     config: Tier2Config,
     limiter: Option<&Tier2Limiter>,
-    trace: Option<&mut WaterfallTrace>,
+    mut trace: Option<&mut WaterfallTrace>,
     tier2: impl FnOnce() -> Tier2Future,
     tier3: impl FnOnce() -> Tier3Future,
 ) -> Result<Tier2RunResult<T>, anyhow::Error>
@@ -190,19 +216,45 @@ where
     Tier2Future: std::future::Future<Output = Result<T, anyhow::Error>>,
     Tier3Future: std::future::Future<Output = Result<T, anyhow::Error>>,
 {
+    fn record_gate(
+        trace: &mut WaterfallTrace,
+        tier: WaterfallTier,
+        outcome: WaterfallOutcome,
+        decision: &'static str,
+        reason: &'static str,
+        detail: Option<&'static str>,
+    ) {
+        trace.record(
+            tier,
+            outcome,
+            Some(WaterfallGateInput {
+                decision,
+                reason,
+                detail,
+            }),
+        );
+    }
+
     if !config.enabled {
         let unavailable =
             Tier2Unavailable::new(Tier2UnavailableReason::Disabled, "tier 2 is disabled")
                 .with_correlation_id(request_id);
-        if let Some(trace) = trace {
-            trace.record(
+        if let Some(trace) = trace.as_deref_mut() {
+            record_gate(
+                trace,
                 WaterfallTier::Tier2,
                 WaterfallOutcome::Skipped,
-                Some(WaterfallGateInput {
-                    decision: "fallback",
-                    reason: "tier2_disabled",
-                    detail: Some("tier 2 is disabled"),
-                }),
+                TRACE_DECISION_FALLBACK,
+                TRACE_REASON_TIER2_DISABLED,
+                Some("disabled"),
+            );
+            record_gate(
+                trace,
+                WaterfallTier::Tier3,
+                WaterfallOutcome::Started,
+                TRACE_DECISION_EXECUTE,
+                TRACE_REASON_TIER3_FALLBACK,
+                Some(TRACE_REASON_TIER2_DISABLED),
             );
         }
         tracing::info!(
@@ -212,10 +264,27 @@ where
             reason = ?unavailable.reason,
             "tier2 fallback (disabled)"
         );
-        let value = tier3().await?;
-        if let Some(trace) = trace {
-            trace.record(WaterfallTier::Tier3, WaterfallOutcome::Succeeded, None);
-        }
+        let value = match tier3().await {
+            Ok(value) => {
+                if let Some(trace) = trace.as_deref_mut() {
+                    trace.record(WaterfallTier::Tier3, WaterfallOutcome::Succeeded, None);
+                }
+                value
+            }
+            Err(err) => {
+                if let Some(trace) = trace.as_deref_mut() {
+                    record_gate(
+                        trace,
+                        WaterfallTier::Tier3,
+                        WaterfallOutcome::Failed,
+                        TRACE_DECISION_ABORT,
+                        TRACE_REASON_TIER3_ERROR,
+                        None,
+                    );
+                }
+                return Err(err);
+            }
+        };
         return Ok(Tier2RunResult {
             value,
             tier2_unavailable: Some(unavailable),
@@ -228,15 +297,22 @@ where
             Ok(permit) => Some(permit),
             Err(unavailable) => {
                 let unavailable = unavailable.with_correlation_id(request_id);
-                if let Some(trace) = trace {
-                    trace.record(
+                if let Some(trace) = trace.as_deref_mut() {
+                    record_gate(
+                        trace,
                         WaterfallTier::Tier2,
                         WaterfallOutcome::Skipped,
-                        Some(WaterfallGateInput {
-                            decision: "fallback",
-                            reason: "tier2_overload",
-                            detail: Some("tier 2 browser capacity exhausted"),
-                        }),
+                        TRACE_DECISION_FALLBACK,
+                        TRACE_REASON_TIER2_OVERLOAD,
+                        Some("capacity_exhausted"),
+                    );
+                    record_gate(
+                        trace,
+                        WaterfallTier::Tier3,
+                        WaterfallOutcome::Started,
+                        TRACE_DECISION_EXECUTE,
+                        TRACE_REASON_TIER3_FALLBACK,
+                        Some(TRACE_REASON_TIER2_OVERLOAD),
                     );
                 }
                 tracing::warn!(
@@ -250,10 +326,27 @@ where
                     queue_timeout_ms = limiter.queue_timeout().as_millis() as u64,
                     "tier2 fallback (overload)"
                 );
-                let value = tier3().await?;
-                if let Some(trace) = trace {
-                    trace.record(WaterfallTier::Tier3, WaterfallOutcome::Succeeded, None);
-                }
+                let value = match tier3().await {
+                    Ok(value) => {
+                        if let Some(trace) = trace.as_deref_mut() {
+                            trace.record(WaterfallTier::Tier3, WaterfallOutcome::Succeeded, None);
+                        }
+                        value
+                    }
+                    Err(err) => {
+                        if let Some(trace) = trace.as_deref_mut() {
+                            record_gate(
+                                trace,
+                                WaterfallTier::Tier3,
+                                WaterfallOutcome::Failed,
+                                TRACE_DECISION_ABORT,
+                                TRACE_REASON_TIER3_ERROR,
+                                None,
+                            );
+                        }
+                        return Err(err);
+                    }
+                };
                 return Ok(Tier2RunResult {
                     value,
                     tier2_unavailable: Some(unavailable),
@@ -262,10 +355,29 @@ where
         },
     };
 
+    if let Some(trace) = trace.as_deref_mut() {
+        record_gate(
+            trace,
+            WaterfallTier::Tier2,
+            WaterfallOutcome::Started,
+            TRACE_DECISION_ATTEMPT,
+            TRACE_REASON_TIER2_ENABLED,
+            None,
+        );
+    }
+
     match tier2().await {
         Ok(value) => {
-            if let Some(trace) = trace {
+            if let Some(trace) = trace.as_deref_mut() {
                 trace.record(WaterfallTier::Tier2, WaterfallOutcome::Succeeded, None);
+                record_gate(
+                    trace,
+                    WaterfallTier::Tier3,
+                    WaterfallOutcome::Skipped,
+                    TRACE_DECISION_SKIP,
+                    TRACE_REASON_TIER3_SKIPPED,
+                    Some("tier2_succeeded"),
+                );
             }
             Ok(Tier2RunResult {
                 value,
@@ -274,18 +386,36 @@ where
         }
         Err(err) => {
             let Some(unavailable) = classify_tier2_unavailable(&err) else {
+                if let Some(trace) = trace.as_deref_mut() {
+                    record_gate(
+                        trace,
+                        WaterfallTier::Tier2,
+                        WaterfallOutcome::Failed,
+                        TRACE_DECISION_ABORT,
+                        TRACE_REASON_TIER2_ERROR,
+                        None,
+                    );
+                }
                 return Err(err);
             };
             let unavailable = unavailable.with_correlation_id(request_id);
-            if let Some(trace) = trace {
+            if let Some(trace) = trace.as_deref_mut() {
                 trace.record(
                     WaterfallTier::Tier2,
                     WaterfallOutcome::Failed,
                     Some(WaterfallGateInput {
-                        decision: "fallback",
-                        reason: "tier2_unavailable",
-                        detail: Some(&unavailable.message),
+                        decision: TRACE_DECISION_FALLBACK,
+                        reason: TRACE_REASON_TIER2_UNAVAILABLE,
+                        detail: Some(unavailable.reason.as_trace_detail()),
                     }),
+                );
+                record_gate(
+                    trace,
+                    WaterfallTier::Tier3,
+                    WaterfallOutcome::Started,
+                    TRACE_DECISION_EXECUTE,
+                    TRACE_REASON_TIER3_FALLBACK,
+                    Some(TRACE_REASON_TIER2_UNAVAILABLE),
                 );
             }
             tracing::warn!(
@@ -297,10 +427,27 @@ where
                 error = %err,
                 "tier2 fallback (unavailable)"
             );
-            let value = tier3().await?;
-            if let Some(trace) = trace {
-                trace.record(WaterfallTier::Tier3, WaterfallOutcome::Succeeded, None);
-            }
+            let value = match tier3().await {
+                Ok(value) => {
+                    if let Some(trace) = trace.as_deref_mut() {
+                        trace.record(WaterfallTier::Tier3, WaterfallOutcome::Succeeded, None);
+                    }
+                    value
+                }
+                Err(err) => {
+                    if let Some(trace) = trace.as_deref_mut() {
+                        record_gate(
+                            trace,
+                            WaterfallTier::Tier3,
+                            WaterfallOutcome::Failed,
+                            TRACE_DECISION_ABORT,
+                            TRACE_REASON_TIER3_ERROR,
+                            None,
+                        );
+                    }
+                    return Err(err);
+                }
+            };
             Ok(Tier2RunResult {
                 value,
                 tier2_unavailable: Some(unavailable),
@@ -453,11 +600,80 @@ mod observability_tests {
             "expected tier2 disabled gating event"
         );
         assert!(
+            trace.events.iter().any(|e| {
+                e.tier == WaterfallTier::Tier3
+                    && e.outcome == WaterfallOutcome::Started
+                    && e.gate.as_ref().is_some_and(|g| {
+                        g.decision == TRACE_DECISION_EXECUTE
+                            && g.reason == TRACE_REASON_TIER3_FALLBACK
+                            && g.detail.as_deref() == Some(TRACE_REASON_TIER2_DISABLED)
+                    })
+            }),
+            "expected tier3 started fallback gating event"
+        );
+        assert!(
             trace.events
                 .iter()
                 .any(|e| e.tier == WaterfallTier::Tier3 && e.outcome == WaterfallOutcome::Succeeded),
             "expected tier3 success event"
         );
         assert!(trace.events.len() <= 48, "trace should be bounded");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn records_tier2_started_and_tier3_skipped_when_tier2_succeeds() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let mut trace = WaterfallTrace::new();
+        let tier3_called = std::sync::Arc::new(AtomicBool::new(false));
+        let tier3_called_inner = tier3_called.clone();
+
+        let result = run_with_fallback(
+            "req-trace-success",
+            Tier2Config::enabled(),
+            None,
+            Some(&mut trace),
+            || async { Ok::<_, anyhow::Error>("tier2".to_string()) },
+            move || {
+                let tier3_called_inner = tier3_called_inner.clone();
+                async move {
+                    tier3_called_inner.store(true, Ordering::SeqCst);
+                    Ok::<_, anyhow::Error>("tier3".to_string())
+                }
+            },
+        )
+        .await
+        .expect("run");
+
+        assert_eq!(result.value, "tier2");
+        assert!(
+            !tier3_called.load(Ordering::SeqCst),
+            "tier3 should not run when tier2 succeeds"
+        );
+
+        assert_eq!(trace.events.len(), 3, "expected fixed trace event count");
+        assert_eq!(trace.events[0].seq, 1);
+        assert_eq!(trace.events[0].tier, WaterfallTier::Tier2);
+        assert_eq!(trace.events[0].outcome, WaterfallOutcome::Started);
+        assert!(
+            trace.events[0].gate.as_ref().is_some_and(|g| {
+                g.decision == TRACE_DECISION_ATTEMPT && g.reason == TRACE_REASON_TIER2_ENABLED
+            }),
+            "expected tier2 start gating"
+        );
+        assert_eq!(trace.events[1].seq, 2);
+        assert_eq!(trace.events[1].tier, WaterfallTier::Tier2);
+        assert_eq!(trace.events[1].outcome, WaterfallOutcome::Succeeded);
+        assert_eq!(trace.events[2].seq, 3);
+        assert_eq!(trace.events[2].tier, WaterfallTier::Tier3);
+        assert_eq!(trace.events[2].outcome, WaterfallOutcome::Skipped);
+        assert!(
+            trace.events[2].gate.as_ref().is_some_and(|g| {
+                g.decision == TRACE_DECISION_SKIP
+                    && g.reason == TRACE_REASON_TIER3_SKIPPED
+                    && g.detail.as_deref() == Some("tier2_succeeded")
+            }),
+            "expected tier3 skipped gating event"
+        );
     }
 }

@@ -395,6 +395,16 @@ enum Command {
         top_k: usize,
         #[arg(
             long,
+            help = "Optional max items to keep after deterministic pruning (0..=50). Defaults to --top-k."
+        )]
+        max_items: Option<usize>,
+        #[arg(
+            long,
+            help = "Optional token budget for deterministic memory context truncation (whitespace token estimate)."
+        )]
+        max_tokens: Option<usize>,
+        #[arg(
+            long,
             env = "DOCDEX_EMBEDDING_BASE_URL",
             value_parser = config::non_empty_string,
             help = "Ollama base URL for embedding calls; takes precedence over --ollama-base-url when both are set"
@@ -1046,6 +1056,8 @@ async fn run() -> Result<()> {
             repo,
             query,
             top_k,
+            max_items,
+            max_tokens,
             embedding_base_url,
             ollama_base_url,
             embedding_model,
@@ -1069,7 +1081,19 @@ async fn run() -> Result<()> {
             let embedding = embedder.embed(&query).await?;
             let store = memory::MemoryStore::new(index_config.state_dir());
             let top_k = top_k.max(1).min(50);
-            let results = tokio::task::spawn_blocking(move || store.recall(&embedding, top_k)).await??;
+            let max_items = max_items.unwrap_or(top_k).min(50);
+            let max_tokens = max_tokens;
+            let results = tokio::task::spawn_blocking(move || {
+                let candidates = store.recall_candidates(&embedding, top_k)?;
+                let budget = max_tokens.unwrap_or(usize::MAX);
+                let (kept, _trace) = memory::prune_and_truncate_memory_context(
+                    &candidates,
+                    max_items,
+                    budget,
+                );
+                Ok::<_, anyhow::Error>(kept)
+            })
+            .await??;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({

@@ -408,6 +408,10 @@ struct MemoryRecallArgs {
     #[serde(default)]
     top_k: Option<usize>,
     #[serde(default)]
+    max_tokens: Option<usize>,
+    #[serde(default)]
+    max_items: Option<usize>,
+    #[serde(default)]
     project_root: Option<PathBuf>,
 }
 
@@ -1547,10 +1551,22 @@ impl McpServer {
         }
 
         let top_k = args.top_k.unwrap_or(5).max(1).min(50);
+        let max_items = args.max_items.unwrap_or(top_k).min(50);
+        let max_tokens = args.max_tokens;
         let embedding = memory.embedder.embed(query).await?;
 
         let store = memory.store.clone();
-        let items = tokio::task::spawn_blocking(move || store.recall(&embedding, top_k)).await??;
+        let items = tokio::task::spawn_blocking(move || {
+            let candidates = store.recall_candidates(&embedding, top_k)?;
+            let budget = max_tokens.unwrap_or(usize::MAX);
+            let (kept, _trace) = crate::memory::prune_and_truncate_memory_context(
+                &candidates,
+                max_items,
+                budget,
+            );
+            Ok::<_, anyhow::Error>(kept)
+        })
+        .await??;
         Ok(json!({
             "top_k": top_k,
             "results": items.into_iter().map(|item| json!({

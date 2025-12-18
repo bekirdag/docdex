@@ -370,6 +370,7 @@ test("installer outcome: downgrade installs when expected version is older and w
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
 <<<<<<< HEAD
+<<<<<<< HEAD
       expectedSha256: archiveSha256,
       source: "fallback",
       assetId: null,
@@ -901,6 +902,9 @@ test("installer lifecycle: update calls restart hook when binary changes", async
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
       expectedSha256: null,
+=======
+      expectedSha256: "a".repeat(64),
+>>>>>>> mcoda/task/ops-01-us-04-t17
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),

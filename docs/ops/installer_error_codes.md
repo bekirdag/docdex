@@ -12,11 +12,17 @@ Assumptions (explicit):
 - You are installing via `npm i -g docdex` (or `npx docdex --version`) with Node.js `>= 18`.
 - The installer is allowed to reach GitHub Releases for the target repo (`DOCDEX_DOWNLOAD_REPO`).
 <<<<<<< HEAD
+<<<<<<< HEAD
 - Integrity verification is **always enforced** when SHA-256 metadata is available (manifest or checksum fallback).
 - Signature verification for integrity metadata is optional and policy-driven; see `docs/contracts/release_integrity_signatures_v1.md`.
 =======
 - Integrity verification is **always enforced** using SHA-256 checksums, and the installer **fails closed** if SHA-256 integrity metadata is missing or invalid (manifest or checksum fallback).
 >>>>>>> mcoda/task/ops-01-us-04-t40
+=======
+- Integrity verification is **required by default** (SHA-256) and missing integrity metadata is treated deterministically:
+  - Default (`DOCDEX_INTEGRITY_POLICY=required`): missing metadata is a fatal `DOCDEX_CHECKSUM_UNUSABLE` (exit `24`).
+  - Explicit overrides (`DOCDEX_INTEGRITY_POLICY=allow-missing|off`) are allowed but **insecure** and are never silent (the installer warns).
+>>>>>>> mcoda/task/ops-01-us-04-t17
 
 Related contracts:
 - `docs/contracts/installer_error_contract_v1.md`

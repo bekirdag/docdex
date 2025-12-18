@@ -51,6 +51,7 @@ const INSTALL_METADATA_FILENAME = "docdexd-install.json";
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 const INSTALL_OUTCOME_SCHEMA_VERSION = 1;
 
 const INSTALL_OUTCOME_CODE_BY_DECISION_OUTCOME = Object.freeze({
@@ -124,6 +125,10 @@ const INSTALL_BACKUP_SUFFIX = ".__docdexd_install_backup";
 =======
 const INTEGRITY_METHOD_LABEL = "SHA-256 checksum";
 >>>>>>> mcoda/task/ops-01-us-04-t40
+=======
+const DEFAULT_INTEGRITY_POLICY = "required";
+const INTEGRITY_POLICY_ENV = "DOCDEX_INTEGRITY_POLICY";
+>>>>>>> mcoda/task/ops-01-us-04-t17
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -279,6 +284,7 @@ class ChecksumResolutionError extends Error {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 class ReplaceBinaryError extends Error {
 =======
 class InstallSwapError extends Error {
@@ -300,6 +306,54 @@ class InstallSwapError extends Error {
     this.exitCode = EXIT_CODE_BY_ERROR_CODE[this.code];
     this.details = withBaseDetails(details);
   }
+=======
+function normalizeIntegrityPolicy(value) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return null;
+
+  if (normalized === "required" || normalized === "strict" || normalized === "on" || normalized === "true") {
+    return "required";
+  }
+  if (normalized === "allow-missing" || normalized === "allow_missing" || normalized === "warn") {
+    return "allow-missing";
+  }
+  if (normalized === "off" || normalized === "disabled" || normalized === "none" || normalized === "false") {
+    return "off";
+  }
+  return null;
+}
+
+function resolveIntegrityPolicy({ env, integrityPolicy, logger }) {
+  const resolvedEnv = env || process.env;
+  const raw = integrityPolicy != null ? integrityPolicy : resolvedEnv[INTEGRITY_POLICY_ENV];
+
+  if (raw != null && normalizeIntegrityPolicy(raw) == null) {
+    throw new InstallerConfigError(
+      `Invalid ${INTEGRITY_POLICY_ENV} value: ${String(
+        raw
+      )}. Allowed: required|allow-missing|off (aliases: strict,on,true / warn / disabled,none,false).`,
+      { integrityPolicy: null, integrityPolicyRaw: String(raw) }
+    );
+  }
+
+  const policy = normalizeIntegrityPolicy(raw) || DEFAULT_INTEGRITY_POLICY;
+
+  if (policy !== DEFAULT_INTEGRITY_POLICY) {
+    const source = integrityPolicy != null ? "options" : "env";
+    const note =
+      policy === "allow-missing"
+        ? "Missing integrity metadata becomes a warning (install proceeds unverified)."
+        : "Integrity verification is disabled (install proceeds without verification).";
+    logger?.warn?.(
+      `[docdex] WARNING: integrity policy override active (${policy}; source=${source}). ${note} (${INTEGRITY_POLICY_ENV}=${String(
+        raw
+      )})`
+    );
+  }
+
+  return policy;
+>>>>>>> mcoda/task/ops-01-us-04-t17
 }
 
 function parseRepoSlug() {
@@ -2433,7 +2487,11 @@ function decideInstallDecision({
   expectedIntegrityMaterial,
   discoveredInstalledState,
   integrityResult,
+<<<<<<< HEAD
   archiveRecordResult
+=======
+  integrityPolicy = DEFAULT_INTEGRITY_POLICY
+>>>>>>> mcoda/task/ops-01-us-04-t17
 }) {
 <<<<<<< HEAD
   if (!discoveredInstalledState?.binaryPresent) return { outcome: "install", reason: "binary_missing" };
@@ -2513,6 +2571,10 @@ function decideInstallDecision({
 
   if (archiveRecordResult?.status !== "verified_ok") {
     return { outcome: "reinstall_unknown", reason: "archive_integrity_unverifiable" };
+  }
+
+  if (integrityPolicy === "off") {
+    return { outcome: "no-op", reason: "integrity_disabled" };
   }
 
   const expectedBinarySha256 = normalizeSha256Hex(expectedIntegrityMaterial?.binarySha256);
@@ -2645,6 +2707,7 @@ async function determineLocalInstallerOutcome({
   sha256FileFn = sha256File,
   expectedBinarySha256 = null,
 <<<<<<< HEAD
+<<<<<<< HEAD
   readInstalledBinaryVersionFn = null
 =======
   expectedArchiveName = null,
@@ -2652,6 +2715,9 @@ async function determineLocalInstallerOutcome({
   expectedArchiveSource = null,
   discoveredInstalledState = null
 >>>>>>> mcoda/task/ops-01-us-06-t03
+=======
+  integrityPolicy = DEFAULT_INTEGRITY_POLICY
+>>>>>>> mcoda/task/ops-01-us-04-t17
 }) {
   const state =
     discoveredInstalledState ||
@@ -2695,6 +2761,7 @@ async function determineLocalInstallerOutcome({
     (normalizeSha256Hex(expectedBinarySha256) || state.metadataStatus === "valid");
 >>>>>>> mcoda/task/ops-01-us-06-t03
 
+<<<<<<< HEAD
   const integrityResult = shouldVerifyIntegrity
     ? await verifyInstalledDocdexdIntegrity({
         fsModule,
@@ -2706,6 +2773,22 @@ async function determineLocalInstallerOutcome({
         installedMetadataStatusReason: state.metadataStatusReason
       })
     : null;
+=======
+  const integrityResult =
+    integrityPolicy === "off"
+      ? null
+      : shouldVerifyIntegrity
+        ? await verifyInstalledDocdexdIntegrity({
+            fsModule,
+            sha256FileFn,
+            binaryPath: discoveredInstalledState.binaryPath,
+            expectedBinarySha256: expectedBinarySha256,
+            installedMetadata: discoveredInstalledState.metadata,
+            installedMetadataStatus: discoveredInstalledState.metadataStatus,
+            installedMetadataStatusReason: discoveredInstalledState.metadataStatusReason
+          })
+        : null;
+>>>>>>> mcoda/task/ops-01-us-04-t17
 
   const shouldVerifyArchiveRecord =
     state.binaryPresent &&
@@ -2731,9 +2814,15 @@ async function determineLocalInstallerOutcome({
 >>>>>>> mcoda/task/ops-01-us-06-t02
     expectedVersion,
     expectedIntegrityMaterial,
+<<<<<<< HEAD
     discoveredInstalledState: state,
     integrityResult,
     archiveRecordResult
+=======
+    discoveredInstalledState,
+    integrityResult,
+    integrityPolicy
+>>>>>>> mcoda/task/ops-01-us-04-t17
   });
 
 <<<<<<< HEAD
@@ -3234,7 +3323,11 @@ async function resolveInstallerDownloadPlan({
   platformKey,
   targetTriple,
   logger = console,
+<<<<<<< HEAD
   structuredLogger = null,
+=======
+  integrityPolicy = DEFAULT_INTEGRITY_POLICY,
+>>>>>>> mcoda/task/ops-01-us-04-t17
   downloadTextFn = downloadText,
   artifactNameFn = artifactName,
   getDownloadBaseFn = getDownloadBase,
@@ -3397,6 +3490,7 @@ async function resolveInstallerDownloadPlan({
     if (!expectedSha256) {
       const manifestCandidates = manifestCandidateNamesFn();
       const checksumCandidates = checksumCandidateNamesFn();
+<<<<<<< HEAD
       throw new ChecksumResolutionError(
         `Missing SHA-256 integrity metadata for ${archive} (tried manifest ${manifestCandidates.join(
           ", "
@@ -3416,6 +3510,34 @@ async function resolveInstallerDownloadPlan({
           checksumErrors: Array.isArray(checksumAttempt?.errors) ? checksumAttempt.errors.map(redactValue) : null,
           checksumEvents: Array.isArray(checksumAttempt?.events) ? redactValue(checksumAttempt.events) : null
         }
+=======
+      if (integrityPolicy === "required") {
+        throw new ChecksumResolutionError(
+          `Missing SHA-256 integrity metadata for ${archive} (tried manifest ${manifestCandidates.join(
+            ", "
+          )} and checksums ${checksumCandidates.join(", ")})`,
+          {
+            platformKey,
+            targetTriple,
+            version,
+            repoSlug,
+            assetName: archive,
+            source: "fallback",
+            manifestName: manifestAttempt?.manifestName ?? null,
+            manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+            fallbackAttempted: true,
+            fallbackReason: manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found",
+            checksumCandidates,
+            checksumErrors: checksumAttempt?.errors ?? null,
+            checksumEvents: checksumAttempt?.events ?? null,
+            integrityPolicy
+          }
+        );
+      }
+
+      logger?.warn?.(
+        `[docdex] WARNING: Missing SHA-256 integrity metadata for ${archive}; continuing without verification because ${INTEGRITY_POLICY_ENV}=${integrityPolicy}`
+>>>>>>> mcoda/task/ops-01-us-04-t17
       );
     }
   }
@@ -3543,8 +3665,12 @@ async function runInstaller(options) {
   const logger = outputFormat === "json" ? createNoopLogger() : noisyLogger;
 =======
   const logger = opts.logger || console;
+<<<<<<< HEAD
   const attemptId = `${process.pid}-${Date.now()}`;
 >>>>>>> mcoda/task/ops-01-us-06-t15
+=======
+  const integrityPolicy = resolveIntegrityPolicy({ env: opts.env, integrityPolicy: opts.integrityPolicy, logger });
+>>>>>>> mcoda/task/ops-01-us-04-t17
 
   const cleanupTasks = [];
   let cleanupRunning = false;
@@ -3752,7 +3878,11 @@ async function runInstaller(options) {
     isWin32,
     sha256FileFn,
 <<<<<<< HEAD
+<<<<<<< HEAD
     readInstalledBinaryVersionFn
+=======
+    integrityPolicy
+>>>>>>> mcoda/task/ops-01-us-04-t17
   });
 
 <<<<<<< HEAD
@@ -3989,6 +4119,7 @@ async function runInstaller(options) {
     platformKey,
     targetTriple,
     logger,
+<<<<<<< HEAD
     structuredLogger: structured
   });
 =======
@@ -4021,6 +4152,34 @@ async function runInstaller(options) {
     }));
 >>>>>>> mcoda/task/ops-01-us-06-t03
 
+=======
+    integrityPolicy
+  });
+
+  const normalizedExpectedSha256 = normalizeSha256Hex(expectedSha256);
+  if (integrityPolicy === "required" && !normalizedExpectedSha256) {
+    throw new ChecksumResolutionError(
+      `Missing SHA-256 integrity metadata for ${archive} (integrity policy ${DEFAULT_INTEGRITY_POLICY} requires verification)`,
+      {
+        platformKey,
+        targetTriple,
+        version,
+        repoSlug,
+        assetName: archive,
+        source,
+        manifestName: manifestAttempt?.manifestName ?? null,
+        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+        fallbackAttempted: source === "fallback",
+        fallbackReason: manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found",
+        checksumCandidates: null,
+        checksumErrors: null,
+        checksumEvents: null,
+        integrityPolicy
+      }
+    );
+  }
+
+>>>>>>> mcoda/task/ops-01-us-04-t17
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
 <<<<<<< HEAD
   const tmpDir = opts.tmpDir || osModule.tmpdir();
@@ -4341,6 +4500,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     const verifiedArchiveSha256 = await verifyDownloadedFileIntegrityFn({
 =======
     const verifiedArchiveSha256 =
@@ -4387,6 +4547,32 @@ async function runInstaller(options) {
         repoSlug
       }
     });
+=======
+    if (integrityPolicy === "off") {
+      logger.warn(`[docdex] WARNING: Skipping SHA-256 verification because ${INTEGRITY_POLICY_ENV}=off`);
+    } else if (!normalizedExpectedSha256) {
+      logger.warn(
+        `[docdex] WARNING: Missing SHA-256 integrity metadata for ${archive}; continuing without verification because ${INTEGRITY_POLICY_ENV}=${integrityPolicy}`
+      );
+    } else {
+      await verifyDownloadedFileIntegrityFn({
+        filePath: tmpFile,
+        expectedSha256: normalizedExpectedSha256,
+        archiveName: archive,
+        details: {
+          platformKey,
+          targetTriple,
+          version,
+          repoSlug,
+          downloadUrl,
+          source,
+          manifestName: manifestAttempt?.manifestName ?? null,
+          manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+          fallbackAttempted: source === "fallback"
+        }
+      });
+    }
+>>>>>>> mcoda/task/ops-01-us-04-t17
 
 <<<<<<< HEAD
     let actualArchiveSha256 = null;
@@ -4994,7 +5180,11 @@ async function runInstaller(options) {
       repoSlug,
       platformKey,
       targetTriple,
+<<<<<<< HEAD
       sourceUri: downloadUrl,
+=======
+      integrityPolicy,
+>>>>>>> mcoda/task/ops-01-us-04-t17
       binary: {
 <<<<<<< HEAD
         filename: binaryFilename,
@@ -5007,6 +5197,7 @@ async function runInstaller(options) {
       archive: {
         assetId,
         name: archive,
+<<<<<<< HEAD
 <<<<<<< HEAD
         sha256: expectedSha256 || null,
 <<<<<<< HEAD
@@ -5041,6 +5232,12 @@ async function runInstaller(options) {
 =======
         downloadUrl: redactUrl(downloadUrl)
 >>>>>>> mcoda/task/ops-01-us-04-t24
+=======
+        sha256: normalizedExpectedSha256 || null,
+        source,
+        downloadUrl,
+        verified: integrityPolicy !== "off" && !!normalizedExpectedSha256
+>>>>>>> mcoda/task/ops-01-us-04-t17
       }
 >>>>>>> mcoda/task/ops-01-us-06-t21
     };

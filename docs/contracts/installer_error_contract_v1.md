@@ -6,6 +6,10 @@ Assumptions (explicit):
 - The installer runs in Node.js >= 18 and exits with a single process exit code (0–255).
 - A “manifest” is a JSON file attached to the GitHub Release (candidate names are installer-configurable; default is `docdex-release-manifest.json`).
 - `manifestVersion` is optional in current manifests; when absent it is reported as `null`.
+- Integrity policy is configurable via `DOCDEX_INTEGRITY_POLICY`:
+  - Default: `required` (fail closed on missing integrity metadata; verify archive SHA-256 before install).
+  - Overrides: `allow-missing` (continue unverified if metadata is missing) or `off` (disable verification).
+  - This error contract describes the default `required` behavior unless explicitly stated otherwise.
 
 ## Goals
 
@@ -113,6 +117,7 @@ If all fallback paths fail (e.g., checksums are also unavailable), the resulting
   - Archive extracted but the expected binary is missing.
 - `DOCDEX_CHECKSUM_UNUSABLE` → exit `24`
   - The installer could not obtain SHA-256 integrity metadata for the selected asset (manifest missing/unusable and checksum fallback missing/malformed).
+<<<<<<< HEAD
 - `DOCDEX_INSTALL_SWAP_FAILED` → exit `25`
   - The installer fetched + verified + extracted successfully, but could not atomically swap the staged install directory into `dist/<platformKey>/` (e.g., permissions or the directory/binary is locked by a running process).
 
@@ -131,6 +136,9 @@ These errors apply to detached signatures over integrity metadata (manifest/chec
   - A `.sig` asset was present but signature verification failed.
 - `DOCDEX_INTEGRITY_SIGNATURE_FETCH_FAILED` → exit `17`
   - Signature policy is `required` and the `.sig` asset could not be fetched (non-404 failure).
+=======
+  - Note: with `DOCDEX_INTEGRITY_POLICY=allow-missing|off`, this condition is handled deterministically but may not be fatal (installer warns and proceeds unverified).
+>>>>>>> mcoda/task/ops-01-us-04-t17
 
 ### Installer configuration (fatal)
 
@@ -145,6 +153,7 @@ All fatal reports:
 - Include `[docdex] error code: <CODE>` and (when helpful) a short “Next steps” section.
 - For manifest-related failures, include whether fallback was attempted (`details.fallbackAttempted`) and why it was not used.
 <<<<<<< HEAD
+<<<<<<< HEAD
 ### Install finalization (fatal)
 
 - `DOCDEX_REPLACE_FAILED` → exit `25`
@@ -154,3 +163,10 @@ All fatal reports:
 - `DOCDEX_INSTALL_SWAP_FAILED` → exit `25`
   - The installer fetched + verified + extracted successfully, but could not atomically swap the staged install directory into `dist/<platformKey>/` (e.g., permissions or the directory/binary is locked by a running process).
 >>>>>>> mcoda/task/ops-01-us-05-t07
+=======
+- Integrity policy is configurable via `DOCDEX_INTEGRITY_POLICY`:
+  - Default: `required` (fail closed on missing integrity metadata; verify archive SHA-256 before install).
+  - Overrides: `allow-missing` (continue unverified if metadata is missing) or `off` (disable verification).
+  - This error contract describes the default `required` behavior unless explicitly stated otherwise.
+  - Note: with `DOCDEX_INTEGRITY_POLICY=allow-missing|off`, this condition is handled deterministically but may not be fatal (installer warns and proceeds unverified).
+>>>>>>> mcoda/task/ops-01-us-04-t17

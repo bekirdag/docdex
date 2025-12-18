@@ -26,6 +26,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
   const base = "https://example.test/releases/download";
   const version = "0.0.0";
   const repoSlug = "owner/repo";
+  const expectedArchiveSha256 = "a".repeat(64);
 
   for (const platformKey of PUBLISHED_PLATFORM_KEYS) {
     await t.test(platformKey, async (st) => {
@@ -75,10 +76,14 @@ test("installer e2e: supported platform matrix installs expected binary layout",
           return {
             archive: expectedArchive,
 <<<<<<< HEAD
+<<<<<<< HEAD
             expectedSha256,
 =======
             expectedSha256: expectedSha256Hex,
 >>>>>>> mcoda/task/ops-01-us-04-t40
+=======
+            expectedSha256: expectedArchiveSha256,
+>>>>>>> mcoda/task/ops-01-us-04-t17
             source: "fallback",
             manifestAttempt: { errors: [], resolved: null, manifestName: null }
           };
@@ -92,14 +97,19 @@ test("installer e2e: supported platform matrix installs expected binary layout",
         verifyDownloadedFileIntegrityFn: async ({ filePath, expectedSha256, archiveName, details }) => {
           assert.equal(filePath, downloadDest);
 <<<<<<< HEAD
+<<<<<<< HEAD
           assert.equal(expectedSha256, "a".repeat(64));
 =======
           assert.equal(expectedSha256, expectedSha256Hex);
 >>>>>>> mcoda/task/ops-01-us-04-t40
+=======
+          assert.equal(expectedSha256, expectedArchiveSha256);
+>>>>>>> mcoda/task/ops-01-us-04-t17
           assert.equal(archiveName, expectedArchive);
           assert.ok(fs.existsSync(filePath));
           assert.equal(details.platformKey, platformKey);
           assert.equal(details.targetTriple, targetTriple);
+<<<<<<< HEAD
           return {
             status: "verified_ok",
             reason: "hash_match",
@@ -108,6 +118,9 @@ test("installer e2e: supported platform matrix installs expected binary layout",
             expectedSource: "fallback",
             error: null
           };
+=======
+          return expectedArchiveSha256;
+>>>>>>> mcoda/task/ops-01-us-04-t17
         },
         extractTarballFn: async (archivePath, targetDir) => {
           extractArchive = archivePath;

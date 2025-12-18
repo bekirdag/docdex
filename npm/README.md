@@ -9,10 +9,16 @@ Docdex is a lightweight, local documentation indexer/search daemon. It runs per-
 - Installer integrity verification (mandatory): resolves exactly one `docdexd` release asset plus an expected SHA-256 (via release manifest or `SHA256SUMS` fallback), verifies the download before extraction, and fails closed with a non-zero exit code without leaving a runnable `docdexd` in place on verification failure; see `docs/ops/installer_error_codes.md` (in the repo).
 - Supported published binaries: macOS (arm64, x64), Linux glibc (arm64, x64), Linux musl (x64), Windows (x64); installer fetches the matching platform release asset.
 - Supported platforms + manual source build + troubleshooting: `docs/ops/installer_supported_platforms.md` (in the repo).
+<<<<<<< HEAD
 - Atomic staged installs + rollback guarantees: `docs/ops/installer_atomic_install_and_rollback.md`.
 - QA checklist for interrupted installs: `docs/ops/installer_atomic_install_qa_checklist.md`.
 - Release manifest schema (assets + checksums + fallback rules): `docs/contracts/release_manifest_schema_v1.md`.
 - Installer integrity policy: `DOCDEX_INTEGRITY_POLICY=required|allow-missing|off` (default `required`). Overrides are insecure and never silent.
+=======
+- Upgrade/downgrade/repair semantics (idempotent `no-op` / integrity-first): `docs/ops/installer_upgrade_downgrade.md`.
+- Release manifest schema (assets + checksums + fallback rules): `docs/contracts/release_manifest_schema_v1.md`.
+- Integrity policy: installs verify SHA-256 and fail closed if checksums are missing or mismatched; remediation: `docs/ops/installer_error_codes.md`.
+>>>>>>> mcoda/task/ops-01-us-06-t08
 - If you publish from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` before installing so the downloader fetches your release assets.
 <<<<<<< HEAD
 - Distribution: binaries stay in GitHub Releases (small npm package); postinstall fetches `docdexd-<platformKey>.tar.gz` matching the npm version.
@@ -21,7 +27,11 @@ Docdex is a lightweight, local documentation indexer/search daemon. It runs per-
   - `DOCDEX_INTEGRITY_METADATA_SOURCES=manifest,checksums,sidecar` (order matters; default shown)
   - `DOCDEX_INTEGRITY_MISSING_POLICY=fallback|abort` (default: `fallback`)
 - Distribution: binaries stay in GitHub Releases (small npm package); postinstall fetches `docdexd-<platform>.tar.gz` matching the npm version.
+<<<<<<< HEAD
 >>>>>>> mcoda/task/ops-01-us-04-t21
+=======
+- Installer is idempotent: if the expected version is already installed and verified, it prints `[docdex] Install outcome: no-op` and does not re-download the asset.
+>>>>>>> mcoda/task/ops-01-us-06-t08
 - Platform diagnostics (no download): `docdex doctor` (or `docdex diagnostics`) prints detected OS/arch(/libc), whether supported, and the expected Rust target triple + release asset naming pattern.
 - Publishing uses npm Trusted Publishing (OIDC) — no NPM token needed; see `.github/workflows/release.yml`.
 

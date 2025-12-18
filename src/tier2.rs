@@ -9,6 +9,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::browser_session::BrowserSessionError;
 use crate::metrics;
+use crate::waterfall_trace::{WaterfallGateInput, WaterfallOutcome, WaterfallTier, WaterfallTrace};
 
 pub const ERR_TIER2_UNAVAILABLE: &str = "tier2_unavailable";
 
@@ -181,6 +182,7 @@ pub async fn run_with_fallback<T, Tier2Future, Tier3Future>(
     request_id: &str,
     config: Tier2Config,
     limiter: Option<&Tier2Limiter>,
+    trace: Option<&mut WaterfallTrace>,
     tier2: impl FnOnce() -> Tier2Future,
     tier3: impl FnOnce() -> Tier3Future,
 ) -> Result<Tier2RunResult<T>, anyhow::Error>
@@ -192,6 +194,17 @@ where
         let unavailable =
             Tier2Unavailable::new(Tier2UnavailableReason::Disabled, "tier 2 is disabled")
                 .with_correlation_id(request_id);
+        if let Some(trace) = trace {
+            trace.record(
+                WaterfallTier::Tier2,
+                WaterfallOutcome::Skipped,
+                Some(WaterfallGateInput {
+                    decision: "fallback",
+                    reason: "tier2_disabled",
+                    detail: Some("tier 2 is disabled"),
+                }),
+            );
+        }
         tracing::info!(
             target: "docdexd_tier2",
             event = "tier2_disabled_fallback",
@@ -199,8 +212,12 @@ where
             reason = ?unavailable.reason,
             "tier2 fallback (disabled)"
         );
+        let value = tier3().await?;
+        if let Some(trace) = trace {
+            trace.record(WaterfallTier::Tier3, WaterfallOutcome::Succeeded, None);
+        }
         return Ok(Tier2RunResult {
-            value: tier3().await?,
+            value,
             tier2_unavailable: Some(unavailable),
         });
     }
@@ -211,6 +228,17 @@ where
             Ok(permit) => Some(permit),
             Err(unavailable) => {
                 let unavailable = unavailable.with_correlation_id(request_id);
+                if let Some(trace) = trace {
+                    trace.record(
+                        WaterfallTier::Tier2,
+                        WaterfallOutcome::Skipped,
+                        Some(WaterfallGateInput {
+                            decision: "fallback",
+                            reason: "tier2_overload",
+                            detail: Some("tier 2 browser capacity exhausted"),
+                        }),
+                    );
+                }
                 tracing::warn!(
                     target: "docdexd_tier2",
                     event = "tier2_overload_fallback",
@@ -222,8 +250,12 @@ where
                     queue_timeout_ms = limiter.queue_timeout().as_millis() as u64,
                     "tier2 fallback (overload)"
                 );
+                let value = tier3().await?;
+                if let Some(trace) = trace {
+                    trace.record(WaterfallTier::Tier3, WaterfallOutcome::Succeeded, None);
+                }
                 return Ok(Tier2RunResult {
-                    value: tier3().await?,
+                    value,
                     tier2_unavailable: Some(unavailable),
                 });
             }
@@ -231,15 +263,31 @@ where
     };
 
     match tier2().await {
-        Ok(value) => Ok(Tier2RunResult {
-            value,
-            tier2_unavailable: None,
-        }),
+        Ok(value) => {
+            if let Some(trace) = trace {
+                trace.record(WaterfallTier::Tier2, WaterfallOutcome::Succeeded, None);
+            }
+            Ok(Tier2RunResult {
+                value,
+                tier2_unavailable: None,
+            })
+        }
         Err(err) => {
             let Some(unavailable) = classify_tier2_unavailable(&err) else {
                 return Err(err);
             };
             let unavailable = unavailable.with_correlation_id(request_id);
+            if let Some(trace) = trace {
+                trace.record(
+                    WaterfallTier::Tier2,
+                    WaterfallOutcome::Failed,
+                    Some(WaterfallGateInput {
+                        decision: "fallback",
+                        reason: "tier2_unavailable",
+                        detail: Some(&unavailable.message),
+                    }),
+                );
+            }
             tracing::warn!(
                 target: "docdexd_tier2",
                 event = "tier2_unavailable_fallback",
@@ -249,8 +297,12 @@ where
                 error = %err,
                 "tier2 fallback (unavailable)"
             );
+            let value = tier3().await?;
+            if let Some(trace) = trace {
+                trace.record(WaterfallTier::Tier3, WaterfallOutcome::Succeeded, None);
+            }
             Ok(Tier2RunResult {
-                value: tier3().await?,
+                value,
                 tier2_unavailable: Some(unavailable),
             })
         }
@@ -326,6 +378,7 @@ mod observability_tests {
             "req-overload-obs",
             Tier2Config::enabled(),
             Some(&limiter),
+            None,
             || async { Ok::<_, anyhow::Error>("tier2".to_string()) },
             || async { Ok::<_, anyhow::Error>("tier3".to_string()) },
         )
@@ -356,6 +409,7 @@ mod observability_tests {
             "req-overload-metrics",
             Tier2Config::enabled(),
             Some(&limiter),
+            None,
             || async { Ok::<_, anyhow::Error>("tier2".to_string()) },
             || async { Ok::<_, anyhow::Error>("tier3".to_string()) },
         )
@@ -372,5 +426,38 @@ mod observability_tests {
         // Silence unused warning if this test module is compiled with cfgs that
         // don't exercise other metrics; the type stays referenced for doctest tooling.
         let _ = Metrics::default();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn records_bounded_tier_trace_for_fallbacks() {
+        let mut trace = WaterfallTrace::new();
+        let result = run_with_fallback(
+            "req-trace-disabled",
+            Tier2Config { enabled: false },
+            None,
+            Some(&mut trace),
+            || async { Ok::<_, anyhow::Error>("tier2".to_string()) },
+            || async { Ok::<_, anyhow::Error>("tier3".to_string()) },
+        )
+        .await
+        .expect("run");
+        assert_eq!(result.value, "tier3");
+        assert!(
+            trace.events.iter().any(|e| {
+                e.tier == WaterfallTier::Tier2
+                    && e.outcome == WaterfallOutcome::Skipped
+                    && e.gate
+                        .as_ref()
+                        .is_some_and(|g| g.reason == "tier2_disabled" && g.decision == "fallback")
+            }),
+            "expected tier2 disabled gating event"
+        );
+        assert!(
+            trace.events
+                .iter()
+                .any(|e| e.tier == WaterfallTier::Tier3 && e.outcome == WaterfallOutcome::Succeeded),
+            "expected tier3 success event"
+        );
+        assert!(trace.events.len() <= 48, "trace should be bounded");
     }
 }

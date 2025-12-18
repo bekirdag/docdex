@@ -692,6 +692,7 @@ mod tests {
                 request_id,
                 config,
                 limiter,
+                None,
                 tier2,
                 || async { Ok::<_, anyhow::Error>("tier3".to_string()) },
             )
@@ -764,6 +765,7 @@ mod tests {
         let err = run_with_fallback(
             "req-bug",
             Tier2Config::enabled(),
+            None,
             None,
             || async { Err::<String, anyhow::Error>(anyhow!("boom")) },
             || async { Ok::<_, anyhow::Error>("tier3".to_string()) },

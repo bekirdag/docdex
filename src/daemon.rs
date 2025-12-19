@@ -291,7 +291,7 @@ pub async fn serve(
             .with_hint("Expected a URL like http://127.0.0.1:11434")
         })?;
         Some(search::MemoryState {
-            store: MemoryStore::new(indexer.state_dir()),
+            store: MemoryStore::new(indexer.repo_state_dir()),
             embedder,
         })
     } else {

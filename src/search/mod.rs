@@ -366,7 +366,7 @@ async fn impact_graph_handler(
 
     let repo_id = crate::symbols::repo_id_for_root(state.indexer.repo_root())
         .unwrap_or_else(|_| String::new());
-    let store = crate::impact::ImpactGraphStore::new(state.indexer.state_dir());
+    let store = crate::impact::ImpactGraphStore::new(state.indexer.repo_state_dir());
     let all_edges = match store.read_edges() {
         Ok(edges) => edges,
         Err(err) => {
@@ -823,7 +823,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             "Respect the reported `token_estimate` to avoid oversized prompts.",
             "When running remote, set --auth-token and TLS (certbot or manual cert/key).",
             "Keep server logging minimal for agent pipelines (e.g., --log warn --access-log=false).",
-            "Use state_dir per project to keep indexes isolated; run separate serve instances per repo.",
+            "State paths are isolated under ~/.docdex/state/repos/<fingerprint>/; run separate serve instances per repo.",
             "Use text_only=true on /snippet or --strip-snippet-html/--disable-snippet-text to trim payloads.",
             "When building prompts, keep rel_path + summary + trimmed snippet; drop score/token_estimate/doc_id and normalize whitespace.",
             "Trim noisy content up front with --exclude-dir/--exclude-prefix so snippets stay relevant and short.",

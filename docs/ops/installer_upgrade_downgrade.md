@@ -351,7 +351,7 @@ Risk notes:
 
 This is usually a repo state issue, not an installer issue:
 - Rebuild the index: `docdexd index --repo <path>`
-- If you intentionally want a clean state, delete only the repo’s index directory: `<repo>/.docdex/index` (this forces a full reindex next run).
+- If you intentionally want a clean state, delete only the repo’s index directory under `~/.docdex/state/repos/<fingerprint>/index` (see `docdexd repo inspect --repo <path>` for the resolved path). This forces a full reindex next run.
 
 ## See also
 

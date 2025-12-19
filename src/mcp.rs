@@ -479,7 +479,7 @@ pub async fn serve(
             .unwrap_or(5000)
             .max(1);
         Some(McpMemoryState {
-            store: MemoryStore::new(indexer.state_dir()),
+            store: MemoryStore::new(indexer.repo_state_dir()),
             embedder: OllamaEmbedder::new(base_url, model, Duration::from_millis(timeout_ms))?,
         })
     } else {
@@ -1581,7 +1581,10 @@ impl McpServer {
         let rel_path = normalize_rel_path(&args.path)
             .ok_or(InvalidPathError)?;
         let rel_str = rel_path.to_string_lossy().replace('\\', "/");
-        let store = SymbolsStore::new(self.indexer.repo_root(), self.indexer.config().state_dir())
+        let store = SymbolsStore::new(
+            self.indexer.repo_root(),
+            self.indexer.config().repo_state_dir(),
+        )
             .context("open symbols store")?;
         let payload = store
             .read_symbols(&rel_str)?

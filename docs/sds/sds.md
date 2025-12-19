@@ -690,6 +690,7 @@ Architectural intent: enforce per-repo isolation while enabling shared, zero-cos
   - `memory.db` (sqlite-vec) for long-term memory  
   - `symbols.db` (Tree-sitter symbols)  
   - `dag.db` (reasoning DAG)  
+- **Per-repo manifest**: `repo_meta.json` at the repo root includes `fingerprint_sha256`, `fingerprint_version`, `canonical_path`, `created_at_epoch_ms`, and `last_seen_at_epoch_ms` to support diagnostics and migrations.  
 - **Shared caches** (global, reused across repos but ingested per repo):  
   - `~/.docdex/state/cache/web/` for raw HTML \+ cleaned JSON from web fetches  
   - `~/.docdex/state/cache/libs/<ecosystem>/<pkg>/` for scraped library docs  

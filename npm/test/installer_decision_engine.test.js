@@ -229,20 +229,32 @@ test("decision engine: version mismatch => upgrade (version_mismatch)", async ()
 });
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 test("decision engine: version mismatch (higher installed) => update plan downgrade", async () => {
 =======
 test("decision engine: version mismatch => downgrade (version_mismatch)", async () => {
 >>>>>>> mcoda/task/ops-01-us-06-t40
+=======
+test("decision engine: reported version mismatch => update (reported_version_mismatch)", async () => {
+>>>>>>> mcoda/task/ops-01-us-03-t37
   const platformKey = "linux-x64-gnu";
   const distDir = path.posix.join("/dist", platformKey);
   const binaryPath = path.posix.join(distDir, "docdexd");
   const metadataPath = path.posix.join(distDir, "docdexd-install.json");
+<<<<<<< HEAD
+=======
+  const sha = "a".repeat(64);
+>>>>>>> mcoda/task/ops-01-us-03-t37
 
   const fsModule = createMockFs({
     existingPaths: [binaryPath],
     filesByPath: {
       [metadataPath]: JSON.stringify(
+<<<<<<< HEAD
         validInstallMetadata({ platformKey, version: "0.2.0", binarySha256: "a".repeat(64) }),
+=======
+        validInstallMetadata({ platformKey, version: "0.1.0", binarySha256: sha }),
+>>>>>>> mcoda/task/ops-01-us-03-t37
         null,
         2
       )
@@ -256,6 +268,7 @@ test("decision engine: version mismatch => downgrade (version_mismatch)", async 
     platformKey,
     expectedVersion: "0.1.0",
     isWin32: false,
+<<<<<<< HEAD
     sha256FileFn: async () => {
       throw new Error("unexpected sha256");
     }
@@ -306,6 +319,15 @@ test("decision engine: downgrade when expected version is lower", async () => {
   assert.equal(outcome.action, "downgrade");
   assert.equal(outcome.reason, "version_mismatch");
   assert.equal(outcome.installedVersion, "0.1.1");
+=======
+    sha256FileFn: async () => sha,
+    detectInstalledBinaryVersionFn: async () => ({ version: "0.0.9", error: null })
+  });
+
+  assert.equal(outcome.outcome, "update");
+  assert.equal(outcome.reason, "reported_version_mismatch");
+  assert.equal(outcome.reportedVersion, "0.0.9");
+>>>>>>> mcoda/task/ops-01-us-03-t37
 });
 
 test("decision engine: binary hash mismatch => repair (binary_integrity_mismatch)", async () => {

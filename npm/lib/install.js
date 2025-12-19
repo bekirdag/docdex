@@ -5288,6 +5288,7 @@ async function runInstaller(options) {
 =======
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
 <<<<<<< HEAD
+<<<<<<< HEAD
   const stagingDir = await createStagingDir({ fsModule, pathModule, stagingRoot, platformKey });
   const stagingArchivePath = pathModule.join(stagingDir, archive);
   const stagingExtractDir = pathModule.join(stagingDir, "extract");
@@ -5298,6 +5299,15 @@ async function runInstaller(options) {
   const stagedDir = pathModule.join(stagingDir, STAGING_EXTRACT_DIRNAME);
   let backupTaken = false;
 >>>>>>> mcoda/task/ops-01-us-05-t34
+=======
+  const tmpDir = opts.tmpDir || osModule.tmpdir();
+  const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
+  const stagingDir = pathModule.join(distBaseDir, `${platformKey}.staging.${process.pid}.${Date.now()}`);
+  const backupDir = pathModule.join(distBaseDir, `${platformKey}.backup.${process.pid}.${Date.now()}`);
+
+  let backupActive = false;
+  let swapCompleted = false;
+>>>>>>> mcoda/task/ops-01-us-05-t08
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
 <<<<<<< HEAD
@@ -5895,6 +5905,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     await extractTarballFn(tmpFile, stageDir);
 =======
         fallbackAttempted: source === "fallback",
@@ -5995,6 +6006,14 @@ async function runInstaller(options) {
       isWin32,
       details: {
 >>>>>>> mcoda/task/ops-01-us-05-t34
+=======
+    await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    await extractTarballFn(tmpFile, stagingDir);
+
+    const stagedBinaryPath = pathModule.join(stagingDir, isWin32 ? "docdexd.exe" : "docdexd");
+    if (!fsModule.existsSync(stagedBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagedBinaryPath}`, {
+>>>>>>> mcoda/task/ops-01-us-05-t08
         platformKey,
         targetTriple,
         version,
@@ -6025,6 +6044,7 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-06-t21
 =======
         fallbackAttempted: source === "fallback",
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -6260,6 +6280,24 @@ async function runInstaller(options) {
     }
 
 >>>>>>> mcoda/task/ops-01-us-04-t05
+=======
+        binaryPath: stagedBinaryPath
+      });
+    }
+
+    await fsModule.promises.chmod(stagedBinaryPath, 0o755).catch(() => {});
+
+    if (fsModule.existsSync(distDir)) {
+      await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+      await fsModule.promises.rename(distDir, backupDir);
+      backupActive = true;
+    }
+
+    await fsModule.promises.rename(stagingDir, distDir);
+    swapCompleted = true;
+
+    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+>>>>>>> mcoda/task/ops-01-us-05-t08
     await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
     logger.log(`[docdex] Installed binary to ${binaryPath}`);
 <<<<<<< HEAD
@@ -6581,6 +6619,7 @@ async function runInstaller(options) {
       value: metadata
     });
 
+<<<<<<< HEAD
 <<<<<<< HEAD
     // Atomic commit: only after verification + staged extraction succeed do we update the final install location.
     await fsModule.promises.mkdir(distDir, { recursive: true });
@@ -7031,6 +7070,28 @@ async function runInstaller(options) {
       await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
     }
 >>>>>>> mcoda/task/ops-01-us-04-t40
+=======
+    if (backupActive) {
+      await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+      backupActive = false;
+    }
+
+    logger.log(`[docdex] Install outcome: ${local.outcome}`);
+    return { binaryPath, outcome: local.outcome };
+  } catch (err) {
+    if (backupActive) {
+      try {
+        if (swapCompleted) {
+          await fsModule.promises.rm(distDir, { recursive: true, force: true }).catch(() => {});
+        }
+        await fsModule.promises.rename(backupDir, distDir);
+        backupActive = false;
+      } catch (restoreErr) {
+        err.restoreError = restoreErr;
+      }
+    }
+    throw err;
+>>>>>>> mcoda/task/ops-01-us-05-t08
   } finally {
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -7092,6 +7153,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     await rmForce(fsModule, stagingDir, { recursive: true });
     await rmForce(fsModule, tmpInstalledBinaryPath);
 >>>>>>> mcoda/task/ops-01-us-05-t22
@@ -7144,6 +7206,12 @@ async function runInstaller(options) {
   } finally {
     await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
 >>>>>>> mcoda/task/ops-01-us-05-t34
+=======
+    await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    if (backupActive) {
+      await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+    }
+>>>>>>> mcoda/task/ops-01-us-05-t08
   }
 }
 

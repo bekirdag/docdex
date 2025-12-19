@@ -13,6 +13,7 @@ Assumptions (explicit):
 - The installer is allowed to reach GitHub Releases for the target repo (`DOCDEX_DOWNLOAD_REPO`).
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 - Integrity verification is **always enforced** when SHA-256 metadata is available (manifest or checksum fallback).
 - Signature verification for integrity metadata is optional and policy-driven; see `docs/contracts/release_integrity_signatures_v1.md`.
 =======
@@ -23,6 +24,9 @@ Assumptions (explicit):
   - Default (`DOCDEX_INTEGRITY_POLICY=required`): missing metadata is a fatal `DOCDEX_CHECKSUM_UNUSABLE` (exit `24`).
   - Explicit overrides (`DOCDEX_INTEGRITY_POLICY=allow-missing|off`) are allowed but **insecure** and are never silent (the installer warns).
 >>>>>>> mcoda/task/ops-01-us-04-t17
+=======
+- Integrity verification is **mandatory**; if SHA-256 metadata is missing or invalid, the installer fails closed with `DOCDEX_CHECKSUM_UNUSABLE`.
+>>>>>>> mcoda/task/ops-01-us-04-t38
 
 Related contracts:
 - `docs/contracts/installer_error_contract_v1.md`
@@ -48,6 +52,7 @@ Related contracts:
    - Prefer `SHA256SUMS` / `SHA256SUMS.txt` from the same release.
    - If the release provides a detached signature for the selected checksums file (`SHA256SUMS.sig` / `SHA256SUMS.txt.sig`), the installer verifies it **before** trusting any checksum entries.
    - Legacy fallback: `docdexd-<platformKey>.tar.gz.sha256` sidecar.
+<<<<<<< HEAD
 4) Download, verify SHA-256 (when available), extract, and verify the expected `docdexd` binary exists.
 =======
 2) Resolve integrity metadata by trying `DOCDEX_INTEGRITY_METADATA_SOURCES` in order (default: `manifest,checksums,sidecar`).
@@ -61,6 +66,9 @@ Related contracts:
    - `abort`: fail deterministically without trying later sources.
 4) Download, verify SHA-256, extract, and verify the expected `docdexd` binary exists.
 >>>>>>> mcoda/task/ops-01-us-04-t21
+=======
+4) Download, verify SHA-256 (required; missing metadata is fatal), extract, and verify the expected `docdexd` binary exists.
+>>>>>>> mcoda/task/ops-01-us-04-t38
 
 When install fails, output includes `[docdex] error code: <CODE>` and the process exits with a stable numeric exit code.
 

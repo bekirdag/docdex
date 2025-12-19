@@ -139,6 +139,7 @@ The npm installer resolves an install plan deterministically (see `npm/lib/insta
    - Prefer `SHA256SUMS` / `SHA256SUMS.txt` entries for that filename.
    - If the release provides a detached signature for the selected checksums file (`SHA256SUMS.sig` / `SHA256SUMS.txt.sig`), the installer verifies it **before** trusting any checksum entries.
    - Legacy fallback: `<archive>.sha256` sidecar for that filename.
+<<<<<<< HEAD
    - If integrity metadata is still unavailable, behavior is controlled by `DOCDEX_INTEGRITY_POLICY`:
      - Default (`required`): fail closed with `DOCDEX_CHECKSUM_UNUSABLE` (exit `24`).
      - Overrides (`allow-missing|off`): warn and proceed unverified (insecure; never silent).
@@ -147,6 +148,10 @@ The npm installer resolves an install plan deterministically (see `npm/lib/insta
 Integrity policy (fail-closed):
 - If SHA-256 integrity metadata cannot be obtained from the manifest or fallback checksums, the installer aborts with `DOCDEX_CHECKSUM_UNUSABLE` (no “silent” install).
 - There is no supported mode that installs a downloaded `docdexd` archive without SHA-256 verification.
+=======
+   - If no SHA-256 metadata is available from the manifest or fallbacks, the installer fails closed with `DOCDEX_CHECKSUM_UNUSABLE`.
+4) Download, verify SHA-256 (fatal on mismatch), extract, and confirm the expected `docdexd` binary exists.
+>>>>>>> mcoda/task/ops-01-us-04-t38
 
 If installation fails, fatal errors are deterministic and include whether fallback was attempted; see `docs/contracts/installer_error_contract_v1.md` and `docs/ops/installer_error_codes.md`.
 

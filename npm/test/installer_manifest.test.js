@@ -651,15 +651,21 @@ test("parseSha256File handles common sha256 file formats deterministically", () 
   assert.equal(parseSha256File(`${expected}  docdexd-linux-x64-gnu.tar.gz\r\n`, "docdexd-linux-x64-gnu.tar.gz"), expected);
 });
 
+<<<<<<< HEAD
 test("verifyDownloadedFileIntegrity fails closed when integrity metadata is absent", async () => {
+=======
+test("verifyDownloadedFileIntegrity fails closed when integrity metadata is missing and passes when it matches", async () => {
+>>>>>>> mcoda/task/ops-01-us-04-t38
   const filePath = path.join(__dirname, "fixtures", "archive", "fake-archive.bin");
   const actual = await sha256File(filePath);
+  const archiveName = "docdexd-linux-x64-gnu.tar.gz";
 
   await assert.rejects(
     () =>
       verifyDownloadedFileIntegrity({
         filePath,
         expectedSha256: null,
+<<<<<<< HEAD
 <<<<<<< HEAD
         archiveName: "docdexd-linux-x64-gnu.tar.gz"
       }),
@@ -668,16 +674,24 @@ test("verifyDownloadedFileIntegrity fails closed when integrity metadata is abse
 =======
         archiveName: "docdexd-linux-x64-gnu.tar.gz",
         details: { source: "fallback" }
+=======
+        archiveName
+>>>>>>> mcoda/task/ops-01-us-04-t38
       }),
     (err) => {
       assert.ok(err instanceof ChecksumResolutionError);
       assert.equal(err.code, "DOCDEX_CHECKSUM_UNUSABLE");
+<<<<<<< HEAD
       assert.equal(err.details.assetName, "docdexd-linux-x64-gnu.tar.gz");
 >>>>>>> mcoda/task/ops-01-us-04-t11
+=======
+      assert.ok(err.message.includes("Missing SHA-256 integrity metadata"));
+>>>>>>> mcoda/task/ops-01-us-04-t38
       return true;
     }
   );
 
+<<<<<<< HEAD
   const res = await verifyDownloadedFileIntegrity({
     filePath,
     expectedSha256: actual,
@@ -687,6 +701,16 @@ test("verifyDownloadedFileIntegrity fails closed when integrity metadata is abse
   assert.equal(res.status, "verified_ok");
   assert.equal(res.expectedSha256, actual);
   assert.equal(res.actualSha256, actual);
+=======
+  assert.equal(
+    await verifyDownloadedFileIntegrity({
+      filePath,
+      expectedSha256: actual,
+      archiveName
+    }),
+    actual
+  );
+>>>>>>> mcoda/task/ops-01-us-04-t38
 });
 test("installer policy allow-missing permits missing integrity metadata deterministically", async () => {
   const base = "https://example.test/releases/download";

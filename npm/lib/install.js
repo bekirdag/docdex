@@ -3917,16 +3917,26 @@ async function verifyDownloadedFileIntegrity({
   details
 }) {
 <<<<<<< HEAD
+<<<<<<< HEAD
   const expected = normalizeSha256Hex(expectedSha256);
   if (!expected) {
     throw new ChecksumResolutionError(`Missing SHA-256 integrity metadata for ${archiveName}`, {
       ...(details || {}),
       assetName: archiveName,
       expectedSha256: null,
+=======
+  const normalizedExpected = normalizeSha256Hex(expectedSha256);
+  if (!normalizedExpected) {
+    throw new ChecksumResolutionError(`Missing SHA-256 integrity metadata for ${archiveName}`, {
+      ...(details || {}),
+      assetName: archiveName,
+      expectedSha256: expectedSha256 ?? null,
+>>>>>>> mcoda/task/ops-01-us-04-t38
       actualSha256: null
     });
   }
 
+<<<<<<< HEAD
   const rawActual = await sha256FileFn(filePath);
   const actual = normalizeSha256Hex(rawActual);
   if (!actual) {
@@ -4005,6 +4015,30 @@ async function recoverInterruptedInstall({ fsModule, distDir, incomingDir, backu
   }
   return normalizedActual;
 >>>>>>> mcoda/task/ops-01-us-04-t11
+=======
+  let actualRaw;
+  try {
+    actualRaw = await sha256FileFn(filePath);
+  } catch (err) {
+    throw new IntegrityMismatchError(archiveName, normalizedExpected, "unreadable", {
+      ...(details || {}),
+      verificationError: err?.message || String(err)
+    });
+  }
+
+  const normalizedActual = normalizeSha256Hex(actualRaw);
+  if (!normalizedActual) {
+    throw new IntegrityMismatchError(archiveName, normalizedExpected, "unreadable", {
+      ...(details || {}),
+      verificationError: "hash_invalid"
+    });
+  }
+
+  if (normalizedActual !== normalizedExpected) {
+    throw new IntegrityMismatchError(archiveName, normalizedExpected, normalizedActual, details);
+  }
+  return normalizedActual;
+>>>>>>> mcoda/task/ops-01-us-04-t38
 }
 
 async function runInstaller(options) {
@@ -6735,12 +6769,17 @@ function describeFatalError(err) {
     const expectedSha256 = typeof err.details?.expectedSha256 === "string" ? err.details.expectedSha256 : null;
     const actualSha256 = typeof err.details?.actualSha256 === "string" ? err.details.actualSha256 : null;
 <<<<<<< HEAD
+<<<<<<< HEAD
     return withInstallAttemptLines({
 =======
     const verificationMethod = typeof err.details?.verificationMethod === "string" ? err.details.verificationMethod : null;
     const integrityMetadataSource =
       typeof err.details?.integrityMetadataSource === "string" ? err.details.integrityMetadataSource : null;
     const integrityMetadataName = typeof err.details?.integrityMetadataName === "string" ? err.details.integrityMetadataName : null;
+=======
+    const verificationError =
+      typeof err.details?.verificationError === "string" ? err.details.verificationError : null;
+>>>>>>> mcoda/task/ops-01-us-04-t38
     return {
 >>>>>>> mcoda/task/ops-01-us-04-t21
       code: err.code,
@@ -6775,8 +6814,12 @@ function describeFatalError(err) {
 >>>>>>> mcoda/task/ops-01-us-04-t18
         expectedSha256 ? `[docdex] Expected sha256: ${expectedSha256}` : null,
         actualSha256 ? `[docdex] Actual sha256:   ${actualSha256}` : null,
+<<<<<<< HEAD
         integrityMetadataSource ? `[docdex] Integrity metadata source: ${integrityMetadataSource}` : null,
         integrityMetadataName ? `[docdex] Integrity metadata name: ${integrityMetadataName}` : null,
+=======
+        verificationError ? `[docdex] Verification error: ${verificationError}` : null,
+>>>>>>> mcoda/task/ops-01-us-04-t38
         err.details?.source ? `[docdex] Source: ${err.details.source}` : null,
         err.details?.integritySource ? `[docdex] Integrity source: ${err.details.integritySource}` : null,
         err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,

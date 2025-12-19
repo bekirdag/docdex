@@ -9,6 +9,8 @@ const path = require("node:path");
 const { runInstaller } = require("../lib/install");
 const { targetTripleForPlatformKey } = require("../lib/platform");
 
+const EXPECTED_SHA256 = "a".repeat(64);
+
 function createNoopLogger() {
   return {
     log: () => {},
@@ -54,7 +56,7 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: EXPECTED_SHA256,
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -64,7 +66,7 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
       await ensureDir(path.dirname(dest));
       await fs.promises.writeFile(dest, "fake-archive-bytes");
     },
-    verifyDownloadedFileIntegrityFn: async () => null,
+    verifyDownloadedFileIntegrityFn: async ({ expectedSha256 }) => expectedSha256,
     extractTarballFn: async (_archivePath, targetDir) => {
       firstExtractCalls += 1;
       await ensureDir(targetDir);
@@ -131,4 +133,3 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
   assert.equal(metadataAfterSecond, metadataAfterFirst);
   assert.equal(binaryAfterSecond, binaryAfterFirst);
 });
-

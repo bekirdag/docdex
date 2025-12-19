@@ -360,6 +360,31 @@ function integrityVerified({ expectedSha256, actualSha256, expectedSource }) {
   };
 }
 
+function logIntegrityCheck({
+  logger,
+  status,
+  method,
+  source,
+  assetName,
+  location,
+  expectedSha256,
+  actualSha256
+}) {
+  if (!logger || typeof logger.log !== "function") return;
+  const safeMethod = typeof method === "string" && method ? method : "sha256";
+  const safeSource = typeof source === "string" && source ? source : "unknown";
+  const safeAsset = typeof assetName === "string" && assetName ? assetName : "unknown";
+  const locationLabel = typeof location === "string" && location ? ` location=${location}` : "";
+  logger.log(
+    `[docdex] Integrity ${status}: method=${safeMethod} source=${safeSource} asset=${safeAsset}${locationLabel}`
+  );
+  if (expectedSha256 || actualSha256) {
+    logger.log(
+      `[docdex] Integrity ${status}: expected=${expectedSha256 ?? "unknown"} actual=${actualSha256 ?? "unknown"}`
+    );
+  }
+}
+
 async function verifyInstalledDocdexdIntegrity({
   fsModule,
   sha256FileFn,
@@ -882,6 +907,9 @@ async function resolveInstallerDownloadPlan({
   let archive = null;
   let expectedSha256 = null;
   let source = "fallback";
+  let integrityMethod = "sha256";
+  let integritySource = null;
+  let integritySourceUrl = null;
 
   let manifestAttempt;
   try {
@@ -910,6 +938,10 @@ async function resolveInstallerDownloadPlan({
     archive = manifestAttempt.resolved.asset.name;
     expectedSha256 = manifestAttempt.resolved.integrity.sha256;
     source = `manifest:${manifestAttempt.manifestName}`;
+    integritySource = source;
+    if (manifestAttempt.manifestName) {
+      integritySourceUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${manifestAttempt.manifestName}`;
+    }
   } else if (manifestAttempt.errors && manifestAttempt.errors.length) {
     logger.warn(`[docdex] Manifest unavailable; falling back. Details: ${manifestAttempt.errors.join(" | ")}`);
   } else {
@@ -930,12 +962,20 @@ async function resolveInstallerDownloadPlan({
 
     if (checksumAttempt.sha256) {
       expectedSha256 = checksumAttempt.sha256;
+      integritySource = checksumAttempt.checksumName
+        ? `checksums:${checksumAttempt.checksumName}`
+        : "checksums";
+      integritySourceUrl = checksumAttempt.checksumUrl || null;
     } else {
       // Legacy fallback: per-asset .sha256 sidecar.
       const shaUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}.sha256`;
       try {
         const shaText = await downloadTextFn(shaUrl);
         expectedSha256 = parseSha256File(shaText, archive);
+        if (expectedSha256) {
+          integritySource = `sidecar:${archive}.sha256`;
+          integritySourceUrl = shaUrl;
+        }
       } catch {
         expectedSha256 = null;
       }
@@ -959,6 +999,7 @@ async function resolveInstallerDownloadPlan({
           manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
           fallbackAttempted: true,
           fallbackReason: manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found",
+          manifestCandidates,
           checksumCandidates,
           checksumErrors: checksumAttempt?.errors ?? null,
           checksumEvents: checksumAttempt?.events ?? null
@@ -971,6 +1012,9 @@ async function resolveInstallerDownloadPlan({
     archive,
     expectedSha256,
     source,
+    integrityMethod,
+    integritySource,
+    integritySourceUrl,
     manifestAttempt: { ...manifestAttempt, fallbackAttempted: !manifestAttempt.resolved }
   };
 }
@@ -1059,13 +1103,33 @@ async function runInstaller(options) {
   });
 
   if (local.outcome === "no-op") {
+    if (local.integrityResult) {
+      logIntegrityCheck({
+        logger,
+        status: "ok",
+        method: "sha256",
+        source: local.integrityResult.expectedSource,
+        assetName: pathModule.basename(local.binaryPath),
+        location: local.binaryPath,
+        expectedSha256: local.integrityResult.expectedSha256,
+        actualSha256: local.integrityResult.actualSha256
+      });
+    }
     logger.log("[docdex] Install outcome: no-op");
     return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
   }
 
   const repoSlug = parseRepoSlugFn();
 
-  const { archive, expectedSha256, source, manifestAttempt } = await resolveInstallerDownloadPlanFn({
+  const {
+    archive,
+    expectedSha256,
+    source,
+    manifestAttempt,
+    integrityMethod,
+    integritySource,
+    integritySourceUrl
+  } = await resolveInstallerDownloadPlanFn({
     repoSlug,
     version,
     platformKey,
@@ -1073,9 +1137,44 @@ async function runInstaller(options) {
     logger
   });
 
+  if (!expectedSha256) {
+    const manifestCandidates = manifestCandidateNames();
+    const checksumCandidates = checksumCandidateNames();
+    throw new ChecksumResolutionError(
+      `Missing SHA-256 integrity metadata for ${archive} (tried manifest ${manifestCandidates.join(
+        ", "
+      )} and checksums ${checksumCandidates.join(", ")})`,
+      {
+        platformKey,
+        targetTriple,
+        version,
+        repoSlug,
+        assetName: archive,
+        source,
+        manifestName: manifestAttempt?.manifestName ?? null,
+        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+        fallbackAttempted: source === "fallback",
+        fallbackReason: manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found",
+        manifestCandidates,
+        checksumCandidates,
+        checksumErrors: null,
+        checksumEvents: null
+      }
+    );
+  }
+
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
   const tmpDir = opts.tmpDir || osModule.tmpdir();
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
+  const resolvedIntegrityMethod = typeof integrityMethod === "string" && integrityMethod ? integrityMethod : "sha256";
+  const resolvedIntegritySource =
+    typeof integritySource === "string" && integritySource
+      ? integritySource
+      : typeof source === "string" && source.startsWith("manifest:")
+        ? source
+        : null;
+  const resolvedIntegritySourceUrl =
+    typeof integritySourceUrl === "string" && integritySourceUrl ? integritySourceUrl : null;
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   try {
@@ -1121,7 +1220,16 @@ async function runInstaller(options) {
       );
     }
 
-    await verifyDownloadedFileIntegrityFn({
+    logIntegrityCheck({
+      logger,
+      status: "check",
+      method: resolvedIntegrityMethod,
+      source: resolvedIntegritySource,
+      assetName: archive,
+      location: downloadUrl
+    });
+
+    const actualSha256 = await verifyDownloadedFileIntegrityFn({
       filePath: tmpFile,
       expectedSha256,
       archiveName: archive,
@@ -1134,8 +1242,22 @@ async function runInstaller(options) {
         source,
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
-        fallbackAttempted: source === "fallback"
+        fallbackAttempted: source === "fallback",
+        integrityMethod: resolvedIntegrityMethod,
+        integritySource: resolvedIntegritySource,
+        integritySourceUrl: resolvedIntegritySourceUrl
       }
+    });
+
+    logIntegrityCheck({
+      logger,
+      status: "ok",
+      method: resolvedIntegrityMethod,
+      source: resolvedIntegritySource,
+      assetName: archive,
+      location: downloadUrl,
+      expectedSha256,
+      actualSha256
     });
 
     // Only replace an existing installation after we have successfully fetched + verified the archive.
@@ -1307,8 +1429,12 @@ function describeFatalError(err) {
         err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
         err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,
         err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,
+        "[docdex] Integrity method: sha256",
         checksumCandidates.length
           ? `[docdex] Checksum candidates tried: ${checksumCandidates.join(", ")}`
+          : null,
+        Array.isArray(err.details?.manifestCandidates) && err.details.manifestCandidates.length
+          ? `[docdex] Manifest candidates tried: ${err.details.manifestCandidates.join(", ")}`
           : null,
         err.details?.fallbackReason ? `[docdex] Fallback reason: ${err.details.fallbackReason}` : null,
         "[docdex] Next steps:",
@@ -1346,6 +1472,9 @@ function describeFatalError(err) {
         `[docdex] error code: ${err.code}`,
         err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
         err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
+        err.details?.integrityMethod ? `[docdex] Integrity method: ${err.details.integrityMethod}` : null,
+        err.details?.integritySource ? `[docdex] Integrity source: ${err.details.integritySource}` : null,
+        err.details?.integritySourceUrl ? `[docdex] Integrity source URL: ${err.details.integritySourceUrl}` : null,
         expectedSha256 ? `[docdex] Expected sha256: ${expectedSha256}` : null,
         actualSha256 ? `[docdex] Actual sha256:   ${actualSha256}` : null,
         err.details?.source ? `[docdex] Source: ${err.details.source}` : null,

@@ -5,10 +5,13 @@ import { spawn } from "child_process";
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Defaults (can be overridden via config or env)
+// Defaults (server-level only; ignore per-request repo/log overrides)
 const DEFAULT_REPO = process.env.DOCDEX_REPO_PATH || "/source";
 const DEFAULT_LOG = process.env.DOCDEX_LOG_LEVEL || "warn";
-const DEFAULT_MAX_RESULTS = Number(process.env.DOCDEX_MAX_RESULTS || 8);
+const DEFAULT_MAX_RESULTS = normalizePositiveInt(
+  process.env.DOCDEX_MAX_RESULTS,
+  8
+);
 
 // Parse JSON bodies
 app.use(bodyParser.json());
@@ -39,22 +42,8 @@ let stdoutBuffer = "";
 const pending = new Map(); // id(string) -> { resolve, reject }
 
 function normalizeConfig(overrides = {}) {
-  const repoPath =
-    typeof overrides.repoPath === "string" && overrides.repoPath.trim()
-      ? overrides.repoPath.trim()
-      : DEFAULT_REPO;
-
-  const logLevel =
-    typeof overrides.logLevel === "string" && overrides.logLevel.trim()
-      ? overrides.logLevel.trim()
-      : DEFAULT_LOG;
-
-  const maxRaw = overrides.maxResults ?? DEFAULT_MAX_RESULTS;
-  const maxNum = Number(maxRaw);
-  const maxResults =
-    Number.isFinite(maxNum) && maxNum > 0 ? maxNum : DEFAULT_MAX_RESULTS;
-
-  return { repoPath, logLevel, maxResults };
+  const maxResults = clampMaxResults(overrides.maxResults);
+  return { repoPath: DEFAULT_REPO, logLevel: DEFAULT_LOG, maxResults };
 }
 
 function startDocdex(config) {
@@ -160,11 +149,30 @@ function decodeConfig(req) {
   try {
     const json = Buffer.from(String(raw), "base64").toString("utf8");
     const parsed = JSON.parse(json);
-    if (parsed && typeof parsed === "object") return parsed;
+    if (parsed && typeof parsed === "object") {
+      const overrides = {};
+      if (Object.prototype.hasOwnProperty.call(parsed, "maxResults")) {
+        overrides.maxResults = parsed.maxResults;
+      }
+      return overrides;
+    }
   } catch (err) {
     console.error("[Adapter] Failed to decode config query param:", err);
   }
   return {};
+}
+
+function normalizePositiveInt(value, fallback) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) {
+    return fallback;
+  }
+  return Math.floor(num);
+}
+
+function clampMaxResults(value) {
+  const normalized = normalizePositiveInt(value, DEFAULT_MAX_RESULTS);
+  return Math.min(normalized, DEFAULT_MAX_RESULTS);
 }
 
 function sendRequestToDocdex(message, configOverrides = {}) {

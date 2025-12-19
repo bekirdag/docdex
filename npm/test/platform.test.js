@@ -223,6 +223,7 @@ test("resolvePlatformPolicy returns platform key, target triple, and expected as
   assert.equal(policy.expectedAssetPattern, "docdexd-<platformKey>.tar.gz (e.g. docdexd-darwin-arm64.tar.gz)");
 });
 
+<<<<<<< HEAD
 test("resolvePlatformPolicy includes detected libc on Linux (derived from platformKey)", () => {
   const policy = resolvePlatformPolicy({ platform: "linux", arch: "x64", env: { DOCDEX_LIBC: "gnu" } });
   assert.equal(policy.detected.platform, "linux");
@@ -235,4 +236,34 @@ test("libcForPlatformKey parses Linux platform keys deterministically", () => {
   assert.equal(libcForPlatformKey("linux-x64-musl"), "musl");
   assert.equal(libcForPlatformKey("darwin-arm64"), null);
   assert.equal(libcForPlatformKey(null), null);
+=======
+test("platform matrix: published entries resolve OS/arch to target triple + asset name", () => {
+  const published = PLATFORM_MATRIX.filter((entry) => entry.published);
+  for (const entry of published) {
+    const options = { platform: entry.platform, arch: entry.arch };
+    if (entry.platform === "linux") options.env = { DOCDEX_LIBC: entry.libc };
+    const policy = resolvePlatformPolicy(options);
+    assert.equal(policy.platformKey, entry.platformKey);
+    assert.equal(policy.targetTriple, entry.targetTriple);
+    assert.equal(policy.expectedAssetName, `docdexd-${entry.platformKey}.tar.gz`);
+  }
+});
+
+test("platform matrix: unpublished entries are rejected as unsupported", () => {
+  const unpublished = PLATFORM_MATRIX.filter((entry) => !entry.published);
+  for (const entry of unpublished) {
+    const options = { platform: entry.platform, arch: entry.arch };
+    if (entry.platform === "linux") options.env = { DOCDEX_LIBC: entry.libc };
+    assert.throws(
+      () => detectPlatformKey(options),
+      (err) => {
+        assert.ok(err instanceof UnsupportedPlatformError);
+        assert.equal(err.details.candidatePlatformKey, entry.platformKey);
+        assert.equal(err.details.candidateTargetTriple, entry.targetTriple);
+        assert.equal(err.details.reason, "target_not_published");
+        return true;
+      }
+    );
+  }
+>>>>>>> mcoda/task/ops-01-us-01-t22
 });

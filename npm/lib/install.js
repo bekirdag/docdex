@@ -1044,6 +1044,18 @@ async function runInstaller(options) {
   const platformKey = platformPolicy.platformKey;
   const targetTriple = platformPolicy.targetTriple;
   const version = getVersionFn();
+  const expectedAssetName =
+    typeof platformPolicy.expectedAssetName === "string" && platformPolicy.expectedAssetName.trim()
+      ? platformPolicy.expectedAssetName.trim()
+      : artifactNameFn(platformKey);
+  const libcSuffix =
+    detectedPlatform === "linux" && typeof platformKey === "string"
+      ? `/${platformKey.split("-")[2] || "unknown"}`
+      : "";
+  logger.log(`[docdex] Detected platform: ${detectedPlatform}/${detectedArch}${libcSuffix}`);
+  logger.log(`[docdex] Target triple: ${targetTriple}`);
+  logger.log(`[docdex] Daemon version: v${version}`);
+  logger.log(`[docdex] Resolved asset: ${expectedAssetName}`);
   const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
   const distDir = pathModule.join(distBaseDir, platformKey);
   const isWin32 = detectedPlatform === "win32";

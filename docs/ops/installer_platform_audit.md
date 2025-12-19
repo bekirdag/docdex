@@ -35,6 +35,7 @@ If a platform is unsupported, install exits non-zero and does not download.
 If a platform is supported but an artifact is missing, install exits non-zero with a “missing artifact/version sync issue” message (not “unsupported platform”) and includes the expected triple and asset pattern.
 
 Contracts:
+- `docs/contracts/installer_asset_metadata_contract_v1.md`
 - `docs/contracts/installer_error_contract_v1.md`
 - `docs/contracts/release_manifest_schema_v1.md`
 - Remediation playbook: `docs/ops/installer_error_codes.md`

@@ -3,7 +3,6 @@
 
 const fs = require("node:fs");
 const https = require("node:https");
-const os = require("node:os");
 const path = require("node:path");
 const { pipeline } = require("node:stream/promises");
 const crypto = require("node:crypto");
@@ -26,6 +25,10 @@ const MAX_MANIFEST_BYTES = 1024 * 1024; // 1 MiB cap for safety
 const INVALID_JSON_ERROR = "invalid JSON";
 const INSTALL_METADATA_SCHEMA_VERSION = 1;
 const INSTALL_METADATA_FILENAME = "docdexd-install.json";
+const STAGING_ROOT_NAME = ".docdex-staging";
+const STAGING_STAGE_PREFIX = "stage-";
+const STAGING_BACKUP_PREFIX = "backup-";
+const STAGING_TTL_MS = 24 * 60 * 60 * 1000;
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -275,6 +278,103 @@ async function sha256File(filePath) {
 
 function installMetadataPath(distDir, pathModule = path) {
   return pathModule.join(distDir, INSTALL_METADATA_FILENAME);
+}
+
+function stagingRootPath(distBaseDir, pathModule = path) {
+  return pathModule.join(distBaseDir, STAGING_ROOT_NAME);
+}
+
+async function createStagingDir({ fsModule, pathModule, stagingRoot, platformKey }) {
+  if (!fsModule?.promises?.mkdir) {
+    throw new Error("staging unavailable: fs.promises.mkdir missing");
+  }
+
+  await fsModule.promises.mkdir(stagingRoot, { recursive: true });
+  const prefix = `${STAGING_STAGE_PREFIX}${platformKey}-`;
+
+  if (fsModule?.promises?.mkdtemp) {
+    return fsModule.promises.mkdtemp(pathModule.join(stagingRoot, prefix));
+  }
+
+  const fallback = pathModule.join(stagingRoot, `${prefix}${Date.now()}-${process.pid}`);
+  await fsModule.promises.mkdir(fallback, { recursive: true });
+  return fallback;
+}
+
+async function cleanupStagingArtifacts({
+  fsModule,
+  pathModule,
+  stagingRoot,
+  platformKey,
+  distDir,
+  logger = console,
+  ttlMs = STAGING_TTL_MS,
+  currentStagingDir = null
+}) {
+  const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+  if (!existsSync || !fsModule?.promises?.readdir || !fsModule?.promises?.stat || !fsModule?.promises?.rm) {
+    return { restored: false, cleaned: 0 };
+  }
+
+  if (!existsSync(stagingRoot)) return { restored: false, cleaned: 0 };
+
+  let entries;
+  try {
+    entries = await fsModule.promises.readdir(stagingRoot, { withFileTypes: true });
+  } catch {
+    return { restored: false, cleaned: 0 };
+  }
+
+  const nowMs = Date.now();
+  const backupPrefix = `${STAGING_BACKUP_PREFIX}${platformKey}-`;
+  let restored = false;
+
+  if (!existsSync(distDir) && fsModule?.promises?.rename) {
+    const backupEntries = entries.filter(
+      (entry) => entry.isDirectory() && entry.name.startsWith(backupPrefix)
+    );
+    if (backupEntries.length) {
+      const backupStats = await Promise.all(
+        backupEntries.map(async (entry) => {
+          const fullPath = pathModule.join(stagingRoot, entry.name);
+          const stat = await fsModule.promises.stat(fullPath).catch(() => null);
+          return { fullPath, stat };
+        })
+      );
+      const candidate = backupStats
+        .filter((entry) => entry.stat)
+        .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs)[0];
+      if (candidate) {
+        try {
+          await fsModule.promises.rename(candidate.fullPath, distDir);
+          restored = true;
+          logger.warn(`[docdex] Restored previous install from ${candidate.fullPath}`);
+        } catch {}
+      }
+    }
+  }
+
+  let cleaned = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const isStage = entry.name.startsWith(STAGING_STAGE_PREFIX);
+    const isBackup = entry.name.startsWith(STAGING_BACKUP_PREFIX);
+    if (!isStage && !isBackup) continue;
+    const fullPath = pathModule.join(stagingRoot, entry.name);
+    if (currentStagingDir && fullPath === currentStagingDir) continue;
+    if (isStage) {
+      await fsModule.promises.rm(fullPath, { recursive: true, force: true }).catch(() => {});
+      cleaned += 1;
+      continue;
+    }
+    const stat = await fsModule.promises.stat(fullPath).catch(() => null);
+    if (!stat) continue;
+    if (nowMs - stat.mtimeMs < ttlMs) continue;
+    await fsModule.promises.rm(fullPath, { recursive: true, force: true }).catch(() => {});
+    cleaned += 1;
+  }
+
+  return { restored, cleaned };
 }
 
 function nowIso() {
@@ -1005,7 +1105,6 @@ async function runInstaller(options) {
   const extractTarballFn = opts.extractTarballFn || extractTarball;
   const fsModule = opts.fsModule || fs;
   const pathModule = opts.pathModule || path;
-  const osModule = opts.osModule || os;
   const artifactNameFn = opts.artifactNameFn || artifactName;
   const assetPatternForPlatformKeyFn = opts.assetPatternForPlatformKeyFn || assetPatternForPlatformKey;
   const sha256FileFn = opts.sha256FileFn || sha256File;
@@ -1047,6 +1146,17 @@ async function runInstaller(options) {
   const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
   const distDir = pathModule.join(distBaseDir, platformKey);
   const isWin32 = detectedPlatform === "win32";
+  const binaryName = isWin32 ? "docdexd.exe" : "docdexd";
+  const stagingRoot = stagingRootPath(distBaseDir, pathModule);
+
+  await cleanupStagingArtifacts({
+    fsModule,
+    pathModule,
+    stagingRoot,
+    platformKey,
+    distDir,
+    logger
+  });
 
   const local = await determineLocalInstallerOutcome({
     fsModule,
@@ -1074,13 +1184,14 @@ async function runInstaller(options) {
   });
 
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
-  const tmpDir = opts.tmpDir || osModule.tmpdir();
-  const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
+  const stagingDir = await createStagingDir({ fsModule, pathModule, stagingRoot, platformKey });
+  const stagingArchivePath = pathModule.join(stagingDir, archive);
+  const stagingExtractDir = pathModule.join(stagingDir, "extract");
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   try {
     try {
-      await downloadFn(downloadUrl, tmpFile);
+      await downloadFn(downloadUrl, stagingArchivePath);
     } catch (err) {
       if (err && typeof err.statusCode === "number" && err.statusCode === 404) {
         const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
@@ -1122,7 +1233,7 @@ async function runInstaller(options) {
     }
 
     await verifyDownloadedFileIntegrityFn({
-      filePath: tmpFile,
+      filePath: stagingArchivePath,
       expectedSha256,
       archiveName: archive,
       details: {
@@ -1138,13 +1249,13 @@ async function runInstaller(options) {
       }
     });
 
-    // Only replace an existing installation after we have successfully fetched + verified the archive.
-    await fsModule.promises.rm(distDir, { recursive: true, force: true });
-    await extractTarballFn(tmpFile, distDir);
+    await fsModule.promises.mkdir(stagingExtractDir, { recursive: true });
+    await extractTarballFn(stagingArchivePath, stagingExtractDir);
 
-    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
-    if (!fsModule.existsSync(binaryPath)) {
-      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
+    const stagingBinaryPath = pathModule.join(stagingExtractDir, binaryName);
+    const finalBinaryPath = pathModule.join(distDir, binaryName);
+    if (!fsModule.existsSync(stagingBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${finalBinaryPath}`, {
         platformKey,
         targetTriple,
         version,
@@ -1155,14 +1266,13 @@ async function runInstaller(options) {
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
         fallbackAttempted: source === "fallback",
-        binaryPath
+        binaryPath: finalBinaryPath
       });
     }
 
-    await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
-    logger.log(`[docdex] Installed binary to ${binaryPath}`);
+    await fsModule.promises.chmod(stagingBinaryPath, 0o755).catch(() => {});
 
-    const binarySha256 = await sha256FileFn(binaryPath);
+    const binarySha256 = await sha256FileFn(stagingBinaryPath);
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
       installedAt: nowIso(),
@@ -1171,7 +1281,7 @@ async function runInstaller(options) {
       platformKey,
       targetTriple,
       binary: {
-        filename: isWin32 ? "docdexd.exe" : "docdexd",
+        filename: binaryName,
         sha256: binarySha256
       },
       archive: {
@@ -1184,14 +1294,37 @@ async function runInstaller(options) {
     await writeJsonFileAtomic({
       fsModule,
       pathModule,
-      filePath: installMetadataPath(distDir, pathModule),
+      filePath: installMetadataPath(stagingExtractDir, pathModule),
       value: metadata
     });
 
+    let backupDir = null;
+    if (fsModule.existsSync(distDir)) {
+      backupDir = pathModule.join(
+        stagingRoot,
+        `${STAGING_BACKUP_PREFIX}${platformKey}-${Date.now()}-${process.pid}`
+      );
+      await fsModule.promises.rename(distDir, backupDir);
+    }
+
+    try {
+      await fsModule.promises.rename(stagingExtractDir, distDir);
+    } catch (err) {
+      if (backupDir) {
+        await fsModule.promises.rename(backupDir, distDir).catch(() => {});
+      }
+      throw err;
+    }
+
+    if (backupDir) {
+      await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+    }
+
+    logger.log(`[docdex] Installed binary to ${finalBinaryPath}`);
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
-    return { binaryPath, outcome: local.outcome };
+    return { binaryPath: finalBinaryPath, outcome: local.outcome };
   } finally {
-    await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
+    await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -1438,6 +1571,7 @@ module.exports = {
   resolveInstallerDownloadPlan,
   parseSha256File,
   sha256File,
+  stagingRootPath,
   verifyInstalledDocdexdIntegrity,
   decideInstallAction,
   determineLocalInstallerOutcome,
@@ -1446,5 +1580,7 @@ module.exports = {
   ChecksumResolutionError,
   runInstaller,
   describeFatalError,
-  handleFatal
+  handleFatal,
+  STAGING_ROOT_NAME,
+  STAGING_BACKUP_PREFIX
 };

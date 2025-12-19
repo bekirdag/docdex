@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const { resolvePlatformPolicy } = require("../lib/platform");
-const { describeFatalError, runInstaller, resolveInstallerDownloadPlan } = require("../lib/install");
+const { describeFatalError, runInstaller, resolveInstallerDownloadPlan, STAGING_ROOT_NAME } = require("../lib/install");
 
 function createNoopLogger() {
   return {
@@ -272,6 +272,7 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
   let downloadCalls = 0;
   let tmpCleanupRmCalls = 0;
   let installRmCalls = 0;
+  let stagingRmCalls = 0;
   let extractCalls = 0;
 
   const base = "https://example.test/releases/download";
@@ -281,9 +282,19 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
   const fsModule = {
     promises: {
       rm: async (_path, options) => {
-        if (options && options.recursive) installRmCalls += 1;
-        else tmpCleanupRmCalls += 1;
-      }
+        if (options && options.recursive) {
+          if (String(_path || "").includes(STAGING_ROOT_NAME)) stagingRmCalls += 1;
+          else installRmCalls += 1;
+        } else {
+          tmpCleanupRmCalls += 1;
+        }
+      },
+      mkdir: async () => {},
+      mkdtemp: async (prefix) => `${prefix}mock`,
+      readdir: async () => [],
+      stat: async () => ({ mtimeMs: Date.now() }),
+      rename: async () => {},
+      chmod: async () => {}
     },
     existsSync: () => true
   };
@@ -339,5 +350,6 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
   assert.equal(downloadCalls, 1);
   assert.equal(extractCalls, 0);
   assert.equal(installRmCalls, 0, "should not remove existing install on 404");
-  assert.equal(tmpCleanupRmCalls, 1, "should still attempt tmp cleanup");
+  assert.ok(stagingRmCalls >= 1, "should clean staging artifacts");
+  assert.equal(tmpCleanupRmCalls, 0, "staged installs should not depend on tmp file cleanup");
 });

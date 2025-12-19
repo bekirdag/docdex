@@ -878,6 +878,8 @@ pub struct SearchMeta {
     pub index_last_updated_epoch_ms: Option<u128>,
     pub repo_root: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub query: Option<SearchQueryMeta>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_assembly: Option<ContextAssemblyMeta>,
@@ -1254,6 +1256,7 @@ fn build_search_meta(
         generated_at_epoch_ms,
         index_last_updated_epoch_ms: last_updated,
         repo_root: indexer.repo_root().display().to_string(),
+        repo_id: crate::symbols::repo_id_for_root(indexer.repo_root()).ok(),
         query,
         context_assembly,
     })

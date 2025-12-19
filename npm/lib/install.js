@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { pipeline } = require("node:stream/promises");
 const crypto = require("node:crypto");
+const { execFile } = require("node:child_process");
 
 const pkg = require("../package.json");
 const {
@@ -281,6 +282,60 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function parseDocdexdVersionOutput(output) {
+  const text = String(output || "").trim();
+  if (!text) return null;
+  const tokens = text.split(/\s+/);
+  if (tokens.length >= 2 && tokens[0].toLowerCase().includes("docdexd")) {
+    if (tokens[1].toLowerCase() === "version" && tokens[2]) {
+      return tokens[2].replace(/^v/, "");
+    }
+    return tokens[1].replace(/^v/, "");
+  }
+  const match = text.match(/\bv?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/);
+  return match ? match[1] : null;
+}
+
+async function detectInstalledBinaryVersion({ binaryPath, execFileFn = execFile, timeoutMs = 2000 }) {
+  try {
+    const result = await new Promise((resolve, reject) => {
+      execFileFn(binaryPath, ["--version"], { timeout: timeoutMs }, (err, stdout, stderr) => {
+        if (err) {
+          err.stdout = stdout;
+          err.stderr = stderr;
+          return reject(err);
+        }
+        resolve({ stdout, stderr });
+      });
+    });
+    const output = `${result.stdout || ""}\n${result.stderr || ""}`.trim();
+    const parsed = parseDocdexdVersionOutput(output);
+    return {
+      version: parsed,
+      rawOutput: output,
+      error: parsed ? null : "unparseable_version_output",
+      errorCode: null
+    };
+  } catch (err) {
+    const output = `${err?.stdout || ""}\n${err?.stderr || ""}`.trim();
+    const parsed = parseDocdexdVersionOutput(output);
+    if (parsed) {
+      return {
+        version: parsed,
+        rawOutput: output,
+        error: null,
+        errorCode: null
+      };
+    }
+    return {
+      version: null,
+      rawOutput: output || null,
+      error: err?.message || String(err),
+      errorCode: typeof err?.code === "string" && err.code ? err.code : null
+    };
+  }
+}
+
 async function readJsonFileIfPossible({ fsModule, filePath }) {
   if (!fsModule?.promises?.readFile) {
     return { value: null, error: "readFile_unavailable", errorCode: "READFILE_UNAVAILABLE" };
@@ -434,6 +489,14 @@ function decideInstallAction({
 }) {
   if (!discoveredInstalledState?.binaryPresent) return { outcome: "update", reason: "binary_missing" };
 
+  if (
+    typeof discoveredInstalledState.reportedVersion === "string" &&
+    discoveredInstalledState.reportedVersion &&
+    discoveredInstalledState.reportedVersion !== expectedVersion
+  ) {
+    return { outcome: "update", reason: "reported_version_mismatch" };
+  }
+
   if (discoveredInstalledState.metadataStatus !== "valid") {
     return {
       outcome: "reinstall_unknown",
@@ -465,7 +528,14 @@ function decideInstallAction({
   return { outcome: "reinstall_unknown", reason: "integrity_unverifiable" };
 }
 
-async function discoverInstalledState({ fsModule, pathModule, distDir, platformKey, isWin32 }) {
+async function discoverInstalledState({
+  fsModule,
+  pathModule,
+  distDir,
+  platformKey,
+  isWin32,
+  detectInstalledBinaryVersionFn
+}) {
   const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
   const metadataPath = installMetadataPath(distDir, pathModule);
 
@@ -479,7 +549,9 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
       metadata: null,
       metadataStatus: "unavailable",
       metadataStatusReason: "existsSync_unavailable",
-      platformMismatch: false
+      platformMismatch: false,
+      reportedVersion: null,
+      reportedVersionError: null
     };
   }
 
@@ -492,8 +564,20 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
       metadata: null,
       metadataStatus: "missing",
       metadataStatusReason: "binary_missing",
-      platformMismatch: false
+      platformMismatch: false,
+      reportedVersion: null,
+      reportedVersionError: null
     };
+  }
+
+  let reportedVersion = null;
+  let reportedVersionError = null;
+  if (typeof detectInstalledBinaryVersionFn === "function") {
+    const probe = await detectInstalledBinaryVersionFn({ binaryPath });
+    if (probe && typeof probe.version === "string" && probe.version) {
+      reportedVersion = probe.version;
+    }
+    reportedVersionError = probe && probe.error ? probe.error : null;
   }
 
   const metaResult = await readJsonFileIfPossible({ fsModule, filePath: metadataPath });
@@ -517,7 +601,9 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
           : metaResult.errorCode
             ? "metadata_unreadable"
             : "metadata_invalid",
-      platformMismatch: false
+      platformMismatch: false,
+      reportedVersion,
+      reportedVersionError
     };
   }
 
@@ -529,7 +615,9 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
     metadata: meta,
     metadataStatus: "valid",
     metadataStatusReason: null,
-    platformMismatch: meta.platformKey !== platformKey
+    platformMismatch: meta.platformKey !== platformKey,
+    reportedVersion,
+    reportedVersionError
   };
 }
 
@@ -576,14 +664,16 @@ async function determineLocalInstallerOutcome({
   expectedVersion,
   isWin32,
   sha256FileFn = sha256File,
-  expectedBinarySha256 = null
+  expectedBinarySha256 = null,
+  detectInstalledBinaryVersionFn = null
 }) {
   const discoveredInstalledState = await discoverInstalledState({
     fsModule,
     pathModule,
     distDir,
     platformKey,
-    isWin32
+    isWin32,
+    detectInstalledBinaryVersionFn
   });
 
   const expectedIntegrityMaterial = {
@@ -621,6 +711,8 @@ async function determineLocalInstallerOutcome({
 
   const installedVersion =
     typeof discoveredInstalledState.installedVersion === "string" ? discoveredInstalledState.installedVersion : null;
+  const reportedVersion =
+    typeof discoveredInstalledState.reportedVersion === "string" ? discoveredInstalledState.reportedVersion : null;
 
   return {
     outcome: decision.outcome,
@@ -628,6 +720,7 @@ async function determineLocalInstallerOutcome({
     binaryPath: discoveredInstalledState.binaryPath,
     metadataPath: discoveredInstalledState.metadataPath,
     installedVersion,
+    reportedVersion,
     integrityResult
   };
 }
@@ -1009,6 +1102,7 @@ async function runInstaller(options) {
   const artifactNameFn = opts.artifactNameFn || artifactName;
   const assetPatternForPlatformKeyFn = opts.assetPatternForPlatformKeyFn || assetPatternForPlatformKey;
   const sha256FileFn = opts.sha256FileFn || sha256File;
+  const detectInstalledBinaryVersionFn = opts.detectInstalledBinaryVersionFn || detectInstalledBinaryVersion;
 
   const detectedPlatform = opts.platform || process.platform;
   const detectedArch = opts.arch || process.arch;
@@ -1055,13 +1149,21 @@ async function runInstaller(options) {
     platformKey,
     expectedVersion: version,
     isWin32,
-    sha256FileFn
+    sha256FileFn,
+    detectInstalledBinaryVersionFn
   });
 
   if (local.outcome === "no-op") {
     logger.log("[docdex] Install outcome: no-op");
     return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
   }
+
+  const detectedVersion =
+    typeof local.reportedVersion === "string" && local.reportedVersion
+      ? local.reportedVersion
+      : typeof local.installedVersion === "string"
+        ? local.installedVersion
+        : null;
 
   const repoSlug = parseRepoSlugFn();
 
@@ -1076,6 +1178,10 @@ async function runInstaller(options) {
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
   const tmpDir = opts.tmpDir || osModule.tmpdir();
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
+  const stagingDir = pathModule.join(distBaseDir, `${platformKey}.staging.${process.pid}.${Date.now()}`);
+  const backupDir = pathModule.join(distBaseDir, `${platformKey}.backup.${process.pid}.${Date.now()}`);
+  let staged = false;
+  let swapped = false;
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   try {
@@ -1095,6 +1201,7 @@ async function runInstaller(options) {
           fallbackAttempted: source === "fallback",
           fallbackReason,
           version,
+          detectedVersion,
           repoSlug,
           downloadUrl,
           expectedAsset: archive,
@@ -1139,12 +1246,13 @@ async function runInstaller(options) {
     });
 
     // Only replace an existing installation after we have successfully fetched + verified the archive.
-    await fsModule.promises.rm(distDir, { recursive: true, force: true });
-    await extractTarballFn(tmpFile, distDir);
+    await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    await extractTarballFn(tmpFile, stagingDir);
+    staged = true;
 
-    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
-    if (!fsModule.existsSync(binaryPath)) {
-      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
+    const stagedBinaryPath = pathModule.join(stagingDir, isWin32 ? "docdexd.exe" : "docdexd");
+    if (!fsModule.existsSync(stagedBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagedBinaryPath}`, {
         platformKey,
         targetTriple,
         version,
@@ -1155,14 +1263,13 @@ async function runInstaller(options) {
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
         fallbackAttempted: source === "fallback",
-        binaryPath
+        binaryPath: stagedBinaryPath
       });
     }
 
-    await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
-    logger.log(`[docdex] Installed binary to ${binaryPath}`);
+    await fsModule.promises.chmod(stagedBinaryPath, 0o755).catch(() => {});
 
-    const binarySha256 = await sha256FileFn(binaryPath);
+    const binarySha256 = await sha256FileFn(stagedBinaryPath);
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
       installedAt: nowIso(),
@@ -1184,14 +1291,36 @@ async function runInstaller(options) {
     await writeJsonFileAtomic({
       fsModule,
       pathModule,
-      filePath: installMetadataPath(distDir, pathModule),
+      filePath: installMetadataPath(stagingDir, pathModule),
       value: metadata
     });
 
+    const hasExisting = fsModule.existsSync(distDir);
+    if (hasExisting) {
+      await fsModule.promises.rename(distDir, backupDir);
+    }
+    try {
+      await fsModule.promises.rename(stagingDir, distDir);
+      swapped = true;
+    } catch (err) {
+      if (hasExisting) {
+        await fsModule.promises.rename(backupDir, distDir).catch(() => {});
+      }
+      throw err;
+    }
+    if (hasExisting) {
+      await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+    }
+
+    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+    logger.log(`[docdex] Installed binary to ${binaryPath}`);
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
     return { binaryPath, outcome: local.outcome };
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
+    if (staged && !swapped) {
+      await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }
 
@@ -1281,6 +1410,8 @@ function describeFatalError(err) {
         fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,
         err.details?.fallbackReason ? `[docdex] Fallback reason: ${err.details.fallbackReason}` : null,
         err.details?.version ? `[docdex] Version: v${err.details.version}` : null,
+        err.details?.detectedVersion ? `[docdex] Detected version: v${err.details.detectedVersion}` : null,
+        err.details?.source ? `[docdex] Release source: ${err.details.source}` : null,
         err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
         err.details?.expectedAsset ? `[docdex] Expected asset: ${err.details.expectedAsset}` : null,
         expectedAssetPattern ? `[docdex] Asset naming pattern: ${expectedAssetPattern}` : null,

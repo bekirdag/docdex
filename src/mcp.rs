@@ -4,6 +4,7 @@ use crate::error::{
     repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
     ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
 };
+use crate::explainability::ExplainabilityStore;
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
@@ -412,6 +413,13 @@ struct MemoryRecallArgs {
 }
 
 #[derive(Deserialize)]
+struct ExplainabilityRecordArgs {
+    record: serde_json::Value,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
 struct ResourceReadParams {
     uri: String,
 }
@@ -473,6 +481,7 @@ pub async fn serve(
     } else {
         None
     };
+    let explainability = ExplainabilityStore::new(indexer.state_dir());
     let effective_burst = if rate_limit_per_min > 0 && rate_limit_burst == 0 {
         rate_limit_per_min
     } else {
@@ -495,6 +504,7 @@ pub async fn serve(
         max_results: max_results.max(1),
         default_project_root: None,
         memory,
+        explainability,
         tool_rate_limit,
     };
     server.run().await
@@ -513,6 +523,7 @@ struct McpServer {
     max_results: usize,
     default_project_root: Option<PathBuf>,
     memory: Option<McpMemoryState>,
+    explainability: ExplainabilityStore,
     tool_rate_limit: Option<RateLimiter<()>>,
 }
 
@@ -1083,6 +1094,39 @@ impl McpServer {
                             }
                         }
                     }
+                    "docdex_explainability_record" | "docdex.explainability_record" => {
+                        let args_res: Result<ExplainabilityRecordArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_explainability_record"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_explainability_record" })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_explainability_record(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_explainability_record"))),
+                                }))
+                            }
+                        }
+                    }
                     other => {
                         return Ok(Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,
@@ -1100,11 +1144,12 @@ impl McpServer {
                                         "docdex_index",
                                         "docdex_files",
                                     "docdex_open",
-                                    "docdex_stats",
-                                    "docdex_repo_inspect",
-                                    "docdex_symbols",
-                                    "docdex_memory_store",
-                                    "docdex_memory_recall"
+                                        "docdex_stats",
+                                        "docdex_repo_inspect",
+                                        "docdex_symbols",
+                                        "docdex_memory_store",
+                                        "docdex_memory_recall",
+                                        "docdex_explainability_record"
                                     ]
                                 })),
                             )),
@@ -1259,6 +1304,18 @@ impl McpServer {
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
                     },
                     "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_explainability_record",
+                description: "Persist an explainability record (repo-scoped, deterministically truncated).",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "record": { "type": "object", "description": "Explainability record JSON (bounded to a server-defined max size)", "additionalProperties": true },
+                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+                    },
+                    "required": ["record"]
                 }),
             },
         ]
@@ -1558,6 +1615,20 @@ impl McpServer {
                 "score": item.score,
                 "metadata": item.metadata
             })).collect::<Vec<_>>()
+        }))
+    }
+
+    async fn handle_explainability_record(
+        &self,
+        args: ExplainabilityRecordArgs,
+    ) -> Result<serde_json::Value> {
+        self.ensure_project_root(args.project_root.as_deref())?;
+        let store = self.explainability.clone();
+        let record = args.record;
+        let stored = tokio::task::spawn_blocking(move || store.store(record)).await??;
+        Ok(json!({
+            "completion_id": stored.completion_id,
+            "record_bytes": stored.record_bytes
         }))
     }
 

@@ -4,6 +4,7 @@ mod chrome_watchdog;
 mod config;
 mod daemon;
 mod error;
+mod explainability;
 mod metrics;
 mod tier2;
 mod impact;
@@ -1238,6 +1239,7 @@ fn print_full_help() -> Result<()> {
     println!("  - docdex_index: reindex all or ingest provided paths; args: paths[], project_root (optional)");
     println!("  - docdex_files: list indexed docs with pagination; args: limit (<=1000), offset (<=50000), project_root (optional)");
     println!("  - docdex_stats: index metadata; args: project_root (optional)");
+    println!("  - docdex_explainability_record: persist explainability record; args: record (required), project_root (optional)");
     println!("  Notes: set DOCDEX_MCP_MAX_RESULTS to clamp docdex_search; run `docdexd mcp --help` for full MCP flags.");
     Ok(())
 }

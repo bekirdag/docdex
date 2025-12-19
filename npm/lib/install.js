@@ -5175,6 +5175,7 @@ async function runInstaller(options) {
           detected: { os: detectedPlatform, arch: detectedArch, ...(detectedLibc ? { libc: detectedLibc } : {}) },
           platformKey,
           targetTriple,
+          installedVersion: local.installedVersion ?? null,
           assetName: archive,
           source,
           manifestName: manifestAttempt?.manifestName ?? null,
@@ -6984,6 +6985,7 @@ function describeFatalError(err) {
 <<<<<<< HEAD
         err.details?.version ? `[docdex] Version: v${err.details.version}` : null,
 <<<<<<< HEAD
+<<<<<<< HEAD
         err.details?.installedVersion ? `[docdex] Detected installed version: v${err.details.installedVersion}` : null,
 =======
         err.details?.detectedVersion ? `[docdex] Detected version: v${err.details.detectedVersion}` : null,
@@ -6994,6 +6996,9 @@ function describeFatalError(err) {
         versionInfo.detected ? `[docdex] Detected version: ${versionInfo.detected}` : null,
         versionInfo.source ? `[docdex] Release source: ${versionInfo.source}` : null,
 >>>>>>> mcoda/task/ops-01-us-03-t39
+=======
+        err.details?.installedVersion ? `[docdex] Detected version: v${err.details.installedVersion}` : null,
+>>>>>>> mcoda/task/ops-01-us-03-t16
         err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
 =======
         expectedVersion ? `[docdex] Expected version: v${expectedVersion}` : null,

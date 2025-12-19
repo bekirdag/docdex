@@ -184,6 +184,7 @@ This confirms the fallback checksum bundle matches the released assets (and shou
 
 ## See also
 
+- `docs/contracts/npm_daemon_version_contract_v1.md`
 - Installer supported platforms + mapping: `docs/ops/installer_supported_platforms.md`
 - Installer error codes + remediation: `docs/ops/installer_error_codes.md`
 - Installer error contract: `docs/contracts/installer_error_contract_v1.md`

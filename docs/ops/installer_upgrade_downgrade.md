@@ -279,6 +279,7 @@ This is usually a repo state issue, not an installer issue:
 
 ## See also
 
+- `docs/contracts/npm_daemon_version_contract_v1.md`
 - Installer supported platforms + safe cleanup: `docs/ops/installer_supported_platforms.md`
 - Atomic staged install + rollback behavior: `docs/ops/installer_atomic_install_and_rollback.md`
 - Installer error codes + remediation: `docs/ops/installer_error_codes.md`

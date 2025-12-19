@@ -255,6 +255,11 @@ Docdex can run as an MCP tool provider over stdio; it does not replace the HTTP 
   - `docdex_files` — args: `{ "limit": <int optional, default 200, max 1000>, "offset": <int optional, default 0>, "project_root": "<path optional>" }`. Returns `{ "results": [{ "doc_id", "rel_path", "summary", "token_estimate" }], "total", "limit", "offset", "repo_root", "project_root" }`.
   - `docdex_open` — args: `{ "path": "<relative file>", "start_line": <int optional>, "end_line": <int optional>, "project_root": "<path optional>" }`. Returns `{ "path", "start_line", "end_line", "total_lines", "content", "repo_root", "project_root" }` (rejects paths outside repo and large files).
   - `docdex_stats` — args: `{ "project_root": "<path optional>" }`. Returns `{ "num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "repo_root", "project_root" }`.
+  - `docdex_repo_inspect` — args: `{ "project_root": "<path optional>" }`. Returns a repo identity report (normalized path, fingerprint, state mapping, status).
+  - `docdex_symbols` — args: `{ "path": "<relative file>", "project_root": "<path optional>" }`. Returns a `docdex.symbols` payload for that file including `outcome.status` (`ok`/`skipped`/`failed`).
+  - `docdex_memory_store` (requires `DOCDEX_ENABLE_MEMORY=1`) — args: `{ "text": "<string>", "metadata": <object optional>, "project_root": "<path optional>" }`. Returns `{ "id", "created_at" }`.
+  - `docdex_memory_recall` (requires `DOCDEX_ENABLE_MEMORY=1`) — args: `{ "query": "<text>", "top_k": <int optional, max 50>, "project_root": "<path optional>" }`. Returns `{ "top_k", "results": [{ "content", "score", "metadata" }] }`.
+- Tool limits (server-scoped; schema-stable): max items and snippet/content caps are documented in `docs/mcp/errors.md` and do not vary by repo.
 - Example calls:
   - Initialize: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
   - Initialize with workspace root: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"workspace_root":"/path/to/repo"}}` (must match the server repo; sets default project_root for later calls)

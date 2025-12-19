@@ -131,3 +131,19 @@ Notes:
 - HTTP `/search` enforces `limit` by clamping to the daemon’s configured max and does not error on over-limit; MCP `docdex_search` similarly clamps `limit` to the MCP server’s `--max-results`.
 - MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`.
 - MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with `details.max_bytes` and `details.actual_bytes`.
+
+## Tool result size limits (server-scoped)
+
+Docdex applies the same limits for every repo handled by a given MCP server process. Requests above these maxima either clamp deterministically or return a deterministic validation error, and responses keep the same JSON schema (no ad hoc fields). Limits are enforced before any per-repo caching or aggregation, so they do not vary by repo and do not allow cross-repo leakage.
+
+| Tool | Max items returned | Max snippet/content size | Over-limit behavior |
+| --- | --- | --- | --- |
+| `docdex_search` | `limit` clamped to `max_results` (`--max-results` / `DOCDEX_MCP_MAX_RESULTS`, min 1) | `summary` <= 360 chars; `snippet` <= 420 chars (`snippet_truncated` may be true) | clamps `limit`; truncates summary/snippet |
+| `docdex_files` | `limit` clamped to 1000; `offset` clamped to 50000 | `summary` <= 360 chars | clamps `limit`/`offset` |
+| `docdex_open` | fixed single object | `content` <= 512 KiB | returns `max_content_exceeded` (with `details.max_bytes`/`details.actual_bytes`); invalid line window -> `invalid_range` |
+| `docdex_stats` | fixed single object | N/A | fixed response |
+| `docdex_repo_inspect` | fixed single object | N/A | fixed response |
+| `docdex_index` | fixed single object; ingest returns one decision per input path | N/A | response scales with input; no server-side cap |
+| `docdex_symbols` | fixed single object | no server-side truncation of stored symbols payload | response size depends on stored record |
+| `docdex_memory_store` | fixed single object | no server-side truncation of stored text | response is `{id, created_at}` |
+| `docdex_memory_recall` | `top_k` clamped to 50 | no server-side truncation of stored content | clamps `top_k` |

@@ -44,6 +44,7 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
     version: "0.1.11",
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
     expectedVersion: "0.1.11",
 >>>>>>> mcoda/task/ops-01-us-03-t39
@@ -53,6 +54,12 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
 >>>>>>> mcoda/task/ops-01-us-03-t23
     repoSlug: "owner/repo",
     source: "fallback",
+=======
+    detectedVersion: "0.1.10",
+    repoSlug: "owner/repo",
+    downloadBase: "https://example.test/releases/download",
+    releaseTag: "v0.1.11",
+>>>>>>> mcoda/task/ops-01-us-03-t45
     downloadUrl: "https://example.test/releases/download/v0.1.11/docdexd-linux-arm64-gnu.tar.gz",
     assetName: "docdexd-linux-arm64-gnu.tar.gz",
     expectedAsset: "docdexd-linux-arm64-gnu.tar.gz",
@@ -68,8 +75,14 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
   assert.equal(report.details.assetName, "docdexd-linux-arm64-gnu.tar.gz");
   assert.ok(report.lines.some((l) => l.includes("missing artifact/version sync issue")));
   assert.ok(report.lines.some((l) => l.includes("Expected version: v0.1.11")));
+<<<<<<< HEAD
   assert.ok(report.lines.some((l) => l.includes("Detected installed version: v0.1.10")));
   assert.ok(report.lines.some((l) => l.includes("Release source: owner/repo (tag v0.1.11)")));
+=======
+  assert.ok(report.lines.some((l) => l.includes("Detected version: v0.1.10")));
+  assert.ok(report.lines.some((l) => l.includes("Download base: https://example.test/releases/download")));
+  assert.ok(report.lines.some((l) => l.includes("Release tag: v0.1.11")));
+>>>>>>> mcoda/task/ops-01-us-03-t45
   assert.ok(report.lines.some((l) => l.includes("Expected target triple: aarch64-unknown-linux-gnu")));
   assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platformKey>.tar.gz")));
 <<<<<<< HEAD
@@ -93,9 +106,17 @@ test("describeFatalError: manifest no-match reads as missing artifact/version sy
     {
       targetTriple: "x86_64-unknown-linux-gnu",
       platformKey: "linux-x64-gnu",
+<<<<<<< HEAD
       version: "0.2.0",
       repoSlug: "owner/repo",
       installedVersion: "0.1.9"
+=======
+      version: "0.1.11",
+      detectedVersion: "0.1.10",
+      repoSlug: "owner/repo",
+      downloadBase: "https://example.test/releases/download",
+      releaseTag: "v0.1.11"
+>>>>>>> mcoda/task/ops-01-us-03-t45
     }
   );
 
@@ -103,12 +124,19 @@ test("describeFatalError: manifest no-match reads as missing artifact/version sy
   assert.equal(report.code, "DOCDEX_ASSET_NO_MATCH");
   assert.ok(report.lines.some((l) => l.includes("missing artifact/version sync issue")));
 <<<<<<< HEAD
+<<<<<<< HEAD
   assert.ok(report.lines.some((l) => l.includes("Platform key: linux-x64-gnu")));
 =======
   assert.ok(report.lines.some((l) => l.includes("Expected version: v0.2.0")));
   assert.ok(report.lines.some((l) => l.includes("Detected installed version: v0.1.9")));
   assert.ok(report.lines.some((l) => l.includes("Release source: owner/repo (tag v0.2.0)")));
 >>>>>>> mcoda/task/ops-01-us-03-t23
+=======
+  assert.ok(report.lines.some((l) => l.includes("Expected version: v0.1.11")));
+  assert.ok(report.lines.some((l) => l.includes("Detected version: v0.1.10")));
+  assert.ok(report.lines.some((l) => l.includes("Download base: https://example.test/releases/download")));
+  assert.ok(report.lines.some((l) => l.includes("Release tag: v0.1.11")));
+>>>>>>> mcoda/task/ops-01-us-03-t45
   assert.ok(report.lines.some((l) => l.includes("Expected target triple: x86_64-unknown-linux-gnu")));
   assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platformKey>.tar.gz")));
 });

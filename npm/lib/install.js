@@ -9,6 +9,7 @@ const crypto = require("node:crypto");
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 const util = require("node:util");
 =======
 const { execFile } = require("node:child_process");
@@ -19,6 +20,9 @@ const childProcess = require("node:child_process");
 =======
 const { execFile } = require("node:child_process");
 >>>>>>> mcoda/task/ops-01-us-03-t37
+=======
+const { spawnSync } = require("node:child_process");
+>>>>>>> mcoda/task/ops-01-us-03-t45
 
 const pkg = require("../package.json");
 const {
@@ -207,6 +211,7 @@ function withBaseDetails(details) {
   };
 }
 
+<<<<<<< HEAD
 function normalizeVersionForDisplay(value) {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -244,6 +249,16 @@ function mergeErrorDetails(err, extra) {
     if (merged[key] == null) merged[key] = value;
   }
   err.details = withBaseDetails(merged);
+=======
+function mergeDetails(existing, extra) {
+  const merged = { ...(existing || {}) };
+  for (const [key, value] of Object.entries(extra || {})) {
+    if (merged[key] == null && value != null) {
+      merged[key] = value;
+    }
+  }
+  return merged;
+>>>>>>> mcoda/task/ops-01-us-03-t45
 }
 
 class InstallerConfigError extends Error {
@@ -449,9 +464,16 @@ function getDownloadBase(repoSlug) {
   return process.env.DOCDEX_DOWNLOAD_BASE || `https://github.com/${repoSlug}/releases/download`;
 }
 
+function normalizeVersionString(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.replace(/^v/, "");
+}
+
 function getVersion() {
   const envVersion = process.env.DOCDEX_VERSION;
-  const version = (envVersion || pkg.version || "").replace(/^v/, "");
+  const version = normalizeVersionString(envVersion || pkg.version || "");
 
   if (!version) {
     throw new InstallerConfigError("Missing package version; set DOCDEX_VERSION or package.json version", {
@@ -460,6 +482,42 @@ function getVersion() {
   }
 
   return version;
+}
+
+function parseVersionFromOutput(output) {
+  if (typeof output !== "string") return null;
+  const match = output.match(/\bv?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/);
+  return match ? normalizeVersionString(match[1]) : null;
+}
+
+function detectInstalledBinaryVersion({
+  binaryPath,
+  env = process.env,
+  spawnSyncFn = spawnSync,
+  timeoutMs = 2000
+}) {
+  const candidates = [["--version"], ["-V"], ["version"]];
+  let lastError = null;
+
+  for (const args of candidates) {
+    const result = spawnSyncFn(binaryPath, args, {
+      encoding: "utf8",
+      timeout: timeoutMs,
+      env,
+      windowsHide: true
+    });
+
+    if (result?.error) {
+      lastError = result.error;
+      continue;
+    }
+
+    const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
+    const version = parseVersionFromOutput(output);
+    if (version) return { version };
+  }
+
+  return { version: null, error: lastError ? lastError.message || String(lastError) : null };
 }
 
 function requestOptions() {
@@ -2969,6 +3027,7 @@ function decideInstallDecision({
   const versionComparison = { expected: expectedParsed, installed: installedParsed, cmp };
 
 <<<<<<< HEAD
+<<<<<<< HEAD
   if (discoveredInstalledState.installedVersion !== expectedVersion) {
     const comparison = compareSemverLoose(discoveredInstalledState.installedVersion, expectedVersion);
     if (comparison === -1) return { outcome: "upgrade", reason: "version_mismatch" };
@@ -3005,6 +3064,14 @@ function decideInstallDecision({
 
   if (integrityPolicy === "off") {
     return { outcome: "no-op", reason: "integrity_disabled" };
+=======
+  const detectedBinaryVersion = normalizeVersionString(discoveredInstalledState.detectedBinaryVersion);
+  if (
+    discoveredInstalledState.installedVersion !== expectedVersion ||
+    (detectedBinaryVersion && detectedBinaryVersion !== expectedVersion)
+  ) {
+    return { outcome: "update", reason: "version_mismatch" };
+>>>>>>> mcoda/task/ops-01-us-03-t45
   }
 
   const expectedBinarySha256 = normalizeSha256Hex(expectedIntegrityMaterial?.binarySha256);
@@ -3024,7 +3091,11 @@ async function discoverInstalledState({
   distDir,
   platformKey,
   isWin32,
+<<<<<<< HEAD
   detectInstalledBinaryVersionFn
+=======
+  detectInstalledVersionFn
+>>>>>>> mcoda/task/ops-01-us-03-t45
 }) {
   const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
   const metadataPath = installMetadataPath(distDir, pathModule);
@@ -3036,6 +3107,8 @@ async function discoverInstalledState({
       metadataPath,
       binaryPresent: false,
       installedVersion: null,
+      detectedBinaryVersion: null,
+      detectedBinaryVersionError: null,
       metadata: null,
       metadataStatus: "unavailable",
       metadataStatusReason: "existsSync_unavailable",
@@ -3051,6 +3124,8 @@ async function discoverInstalledState({
       metadataPath,
       binaryPresent: false,
       installedVersion: null,
+      detectedBinaryVersion: null,
+      detectedBinaryVersionError: null,
       metadata: null,
       metadataStatus: "missing",
       metadataStatusReason: "binary_missing",
@@ -3060,6 +3135,7 @@ async function discoverInstalledState({
     };
   }
 
+<<<<<<< HEAD
   let reportedVersion = null;
   let reportedVersionError = null;
   if (typeof detectInstalledBinaryVersionFn === "function") {
@@ -3068,6 +3144,22 @@ async function discoverInstalledState({
       reportedVersion = probe.version;
     }
     reportedVersionError = probe && probe.error ? probe.error : null;
+=======
+  let detectedBinaryVersion = null;
+  let detectedBinaryVersionError = null;
+  if (typeof detectInstalledVersionFn === "function") {
+    try {
+      const detection = await detectInstalledVersionFn({ binaryPath, platformKey, isWin32 });
+      if (detection && typeof detection.version === "string") {
+        detectedBinaryVersion = normalizeVersionString(detection.version) || null;
+      }
+      if (detection && detection.error) {
+        detectedBinaryVersionError = detection.error;
+      }
+    } catch (err) {
+      detectedBinaryVersionError = err?.message || String(err);
+    }
+>>>>>>> mcoda/task/ops-01-us-03-t45
   }
 
   const metaResult = await readJsonFileIfPossible({ fsModule, filePath: metadataPath });
@@ -3078,12 +3170,18 @@ async function discoverInstalledState({
       binaryPath,
       metadataPath,
       binaryPresent: true,
+<<<<<<< HEAD
       installedVersion:
         typeof meta?.installedVersion === "string"
           ? meta.installedVersion
           : typeof meta?.version === "string"
             ? meta.version
             : null,
+=======
+      installedVersion: typeof meta?.version === "string" ? meta.version : null,
+      detectedBinaryVersion,
+      detectedBinaryVersionError,
+>>>>>>> mcoda/task/ops-01-us-03-t45
       metadata: null,
       metadataStatus:
         metaResult.errorCode === "ENOENT"
@@ -3107,8 +3205,15 @@ async function discoverInstalledState({
     binaryPath,
     metadataPath,
     binaryPresent: true,
+<<<<<<< HEAD
     installedVersion: normalized.installedVersion,
     metadata: normalized,
+=======
+    installedVersion: meta.version,
+    detectedBinaryVersion,
+    detectedBinaryVersionError,
+    metadata: meta,
+>>>>>>> mcoda/task/ops-01-us-03-t45
     metadataStatus: "valid",
     metadataStatusReason: null,
 <<<<<<< HEAD
@@ -3168,6 +3273,7 @@ async function determineLocalInstallerOutcome({
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   readInstalledBinaryVersionFn = null
 =======
   expectedArchiveName = null,
@@ -3195,6 +3301,9 @@ async function determineLocalInstallerOutcome({
   const platformMismatch = Boolean(discoveredInstalledState.platformMismatch);
 =======
   detectInstalledBinaryVersionFn = null
+=======
+  detectInstalledVersionFn = null
+>>>>>>> mcoda/task/ops-01-us-03-t45
 }) {
   const discoveredInstalledState = await discoverInstalledState({
     fsModule,
@@ -3202,7 +3311,11 @@ async function determineLocalInstallerOutcome({
     distDir,
     platformKey,
     isWin32,
+<<<<<<< HEAD
     detectInstalledBinaryVersionFn
+=======
+    detectInstalledVersionFn
+>>>>>>> mcoda/task/ops-01-us-03-t45
   });
 >>>>>>> mcoda/task/ops-01-us-03-t37
 
@@ -3220,11 +3333,16 @@ async function determineLocalInstallerOutcome({
         : null
   };
 
+  const detectedBinaryVersion = normalizeVersionString(discoveredInstalledState.detectedBinaryVersion);
+  const detectedVersionMismatch =
+    detectedBinaryVersion && detectedBinaryVersion !== expectedVersion;
+
   const shouldVerifyIntegrity =
 <<<<<<< HEAD
     binaryPresent &&
     !platformMismatch &&
     discoveredInstalledState.installedVersion === expectedVersion &&
+    !detectedVersionMismatch &&
     (normalizeSha256Hex(expectedBinarySha256) || discoveredInstalledState.metadataStatus === "valid");
 =======
     state.binaryPresent &&
@@ -3301,6 +3419,7 @@ async function determineLocalInstallerOutcome({
   let installedVersion =
     typeof discoveredInstalledState.installedVersion === "string" ? discoveredInstalledState.installedVersion : null;
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
   const installedVersion =
     typeof state.installedVersion === "string" ? state.installedVersion : null;
@@ -3329,6 +3448,12 @@ async function determineLocalInstallerOutcome({
   const reportedVersion =
     typeof discoveredInstalledState.reportedVersion === "string" ? discoveredInstalledState.reportedVersion : null;
 >>>>>>> mcoda/task/ops-01-us-03-t37
+=======
+  const detectedVersion =
+    typeof discoveredInstalledState.detectedBinaryVersion === "string"
+      ? discoveredInstalledState.detectedBinaryVersion
+      : null;
+>>>>>>> mcoda/task/ops-01-us-03-t45
 
   return {
     plan: planFromOutcome({
@@ -3355,6 +3480,7 @@ async function determineLocalInstallerOutcome({
     metadataPath: discoveredInstalledState.metadataPath,
     installedVersion,
 <<<<<<< HEAD
+<<<<<<< HEAD
     integrityResult,
 <<<<<<< HEAD
     binaryVersion,
@@ -3378,6 +3504,9 @@ async function determineLocalInstallerOutcome({
 >>>>>>> mcoda/task/ops-01-us-06-t03
 =======
     reportedVersion,
+=======
+    detectedVersion,
+>>>>>>> mcoda/task/ops-01-us-03-t45
     integrityResult
 >>>>>>> mcoda/task/ops-01-us-03-t37
   };
@@ -4003,11 +4132,16 @@ async function resolveInstallerDownloadPlan({
     if (err instanceof ManifestResolutionError) {
       const expectedAsset = artifactNameFn(platformKey);
 <<<<<<< HEAD
+<<<<<<< HEAD
       const detectedDetails = detected && typeof detected === "object" ? detected : null;
 =======
       const manifestName =
         typeof err.details?.manifestName === "string" ? err.details.manifestName : null;
 >>>>>>> mcoda/task/ops-01-us-03-t39
+=======
+      const downloadBase = getDownloadBaseFn(repoSlug);
+      const releaseTag = `v${version}`;
+>>>>>>> mcoda/task/ops-01-us-03-t45
       err.details = {
         ...withBaseDetails(err.details),
         detected: detectedDetails,
@@ -4016,10 +4150,17 @@ async function resolveInstallerDownloadPlan({
         version,
         expectedAsset,
         expectedAssetPattern: assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset }),
+<<<<<<< HEAD
         expectedVersion: version,
         version,
         repoSlug,
         source: manifestName ? `manifest:${manifestName}` : "manifest"
+=======
+        version,
+        repoSlug,
+        downloadBase,
+        releaseTag
+>>>>>>> mcoda/task/ops-01-us-03-t45
       };
 >>>>>>> mcoda/task/ops-01-us-02-t41
     }
@@ -4521,6 +4662,7 @@ async function runInstaller(options) {
   const assetPatternForPlatformKeyFn = opts.assetPatternForPlatformKeyFn || assetPatternForPlatformKey;
   const sha256FileFn = opts.sha256FileFn || sha256File;
 <<<<<<< HEAD
+<<<<<<< HEAD
   const execFileFn = opts.execFileFn || execFile;
   const readInstalledBinaryVersionFn =
     opts.readInstalledBinaryVersionFn ||
@@ -4531,6 +4673,11 @@ async function runInstaller(options) {
 =======
   const detectInstalledBinaryVersionFn = opts.detectInstalledBinaryVersionFn || detectInstalledBinaryVersion;
 >>>>>>> mcoda/task/ops-01-us-03-t37
+=======
+  const detectInstalledVersionFn =
+    opts.detectInstalledVersionFn ||
+    ((args) => detectInstalledBinaryVersion({ ...args, env: opts.env || process.env }));
+>>>>>>> mcoda/task/ops-01-us-03-t45
 
   const detectedPlatform = opts.platform || process.platform;
   const detectedArch = opts.arch || process.arch;
@@ -4706,6 +4853,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     readInstalledBinaryVersionFn
 =======
     integrityPolicy
@@ -4741,6 +4889,9 @@ async function runInstaller(options) {
       outcomeReason: local.reason,
       decision: { outcome: local.outcome, outcomeCode: localOutcomeCode, reason: local.reason }
     }
+=======
+    detectInstalledVersionFn
+>>>>>>> mcoda/task/ops-01-us-03-t45
   });
 
   if (local.integrityChecked) {
@@ -4780,6 +4931,7 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-04-t24
   }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
   if (local.outcome === "no-op") {
 <<<<<<< HEAD
@@ -5300,6 +5452,41 @@ async function runInstaller(options) {
   let backupTaken = false;
 >>>>>>> mcoda/task/ops-01-us-05-t34
 =======
+=======
+  const repoSlug = parseRepoSlugFn();
+  const downloadBase = getDownloadBaseFn(repoSlug);
+  const releaseTag = `v${version}`;
+
+  let archive;
+  let expectedSha256;
+  let source;
+  let manifestAttempt;
+
+  try {
+    ({ archive, expectedSha256, source, manifestAttempt } = await resolveInstallerDownloadPlanFn({
+      repoSlug,
+      version,
+      platformKey,
+      targetTriple,
+      logger
+    }));
+  } catch (err) {
+    if (err && typeof err === "object") {
+      err.details = mergeDetails(err.details, {
+        version,
+        detectedVersion: local.detectedVersion ?? null,
+        repoSlug,
+        downloadBase,
+        releaseTag,
+        platformKey,
+        targetTriple
+      });
+    }
+    throw err;
+  }
+
+  const downloadUrl = `${downloadBase}/${releaseTag}/${archive}`;
+>>>>>>> mcoda/task/ops-01-us-03-t45
   const tmpDir = opts.tmpDir || osModule.tmpdir();
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
   const stagingDir = pathModule.join(distBaseDir, `${platformKey}.staging.${process.pid}.${Date.now()}`);
@@ -5469,6 +5656,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
           installedVersion: local.installedVersion,
 =======
           detectedVersion,
@@ -5482,6 +5670,13 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-03-t23
           repoSlug,
           downloadUrl: redactUrl(downloadUrl),
+=======
+          detectedVersion: local.detectedVersion ?? null,
+          repoSlug,
+          downloadBase,
+          releaseTag,
+          downloadUrl,
+>>>>>>> mcoda/task/ops-01-us-03-t45
           expectedAsset: archive,
           expectedAssetPattern: assetPatternForPlatformKeyFn(platformKey, { exampleAssetName: archive }),
           note: "This usually means the GitHub release assets are missing or the npm version is out of sync with the release."
@@ -7377,6 +7572,7 @@ function describeFatalError(err) {
 >>>>>>> mcoda/task/ops-01-us-02-t40
         : null;
     const platformKey = typeof err.details?.platformKey === "string" ? err.details.platformKey : null;
+<<<<<<< HEAD
     let expectedTargetTriple =
       typeof err.details?.targetTriple === "string" && err.details.targetTriple.trim()
         ? err.details.targetTriple.trim()
@@ -7386,6 +7582,23 @@ function describeFatalError(err) {
         expectedTargetTriple = targetTripleForPlatformKey(platformKey);
       } catch {}
     }
+=======
+    const expectedVersion =
+      typeof err.details?.expectedVersion === "string"
+        ? err.details.expectedVersion
+        : typeof err.details?.version === "string"
+          ? err.details.version
+          : null;
+    const detectedVersion =
+      typeof err.details?.detectedVersion === "string" ? err.details.detectedVersion : null;
+    const downloadBase = typeof err.details?.downloadBase === "string" ? err.details.downloadBase : null;
+    const releaseTag =
+      typeof err.details?.releaseTag === "string"
+        ? err.details.releaseTag
+        : expectedVersion
+          ? `v${expectedVersion}`
+          : null;
+>>>>>>> mcoda/task/ops-01-us-03-t45
     const expectedAsset =
       typeof err.details?.expectedAsset === "string" && err.details.expectedAsset.trim()
         ? err.details.expectedAsset.trim()
@@ -7431,6 +7644,7 @@ function describeFatalError(err) {
         err.details?.fallbackReason ? `[docdex] Fallback reason: ${err.details.fallbackReason}` : null,
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         err.details?.version ? `[docdex] Version: v${err.details.version}` : null,
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -7454,6 +7668,13 @@ function describeFatalError(err) {
         releaseSource ? `[docdex] Release source: ${releaseSource}` : null,
         resolutionSource ? `[docdex] Resolution source: ${resolutionSource}` : null,
 >>>>>>> mcoda/task/ops-01-us-03-t23
+=======
+        expectedVersion ? `[docdex] Expected version: v${expectedVersion}` : null,
+        detectedVersion ? `[docdex] Detected version: v${detectedVersion}` : null,
+        err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
+        downloadBase ? `[docdex] Download base: ${downloadBase}` : null,
+        releaseTag ? `[docdex] Release tag: ${releaseTag}` : null,
+>>>>>>> mcoda/task/ops-01-us-03-t45
         err.details?.expectedAsset ? `[docdex] Expected asset: ${err.details.expectedAsset}` : null,
         expectedAssetPattern ? `[docdex] Asset naming pattern: ${expectedAssetPattern}` : null,
         err.details?.downloadUrl ? `[docdex] URL tried: ${redactUrl(err.details.downloadUrl)}` : null,
@@ -7761,6 +7982,7 @@ function describeFatalError(err) {
           ? assetPatternForPlatformKey(platformKey)
           : assetPatternForPlatformKey(null);
 <<<<<<< HEAD
+<<<<<<< HEAD
     const versionInfo = versionDiagnostics(err.details);
 =======
     const expectedVersion =
@@ -7774,6 +7996,23 @@ function describeFatalError(err) {
         : repoSlug
       : null;
 >>>>>>> mcoda/task/ops-01-us-03-t23
+=======
+    const expectedVersion =
+      typeof err.details?.expectedVersion === "string"
+        ? err.details.expectedVersion
+        : typeof err.details?.version === "string"
+          ? err.details.version
+          : null;
+    const detectedVersion =
+      typeof err.details?.detectedVersion === "string" ? err.details.detectedVersion : null;
+    const downloadBase = typeof err.details?.downloadBase === "string" ? err.details.downloadBase : null;
+    const releaseTag =
+      typeof err.details?.releaseTag === "string"
+        ? err.details.releaseTag
+        : expectedVersion
+          ? `v${expectedVersion}`
+          : null;
+>>>>>>> mcoda/task/ops-01-us-03-t45
 
     const title =
       err.code === "DOCDEX_ASSET_NO_MATCH"
@@ -7805,6 +8044,7 @@ function describeFatalError(err) {
             `[docdex] error code: ${err.code}`,
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
             platformKey ? `[docdex] Platform key: ${platformKey}` : null,
 =======
             versionInfo.expected ? `[docdex] Expected version: ${versionInfo.expected}` : null,
@@ -7816,6 +8056,13 @@ function describeFatalError(err) {
             installedVersion ? `[docdex] Detected installed version: v${installedVersion}` : null,
             releaseSource ? `[docdex] Release source: ${releaseSource}` : null,
 >>>>>>> mcoda/task/ops-01-us-03-t23
+=======
+            expectedVersion ? `[docdex] Expected version: v${expectedVersion}` : null,
+            detectedVersion ? `[docdex] Detected version: v${detectedVersion}` : null,
+            err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
+            downloadBase ? `[docdex] Download base: ${downloadBase}` : null,
+            releaseTag ? `[docdex] Release tag: ${releaseTag}` : null,
+>>>>>>> mcoda/task/ops-01-us-03-t45
             err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
             `[docdex] Asset naming pattern: ${expectedAssetPattern}`,
             `[docdex] Details: ${err.message}`

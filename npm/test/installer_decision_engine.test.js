@@ -230,6 +230,7 @@ test("decision engine: version mismatch => upgrade (version_mismatch)", async ()
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 test("decision engine: version mismatch (higher installed) => update plan downgrade", async () => {
 =======
 test("decision engine: version mismatch => downgrade (version_mismatch)", async () => {
@@ -287,6 +288,9 @@ test("decision engine: reported version mismatch => update (reported_version_mis
 });
 
 test("decision engine: downgrade when expected version is lower", async () => {
+=======
+test("decision engine: detected version mismatch => update (version_mismatch)", async () => {
+>>>>>>> mcoda/task/ops-01-us-03-t45
   const platformKey = "linux-x64-gnu";
   const distDir = path.posix.join("/dist", platformKey);
   const binaryPath = path.posix.join(distDir, "docdexd");
@@ -296,7 +300,11 @@ test("decision engine: downgrade when expected version is lower", async () => {
     existingPaths: [binaryPath],
     filesByPath: {
       [metadataPath]: JSON.stringify(
+<<<<<<< HEAD
         validInstallMetadata({ platformKey, version: "0.1.1", binarySha256: "a".repeat(64) }),
+=======
+        validInstallMetadata({ platformKey, version: "0.1.0", binarySha256: "a".repeat(64) }),
+>>>>>>> mcoda/task/ops-01-us-03-t45
         null,
         2
       )
@@ -312,6 +320,7 @@ test("decision engine: downgrade when expected version is lower", async () => {
     isWin32: false,
     sha256FileFn: async () => {
       throw new Error("unexpected sha256");
+<<<<<<< HEAD
     }
   });
 
@@ -328,6 +337,15 @@ test("decision engine: downgrade when expected version is lower", async () => {
   assert.equal(outcome.reason, "reported_version_mismatch");
   assert.equal(outcome.reportedVersion, "0.0.9");
 >>>>>>> mcoda/task/ops-01-us-03-t37
+=======
+    },
+    detectInstalledVersionFn: async () => ({ version: "0.0.9" })
+  });
+
+  assert.equal(outcome.outcome, "update");
+  assert.equal(outcome.reason, "version_mismatch");
+  assert.equal(outcome.detectedVersion, "0.0.9");
+>>>>>>> mcoda/task/ops-01-us-03-t45
 });
 
 test("decision engine: binary hash mismatch => repair (binary_integrity_mismatch)", async () => {

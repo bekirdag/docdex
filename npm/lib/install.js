@@ -4881,6 +4881,7 @@ async function runInstaller(options) {
   const version = getVersionFn();
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   const stateRootDir = opts.stateRootDir || resolveInstallerStateRootDir({ osModule, pathModule, env });
   const distDir = resolveInstallerInstallDir({ stateRootDir, platformKey, pathModule });
   const legacyDistBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
@@ -4892,6 +4893,20 @@ async function runInstaller(options) {
       enabled: structuredLogsEnabled(opts.structuredLogsEnabled),
       baseFields: { os: detectedPlatform, arch: detectedArch, platformKey, targetTriple, version, stage: "install" }
     });
+=======
+  const expectedAssetName =
+    typeof platformPolicy.expectedAssetName === "string" && platformPolicy.expectedAssetName.trim()
+      ? platformPolicy.expectedAssetName.trim()
+      : artifactNameFn(platformKey);
+  const libcSuffix =
+    detectedPlatform === "linux" && typeof platformKey === "string"
+      ? `/${platformKey.split("-")[2] || "unknown"}`
+      : "";
+  logger.log(`[docdex] Detected platform: ${detectedPlatform}/${detectedArch}${libcSuffix}`);
+  logger.log(`[docdex] Target triple: ${targetTriple}`);
+  logger.log(`[docdex] Daemon version: v${version}`);
+  logger.log(`[docdex] Resolved asset: ${expectedAssetName}`);
+>>>>>>> mcoda/task/ops-01-us-01-t42
   const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
   const distDir = pathModule.join(distBaseDir, platformKey);
 >>>>>>> mcoda/task/ops-01-us-04-t24

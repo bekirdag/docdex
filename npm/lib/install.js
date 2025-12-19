@@ -3,7 +3,6 @@
 
 const fs = require("node:fs");
 const https = require("node:https");
-const os = require("node:os");
 const path = require("node:path");
 const { pipeline } = require("node:stream/promises");
 const crypto = require("node:crypto");
@@ -51,6 +50,7 @@ const MAX_MANIFEST_BYTES = 1024 * 1024; // 1 MiB cap for safety
 const INVALID_JSON_ERROR = "invalid JSON";
 const INSTALL_METADATA_SCHEMA_VERSION = 2;
 const INSTALL_METADATA_FILENAME = "docdexd-install.json";
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -147,6 +147,12 @@ function libcFromPlatformKey(platformKey) {
   if (platformKey.endsWith("-musl")) return "musl";
   return null;
 }
+=======
+const STAGING_ROOT_NAME = ".docdex-staging";
+const STAGING_STAGE_PREFIX = "stage-";
+const STAGING_BACKUP_PREFIX = "backup-";
+const STAGING_TTL_MS = 24 * 60 * 60 * 1000;
+>>>>>>> mcoda/task/ops-01-us-05-t33
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -744,6 +750,7 @@ function installMetadataPath(distDir, pathModule = path) {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 function resolveInstallerStateRootDir({ osModule, pathModule, env }) {
   const override =
     typeof env?.DOCDEX_INSTALL_STATE_DIR === "string" && env.DOCDEX_INSTALL_STATE_DIR.trim()
@@ -775,6 +782,103 @@ function installSwapDirs(distDir) {
 function binaryPathInDir({ pathModule, dirPath, isWin32 }) {
   return pathModule.join(dirPath, isWin32 ? "docdexd.exe" : "docdexd");
 >>>>>>> mcoda/task/ops-01-us-05-t05
+=======
+function stagingRootPath(distBaseDir, pathModule = path) {
+  return pathModule.join(distBaseDir, STAGING_ROOT_NAME);
+}
+
+async function createStagingDir({ fsModule, pathModule, stagingRoot, platformKey }) {
+  if (!fsModule?.promises?.mkdir) {
+    throw new Error("staging unavailable: fs.promises.mkdir missing");
+  }
+
+  await fsModule.promises.mkdir(stagingRoot, { recursive: true });
+  const prefix = `${STAGING_STAGE_PREFIX}${platformKey}-`;
+
+  if (fsModule?.promises?.mkdtemp) {
+    return fsModule.promises.mkdtemp(pathModule.join(stagingRoot, prefix));
+  }
+
+  const fallback = pathModule.join(stagingRoot, `${prefix}${Date.now()}-${process.pid}`);
+  await fsModule.promises.mkdir(fallback, { recursive: true });
+  return fallback;
+}
+
+async function cleanupStagingArtifacts({
+  fsModule,
+  pathModule,
+  stagingRoot,
+  platformKey,
+  distDir,
+  logger = console,
+  ttlMs = STAGING_TTL_MS,
+  currentStagingDir = null
+}) {
+  const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+  if (!existsSync || !fsModule?.promises?.readdir || !fsModule?.promises?.stat || !fsModule?.promises?.rm) {
+    return { restored: false, cleaned: 0 };
+  }
+
+  if (!existsSync(stagingRoot)) return { restored: false, cleaned: 0 };
+
+  let entries;
+  try {
+    entries = await fsModule.promises.readdir(stagingRoot, { withFileTypes: true });
+  } catch {
+    return { restored: false, cleaned: 0 };
+  }
+
+  const nowMs = Date.now();
+  const backupPrefix = `${STAGING_BACKUP_PREFIX}${platformKey}-`;
+  let restored = false;
+
+  if (!existsSync(distDir) && fsModule?.promises?.rename) {
+    const backupEntries = entries.filter(
+      (entry) => entry.isDirectory() && entry.name.startsWith(backupPrefix)
+    );
+    if (backupEntries.length) {
+      const backupStats = await Promise.all(
+        backupEntries.map(async (entry) => {
+          const fullPath = pathModule.join(stagingRoot, entry.name);
+          const stat = await fsModule.promises.stat(fullPath).catch(() => null);
+          return { fullPath, stat };
+        })
+      );
+      const candidate = backupStats
+        .filter((entry) => entry.stat)
+        .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs)[0];
+      if (candidate) {
+        try {
+          await fsModule.promises.rename(candidate.fullPath, distDir);
+          restored = true;
+          logger.warn(`[docdex] Restored previous install from ${candidate.fullPath}`);
+        } catch {}
+      }
+    }
+  }
+
+  let cleaned = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const isStage = entry.name.startsWith(STAGING_STAGE_PREFIX);
+    const isBackup = entry.name.startsWith(STAGING_BACKUP_PREFIX);
+    if (!isStage && !isBackup) continue;
+    const fullPath = pathModule.join(stagingRoot, entry.name);
+    if (currentStagingDir && fullPath === currentStagingDir) continue;
+    if (isStage) {
+      await fsModule.promises.rm(fullPath, { recursive: true, force: true }).catch(() => {});
+      cleaned += 1;
+      continue;
+    }
+    const stat = await fsModule.promises.stat(fullPath).catch(() => null);
+    if (!stat) continue;
+    if (nowMs - stat.mtimeMs < ttlMs) continue;
+    await fsModule.promises.rm(fullPath, { recursive: true, force: true }).catch(() => {});
+    cleaned += 1;
+  }
+
+  return { restored, cleaned };
+>>>>>>> mcoda/task/ops-01-us-05-t33
 }
 
 function nowIso() {
@@ -4276,7 +4380,6 @@ async function runInstaller(options) {
   const writeJsonFileAtomicFn = opts.writeJsonFileAtomicFn || writeJsonFileAtomic;
   const fsModule = opts.fsModule || fs;
   const pathModule = opts.pathModule || path;
-  const osModule = opts.osModule || os;
   const artifactNameFn = opts.artifactNameFn || artifactName;
   const assetPatternForPlatformKeyFn = opts.assetPatternForPlatformKeyFn || assetPatternForPlatformKey;
   const sha256FileFn = opts.sha256FileFn || sha256File;
@@ -4346,6 +4449,17 @@ async function runInstaller(options) {
   const distDir = pathModule.join(distBaseDir, platformKey);
 >>>>>>> mcoda/task/ops-01-us-04-t24
   const isWin32 = detectedPlatform === "win32";
+  const binaryName = isWin32 ? "docdexd.exe" : "docdexd";
+  const stagingRoot = stagingRootPath(distBaseDir, pathModule);
+
+  await cleanupStagingArtifacts({
+    fsModule,
+    pathModule,
+    stagingRoot,
+    platformKey,
+    distDir,
+    logger
+  });
 
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -4906,6 +5020,7 @@ async function runInstaller(options) {
     }
   });
 
+<<<<<<< HEAD
   const resolutionEvents = Array.isArray(manifestAttempt?.events) ? manifestAttempt.events : [];
   for (const ev of resolutionEvents) {
     emitInstallerEvent({
@@ -5029,6 +5144,12 @@ async function runInstaller(options) {
   let staged = false;
   let swapped = false;
 >>>>>>> mcoda/task/ops-01-us-03-t37
+=======
+  const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
+  const stagingDir = await createStagingDir({ fsModule, pathModule, stagingRoot, platformKey });
+  const stagingArchivePath = pathModule.join(stagingDir, archive);
+  const stagingExtractDir = pathModule.join(stagingDir, "extract");
+>>>>>>> mcoda/task/ops-01-us-05-t33
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
 <<<<<<< HEAD
@@ -5071,6 +5192,7 @@ async function runInstaller(options) {
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
 >>>>>>> mcoda/task/ops-01-us-05-t27
     try {
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
       await fsModule.promises.rename(backupDir, distDir);
@@ -5168,6 +5290,9 @@ async function runInstaller(options) {
         fields: { stage: "download", artifact: archive, version, source, repoSlug, result: "ok" }
       });
 >>>>>>> mcoda/task/ops-01-us-04-t24
+=======
+      await downloadFn(downloadUrl, stagingArchivePath);
+>>>>>>> mcoda/task/ops-01-us-05-t33
     } catch (err) {
       if (err && typeof err.statusCode === "number" && err.statusCode === 404) {
         const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
@@ -5233,6 +5358,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     const verifiedArchiveSha256 = await verifyDownloadedFileIntegrityFn({
 =======
     const verifiedArchiveSha256 =
@@ -5262,6 +5388,10 @@ async function runInstaller(options) {
     await verifyDownloadedFileIntegrityFn({
       filePath: stagedArchivePath,
 >>>>>>> mcoda/task/ops-01-us-05-t07
+=======
+    await verifyDownloadedFileIntegrityFn({
+      filePath: stagingArchivePath,
+>>>>>>> mcoda/task/ops-01-us-05-t33
       expectedSha256,
 =======
     logger.log(`[docdex] Verifying integrity of ${archive} (${INTEGRITY_METHOD_LABEL})...`);
@@ -5615,6 +5745,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     await extractTarballFn(tmpFile, stageDir);
 =======
         fallbackAttempted: source === "fallback",
@@ -5696,6 +5827,15 @@ async function runInstaller(options) {
     if (!fsModule.existsSync(stagedBinaryPath)) {
       throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagedBinaryPath}`, {
 >>>>>>> mcoda/task/ops-01-us-03-t37
+=======
+    await fsModule.promises.mkdir(stagingExtractDir, { recursive: true });
+    await extractTarballFn(stagingArchivePath, stagingExtractDir);
+
+    const stagingBinaryPath = pathModule.join(stagingExtractDir, binaryName);
+    const finalBinaryPath = pathModule.join(distDir, binaryName);
+    if (!fsModule.existsSync(stagingBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${finalBinaryPath}`, {
+>>>>>>> mcoda/task/ops-01-us-05-t33
         platformKey,
         targetTriple,
         version,
@@ -5725,6 +5865,7 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-06-t21
 =======
         fallbackAttempted: source === "fallback",
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -6038,6 +6179,15 @@ async function runInstaller(options) {
 
     const binarySha256 = await sha256FileFn(stagedBinaryPath);
 >>>>>>> mcoda/task/ops-01-us-03-t37
+=======
+        binaryPath: finalBinaryPath
+      });
+    }
+
+    await fsModule.promises.chmod(stagingBinaryPath, 0o755).catch(() => {});
+
+    const binarySha256 = await sha256FileFn(stagingBinaryPath);
+>>>>>>> mcoda/task/ops-01-us-05-t33
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
 <<<<<<< HEAD
@@ -6072,7 +6222,11 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-04-t17
       binary: {
 <<<<<<< HEAD
+<<<<<<< HEAD
         filename: binaryFilename,
+=======
+        filename: binaryName,
+>>>>>>> mcoda/task/ops-01-us-05-t33
         sha256: binarySha256
 =======
         filename: isWin32 ? "docdexd.exe" : "docdexd",
@@ -6150,6 +6304,7 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-06-t35
       fsModule,
       pathModule,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -6527,10 +6682,30 @@ async function runInstaller(options) {
     } catch (err) {
       if (hasExisting) {
 >>>>>>> mcoda/task/ops-01-us-03-t37
+=======
+      filePath: installMetadataPath(stagingExtractDir, pathModule),
+      value: metadata
+    });
+
+    let backupDir = null;
+    if (fsModule.existsSync(distDir)) {
+      backupDir = pathModule.join(
+        stagingRoot,
+        `${STAGING_BACKUP_PREFIX}${platformKey}-${Date.now()}-${process.pid}`
+      );
+      await fsModule.promises.rename(distDir, backupDir);
+    }
+
+    try {
+      await fsModule.promises.rename(stagingExtractDir, distDir);
+    } catch (err) {
+      if (backupDir) {
+>>>>>>> mcoda/task/ops-01-us-05-t33
         await fsModule.promises.rename(backupDir, distDir).catch(() => {});
       }
       throw err;
     }
+<<<<<<< HEAD
 <<<<<<< HEAD
     await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
 
@@ -6764,6 +6939,18 @@ async function runInstaller(options) {
       await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
     }
 >>>>>>> mcoda/task/ops-01-us-03-t37
+=======
+
+    if (backupDir) {
+      await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+    }
+
+    logger.log(`[docdex] Installed binary to ${finalBinaryPath}`);
+    logger.log(`[docdex] Install outcome: ${local.outcome}`);
+    return { binaryPath: finalBinaryPath, outcome: local.outcome };
+  } finally {
+    await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+>>>>>>> mcoda/task/ops-01-us-05-t33
   }
 }
 
@@ -7475,8 +7662,12 @@ module.exports = {
   resolveInstallerDownloadPlan,
   parseSha256File,
   sha256File,
+<<<<<<< HEAD
   readInstalledDocdexdVersion,
   parseDocdexdVersionOutput,
+=======
+  stagingRootPath,
+>>>>>>> mcoda/task/ops-01-us-05-t33
   verifyInstalledDocdexdIntegrity,
   decideInstallDecision,
   decideInstallAction,
@@ -7501,5 +7692,7 @@ module.exports = {
 >>>>>>> mcoda/task/ops-01-us-05-t07
   runInstaller,
   describeFatalError,
-  handleFatal
+  handleFatal,
+  STAGING_ROOT_NAME,
+  STAGING_BACKUP_PREFIX
 };

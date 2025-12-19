@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 
 const { resolvePlatformPolicy } = require("../lib/platform");
-const { describeFatalError, runInstaller, resolveInstallerDownloadPlan } = require("../lib/install");
+const { describeFatalError, runInstaller, resolveInstallerDownloadPlan, STAGING_ROOT_NAME } = require("../lib/install");
 
 const EXPECTED_SHA256 = "a".repeat(64);
 
@@ -286,11 +286,14 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
   let stagingCleanupRmCalls = 0;
   let installRmCalls = 0;
   let stagingRmCalls = 0;
+<<<<<<< HEAD
 =======
 >>>>>>> mcoda/task/ops-01-us-05-t07
 =======
   const rmCalls = [];
 >>>>>>> mcoda/task/ops-01-us-04-t13
+=======
+>>>>>>> mcoda/task/ops-01-us-05-t33
   let extractCalls = 0;
 
   const base = "https://example.test/releases/download";
@@ -316,6 +319,7 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
 <<<<<<< HEAD
       rm: async (_path, options) => {
         if (options && options.recursive) {
+<<<<<<< HEAD
 <<<<<<< HEAD
           const p = String(_path);
           if (p.endsWith(`/${platformKey}`) || p.endsWith(`\\${platformKey}`)) installRmCalls += 1;
@@ -348,6 +352,20 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
       mkdir: async () => {},
       rm: async (rmPath, options) => rmCalls.push({ rmPath, options })
 >>>>>>> mcoda/task/ops-01-us-05-t07
+=======
+          if (String(_path || "").includes(STAGING_ROOT_NAME)) stagingRmCalls += 1;
+          else installRmCalls += 1;
+        } else {
+          tmpCleanupRmCalls += 1;
+        }
+      },
+      mkdir: async () => {},
+      mkdtemp: async (prefix) => `${prefix}mock`,
+      readdir: async () => [],
+      stat: async () => ({ mtimeMs: Date.now() }),
+      rename: async () => {},
+      chmod: async () => {}
+>>>>>>> mcoda/task/ops-01-us-05-t33
     },
     existsSync: () => true
   };
@@ -423,6 +441,7 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
   assert.equal(installRmCalls, 0, "should not remove existing install on 404");
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   assert.equal(stagingRmCalls, 1, "should still attempt staging cleanup");
 =======
   assert.equal(stagingRmCalls, 1, "should still attempt staged cleanup");
@@ -456,4 +475,8 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
   );
   assert.ok(rmCalls.some((c) => !c.options?.recursive), "should still attempt tmp cleanup");
 >>>>>>> mcoda/task/ops-01-us-04-t13
+=======
+  assert.ok(stagingRmCalls >= 1, "should clean staging artifacts");
+  assert.equal(tmpCleanupRmCalls, 0, "staged installs should not depend on tmp file cleanup");
+>>>>>>> mcoda/task/ops-01-us-05-t33
 });

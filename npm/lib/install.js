@@ -1076,6 +1076,11 @@ async function runInstaller(options) {
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
   const tmpDir = opts.tmpDir || osModule.tmpdir();
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
+  const installStamp = `${process.pid}-${Date.now()}`;
+  const stagingDir = pathModule.join(distBaseDir, `${platformKey}.staging-${installStamp}`);
+  const backupDir = pathModule.join(distBaseDir, `${platformKey}.backup-${installStamp}`);
+  let backupCreated = false;
+  let stagingTouched = false;
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   try {
@@ -1138,12 +1143,16 @@ async function runInstaller(options) {
       }
     });
 
-    // Only replace an existing installation after we have successfully fetched + verified the archive.
-    await fsModule.promises.rm(distDir, { recursive: true, force: true });
-    await extractTarballFn(tmpFile, distDir);
+    // Extract into a non-runnable staging dir, then promote atomically after verification.
+    stagingTouched = true;
+    await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    await extractTarballFn(tmpFile, stagingDir);
 
-    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
-    if (!fsModule.existsSync(binaryPath)) {
+    const binaryName = isWin32 ? "docdexd.exe" : "docdexd";
+    const stagingBinaryPath = pathModule.join(stagingDir, binaryName);
+    const binaryPath = pathModule.join(distDir, binaryName);
+    const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+    if (!existsSync || !existsSync(stagingBinaryPath)) {
       throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
         platformKey,
         targetTriple,
@@ -1157,6 +1166,31 @@ async function runInstaller(options) {
         fallbackAttempted: source === "fallback",
         binaryPath
       });
+    }
+
+    if (!isWin32) {
+      await fsModule.promises.chmod(stagingBinaryPath, 0o644).catch(() => {});
+    }
+
+    if (existsSync && existsSync(distDir)) {
+      await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+      await fsModule.promises.rename(distDir, backupDir);
+      backupCreated = true;
+    }
+
+    let promoted = false;
+    try {
+      await fsModule.promises.rename(stagingDir, distDir);
+      promoted = true;
+    } catch (err) {
+      if (backupCreated) {
+        await fsModule.promises.rename(backupDir, distDir).catch(() => {});
+      }
+      throw err;
+    } finally {
+      if (promoted && backupCreated) {
+        await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+      }
     }
 
     await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
@@ -1192,6 +1226,9 @@ async function runInstaller(options) {
     return { binaryPath, outcome: local.outcome };
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
+    if (stagingTouched) {
+      await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }
 

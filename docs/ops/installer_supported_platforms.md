@@ -16,6 +16,44 @@ Assumptions (explicit):
 
 ---
 
+## Installation + postinstall asset selection
+
+The npm tarball does **not** include platform-native `docdexd` binaries. During `npm install`, the postinstall step (`npm/lib/install.js`) downloads the correct daemon binary from GitHub Releases for the npm package version.
+
+Resolution flow (deterministic):
+1) Determine version: `DOCDEX_VERSION` if set, otherwise the npm package `package.json` version (release tag `vX.Y.Z`).
+2) Determine repo: `DOCDEX_DOWNLOAD_REPO` if set, otherwise `package.json.repository.url` (parsed to `owner/repo`).
+3) Detect runtime → `platformKey` + `targetTriple` (see next section).
+4) Resolve a single asset for that `targetTriple`:
+   - Prefer the release manifest (`docdex-release-manifest.json`), then fallback to deterministic asset naming.
+5) Download `docdexd-<platformKey>.tar.gz` from the release tag `v<version>`, verify SHA-256, extract into `dist/<platformKey>/`, and record `docdexd-install.json`.
+
+Installer output you can expect:
+- `[docdex] Fetching docdexd-<platformKey>.tar.gz for <platformKey> (<targetTriple>) via <source>...`
+- `[docdex] Installed binary to <.../dist/<platformKey>/docdexd>`
+- On errors, additional lines include detected OS/arch, expected target triple, version, and asset naming pattern.
+
+---
+
+## Installation + postinstall asset selection
+
+The npm tarball does **not** include platform-native `docdexd` binaries. During `npm install`, the postinstall step (`npm/lib/install.js`) downloads the correct daemon binary from GitHub Releases for the npm package version.
+
+Resolution flow (deterministic):
+1) Determine version: `DOCDEX_VERSION` if set, otherwise the npm package `package.json` version (release tag `vX.Y.Z`).
+2) Determine repo: `DOCDEX_DOWNLOAD_REPO` if set, otherwise `package.json.repository.url` (parsed to `owner/repo`).
+3) Detect runtime → `platformKey` + `targetTriple` (see next section).
+4) Resolve a single asset for that `targetTriple`:
+   - Prefer the release manifest (`docdex-release-manifest.json`), then fallback to deterministic asset naming.
+5) Download `docdexd-<platformKey>.tar.gz` from the release tag `v<version>`, verify SHA-256, extract into `dist/<platformKey>/`, and record `docdexd-install.json`.
+
+Installer output you can expect:
+- `[docdex] Fetching docdexd-<platformKey>.tar.gz for <platformKey> (<targetTriple>) via <source>...`
+- `[docdex] Installed binary to <.../dist/<platformKey>/docdexd>`
+- On errors, additional lines include detected OS/arch, expected target triple, version, and asset naming pattern.
+
+---
+
 ## Platform identifiers the installer uses
 
 Inputs (Node runtime):
@@ -33,6 +71,36 @@ Outputs:
 Release asset naming (expected):
 - Archive: `docdexd-<platformKey>.tar.gz`
 - Pattern string shown in errors: `docdexd-<platformKey>.tar.gz (e.g. docdexd-linux-x64-gnu.tar.gz)`
+
+---
+
+## Validate installation
+
+After install, confirm the wrapper and daemon are in place:
+- `docdex --version` (or `npx docdex --version`) should succeed.
+- `docdex doctor` (or `docdex diagnostics`) prints detected OS/arch/libc, `platformKey`, and expected `targetTriple`.
+- The daemon should exist and be executable at `dist/<platformKey>/docdexd` (or `docdexd.exe` on Windows).
+
+Locate the install safely:
+- Local dependency: `<repo>/node_modules/docdex/dist/<platformKey>/`
+- Global install: `$(npm root -g)/docdex/dist/<platformKey>/`
+
+Tip: `dist/<platformKey>/docdexd-install.json` records the resolved version, repo, target triple, and asset name for the last verified install.
+
+---
+
+## Validate installation
+
+After install, confirm the wrapper and daemon are in place:
+- `docdex --version` (or `npx docdex --version`) should succeed.
+- `docdex doctor` (or `docdex diagnostics`) prints detected OS/arch/libc, `platformKey`, and expected `targetTriple`.
+- The daemon should exist and be executable at `dist/<platformKey>/docdexd` (or `docdexd.exe` on Windows).
+
+Locate the install safely:
+- Local dependency: `<repo>/node_modules/docdex/dist/<platformKey>/`
+- Global install: `$(npm root -g)/docdex/dist/<platformKey>/`
+
+Tip: `dist/<platformKey>/docdexd-install.json` records the resolved version, repo, target triple, and asset name for the last verified install.
 
 ---
 
@@ -144,6 +212,68 @@ How to verify release assets (publisher/operator checklist):
 See also:
 - `docs/contracts/release_manifest_schema_v1.md`
 - `docs/ops/installer_error_codes.md`
+
+---
+
+### C) Network/proxy download failures
+
+What it means:
+- The installer could not fetch a manifest, checksum, or archive (`DOCDEX_DOWNLOAD_FAILED`, `DOCDEX_MANIFEST_FETCH_FAILED`, `DOCDEX_CHECKSUM_FETCH_FAILED`).
+
+What to do:
+- Verify you can reach GitHub Releases from this environment (corporate proxies/firewalls often block direct HTTPS downloads).
+- If rate limited, set `DOCDEX_GITHUB_TOKEN` (or `GITHUB_TOKEN`) and retry.
+- If you use a mirror, set `DOCDEX_DOWNLOAD_BASE` to the releases base URL for your mirror.
+
+### D) Permissions / filesystem errors
+
+What it means:
+- The install could not write to the package directory or temp dir (common for global installs on locked-down systems).
+
+What to do:
+- Prefer installing with a user-writable Node/npm prefix (or a Node version manager) instead of running as root.
+- As a low-risk check, install locally in a project (`npm install docdex`) to confirm the environment can write `node_modules/`.
+
+### E) Checksum/integrity failures
+
+What it means:
+- SHA-256 verification failed (`DOCDEX_INTEGRITY_MISMATCH`) or no usable checksum metadata exists (`DOCDEX_CHECKSUM_UNUSABLE`).
+
+What to do:
+- Re-run install to rule out transient proxy/cache corruption.
+- Treat persistent integrity failures as a potential tampering signal; do not manually extract unverified archives.
+- If you control the release, ensure the manifest or `SHA256SUMS` includes a checksum entry for the expected asset.
+
+---
+
+### C) Network/proxy download failures
+
+What it means:
+- The installer could not fetch a manifest, checksum, or archive (`DOCDEX_DOWNLOAD_FAILED`, `DOCDEX_MANIFEST_FETCH_FAILED`, `DOCDEX_CHECKSUM_FETCH_FAILED`).
+
+What to do:
+- Verify you can reach GitHub Releases from this environment (corporate proxies/firewalls often block direct HTTPS downloads).
+- If rate limited, set `DOCDEX_GITHUB_TOKEN` (or `GITHUB_TOKEN`) and retry.
+- If you use a mirror, set `DOCDEX_DOWNLOAD_BASE` to the releases base URL for your mirror.
+
+### D) Permissions / filesystem errors
+
+What it means:
+- The install could not write to the package directory or temp dir (common for global installs on locked-down systems).
+
+What to do:
+- Prefer installing with a user-writable Node/npm prefix (or a Node version manager) instead of running as root.
+- As a low-risk check, install locally in a project (`npm install docdex`) to confirm the environment can write `node_modules/`.
+
+### E) Checksum/integrity failures
+
+What it means:
+- SHA-256 verification failed (`DOCDEX_INTEGRITY_MISMATCH`) or no usable checksum metadata exists (`DOCDEX_CHECKSUM_UNUSABLE`).
+
+What to do:
+- Re-run install to rule out transient proxy/cache corruption.
+- Treat persistent integrity failures as a potential tampering signal; do not manually extract unverified archives.
+- If you control the release, ensure the manifest or `SHA256SUMS` includes a checksum entry for the expected asset.
 
 ---
 

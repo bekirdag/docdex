@@ -135,6 +135,9 @@ jobs:
       - name: List artifacts
         run: ls -lh artifacts
 
+      - name: Validate release asset naming
+        run: node scripts/validate_release_assets.cjs --dir artifacts
+
       - name: Verify artifact checksums
         shell: bash
         working-directory: artifacts

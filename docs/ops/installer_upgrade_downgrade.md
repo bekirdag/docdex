@@ -110,8 +110,8 @@ This is usually a repo state issue, not an installer issue:
 
 ## See also
 
+- `docs/contracts/npm_daemon_version_contract_v1.md`
 - Installer supported platforms + safe cleanup: `docs/ops/installer_supported_platforms.md`
 - Installer error codes + remediation: `docs/ops/installer_error_codes.md`
 - Release manifest contract: `docs/contracts/release_manifest_schema_v1.md`
 - Installer error contract: `docs/contracts/installer_error_contract_v1.md`
-

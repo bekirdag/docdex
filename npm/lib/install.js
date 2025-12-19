@@ -4513,6 +4513,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   const stageDir = pathModule.join(distBaseDir, `${platformKey}.staging.${process.pid}.${Date.now()}`);
   let tmpBinaryPath = null;
 =======
@@ -4657,6 +4658,13 @@ async function runInstaller(options) {
   const resolvedIntegritySourceUrl =
     typeof integritySourceUrl === "string" && integritySourceUrl ? integritySourceUrl : null;
 >>>>>>> mcoda/task/ops-01-us-04-t18
+=======
+  const installStamp = `${process.pid}-${Date.now()}`;
+  const stagingDir = pathModule.join(distBaseDir, `${platformKey}.staging-${installStamp}`);
+  const backupDir = pathModule.join(distBaseDir, `${platformKey}.backup-${installStamp}`);
+  let backupCreated = false;
+  let stagingTouched = false;
+>>>>>>> mcoda/task/ops-01-us-04-t05
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   let thrownError = null;
@@ -5217,6 +5225,7 @@ async function runInstaller(options) {
     });
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     await extractTarballFn(tmpFile, stageDir);
 =======
         fallbackAttempted: source === "fallback",
@@ -5266,6 +5275,19 @@ async function runInstaller(options) {
     if (!fsModule.existsSync(stagingBinaryPath)) {
       throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagingBinaryPath}`, {
 >>>>>>> mcoda/task/ops-01-us-04-t13
+=======
+    // Extract into a non-runnable staging dir, then promote atomically after verification.
+    stagingTouched = true;
+    await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    await extractTarballFn(tmpFile, stagingDir);
+
+    const binaryName = isWin32 ? "docdexd.exe" : "docdexd";
+    const stagingBinaryPath = pathModule.join(stagingDir, binaryName);
+    const binaryPath = pathModule.join(distDir, binaryName);
+    const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+    if (!existsSync || !existsSync(stagingBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
+>>>>>>> mcoda/task/ops-01-us-04-t05
         platformKey,
         targetTriple,
         version,
@@ -5469,6 +5491,7 @@ async function runInstaller(options) {
       });
     }
 
+<<<<<<< HEAD
     await fsModule.promises.mkdir(distDir, { recursive: true });
     await rmForce(fsModule, tmpInstalledBinaryPath);
     await fsModule.promises.copyFile(extractedBinaryPath, tmpInstalledBinaryPath);
@@ -5498,6 +5521,33 @@ async function runInstaller(options) {
     }
 
 <<<<<<< HEAD
+=======
+    if (!isWin32) {
+      await fsModule.promises.chmod(stagingBinaryPath, 0o644).catch(() => {});
+    }
+
+    if (existsSync && existsSync(distDir)) {
+      await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+      await fsModule.promises.rename(distDir, backupDir);
+      backupCreated = true;
+    }
+
+    let promoted = false;
+    try {
+      await fsModule.promises.rename(stagingDir, distDir);
+      promoted = true;
+    } catch (err) {
+      if (backupCreated) {
+        await fsModule.promises.rename(backupDir, distDir).catch(() => {});
+      }
+      throw err;
+    } finally {
+      if (promoted && backupCreated) {
+        await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+      }
+    }
+
+>>>>>>> mcoda/task/ops-01-us-04-t05
     await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
     logger.log(`[docdex] Installed binary to ${binaryPath}`);
 <<<<<<< HEAD
@@ -6210,6 +6260,7 @@ async function runInstaller(options) {
 =======
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
 <<<<<<< HEAD
+<<<<<<< HEAD
     await rmForce(fsModule, stagingDir, { recursive: true });
     await rmForce(fsModule, tmpInstalledBinaryPath);
 >>>>>>> mcoda/task/ops-01-us-05-t22
@@ -6227,6 +6278,11 @@ async function runInstaller(options) {
 =======
     await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
 >>>>>>> mcoda/task/ops-01-us-04-t13
+=======
+    if (stagingTouched) {
+      await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    }
+>>>>>>> mcoda/task/ops-01-us-04-t05
   }
 }
 

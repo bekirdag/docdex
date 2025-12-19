@@ -1044,9 +1044,15 @@ async function runInstaller(options) {
   const platformKey = platformPolicy.platformKey;
   const targetTriple = platformPolicy.targetTriple;
   const version = getVersionFn();
+  const expectedAssetName = platformPolicy.expectedAssetName || artifactNameFn(platformKey);
   const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
   const distDir = pathModule.join(distBaseDir, platformKey);
   const isWin32 = detectedPlatform === "win32";
+
+  logger.log(
+    `[docdex] Detected platform: ${detectedPlatform}/${detectedArch} -> ${platformKey} (${targetTriple})`
+  );
+  logger.log(`[docdex] Resolved daemon version: v${version}`);
 
   const local = await determineLocalInstallerOutcome({
     fsModule,
@@ -1059,6 +1065,7 @@ async function runInstaller(options) {
   });
 
   if (local.outcome === "no-op") {
+    logger.log(`[docdex] Resolved asset: ${expectedAssetName} (cached)`);
     logger.log("[docdex] Install outcome: no-op");
     return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
   }
@@ -1072,6 +1079,8 @@ async function runInstaller(options) {
     targetTriple,
     logger
   });
+
+  logger.log(`[docdex] Resolved asset: ${archive} (${source})`);
 
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
   const tmpDir = opts.tmpDir || osModule.tmpdir();

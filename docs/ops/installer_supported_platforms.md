@@ -36,6 +36,28 @@ Release asset naming (expected):
 
 ---
 
+## Version + asset resolution (postinstall)
+
+- The npm package ships JS only; platform-native `docdexd` binaries are downloaded at install time.
+- Version selection: `DOCDEX_VERSION` overrides; otherwise use `package.json` version (leading `v` is stripped).
+- Release tag for assets: `v<version>` (example: npm `0.1.6` -> GitHub Release `v0.1.6`).
+- Asset naming: `docdexd-<platformKey>.tar.gz` (or manifest-provided asset names when a release manifest is present).
+- Download URL shape: `https://github.com/<repo>/releases/download/v<version>/docdexd-<platformKey>.tar.gz`.
+- Deterministic mapping from runtime (`process.platform`/`process.arch` + Linux libc) to `platformKey` and `targetTriple` is defined in `npm/lib/platform_matrix.js` and summarized in the tables below.
+
+---
+
+## Version + asset resolution (postinstall)
+
+- The npm package ships JS only; platform-native `docdexd` binaries are downloaded at install time.
+- Version selection: `DOCDEX_VERSION` overrides; otherwise use `package.json` version (leading `v` is stripped).
+- Release tag for assets: `v<version>` (example: npm `0.1.6` -> GitHub Release `v0.1.6`).
+- Asset naming: `docdexd-<platformKey>.tar.gz` (or manifest-provided asset names when a release manifest is present).
+- Download URL shape: `https://github.com/<repo>/releases/download/v<version>/docdexd-<platformKey>.tar.gz`.
+- Deterministic mapping from runtime (`process.platform`/`process.arch` + Linux libc) to `platformKey` and `targetTriple` is defined in `npm/lib/platform_matrix.js` and summarized in the tables below.
+
+---
+
 ## Supported platforms (published artifacts)
 
 These are the entries marked `published: true` in `npm/lib/platform_matrix.js`. The installer treats only these as supported and will attempt to download/install `docdexd`.

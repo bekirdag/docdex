@@ -49,6 +49,7 @@ Additional common keys (when available):
 - `repoSlug` (string|null)
 - `version` (string|null)
 <<<<<<< HEAD
+<<<<<<< HEAD
 - `installedVersion` (string|null)
 =======
 - `detectedVersion` (string|null)
@@ -56,6 +57,10 @@ Additional common keys (when available):
 - `detectedVersionSource` (`"metadata"|"binary"|null`)
 - `detectedVersionError` (string|null)
 >>>>>>> mcoda/task/ops-01-us-03-t43
+=======
+- `expectedVersion` (string|null)
+- `installedVersion` (string|null)
+>>>>>>> mcoda/task/ops-01-us-03-t44
 - `downloadUrl` (string|null)
 - `manifestName` (string|null)
 - `source` (`"manifest:<name>"|"fallback"|null`)

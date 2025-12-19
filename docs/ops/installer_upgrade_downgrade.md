@@ -140,7 +140,11 @@ The installer always targets the expected version for the current npm package in
 - If the expected version is already installed and verified, the installer is a `no-op` and does not download anything.
 =======
 The installer does not treat “upgrade” and “downgrade” differently. It always targets the expected version for the current npm package install:
+<<<<<<< HEAD
 - If the installed version differs, the installer replaces the `docdexd` binary under `dist/<platformKey>/` so the final state equals the expected version.
+=======
+- If the installed version differs, the installer extracts into a staging directory and atomically swaps `dist/<platformKey>/` so the final state equals the expected version.
+>>>>>>> mcoda/task/ops-01-us-03-t44
 - If the expected version is already installed and verified, the installer is a `no-op`.
 >>>>>>> mcoda/task/ops-01-us-05-t41
 
@@ -180,6 +184,7 @@ There are two relevant integrity checks:
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
    - Safety property: the existing `dist/<platformKey>/docdexd` (or `docdexd.exe`) is not modified until a new binary has been downloaded, verified, extracted, and is ready to be atomically swapped into place.
 =======
    - Safety property: the installer performs a staged install and only replaces the final `docdexd` path after the archive is successfully fetched, verified, and extracted into a staging directory (see `docs/ops/installer_atomic_replace.md`).
@@ -196,6 +201,9 @@ There are two relevant integrity checks:
 =======
    - Safety property: the existing `dist/<platformKey>/` is only replaced after the archive is successfully fetched, SHA-256 verified, extracted to a staging directory, and the expected `docdexd` binary is present.
 >>>>>>> mcoda/task/ops-01-us-04-t13
+=======
+   - Safety property: the existing `dist/<platformKey>/` is only replaced after the archive is successfully fetched, verified, and the staged binary passes the version check.
+>>>>>>> mcoda/task/ops-01-us-03-t44
 
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -219,6 +227,10 @@ There are two relevant integrity checks:
 =======
    - Note: `no-op` integrity verification is intentionally local-first and does not require network access; it verifies the binary has not changed since the last verified install, not “re-checking” the release every time.
 >>>>>>> mcoda/task/ops-01-us-06-t08
+
+3) **Post-extract version verification (install/repair only)**  
+   Before swapping in a staged install, the installer runs `docdexd --version` and verifies it matches the expected npm version.
+   - If the version check fails or does not match, installation fails and the previous `dist/<platformKey>/` remains intact.
 
 ## Install metadata: what it is and where it lives
 

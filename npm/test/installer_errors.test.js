@@ -45,6 +45,7 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
     expectedVersion: "0.1.11",
 >>>>>>> mcoda/task/ops-01-us-03-t39
@@ -52,6 +53,10 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
 =======
     installedVersion: "0.1.10",
 >>>>>>> mcoda/task/ops-01-us-03-t23
+=======
+    expectedVersion: "0.1.11",
+    installedVersion: "0.1.10",
+>>>>>>> mcoda/task/ops-01-us-03-t44
     repoSlug: "owner/repo",
     source: "fallback",
 =======
@@ -84,6 +89,8 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
   assert.ok(report.lines.some((l) => l.includes("Release tag: v0.1.11")));
 >>>>>>> mcoda/task/ops-01-us-03-t45
   assert.ok(report.lines.some((l) => l.includes("Expected target triple: aarch64-unknown-linux-gnu")));
+  assert.ok(report.lines.some((l) => l.includes("Expected version: v0.1.11")));
+  assert.ok(report.lines.some((l) => l.includes("Detected installed version: v0.1.10")));
   assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platformKey>.tar.gz")));
 <<<<<<< HEAD
 <<<<<<< HEAD

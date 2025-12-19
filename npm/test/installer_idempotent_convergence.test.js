@@ -738,7 +738,8 @@ test("installer: repair then converges to no-op without re-download", async (t) 
 <<<<<<< HEAD
       await ensureDir(targetDir);
       await fs.promises.writeFile(path.join(targetDir, "docdexd"), `docdexd-${version}\n`, "utf8");
-    }
+    },
+    readBinaryVersionFn: async ({ expectedVersion }) => ({ version: expectedVersion, output: `docdexd ${version}` })
   });
   assert.equal(first.outcome, "update");
 
@@ -854,6 +855,9 @@ test("installer: repair then converges to no-op without re-download", async (t) 
     extractTarballFn: async () => {
 >>>>>>> mcoda/task/ops-01-us-06-t14
       throw new Error("unexpected extract");
+    },
+    readBinaryVersionFn: async () => {
+      throw new Error("unexpected version check");
     }
   });
 
@@ -883,6 +887,7 @@ test("installer: repair then converges to no-op without re-download", async (t) 
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 >>>>>>> mcoda/task/ops-01-us-06-t14
 =======
 >>>>>>> mcoda/task/ops-01-us-06-t03
@@ -894,3 +899,5 @@ test("installer: repair then converges to no-op without re-download", async (t) 
 >>>>>>> mcoda/task/ops-01-us-04-t18
 =======
 >>>>>>> mcoda/task/ops-01-us-04-t11
+=======
+>>>>>>> mcoda/task/ops-01-us-03-t44

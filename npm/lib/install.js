@@ -188,8 +188,50 @@ function withBaseDetails(details) {
     targetTriple: null,
     manifestVersion: null,
     assetName: null,
+    expectedVersion: null,
+    detectedVersion: null,
+    source: null,
     ...(details || {})
   };
+}
+
+function normalizeVersionForDisplay(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.startsWith("v") ? trimmed : `v${trimmed}`;
+}
+
+function versionDiagnostics(details) {
+  const expectedRaw = details?.expectedVersion ?? details?.version ?? null;
+  const detectedRaw = details?.detectedVersion ?? details?.installedVersion ?? null;
+  const sourceRaw = typeof details?.source === "string" ? details.source.trim() : "";
+  return {
+    expected: normalizeVersionForDisplay(expectedRaw),
+    detected: normalizeVersionForDisplay(detectedRaw),
+    source: sourceRaw ? sourceRaw : null
+  };
+}
+
+function mergeErrorDetails(err, extra) {
+  if (!err || typeof err !== "object") return;
+  const base = err.details && typeof err.details === "object" ? { ...err.details } : {};
+  const extraSource =
+    typeof extra?.source === "string" && extra.source.trim() ? extra.source.trim() : null;
+  const candidateSource =
+    typeof base.source === "string" && base.source.trim()
+      ? base.source.trim()
+      : typeof base.manifestName === "string" && base.manifestName.trim()
+        ? `manifest:${base.manifestName.trim()}`
+        : null;
+  const merged = { ...base };
+  if (!merged.source && extraSource) merged.source = extraSource;
+  if (!merged.source && candidateSource) merged.source = candidateSource;
+  for (const [key, value] of Object.entries(extra || {})) {
+    if (value == null) continue;
+    if (merged[key] == null) merged[key] = value;
+  }
+  err.details = withBaseDetails(merged);
 }
 
 class InstallerConfigError extends Error {
@@ -3719,7 +3761,12 @@ async function resolveInstallerDownloadPlan({
   } catch (err) {
     if (err instanceof ManifestResolutionError) {
       const expectedAsset = artifactNameFn(platformKey);
+<<<<<<< HEAD
       const detectedDetails = detected && typeof detected === "object" ? detected : null;
+=======
+      const manifestName =
+        typeof err.details?.manifestName === "string" ? err.details.manifestName : null;
+>>>>>>> mcoda/task/ops-01-us-03-t39
       err.details = {
         ...withBaseDetails(err.details),
         detected: detectedDetails,
@@ -3727,7 +3774,11 @@ async function resolveInstallerDownloadPlan({
         repoSlug,
         version,
         expectedAsset,
-        expectedAssetPattern: assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset })
+        expectedAssetPattern: assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset }),
+        expectedVersion: version,
+        version,
+        repoSlug,
+        source: manifestName ? `manifest:${manifestName}` : "manifest"
       };
 >>>>>>> mcoda/task/ops-01-us-02-t41
     }
@@ -3894,6 +3945,7 @@ async function resolveInstallerDownloadPlan({
           platformKey,
           targetTriple,
           version,
+          expectedVersion: version,
           repoSlug,
           assetName: archive,
           source: "fallback",
@@ -4551,6 +4603,7 @@ async function runInstaller(options) {
         ? local.installedVersion
         : null;
 
+<<<<<<< HEAD
   const repoSlug = parseRepoSlugFn();
 >>>>>>> mcoda/task/ops-01-us-03-t37
 
@@ -4698,6 +4751,24 @@ async function runInstaller(options) {
     logger
 >>>>>>> mcoda/task/ops-01-us-02-t41
   });
+=======
+  const detectedVersion = local.installedVersion;
+  let plan;
+  try {
+    plan = await resolveInstallerDownloadPlanFn({
+      repoSlug,
+      version,
+      platformKey,
+      targetTriple,
+      logger
+    });
+  } catch (err) {
+    mergeErrorDetails(err, { expectedVersion: version, detectedVersion, repoSlug });
+    throw err;
+  }
+
+  const { archive, expectedSha256, source, manifestAttempt } = plan;
+>>>>>>> mcoda/task/ops-01-us-03-t39
 
 <<<<<<< HEAD
   if (local.outcome === "no-op") {
@@ -5093,10 +5164,15 @@ async function runInstaller(options) {
           fallbackReason,
           version,
 <<<<<<< HEAD
+<<<<<<< HEAD
           installedVersion: local.installedVersion,
 =======
           detectedVersion,
 >>>>>>> mcoda/task/ops-01-us-03-t37
+=======
+          expectedVersion: version,
+          detectedVersion: local.installedVersion,
+>>>>>>> mcoda/task/ops-01-us-03-t39
           repoSlug,
           downloadUrl: redactUrl(downloadUrl),
           expectedAsset: archive,
@@ -6847,7 +6923,12 @@ function describeFatalError(err) {
       typeof err.details?.expectedAssetPattern === "string" && err.details.expectedAssetPattern.trim()
         ? err.details.expectedAssetPattern.trim()
         : assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset || undefined });
+<<<<<<< HEAD
     return withInstallAttemptLines({
+=======
+    const versionInfo = versionDiagnostics(err.details);
+    return {
+>>>>>>> mcoda/task/ops-01-us-03-t39
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
@@ -6861,6 +6942,7 @@ function describeFatalError(err) {
         err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,
         fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,
         err.details?.fallbackReason ? `[docdex] Fallback reason: ${err.details.fallbackReason}` : null,
+<<<<<<< HEAD
         err.details?.version ? `[docdex] Version: v${err.details.version}` : null,
 <<<<<<< HEAD
         err.details?.installedVersion ? `[docdex] Detected installed version: v${err.details.installedVersion}` : null,
@@ -6868,6 +6950,11 @@ function describeFatalError(err) {
         err.details?.detectedVersion ? `[docdex] Detected version: v${err.details.detectedVersion}` : null,
         err.details?.source ? `[docdex] Release source: ${err.details.source}` : null,
 >>>>>>> mcoda/task/ops-01-us-03-t37
+=======
+        versionInfo.expected ? `[docdex] Expected version: ${versionInfo.expected}` : null,
+        versionInfo.detected ? `[docdex] Detected version: ${versionInfo.detected}` : null,
+        versionInfo.source ? `[docdex] Release source: ${versionInfo.source}` : null,
+>>>>>>> mcoda/task/ops-01-us-03-t39
         err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
         err.details?.expectedAsset ? `[docdex] Expected asset: ${err.details.expectedAsset}` : null,
         expectedAssetPattern ? `[docdex] Asset naming pattern: ${expectedAssetPattern}` : null,
@@ -7141,6 +7228,7 @@ function describeFatalError(err) {
         : platformKey
           ? assetPatternForPlatformKey(platformKey)
           : assetPatternForPlatformKey(null);
+    const versionInfo = versionDiagnostics(err.details);
 
     const title =
       err.code === "DOCDEX_ASSET_NO_MATCH"
@@ -7170,7 +7258,13 @@ function describeFatalError(err) {
         ? [
             "[docdex] install failed: missing artifact/version sync issue (manifest has no asset for this target)",
             `[docdex] error code: ${err.code}`,
+<<<<<<< HEAD
             platformKey ? `[docdex] Platform key: ${platformKey}` : null,
+=======
+            versionInfo.expected ? `[docdex] Expected version: ${versionInfo.expected}` : null,
+            versionInfo.detected ? `[docdex] Detected version: ${versionInfo.detected}` : null,
+            versionInfo.source ? `[docdex] Release source: ${versionInfo.source}` : null,
+>>>>>>> mcoda/task/ops-01-us-03-t39
             err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
             `[docdex] Asset naming pattern: ${expectedAssetPattern}`,
             `[docdex] Details: ${err.message}`
@@ -7178,9 +7272,16 @@ function describeFatalError(err) {
         : [
             `[docdex] install failed: ${err.message}`,
             `[docdex] error code: ${err.code}`,
+<<<<<<< HEAD
             platformKey ? `[docdex] Platform key: ${platformKey}` : null
           ].filter(Boolean);
 >>>>>>> mcoda/task/ops-01-us-02-t40
+=======
+            versionInfo.expected ? `[docdex] Expected version: ${versionInfo.expected}` : null,
+            versionInfo.detected ? `[docdex] Detected version: ${versionInfo.detected}` : null,
+            versionInfo.source ? `[docdex] Release source: ${versionInfo.source}` : null
+          ].filter(Boolean);
+>>>>>>> mcoda/task/ops-01-us-03-t39
 
     if (fallbackAttempted === false) {
       lines.push(

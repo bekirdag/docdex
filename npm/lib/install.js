@@ -1077,7 +1077,9 @@ async function runInstaller(options) {
   const tmpDir = opts.tmpDir || osModule.tmpdir();
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
 
-  logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
+  logger.log(
+    `[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) on ${detectedPlatform}/${detectedArch} @ v${version} via ${source}...`
+  );
   try {
     try {
       await downloadFn(downloadUrl, tmpFile);

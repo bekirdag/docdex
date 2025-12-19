@@ -6,6 +6,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const { ManifestResolutionError } = require("../lib/release_manifest");
+const { artifactName } = require("../lib/platform");
+const { PLATFORM_MATRIX } = require("../lib/platform_matrix");
 const {
   ChecksumResolutionError,
   resolveInstallerDownloadPlan,
@@ -36,6 +38,51 @@ function createCapturingLogger() {
     warns
   };
 }
+
+test("installer resolves manifest assets for published target matrix deterministically", async () => {
+  const base = "https://example.test/releases/download";
+  const version = "0.0.0";
+  const manifestName = "docdex-release-manifest.json";
+
+  const hex = "0123456789abcdef";
+  const published = PLATFORM_MATRIX.filter((entry) => entry.published)
+    .slice()
+    .sort((a, b) => a.platformKey.localeCompare(b.platformKey));
+
+  const targets = {};
+  const shaByTriple = new Map();
+  for (const [index, entry] of published.entries()) {
+    const sha = hex[index % hex.length].repeat(64);
+    targets[entry.targetTriple] = {
+      asset: { name: artifactName(entry.platformKey) },
+      integrity: { sha256: sha }
+    };
+    shaByTriple.set(entry.targetTriple, sha);
+  }
+
+  const manifestText = JSON.stringify({ manifestVersion: 1, targets }, null, 2);
+  const downloadTextFn = async (url) => {
+    if (url === `${base}/v${version}/${manifestName}`) return manifestText;
+    throw httpError(404, `not found: ${url}`);
+  };
+
+  for (const entry of published) {
+    const plan = await resolveInstallerDownloadPlan({
+      repoSlug: "owner/repo",
+      version,
+      platformKey: entry.platformKey,
+      targetTriple: entry.targetTriple,
+      downloadTextFn,
+      getDownloadBaseFn: () => base,
+      manifestCandidateNamesFn: () => [manifestName],
+      logger: createCapturingLogger().logger
+    });
+
+    assert.equal(plan.archive, artifactName(entry.platformKey));
+    assert.equal(plan.expectedSha256, shaByTriple.get(entry.targetTriple));
+    assert.equal(plan.source, `manifest:${manifestName}`);
+  }
+});
 
 test("installer resolves asset + sha256 via first available manifest candidate deterministically", async () => {
   const base = "https://example.test/releases/download";

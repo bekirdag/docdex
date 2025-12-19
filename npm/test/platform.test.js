@@ -16,7 +16,7 @@ const {
   UnsupportedPlatformError
 } = require("../lib/platform");
 
-const { PUBLISHED_RELEASE_TARGETS } = require("../lib/platform_matrix");
+const { PLATFORM_MATRIX, PUBLISHED_RELEASE_TARGETS } = require("../lib/platform_matrix");
 const { DEFAULT_TARGETS } = require("../../scripts/generate_release_manifest.cjs");
 
 function writeElf64WithInterpreter(filePath, interpreter) {
@@ -87,6 +87,19 @@ test("detectTargetTriple deterministically maps supported runtimes", () => {
     "aarch64-unknown-linux-gnu"
   );
   assert.equal(detectTargetTriple({ platform: "win32", arch: "x64" }), "x86_64-pc-windows-msvc");
+});
+
+test("detectTargetTriple maps published runtime matrix deterministically", () => {
+  const published = PLATFORM_MATRIX.filter((entry) => entry.published);
+  for (const entry of published) {
+    const env = entry.platform === "linux" ? { DOCDEX_LIBC: entry.libc } : {};
+    const resolved = detectTargetTriple({
+      platform: entry.platform,
+      arch: entry.arch,
+      env
+    });
+    assert.equal(resolved, entry.targetTriple);
+  }
 });
 
 test("unpublished targets are treated as unsupported (no download expected)", () => {

@@ -4882,6 +4882,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   const stateRootDir = opts.stateRootDir || resolveInstallerStateRootDir({ osModule, pathModule, env });
   const distDir = resolveInstallerInstallDir({ stateRootDir, platformKey, pathModule });
   const legacyDistBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
@@ -4907,6 +4908,13 @@ async function runInstaller(options) {
   logger.log(`[docdex] Daemon version: v${version}`);
   logger.log(`[docdex] Resolved asset: ${expectedAssetName}`);
 >>>>>>> mcoda/task/ops-01-us-01-t42
+=======
+  const detectedSummary = platformPolicy?.detected || { platform: detectedPlatform, arch: detectedArch };
+  logger.log(`[docdex] Detected platform: ${detectedSummary.platform}/${detectedSummary.arch}`);
+  logger.log(`[docdex] Target triple: ${targetTriple}`);
+  logger.log(`[docdex] Package version: v${version}`);
+
+>>>>>>> mcoda/task/ops-01-us-01-t19
   const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
   const distDir = pathModule.join(distBaseDir, platformKey);
 >>>>>>> mcoda/task/ops-01-us-04-t24
@@ -5105,12 +5113,16 @@ async function runInstaller(options) {
     }
     logger.log("[docdex] Install outcome: no-op");
 <<<<<<< HEAD
+<<<<<<< HEAD
     structured.emit({
       level: "info",
       event: "DOCDEX_INSTALLER_NOOP",
       message: "Installer determined no-op; existing binary verified",
       fields: { stage: "install", result: "no-op", outcome: local.outcome, integrityResult: redactValue(local.integrityResult) }
     });
+=======
+    logger.log("[docdex] Verify: docdex --version");
+>>>>>>> mcoda/task/ops-01-us-01-t19
     return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
 >>>>>>> mcoda/task/ops-01-us-04-t24
 =======
@@ -5755,6 +5767,7 @@ async function runInstaller(options) {
 =======
   registerCleanup(() => fsModule.promises.rm(tmpFile, { force: true }).catch(() => {}));
 
+  logger.log(`[docdex] Resolved asset: ${archive}`);
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
 >>>>>>> mcoda/task/ops-01-us-05-t27
     try {
@@ -7454,6 +7467,7 @@ async function runInstaller(options) {
     logger.log(`[docdex] Installed binary to ${binaryPath}`);
 >>>>>>> mcoda/task/ops-01-us-03-t37
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
+    logger.log("[docdex] Verify: docdex --version");
     return { binaryPath, outcome: local.outcome };
   } catch (err) {
     if (stagingPrepared) {

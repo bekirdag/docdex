@@ -1048,6 +1048,7 @@ function nowIso() {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 function normalizeInstallerOutputFormat(raw) {
   const value = String(raw || "")
     .trim()
@@ -1517,6 +1518,48 @@ async function detectInstalledBinaryVersion({ binaryPath, execFileFn = execFile,
 }
 
 >>>>>>> mcoda/task/ops-01-us-03-t37
+=======
+function libcFromPlatformKey(platformKey) {
+  if (typeof platformKey !== "string" || !platformKey.startsWith("linux-")) return null;
+  const parts = platformKey.split("-");
+  return parts.length >= 3 ? parts[2] : null;
+}
+
+function formatDetectedPlatform({ platform, arch, platformKey }) {
+  const libc = libcFromPlatformKey(platformKey);
+  return `${platform}/${arch}${libc ? `/${libc}` : ""}`;
+}
+
+function logInstallSummary({
+  logger,
+  outcome,
+  platform,
+  arch,
+  platformKey,
+  targetTriple,
+  version,
+  assetName,
+  assetSource,
+  binaryPath
+}) {
+  const lines = [
+    "[docdex] Install summary:",
+    `[docdex] Outcome: ${outcome}`,
+    `[docdex] Detected platform: ${formatDetectedPlatform({ platform, arch, platformKey })}`,
+    `[docdex] Platform key: ${platformKey}`,
+    `[docdex] Target triple: ${targetTriple}`,
+    `[docdex] Daemon version: v${version}`,
+    assetName ? `[docdex] Asset: ${assetName}` : null,
+    assetSource ? `[docdex] Asset source: ${assetSource}` : null,
+    binaryPath ? `[docdex] Binary path: ${binaryPath}` : null,
+    "[docdex] Diagnostics: `docdex doctor` (or `docdex diagnostics`)",
+    "[docdex] Validate: `docdex --version` (or `docdexd --version`)"
+  ].filter(Boolean);
+
+  for (const line of lines) logger.log(line);
+}
+
+>>>>>>> mcoda/task/ops-01-us-01-t14
 async function readJsonFileIfPossible({ fsModule, filePath }) {
   if (!fsModule?.promises?.readFile) {
     return { value: null, error: "readFile_unavailable", errorCode: "READFILE_UNAVAILABLE" };
@@ -4958,8 +5001,12 @@ async function runInstaller(options) {
   const distDir = pathModule.join(distBaseDir, platformKey);
 >>>>>>> mcoda/task/ops-01-us-04-t24
   const isWin32 = detectedPlatform === "win32";
+<<<<<<< HEAD
   const binaryName = isWin32 ? "docdexd.exe" : "docdexd";
   const stagingRoot = stagingRootPath(distBaseDir, pathModule);
+=======
+  const expectedAssetName = artifactNameFn(platformKey);
+>>>>>>> mcoda/task/ops-01-us-01-t14
 
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5181,6 +5228,7 @@ async function runInstaller(options) {
     logger.log("[docdex] Install outcome: no-op");
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     structured.emit({
       level: "info",
       event: "DOCDEX_INSTALLER_NOOP",
@@ -5190,6 +5238,20 @@ async function runInstaller(options) {
 =======
     logger.log("[docdex] Verify: docdex --version");
 >>>>>>> mcoda/task/ops-01-us-01-t19
+=======
+    logInstallSummary({
+      logger,
+      outcome: local.outcome,
+      platform: detectedPlatform,
+      arch: detectedArch,
+      platformKey,
+      targetTriple,
+      version,
+      assetName: expectedAssetName,
+      assetSource: "local",
+      binaryPath: local.binaryPath
+    });
+>>>>>>> mcoda/task/ops-01-us-01-t14
     return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
 >>>>>>> mcoda/task/ops-01-us-04-t24
 =======
@@ -5793,6 +5855,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
   const backupDir = pathModule.join(distBaseDir, `${platformKey}.backup.${process.pid}.${Date.now()}`);
 
+<<<<<<< HEAD
   let backupActive = false;
   let swapCompleted = false;
 >>>>>>> mcoda/task/ops-01-us-05-t08
@@ -5801,6 +5864,9 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-03-t44
 
 <<<<<<< HEAD
+=======
+  logger.log("[docdex] Progress: download");
+>>>>>>> mcoda/task/ops-01-us-01-t14
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
 <<<<<<< HEAD
   let thrownError = null;
@@ -6430,6 +6496,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     await extractTarballFn(tmpFile, stageDir);
 =======
         fallbackAttempted: source === "fallback",
@@ -6450,6 +6517,9 @@ async function runInstaller(options) {
       actualSha256
     });
 
+=======
+    logger.log("[docdex] Progress: extract");
+>>>>>>> mcoda/task/ops-01-us-01-t14
     // Only replace an existing installation after we have successfully fetched + verified the archive.
 <<<<<<< HEAD
     await fsModule.promises.rm(distDir, { recursive: true, force: true });
@@ -6770,10 +6840,16 @@ async function runInstaller(options) {
     }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     await fsModule.promises.mkdir(distDir, { recursive: true });
     await rmForce(fsModule, tmpInstalledBinaryPath);
     await fsModule.promises.copyFile(extractedBinaryPath, tmpInstalledBinaryPath);
     await fsModule.promises.chmod(tmpInstalledBinaryPath, 0o755).catch(() => {});
+=======
+    logger.log("[docdex] Progress: install");
+    await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
+    logger.log(`[docdex] Installed binary to ${binaryPath}`);
+>>>>>>> mcoda/task/ops-01-us-01-t14
 
     let binaryPath = docdexBinaryPath({ pathModule, distDir, isWin32 });
     if (isWin32) {
@@ -7586,6 +7662,18 @@ async function runInstaller(options) {
     }
 
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
+    logInstallSummary({
+      logger,
+      outcome: local.outcome,
+      platform: detectedPlatform,
+      arch: detectedArch,
+      platformKey,
+      targetTriple,
+      version,
+      assetName: archive,
+      assetSource: source,
+      binaryPath
+    });
     return { binaryPath, outcome: local.outcome };
   } catch (err) {
     // If the swap failed after creating a backup, restore the previous installation.

@@ -38,11 +38,14 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
     platformKey: "linux-arm64-gnu",
     targetTriple: "aarch64-unknown-linux-gnu",
     version: "0.1.11",
+    expectedVersion: "0.1.11",
+    detectedVersion: "0.1.10",
     repoSlug: "owner/repo",
     downloadUrl: "https://example.test/releases/download/v0.1.11/docdexd-linux-arm64-gnu.tar.gz",
     assetName: "docdexd-linux-arm64-gnu.tar.gz",
     expectedAsset: "docdexd-linux-arm64-gnu.tar.gz",
-    expectedAssetPattern: "docdexd-<platformKey>.tar.gz"
+    expectedAssetPattern: "docdexd-<platformKey>.tar.gz",
+    source: "manifest:docdexd-manifest.json"
   });
 
   const report = describeFatalError(err);
@@ -54,6 +57,9 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
   assert.ok(report.lines.some((l) => l.includes("missing artifact/version sync issue")));
   assert.ok(report.lines.some((l) => l.includes("Expected target triple: aarch64-unknown-linux-gnu")));
   assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platformKey>.tar.gz")));
+  assert.ok(report.lines.some((l) => l.includes("Expected version: v0.1.11")));
+  assert.ok(report.lines.some((l) => l.includes("Detected version: v0.1.10")));
+  assert.ok(report.lines.some((l) => l.includes("Release source: manifest:docdexd-manifest.json")));
 });
 
 test("describeFatalError: manifest no-match reads as missing artifact/version sync issue and includes triple + pattern", () => {

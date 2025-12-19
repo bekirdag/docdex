@@ -260,6 +260,8 @@ test("installer: supported runtime with missing manifest target triple never dow
   const report = describeFatalError(err);
   assert.equal(report.code, "DOCDEX_ASSET_NO_MATCH");
   assert.ok(report.lines.some((l) => l.includes("missing artifact/version sync issue")));
+  assert.ok(report.lines.some((l) => l.includes("Expected version: v0.0.0")));
+  assert.ok(report.lines.some((l) => l.includes("Release source: manifest:docdexd-manifest.json")));
   assert.ok(report.lines.some((l) => l.includes("Expected target triple: x86_64-unknown-linux-gnu")));
   assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platformKey>.tar.gz")));
 
@@ -332,6 +334,8 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
   assert.equal(report.exitCode, 21);
   assert.ok(report.lines.some((l) => l.includes("missing artifact/version sync issue")));
   assert.ok(report.lines.some((l) => l.includes("Detected platform: linux/x64")));
+  assert.ok(report.lines.some((l) => l.includes("Expected version: v0.0.0")));
+  assert.ok(report.lines.some((l) => l.includes("Release source: fallback")));
   assert.ok(report.lines.some((l) => l.includes("Expected target triple: x86_64-unknown-linux-gnu")));
   assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platformKey>.tar.gz")));
   assert.ok(!report.lines.some((l) => l.includes("unsupported platform")));

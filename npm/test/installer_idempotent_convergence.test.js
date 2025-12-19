@@ -29,6 +29,10 @@ function createNoopLogger() {
   };
 }
 
+function createVersionDetector(version) {
+  return async () => ({ version, raw: `docdexd ${version}`, error: null });
+}
+
 async function ensureDir(dirPath) {
   await fs.promises.mkdir(dirPath, { recursive: true });
 }
@@ -706,6 +710,7 @@ test("installer: repair then converges to no-op without re-download", async (t) 
     arch: "x64",
     tmpDir,
     distBaseDir,
+    getBinaryVersionFn: createVersionDetector(version),
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
     getVersionFn: () => version,
@@ -822,6 +827,7 @@ test("installer: repair then converges to no-op without re-download", async (t) 
     arch: "x64",
     tmpDir,
     distBaseDir,
+    getBinaryVersionFn: createVersionDetector(version),
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
     getVersionFn: () => version,
@@ -888,6 +894,7 @@ test("installer: repair then converges to no-op without re-download", async (t) 
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 >>>>>>> mcoda/task/ops-01-us-06-t14
 =======
 >>>>>>> mcoda/task/ops-01-us-06-t03
@@ -901,3 +908,5 @@ test("installer: repair then converges to no-op without re-download", async (t) 
 >>>>>>> mcoda/task/ops-01-us-04-t11
 =======
 >>>>>>> mcoda/task/ops-01-us-03-t44
+=======
+>>>>>>> mcoda/task/ops-01-us-03-t06

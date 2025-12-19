@@ -30,6 +30,10 @@ function createNoopLogger() {
   };
 }
 
+function createVersionDetector(version) {
+  return async () => ({ version, raw: `docdexd ${version}`, error: null });
+}
+
 async function ensureParentDir(filePath) {
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
 }
@@ -81,7 +85,12 @@ test("installer e2e: supported platform matrix installs expected binary layout",
         platform: entry.platform,
         arch: entry.arch,
         tmpDir,
+<<<<<<< HEAD
         stateRootDir,
+=======
+        distBaseDir,
+        getBinaryVersionFn: createVersionDetector(version),
+>>>>>>> mcoda/task/ops-01-us-03-t06
         detectPlatformKeyFn: () => platformKey,
         targetTripleForPlatformKeyFn: (key) => targetTripleForPlatformKey(key),
         getVersionFn: () => version,

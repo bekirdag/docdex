@@ -41,6 +41,7 @@ function createNoopLogger() {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 async function readBinaryVersionStub({ expectedVersion }) {
   return { version: expectedVersion, output: `docdexd ${expectedVersion}` };
 =======
@@ -59,6 +60,19 @@ function createCapturingLogger() {
     errors
   };
 >>>>>>> mcoda/task/ops-01-us-01-t13
+=======
+function createVersionDetector(version) {
+  return async () => ({ version, raw: `docdexd ${version}`, error: null });
+}
+
+function createSequencedVersionDetector(versions) {
+  let calls = 0;
+  return async () => {
+    const version = versions[Math.min(calls, versions.length - 1)];
+    calls += 1;
+    return { version, raw: version ? `docdexd ${version}` : "", error: null };
+  };
+>>>>>>> mcoda/task/ops-01-us-03-t06
 }
 
 async function ensureDir(dirPath) {
@@ -197,7 +211,12 @@ test("installer outcome: no-op skips plan/download when local install is verifie
     logger,
     platform: "linux",
     arch: "x64",
+<<<<<<< HEAD
     stateRootDir,
+=======
+    distBaseDir,
+    getBinaryVersionFn: createVersionDetector(version),
+>>>>>>> mcoda/task/ops-01-us-03-t06
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
     getVersionFn: () => version,
@@ -279,7 +298,76 @@ test("installer outcome: no-op skips plan/download when local install is verifie
 >>>>>>> mcoda/task/ops-01-us-03-t15
 });
 
+<<<<<<< HEAD
 test("installer outcome: upgrade installs when expected version is newer and writes fresh metadata", async (t) => {
+=======
+test("installer outcome: version mismatch forces update even with verified metadata", async (t) => {
+  const base = "https://example.test/releases/download";
+  const expectedVersion = "0.0.2";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const isWin32 = false;
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-outcome-version-mismatch-"));
+  t.after(async () => {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  const distBaseDir = path.join(tmpRoot, "dist");
+  const distDir = path.join(distBaseDir, platformKey);
+  const tmpDir = path.join(tmpRoot, "tmp");
+  await ensureDir(tmpDir);
+
+  const binaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "verified-binary\n" });
+  const binarySha = await sha256File(binaryPath);
+  await writeInstallMetadata({ distDir, platformKey, version: expectedVersion, targetTriple, binarySha256: binarySha });
+
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+  let downloadCalls = 0;
+  let extractCalls = 0;
+
+  const result = await runInstaller({
+    logger: createNoopLogger(),
+    platform: "linux",
+    arch: "x64",
+    tmpDir,
+    distBaseDir,
+    getBinaryVersionFn: createSequencedVersionDetector(["0.0.1", expectedVersion]),
+    detectPlatformKeyFn: () => platformKey,
+    targetTripleForPlatformKeyFn: () => targetTriple,
+    getVersionFn: () => expectedVersion,
+    parseRepoSlugFn: () => "owner/repo",
+    getDownloadBaseFn: () => base,
+    resolveInstallerDownloadPlanFn: async () => ({
+      archive,
+      expectedSha256: null,
+      source: "fallback",
+      manifestAttempt: { errors: [], resolved: null, manifestName: null }
+    }),
+    downloadFn: async (_url, dest) => {
+      downloadCalls += 1;
+      await ensureDir(path.dirname(dest));
+      await fs.promises.writeFile(dest, "fake-archive-bytes");
+    },
+    verifyDownloadedFileIntegrityFn: async () => null,
+    extractTarballFn: async (_archivePath, targetDir) => {
+      extractCalls += 1;
+      await ensureDir(targetDir);
+      await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n");
+    }
+  });
+
+  assert.equal(result.outcome, "update");
+  assert.equal(downloadCalls, 1);
+  assert.equal(extractCalls, 1);
+
+  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
+  assert.equal(meta.version, expectedVersion);
+});
+
+test("installer outcome: update installs when version differs and writes fresh metadata", async (t) => {
+>>>>>>> mcoda/task/ops-01-us-03-t06
   const base = "https://example.test/releases/download";
   const expectedVersion = "0.0.2";
   const installedVersion = "0.0.1";
@@ -432,6 +520,7 @@ test("installer outcome: downgrade installs when expected version is older and w
     arch: "x64",
     tmpDir,
     distBaseDir,
+    getBinaryVersionFn: createVersionDetector(expectedVersion),
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
     getVersionFn: () => expectedVersion,
@@ -1319,6 +1408,7 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
     arch: "x64",
     tmpDir,
     distBaseDir,
+    getBinaryVersionFn: createVersionDetector(version),
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
     getVersionFn: () => version,
@@ -1403,6 +1493,7 @@ test("installer lifecycle: reinstall_unknown does not restart when binary is unc
     arch: "x64",
     tmpDir,
     distBaseDir,
+    getBinaryVersionFn: createVersionDetector(version),
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
     getVersionFn: () => version,
@@ -1879,6 +1970,7 @@ test("installer recovery: restores backup before no-op decision", async (t) => {
     platform: "linux",
     arch: "x64",
     distBaseDir,
+    getBinaryVersionFn: createVersionDetector(version),
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
     getVersionFn: () => version,

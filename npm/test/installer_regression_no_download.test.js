@@ -22,6 +22,10 @@ function createNoopLogger() {
   };
 }
 
+function createVersionDetector(version) {
+  return async () => ({ version, raw: `docdexd ${version}`, error: null });
+}
+
 function httpError(statusCode, message) {
   const err = new Error(message || `HTTP ${statusCode}`);
   err.statusCode = statusCode;
@@ -491,7 +495,11 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
       platform: "linux",
       arch: "x64",
       tmpDir: "/tmp/docdex-installer-test",
+<<<<<<< HEAD
       distBaseDir,
+=======
+      getBinaryVersionFn: createVersionDetector(version),
+>>>>>>> mcoda/task/ops-01-us-03-t06
       detectPlatformKeyFn: () => platformKey,
       getVersionFn: () => version,
       parseRepoSlugFn: () => "owner/repo",

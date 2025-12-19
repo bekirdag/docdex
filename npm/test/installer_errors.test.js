@@ -46,6 +46,7 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
     expectedVersion: "0.1.11",
 >>>>>>> mcoda/task/ops-01-us-03-t39
@@ -57,6 +58,10 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
     expectedVersion: "0.1.11",
     installedVersion: "0.1.10",
 >>>>>>> mcoda/task/ops-01-us-03-t44
+=======
+    detectedVersion: "0.1.10",
+    source: "fallback",
+>>>>>>> mcoda/task/ops-01-us-03-t06
     repoSlug: "owner/repo",
     source: "fallback",
 =======
@@ -94,6 +99,7 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
   assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platformKey>.tar.gz")));
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   assert.ok(report.lines.some((l) => l.includes("Detected platform: linux/arm64/gnu")));
 =======
   assert.ok(report.lines.some((l) => l.includes("Detected version: v0.1.10")));
@@ -104,6 +110,11 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
   assert.ok(report.lines.some((l) => l.includes("Detected version: v0.1.10")));
   assert.ok(report.lines.some((l) => l.includes("Release source: manifest:docdexd-manifest.json")));
 >>>>>>> mcoda/task/ops-01-us-03-t39
+=======
+  assert.ok(report.lines.some((l) => l.includes("Release source: fallback")));
+  assert.ok(report.lines.some((l) => l.includes("Expected version: v0.1.11")));
+  assert.ok(report.lines.some((l) => l.includes("Detected version: v0.1.10")));
+>>>>>>> mcoda/task/ops-01-us-03-t06
 });
 
 test("describeFatalError: manifest no-match reads as missing artifact/version sync issue and includes triple + pattern", () => {

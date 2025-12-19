@@ -35,9 +35,19 @@ function validInstallMetadata({ platformKey, version, binarySha256 }) {
   const archiveSha256 = "c".repeat(64);
 >>>>>>> mcoda/task/ops-01-us-06-t03
   return {
+<<<<<<< HEAD
     schemaVersion: 2,
     installedVersion: version,
     expectedVersion: version,
+=======
+    schemaVersion: 1,
+    installedAt: "2025-01-01T00:00:00.000Z",
+    version,
+    expectedVersion: version,
+    installedVersion: version,
+    releaseTag: `v${version}`,
+    repoSlug: "owner/repo",
+>>>>>>> mcoda/task/ops-01-us-03-t43
     platformKey,
     targetTriple: "x86_64-unknown-linux-gnu",
 <<<<<<< HEAD
@@ -60,10 +70,18 @@ function validInstallMetadata({ platformKey, version, binarySha256 }) {
       sha256: binarySha256
     },
     archive: {
+<<<<<<< HEAD
       name: archiveName,
       sha256: archiveSha256,
       source: "manifest:docdex-release-manifest.json",
       downloadUrl: `https://example.test/releases/download/v${version}/${archiveName}`
+=======
+      name: "docdexd-linux-x64-gnu.tar.gz",
+      tag: `v${version}`,
+      sha256: "b".repeat(64),
+      source: "fallback",
+      downloadUrl: `https://example.test/v${version}/docdexd-linux-x64-gnu.tar.gz`
+>>>>>>> mcoda/task/ops-01-us-03-t43
     }
 >>>>>>> mcoda/task/ops-01-us-06-t03
   };

@@ -48,7 +48,14 @@ Additional common keys (when available):
 - `platformKey` (string|null)
 - `repoSlug` (string|null)
 - `version` (string|null)
+<<<<<<< HEAD
 - `installedVersion` (string|null)
+=======
+- `detectedVersion` (string|null)
+- `detectedVersionStatus` (`"installed"|"not_installed"|"unknown"|"error"|null`)
+- `detectedVersionSource` (`"metadata"|"binary"|null`)
+- `detectedVersionError` (string|null)
+>>>>>>> mcoda/task/ops-01-us-03-t43
 - `downloadUrl` (string|null)
 - `manifestName` (string|null)
 - `source` (`"manifest:<name>"|"fallback"|null`)

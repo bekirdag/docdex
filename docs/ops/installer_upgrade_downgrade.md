@@ -229,6 +229,17 @@ The installer writes a small JSON metadata file next to the installed binary:
 This metadata enables deterministic `no-op` and `repair` decisions without downloading a new asset.
 Note: the installer may still fetch release metadata (manifest/checksums) to verify the recorded `archive.sha256`, but it does not re-download the platform archive when the outcome is `no-op`.
 
+### Metadata fields (stable + additive)
+
+The metadata is designed to be backward-compatible (new fields are additive). Common fields include:
+- `version` (legacy) plus explicit `expectedVersion` and `installedVersion`
+- `installedAt` (ISO timestamp)
+- `releaseTag` (e.g., `v0.1.2`) and `archive.tag`
+- `archive.name`, `archive.source`, `archive.downloadUrl`, `archive.sha256`
+- `binary.sha256`, `platformKey`, `targetTriple`, `repoSlug`
+
+When metadata is missing or unreadable, the installer may probe `docdexd --version` (short timeout) to report the detected daemon version in errors.
+
 ### Locate it (safe, cross-platform)
 
 Local install (project dependency):

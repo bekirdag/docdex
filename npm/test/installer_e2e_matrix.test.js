@@ -39,6 +39,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
       const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), `docdex-installer-e2e-${platformKey}-`));
       const tmpDir = path.join(tmpRoot, "tmp");
       const distBaseDir = path.join(tmpRoot, "dist");
+      const stagingRoot = path.join(distBaseDir, ".docdexd-staging");
       await fs.promises.mkdir(tmpDir, { recursive: true });
 
       st.after(async () => {
@@ -104,10 +105,10 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 
       assert.equal(downloadUrl, expectedDownloadUrl);
       assert.equal(extractArchive, downloadDest);
-      assert.equal(extractDir, path.join(distBaseDir, platformKey));
+      assert.ok(path.resolve(extractDir).startsWith(path.resolve(stagingRoot)));
       assert.equal(result.binaryPath, expectedBinaryPath);
       assert.ok(fs.existsSync(expectedBinaryPath));
+      assert.ok(!fs.existsSync(extractDir));
     });
   }
 });
-

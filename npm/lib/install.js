@@ -1076,6 +1076,11 @@ async function runInstaller(options) {
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
   const tmpDir = opts.tmpDir || osModule.tmpdir();
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
+  const stagingDir = pathModule.join(distBaseDir, `${platformKey}.staging.${process.pid}.${Date.now()}`);
+  const backupDir = pathModule.join(distBaseDir, `${platformKey}.backup.${process.pid}.${Date.now()}`);
+
+  let backupActive = false;
+  let swapCompleted = false;
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   try {
@@ -1138,13 +1143,12 @@ async function runInstaller(options) {
       }
     });
 
-    // Only replace an existing installation after we have successfully fetched + verified the archive.
-    await fsModule.promises.rm(distDir, { recursive: true, force: true });
-    await extractTarballFn(tmpFile, distDir);
+    await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    await extractTarballFn(tmpFile, stagingDir);
 
-    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
-    if (!fsModule.existsSync(binaryPath)) {
-      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
+    const stagedBinaryPath = pathModule.join(stagingDir, isWin32 ? "docdexd.exe" : "docdexd");
+    if (!fsModule.existsSync(stagedBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagedBinaryPath}`, {
         platformKey,
         targetTriple,
         version,
@@ -1155,10 +1159,22 @@ async function runInstaller(options) {
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
         fallbackAttempted: source === "fallback",
-        binaryPath
+        binaryPath: stagedBinaryPath
       });
     }
 
+    await fsModule.promises.chmod(stagedBinaryPath, 0o755).catch(() => {});
+
+    if (fsModule.existsSync(distDir)) {
+      await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+      await fsModule.promises.rename(distDir, backupDir);
+      backupActive = true;
+    }
+
+    await fsModule.promises.rename(stagingDir, distDir);
+    swapCompleted = true;
+
+    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
     await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
     logger.log(`[docdex] Installed binary to ${binaryPath}`);
 
@@ -1188,10 +1204,32 @@ async function runInstaller(options) {
       value: metadata
     });
 
+    if (backupActive) {
+      await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+      backupActive = false;
+    }
+
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
     return { binaryPath, outcome: local.outcome };
+  } catch (err) {
+    if (backupActive) {
+      try {
+        if (swapCompleted) {
+          await fsModule.promises.rm(distDir, { recursive: true, force: true }).catch(() => {});
+        }
+        await fsModule.promises.rename(backupDir, distDir);
+        backupActive = false;
+      } catch (restoreErr) {
+        err.restoreError = restoreErr;
+      }
+    }
+    throw err;
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
+    await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    if (backupActive) {
+      await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }
 

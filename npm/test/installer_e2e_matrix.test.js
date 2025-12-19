@@ -104,10 +104,13 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 
       assert.equal(downloadUrl, expectedDownloadUrl);
       assert.equal(extractArchive, downloadDest);
-      assert.equal(extractDir, path.join(distBaseDir, platformKey));
+      const expectedDistDir = path.join(distBaseDir, platformKey);
+      assert.ok(extractDir, "expected extractTarball to run");
+      assert.ok(extractDir.startsWith(`${distBaseDir}${path.sep}`), "expected staging dir under distBaseDir");
+      assert.notEqual(extractDir, expectedDistDir);
+      assert.ok(!fs.existsSync(extractDir), "expected staging dir to be cleaned after install");
       assert.equal(result.binaryPath, expectedBinaryPath);
       assert.ok(fs.existsSync(expectedBinaryPath));
     });
   }
 });
-

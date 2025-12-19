@@ -572,7 +572,8 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
 
     // docdex_open should fail with a structured max-content error.
     let big_path = repo.path().join("docs").join("big.md");
-    std::fs::write(&big_path, "x".repeat(600_000))?;
+    let big_size = 2_000_000usize;
+    std::fs::write(&big_path, "x".repeat(big_size))?;
     send_line(
         &mut mcp.stdin,
         json!({
@@ -593,6 +594,68 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
             .and_then(|v| v.as_u64()),
         Some(512 * 1024),
         "max_bytes should be reported"
+    );
+    assert_eq!(
+        open_err.get("error")
+            .and_then(|v| v.get("data"))
+            .and_then(|v| v.get("details"))
+            .and_then(|v| v.get("actual_bytes"))
+            .and_then(|v| v.as_u64()),
+        Some(big_size as u64),
+        "actual_bytes should be reported"
+    );
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_search_clamps_after_parser_sanitization() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let mut mcp = McpHarness::spawn(repo.path())?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 23,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": { "query": "MCP_ROADMAP:\"", "limit": 999 }
+            }
+        }),
+    )?;
+    let search_resp = read_line(&mut mcp.reader)?;
+    let search_body = parse_tool_result(&search_resp)?;
+    assert_eq!(
+        search_body.get("limit").and_then(|v| v.as_u64()),
+        Some(4),
+        "docdex_search should report the clamped limit"
+    );
+    let hits_len = search_body
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .map(|v| v.len())
+        .unwrap_or(0);
+    assert!(hits_len <= 4, "docdex_search hits should remain bounded");
+
+    let meta_query = search_body
+        .get("meta")
+        .and_then(|v| v.get("query"))
+        .ok_or("search response missing meta.query")?;
+    assert_eq!(
+        meta_query.get("rewrite").and_then(|v| v.as_str()),
+        Some("sanitized"),
+        "parser errors should surface sanitized query metadata"
+    );
+    assert_eq!(
+        meta_query.get("effective").and_then(|v| v.as_str()),
+        Some("MCP_ROADMAP"),
+        "sanitized query should be reflected in metadata"
     );
 
     mcp.shutdown();

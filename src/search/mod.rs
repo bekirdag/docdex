@@ -7,6 +7,11 @@ use crate::error::{
     ERR_RATE_LIMITED,
 };
 use crate::libs::LibsIndexer;
+use crate::max_size::{
+    clamp_option, DEFAULT_MEMORY_RECALL, DEFAULT_SEARCH_LIMIT, DEFAULT_SNIPPET_WINDOW,
+    MAX_MEMORY_RECALL, MAX_RATE_LIMIT_MESSAGE_BYTES, MAX_SNIPPET_WINDOW, MIN_SNIPPET_WINDOW,
+    MaxSizePolicy, truncate_utf8_bytes,
+};
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::ratelimit::RateLimiter;
@@ -29,18 +34,13 @@ use std::time::Instant;
 use tracing::warn;
 use uuid::Uuid;
 
-const DEFAULT_SNIPPET_WINDOW: usize = 40;
-const MIN_SNIPPET_WINDOW: usize = 10;
-const MAX_SNIPPET_WINDOW: usize = 400;
-const MAX_RATE_LIMIT_MESSAGE_BYTES: usize = 256;
-
 // Rate limiting is shared with MCP and other surfaces via crate::ratelimit.
 
 #[derive(Clone)]
 pub struct SecurityConfig {
     pub auth_token: Option<String>,
     pub allow_nets: Vec<ipnet::IpNet>,
-    pub max_limit: usize,
+    pub max_size: MaxSizePolicy,
     pub max_query_bytes: usize,
     pub max_request_bytes: usize,
     pub rate_limit: Option<RateLimiter<IpAddr>>,
@@ -119,7 +119,7 @@ impl SecurityConfig {
         Ok(Self {
             auth_token,
             allow_nets,
-            max_limit: max_limit.max(1),
+            max_size: MaxSizePolicy::new(max_limit),
             max_query_bytes,
             max_request_bytes,
             rate_limit,
@@ -556,7 +556,7 @@ async fn memory_recall_handler(
             "query must not be empty",
         );
     }
-    let top_k = req.top_k.unwrap_or(5).max(1).min(50);
+    let top_k = clamp_option(req.top_k, DEFAULT_MEMORY_RECALL, 1, MAX_MEMORY_RECALL);
 
     let query_embedding = match memory
         .embedder
@@ -831,7 +831,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             "For MCP-aware agents, register a server named docdex that runs `docdexd mcp --repo <repo> --log warn --max-results 8`, then use docdex_search before edits and docdex_index when results look stale.",
         ],
         limits: AiHelpLimits {
-            max_limit: state.security.max_limit,
+            max_limit: state.security.max_size.max_results,
             max_query_bytes: state.security.max_query_bytes,
             max_request_bytes: state.security.max_request_bytes,
             rate_limit_per_min: rate_limit_hint(&state.security),
@@ -936,19 +936,6 @@ struct ErrorBody {
     error: ErrorDetail,
 }
 
-fn truncate_bytes(input: &str, max_bytes: usize) -> String {
-    if input.len() <= max_bytes {
-        return input.to_string();
-    }
-    let mut end = max_bytes;
-    while end > 0 && !input.is_char_boundary(end) {
-        end -= 1;
-    }
-    let mut out = input[..end].to_string();
-    out.push_str("…");
-    out
-}
-
 #[derive(Serialize)]
 struct ErrorDetail {
     code: &'static str,
@@ -978,7 +965,7 @@ impl ErrorDetail {
     fn rate_limited(err: &RateLimited) -> Self {
         Self {
             code: ERR_RATE_LIMITED,
-            message: truncate_bytes(&err.message, MAX_RATE_LIMIT_MESSAGE_BYTES),
+            message: truncate_utf8_bytes(&err.message, MAX_RATE_LIMIT_MESSAGE_BYTES),
             retry_after_ms: Some(err.retry_after_ms),
             retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
             limit_key: Some(err.limit_key.clone()),
@@ -1298,7 +1285,12 @@ async fn search_handler(
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
     Query(params): Query<SearchParams>,
 ) -> impl IntoResponse {
-    let limit = params.limit.unwrap_or(8).min(state.security.max_limit);
+    let limit = clamp_option(
+        params.limit,
+        DEFAULT_SEARCH_LIMIT,
+        1,
+        state.security.max_size.max_results,
+    );
     let raw = match params.q.as_deref() {
         Some(value) => value,
         None => {
@@ -1465,10 +1457,12 @@ async fn snippet_handler(
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
     Query(params): Query<SnippetParams>,
 ) -> impl IntoResponse {
-    let window = params
-        .window
-        .unwrap_or(DEFAULT_SNIPPET_WINDOW)
-        .clamp(MIN_SNIPPET_WINDOW, MAX_SNIPPET_WINDOW);
+    let window = clamp_option(
+        params.window,
+        DEFAULT_SNIPPET_WINDOW,
+        MIN_SNIPPET_WINDOW,
+        MAX_SNIPPET_WINDOW,
+    );
     let strip_html_flag = params.strip_html.unwrap_or(false)
         | params.text_only.unwrap_or(false)
         | state.security.strip_snippet_html;

@@ -14,6 +14,7 @@ use tantivy::DocAddress;
 use tantivy::{
     doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, SnippetGenerator, Term,
 };
+<<<<<<< HEAD
 use thiserror::Error;
 use tracing::warn;
 use crate::error::{AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX};
@@ -22,8 +23,19 @@ use crate::state_layout::{
     StatePaths,
 };
 use crate::state_paths::{default_state_base_dir, RepoStatePaths, StatePaths};
+=======
+use crate::error::{
+    repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
+    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+};
+use crate::max_size::{
+    truncate_utf8_chars, MAX_SNIPPET_CHARS, MAX_SUMMARY_CHARS, MAX_SUMMARY_SEGMENTS,
+};
+>>>>>>> mcoda/task/bck-05-us-10-t25
 use crate::symbols;
 use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
+use thiserror::Error;
+use tracing::warn;
 use walkdir::WalkDir;
 
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
@@ -155,9 +167,12 @@ const DEFAULT_EXCLUDED_RELATIVE_PREFIXES: &[&str] = &[
     "docker-data/",
     ".docker/",
 ];
+<<<<<<< HEAD
 pub(crate) const MAX_SUMMARY_CHARS: usize = 360;
 const MAX_SUMMARY_SEGMENTS: usize = 4;
 pub(crate) const MAX_SNIPPET_CHARS: usize = 420;
+=======
+>>>>>>> mcoda/task/bck-05-us-10-t25
 const FALLBACK_PREVIEW_LINES: usize = 60;
 
 #[derive(Clone)]
@@ -1696,7 +1711,7 @@ fn summarize(content: &str) -> String {
     let segments = collect_segments(cleaned, MAX_SUMMARY_SEGMENTS);
     if segments.is_empty() {
         let collapsed = collapse_whitespace(cleaned);
-        let (truncated, was_truncated) = truncate_to_limit(&collapsed, MAX_SUMMARY_CHARS);
+        let (truncated, was_truncated) = truncate_utf8_chars(&collapsed, MAX_SUMMARY_CHARS);
         return if was_truncated { truncated } else { collapsed };
     }
     let mut summary = String::new();
@@ -1725,10 +1740,10 @@ fn summarize(content: &str) -> String {
             .take(60)
             .collect::<Vec<_>>()
             .join(" ");
-        let (truncated, was_truncated) = truncate_to_limit(&fallback, MAX_SUMMARY_CHARS);
+        let (truncated, was_truncated) = truncate_utf8_chars(&fallback, MAX_SUMMARY_CHARS);
         return if was_truncated { truncated } else { fallback };
     }
-    let (truncated, was_truncated) = truncate_to_limit(&summary, MAX_SUMMARY_CHARS);
+    let (truncated, was_truncated) = truncate_utf8_chars(&summary, MAX_SUMMARY_CHARS);
     if was_truncated {
         truncated
     } else {
@@ -1898,34 +1913,6 @@ fn collapse_whitespace(text: &str) -> String {
     MULTISPACE_RE.replace_all(text, " ").trim().to_string()
 }
 
-fn truncate_to_limit(text: &str, max_chars: usize) -> (String, bool) {
-    if max_chars == 0 {
-        return (String::new(), true);
-    }
-    let char_count = text.chars().count();
-    if char_count <= max_chars {
-        return (text.to_string(), false);
-    }
-    let take_chars = max_chars.saturating_sub(1);
-    let mut truncated = String::new();
-    for (idx, ch) in text.chars().enumerate() {
-        if idx >= take_chars {
-            break;
-        }
-        truncated.push(ch);
-    }
-    while truncated
-        .chars()
-        .last()
-        .map(|c| c.is_whitespace())
-        .unwrap_or(false)
-    {
-        truncated.pop();
-    }
-    truncated.push('…');
-    (truncated, true)
-}
-
 fn condense_snippet(lines: &[String], max_chars: usize) -> (String, bool) {
     if lines.is_empty() {
         return (String::new(), false);
@@ -1961,7 +1948,7 @@ fn condense_snippet(lines: &[String], max_chars: usize) -> (String, bool) {
         return (String::new(), false);
     }
     if total_chars > max_chars || snippet.chars().count() > max_chars {
-        let (truncated, _) = truncate_to_limit(&snippet, max_chars);
+        let (truncated, _) = truncate_utf8_chars(&snippet, max_chars);
         return (truncated, true);
     }
     (snippet, false)

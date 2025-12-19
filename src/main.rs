@@ -4,7 +4,11 @@ mod chrome_watchdog;
 mod config;
 mod daemon;
 mod error;
+<<<<<<< HEAD
 mod explainability;
+=======
+mod max_size;
+>>>>>>> mcoda/task/bck-05-us-10-t25
 mod metrics;
 mod tier2;
 mod waterfall_trace;

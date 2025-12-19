@@ -917,6 +917,7 @@ pub struct ContextAssemblyMeta {
     pub hits_before_pruning: usize,
     pub hits_after_pruning: usize,
     pub token_estimate_sum_kept: u64,
+    pub token_estimate_sum_pruned: u64,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pruned: Vec<PrunedHitMeta>,
     pub selected_sources: Vec<SelectedSourceMeta>,
@@ -1169,11 +1170,40 @@ pub async fn run_query(
 ) -> Result<SearchResponse> {
     let (hits, query_meta) = search_with_optional_libs(indexer, libs_indexer, query, limit)?;
     let top_score = hits.first().map(|hit| hit.score);
+    let token_estimate_sum_kept: u64 = hits.iter().map(|hit| hit.token_estimate).sum();
+    let selected_sources = hits
+        .iter()
+        .map(|hit| SelectedSourceMeta {
+            doc_id: hit.doc_id.clone(),
+            rel_path: hit.rel_path.clone(),
+            score: hit.score,
+            token_estimate: hit.token_estimate,
+            snippet_origin: hit.snippet_origin.clone(),
+            snippet_truncated: hit.snippet_truncated,
+        })
+        .collect::<Vec<_>>();
+    let context_assembly = ContextAssemblyMeta {
+        requested_limit: Some(limit),
+        effective_limit: limit,
+        snippet_policy: SnippetPolicy::Full,
+        max_tokens: None,
+        token_budget_mode: "per_hit_token_estimate",
+        hits_before_pruning: hits.len(),
+        hits_after_pruning: hits.len(),
+        token_estimate_sum_kept,
+        token_estimate_sum_pruned: 0,
+        pruned: Vec::new(),
+        selected_sources,
+    };
     Ok(SearchResponse {
         hits,
         top_score,
         top_score_camel: top_score,
-        meta: Some(build_search_meta(indexer, Some(query_meta), None)?),
+        meta: Some(build_search_meta(
+            indexer,
+            Some(query_meta),
+            Some(context_assembly),
+        )?),
     })
 }
 
@@ -1302,11 +1332,14 @@ async fn search_handler(
 
             let hits_before_pruning = hits.len();
             let mut pruned: Vec<PrunedHitMeta> = Vec::new();
+            let mut token_estimate_sum_pruned: u64 = 0;
             if let Some(budget) = max_tokens {
                 hits.retain(|hit| {
                     if hit.token_estimate <= budget {
                         true
                     } else {
+                        token_estimate_sum_pruned =
+                            token_estimate_sum_pruned.saturating_add(hit.token_estimate);
                         pruned.push(PrunedHitMeta {
                             doc_id: hit.doc_id.clone(),
                             rel_path: hit.rel_path.clone(),
@@ -1348,6 +1381,7 @@ async fn search_handler(
                 hits_before_pruning,
                 hits_after_pruning: hits.len(),
                 token_estimate_sum_kept,
+                token_estimate_sum_pruned,
                 pruned,
                 selected_sources,
             };

@@ -1309,6 +1309,7 @@ impl McpServer {
             hits_before_pruning: hits.hits.len(),
             hits_after_pruning: hits.hits.len(),
             token_estimate_sum_kept,
+            token_estimate_sum_pruned: 0,
             pruned: Vec::new(),
             selected_sources: hits
                 .hits

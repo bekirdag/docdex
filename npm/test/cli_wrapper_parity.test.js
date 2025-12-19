@@ -6,14 +6,31 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const { createRequire } = require("node:module");
+const platform = require("../lib/platform");
 
-function runScriptWithMocks(scriptPath, { mocks, argv }) {
+function runScriptWithMocks(scriptPath, { mocks, argv, process: processOverrides } = {}) {
   const realRequire = createRequire(scriptPath);
   const code = fs.readFileSync(scriptPath, "utf8").replace(/^#!.*\n/, "");
 
   const stdout = [];
   const stderr = [];
   let exitCode = null;
+  const baseProcess = {
+    argv: argv || ["node", scriptPath],
+    platform: "darwin",
+    arch: "arm64",
+    env: {},
+    exit: (code) => {
+      exitCode = code;
+      const err = new Error("process.exit");
+      err.__EXIT__ = true;
+      throw err;
+    }
+  };
+  const sandboxProcess = { ...baseProcess, ...(processOverrides || {}) };
+  if (processOverrides?.env) {
+    sandboxProcess.env = { ...baseProcess.env, ...processOverrides.env };
+  }
 
   const sandbox = {
     __filename: scriptPath,
@@ -24,17 +41,7 @@ function runScriptWithMocks(scriptPath, { mocks, argv }) {
       log: (msg) => stdout.push(String(msg)),
       error: (msg) => stderr.push(String(msg))
     },
-    process: {
-      argv: argv || ["node", scriptPath],
-      platform: "darwin",
-      arch: "arm64",
-      exit: (code) => {
-        exitCode = code;
-        const err = new Error("process.exit");
-        err.__EXIT__ = true;
-        throw err;
-      }
-    },
+    process: sandboxProcess,
     require: (request) => {
       if (mocks && Object.prototype.hasOwnProperty.call(mocks, request)) return mocks[request];
       return realRequire(request);
@@ -133,8 +140,54 @@ test("docdex CLI wrapper: supported platform with missing local binary exits non
 
   assert.equal(result.exitCode, 1);
   assert.ok(result.stderr.includes("[docdex] Missing binary for darwin-arm64."));
+  assert.ok(result.stderr.includes("[docdex] Expected target triple: aarch64-apple-darwin"));
+  assert.ok(result.stderr.includes("[docdex] Asset naming pattern: docdexd-<platformKey>.tar.gz"));
   assert.ok(!result.stderr.includes("unsupported platform"));
   assert.equal(spawnCalls, 0);
+});
+
+test("docdex CLI wrapper: `doctor` on linux musl reports libc-aware target mapping", () => {
+  let spawnCalls = 0;
+  let existsCalls = 0;
+
+  const env = { DOCDEX_LIBC: "musl" };
+
+  const platformModule = {
+    ...platform,
+    detectLibcFromRuntime: () => platform.detectLibcFromRuntime({ env }),
+    detectPlatformKey: () => platform.detectPlatformKey({ platform: "linux", arch: "x64", env, report: null })
+  };
+
+  const scriptPath = path.join(__dirname, "..", "bin", "docdex.js");
+  const result = runScriptWithMocks(scriptPath, {
+    mocks: {
+      "../lib/platform": platformModule,
+      "node:child_process": {
+        spawn: () => {
+          spawnCalls += 1;
+          throw new Error("unexpected spawn");
+        }
+      },
+      "node:fs": {
+        existsSync: () => {
+          existsCalls += 1;
+          throw new Error("unexpected fs.existsSync");
+        }
+      },
+      "node:path": require("node:path")
+    },
+    argv: ["node", scriptPath, "doctor"],
+    process: { platform: "linux", arch: "x64" }
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.ok(result.stdout.includes("[docdex] Detected platform: linux/x64/musl"));
+  assert.ok(result.stdout.includes("[docdex] Platform key: linux-x64-musl"));
+  assert.ok(result.stdout.includes("[docdex] Expected target triple: x86_64-unknown-linux-musl"));
+  assert.ok(result.stdout.includes("[docdex] Expected release asset: docdexd-linux-x64-musl.tar.gz"));
+  assert.ok(result.stdout.includes("[docdex] Asset naming pattern: docdexd-<platformKey>.tar.gz"));
+  assert.equal(spawnCalls, 0);
+  assert.equal(existsCalls, 0);
 });
 
 test("docdex CLI wrapper: `doctor` prints platform diagnostics without checking local binaries", () => {
@@ -178,6 +231,67 @@ test("docdex CLI wrapper: `doctor` prints platform diagnostics without checking 
   assert.ok(result.stdout.includes("[docdex] Expected target triple: aarch64-apple-darwin"));
   assert.ok(result.stdout.includes("[docdex] Expected release asset: docdexd-darwin-arm64.tar.gz"));
   assert.ok(result.stdout.includes("[docdex] Asset naming pattern: docdexd-<platformKey>.tar.gz"));
+  assert.equal(spawnCalls, 0);
+  assert.equal(existsCalls, 0);
+});
+
+test("docdex CLI wrapper: recognized-but-unpublished platform reports asset naming pattern", () => {
+  let spawnCalls = 0;
+  let existsCalls = 0;
+
+  class UnsupportedPlatformError extends Error {
+    constructor(details) {
+      super(`Unsupported platform: ${details.platform}/${details.arch}`);
+      this.name = "UnsupportedPlatformError";
+      this.code = "DOCDEX_UNSUPPORTED_PLATFORM";
+      this.exitCode = 3;
+      this.details = details;
+    }
+  }
+
+  const platformModule = {
+    UnsupportedPlatformError,
+    detectPlatformKey: () => {
+      throw new UnsupportedPlatformError({
+        platform: "linux",
+        arch: "arm64",
+        libc: "musl",
+        candidatePlatformKey: "linux-arm64-musl",
+        candidateTargetTriple: "aarch64-unknown-linux-musl",
+        supportedPlatformKeys: ["darwin-arm64", "linux-x64-gnu"],
+        supportedTargetTriples: ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+      });
+    },
+    assetPatternForPlatformKey: (platformKey) =>
+      `docdexd-<platformKey>.tar.gz (e.g. docdexd-${platformKey}.tar.gz)`
+  };
+
+  const scriptPath = path.join(__dirname, "..", "bin", "docdex.js");
+  const result = runScriptWithMocks(scriptPath, {
+    mocks: {
+      "../lib/platform": platformModule,
+      "node:child_process": {
+        spawn: () => {
+          spawnCalls += 1;
+          throw new Error("unexpected spawn");
+        }
+      },
+      "node:fs": {
+        existsSync: () => {
+          existsCalls += 1;
+          throw new Error("unexpected fs.existsSync");
+        }
+      },
+      "node:path": require("node:path")
+    },
+    argv: ["node", scriptPath, "--version"],
+    process: { platform: "linux", arch: "arm64" }
+  });
+
+  assert.equal(result.exitCode, 3);
+  assert.ok(result.stderr.includes("[docdex] unsupported platform (linux/arm64/musl)"));
+  assert.ok(result.stderr.includes("[docdex] Asset naming pattern: docdexd-<platformKey>.tar.gz"));
+  assert.ok(result.stderr.includes("[docdex] Supported platforms: darwin-arm64, linux-x64-gnu"));
   assert.equal(spawnCalls, 0);
   assert.equal(existsCalls, 0);
 });

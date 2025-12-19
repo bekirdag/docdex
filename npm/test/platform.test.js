@@ -16,7 +16,7 @@ const {
   UnsupportedPlatformError
 } = require("../lib/platform");
 
-const { PUBLISHED_RELEASE_TARGETS } = require("../lib/platform_matrix");
+const { PLATFORM_MATRIX, PUBLISHED_RELEASE_TARGETS } = require("../lib/platform_matrix");
 const { DEFAULT_TARGETS } = require("../../scripts/generate_release_manifest.cjs");
 
 function writeElf64WithInterpreter(filePath, interpreter) {
@@ -182,4 +182,34 @@ test("resolvePlatformPolicy returns platform key, target triple, and expected as
   assert.equal(policy.targetTriple, "aarch64-apple-darwin");
   assert.equal(policy.expectedAssetName, "docdexd-darwin-arm64.tar.gz");
   assert.equal(policy.expectedAssetPattern, "docdexd-<platformKey>.tar.gz (e.g. docdexd-darwin-arm64.tar.gz)");
+});
+
+test("platform matrix: published entries resolve OS/arch to target triple + asset name", () => {
+  const published = PLATFORM_MATRIX.filter((entry) => entry.published);
+  for (const entry of published) {
+    const options = { platform: entry.platform, arch: entry.arch };
+    if (entry.platform === "linux") options.env = { DOCDEX_LIBC: entry.libc };
+    const policy = resolvePlatformPolicy(options);
+    assert.equal(policy.platformKey, entry.platformKey);
+    assert.equal(policy.targetTriple, entry.targetTriple);
+    assert.equal(policy.expectedAssetName, `docdexd-${entry.platformKey}.tar.gz`);
+  }
+});
+
+test("platform matrix: unpublished entries are rejected as unsupported", () => {
+  const unpublished = PLATFORM_MATRIX.filter((entry) => !entry.published);
+  for (const entry of unpublished) {
+    const options = { platform: entry.platform, arch: entry.arch };
+    if (entry.platform === "linux") options.env = { DOCDEX_LIBC: entry.libc };
+    assert.throws(
+      () => detectPlatformKey(options),
+      (err) => {
+        assert.ok(err instanceof UnsupportedPlatformError);
+        assert.equal(err.details.candidatePlatformKey, entry.platformKey);
+        assert.equal(err.details.candidateTargetTriple, entry.targetTriple);
+        assert.equal(err.details.reason, "target_not_published");
+        return true;
+      }
+    );
+  }
 });

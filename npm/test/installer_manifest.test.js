@@ -63,6 +63,82 @@ test("installer resolves asset + sha256 via first available manifest candidate d
   assert.equal(plan.source, "manifest:docdex-release-manifest.json");
 });
 
+test("installer prefers manifest asset name even when it differs from deterministic naming", async () => {
+  const base = "https://example.test/releases/download";
+  const version = "0.0.0";
+  const manifestText = JSON.stringify(
+    {
+      manifestVersion: 1,
+      targets: {
+        "x86_64-unknown-linux-gnu": {
+          asset: { name: "docdexd-linux-x64-gnu-custom.tar.gz" },
+          integrity: { sha256: "f".repeat(64) }
+        }
+      }
+    },
+    null,
+    2
+  );
+
+  const downloadTextFn = async (url) => {
+    if (url === `${base}/v${version}/docdex-release-manifest.json`) return manifestText;
+    throw httpError(404, `not found: ${url}`);
+  };
+
+  const plan = await resolveInstallerDownloadPlan({
+    repoSlug: "owner/repo",
+    version,
+    platformKey: "linux-x64-gnu",
+    targetTriple: "x86_64-unknown-linux-gnu",
+    downloadTextFn,
+    getDownloadBaseFn: () => base,
+    manifestCandidateNamesFn: () => ["docdex-release-manifest.json"],
+    logger: createCapturingLogger().logger
+  });
+
+  assert.equal(plan.archive, "docdexd-linux-x64-gnu-custom.tar.gz");
+  assert.equal(plan.expectedSha256, "f".repeat(64));
+  assert.equal(plan.source, "manifest:docdex-release-manifest.json");
+});
+
+test("installer prefers manifest asset name even when it differs from deterministic naming", async () => {
+  const base = "https://example.test/releases/download";
+  const version = "0.0.0";
+  const manifestText = JSON.stringify(
+    {
+      manifestVersion: 1,
+      targets: {
+        "x86_64-unknown-linux-gnu": {
+          asset: { name: "docdexd-linux-x64-gnu-custom.tar.gz" },
+          integrity: { sha256: "f".repeat(64) }
+        }
+      }
+    },
+    null,
+    2
+  );
+
+  const downloadTextFn = async (url) => {
+    if (url === `${base}/v${version}/docdex-release-manifest.json`) return manifestText;
+    throw httpError(404, `not found: ${url}`);
+  };
+
+  const plan = await resolveInstallerDownloadPlan({
+    repoSlug: "owner/repo",
+    version,
+    platformKey: "linux-x64-gnu",
+    targetTriple: "x86_64-unknown-linux-gnu",
+    downloadTextFn,
+    getDownloadBaseFn: () => base,
+    manifestCandidateNamesFn: () => ["docdex-release-manifest.json"],
+    logger: createCapturingLogger().logger
+  });
+
+  assert.equal(plan.archive, "docdexd-linux-x64-gnu-custom.tar.gz");
+  assert.equal(plan.expectedSha256, "f".repeat(64));
+  assert.equal(plan.source, "manifest:docdex-release-manifest.json");
+});
+
 test("installer resolves from manifest.assets array shape deterministically", async () => {
   const base = "https://example.test/releases/download";
   const version = "0.0.0";

@@ -696,6 +696,14 @@ test("parseSha256File handles common sha256 file formats deterministically", () 
 
   assert.equal(parseSha256File(text, "docdexd-linux-x64-gnu.tar.gz"), expected);
   assert.equal(parseSha256File(`${expected}  docdexd-linux-x64-gnu.tar.gz\r\n`, "docdexd-linux-x64-gnu.tar.gz"), expected);
+  assert.equal(
+    parseSha256File(`${expected}  ./dist/docdexd-linux-x64-gnu.tar.gz`, "docdexd-linux-x64-gnu.tar.gz"),
+    expected
+  );
+  assert.equal(
+    parseSha256File(`${expected}\n`, "docdexd-linux-x64-gnu.tar.gz", { allowBareHash: true }),
+    expected
+  );
 });
 
 <<<<<<< HEAD

@@ -465,7 +465,7 @@ function decideInstallAction({
   return { outcome: "reinstall_unknown", reason: "integrity_unverifiable" };
 }
 
-async function discoverInstalledState({ fsModule, pathModule, distDir, platformKey, isWin32 }) {
+async function discoverInstalledState({ fsModule, pathModule, distDir, platformKey, expectedTargetTriple, isWin32 }) {
   const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
   const metadataPath = installMetadataPath(distDir, pathModule);
 
@@ -521,6 +521,11 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
     };
   }
 
+  const expectedTarget =
+    typeof expectedTargetTriple === "string" && expectedTargetTriple ? expectedTargetTriple : null;
+  const recordedTarget = typeof meta.targetTriple === "string" && meta.targetTriple ? meta.targetTriple : null;
+  const targetMismatch = expectedTarget && recordedTarget && recordedTarget !== expectedTarget;
+
   return {
     binaryPath,
     metadataPath,
@@ -529,7 +534,7 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
     metadata: meta,
     metadataStatus: "valid",
     metadataStatusReason: null,
-    platformMismatch: meta.platformKey !== platformKey
+    platformMismatch: meta.platformKey !== platformKey || targetMismatch
   };
 }
 
@@ -574,6 +579,7 @@ async function determineLocalInstallerOutcome({
   distDir,
   platformKey,
   expectedVersion,
+  expectedTargetTriple = null,
   isWin32,
   sha256FileFn = sha256File,
   expectedBinarySha256 = null
@@ -583,6 +589,7 @@ async function determineLocalInstallerOutcome({
     pathModule,
     distDir,
     platformKey,
+    expectedTargetTriple,
     isWin32
   });
 
@@ -628,7 +635,8 @@ async function determineLocalInstallerOutcome({
     binaryPath: discoveredInstalledState.binaryPath,
     metadataPath: discoveredInstalledState.metadataPath,
     installedVersion,
-    integrityResult
+    integrityResult,
+    installedMetadata: discoveredInstalledState.metadata
   };
 }
 
@@ -1048,17 +1056,27 @@ async function runInstaller(options) {
   const distDir = pathModule.join(distBaseDir, platformKey);
   const isWin32 = detectedPlatform === "win32";
 
+  logger.log(`[docdex] Detected platform: ${detectedPlatform}/${detectedArch}`);
+  logger.log(`[docdex] Expected target triple: ${targetTriple}`);
+  logger.log(`[docdex] Resolved daemon version: v${version}`);
+
   const local = await determineLocalInstallerOutcome({
     fsModule,
     pathModule,
     distDir,
     platformKey,
+    expectedTargetTriple: targetTriple,
     expectedVersion: version,
     isWin32,
     sha256FileFn
   });
 
   if (local.outcome === "no-op") {
+    const archivedName = local.installedMetadata?.archive?.name;
+    const resolvedAsset =
+      typeof archivedName === "string" && archivedName.trim() ? archivedName.trim() : artifactNameFn(platformKey);
+    logger.log(`[docdex] Resolved daemon asset: ${resolvedAsset}`);
+    logger.log("[docdex] Cache hit: existing docdexd matches expected version/target.");
     logger.log("[docdex] Install outcome: no-op");
     return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
   }
@@ -1072,6 +1090,8 @@ async function runInstaller(options) {
     targetTriple,
     logger
   });
+
+  logger.log(`[docdex] Resolved daemon asset: ${archive}`);
 
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
   const tmpDir = opts.tmpDir || osModule.tmpdir();

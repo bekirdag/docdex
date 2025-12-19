@@ -17,6 +17,22 @@ function createNoopLogger() {
   };
 }
 
+function createCapturingLogger() {
+  const logs = [];
+  const warns = [];
+  const errors = [];
+  return {
+    logger: {
+      log: (...args) => logs.push(args.join(" ")),
+      warn: (...args) => warns.push(args.join(" ")),
+      error: (...args) => errors.push(args.join(" "))
+    },
+    logs,
+    warns,
+    errors
+  };
+}
+
 async function ensureDir(dirPath) {
   await fs.promises.mkdir(dirPath, { recursive: true });
 }
@@ -83,8 +99,9 @@ test("installer outcome: no-op skips plan/download when local install is verifie
   let downloadCalls = 0;
   let extractCalls = 0;
 
+  const { logger, logs } = createCapturingLogger();
   const result = await runInstaller({
-    logger: createNoopLogger(),
+    logger,
     platform: "linux",
     arch: "x64",
     distBaseDir,
@@ -116,6 +133,12 @@ test("installer outcome: no-op skips plan/download when local install is verifie
   assert.equal(planCalls, 0);
   assert.equal(downloadCalls, 0);
   assert.equal(extractCalls, 0);
+  assert.ok(logs.some((line) => line.includes("Detected platform: linux/x64")));
+  assert.ok(logs.some((line) => line.includes(`Expected target triple: ${targetTriple}`)));
+  assert.ok(logs.some((line) => line.includes(`Resolved daemon version: v${version}`)));
+  assert.ok(logs.some((line) => line.includes("Resolved daemon asset: docdexd-linux-x64-gnu.tar.gz")));
+  assert.ok(logs.some((line) => line.includes("Cache hit: existing docdexd matches expected version/target")));
+  assert.ok(logs.some((line) => line.includes("Install outcome: no-op")));
 });
 
 test("installer outcome: update installs when version differs and writes fresh metadata", async (t) => {

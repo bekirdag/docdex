@@ -154,6 +154,45 @@ test("decision engine: platform mismatch => reinstall_unknown (platform_mismatch
   assert.equal(outcome.installedVersion, "0.1.0");
 });
 
+test("decision engine: target triple mismatch => reinstall_unknown (platform_mismatch)", async () => {
+  const platformKey = "linux-x64-gnu";
+  const distDir = path.posix.join("/dist", platformKey);
+  const binaryPath = path.posix.join(distDir, "docdexd");
+  const metadataPath = path.posix.join(distDir, "docdexd-install.json");
+
+  const fsModule = createMockFs({
+    existingPaths: [binaryPath],
+    filesByPath: {
+      [metadataPath]: JSON.stringify(
+        validInstallMetadata({ platformKey, version: "0.1.0", binarySha256: "a".repeat(64) }),
+        null,
+        2
+      )
+    }
+  });
+
+  let shaCalls = 0;
+  const outcome = await determineLocalInstallerOutcome({
+    fsModule,
+    pathModule: path.posix,
+    distDir,
+    platformKey,
+    expectedVersion: "0.1.0",
+    expectedTargetTriple: "aarch64-unknown-linux-gnu",
+    isWin32: false,
+    sha256FileFn: async () => {
+      shaCalls += 1;
+      throw new Error("unexpected sha256");
+    }
+  });
+
+  assert.equal(outcome.outcome, "reinstall_unknown");
+  assert.equal(outcome.reason, "platform_mismatch");
+  assert.equal(outcome.installedVersion, "0.1.0");
+  assert.equal(outcome.integrityResult, null);
+  assert.equal(shaCalls, 0);
+});
+
 test("decision engine: version mismatch => update (version_mismatch)", async () => {
   const platformKey = "linux-x64-gnu";
   const distDir = path.posix.join("/dist", platformKey);

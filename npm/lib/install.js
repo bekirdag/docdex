@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { pipeline } = require("node:stream/promises");
 const crypto = require("node:crypto");
+const { probeDocdexdVersion, DEFAULT_VERSION_PROBE_TIMEOUT_MS } = require("./daemon_version");
 
 const pkg = require("../package.json");
 const {
@@ -576,7 +577,9 @@ async function determineLocalInstallerOutcome({
   expectedVersion,
   isWin32,
   sha256FileFn = sha256File,
-  expectedBinarySha256 = null
+  expectedBinarySha256 = null,
+  probeVersionFn = null,
+  versionProbeTimeoutMs = DEFAULT_VERSION_PROBE_TIMEOUT_MS
 }) {
   const discoveredInstalledState = await discoverInstalledState({
     fsModule,
@@ -622,12 +625,43 @@ async function determineLocalInstallerOutcome({
   const installedVersion =
     typeof discoveredInstalledState.installedVersion === "string" ? discoveredInstalledState.installedVersion : null;
 
+  let detectedVersion = null;
+  let detectedVersionStatus = null;
+  let detectedVersionSource = null;
+  let detectedVersionError = null;
+
+  if (discoveredInstalledState.binaryPresent) {
+    if (installedVersion && discoveredInstalledState.metadataStatus === "valid") {
+      const metaInstalled =
+        typeof discoveredInstalledState.metadata?.installedVersion === "string"
+          ? discoveredInstalledState.metadata.installedVersion
+          : null;
+      detectedVersion = metaInstalled || installedVersion;
+      detectedVersionStatus = "metadata";
+      detectedVersionSource = "metadata";
+    } else if (typeof probeVersionFn === "function") {
+      const probeResult = await probeVersionFn({
+        binaryPath: discoveredInstalledState.binaryPath,
+        timeoutMs: versionProbeTimeoutMs,
+        fsModule
+      });
+      detectedVersion = typeof probeResult?.version === "string" ? probeResult.version : null;
+      detectedVersionStatus = typeof probeResult?.status === "string" ? probeResult.status : null;
+      detectedVersionSource = detectedVersion ? "binary" : null;
+      detectedVersionError = probeResult?.error ?? null;
+    }
+  }
+
   return {
     outcome: decision.outcome,
     reason: decision.reason,
     binaryPath: discoveredInstalledState.binaryPath,
     metadataPath: discoveredInstalledState.metadataPath,
     installedVersion,
+    detectedVersion,
+    detectedVersionStatus,
+    detectedVersionSource,
+    detectedVersionError,
     integrityResult
   };
 }
@@ -1009,6 +1043,13 @@ async function runInstaller(options) {
   const artifactNameFn = opts.artifactNameFn || artifactName;
   const assetPatternForPlatformKeyFn = opts.assetPatternForPlatformKeyFn || assetPatternForPlatformKey;
   const sha256FileFn = opts.sha256FileFn || sha256File;
+  const probeVersionFn = Object.prototype.hasOwnProperty.call(opts, "probeVersionFn")
+    ? opts.probeVersionFn
+    : probeDocdexdVersion;
+  const versionProbeTimeoutMs =
+    typeof opts.versionProbeTimeoutMs === "number" && Number.isFinite(opts.versionProbeTimeoutMs)
+      ? opts.versionProbeTimeoutMs
+      : DEFAULT_VERSION_PROBE_TIMEOUT_MS;
 
   const detectedPlatform = opts.platform || process.platform;
   const detectedArch = opts.arch || process.arch;
@@ -1055,12 +1096,19 @@ async function runInstaller(options) {
     platformKey,
     expectedVersion: version,
     isWin32,
-    sha256FileFn
+    sha256FileFn,
+    probeVersionFn,
+    versionProbeTimeoutMs
   });
 
   if (local.outcome === "no-op") {
     logger.log("[docdex] Install outcome: no-op");
-    return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
+    return {
+      binaryPath: local.binaryPath,
+      outcome: local.outcome,
+      integrityResult: local.integrityResult,
+      detectedVersion: local.detectedVersion
+    };
   }
 
   const repoSlug = parseRepoSlugFn();
@@ -1095,6 +1143,10 @@ async function runInstaller(options) {
           fallbackAttempted: source === "fallback",
           fallbackReason,
           version,
+          detectedVersion: local.detectedVersion,
+          detectedVersionStatus: local.detectedVersionStatus,
+          detectedVersionSource: local.detectedVersionSource,
+          detectedVersionError: local.detectedVersionError,
           repoSlug,
           downloadUrl,
           expectedAsset: archive,
@@ -1163,10 +1215,19 @@ async function runInstaller(options) {
     logger.log(`[docdex] Installed binary to ${binaryPath}`);
 
     const binarySha256 = await sha256FileFn(binaryPath);
+    const versionProbe =
+      typeof probeVersionFn === "function"
+        ? await probeVersionFn({ binaryPath, timeoutMs: versionProbeTimeoutMs, fsModule })
+        : null;
+    const installedVersion =
+      typeof versionProbe?.version === "string" && versionProbe.version ? versionProbe.version : version;
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
       installedAt: nowIso(),
       version,
+      expectedVersion: version,
+      installedVersion,
+      releaseTag: `v${version}`,
       repoSlug,
       platformKey,
       targetTriple,
@@ -1176,6 +1237,7 @@ async function runInstaller(options) {
       },
       archive: {
         name: archive,
+        tag: `v${version}`,
         sha256: expectedSha256 || null,
         source,
         downloadUrl
@@ -1256,6 +1318,19 @@ function describeFatalError(err) {
   if (err instanceof MissingArtifactError) {
     const detected = err.details?.detected ? `${err.details.detected.os}/${err.details.detected.arch}` : null;
     const platformKey = typeof err.details?.platformKey === "string" ? err.details.platformKey : null;
+    const detectedVersion =
+      typeof err.details?.detectedVersion === "string" && err.details.detectedVersion.trim()
+        ? err.details.detectedVersion.trim()
+        : null;
+    const detectedVersionStatus =
+      typeof err.details?.detectedVersionStatus === "string" ? err.details.detectedVersionStatus : null;
+    const detectedVersionLine = detectedVersion
+      ? `[docdex] Detected installed docdexd: v${detectedVersion}`
+      : detectedVersionStatus === "not_installed"
+        ? "[docdex] Detected installed docdexd: not installed"
+        : detectedVersionStatus === "error"
+          ? "[docdex] Detected installed docdexd: probe failed"
+          : null;
     const expectedAsset =
       typeof err.details?.expectedAsset === "string" && err.details.expectedAsset.trim()
         ? err.details.expectedAsset.trim()
@@ -1281,7 +1356,9 @@ function describeFatalError(err) {
         fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,
         err.details?.fallbackReason ? `[docdex] Fallback reason: ${err.details.fallbackReason}` : null,
         err.details?.version ? `[docdex] Version: v${err.details.version}` : null,
+        detectedVersionLine,
         err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
+        err.details?.source ? `[docdex] Release source: ${err.details.source}` : null,
         err.details?.expectedAsset ? `[docdex] Expected asset: ${err.details.expectedAsset}` : null,
         expectedAssetPattern ? `[docdex] Asset naming pattern: ${expectedAssetPattern}` : null,
         err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,

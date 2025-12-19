@@ -56,6 +56,17 @@ The installer writes a small JSON metadata file next to the installed binary:
 
 This metadata enables deterministic `no-op` and `repair` decisions without downloading a new asset.
 
+### Metadata fields (stable + additive)
+
+The metadata is designed to be backward-compatible (new fields are additive). Common fields include:
+- `version` (legacy) plus explicit `expectedVersion` and `installedVersion`
+- `installedAt` (ISO timestamp)
+- `releaseTag` (e.g., `v0.1.2`) and `archive.tag`
+- `archive.name`, `archive.source`, `archive.downloadUrl`, `archive.sha256`
+- `binary.sha256`, `platformKey`, `targetTriple`, `repoSlug`
+
+When metadata is missing or unreadable, the installer may probe `docdexd --version` (short timeout) to report the detected daemon version in errors.
+
 ### Locate it (safe, cross-platform)
 
 Local install (project dependency):
@@ -114,4 +125,3 @@ This is usually a repo state issue, not an installer issue:
 - Installer error codes + remediation: `docs/ops/installer_error_codes.md`
 - Release manifest contract: `docs/contracts/release_manifest_schema_v1.md`
 - Installer error contract: `docs/contracts/installer_error_contract_v1.md`
-

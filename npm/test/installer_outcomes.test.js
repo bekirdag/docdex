@@ -41,6 +41,9 @@ async function writeInstallMetadata({
     schemaVersion: 1,
     installedAt: new Date().toISOString(),
     version,
+    expectedVersion: version,
+    installedVersion: version,
+    releaseTag: `v${version}`,
     repoSlug,
     platformKey,
     targetTriple,
@@ -50,6 +53,7 @@ async function writeInstallMetadata({
     },
     archive: {
       name: null,
+      tag: `v${version}`,
       sha256: null,
       source: null,
       downloadUrl: null
@@ -194,6 +198,10 @@ test("installer outcome: update installs when version differs and writes fresh m
   assert.ok(fs.existsSync(metadataPath));
   const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
   assert.equal(meta.version, expectedVersion);
+  assert.equal(meta.expectedVersion, expectedVersion);
+  assert.equal(meta.installedVersion, expectedVersion);
+  assert.equal(meta.releaseTag, `v${expectedVersion}`);
+  assert.equal(meta.archive?.tag, `v${expectedVersion}`);
   assert.equal(meta.platformKey, platformKey);
   assert.equal(typeof meta.binary?.sha256, "string");
   assert.equal(meta.binary.sha256.length, 64);

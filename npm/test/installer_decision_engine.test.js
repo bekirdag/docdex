@@ -32,12 +32,22 @@ function validInstallMetadata({ platformKey, version, binarySha256 }) {
     schemaVersion: 1,
     installedAt: "2025-01-01T00:00:00.000Z",
     version,
+    expectedVersion: version,
+    installedVersion: version,
+    releaseTag: `v${version}`,
     repoSlug: "owner/repo",
     platformKey,
     targetTriple: "x86_64-unknown-linux-gnu",
     binary: {
       filename: "docdexd",
       sha256: binarySha256
+    },
+    archive: {
+      name: "docdexd-linux-x64-gnu.tar.gz",
+      tag: `v${version}`,
+      sha256: "b".repeat(64),
+      source: "fallback",
+      downloadUrl: `https://example.test/v${version}/docdexd-linux-x64-gnu.tar.gz`
     }
   };
 }

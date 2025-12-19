@@ -138,6 +138,8 @@ struct RepoRegistryEntry {
 struct RepoStateMetaV1 {
     version: u32,
     fingerprint_sha256: String,
+    #[serde(default = "default_fingerprint_version")]
+    fingerprint_version: u32,
     canonical_path: String,
     #[serde(default)]
     created_at_epoch_ms: i64,
@@ -147,8 +149,13 @@ struct RepoStateMetaV1 {
 
 const REPO_REGISTRY_VERSION: u32 = 1;
 const REPO_META_VERSION: u32 = 1;
+const FINGERPRINT_VERSION: u32 = 1;
 const REPO_REGISTRY_FILENAME: &str = "repo_registry.json";
 const REPO_META_FILENAME: &str = "repo_meta.json";
+
+fn default_fingerprint_version() -> u32 {
+    FINGERPRINT_VERSION
+}
 
 pub fn legacy_repo_id_for_root(repo_root: &Path) -> String {
     let normalized = normalize_path(repo_root);
@@ -765,6 +772,7 @@ fn write_repo_meta(
     let payload = RepoStateMetaV1 {
         version: REPO_META_VERSION,
         fingerprint_sha256: fingerprint.to_string(),
+        fingerprint_version: FINGERPRINT_VERSION,
         canonical_path: canonical_path.to_string(),
         created_at_epoch_ms: created_at,
         last_seen_at_epoch_ms: now_ms,
@@ -851,7 +859,8 @@ fn file_identity_payload(path: &Path) -> Result<String> {
     {
         use std::os::unix::fs::MetadataExt;
         return Ok(format!(
-            "v1|unix|dev={}|ino={}|is_dir={}",
+            "v{}|unix|dev={}|ino={}|is_dir={}",
+            FINGERPRINT_VERSION,
             meta.dev(),
             meta.ino(),
             meta.is_dir()
@@ -864,7 +873,8 @@ fn file_identity_payload(path: &Path) -> Result<String> {
         let vsn = meta.volume_serial_number().unwrap_or(0);
         let file_index = meta.file_index().unwrap_or(0);
         return Ok(format!(
-            "v1|windows|volume_serial_number={vsn}|file_index={file_index}|is_dir={}",
+            "v{}|windows|volume_serial_number={vsn}|file_index={file_index}|is_dir={}",
+            FINGERPRINT_VERSION,
             meta.is_dir()
         ));
     }
@@ -872,7 +882,7 @@ fn file_identity_payload(path: &Path) -> Result<String> {
     #[cfg(not(any(unix, windows)))]
     {
         let normalized = normalize_path(path);
-        Ok(format!("v1|path|{}", normalized))
+        Ok(format!("v{}|path|{}", FINGERPRINT_VERSION, normalized))
     }
 }
 
@@ -885,6 +895,32 @@ mod tests {
         fs::create_dir_all(dir)?;
         fs::create_dir_all(dir.join(".git"))?;
         fs::write(dir.join("readme.md"), "# Repo\n")?;
+        Ok(())
+    }
+
+    #[test]
+    fn fingerprint_deterministic_for_same_repo() -> Result<()> {
+        let base = TempDir::new()?;
+        let repo = base.path().join("repo");
+        create_git_repo(&repo)?;
+
+        let first = repo_fingerprint_sha256(&repo)?;
+        let second = repo_fingerprint_sha256(&repo)?;
+        assert_eq!(first, second);
+        Ok(())
+    }
+
+    #[test]
+    fn fingerprint_differs_for_distinct_repos() -> Result<()> {
+        let base = TempDir::new()?;
+        let repo_a = base.path().join("repo-a");
+        let repo_b = base.path().join("repo-b");
+        create_git_repo(&repo_a)?;
+        create_git_repo(&repo_b)?;
+
+        let fp_a = repo_fingerprint_sha256(&repo_a)?;
+        let fp_b = repo_fingerprint_sha256(&repo_b)?;
+        assert_ne!(fp_a, fp_b);
         Ok(())
     }
 
@@ -1083,6 +1119,25 @@ mod tests {
             assert!(mapping_obj.contains_key(key), "missing mapping key: {key}");
         }
         assert!(mapping_obj.contains_key("lastSeenAtEpochMs"));
+        Ok(())
+    }
+
+    #[test]
+    fn repo_meta_includes_fingerprint_version() -> Result<()> {
+        let base = TempDir::new()?;
+        let shared = base.path().join("state");
+        fs::create_dir_all(shared.join("repos"))?;
+
+        let repo_root = base.path().join("repo-a");
+        create_git_repo(&repo_root)?;
+        let resolution = resolve_shared_state_key(&repo_root, &shared)?;
+        let state_key = resolution.state_key.clone();
+        let state_index = shared_repo_root_dir(&shared, &state_key).join("index");
+        fs::create_dir_all(&state_index)?;
+
+        record_repo_opened(&repo_root, &state_index)?;
+        let meta = read_repo_meta(&shared, &state_key).expect("repo meta");
+        assert_eq!(meta.fingerprint_version, FINGERPRINT_VERSION);
         Ok(())
     }
 }

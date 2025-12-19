@@ -9,7 +9,11 @@ pub struct RepoArgs {
     #[arg(
         long,
         env = "DOCDEX_STATE_DIR",
+<<<<<<< HEAD
         help = "Override state base directory (default: ~/.docdex/state, per-repo under repos/<fingerprint>/index). Relative paths or absolute paths inside the repo keep legacy in-repo layout; absolute paths outside the repo are treated as shared bases and scoped under <state-dir>/repos/<repo_id>/index."
+=======
+        help = "Override Docdex state root (default: ~/.docdex/state). State is always scoped under <state-root>/repos/<fingerprint>/index to prevent cross-repo mixing. Relative paths are resolved under the repo root."
+>>>>>>> mcoda/task/ops-01-us-03-t02
     )]
     pub state_dir: Option<PathBuf>,
     #[arg(

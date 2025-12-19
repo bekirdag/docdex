@@ -162,6 +162,7 @@ pub struct LibsIndexer {
 
 impl LibsIndexer {
     pub fn open_or_create(libs_state_dir: PathBuf) -> Result<Self> {
+<<<<<<< HEAD
         if let Ok(paths) = StatePaths::new() {
             paths
                 .assert_repo_scoped_cache_dir("libs", &libs_state_dir)
@@ -173,6 +174,9 @@ impl LibsIndexer {
                 })?;
         }
         crate::index::ensure_state_dir_secure(&libs_state_dir)?;
+=======
+        crate::state_layout::ensure_state_dir_secure(&libs_state_dir)?;
+>>>>>>> mcoda/task/ops-01-us-03-t02
         let (schema, fields) = build_schema();
         let index = Index::open_or_create(
             tantivy::directory::MmapDirectory::open(&libs_state_dir)?,

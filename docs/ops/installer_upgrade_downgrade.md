@@ -351,7 +351,11 @@ Risk notes:
 
 This is usually a repo state issue, not an installer issue:
 - Rebuild the index: `docdexd index --repo <path>`
+<<<<<<< HEAD
 - If you intentionally want a clean state, delete only the repo’s index directory under `~/.docdex/state/repos/<fingerprint>/index` (see `docdexd repo inspect --repo <path>` for the resolved path). This forces a full reindex next run.
+=======
+- If you intentionally want a clean state, delete only the repo’s index directory under the state root (see `docdexd repo inspect --repo <path>` for `indexDir`, typically `~/.docdex/state/repos/<fingerprint>/index`). This forces a full reindex next run.
+>>>>>>> mcoda/task/ops-01-us-03-t02
 
 ## See also
 

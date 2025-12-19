@@ -20,12 +20,13 @@ struct McpHarness {
 }
 
 impl McpHarness {
-    fn spawn(repo: &Path) -> Result<Self, Box<dyn Error>> {
-        Self::spawn_with_env(repo, &[])
+    fn spawn(repo: &Path, state_root: &Path) -> Result<Self, Box<dyn Error>> {
+        Self::spawn_with_env(repo, state_root, &[])
     }
 
     fn spawn_with_env(
         repo: &Path,
+        state_root: &Path,
         envs: &[(&str, &str)],
     ) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo.to_string_lossy().to_string();
@@ -39,6 +40,7 @@ impl McpHarness {
             "--max-results",
             "4",
         ]);
+        cmd.env("DOCDEX_STATE_DIR", state_root);
         for (key, value) in envs {
             cmd.env(key, value);
         }
@@ -95,12 +97,15 @@ fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
     Ok(temp)
 }
 
-fn run_docdex<I, S>(args: I) -> Result<std::process::Output, Box<dyn Error>>
+fn run_docdex<I, S>(state_root: &Path, args: I) -> Result<std::process::Output, Box<dyn Error>>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    Ok(Command::new(docdex_bin()).args(args).output()?)
+    Ok(Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root)
+        .args(args)
+        .output()?)
 }
 
 fn send_line(
@@ -153,11 +158,13 @@ fn mcp_error_data_code(resp: &Value) -> Option<&str> {
 #[test]
 fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let mut mcp = McpHarness::spawn_with_env(
         repo.path(),
+        state_root.path(),
         &[
             // 1 request/sec refill + burst=1 lets us deterministically rate-limit
             // multiple tools within a short test window.
@@ -298,9 +305,15 @@ fn pick_free_port() -> Option<u16> {
     }
 }
 
-fn spawn_server(repo_root: &Path, host: &str, port: u16) -> Result<Child, Box<dyn Error>> {
+fn spawn_server(
+    state_root: &Path,
+    repo_root: &Path,
+    host: &str,
+    port: u16,
+) -> Result<Child, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     Ok(Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root)
         .args([
             "serve",
             "--repo",
@@ -334,14 +347,15 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
 #[test]
 fn mcp_error_codes_match_http_invalid_query() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = spawn_server(repo.path(), host, port)?;
+    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
     wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
@@ -360,7 +374,7 @@ fn mcp_error_codes_match_http_invalid_query() -> Result<(), Box<dyn Error>> {
         "HTTP invalid query should return machine code invalid_query"
     );
 
-    let mut mcp = McpHarness::spawn(repo.path())?;
+    let mut mcp = McpHarness::spawn(repo.path(), state_root.path())?;
     send_line(
         &mut mcp.stdin,
         json!({
@@ -387,7 +401,8 @@ fn mcp_error_codes_match_http_invalid_query() -> Result<(), Box<dyn Error>> {
 #[test]
 fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    let mut mcp = McpHarness::spawn(repo.path())?;
+    let state_root = TempDir::new()?;
+    let mut mcp = McpHarness::spawn(repo.path(), state_root.path())?;
 
     send_line(
         &mut mcp.stdin,
@@ -478,7 +493,8 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
 #[test]
 fn mcp_missing_project_root_path_is_missing_repo_path() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    let mut mcp = McpHarness::spawn(repo.path())?;
+    let state_root = TempDir::new()?;
+    let mut mcp = McpHarness::spawn(repo.path(), state_root.path())?;
 
     let missing = repo.path().join("does-not-exist");
     send_line(
@@ -517,10 +533,11 @@ fn mcp_missing_project_root_path_is_missing_repo_path() -> Result<(), Box<dyn Er
 #[test]
 fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
-    let mut mcp = McpHarness::spawn(repo.path())?;
+    let mut mcp = McpHarness::spawn(repo.path(), state_root.path())?;
 
     // Clamp docdex_search to max-results (4).
     send_line(
@@ -665,15 +682,16 @@ fn mcp_search_clamps_after_parser_sanitization() -> Result<(), Box<dyn Error>> {
 #[test]
 fn cli_invalid_query_error_matches_machine_reason() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    let index_out = run_docdex(["index", "--repo", repo_str.as_str()])?;
+    let index_out = run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
     assert!(
         index_out.status.success(),
         "index should succeed: {}",
         String::from_utf8_lossy(&index_out.stderr)
     );
 
-    let query_out = run_docdex([
+    let query_out = run_docdex(state_root.path(), [
         "query",
         "--repo",
         repo_str.as_str(),

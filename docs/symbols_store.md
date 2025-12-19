@@ -29,18 +29,32 @@ When symbol extraction is disabled:
 
 The symbols store lives under Docdex’s **per-repo state root**:
 
+<<<<<<< HEAD
 - Default: `~/.docdex/state/repos/<fingerprint>`
 - Override base: `--state-dir <path>` / `DOCDEX_STATE_DIR` (relative paths or in-repo absolute paths keep legacy layout)
+=======
+- Default (`<repo-state-root>`): `~/.docdex/state/repos/<fingerprint>/`
+- Override: `--state-dir <state-root>` / `DOCDEX_STATE_DIR` (relative paths are resolved under `repo`; per-repo state root is `<state-root>/repos/<fingerprint>/`)
+- Inspect: `docdexd repo inspect --repo <path>` reports `repoStateRoot` and `indexDir`.
+>>>>>>> mcoda/task/ops-01-us-03-t02
 
 ### Symbols store path and layout
 
 When enabled, the symbols store root is:
 
+<<<<<<< HEAD
 `<repo_state_dir>/symbols.db/`
 
 Current on-disk layout:
 
 - `<repo_state_dir>/symbols.db/files/`
+=======
+`<repo-state-root>/symbols.db/`
+
+Current on-disk layout:
+
+- `<repo-state-root>/symbols.db/files/`
+>>>>>>> mcoda/task/ops-01-us-03-t02
   - One JSON file per repo-relative path: `<sha256(rel_path)>.json`
 
 Notes:
@@ -51,7 +65,11 @@ Notes:
 ### Lifecycle rules
 
 - Full reindex (`docdexd index`):
+<<<<<<< HEAD
   - Docdex attempts to delete `<repo_state_dir>/symbols.db/` and recreate `<repo_state_dir>/symbols.db/files/`.
+=======
+  - Docdex attempts to delete `<repo-state-root>/symbols.db/` and recreate `<repo-state-root>/symbols.db/files/`.
+>>>>>>> mcoda/task/ops-01-us-03-t02
   - If the reset fails, indexing continues; stale symbol records may remain on disk for paths that are no longer indexed.
 - Incremental ingest (`docdexd ingest` / watcher ingestion):
   - Docdex overwrites the per-file record for the ingested file.
@@ -115,7 +133,7 @@ Each stored record is a `docdex.symbols` JSON payload:
 
 ### `repo_id`
 
-`repo_id` is a SHA-256 hex digest derived from the repo root path after canonicalization and slash normalization.
+`repo_id` is the repo fingerprint (SHA-256 of the repo identity). It is derived from the `.git` directory when present, falling back to the repo root on non-git directories.
 
 Assumption/implication:
 

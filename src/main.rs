@@ -18,6 +18,7 @@ mod ollama;
 mod ratelimit;
 mod repo_identity;
 mod search;
+mod state_layout;
 mod symbols;
 mod state_paths;
 mod util;
@@ -38,7 +39,11 @@ use tracing::info;
     name = "docdexd",
     version,
     about = "Local documentation index/search daemon",
+<<<<<<< HEAD
     long_about = "Docdex indexes plain-text/markdown documentation under a workspace and serves top-k search/snippet results over HTTP or CLI. Defaults store data under ~/.docdex/state/repos/<fingerprint>/index and avoid common tool caches; override paths and exclusions with --state-dir/--exclude-* or matching env vars. Optional MCP server (`docdexd mcp`) exposes docdex_search/index/files/open/stats tools over stdio for MCP-aware clients; register it in your MCP client as server \"docdex\" with command: docdexd mcp --repo <repo> --log warn."
+=======
+    long_about = "Docdex indexes plain-text/markdown documentation under a workspace and serves top-k search/snippet results over HTTP or CLI. Defaults store data under ~/.docdex/state/repos/<fingerprint>/index; override the global state root and exclusions with --state-dir/--exclude-* or matching env vars. Optional MCP server (`docdexd mcp`) exposes docdex_search/index/files/open/stats tools over stdio for MCP-aware clients; register it in your MCP client as server \"docdex\" with command: docdexd mcp --repo <repo> --log warn."
+>>>>>>> mcoda/task/ops-01-us-03-t02
 )]
 struct Cli {
     #[command(subcommand)]
@@ -213,7 +218,11 @@ enum Command {
         #[arg(
             long,
             env = "DOCDEX_AUDIT_LOG_PATH",
+<<<<<<< HEAD
             help = "Audit log path (JSON lines with hash chain; defaults to <repo_state_dir>/audit.log)"
+=======
+            help = "Audit log path (JSON lines with hash chain; defaults to <repo-state-root>/audit.log)"
+>>>>>>> mcoda/task/ops-01-us-03-t02
         )]
         audit_log_path: Option<PathBuf>,
         #[arg(
@@ -778,6 +787,7 @@ async fn run() -> Result<()> {
                 }
                 eprintln!("{line}");
             }
+<<<<<<< HEAD
             let _ =
                 audit::AuditLogger::new(index_config.repo_state_dir().join("audit.log"), 5_000_000, 5)
                     .map(|logger| {
@@ -792,6 +802,25 @@ async fn run() -> Result<()> {
                             Some("sensitive terms found"),
                         )
                     });
+=======
+            let _ = audit::AuditLogger::new(
+                index_config.repo_state_dir().join("audit.log"),
+                5_000_000,
+                5,
+            )
+            .map(|logger| {
+                logger.log(
+                    "self_check",
+                    "fail",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("sensitive terms found"),
+                )
+            });
+>>>>>>> mcoda/task/ops-01-us-03-t02
             return Err(anyhow!("sensitive terms detected in index"));
         }
         Command::Index { repo } => {
@@ -1016,7 +1045,11 @@ async fn run() -> Result<()> {
                 repo.symbols_enabled(),
             )?;
             util::init_logging("warn")?;
+<<<<<<< HEAD
             index::ensure_state_dir_secure(index_config.repo_state_dir())?;
+=======
+            state_layout::ensure_state_dir_secure(index_config.state_dir())?;
+>>>>>>> mcoda/task/ops-01-us-03-t02
 
             let timeout = std::time::Duration::from_millis(embedding_timeout_ms.max(1));
             let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);
@@ -1076,7 +1109,11 @@ async fn run() -> Result<()> {
                 repo.symbols_enabled(),
             )?;
             util::init_logging("warn")?;
+<<<<<<< HEAD
             index::ensure_state_dir_secure(index_config.repo_state_dir())?;
+=======
+            state_layout::ensure_state_dir_secure(index_config.state_dir())?;
+>>>>>>> mcoda/task/ops-01-us-03-t02
 
             let timeout = std::time::Duration::from_millis(embedding_timeout_ms.max(1));
             let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);

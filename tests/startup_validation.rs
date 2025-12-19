@@ -28,6 +28,39 @@ fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
     Ok(temp)
 }
 
+fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<Value, Box<dyn Error>> {
+    let repo_str = repo_root.to_string_lossy().to_string();
+    let state_root_str = state_root.to_string_lossy().to_string();
+    let output = Command::new(docdex_bin())
+        .args([
+            "repo",
+            "inspect",
+            "--repo",
+            repo_str.as_str(),
+            "--state-dir",
+            state_root_str.as_str(),
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "docdexd repo inspect exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+fn resolve_index_dir(state_root: &Path, repo_root: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let payload = inspect_repo_state(state_root, repo_root)?;
+    let resolved = payload
+        .get("resolvedIndexStateDir")
+        .and_then(|value| value.as_str())
+        .ok_or("missing resolvedIndexStateDir")?;
+    Ok(PathBuf::from(resolved))
+}
+
 fn pick_free_port() -> Option<u16> {
     match TcpListener::bind("127.0.0.1:0") {
         Ok(listener) => Some(listener.local_addr().ok()?.port()),
@@ -52,9 +85,14 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
     Err("docdexd healthz endpoint did not respond in time".into())
 }
 
-fn spawn_server_default_host(repo_root: &Path, port: u16) -> Result<Child, Box<dyn Error>> {
+fn spawn_server_default_host(
+    state_root: &Path,
+    repo_root: &Path,
+    port: u16,
+) -> Result<Child, Box<dyn Error>> {
     let repo_arg = repo_root.to_string_lossy().to_string();
     Ok(Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root)
         .args([
             "serve",
             "--repo",
@@ -92,13 +130,15 @@ impl Drop for ChildGuard {
 #[test]
 fn daemon_refuses_requests_until_state_validation_completes() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
 
-    let state_dir = repo.path().join(".docdex").join("index");
+    let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
     let repo_arg = repo.path().to_string_lossy().to_string();
     let child = Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root.path())
         .args([
             "serve",
             "--repo",
@@ -146,11 +186,12 @@ fn daemon_refuses_requests_until_state_validation_completes() -> Result<(), Box<
 #[test]
 fn daemon_defaults_to_loopback_binding() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
 
-    let child = spawn_server_default_host(repo.path(), port)?;
+    let child = spawn_server_default_host(state_root.path(), repo.path(), port)?;
     let guard = ChildGuard(child);
     wait_for_health("127.0.0.1", port)?;
 
@@ -175,8 +216,10 @@ fn daemon_defaults_to_loopback_binding() -> Result<(), Box<dyn Error>> {
 #[test]
 fn startup_failure_emits_single_error_envelope_for_auth() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_arg = repo.path().to_string_lossy().to_string();
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root.path())
         .args([
             "serve",
             "--repo",

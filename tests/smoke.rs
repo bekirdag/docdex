@@ -48,23 +48,22 @@ fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
     Ok(temp)
 }
 
-fn symbols_record_path(repo_root: &Path, rel_path: &str) -> PathBuf {
+fn symbols_record_path(repo_state_root: &Path, rel_path: &str) -> PathBuf {
     let key = hex::encode(Sha256::digest(rel_path.as_bytes()));
-    repo_root
-        .join(".docdex")
-        .join("index")
+    repo_state_root
         .join("symbols.db")
         .join("files")
         .join(format!("{key}.json"))
 }
 
-fn run_docdex<I, S>(args: I) -> Result<Vec<u8>, Box<dyn Error>>
+fn run_docdex<I, S>(state_root: &Path, args: I) -> Result<Vec<u8>, Box<dyn Error>>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
     let output = Command::new(docdex_bin())
         .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+        .env("DOCDEX_STATE_DIR", state_root)
         .args(args)
         .output()?;
     if !output.status.success() {
@@ -76,6 +75,49 @@ where
         .into());
     }
     Ok(output.stdout)
+}
+
+fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<Value, Box<dyn Error>> {
+    let repo_str = repo_root.to_string_lossy().to_string();
+    let state_root_str = state_root.to_string_lossy().to_string();
+    let output = Command::new(docdex_bin())
+        .args([
+            "repo",
+            "inspect",
+            "--repo",
+            repo_str.as_str(),
+            "--state-dir",
+            state_root_str.as_str(),
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "docdexd repo inspect exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+fn resolve_index_dir(state_root: &Path, repo_root: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let payload = inspect_repo_state(state_root, repo_root)?;
+    let resolved = payload
+        .get("resolvedIndexStateDir")
+        .and_then(|value| value.as_str())
+        .ok_or("missing resolvedIndexStateDir")?;
+    Ok(PathBuf::from(resolved))
+}
+
+fn resolve_repo_state_root(state_root: &Path, repo_root: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let payload = inspect_repo_state(state_root, repo_root)?;
+    let root = payload
+        .get("statePaths")
+        .and_then(|value| value.get("repoStateRoot"))
+        .and_then(|value| value.as_str())
+        .ok_or("missing statePaths.repoStateRoot")?;
+    Ok(PathBuf::from(root))
 }
 
 fn pick_free_port() -> Option<u16> {
@@ -105,11 +147,12 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
 #[test]
 fn cli_index_and_query_smoke() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
 
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
-    let stdout = run_docdex([
+    let stdout = run_docdex(state_root.path(), [
         "query",
         "--repo",
         repo_str.as_str(),
@@ -155,22 +198,20 @@ fn cli_index_and_query_smoke() -> Result<(), Box<dyn Error>> {
 #[test]
 fn index_writes_default_state_dir() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     let repo_str = repo_root.to_string_lossy().to_string();
 
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
+    let resolved_index = resolve_index_dir(state_root.path(), repo_root)?;
     assert!(
-        repo_root.join(".docdex").join("index").exists(),
-        "default .docdex/index should exist after indexing"
+        resolved_index.exists(),
+        "default state index dir should exist after indexing"
     );
     assert!(
-        !repo_root
-            .join(".gpt-creator")
-            .join("docdex")
-            .join("index")
-            .exists(),
-        "legacy .gpt-creator/docdex/index should not be created by default"
+        !repo_root.join(".docdex").exists(),
+        "repo-local .docdex should not be created when using global state root"
     );
     Ok(())
 }
@@ -178,11 +219,12 @@ fn index_writes_default_state_dir() -> Result<(), Box<dyn Error>> {
 #[test]
 fn index_honors_custom_state_dir() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     let repo_str = repo_root.to_string_lossy().to_string();
-    let custom_state = ".alt-docdex/index";
+    let custom_state = ".alt-docdex";
 
-    run_docdex([
+    run_docdex(state_root.path(), [
         "index",
         "--repo",
         repo_str.as_str(),
@@ -190,8 +232,10 @@ fn index_honors_custom_state_dir() -> Result<(), Box<dyn Error>> {
         custom_state,
     ])?;
 
+    let custom_base = repo_root.join(custom_state);
+    let resolved_index = resolve_index_dir(&custom_base, repo_root)?;
     assert!(
-        repo_root.join(custom_state).exists(),
+        resolved_index.exists(),
         "custom state dir should be created when provided"
     );
     assert!(
@@ -204,17 +248,15 @@ fn index_honors_custom_state_dir() -> Result<(), Box<dyn Error>> {
 #[test]
 fn symbols_disabled_does_not_create_symbols_store() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     let repo_str = repo_root.to_string_lossy().to_string();
 
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
+    let repo_state_root = resolve_repo_state_root(state_root.path(), repo_root)?;
     assert!(
-        !repo_root
-            .join(".docdex")
-            .join("index")
-            .join("symbols.db")
-            .exists(),
+        !repo_state_root.join("symbols.db").exists(),
         "symbols.db should not be created when symbol extraction is disabled"
     );
     Ok(())
@@ -223,18 +265,20 @@ fn symbols_disabled_does_not_create_symbols_store() -> Result<(), Box<dyn Error>
 #[test]
 fn symbols_enabled_creates_symbols_store_records() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     let repo_str = repo_root.to_string_lossy().to_string();
     let rel_path = "docs/overview.md";
 
-    run_docdex([
+    run_docdex(state_root.path(), [
         "index",
         "--repo",
         repo_str.as_str(),
         "--enable-symbol-extraction=true",
     ])?;
 
-    let record_path = symbols_record_path(repo_root, rel_path);
+    let repo_state_root = resolve_repo_state_root(state_root.path(), repo_root)?;
+    let record_path = symbols_record_path(&repo_state_root, rel_path);
     assert!(
         record_path.exists(),
         "expected symbols record to exist for {rel_path}"
@@ -268,6 +312,7 @@ fn symbols_enabled_creates_symbols_store_records() -> Result<(), Box<dyn Error>>
 #[test]
 fn exclude_dir_flag_skips_vendor_docs() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     let repo_str = repo_root.to_string_lossy().to_string();
     let vendor_dir = repo_root.join("vendor");
@@ -277,7 +322,7 @@ fn exclude_dir_flag_skips_vendor_docs() -> Result<(), Box<dyn Error>> {
         "# Vendor Doc\nSHOULD_BE_SKIPPED_VENDOR_TEST\n",
     )?;
 
-    run_docdex([
+    run_docdex(state_root.path(), [
         "index",
         "--repo",
         repo_str.as_str(),
@@ -285,7 +330,7 @@ fn exclude_dir_flag_skips_vendor_docs() -> Result<(), Box<dyn Error>> {
         "vendor",
     ])?;
 
-    let stdout = run_docdex([
+    let stdout = run_docdex(state_root.path(), [
         "query",
         "--repo",
         repo_str.as_str(),
@@ -310,9 +355,10 @@ fn exclude_dir_flag_skips_vendor_docs() -> Result<(), Box<dyn Error>> {
 #[test]
 fn exclude_prefix_on_ingest_skips_secret_file() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     let repo_str = repo_root.to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let secret_dir = repo_root.join("secret");
     fs::create_dir_all(&secret_dir)?;
@@ -320,7 +366,7 @@ fn exclude_prefix_on_ingest_skips_secret_file() -> Result<(), Box<dyn Error>> {
     let needle = "SHOULD_NOT_BE_INDEXED_SECRET_123";
     fs::write(&secret_file, format!("# Secret\n{needle}\n"))?;
 
-    run_docdex([
+    run_docdex(state_root.path(), [
         "ingest",
         "--repo",
         repo_str.as_str(),
@@ -330,7 +376,7 @@ fn exclude_prefix_on_ingest_skips_secret_file() -> Result<(), Box<dyn Error>> {
         secret_file.to_string_lossy().as_ref(),
     ])?;
 
-    let stdout = run_docdex([
+    let stdout = run_docdex(state_root.path(), [
         "query",
         "--repo",
         repo_str.as_str(),
@@ -352,11 +398,17 @@ fn exclude_prefix_on_ingest_skips_secret_file() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn spawn_server(repo_root: &Path, host: &str, port: u16) -> Result<Child, Box<dyn Error>> {
-    spawn_server_with_args(repo_root, host, port, &["--secure-mode=false"])
+fn spawn_server(
+    state_root: &Path,
+    repo_root: &Path,
+    host: &str,
+    port: u16,
+) -> Result<Child, Box<dyn Error>> {
+    spawn_server_with_args(state_root, repo_root, host, port, &["--secure-mode=false"])
 }
 
 fn spawn_server_with_args(
+    state_root: &Path,
     repo_root: &Path,
     host: &str,
     port: u16,
@@ -377,6 +429,7 @@ fn spawn_server_with_args(
     ];
     args.extend_from_slice(extra_args);
     let child = Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root)
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -386,25 +439,27 @@ fn spawn_server_with_args(
 }
 
 fn spawn_server_with_auth(
+    state_root: &Path,
     repo_root: &Path,
     host: &str,
     port: u16,
     token: &str,
 ) -> Result<Child, Box<dyn Error>> {
-    spawn_server_with_args(repo_root, host, port, &["--auth-token", token])
+    spawn_server_with_args(state_root, repo_root, host, port, &["--auth-token", token])
 }
 
 #[test]
 fn http_server_smoke() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut child = spawn_server(repo.path(), host, port)?;
+    let mut child = spawn_server(state_root.path(), repo.path(), host, port)?;
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/search");
     let payload: Value = client
@@ -464,15 +519,16 @@ fn http_server_smoke() -> Result<(), Box<dyn Error>> {
 #[test]
 fn http_search_validation_error_on_empty_or_invalid_query() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     let repo_str = repo_root.to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut child = spawn_server(repo_root, host, port)?;
+    let mut child = spawn_server(state_root.path(), repo_root, host, port)?;
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/search");
 
@@ -516,15 +572,16 @@ fn http_search_validation_error_on_empty_or_invalid_query() -> Result<(), Box<dy
 #[test]
 fn http_search_no_matches_returns_empty_hits_and_null_top_score() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     let repo_str = repo_root.to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut child = spawn_server(repo_root, host, port)?;
+    let mut child = spawn_server(state_root.path(), repo_root, host, port)?;
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/search");
 
@@ -556,15 +613,16 @@ fn http_search_no_matches_returns_empty_hits_and_null_top_score() -> Result<(), 
 #[test]
 fn http_server_requires_auth_when_configured() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
     let token = "secret-token";
-    let mut child = spawn_server_with_auth(repo.path(), host, port, token)?;
+    let mut child = spawn_server_with_auth(state_root.path(), repo.path(), host, port, token)?;
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/search");
 
@@ -603,14 +661,16 @@ fn http_server_requires_auth_when_configured() -> Result<(), Box<dyn Error>> {
 #[test]
 fn non_loopback_plain_http_requires_tls_or_opt_out() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     // Default behavior: fail fast when binding publicly without TLS/insecure.
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let failure = Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root.path())
         .args([
             "serve",
             "--repo",
@@ -663,6 +723,7 @@ fn non_loopback_plain_http_requires_tls_or_opt_out() -> Result<(), Box<dyn Error
         return Ok(());
     };
     let mut child = Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root.path())
         .args([
             "serve",
             "--repo",
@@ -688,8 +749,9 @@ fn non_loopback_plain_http_requires_tls_or_opt_out() -> Result<(), Box<dyn Error
 #[test]
 fn rate_limit_and_request_size_limits_apply() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let host = "127.0.0.1";
 
@@ -698,6 +760,7 @@ fn rate_limit_and_request_size_limits_apply() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
     let mut clamp_child = spawn_server_with_args(
+        state_root.path(),
         repo.path(),
         host,
         clamp_port,
@@ -748,6 +811,7 @@ fn rate_limit_and_request_size_limits_apply() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
     let mut rate_child = spawn_server_with_args(
+        state_root.path(),
         repo.path(),
         host,
         rate_port,
@@ -814,14 +878,15 @@ fn rate_limit_and_request_size_limits_apply() -> Result<(), Box<dyn Error>> {
 #[test]
 fn search_and_snippet_flags_reduce_payloads() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut child = spawn_server(repo.path(), host, port)?;
+    let mut child = spawn_server(state_root.path(), repo.path(), host, port)?;
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let search_url = format!("http://{host}:{port}/search");
 
@@ -908,19 +973,20 @@ fn search_and_snippet_flags_reduce_payloads() -> Result<(), Box<dyn Error>> {
 #[test]
 fn watcher_removes_deleted_docs() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     let repo_str = repo_root.to_string_lossy().to_string();
     let unique = "SHOULD_BE_REMOVED_UNIQUE_123";
     let doomed = repo_root.join("docs").join("temp.md");
     fs::write(&doomed, format!("# Temp\n{unique}\n"))?;
 
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut child = spawn_server(repo_root, host, port)?;
+    let mut child = spawn_server(state_root.path(), repo_root, host, port)?;
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let search_url = format!("http://{host}:{port}/search");
 
@@ -968,6 +1034,7 @@ fn watcher_removes_deleted_docs() -> Result<(), Box<dyn Error>> {
 #[test]
 fn snippet_html_is_sanitized_or_stripped() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     let repo_str = repo_root.to_string_lossy().to_string();
 
@@ -982,14 +1049,14 @@ This line contains malicious content: <script>alert("pwned")</script> plus a key
         "#,
     )?;
 
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     // Start server with default sanitized HTML.
     let host = "127.0.0.1";
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
-    let mut child = spawn_server(repo_root, host, port)?;
+    let mut child = spawn_server(state_root.path(), repo_root, host, port)?;
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let search_url = format!("http://{host}:{port}/search");
     let snippet_url_base = format!("http://{host}:{port}/snippet");
@@ -1031,6 +1098,7 @@ This line contains malicious content: <script>alert("pwned")</script> plus a key
         return Ok(());
     };
     let mut strip_child = spawn_server_with_args(
+        state_root.path(),
         repo_root,
         host,
         strip_port,
@@ -1064,14 +1132,18 @@ This line contains malicious content: <script>alert("pwned")</script> plus a key
 #[test]
 fn ai_help_requires_auth_when_configured() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    run_docdex(["index", "--repo", repo.path().to_string_lossy().as_ref()])?;
+    let state_root = TempDir::new()?;
+    run_docdex(
+        state_root.path(),
+        ["index", "--repo", repo.path().to_string_lossy().as_ref()],
+    )?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
     let token = "secret-token";
-    let mut child = spawn_server_with_auth(repo.path(), host, port, token)?;
+    let mut child = spawn_server_with_auth(state_root.path(), repo.path(), host, port, token)?;
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/ai-help");
 
@@ -1116,12 +1188,13 @@ fn help_all_command_outputs_subcommands() -> Result<(), Box<dyn Error>> {
 #[test]
 fn state_dir_has_strict_permissions() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     let repo_str = repo_root.to_string_lossy().to_string();
 
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
-    let state_dir = repo_root.join(".docdex").join("index");
+    let state_dir = resolve_index_dir(state_root.path(), repo_root)?;
     let metadata = fs::metadata(&state_dir)?;
     let mode = metadata.permissions().mode() & 0o777;
     assert_eq!(
@@ -1135,15 +1208,17 @@ fn state_dir_has_strict_permissions() -> Result<(), Box<dyn Error>> {
 #[test]
 fn self_check_reports_sensitive_terms() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     let repo_str = repo_root.to_string_lossy().to_string();
 
     // Insert a sensitive term.
     fs::write(repo_root.join("leak.md"), "company SECRET_TOKEN leak")?;
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     // Self-check should fail when sensitive term is present.
     let failure = Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root.path())
         .args([
             "self-check",
             "--repo",
@@ -1164,6 +1239,7 @@ fn self_check_reports_sensitive_terms() -> Result<(), Box<dyn Error>> {
 
     // Self-check passes when term is absent.
     let success = Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root.path())
         .args([
             "self-check",
             "--repo",

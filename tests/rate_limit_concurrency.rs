@@ -38,12 +38,15 @@ fn setup_repo() -> Result<TempDir, BoxError> {
     Ok(temp)
 }
 
-fn run_docdex<I, S>(args: I) -> Result<std::process::Output, BoxError>
+fn run_docdex<I, S>(state_root: &Path, args: I) -> Result<std::process::Output, BoxError>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    Ok(Command::new(docdex_bin()).args(args).output()?)
+    Ok(Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root)
+        .args(args)
+        .output()?)
 }
 
 fn pick_free_port() -> Option<u16> {
@@ -58,6 +61,7 @@ fn pick_free_port() -> Option<u16> {
 }
 
 fn spawn_server_with_args(
+    state_root: &Path,
     repo: &Path,
     host: &str,
     port: u16,
@@ -76,6 +80,7 @@ fn spawn_server_with_args(
         "--log",
         "warn",
     ]);
+    cmd.env("DOCDEX_STATE_DIR", state_root);
     cmd.args(extra_args);
     Ok(cmd
         .stdin(Stdio::null())
@@ -170,14 +175,16 @@ fn assert_http_rate_limit_payload(body: &Value) -> Result<HashSet<String>, BoxEr
 #[test]
 fn http_rate_limit_signaling_is_stable_under_concurrency() -> Result<(), BoxError> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
     let mut child = spawn_server_with_args(
+        state_root.path(),
         repo.path(),
         host,
         port,

@@ -81,6 +81,8 @@ pub struct RepoInspectReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_paths: Option<crate::state_layout::StatePathsDebug>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mapping: Option<RepoInspectMapping>,
     pub status: RepoInspectStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -206,22 +208,23 @@ pub fn inspect_repo(repo_root: &Path, state_dir_override: Option<&Path>) -> Resu
     let normalized_path = normalize_path(&repo_root);
     let computed_fingerprint = repo_fingerprint_sha256(&repo_root).ok();
 
-    let resolved = resolve_state_dir_for_inspect(&repo_root, state_dir_override);
+    let resolved = crate::state_layout::resolve_state_paths_for_inspect(
+        &repo_root,
+        state_dir_override.map(|path| path.to_path_buf()),
+    )?;
     let mut report = RepoInspectReport {
         repo_root: repo_root_str,
         normalized_path,
         computed_fingerprint: computed_fingerprint.clone(),
-        resolved_index_state_dir: resolved.resolved_index_dir.display().to_string(),
-        shared_state_base_dir: resolved.shared_base_dir.as_ref().map(|p| p.display().to_string()),
-        state_key: resolved.state_key.clone(),
+        resolved_index_state_dir: resolved.index_dir().display().to_string(),
+        shared_state_base_dir: Some(resolved.layout().base_dir().display().to_string()),
+        state_key: Some(resolved.state_key().to_string()),
+        state_paths: Some(resolved.debug_report()),
         mapping: None,
-        status: RepoInspectStatus::LocalStateDir,
+        status: RepoInspectStatus::Unmapped,
         diagnostics: None,
     };
-
-    let Some(shared_base_dir) = resolved.shared_base_dir else {
-        return Ok(report);
-    };
+    let shared_base_dir = resolved.layout().base_dir().to_path_buf();
 
     let Some(fingerprint) = computed_fingerprint else {
         report.status = RepoInspectStatus::Unmapped;
@@ -306,6 +309,21 @@ pub fn inspect_repo(repo_root: &Path, state_dir_override: Option<&Path>) -> Resu
 }
 
 pub fn resolve_shared_state_key(repo_root: &Path, shared_base_dir: &Path) -> Result<RepoStateKeyResolution> {
+    resolve_shared_state_key_internal(repo_root, shared_base_dir, true)
+}
+
+pub(crate) fn resolve_shared_state_key_lenient(
+    repo_root: &Path,
+    shared_base_dir: &Path,
+) -> Result<RepoStateKeyResolution> {
+    resolve_shared_state_key_internal(repo_root, shared_base_dir, false)
+}
+
+fn resolve_shared_state_key_internal(
+    repo_root: &Path,
+    shared_base_dir: &Path,
+    validate_meta: bool,
+) -> Result<RepoStateKeyResolution> {
     let fingerprint = repo_fingerprint_sha256(repo_root)?;
     let registry_path = repo_registry_path(shared_base_dir);
     let registry = load_registry(&registry_path)?;
@@ -330,12 +348,12 @@ pub fn resolve_shared_state_key(repo_root: &Path, shared_base_dir: &Path) -> Res
         }
     }
 
-    // Fast-fail on explicit mismatches when metadata exists.
-    validate_state_meta(shared_base_dir, &state_key, &fingerprint)?;
+    if validate_meta {
+        // Fast-fail on explicit mismatches when metadata exists.
+        validate_state_meta(shared_base_dir, &state_key, &fingerprint)?;
+    }
 
-    Ok(RepoStateKeyResolution {
-        state_key,
-    })
+    Ok(RepoStateKeyResolution { state_key })
 }
 
 pub fn resolve_shared_index_state_dir(repo_root: &Path, custom_state_dir: &Path) -> Result<PathBuf> {
@@ -589,6 +607,7 @@ fn normalize_path(path: &Path) -> String {
         .replace('\\', "/")
 }
 
+<<<<<<< HEAD
 struct InspectStateDirResolution {
     resolved_index_dir: PathBuf,
     shared_base_dir: Option<PathBuf>,
@@ -695,6 +714,8 @@ fn resolve_state_dir_for_inspect(repo_root: &Path, state_dir_override: Option<&P
     }
 }
 
+=======
+>>>>>>> mcoda/task/ops-01-us-03-t02
 fn read_repo_meta(shared_base_dir: &Path, state_key: &str) -> Option<RepoStateMetaV1> {
     let path = repo_meta_path(shared_base_dir, state_key);
     let raw = fs::read_to_string(&path).ok()?;

@@ -16,9 +16,10 @@ use tantivy::{
 };
 use thiserror::Error;
 use tracing::warn;
-use crate::error::{
-    repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
-    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+use crate::error::{AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX};
+use crate::state_layout::{
+    ensure_state_dir_secure, missing_repo_path_error, repo_state_mismatch_error, resolve_state_paths,
+    StatePaths,
 };
 use crate::state_paths::{default_state_base_dir, RepoStatePaths, StatePaths};
 use crate::symbols;
@@ -161,8 +162,12 @@ const FALLBACK_PREVIEW_LINES: usize = 60;
 
 #[derive(Clone)]
 pub struct IndexConfig {
+<<<<<<< HEAD
     state_dir: PathBuf,
     repo_state_dir: PathBuf,
+=======
+    state_paths: StatePaths,
+>>>>>>> mcoda/task/ops-01-us-03-t02
     excluded_dir_names: Vec<String>,
     excluded_relative_prefixes: Vec<String>,
     symbols_enabled: bool,
@@ -289,9 +294,13 @@ impl IndexConfig {
         symbols_enabled: bool,
     ) -> Result<Self> {
         let state_paths = resolve_state_paths(repo_root, state_dir)?;
+<<<<<<< HEAD
         state_paths.log_if_unexpected();
         let state_dir = state_paths.index_dir().to_path_buf();
         let repo_state_dir = state_paths.repo_state_dir().to_path_buf();
+=======
+        state_paths.ensure_dirs()?;
+>>>>>>> mcoda/task/ops-01-us-03-t02
         let mut excluded_dir_names: Vec<String> = DEFAULT_EXCLUDED_DIR_NAMES
             .iter()
             .map(|value| value.to_string())
@@ -318,15 +327,25 @@ impl IndexConfig {
                 excluded_relative_prefixes.push(normalized);
             }
         }
-        if let Ok(rel_state) = state_dir.strip_prefix(repo_root) {
+        if let Ok(rel_state) = state_paths.index_dir().strip_prefix(repo_root) {
+            let normalized = normalize_prefix(rel_state.to_string_lossy().as_ref());
+            if !normalized.is_empty() && !excluded_relative_prefixes.contains(&normalized) {
+                excluded_relative_prefixes.push(normalized);
+            }
+        }
+        if let Ok(rel_state) = state_paths.repo_root().strip_prefix(repo_root) {
             let normalized = normalize_prefix(rel_state.to_string_lossy().as_ref());
             if !normalized.is_empty() && !excluded_relative_prefixes.contains(&normalized) {
                 excluded_relative_prefixes.push(normalized);
             }
         }
         Ok(Self {
+<<<<<<< HEAD
             state_dir,
             repo_state_dir,
+=======
+            state_paths,
+>>>>>>> mcoda/task/ops-01-us-03-t02
             excluded_dir_names,
             excluded_relative_prefixes,
             symbols_enabled,
@@ -334,7 +353,15 @@ impl IndexConfig {
     }
 
     pub fn state_dir(&self) -> &Path {
-        &self.state_dir
+        self.state_paths.index_dir()
+    }
+
+    pub fn repo_state_dir(&self) -> &Path {
+        self.state_paths.repo_root()
+    }
+
+    pub fn state_paths(&self) -> &StatePaths {
+        &self.state_paths
     }
 
     pub fn repo_state_dir(&self) -> &Path {
@@ -1313,10 +1340,11 @@ mod file_decision_tests {
     #[test]
     fn decide_file_picks_longest_excluded_prefix() {
         let repo = TempDir::new().expect("temp repo");
+        let state_root = TempDir::new().expect("temp state");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
         let config = IndexConfig::with_overrides(
             &repo_root,
-            None,
+            Some(state_root.path().to_path_buf()),
             Vec::new(),
             vec!["docs/".into(), "docs/private/".into()],
             false,
@@ -1339,10 +1367,15 @@ mod file_decision_tests {
     #[test]
     fn decide_file_excludes_state_dir_before_prefix_rules() {
         let repo = TempDir::new().expect("temp repo");
+        let state_root = TempDir::new().expect("temp state");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
         let config = IndexConfig::with_overrides(
             &repo_root,
+<<<<<<< HEAD
             Some(PathBuf::from(".docdex/index")),
+=======
+            Some(state_root.path().to_path_buf()),
+>>>>>>> mcoda/task/ops-01-us-03-t02
             Vec::new(),
             Vec::new(),
             false,
@@ -1360,9 +1393,16 @@ mod file_decision_tests {
     #[test]
     fn decide_file_excludes_default_vendor_dir() {
         let repo = TempDir::new().expect("temp repo");
+        let state_root = TempDir::new().expect("temp state");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config =
-            IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false).expect("config");
+        let config = IndexConfig::with_overrides(
+            &repo_root,
+            Some(state_root.path().to_path_buf()),
+            Vec::new(),
+            Vec::new(),
+            false,
+        )
+        .expect("config");
         let file = repo_root.join("vendor/doc.md");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
         fs::write(&file, "# vendor\n").expect("write file");
@@ -1380,9 +1420,16 @@ mod file_decision_tests {
     #[test]
     fn decide_file_excludes_outside_repo() {
         let repo = TempDir::new().expect("temp repo");
+        let state_root = TempDir::new().expect("temp state");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config =
-            IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false).expect("config");
+        let config = IndexConfig::with_overrides(
+            &repo_root,
+            Some(state_root.path().to_path_buf()),
+            Vec::new(),
+            Vec::new(),
+            false,
+        )
+        .expect("config");
 
         let other = TempDir::new().expect("other repo");
         let outside = other.path().join("note.md");
@@ -1396,9 +1443,16 @@ mod file_decision_tests {
     #[test]
     fn decide_file_includes_supported_extensions() {
         let repo = TempDir::new().expect("temp repo");
+        let state_root = TempDir::new().expect("temp state");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config =
-            IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false).expect("config");
+        let config = IndexConfig::with_overrides(
+            &repo_root,
+            Some(state_root.path().to_path_buf()),
+            Vec::new(),
+            Vec::new(),
+            false,
+        )
+        .expect("config");
         let file = repo_root.join("docs/notes.txt");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
         fs::write(&file, "hello\n").expect("write file");
@@ -1414,6 +1468,7 @@ mod file_decision_tests {
     }
 }
 
+<<<<<<< HEAD
 #[cfg(test)]
 mod state_path_tests {
     use super::*;
@@ -1619,6 +1674,8 @@ fn resolve_shared_index_dir(repo_root: &Path, custom_state_dir: &Path) -> Result
     }
 }
 
+=======
+>>>>>>> mcoda/task/ops-01-us-03-t02
 fn normalize_prefix(input: &str) -> String {
     let mut cleaned = input
         .replace('\\', "/")

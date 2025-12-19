@@ -75,7 +75,11 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 
 ## TL;DR for agents
 - Use Docdex for repo docs: run `docdexd index --repo .` once, then either `docdexd serve --repo . --host 127.0.0.1 --port 46137` for HTTP, or `docdexd mcp --repo . --log warn` for MCP.
+<<<<<<< HEAD
 - If you opt into in-repo state dirs (e.g., `--state-dir .docdex/index`), add `.docdex/` to `.gitignore` so indexes aren't committed.
+=======
+- State lives under `~/.docdex/state` by default; if you override `--state-dir` into the repo, add that directory to `.gitignore`.
+>>>>>>> mcoda/task/ops-01-us-03-t02
 - When MCP-aware, register a server named `docdex` that runs `docdexd mcp --repo . --log warn --max-results 8`, then call `docdex_search` before coding and `docdex_index` when stale.
 - Prefer summary-first (snippets=false), fetch specific snippets only when needed, keep queries short, and respect token estimates.
 
@@ -85,7 +89,11 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - Secure serving: add `--auth-token <token>` (required by default); use TLS with `--tls-cert/--tls-key` or `--certbot-domain <domain>`.
 - Single-file ingest: `docdexd ingest --repo <path> --file docs/new.md` (honors excludes).
 - Query via CLI: `docdexd query --repo <path> --query "term" --limit 4` (add `--repo-only` to ignore libs index hits).
+<<<<<<< HEAD
 - Git hygiene: if you use an in-repo `--state-dir`, add `.docdex/` (and especially `.docdex/index/`) to your repo's `.gitignore` so index artifacts never get committed.
+=======
+- Git hygiene: default state is global (`~/.docdex/state`), so nothing in-repo is created unless you override `--state-dir`; add any repo-local override dir to `.gitignore`.
+>>>>>>> mcoda/task/ops-01-us-03-t02
 - Health check: `curl http://127.0.0.1:46137/healthz`.
 - Summary-only search responses: `curl "http://127.0.0.1:46137/search?q=foo&snippets=false"`; fetch snippets only for top hits.
 - Repo-only HTTP search (ignore libs index hits): `curl "http://127.0.0.1:46137/search?q=foo&include_libs=false"`.
@@ -105,6 +113,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - If you build from source, the version comes from `Cargo.toml` in this repo; the npm wrapper uses the matching version to fetch binaries.
 
 ## Paths and defaults
+<<<<<<< HEAD
 - State/index directory: `~/.docdex/state/repos/<fingerprint>/index` (override base with `--state-dir`; relative or in-repo paths keep the legacy in-repo layout). The directory is created with `0700` permissions by default.
 - HTTP API: defaults to `127.0.0.1:46137` when serving.
 - Docdex data and logs stay local under `~/.docdex/state` (or a custom state dir); no external services.
@@ -112,6 +121,16 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 ## Configuration knobs
 - `--repo <path>`: workspace root to index (defaults to `.`).
 - `--state-dir <path>` / `DOCDEX_STATE_DIR`: override the state base directory (default `~/.docdex/state`). Relative paths or absolute paths inside the repo keep legacy in-repo layout; absolute paths outside the repo are treated as shared bases and scoped under `repos/<fingerprint>/index`. When using a shared base, repo moves/renames require an explicit `docdexd repo reassociate` step before Docdex will reuse the existing state.
+=======
+- State root: `~/.docdex/state` (created with `0700` permissions by default).
+- Per-repo state root (`<repo-state-root>`): `~/.docdex/state/repos/<fingerprint>/` (index at `.../index`).
+- HTTP API: defaults to `127.0.0.1:46137` when serving.
+- Docdex data and logs stay on the local machine under the state root; no external services.
+
+## Configuration knobs
+- `--repo <path>`: workspace root to index (defaults to `.`).
+- `--state-dir <path>` / `DOCDEX_STATE_DIR`: override the state root (default: `~/.docdex/state`). Relative paths are resolved under `repo`. Per-repo state lives under `<state-root>/repos/<fingerprint>/`; moves/renames with a shared state root (default) may require `docdexd repo reassociate` to reuse existing state.
+>>>>>>> mcoda/task/ops-01-us-03-t02
 - `--exclude-prefix a,b,c` / `DOCDEX_EXCLUDE_PREFIXES`: extra relative prefixes to skip.
 - `--exclude-dir a,b,c` / `DOCDEX_EXCLUDE_DIRS`: extra directory names to skip anywhere in the tree.
 - `DOCDEX_ENABLE_SYMBOL_EXTRACTION`: enable optional per-file symbol extraction during indexing; see `docs/symbols_store.md`.
@@ -128,7 +147,11 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - `--max-request-bytes <n>` / `DOCDEX_MAX_REQUEST_BYTES`: reject requests whose Content-Length or size hint exceeds `n` bytes (default: 16384).
 - `--rate-limit-per-min <n>` / `DOCDEX_RATE_LIMIT_PER_MIN`: per-IP request budget per minute (default 60 in secure mode when unset/0; 0 disables when secure mode is off).
 - `--rate-limit-burst <n>` / `DOCDEX_RATE_LIMIT_BURST`: optional burst capacity for the rate limiter (defaults to per-minute limit when 0).
+<<<<<<< HEAD
 - `--audit-log-path <path>` / `DOCDEX_AUDIT_LOG_PATH`: write audit log JSONL to this path (default: `<repo_state_dir>/audit.log`).
+=======
+- `--audit-log-path <path>` / `DOCDEX_AUDIT_LOG_PATH`: write audit log JSONL to this path (default: `<repo-state-root>/audit.log`).
+>>>>>>> mcoda/task/ops-01-us-03-t02
 - `--audit-max-bytes <n>` / `DOCDEX_AUDIT_MAX_BYTES`: rotate audit log after this many bytes (default: 5_000_000).
 - `--audit-max-files <n>` / `DOCDEX_AUDIT_MAX_FILES`: keep at most this many rotated audit files (default: 5).
 - `--audit-disable` / `DOCDEX_AUDIT_DISABLE=true`: disable audit logging entirely.
@@ -223,7 +246,11 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 
 Docdex is safety-first: it will not silently “cross-associate” an existing on-disk state directory with a different repo path when doing so could mix data between repos.
 
+<<<<<<< HEAD
 The default state dir is shared under `~/.docdex/state/repos/<fingerprint>/index`, so moves/renames typically keep working when the repo fingerprint stays stable. If you opt into an in-repo `--state-dir`, moves/renames require moving that directory with the repo. The stricter “explicit re-association” flow below applies when you use an absolute shared `--state-dir` outside the repo root.
+=======
+If you override `--state-dir` to a repo-local path, moves/renames typically require only moving that directory with the repo. The stricter “explicit re-association” flow below applies when you use the default shared state root (`~/.docdex/state`) or any absolute shared `--state-dir` outside the repo root.
+>>>>>>> mcoda/task/ops-01-us-03-t02
 
 Deterministic failures and what they mean:
 

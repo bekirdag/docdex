@@ -71,7 +71,7 @@ Use these codes for invalid inputs:
 - `invalid_query`: invalid query text (empty/whitespace-only, or query parser rejects it).
 - `invalid_path`: invalid or unsafe path (absolute path, parent traversal, outside repo, etc).
 - `invalid_range`: invalid line window (`start_line`/`end_line` out of bounds).
-- `max_content_exceeded`: response content would exceed server limits (e.g. `docdex_open` file too large).
+- `max_content_exceeded`: reserved for cases where content cannot be safely truncated (not currently emitted; MCP tools clamp/truncate content to MaxSizePolicy).
 
 ### Feature/domain codes (currently emitted)
 
@@ -123,13 +123,13 @@ Docdex presents the same underlying failures in three different wrappers:
 | Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_params` | `-32602` | N/A | N/A |
 | Invalid path for `docdex_open` | `invalid_path` | `-32602` | N/A | N/A |
 | Invalid line window for `docdex_open` | `invalid_range` | `-32602` | N/A | N/A |
-| File too large for `docdex_open` | `max_content_exceeded` | `-32602` | N/A | N/A |
 | Internal MCP server failure | `internal_error` | `-32000` | `500` (varies by endpoint) | Exit `1` (varies; may be JSON for `StartupError`/`AppError`) |
 
 Notes:
 
 - HTTP `/search` enforces `limit` by clamping to the daemon’s configured max and does not error on over-limit; MCP `docdex_search` similarly clamps `limit` to the MCP server’s `--max-results`.
 - MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`.
+<<<<<<< HEAD
 - MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with `details.max_bytes` and `details.actual_bytes`.
 
 ## Tool result size limits (server-scoped)
@@ -147,3 +147,17 @@ Docdex applies the same limits for every repo handled by a given MCP server proc
 | `docdex_symbols` | fixed single object | no server-side truncation of stored symbols payload | response size depends on stored record |
 | `docdex_memory_store` | fixed single object | no server-side truncation of stored text | response is `{id, created_at}` |
 | `docdex_memory_recall` | `top_k` clamped to 50 | no server-side truncation of stored content | clamps `top_k` |
+=======
+- MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it clamps the response content to the max bytes.
+
+## MaxSizePolicy (MCP tool bounds)
+
+Docdex enforces repo-invariant bounds on MCP tool outputs. When a client requests more than the maximum, results are clamped; schemas remain unchanged.
+
+- `docdex_search`: `limit` clamped to `--max-results` (default 8). `summary` is capped at 360 chars and `snippet` at 420 chars.
+- `docdex_files`: `limit` ≤ 1000, `offset` ≤ 50000.
+- `docdex_index` (ingest mode): `paths` and `decisions` arrays are truncated to 1000 items.
+- `docdex_symbols`: `symbols` array is capped at 1000 items per file.
+- `docdex_memory_recall`: `top_k` ≤ 50; `content` is truncated to 512 KiB per item.
+- `docdex_open`: `content` is truncated to 512 KiB.
+>>>>>>> mcoda/task/bck-05-us-10-t26

@@ -7,6 +7,7 @@ use crate::error::{
 use crate::explainability::ExplainabilityStore;
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
+use crate::limits::{self, MaxSizePolicy};
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::ratelimit::RateLimiter;
@@ -30,23 +31,12 @@ const ERR_METHOD_NOT_FOUND: i32 = -32601;
 const ERR_INVALID_PARAMS: i32 = -32602;
 const ERR_INTERNAL: i32 = -32000;
 const ERR_RATE_LIMITED_RPC: i32 = -32029;
-const FILES_DEFAULT_LIMIT: usize = 200;
-const FILES_MAX_LIMIT: usize = 1000;
-const FILES_MAX_OFFSET: usize = 50_000;
-const OPEN_MAX_BYTES: usize = 512 * 1024; // guard rail for returning file content
 const MAX_ERROR_MESSAGE_BYTES: usize = 256;
 const MAX_ERROR_REASON_BYTES: usize = 768;
 
 #[derive(Error, Debug)]
 #[error("path must be relative and not contain parent components")]
 struct InvalidPathError;
-
-#[derive(Error, Debug)]
-#[error("file too large ({actual_bytes} bytes > {max_bytes} limit)")]
-struct MaxContentError {
-    actual_bytes: usize,
-    max_bytes: usize,
-}
 
 #[derive(Error, Debug)]
 #[error("line range is invalid (start_line={start_line}, end_line={end_line}, total_lines={total_lines})")]
@@ -81,12 +71,14 @@ fn mcp_error_data(
     tool: Option<&str>,
     details: Option<serde_json::Value>,
 ) -> serde_json::Value {
-    let message = truncate_bytes(message, MAX_ERROR_MESSAGE_BYTES);
+    let message = truncate_error_bytes(message, MAX_ERROR_MESSAGE_BYTES);
     let message_for_data = message.clone();
     let mut envelope_error = serde_json::Map::new();
     envelope_error.insert("code".to_string(), json!(code));
     envelope_error.insert("message".to_string(), json!(message));
-    if let Some(reason) = reason.clone().map(|value| truncate_bytes(value, MAX_ERROR_REASON_BYTES)) {
+    if let Some(reason) =
+        reason.clone().map(|value| truncate_error_bytes(value, MAX_ERROR_REASON_BYTES))
+    {
         envelope_error.insert("reason".to_string(), json!(reason.clone()));
     }
     if let Some(tool) = tool {
@@ -101,7 +93,7 @@ fn mcp_error_data(
     data.insert("code".to_string(), json!(code));
     data.insert("message".to_string(), json!(message_for_data));
     data.insert("error".to_string(), envelope_error_value);
-    if let Some(reason) = reason.map(|value| truncate_bytes(value, MAX_ERROR_REASON_BYTES)) {
+    if let Some(reason) = reason.map(|value| truncate_error_bytes(value, MAX_ERROR_REASON_BYTES)) {
         data.insert("reason".to_string(), json!(reason));
     }
     if let Some(tool) = tool {
@@ -134,7 +126,7 @@ fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
     .expect("rate-limit data should serialize")
 }
 
-fn truncate_bytes(input: String, max_bytes: usize) -> String {
+fn truncate_error_bytes(input: String, max_bytes: usize) -> String {
     if input.len() <= max_bytes {
         return input;
     }
@@ -155,7 +147,7 @@ fn rpc_error(
     tool: Option<&str>,
     details: Option<serde_json::Value>,
 ) -> RpcError {
-    let message = truncate_bytes(message.into(), MAX_ERROR_MESSAGE_BYTES);
+    let message = truncate_error_bytes(message.into(), MAX_ERROR_MESSAGE_BYTES);
     RpcError {
         code: rpc_code,
         message: message.clone(),
@@ -166,7 +158,7 @@ fn rpc_error(
 fn rpc_rate_limited(err: &RateLimited) -> RpcError {
     RpcError {
         code: ERR_RATE_LIMITED_RPC,
-        message: truncate_bytes(err.message.clone(), MAX_ERROR_MESSAGE_BYTES),
+        message: truncate_error_bytes(err.message.clone(), MAX_ERROR_MESSAGE_BYTES),
         data: Some(mcp_rate_limited_data(err)),
     }
 }
@@ -243,15 +235,6 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
     }
     if err.downcast_ref::<InvalidUriError>().is_some() {
         return ("invalid_params", Some(json!({ "kind": "invalid_uri" })));
-    }
-    if let Some(max_err) = err.downcast_ref::<MaxContentError>() {
-        return (
-            "max_content_exceeded",
-            Some(json!({
-                "max_bytes": max_err.max_bytes,
-                "actual_bytes": max_err.actual_bytes,
-            })),
-        );
     }
     if err.downcast_ref::<MissingSymbolsDependencyError>().is_some() {
         return (
@@ -506,7 +489,7 @@ pub async fn serve(
         repo_root,
         indexer,
         libs_indexer,
-        max_results: max_results.max(1),
+        limits: MaxSizePolicy::for_mcp(max_results),
         default_project_root: None,
         memory,
         explainability,
@@ -525,7 +508,7 @@ struct McpServer {
     repo_root: PathBuf,
     indexer: Indexer,
     libs_indexer: Option<libs::LibsIndexer>,
-    max_results: usize,
+    limits: MaxSizePolicy,
     default_project_root: Option<PathBuf>,
     memory: Option<McpMemoryState>,
     explainability: ExplainabilityStore,
@@ -1201,7 +1184,7 @@ impl McpServer {
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "minLength": 1, "description": "Concise search query (will be rejected if empty)" },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": self.max_results as i64, "default": self.max_results, "description": "Max results to return (clamped to server max)" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": self.limits.max_search_items as i64, "default": self.limits.max_search_items, "description": "Max results to return (clamped to server max)" },
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
                     },
                     "required": ["query"]
@@ -1231,8 +1214,8 @@ impl McpServer {
                     "type": "object",
                     "properties": {
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": FILES_MAX_LIMIT as i64, "default": FILES_DEFAULT_LIMIT, "description": "Max documents to return (clamped)" },
-                        "offset": { "type": "integer", "minimum": 0, "maximum": FILES_MAX_OFFSET as i64, "default": 0, "description": "Number of docs to skip before listing (clamped)" }
+                        "limit": { "type": "integer", "minimum": 1, "maximum": self.limits.max_files_limit as i64, "default": limits::MCP_FILES_DEFAULT_LIMIT, "description": "Max documents to return (clamped)" },
+                        "offset": { "type": "integer", "minimum": 0, "maximum": self.limits.max_files_offset as i64, "default": 0, "description": "Number of docs to skip before listing (clamped)" }
                     }
                 }),
             },
@@ -1305,7 +1288,7 @@ impl McpServer {
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "minLength": 1, "description": "Query text to embed" },
-                        "top_k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 5, "description": "Max results to return" },
+                        "top_k": { "type": "integer", "minimum": 1, "maximum": self.limits.max_memory_items as i64, "default": 5, "description": "Max results to return" },
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
                     },
                     "required": ["query"]
@@ -1342,10 +1325,11 @@ impl McpServer {
         let requested_limit = args.limit;
         let limit = args
             .limit
-            .unwrap_or(self.max_results)
-            .clamp(1, self.max_results);
-        let hits =
+            .unwrap_or(self.limits.max_search_items)
+            .clamp(1, self.limits.max_search_items);
+        let mut hits =
             search::run_query(&self.indexer, self.libs_indexer.as_ref(), query, limit).await?;
+        apply_search_bounds(&self.limits, &mut hits.hits);
         let hits_value = serde_json::to_value(&hits.hits)?;
         let project_root_path = self
             .default_project_root
@@ -1440,6 +1424,12 @@ impl McpServer {
                 "reason": decision.reason,
             }));
         }
+        if ingested.len() > self.limits.max_index_items {
+            ingested.truncate(self.limits.max_index_items);
+        }
+        if decisions.len() > self.limits.max_index_items {
+            decisions.truncate(self.limits.max_index_items);
+        }
         Ok(json!({
             "status": "ok",
             "action": "ingest",
@@ -1458,9 +1448,9 @@ impl McpServer {
         self.ensure_project_root(args.project_root.as_deref())?;
         let limit = args
             .limit
-            .unwrap_or(FILES_DEFAULT_LIMIT)
-            .clamp(1, FILES_MAX_LIMIT);
-        let offset = args.offset.unwrap_or(0).min(FILES_MAX_OFFSET);
+            .unwrap_or(limits::MCP_FILES_DEFAULT_LIMIT)
+            .clamp(1, self.limits.max_files_limit);
+        let offset = args.offset.unwrap_or(0).min(self.limits.max_files_offset);
         let (docs, total) = self.indexer.list_docs(offset, limit)?;
         Ok(json!({
             "results": docs,
@@ -1519,13 +1509,6 @@ impl McpServer {
         }
         let content = fs::read_to_string(&canonical)
             .with_context(|| format!("read {}", rel_path.display()))?;
-        if content.len() > OPEN_MAX_BYTES {
-            return Err(MaxContentError {
-                actual_bytes: content.len(),
-                max_bytes: OPEN_MAX_BYTES,
-            }
-            .into());
-        }
         let lines: Vec<&str> = content.lines().collect();
         let total_lines = lines.len();
         if total_lines == 0 {
@@ -1557,12 +1540,13 @@ impl McpServer {
         let start_idx = start.saturating_sub(1);
         let end_idx = end_raw.saturating_sub(1);
         let slice = lines[start_idx..=end_idx].join("\n");
+        let (bounded, _) = limits::truncate_bytes(&slice, self.limits.max_content_bytes);
         Ok(json!({
             "path": rel_path.display().to_string(),
             "start_line": start,
             "end_line": end_raw,
             "total_lines": total_lines,
-            "content": slice,
+            "content": bounded,
             "repo_root": self.repo_root.display().to_string(),
             "project_root": self
                 .default_project_root
@@ -1590,11 +1574,12 @@ impl McpServer {
         let store = SymbolsStore::new(self.indexer.repo_root(), self.indexer.repo_state_dir())
 >>>>>>> mcoda/task/ops-01-us-03-t02
             .context("open symbols store")?;
-        let payload = store
+        let mut payload = store
             .read_symbols(&rel_str)?
             .ok_or_else(|| MissingSymbolsIndexError {
                 rel_path: rel_str.to_string(),
             })?;
+        apply_symbols_bounds(&self.limits, &mut payload);
         Ok(serde_json::to_value(payload).context("serialize symbols payload")?)
     }
 
@@ -1648,6 +1633,7 @@ impl McpServer {
             return Err(AppError::new(ERR_INVALID_ARGUMENT, "query must not be empty").into());
         }
 
+<<<<<<< HEAD
         let top_k = args.top_k.unwrap_or(5).max(1).min(50);
         let max_items = args.max_items.unwrap_or(top_k).min(50);
         let max_tokens = args.max_tokens;
@@ -1665,13 +1651,31 @@ impl McpServer {
             Ok::<_, anyhow::Error>(kept)
         })
         .await??;
+=======
+        let top_k = args
+            .top_k
+            .unwrap_or(5)
+            .max(1)
+            .min(self.limits.max_memory_items);
+        let embedding = memory.embedder.embed(query).await?;
+
+        let store = memory.store.clone();
+        let items = tokio::task::spawn_blocking(move || store.recall(&embedding, top_k)).await??;
+        let max_content_bytes = self.limits.max_content_bytes;
+>>>>>>> mcoda/task/bck-05-us-10-t26
         Ok(json!({
             "top_k": top_k,
-            "results": items.into_iter().map(|item| json!({
-                "content": item.content,
-                "score": item.score,
-                "metadata": item.metadata
-            })).collect::<Vec<_>>()
+            "results": items
+                .into_iter()
+                .map(|item| {
+                    let (content, _) = limits::truncate_bytes(&item.content, max_content_bytes);
+                    json!({
+                        "content": content,
+                        "score": item.score,
+                        "metadata": item.metadata
+                    })
+                })
+                .collect::<Vec<_>>()
         }))
     }
 
@@ -1766,6 +1770,38 @@ impl McpServer {
             return self.ensure_same_repo(default_root);
         }
         Ok(())
+    }
+}
+
+fn apply_search_bounds(limits: &MaxSizePolicy, hits: &mut [crate::index::Hit]) {
+    for hit in hits {
+        let (summary, summary_truncated) =
+            limits::truncate_chars(&hit.summary, limits.max_summary_chars);
+        if summary_truncated {
+            hit.summary = summary;
+        }
+        let (snippet, snippet_truncated) =
+            limits::truncate_chars(&hit.snippet, limits.max_snippet_chars);
+        if snippet_truncated {
+            hit.snippet = snippet;
+            hit.snippet_truncated = Some(true);
+        }
+    }
+}
+
+fn apply_symbols_bounds(limits: &MaxSizePolicy, payload: &mut crate::symbols::SymbolsResponseV1) {
+    if payload.symbols.len() > limits.max_symbols_items {
+        payload.symbols.truncate(limits.max_symbols_items);
+    }
+    if let Some(outcome) = payload.outcome.as_mut() {
+        if let Some(reason) = outcome.reason.as_mut() {
+            let (bounded, _) = limits::truncate_chars(reason, limits.max_summary_chars);
+            *reason = bounded;
+        }
+        if let Some(summary) = outcome.error_summary.as_mut() {
+            let (bounded, _) = limits::truncate_chars(summary, limits.max_summary_chars);
+            *summary = bounded;
+        }
     }
 }
 

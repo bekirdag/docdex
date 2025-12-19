@@ -8,6 +8,12 @@ Assumptions (explicit):
 - The installer uses the published release manifest/checksums contracts when it needs to fetch an archive; see `docs/contracts/release_manifest_schema_v1.md`.
 - Default integrity policy is `DOCDEX_INTEGRITY_POLICY=required` (fail closed on missing integrity metadata; verify archive SHA-256 before install). Explicit overrides (`allow-missing|off`) are insecure and never silent.
 
+## Version sync contract (summary)
+
+- Expected version is the npm package version (or `DOCDEX_VERSION` if set; leading `v` is stripped) and exact match is required.
+- If a different version is detected locally, the installer replaces it; if integrity mismatches are detected, the installer repairs it.
+- Release source/tag/asset selection is deterministic; see `docs/contracts/version_sync_contract_v1.md`.
+
 ## Deterministic installer outcomes
 
 The installer converges to a single final state: the installed `docdexd` under `dist/<platformKey>/` matches the expected version for this npm package install.
@@ -215,9 +221,12 @@ OS notes (common defaults; prefer `npm root -g` over guessing):
 
 ## Troubleshooting stale/corrupt daemon installs (risk-mitigated)
 
+If install failed with a missing artifact/version sync error, see `docs/contracts/version_sync_contract_v1.md` and `docs/ops/installer_supported_platforms.md` for release asset checks and remediation.
+
 ### 1) Confirm which `docdexd` you are running
 
 - Platform diagnostics (offline): `docdex doctor`
+- Installed daemon version: `docdexd --version` (wrapper) or read `dist/<platformKey>/docdexd-install.json` (field `version`).
 - Wrapper expects the binary at: `dist/<platformKey>/docdexd` (or `docdexd.exe` on Windows).
 
 If you upgraded/downgraded but the daemon still behaves like an older build, you may be running an already-started process.
@@ -273,5 +282,6 @@ This is usually a repo state issue, not an installer issue:
 - Installer supported platforms + safe cleanup: `docs/ops/installer_supported_platforms.md`
 - Atomic staged install + rollback behavior: `docs/ops/installer_atomic_install_and_rollback.md`
 - Installer error codes + remediation: `docs/ops/installer_error_codes.md`
+- Version sync contract: `docs/contracts/version_sync_contract_v1.md`
 - Release manifest contract: `docs/contracts/release_manifest_schema_v1.md`
 - Installer error contract: `docs/contracts/installer_error_contract_v1.md`

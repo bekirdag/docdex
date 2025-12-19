@@ -44,6 +44,8 @@ Additional common keys (when available):
 - `platformKey` (string|null)
 - `repoSlug` (string|null)
 - `version` (string|null)
+- `expectedVersion` (string|null)
+- `installedVersion` (string|null)
 - `downloadUrl` (string|null)
 - `manifestName` (string|null)
 - `source` (`"manifest:<name>"|"fallback"|null`)

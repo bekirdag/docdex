@@ -26,7 +26,7 @@ The installer logs the outcome as a single line:
 ## Upgrade vs downgrade
 
 The installer does not treat “upgrade” and “downgrade” differently. It always targets the expected version for the current npm package install:
-- If the installed version differs, the installer replaces `dist/<platformKey>/` so the final state equals the expected version.
+- If the installed version differs, the installer extracts into a staging directory and atomically swaps `dist/<platformKey>/` so the final state equals the expected version.
 - If the expected version is already installed and verified, the installer is a `no-op`.
 
 This makes repeated installs idempotent: running the installer multiple times converges to the same installed binary and the same metadata for a given version/platform.
@@ -43,11 +43,15 @@ There are two relevant integrity checks:
 
    The downloaded archive is verified against the expected SHA-256. If verification fails, installation fails closed with:
    - Error code: `DOCDEX_INTEGRITY_MISMATCH` (see `docs/ops/installer_error_codes.md`)
-   - Safety property: the existing `dist/<platformKey>/` is only removed after the archive is successfully fetched and verified.
+   - Safety property: the existing `dist/<platformKey>/` is only replaced after the archive is successfully fetched, verified, and the staged binary passes the version check.
 
 2) **Local binary integrity (no-op vs repair)**  
    For a `no-op`, the installer verifies the existing binary by hashing it and comparing to the recorded `binary.sha256` from the last successful, verified install.
    - If this local check fails, the outcome becomes `repair` and the installer reinstalls a verified binary.
+
+3) **Post-extract version verification (install/repair only)**  
+   Before swapping in a staged install, the installer runs `docdexd --version` and verifies it matches the expected npm version.
+   - If the version check fails or does not match, installation fails and the previous `dist/<platformKey>/` remains intact.
 
 ## Install metadata: what it is and where it lives
 
@@ -114,4 +118,3 @@ This is usually a repo state issue, not an installer issue:
 - Installer error codes + remediation: `docs/ops/installer_error_codes.md`
 - Release manifest contract: `docs/contracts/release_manifest_schema_v1.md`
 - Installer error contract: `docs/contracts/installer_error_contract_v1.md`
-

@@ -38,6 +38,8 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
     platformKey: "linux-arm64-gnu",
     targetTriple: "aarch64-unknown-linux-gnu",
     version: "0.1.11",
+    expectedVersion: "0.1.11",
+    installedVersion: "0.1.10",
     repoSlug: "owner/repo",
     downloadUrl: "https://example.test/releases/download/v0.1.11/docdexd-linux-arm64-gnu.tar.gz",
     assetName: "docdexd-linux-arm64-gnu.tar.gz",
@@ -53,6 +55,8 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
   assert.equal(report.details.assetName, "docdexd-linux-arm64-gnu.tar.gz");
   assert.ok(report.lines.some((l) => l.includes("missing artifact/version sync issue")));
   assert.ok(report.lines.some((l) => l.includes("Expected target triple: aarch64-unknown-linux-gnu")));
+  assert.ok(report.lines.some((l) => l.includes("Expected version: v0.1.11")));
+  assert.ok(report.lines.some((l) => l.includes("Detected installed version: v0.1.10")));
   assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platformKey>.tar.gz")));
 });
 

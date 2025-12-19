@@ -69,7 +69,8 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
       firstExtractCalls += 1;
       await ensureDir(targetDir);
       await fs.promises.writeFile(path.join(targetDir, "docdexd"), `docdexd-${version}\n`, "utf8");
-    }
+    },
+    readBinaryVersionFn: async ({ expectedVersion }) => ({ version: expectedVersion, output: `docdexd ${version}` })
   });
 
   assert.equal(first.outcome, "update");
@@ -115,6 +116,9 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
     extractTarballFn: async () => {
       extractCalls += 1;
       throw new Error("unexpected extract");
+    },
+    readBinaryVersionFn: async () => {
+      throw new Error("unexpected version check");
     }
   });
 
@@ -131,4 +135,3 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
   assert.equal(metadataAfterSecond, metadataAfterFirst);
   assert.equal(binaryAfterSecond, binaryAfterFirst);
 });
-

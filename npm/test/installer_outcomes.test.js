@@ -17,6 +17,10 @@ function createNoopLogger() {
   };
 }
 
+async function readBinaryVersionStub({ expectedVersion }) {
+  return { version: expectedVersion, output: `docdexd ${expectedVersion}` };
+}
+
 async function ensureDir(dirPath) {
   await fs.promises.mkdir(dirPath, { recursive: true });
 }
@@ -184,7 +188,8 @@ test("installer outcome: update installs when version differs and writes fresh m
       await ensureDir(targetDir);
       const newBinaryPath = path.join(targetDir, "docdexd");
       await fs.promises.writeFile(newBinaryPath, "new-binary\n");
-    }
+    },
+    readBinaryVersionFn: readBinaryVersionStub
   });
 
   assert.equal(downloadUrl, expectedDownloadUrl);
@@ -197,6 +202,199 @@ test("installer outcome: update installs when version differs and writes fresh m
   assert.equal(meta.platformKey, platformKey);
   assert.equal(typeof meta.binary?.sha256, "string");
   assert.equal(meta.binary.sha256.length, 64);
+});
+
+test("installer outcome: update installs when no daemon is present", async (t) => {
+  const base = "https://example.test/releases/download";
+  const expectedVersion = "0.0.2";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-outcome-missing-"));
+  t.after(async () => {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  const distBaseDir = path.join(tmpRoot, "dist");
+  const distDir = path.join(distBaseDir, platformKey);
+  const tmpDir = path.join(tmpRoot, "tmp");
+  await ensureDir(tmpDir);
+
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+
+  const result = await runInstaller({
+    logger: createNoopLogger(),
+    platform: "linux",
+    arch: "x64",
+    tmpDir,
+    distBaseDir,
+    detectPlatformKeyFn: () => platformKey,
+    targetTripleForPlatformKeyFn: () => targetTriple,
+    getVersionFn: () => expectedVersion,
+    parseRepoSlugFn: () => "owner/repo",
+    getDownloadBaseFn: () => base,
+    resolveInstallerDownloadPlanFn: async () => ({
+      archive,
+      expectedSha256: null,
+      source: "fallback",
+      manifestAttempt: { errors: [], resolved: null, manifestName: null }
+    }),
+    downloadFn: async (_url, dest) => {
+      await ensureDir(path.dirname(dest));
+      await fs.promises.writeFile(dest, "fake-archive-bytes");
+    },
+    verifyDownloadedFileIntegrityFn: async () => null,
+    extractTarballFn: async (_archivePath, targetDir) => {
+      await ensureDir(targetDir);
+      await fs.promises.writeFile(path.join(targetDir, "docdexd"), "fresh\n");
+    },
+    readBinaryVersionFn: readBinaryVersionStub
+  });
+
+  assert.equal(result.outcome, "update");
+  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
+  assert.equal(meta.version, expectedVersion);
+});
+
+test("installer outcome: update installs when installed version is newer", async (t) => {
+  const base = "https://example.test/releases/download";
+  const expectedVersion = "0.0.2";
+  const installedVersion = "0.0.3";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const isWin32 = false;
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-outcome-downgrade-"));
+  t.after(async () => {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  const distBaseDir = path.join(tmpRoot, "dist");
+  const distDir = path.join(distBaseDir, platformKey);
+  const tmpDir = path.join(tmpRoot, "tmp");
+  await ensureDir(tmpDir);
+
+  const oldBinaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "old-binary\n" });
+  const oldSha = await sha256File(oldBinaryPath);
+  await writeInstallMetadata({
+    distDir,
+    platformKey,
+    version: installedVersion,
+    targetTriple,
+    binarySha256: oldSha
+  });
+
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+
+  const result = await runInstaller({
+    logger: createNoopLogger(),
+    platform: "linux",
+    arch: "x64",
+    tmpDir,
+    distBaseDir,
+    detectPlatformKeyFn: () => platformKey,
+    targetTripleForPlatformKeyFn: () => targetTriple,
+    getVersionFn: () => expectedVersion,
+    parseRepoSlugFn: () => "owner/repo",
+    getDownloadBaseFn: () => base,
+    resolveInstallerDownloadPlanFn: async () => ({
+      archive,
+      expectedSha256: null,
+      source: "fallback",
+      manifestAttempt: { errors: [], resolved: null, manifestName: null }
+    }),
+    downloadFn: async (_url, dest) => {
+      await ensureDir(path.dirname(dest));
+      await fs.promises.writeFile(dest, "fake-archive-bytes");
+    },
+    verifyDownloadedFileIntegrityFn: async () => null,
+    extractTarballFn: async (_archivePath, targetDir) => {
+      await ensureDir(targetDir);
+      const newBinaryPath = path.join(targetDir, "docdexd");
+      await fs.promises.writeFile(newBinaryPath, "new-binary\n");
+    },
+    readBinaryVersionFn: readBinaryVersionStub
+  });
+
+  assert.equal(result.outcome, "update");
+  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
+  assert.equal(meta.version, expectedVersion);
+});
+
+test("installer outcome: version mismatch after install fails and preserves existing binary", async (t) => {
+  const base = "https://example.test/releases/download";
+  const expectedVersion = "0.0.2";
+  const installedVersion = "0.0.1";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const isWin32 = false;
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-outcome-version-mismatch-"));
+  t.after(async () => {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  const distBaseDir = path.join(tmpRoot, "dist");
+  const distDir = path.join(distBaseDir, platformKey);
+  const tmpDir = path.join(tmpRoot, "tmp");
+  await ensureDir(tmpDir);
+
+  const oldBinaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "old-binary\n" });
+  const oldSha = await sha256File(oldBinaryPath);
+  await writeInstallMetadata({
+    distDir,
+    platformKey,
+    version: installedVersion,
+    targetTriple,
+    binarySha256: oldSha
+  });
+
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+
+  let err;
+  try {
+    await runInstaller({
+      logger: createNoopLogger(),
+      platform: "linux",
+      arch: "x64",
+      tmpDir,
+      distBaseDir,
+      detectPlatformKeyFn: () => platformKey,
+      targetTripleForPlatformKeyFn: () => targetTriple,
+      getVersionFn: () => expectedVersion,
+      parseRepoSlugFn: () => "owner/repo",
+      getDownloadBaseFn: () => base,
+      resolveInstallerDownloadPlanFn: async () => ({
+        archive,
+        expectedSha256: null,
+        source: "fallback",
+        manifestAttempt: { errors: [], resolved: null, manifestName: null }
+      }),
+      downloadFn: async (_url, dest) => {
+        await ensureDir(path.dirname(dest));
+        await fs.promises.writeFile(dest, "fake-archive-bytes");
+      },
+      verifyDownloadedFileIntegrityFn: async () => null,
+      extractTarballFn: async (_archivePath, targetDir) => {
+        await ensureDir(targetDir);
+        const newBinaryPath = path.join(targetDir, "docdexd");
+        await fs.promises.writeFile(newBinaryPath, "new-binary\n");
+      },
+      readBinaryVersionFn: async () => ({ version: "0.0.0", output: "docdexd 0.0.0" })
+    });
+  } catch (e) {
+    err = e;
+  }
+
+  assert.ok(err, "expected an error");
+  assert.equal(err.code, "DOCDEX_ARCHIVE_INVALID");
+  const persisted = await fs.promises.readFile(oldBinaryPath, "utf8");
+  assert.equal(persisted, "old-binary\n");
+  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
+  assert.equal(meta.version, installedVersion);
 });
 
 test("installer outcome: repair reinstalls when binary hash mismatches metadata", async (t) => {
@@ -250,7 +448,8 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
       await ensureDir(targetDir);
       const repaired = path.join(targetDir, "docdexd");
       await fs.promises.writeFile(repaired, "repaired\n");
-    }
+    },
+    readBinaryVersionFn: readBinaryVersionStub
   });
 
   assert.equal(result.outcome, "repair");
@@ -310,7 +509,8 @@ test("installer outcome: reinstall_unknown reinstalls when metadata is missing",
       await ensureDir(targetDir);
       const repaired = path.join(targetDir, "docdexd");
       await fs.promises.writeFile(repaired, "fresh\n");
-    }
+    },
+    readBinaryVersionFn: readBinaryVersionStub
   });
 
   assert.equal(result.outcome, "reinstall_unknown");
@@ -380,7 +580,8 @@ test("installer outcome: reinstall_unknown reinstalls when integrity cannot be v
       shaCalls += 1;
       if (shaCalls === 1) throw new Error("EACCES: permission denied");
       return sha256File(filePath);
-    }
+    },
+    readBinaryVersionFn: readBinaryVersionStub
   });
 
   assert.equal(result.outcome, "reinstall_unknown");

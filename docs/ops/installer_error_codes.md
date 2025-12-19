@@ -11,7 +11,7 @@ This document explains:
 Assumptions (explicit):
 - You are installing via `npm i -g docdex` (or `npx docdex --version`) with Node.js `>= 18`.
 - The installer is allowed to reach GitHub Releases for the target repo (`DOCDEX_DOWNLOAD_REPO`).
-- Integrity verification is **always enforced** when SHA-256 metadata is available (manifest or checksum fallback).
+- Integrity verification is **mandatory**; if SHA-256 metadata is missing or invalid, the installer fails closed with `DOCDEX_CHECKSUM_UNUSABLE`.
 
 Related contracts:
 - `docs/contracts/installer_error_contract_v1.md`
@@ -32,7 +32,7 @@ Related contracts:
 3) Fallback: deterministic asset naming `docdexd-<platformKey>.tar.gz` and checksum discovery:
    - Prefer `SHA256SUMS` / `SHA256SUMS.txt` from the same release.
    - Legacy fallback: `docdexd-<platformKey>.tar.gz.sha256` sidecar.
-4) Download, verify SHA-256 (when available), extract, and verify the expected `docdexd` binary exists.
+4) Download, verify SHA-256 (required; missing metadata is fatal), extract, and verify the expected `docdexd` binary exists.
 
 When install fails, output includes `[docdex] error code: <CODE>` and the process exits with a stable numeric exit code.
 

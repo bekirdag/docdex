@@ -471,24 +471,31 @@ test("parseSha256File handles common sha256 file formats deterministically", () 
   assert.equal(parseSha256File(`${expected}  docdexd-linux-x64-gnu.tar.gz\r\n`, "docdexd-linux-x64-gnu.tar.gz"), expected);
 });
 
-test("verifyDownloadedFileIntegrity is deterministic when integrity check is absent or passes", async () => {
+test("verifyDownloadedFileIntegrity fails closed when integrity metadata is missing and passes when it matches", async () => {
   const filePath = path.join(__dirname, "fixtures", "archive", "fake-archive.bin");
   const actual = await sha256File(filePath);
+  const archiveName = "docdexd-linux-x64-gnu.tar.gz";
 
-  assert.equal(
-    await verifyDownloadedFileIntegrity({
-      filePath,
-      expectedSha256: null,
-      archiveName: "docdexd-linux-x64-gnu.tar.gz"
-    }),
-    null
+  await assert.rejects(
+    () =>
+      verifyDownloadedFileIntegrity({
+        filePath,
+        expectedSha256: null,
+        archiveName
+      }),
+    (err) => {
+      assert.ok(err instanceof ChecksumResolutionError);
+      assert.equal(err.code, "DOCDEX_CHECKSUM_UNUSABLE");
+      assert.ok(err.message.includes("Missing SHA-256 integrity metadata"));
+      return true;
+    }
   );
 
   assert.equal(
     await verifyDownloadedFileIntegrity({
       filePath,
       expectedSha256: actual,
-      archiveName: "docdexd-linux-x64-gnu.tar.gz"
+      archiveName
     }),
     actual
   );

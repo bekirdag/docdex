@@ -982,12 +982,38 @@ async function verifyDownloadedFileIntegrity({
   sha256FileFn = sha256File,
   details
 }) {
-  if (!expectedSha256) return null;
-  const actual = await sha256FileFn(filePath);
-  if (actual.toLowerCase() !== expectedSha256.toLowerCase()) {
-    throw new IntegrityMismatchError(archiveName, expectedSha256, actual, details);
+  const normalizedExpected = normalizeSha256Hex(expectedSha256);
+  if (!normalizedExpected) {
+    throw new ChecksumResolutionError(`Missing SHA-256 integrity metadata for ${archiveName}`, {
+      ...(details || {}),
+      assetName: archiveName,
+      expectedSha256: expectedSha256 ?? null,
+      actualSha256: null
+    });
   }
-  return actual;
+
+  let actualRaw;
+  try {
+    actualRaw = await sha256FileFn(filePath);
+  } catch (err) {
+    throw new IntegrityMismatchError(archiveName, normalizedExpected, "unreadable", {
+      ...(details || {}),
+      verificationError: err?.message || String(err)
+    });
+  }
+
+  const normalizedActual = normalizeSha256Hex(actualRaw);
+  if (!normalizedActual) {
+    throw new IntegrityMismatchError(archiveName, normalizedExpected, "unreadable", {
+      ...(details || {}),
+      verificationError: "hash_invalid"
+    });
+  }
+
+  if (normalizedActual !== normalizedExpected) {
+    throw new IntegrityMismatchError(archiveName, normalizedExpected, normalizedActual, details);
+  }
+  return normalizedActual;
 }
 
 async function runInstaller(options) {
@@ -1337,6 +1363,8 @@ function describeFatalError(err) {
   if (err instanceof IntegrityMismatchError) {
     const expectedSha256 = typeof err.details?.expectedSha256 === "string" ? err.details.expectedSha256 : null;
     const actualSha256 = typeof err.details?.actualSha256 === "string" ? err.details.actualSha256 : null;
+    const verificationError =
+      typeof err.details?.verificationError === "string" ? err.details.verificationError : null;
     return {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
@@ -1348,6 +1376,7 @@ function describeFatalError(err) {
         err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
         expectedSha256 ? `[docdex] Expected sha256: ${expectedSha256}` : null,
         actualSha256 ? `[docdex] Actual sha256:   ${actualSha256}` : null,
+        verificationError ? `[docdex] Verification error: ${verificationError}` : null,
         err.details?.source ? `[docdex] Source: ${err.details.source}` : null,
         err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,
         err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,

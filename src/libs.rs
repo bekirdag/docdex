@@ -3,6 +3,7 @@ use crate::index::{
     DocSnapshot, Hit, QueryRewrite, SearchError, SearchQueryMeta, SearchSnippetOrigin,
     SnippetOrigin, SnippetResult,
 };
+use crate::state_paths::StatePaths;
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -22,11 +23,22 @@ const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
 const MAX_LIB_DOC_BYTES: u64 = 512 * 1024;
 const MAX_LIB_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
 
-pub(crate) fn libs_state_dir_from_index_state_dir(index_state_dir: &Path) -> PathBuf {
-    index_state_dir
+pub(crate) fn libs_state_dir_from_index_state_dir(repo_root: &Path, index_state_dir: &Path) -> PathBuf {
+    let fallback = index_state_dir
         .parent()
         .unwrap_or(index_state_dir)
-        .join("libs_index")
+        .join("libs_index");
+    match StatePaths::new().and_then(|paths| paths.repo_cache_dir(repo_root, "libs")) {
+        Ok(path) => path,
+        Err(err) => {
+            warn!(
+                target: "docdexd",
+                error = %err,
+                "failed to resolve global libs cache dir; falling back to repo-local libs index"
+            );
+            fallback
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -150,6 +162,16 @@ pub struct LibsIndexer {
 
 impl LibsIndexer {
     pub fn open_or_create(libs_state_dir: PathBuf) -> Result<Self> {
+        if let Ok(paths) = StatePaths::new() {
+            paths
+                .assert_repo_scoped_cache_dir("libs", &libs_state_dir)
+                .with_context(|| {
+                    format!(
+                        "libs cache dir must be repo-scoped: {}",
+                        libs_state_dir.display()
+                    )
+                })?;
+        }
         crate::index::ensure_state_dir_secure(&libs_state_dir)?;
         let (schema, fields) = build_schema();
         let index = Index::open_or_create(
@@ -179,6 +201,16 @@ impl LibsIndexer {
     }
 
     pub fn open_read_only(libs_state_dir: PathBuf) -> Result<Option<Self>> {
+        if let Ok(paths) = StatePaths::new() {
+            paths
+                .assert_repo_scoped_cache_dir("libs", &libs_state_dir)
+                .with_context(|| {
+                    format!(
+                        "libs cache dir must be repo-scoped: {}",
+                        libs_state_dir.display()
+                    )
+                })?;
+        }
         if !libs_state_dir.exists() {
             return Ok(None);
         }

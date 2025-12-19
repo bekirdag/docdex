@@ -484,6 +484,7 @@ pub async fn serve(
         None
     };
     let libs_indexer = libs::LibsIndexer::open_read_only(libs::libs_state_dir_from_index_state_dir(
+        indexer.repo_root(),
         indexer.state_dir(),
     ))
     .ok()

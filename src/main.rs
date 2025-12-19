@@ -17,6 +17,7 @@ mod ratelimit;
 mod repo_identity;
 mod search;
 mod symbols;
+mod state_paths;
 mod util;
 mod watcher;
 
@@ -829,7 +830,8 @@ async fn run() -> Result<()> {
             let libs_indexer = if repo_only {
                 None
             } else {
-                let libs_dir = libs::libs_state_dir_from_index_state_dir(server.state_dir());
+                let libs_dir =
+                    libs::libs_state_dir_from_index_state_dir(server.repo_root(), server.state_dir());
                 libs::LibsIndexer::open_read_only(libs_dir).ok().flatten()
             };
             let hits = search::run_query(&server, libs_indexer.as_ref(), &query, limit).await?;
@@ -957,7 +959,8 @@ async fn run() -> Result<()> {
                 repo.symbols_enabled(),
             )?;
             util::init_logging("warn")?;
-            let libs_dir = libs::libs_state_dir_from_index_state_dir(index_config.state_dir());
+            let libs_dir =
+                libs::libs_state_dir_from_index_state_dir(&repo_root, index_config.state_dir());
             let indexer = libs::LibsIndexer::open_or_create(libs_dir)?;
             let raw = fs::read_to_string(&sources)
                 .with_context(|| format!("read libs sources file {}", sources.display()))?;

@@ -5,9 +5,17 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
 
 const { runInstaller, sha256File } = require("../lib/install");
 const { targetTripleForPlatformKey } = require("../lib/platform");
+
+function sha256String(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+const ARCHIVE_BYTES = "fake-archive-bytes";
+const ARCHIVE_SHA256 = sha256String(ARCHIVE_BYTES);
 
 function createNoopLogger() {
   return {
@@ -165,7 +173,7 @@ test("installer outcome: update installs when version differs and writes fresh m
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: ARCHIVE_SHA256,
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -173,12 +181,13 @@ test("installer outcome: update installs when version differs and writes fresh m
       downloadUrl = url;
       downloadDest = dest;
       await ensureDir(path.dirname(dest));
-      await fs.promises.writeFile(dest, "fake-archive-bytes");
+      await fs.promises.writeFile(dest, ARCHIVE_BYTES);
     },
-    verifyDownloadedFileIntegrityFn: async ({ filePath }) => {
+    verifyDownloadedFileIntegrityFn: async ({ filePath, expectedSha256 }) => {
       assert.equal(filePath, downloadDest);
       assert.ok(fs.existsSync(filePath));
-      return null;
+      assert.equal(expectedSha256, ARCHIVE_SHA256);
+      return expectedSha256;
     },
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
@@ -237,15 +246,15 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: ARCHIVE_SHA256,
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
     downloadFn: async (_url, dest) => {
       await ensureDir(path.dirname(dest));
-      await fs.promises.writeFile(dest, "fake-archive-bytes");
+      await fs.promises.writeFile(dest, ARCHIVE_BYTES);
     },
-    verifyDownloadedFileIntegrityFn: async () => null,
+    verifyDownloadedFileIntegrityFn: async () => ARCHIVE_SHA256,
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
       const repaired = path.join(targetDir, "docdexd");
@@ -297,15 +306,15 @@ test("installer outcome: reinstall_unknown reinstalls when metadata is missing",
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: ARCHIVE_SHA256,
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
     downloadFn: async (_url, dest) => {
       await ensureDir(path.dirname(dest));
-      await fs.promises.writeFile(dest, "fake-archive-bytes");
+      await fs.promises.writeFile(dest, ARCHIVE_BYTES);
     },
-    verifyDownloadedFileIntegrityFn: async () => null,
+    verifyDownloadedFileIntegrityFn: async () => ARCHIVE_SHA256,
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
       const repaired = path.join(targetDir, "docdexd");
@@ -361,16 +370,16 @@ test("installer outcome: reinstall_unknown reinstalls when integrity cannot be v
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: ARCHIVE_SHA256,
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
     downloadFn: async (_url, dest) => {
       downloadCalls += 1;
       await ensureDir(path.dirname(dest));
-      await fs.promises.writeFile(dest, "fake-archive-bytes");
+      await fs.promises.writeFile(dest, ARCHIVE_BYTES);
     },
-    verifyDownloadedFileIntegrityFn: async () => null,
+    verifyDownloadedFileIntegrityFn: async () => ARCHIVE_SHA256,
     extractTarballFn: async (_archivePath, targetDir) => {
       extractCalls += 1;
       await ensureDir(targetDir);

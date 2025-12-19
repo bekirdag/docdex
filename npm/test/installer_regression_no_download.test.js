@@ -301,7 +301,7 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
       getDownloadBaseFn: () => base,
       resolveInstallerDownloadPlanFn: async () => ({
         archive: "docdexd-linux-x64-gnu.tar.gz",
-        expectedSha256: null,
+        expectedSha256: "a".repeat(64),
         source: "fallback",
         manifestAttempt: { errors: [], resolved: null, manifestName: null }
       }),

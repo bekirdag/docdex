@@ -310,6 +310,37 @@ async function writeJsonFileAtomic({ fsModule, pathModule, filePath, value }) {
   await fsModule.promises.rename(tmp, filePath);
 }
 
+async function createStagingDir({ fsModule, pathModule, distBaseDir, platformKey }) {
+  await fsModule.promises.mkdir(distBaseDir, { recursive: true });
+  const prefix = pathModule.join(distBaseDir, `.docdexd-${platformKey}.`);
+  return fsModule.promises.mkdtemp(prefix);
+}
+
+async function swapInstallDir({ fsModule, distDir, stagingDir }) {
+  const backupDir = `${distDir}.backup.${process.pid}.${Date.now()}`;
+  let hasBackup = false;
+
+  try {
+    await fsModule.promises.rename(distDir, backupDir);
+    hasBackup = true;
+  } catch (err) {
+    if (!(err && err.code === "ENOENT")) throw err;
+  }
+
+  try {
+    await fsModule.promises.rename(stagingDir, distDir);
+  } catch (err) {
+    if (hasBackup) {
+      await fsModule.promises.rename(backupDir, distDir).catch(() => {});
+    }
+    throw err;
+  }
+
+  if (hasBackup) {
+    await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 function isValidInstallMetadata(meta) {
   if (!meta || typeof meta !== "object") return false;
   if (meta.schemaVersion !== INSTALL_METADATA_SCHEMA_VERSION) return false;
@@ -882,6 +913,7 @@ async function resolveInstallerDownloadPlan({
   let archive = null;
   let expectedSha256 = null;
   let source = "fallback";
+  let integritySource = null;
 
   let manifestAttempt;
   try {
@@ -910,6 +942,7 @@ async function resolveInstallerDownloadPlan({
     archive = manifestAttempt.resolved.asset.name;
     expectedSha256 = manifestAttempt.resolved.integrity.sha256;
     source = `manifest:${manifestAttempt.manifestName}`;
+    integritySource = source;
   } else if (manifestAttempt.errors && manifestAttempt.errors.length) {
     logger.warn(`[docdex] Manifest unavailable; falling back. Details: ${manifestAttempt.errors.join(" | ")}`);
   } else {
@@ -930,18 +963,23 @@ async function resolveInstallerDownloadPlan({
 
     if (checksumAttempt.sha256) {
       expectedSha256 = checksumAttempt.sha256;
+      integritySource = `checksum:${checksumAttempt.checksumName}`;
     } else {
       // Legacy fallback: per-asset .sha256 sidecar.
       const shaUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}.sha256`;
       try {
         const shaText = await downloadTextFn(shaUrl);
         expectedSha256 = parseSha256File(shaText, archive);
+        if (expectedSha256) {
+          integritySource = `checksum:${archive}.sha256`;
+        }
       } catch {
         expectedSha256 = null;
       }
     }
 
-    if (!expectedSha256) {
+    const normalized = normalizeSha256Hex(expectedSha256);
+    if (!normalized) {
       const manifestCandidates = manifestCandidateNamesFn();
       const checksumCandidates = checksumCandidateNamesFn();
       throw new ChecksumResolutionError(
@@ -959,18 +997,21 @@ async function resolveInstallerDownloadPlan({
           manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
           fallbackAttempted: true,
           fallbackReason: manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found",
+          integritySource,
           checksumCandidates,
           checksumErrors: checksumAttempt?.errors ?? null,
           checksumEvents: checksumAttempt?.events ?? null
         }
       );
     }
+    expectedSha256 = normalized;
   }
 
   return {
     archive,
-    expectedSha256,
+    expectedSha256: normalizeSha256Hex(expectedSha256),
     source,
+    integritySource,
     manifestAttempt: { ...manifestAttempt, fallbackAttempted: !manifestAttempt.resolved }
   };
 }
@@ -982,12 +1023,20 @@ async function verifyDownloadedFileIntegrity({
   sha256FileFn = sha256File,
   details
 }) {
-  if (!expectedSha256) return null;
-  const actual = await sha256FileFn(filePath);
-  if (actual.toLowerCase() !== expectedSha256.toLowerCase()) {
-    throw new IntegrityMismatchError(archiveName, expectedSha256, actual, details);
+  const normalizedExpected = normalizeSha256Hex(expectedSha256);
+  if (!normalizedExpected) {
+    throw new ChecksumResolutionError(`Missing SHA-256 integrity metadata for ${archiveName}`, {
+      ...(details || {}),
+      assetName: archiveName,
+      expectedSha256: expectedSha256 ?? null
+    });
   }
-  return actual;
+  const actual = await sha256FileFn(filePath);
+  const normalizedActual = normalizeSha256Hex(actual);
+  if (!normalizedActual || normalizedActual !== normalizedExpected) {
+    throw new IntegrityMismatchError(archiveName, normalizedExpected, actual, details);
+  }
+  return normalizedActual;
 }
 
 async function runInstaller(options) {
@@ -1065,7 +1114,7 @@ async function runInstaller(options) {
 
   const repoSlug = parseRepoSlugFn();
 
-  const { archive, expectedSha256, source, manifestAttempt } = await resolveInstallerDownloadPlanFn({
+  const { archive, expectedSha256, source, integritySource, manifestAttempt } = await resolveInstallerDownloadPlanFn({
     repoSlug,
     version,
     platformKey,
@@ -1078,6 +1127,7 @@ async function runInstaller(options) {
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
+  let stagingDir = null;
   try {
     try {
       await downloadFn(downloadUrl, tmpFile);
@@ -1132,19 +1182,20 @@ async function runInstaller(options) {
         repoSlug,
         downloadUrl,
         source,
+        integritySource: integritySource || source || null,
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
         fallbackAttempted: source === "fallback"
       }
     });
 
-    // Only replace an existing installation after we have successfully fetched + verified the archive.
-    await fsModule.promises.rm(distDir, { recursive: true, force: true });
-    await extractTarballFn(tmpFile, distDir);
+    // Stage the install before swapping it into place.
+    stagingDir = await createStagingDir({ fsModule, pathModule, distBaseDir, platformKey });
+    await extractTarballFn(tmpFile, stagingDir);
 
-    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
-    if (!fsModule.existsSync(binaryPath)) {
-      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
+    const stagedBinaryPath = pathModule.join(stagingDir, isWin32 ? "docdexd.exe" : "docdexd");
+    if (!fsModule.existsSync(stagedBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagedBinaryPath}`, {
         platformKey,
         targetTriple,
         version,
@@ -1152,17 +1203,16 @@ async function runInstaller(options) {
         assetName: archive,
         downloadUrl,
         source,
+        integritySource: integritySource || source || null,
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
         fallbackAttempted: source === "fallback",
-        binaryPath
+        binaryPath: stagedBinaryPath
       });
     }
 
-    await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
-    logger.log(`[docdex] Installed binary to ${binaryPath}`);
-
-    const binarySha256 = await sha256FileFn(binaryPath);
+    await fsModule.promises.chmod(stagedBinaryPath, 0o755).catch(() => {});
+    const binarySha256 = await sha256FileFn(stagedBinaryPath);
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
       installedAt: nowIso(),
@@ -1178,19 +1228,28 @@ async function runInstaller(options) {
         name: archive,
         sha256: expectedSha256 || null,
         source,
+        integritySource: integritySource || source || null,
         downloadUrl
       }
     };
     await writeJsonFileAtomic({
       fsModule,
       pathModule,
-      filePath: installMetadataPath(distDir, pathModule),
+      filePath: installMetadataPath(stagingDir, pathModule),
       value: metadata
     });
 
+    await swapInstallDir({ fsModule, distDir, stagingDir });
+    stagingDir = null;
+
+    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+    logger.log(`[docdex] Installed binary to ${binaryPath}`);
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
     return { binaryPath, outcome: local.outcome };
   } finally {
+    if (stagingDir) {
+      await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    }
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
   }
 }
@@ -1349,6 +1408,7 @@ function describeFatalError(err) {
         expectedSha256 ? `[docdex] Expected sha256: ${expectedSha256}` : null,
         actualSha256 ? `[docdex] Actual sha256:   ${actualSha256}` : null,
         err.details?.source ? `[docdex] Source: ${err.details.source}` : null,
+        err.details?.integritySource ? `[docdex] Integrity source: ${err.details.integritySource}` : null,
         err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,
         err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,
         fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,

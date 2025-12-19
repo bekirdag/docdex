@@ -5,9 +5,17 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
 
 const { runInstaller } = require("../lib/install");
 const { targetTripleForPlatformKey } = require("../lib/platform");
+
+function sha256String(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+const ARCHIVE_BYTES = "fake-archive-bytes";
+const ARCHIVE_SHA256 = sha256String(ARCHIVE_BYTES);
 
 function createNoopLogger() {
   return {
@@ -54,7 +62,7 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
-      expectedSha256: null,
+      expectedSha256: ARCHIVE_SHA256,
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -62,9 +70,9 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
       firstDownloadCalls += 1;
       assert.equal(url, `${base}/v${version}/${archive}`);
       await ensureDir(path.dirname(dest));
-      await fs.promises.writeFile(dest, "fake-archive-bytes");
+      await fs.promises.writeFile(dest, ARCHIVE_BYTES);
     },
-    verifyDownloadedFileIntegrityFn: async () => null,
+    verifyDownloadedFileIntegrityFn: async () => ARCHIVE_SHA256,
     extractTarballFn: async (_archivePath, targetDir) => {
       firstExtractCalls += 1;
       await ensureDir(targetDir);
@@ -131,4 +139,3 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
   assert.equal(metadataAfterSecond, metadataAfterFirst);
   assert.equal(binaryAfterSecond, binaryAfterFirst);
 });
-

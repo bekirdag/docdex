@@ -22,12 +22,48 @@ fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
     Ok(temp)
 }
 
-fn run_docdex<I, S>(args: I) -> Result<std::process::Output, Box<dyn Error>>
+fn run_docdex<I, S>(state_root: &Path, args: I) -> Result<std::process::Output, Box<dyn Error>>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    Ok(Command::new(docdex_bin()).args(args).output()?)
+    Ok(Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root)
+        .args(args)
+        .output()?)
+}
+
+fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<Value, Box<dyn Error>> {
+    let repo_str = repo_root.to_string_lossy().to_string();
+    let state_root_str = state_root.to_string_lossy().to_string();
+    let output = Command::new(docdex_bin())
+        .args([
+            "repo",
+            "inspect",
+            "--repo",
+            repo_str.as_str(),
+            "--state-dir",
+            state_root_str.as_str(),
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "docdexd repo inspect exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+fn resolve_index_dir(state_root: &Path, repo_root: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let payload = inspect_repo_state(state_root, repo_root)?;
+    let resolved = payload
+        .get("resolvedIndexStateDir")
+        .and_then(|value| value.as_str())
+        .ok_or("missing resolvedIndexStateDir")?;
+    Ok(PathBuf::from(resolved))
 }
 
 fn pick_free_port() -> Option<u16> {
@@ -41,9 +77,15 @@ fn pick_free_port() -> Option<u16> {
     }
 }
 
-fn spawn_server(repo_root: &Path, host: &str, port: u16) -> Result<Child, Box<dyn Error>> {
+fn spawn_server(
+    state_root: &Path,
+    repo_root: &Path,
+    host: &str,
+    port: u16,
+) -> Result<Child, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     Ok(Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root)
         .args([
             "serve",
             "--repo",
@@ -131,15 +173,17 @@ fn field_error_codes(body: &Value, field: &str) -> Result<Vec<String>, Box<dyn E
 #[test]
 fn impact_enforces_max_edges_and_sets_truncated() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
-    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
+    let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
+    write_impact_graph(&state_dir)?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = spawn_server(repo.path(), host, port)?;
+    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
     wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
@@ -179,15 +223,17 @@ fn impact_enforces_max_edges_and_sets_truncated() -> Result<(), Box<dyn Error>> 
 #[test]
 fn impact_max_edges_zero_returns_empty_and_truncated() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
-    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
+    let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
+    write_impact_graph(&state_dir)?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = spawn_server(repo.path(), host, port)?;
+    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
     wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
@@ -221,15 +267,17 @@ fn impact_max_edges_zero_returns_empty_and_truncated() -> Result<(), Box<dyn Err
 #[test]
 fn impact_enforces_max_depth() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
-    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
+    let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
+    write_impact_graph(&state_dir)?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = spawn_server(repo.path(), host, port)?;
+    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
     wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
@@ -276,15 +324,17 @@ fn impact_enforces_max_depth() -> Result<(), Box<dyn Error>> {
 #[test]
 fn impact_max_depth_zero_returns_empty_and_truncated() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
-    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
+    let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
+    write_impact_graph(&state_dir)?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = spawn_server(repo.path(), host, port)?;
+    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
     wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
@@ -318,15 +368,17 @@ fn impact_max_depth_zero_returns_empty_and_truncated() -> Result<(), Box<dyn Err
 #[test]
 fn impact_filters_edge_types() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
-    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
+    let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
+    write_impact_graph(&state_dir)?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = spawn_server(repo.path(), host, port)?;
+    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
     wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
@@ -371,15 +423,17 @@ fn impact_filters_edge_types() -> Result<(), Box<dyn Error>> {
 #[test]
 fn impact_reports_applied_limits_and_not_truncated_by_default() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
-    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
+    let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
+    write_impact_graph(&state_dir)?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = spawn_server(repo.path(), host, port)?;
+    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
     wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
@@ -410,10 +464,12 @@ fn impact_reports_applied_limits_and_not_truncated_by_default() -> Result<(), Bo
 #[test]
 fn impact_edge_types_does_not_expand_through_excluded_edges() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
+    let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
     write_impact_graph_payload(
-        &repo.path().join(".docdex").join("index"),
+        &state_dir,
         serde_json::json!({
             "edges": [
                 { "source": "a.ts", "target": "b.ts", "kind": "include" },
@@ -427,7 +483,7 @@ fn impact_edge_types_does_not_expand_through_excluded_edges() -> Result<(), Box<
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = spawn_server(repo.path(), host, port)?;
+    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
     wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
@@ -464,15 +520,17 @@ fn impact_edge_types_does_not_expand_through_excluded_edges() -> Result<(), Box<
 #[test]
 fn impact_invalid_params_return_invalid_argument_with_field_details() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
-    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
+    let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
+    write_impact_graph(&state_dir)?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = spawn_server(repo.path(), host, port)?;
+    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
     wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
@@ -507,15 +565,17 @@ fn impact_invalid_params_return_invalid_argument_with_field_details() -> Result<
 #[test]
 fn impact_non_integer_params_return_invalid_argument_with_field_details() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
-    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
+    let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
+    write_impact_graph(&state_dir)?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = spawn_server(repo.path(), host, port)?;
+    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
     wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
@@ -546,15 +606,17 @@ fn impact_non_integer_params_return_invalid_argument_with_field_details() -> Res
 #[test]
 fn impact_missing_file_returns_invalid_argument_with_field_details() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
-    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
+    let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
+    write_impact_graph(&state_dir)?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = spawn_server(repo.path(), host, port)?;
+    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
     wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
@@ -585,15 +647,17 @@ fn impact_missing_file_returns_invalid_argument_with_field_details() -> Result<(
 #[test]
 fn impact_edge_types_empty_returns_invalid_argument_with_field_details() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
-    write_impact_graph(&repo.path().join(".docdex").join("index"))?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
+    let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
+    write_impact_graph(&state_dir)?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = spawn_server(repo.path(), host, port)?;
+    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
     wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;

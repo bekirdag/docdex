@@ -16,6 +16,7 @@ mod ollama;
 mod ratelimit;
 mod repo_identity;
 mod search;
+mod state_layout;
 mod symbols;
 mod util;
 mod watcher;
@@ -35,7 +36,7 @@ use tracing::info;
     name = "docdexd",
     version,
     about = "Local documentation index/search daemon",
-    long_about = "Docdex indexes plain-text/markdown documentation under a workspace and serves top-k search/snippet results over HTTP or CLI. Defaults store data in <repo>/.docdex/index and avoid common tool caches; override paths and exclusions with --state-dir/--exclude-* or matching env vars. Optional MCP server (`docdexd mcp`) exposes docdex_search/index/files/open/stats tools over stdio for MCP-aware clients; register it in your MCP client as server \"docdex\" with command: docdexd mcp --repo <repo> --log warn."
+    long_about = "Docdex indexes plain-text/markdown documentation under a workspace and serves top-k search/snippet results over HTTP or CLI. Defaults store data under ~/.docdex/state/repos/<fingerprint>/index; override the global state root and exclusions with --state-dir/--exclude-* or matching env vars. Optional MCP server (`docdexd mcp`) exposes docdex_search/index/files/open/stats tools over stdio for MCP-aware clients; register it in your MCP client as server \"docdex\" with command: docdexd mcp --repo <repo> --log warn."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -210,7 +211,7 @@ enum Command {
         #[arg(
             long,
             env = "DOCDEX_AUDIT_LOG_PATH",
-            help = "Audit log path (JSON lines with hash chain; defaults to <state-dir>/audit.log)"
+            help = "Audit log path (JSON lines with hash chain; defaults to <repo-state-root>/audit.log)"
         )]
         audit_log_path: Option<PathBuf>,
         #[arg(
@@ -614,7 +615,7 @@ async fn run() -> Result<()> {
             } else {
                 let path = audit_log_path
                     .clone()
-                    .unwrap_or_else(|| index_config.state_dir().join("audit.log"));
+                    .unwrap_or_else(|| index_config.repo_state_dir().join("audit.log"));
                 Some(audit::AuditLogger::new(
                     path,
                     audit_max_bytes,
@@ -717,7 +718,7 @@ async fn run() -> Result<()> {
                 }
             }
             if findings.is_empty() {
-                let report_path = index_config.state_dir().join("self_check_report.json");
+                let report_path = index_config.repo_state_dir().join("self_check_report.json");
                 let empty: Vec<serde_json::Value> = Vec::new();
                 let report = serde_json::json!({
                     "repo": repo_root,
@@ -731,14 +732,14 @@ async fn run() -> Result<()> {
                 );
                 // best-effort audit log for admin self-check action
                 let _ = audit::AuditLogger::new(
-                    index_config.state_dir().join("audit.log"),
+                    index_config.repo_state_dir().join("audit.log"),
                     5_000_000,
                     5,
                 )
                 .map(|logger| logger.log("self_check", "pass", None, None, None, None, None, None));
                 return Ok(());
             }
-            let report_path = index_config.state_dir().join("self_check_report.json");
+            let report_path = index_config.repo_state_dir().join("self_check_report.json");
             let report = serde_json::json!({
                 "repo": repo_root,
                 "checked_at": chrono::Utc::now().to_rfc3339(),
@@ -765,20 +766,23 @@ async fn run() -> Result<()> {
                 }
                 eprintln!("{line}");
             }
-            let _ =
-                audit::AuditLogger::new(index_config.state_dir().join("audit.log"), 5_000_000, 5)
-                    .map(|logger| {
-                        logger.log(
-                            "self_check",
-                            "fail",
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            Some("sensitive terms found"),
-                        )
-                    });
+            let _ = audit::AuditLogger::new(
+                index_config.repo_state_dir().join("audit.log"),
+                5_000_000,
+                5,
+            )
+            .map(|logger| {
+                logger.log(
+                    "self_check",
+                    "fail",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("sensitive terms found"),
+                )
+            });
             return Err(anyhow!("sensitive terms detected in index"));
         }
         Command::Index { repo } => {
@@ -1001,7 +1005,7 @@ async fn run() -> Result<()> {
                 repo.symbols_enabled(),
             )?;
             util::init_logging("warn")?;
-            index::ensure_state_dir_secure(index_config.state_dir())?;
+            state_layout::ensure_state_dir_secure(index_config.state_dir())?;
 
             let timeout = std::time::Duration::from_millis(embedding_timeout_ms.max(1));
             let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);
@@ -1024,7 +1028,7 @@ async fn run() -> Result<()> {
                 embedder.provider(),
                 embedder.model(),
             );
-            let store = memory::MemoryStore::new(index_config.state_dir());
+            let store = memory::MemoryStore::new(index_config.repo_state_dir());
             let created_at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_millis() as i64;
@@ -1059,14 +1063,14 @@ async fn run() -> Result<()> {
                 repo.symbols_enabled(),
             )?;
             util::init_logging("warn")?;
-            index::ensure_state_dir_secure(index_config.state_dir())?;
+            state_layout::ensure_state_dir_secure(index_config.state_dir())?;
 
             let timeout = std::time::Duration::from_millis(embedding_timeout_ms.max(1));
             let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);
             let embedder =
                 ollama::OllamaEmbedder::new(embedding_base_url, embedding_model, timeout)?;
             let embedding = embedder.embed(&query).await?;
-            let store = memory::MemoryStore::new(index_config.state_dir());
+            let store = memory::MemoryStore::new(index_config.repo_state_dir());
             let top_k = top_k.max(1).min(50);
             let results = tokio::task::spawn_blocking(move || store.recall(&embedding, top_k)).await??;
             println!(

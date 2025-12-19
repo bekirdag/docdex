@@ -1,4 +1,4 @@
-use serde_json::json;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fs;
@@ -18,11 +18,15 @@ struct McpHarness {
 }
 
 impl McpHarness {
-    fn spawn(repo: &Path) -> Result<Self, Box<dyn Error>> {
-        Self::spawn_with_symbols(repo, false)
+    fn spawn(repo: &Path, state_root: &Path) -> Result<Self, Box<dyn Error>> {
+        Self::spawn_with_symbols(repo, state_root, false)
     }
 
-    fn spawn_with_symbols(repo: &Path, enable_symbols: bool) -> Result<Self, Box<dyn Error>> {
+    fn spawn_with_symbols(
+        repo: &Path,
+        state_root: &Path,
+        enable_symbols: bool,
+    ) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo.to_string_lossy().to_string();
         let mut cmd = Command::new(docdex_bin());
         cmd.args([
@@ -34,6 +38,7 @@ impl McpHarness {
             "--max-results",
             "4",
         ]);
+        cmd.env("DOCDEX_STATE_DIR", state_root);
         if enable_symbols {
             cmd.env("DOCDEX_ENABLE_SYMBOL_EXTRACTION", "1");
         }
@@ -83,14 +88,46 @@ fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
     Ok(temp)
 }
 
-fn symbols_record_path(repo_root: &Path, rel_path: &str) -> PathBuf {
+fn symbols_record_path(repo_state_root: &Path, rel_path: &str) -> PathBuf {
     let key = hex::encode(Sha256::digest(rel_path.as_bytes()));
-    repo_root
-        .join(".docdex")
-        .join("index")
+    repo_state_root
         .join("symbols.db")
         .join("files")
         .join(format!("{key}.json"))
+}
+
+fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<Value, Box<dyn Error>> {
+    let repo_str = repo_root.to_string_lossy().to_string();
+    let state_root_str = state_root.to_string_lossy().to_string();
+    let output = Command::new(docdex_bin())
+        .args([
+            "repo",
+            "inspect",
+            "--repo",
+            repo_str.as_str(),
+            "--state-dir",
+            state_root_str.as_str(),
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "docdexd repo inspect exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+fn resolve_repo_state_root(state_root: &Path, repo_root: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let payload = inspect_repo_state(state_root, repo_root)?;
+    let root = payload
+        .get("statePaths")
+        .and_then(|value| value.get("repoStateRoot"))
+        .and_then(|value| value.as_str())
+        .ok_or("missing statePaths.repoStateRoot")?;
+    Ok(PathBuf::from(root))
 }
 
 fn send_line(
@@ -134,7 +171,8 @@ fn read_line(
 #[test]
 fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    let mut harness = McpHarness::spawn(repo.path())?;
+    let state_root = TempDir::new()?;
+    let mut harness = McpHarness::spawn(repo.path(), state_root.path())?;
 
     // initialize
     send_line(
@@ -400,12 +438,13 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
 #[test]
 fn mcp_symbols_returns_outcome_and_symbols_when_enabled() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     fs::write(
         repo_root.join("docs").join("symbols.md"),
         "# Title\n\nIntro text.\n\n## Subsection\nMore.\n",
     )?;
-    let mut harness = McpHarness::spawn_with_symbols(repo_root, true)?;
+    let mut harness = McpHarness::spawn_with_symbols(repo_root, state_root.path(), true)?;
 
     send_line(
         &mut harness.stdin,
@@ -498,13 +537,14 @@ fn mcp_symbols_returns_outcome_and_symbols_when_enabled() -> Result<(), Box<dyn 
 fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<(), Box<dyn Error>>
 {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     let rel_path = "docs/symbols.md";
     fs::write(
         repo_root.join(rel_path),
         "# Title\n\nIntro text.\n\n## Subsection\nMore.\n",
     )?;
-    let mut harness = McpHarness::spawn_with_symbols(repo_root, true)?;
+    let mut harness = McpHarness::spawn_with_symbols(repo_root, state_root.path(), true)?;
 
     send_line(
         &mut harness.stdin,
@@ -523,7 +563,8 @@ fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<
     )?;
     let _ = read_line(&mut harness.reader)?;
 
-    let record_path = symbols_record_path(repo_root, rel_path);
+    let repo_state_root = resolve_repo_state_root(state_root.path(), repo_root)?;
+    let record_path = symbols_record_path(&repo_state_root, rel_path);
     let raw = fs::read_to_string(&record_path)?;
     let mut value: serde_json::Value = serde_json::from_str(&raw)?;
     let symbols = value
@@ -605,7 +646,8 @@ fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<
 #[test]
 fn mcp_rejects_wrong_version() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    let mut harness = McpHarness::spawn(repo.path())?;
+    let state_root = TempDir::new()?;
+    let mut harness = McpHarness::spawn(repo.path(), state_root.path())?;
 
     send_line(
         &mut harness.stdin,
@@ -633,7 +675,8 @@ fn mcp_rejects_wrong_version() -> Result<(), Box<dyn Error>> {
 #[test]
 fn mcp_unknown_tool_returns_error() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    let mut harness = McpHarness::spawn(repo.path())?;
+    let state_root = TempDir::new()?;
+    let mut harness = McpHarness::spawn(repo.path(), state_root.path())?;
 
     send_line(
         &mut harness.stdin,
@@ -661,7 +704,8 @@ fn mcp_unknown_tool_returns_error() -> Result<(), Box<dyn Error>> {
 #[test]
 fn mcp_search_empty_query_errors() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    let mut harness = McpHarness::spawn(repo.path())?;
+    let state_root = TempDir::new()?;
+    let mut harness = McpHarness::spawn(repo.path(), state_root.path())?;
 
     // index first
     send_line(
@@ -702,7 +746,8 @@ fn mcp_search_empty_query_errors() -> Result<(), Box<dyn Error>> {
 #[test]
 fn mcp_files_pagination_and_invalid_params() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    let mut harness = McpHarness::spawn(repo.path())?;
+    let state_root = TempDir::new()?;
+    let mut harness = McpHarness::spawn(repo.path(), state_root.path())?;
 
     // index first
     send_line(
@@ -774,6 +819,7 @@ fn mcp_files_pagination_and_invalid_params() -> Result<(), Box<dyn Error>> {
 #[test]
 fn mcp_open_respects_ranges_and_bounds() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     let content = "\
 Line1
@@ -783,7 +829,7 @@ Line4
 Line5
 ";
     std::fs::write(repo_root.join("docs").join("open.md"), content)?;
-    let mut harness = McpHarness::spawn(repo_root)?;
+    let mut harness = McpHarness::spawn(repo_root, state_root.path())?;
 
     // Full file
     send_line(
@@ -857,7 +903,8 @@ Line5
 #[test]
 fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    let mut harness = McpHarness::spawn(repo.path())?;
+    let state_root = TempDir::new()?;
+    let mut harness = McpHarness::spawn(repo.path(), state_root.path())?;
 
     // search with missing query
     send_line(
@@ -1018,7 +1065,8 @@ fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
 #[test]
 fn mcp_initialize_rejects_wrong_workspace_root() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    let mut harness = McpHarness::spawn(repo.path())?;
+    let state_root = TempDir::new()?;
+    let mut harness = McpHarness::spawn(repo.path(), state_root.path())?;
 
     send_line(
         &mut harness.stdin,

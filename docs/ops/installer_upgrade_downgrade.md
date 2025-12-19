@@ -106,7 +106,7 @@ Risk notes:
 
 This is usually a repo state issue, not an installer issue:
 - Rebuild the index: `docdexd index --repo <path>`
-- If you intentionally want a clean state, delete only the repo’s index directory: `<repo>/.docdex/index` (this forces a full reindex next run).
+- If you intentionally want a clean state, delete only the repo’s index directory under the state root (see `docdexd repo inspect --repo <path>` for `indexDir`, typically `~/.docdex/state/repos/<fingerprint>/index`). This forces a full reindex next run.
 
 ## See also
 
@@ -114,4 +114,3 @@ This is usually a repo state issue, not an installer issue:
 - Installer error codes + remediation: `docs/ops/installer_error_codes.md`
 - Release manifest contract: `docs/contracts/release_manifest_schema_v1.md`
 - Installer error contract: `docs/contracts/installer_error_contract_v1.md`
-

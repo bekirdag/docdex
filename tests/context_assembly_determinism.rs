@@ -13,12 +13,15 @@ fn docdex_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
-fn run_docdex<I, S>(args: I) -> Result<Vec<u8>, Box<dyn Error>>
+fn run_docdex<I, S>(state_root: &Path, args: I) -> Result<Vec<u8>, Box<dyn Error>>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let output = Command::new(docdex_bin()).args(args).output()?;
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root)
+        .args(args)
+        .output()?;
     if !output.status.success() {
         return Err(format!(
             "docdexd exited with {}: {}",
@@ -54,7 +57,12 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
     Err("docdexd healthz endpoint did not respond in time".into())
 }
 
-fn spawn_server(repo_root: &Path, host: &str, port: u16) -> Result<Child, Box<dyn Error>> {
+fn spawn_server(
+    state_root: &Path,
+    repo_root: &Path,
+    host: &str,
+    port: u16,
+) -> Result<Child, Box<dyn Error>> {
     let repo_arg = repo_root.to_string_lossy().to_string();
     let port_string = port.to_string();
     let args = vec![
@@ -70,6 +78,7 @@ fn spawn_server(repo_root: &Path, host: &str, port: u16) -> Result<Child, Box<dy
         "--secure-mode=false",
     ];
     let child = Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root)
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -258,14 +267,15 @@ fn capture_determinism_signatures(client: &Client, host: &str, port: u16) -> Res
 #[test]
 fn e2e_context_assembly_ordering_is_deterministic() -> Result<(), Box<dyn Error>> {
     let repo = setup_determinism_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut child = spawn_server(repo.path(), host, port)?;
+    let mut child = spawn_server(state_root.path(), repo.path(), host, port)?;
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let search_url = format!("http://{host}:{port}/search");
 
@@ -292,26 +302,27 @@ fn e2e_context_assembly_ordering_is_deterministic() -> Result<(), Box<dyn Error>
 #[test]
 fn e2e_context_assembly_is_deterministic_across_reindex_and_restart() -> Result<(), Box<dyn Error>> {
     let repo = setup_determinism_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut child = spawn_server(repo.path(), host, port)?;
+    let mut child = spawn_server(state_root.path(), repo.path(), host, port)?;
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let baseline = capture_determinism_signatures(&client, host, port)?;
 
     child.kill().ok();
     child.wait().ok();
 
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
-    let mut child = spawn_server(repo.path(), host, port)?;
+    let mut child = spawn_server(state_root.path(), repo.path(), host, port)?;
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let after = capture_determinism_signatures(&client, host, port)?;
 
@@ -325,14 +336,15 @@ fn e2e_context_assembly_is_deterministic_across_reindex_and_restart() -> Result<
 #[test]
 fn e2e_context_assembly_pruning_is_deterministic() -> Result<(), Box<dyn Error>> {
     let repo = setup_determinism_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut child = spawn_server(repo.path(), host, port)?;
+    let mut child = spawn_server(state_root.path(), repo.path(), host, port)?;
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let search_url = format!("http://{host}:{port}/search");
 
@@ -385,14 +397,15 @@ fn e2e_context_assembly_pruning_is_deterministic() -> Result<(), Box<dyn Error>>
 #[test]
 fn e2e_context_assembly_chunking_is_deterministic() -> Result<(), Box<dyn Error>> {
     let repo = setup_determinism_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut child = spawn_server(repo.path(), host, port)?;
+    let mut child = spawn_server(state_root.path(), repo.path(), host, port)?;
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
 
     let snippet_url = format!("http://{host}:{port}/snippet/docs/chunk.md");

@@ -9,13 +9,14 @@ fn docdex_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
-fn run_docdex<I, S>(args: I) -> Result<Vec<u8>, Box<dyn Error>>
+fn run_docdex<I, S>(state_root: &Path, args: I) -> Result<Vec<u8>, Box<dyn Error>>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
     let output = Command::new(docdex_bin())
         .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+        .env("DOCDEX_STATE_DIR", state_root)
         .args(args)
         .output()?;
     if !output.status.success() {
@@ -51,6 +52,7 @@ fn write_lib_doc(repo_root: &Path) -> Result<PathBuf, Box<dyn Error>> {
 #[test]
 fn libs_ingestion_is_partial_and_searchable() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     let repo_str = repo_root.to_string_lossy().to_string();
 
@@ -77,9 +79,9 @@ fn libs_ingestion_is_partial_and_searchable() -> Result<(), Box<dyn Error>> {
     });
     fs::write(&sources_path, serde_json::to_string_pretty(&sources)?)?;
 
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
-    let ingest_out = run_docdex([
+    let ingest_out = run_docdex(state_root.path(), [
         "libs-ingest",
         "--repo",
         repo_str.as_str(),
@@ -109,7 +111,7 @@ fn libs_ingestion_is_partial_and_searchable() -> Result<(), Box<dyn Error>> {
         1
     );
 
-    let query_out = run_docdex([
+    let query_out = run_docdex(state_root.path(), [
         "query",
         "--repo",
         repo_str.as_str(),

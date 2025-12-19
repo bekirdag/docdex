@@ -40,6 +40,7 @@ fn pick_free_port() -> Option<u16> {
 }
 
 fn spawn_server(
+    state_root: &Path,
     repo_root: &Path,
     host: &str,
     port: u16,
@@ -49,6 +50,7 @@ fn spawn_server(
 ) -> Result<Child, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     Ok(Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root)
         .args([
             "serve",
             "--repo",
@@ -229,7 +231,9 @@ fn http_memory_store_timeout_returns_stable_code() -> Result<(), Box<dyn Error>>
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = spawn_server(repo.path(), host, port, &slow.base_url, "fake-embed", 50)?;
+    let state_root = TempDir::new()?;
+    let mut server =
+        spawn_server(state_root.path(), repo.path(), host, port, &slow.base_url, "fake-embed", 50)?;
     wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
@@ -259,6 +263,7 @@ fn http_memory_store_timeout_returns_stable_code() -> Result<(), Box<dyn Error>>
 #[test]
 fn mcp_memory_store_timeout_returns_stable_code() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let Some(slow) = MockOllama::spawn(post(|| async move {
         tokio::time::sleep(Duration::from_millis(200)).await;
         (axum::http::StatusCode::OK, Json(json!({ "embedding": [0.1, 0.2] })))
@@ -267,7 +272,9 @@ fn mcp_memory_store_timeout_returns_stable_code() -> Result<(), Box<dyn Error>> 
         return Ok(());
     };
 
-    let envs = [
+    let state_root_str = state_root.path().to_string_lossy().to_string();
+    let envs = vec![
+        ("DOCDEX_STATE_DIR", state_root_str.as_str()),
         ("DOCDEX_ENABLE_MEMORY", "1"),
         ("DOCDEX_OLLAMA_BASE_URL", slow.base_url.as_str()),
         ("DOCDEX_EMBEDDING_MODEL", "fake-embed"),
@@ -296,6 +303,7 @@ fn mcp_memory_store_timeout_returns_stable_code() -> Result<(), Box<dyn Error>> 
 #[test]
 fn invalid_model_is_explicit_and_daemon_stays_healthy() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let Some(mock) = MockOllama::spawn(post(|| async move {
         (
             axum::http::StatusCode::NOT_FOUND,
@@ -311,6 +319,7 @@ fn invalid_model_is_explicit_and_daemon_stays_healthy() -> Result<(), Box<dyn Er
     };
     let host = "127.0.0.1";
     let mut server = Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root.path())
         .args([
             "serve",
             "--repo",
@@ -363,6 +372,7 @@ fn invalid_model_is_explicit_and_daemon_stays_healthy() -> Result<(), Box<dyn Er
 #[test]
 fn memory_metadata_includes_embedding_model() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let Some(mock) = MockOllama::spawn(post(|| async move {
         (axum::http::StatusCode::OK, Json(json!({ "embedding": [1.0, 0.0] })))
     }))?
@@ -375,6 +385,7 @@ fn memory_metadata_includes_embedding_model() -> Result<(), Box<dyn Error>> {
     };
     let host = "127.0.0.1";
     let mut server = Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root.path())
         .args([
             "serve",
             "--repo",
@@ -433,6 +444,7 @@ fn memory_metadata_includes_embedding_model() -> Result<(), Box<dyn Error>> {
 #[test]
 fn cli_timeout_error_is_machine_readable() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let Some(slow) = MockOllama::spawn(post(|| async move {
         tokio::time::sleep(Duration::from_millis(200)).await;
         (axum::http::StatusCode::OK, Json(json!({ "embedding": [0.1, 0.2] })))
@@ -442,6 +454,7 @@ fn cli_timeout_error_is_machine_readable() -> Result<(), Box<dyn Error>> {
     };
 
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root.path())
         .args([
         "memory-store",
         "--repo",

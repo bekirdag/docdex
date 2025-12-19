@@ -27,21 +27,21 @@ When symbol extraction is disabled:
 
 ### State directory
 
-The symbols store lives under Docdex’s **state/index directory**:
+The symbols store lives under Docdex’s **per-repo state root**:
 
-- Default: `<repo>/.docdex/index`
-- Legacy fallback (if present): `<repo>/.gpt-creator/docdex/index`
-- Override: `--state-dir <path>` / `DOCDEX_STATE_DIR` (relative paths are resolved under `repo`)
+- Default (`<repo-state-root>`): `~/.docdex/state/repos/<fingerprint>/`
+- Override: `--state-dir <state-root>` / `DOCDEX_STATE_DIR` (relative paths are resolved under `repo`; per-repo state root is `<state-root>/repos/<fingerprint>/`)
+- Inspect: `docdexd repo inspect --repo <path>` reports `repoStateRoot` and `indexDir`.
 
 ### Symbols store path and layout
 
 When enabled, the symbols store root is:
 
-`<state_dir>/symbols.db/`
+`<repo-state-root>/symbols.db/`
 
 Current on-disk layout:
 
-- `<state_dir>/symbols.db/files/`
+- `<repo-state-root>/symbols.db/files/`
   - One JSON file per repo-relative path: `<sha256(rel_path)>.json`
 
 Notes:
@@ -52,7 +52,7 @@ Notes:
 ### Lifecycle rules
 
 - Full reindex (`docdexd index`):
-  - Docdex attempts to delete `<state_dir>/symbols.db/` and recreate `<state_dir>/symbols.db/files/`.
+  - Docdex attempts to delete `<repo-state-root>/symbols.db/` and recreate `<repo-state-root>/symbols.db/files/`.
   - If the reset fails, indexing continues; stale symbol records may remain on disk for paths that are no longer indexed.
 - Incremental ingest (`docdexd ingest` / watcher ingestion):
   - Docdex overwrites the per-file record for the ingested file.
@@ -87,7 +87,7 @@ See `docs/mcp/errors.md` for the common error envelope.
 
 Internal consumers can use the `SymbolsStore` API in `src/symbols.rs`:
 
-- `SymbolsStore::new(repo_root, state_dir) -> Result<SymbolsStore>`
+- `SymbolsStore::new(repo_root, repo_state_dir) -> Result<SymbolsStore>`
 - `SymbolsStore::read_symbols(rel_path) -> Result<Option<SymbolsResponseV1>>`
 - `SymbolsStore::upsert_symbols(rel_path, payload) -> Result<()>`
 - `SymbolsStore::delete_symbols(rel_path) -> Result<()>`
@@ -116,7 +116,7 @@ Each stored record is a `docdex.symbols` JSON payload:
 
 ### `repo_id`
 
-`repo_id` is a SHA-256 hex digest derived from the repo root path after canonicalization and slash normalization.
+`repo_id` is the repo fingerprint (SHA-256 of the repo identity). It is derived from the `.git` directory when present, falling back to the repo root on non-git directories.
 
 Assumption/implication:
 

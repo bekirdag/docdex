@@ -714,7 +714,12 @@ mod tests {
     #[test]
     fn store_accepts_type_alias_for_kind() {
         let dir = TempDir::new().expect("tempdir");
-        let state_dir = dir.path().join(".docdex").join("index");
+        let state_dir = dir
+            .path()
+            .join("state")
+            .join("repos")
+            .join("test-fingerprint")
+            .join("index");
         std::fs::create_dir_all(&state_dir).expect("create state dir");
         std::fs::write(
             state_dir.join("impact_graph.json"),

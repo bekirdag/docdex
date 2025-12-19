@@ -150,7 +150,7 @@ pub struct LibsIndexer {
 
 impl LibsIndexer {
     pub fn open_or_create(libs_state_dir: PathBuf) -> Result<Self> {
-        crate::index::ensure_state_dir_secure(&libs_state_dir)?;
+        crate::state_layout::ensure_state_dir_secure(&libs_state_dir)?;
         let (schema, fields) = build_schema();
         let index = Index::open_or_create(
             tantivy::directory::MmapDirectory::open(&libs_state_dir)?,

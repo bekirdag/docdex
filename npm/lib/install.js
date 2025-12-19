@@ -4459,6 +4459,7 @@ async function runInstaller(options) {
     detectInstalledBinaryVersionFn
 >>>>>>> mcoda/task/ops-01-us-03-t37
   });
+  const detectedInstalledVersion = typeof local.installedVersion === "string" ? local.installedVersion : null;
 
 <<<<<<< HEAD
   const localOutcomeCode = normalizeOutcomeCode(local.outcome);
@@ -4603,6 +4604,7 @@ async function runInstaller(options) {
         ? local.installedVersion
         : null;
 
+<<<<<<< HEAD
 <<<<<<< HEAD
   const repoSlug = parseRepoSlugFn();
 >>>>>>> mcoda/task/ops-01-us-03-t37
@@ -4753,6 +4755,8 @@ async function runInstaller(options) {
   });
 =======
   const detectedVersion = local.installedVersion;
+=======
+>>>>>>> mcoda/task/ops-01-us-03-t23
   let plan;
   try {
     plan = await resolveInstallerDownloadPlanFn({
@@ -4763,11 +4767,24 @@ async function runInstaller(options) {
       logger
     });
   } catch (err) {
+<<<<<<< HEAD
     mergeErrorDetails(err, { expectedVersion: version, detectedVersion, repoSlug });
+=======
+    if (err && typeof err === "object") {
+      const baseDetails = withBaseDetails(err.details);
+      err.details = {
+        ...baseDetails,
+        version: baseDetails.version ?? version,
+        repoSlug: baseDetails.repoSlug ?? repoSlug,
+        installedVersion: baseDetails.installedVersion ?? detectedInstalledVersion
+      };
+    }
+>>>>>>> mcoda/task/ops-01-us-03-t23
     throw err;
   }
 
   const { archive, expectedSha256, source, manifestAttempt } = plan;
+<<<<<<< HEAD
 >>>>>>> mcoda/task/ops-01-us-03-t39
 
 <<<<<<< HEAD
@@ -4797,6 +4814,8 @@ async function runInstaller(options) {
 =======
     integrityPolicy
   });
+=======
+>>>>>>> mcoda/task/ops-01-us-03-t23
 
   const normalizedExpectedSha256 = normalizeSha256Hex(expectedSha256);
   if (integrityPolicy === "required" && !normalizedExpectedSha256) {
@@ -5165,6 +5184,7 @@ async function runInstaller(options) {
           version,
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
           installedVersion: local.installedVersion,
 =======
           detectedVersion,
@@ -5173,6 +5193,9 @@ async function runInstaller(options) {
           expectedVersion: version,
           detectedVersion: local.installedVersion,
 >>>>>>> mcoda/task/ops-01-us-03-t39
+=======
+          installedVersion: detectedInstalledVersion,
+>>>>>>> mcoda/task/ops-01-us-03-t23
           repoSlug,
           downloadUrl: redactUrl(downloadUrl),
           expectedAsset: archive,
@@ -5186,6 +5209,7 @@ async function runInstaller(options) {
           platformKey,
           targetTriple,
           version,
+          installedVersion: detectedInstalledVersion,
           repoSlug,
           assetName: archive,
           downloadUrl: redactUrl(downloadUrl),
@@ -6924,9 +6948,23 @@ function describeFatalError(err) {
         ? err.details.expectedAssetPattern.trim()
         : assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset || undefined });
 <<<<<<< HEAD
+<<<<<<< HEAD
     return withInstallAttemptLines({
 =======
     const versionInfo = versionDiagnostics(err.details);
+=======
+    const expectedVersion =
+      typeof err.details?.version === "string" && err.details.version ? err.details.version : null;
+    const installedVersion =
+      typeof err.details?.installedVersion === "string" && err.details.installedVersion ? err.details.installedVersion : null;
+    const repoSlug = typeof err.details?.repoSlug === "string" && err.details.repoSlug ? err.details.repoSlug : null;
+    const releaseSource = repoSlug
+      ? expectedVersion
+        ? `${repoSlug} (tag v${expectedVersion})`
+        : repoSlug
+      : null;
+    const resolutionSource = typeof err.details?.source === "string" ? err.details.source : null;
+>>>>>>> mcoda/task/ops-01-us-03-t23
     return {
 >>>>>>> mcoda/task/ops-01-us-03-t39
       code: err.code,
@@ -6943,6 +6981,7 @@ function describeFatalError(err) {
         fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,
         err.details?.fallbackReason ? `[docdex] Fallback reason: ${err.details.fallbackReason}` : null,
 <<<<<<< HEAD
+<<<<<<< HEAD
         err.details?.version ? `[docdex] Version: v${err.details.version}` : null,
 <<<<<<< HEAD
         err.details?.installedVersion ? `[docdex] Detected installed version: v${err.details.installedVersion}` : null,
@@ -6956,6 +6995,12 @@ function describeFatalError(err) {
         versionInfo.source ? `[docdex] Release source: ${versionInfo.source}` : null,
 >>>>>>> mcoda/task/ops-01-us-03-t39
         err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
+=======
+        expectedVersion ? `[docdex] Expected version: v${expectedVersion}` : null,
+        installedVersion ? `[docdex] Detected installed version: v${installedVersion}` : null,
+        releaseSource ? `[docdex] Release source: ${releaseSource}` : null,
+        resolutionSource ? `[docdex] Resolution source: ${resolutionSource}` : null,
+>>>>>>> mcoda/task/ops-01-us-03-t23
         err.details?.expectedAsset ? `[docdex] Expected asset: ${err.details.expectedAsset}` : null,
         expectedAssetPattern ? `[docdex] Asset naming pattern: ${expectedAssetPattern}` : null,
         err.details?.downloadUrl ? `[docdex] URL tried: ${redactUrl(err.details.downloadUrl)}` : null,
@@ -6963,7 +7008,10 @@ function describeFatalError(err) {
         "[docdex] Next steps:",
         "[docdex] - Confirm the GitHub Release for this version contains the expected asset for your target.",
         "[docdex] - If installing from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` to the repo that hosts the assets.",
-        "[docdex] - Workaround: install a version with matching assets, or build from source (`cargo build --release --locked`)."
+        "[docdex] - Workaround: install a version with matching assets, or build from source (`cargo build --release --locked`).",
+        installedVersion && expectedVersion && installedVersion !== expectedVersion
+          ? `[docdex] - If you need the detected docdexd v${installedVersion}, install npm package v${installedVersion} (or set DOCDEX_VERSION=${installedVersion}).`
+          : null
       ].filter(Boolean)
     });
   }
@@ -7021,6 +7069,7 @@ function describeFatalError(err) {
   }
 
   if (err instanceof DownloadError) {
+<<<<<<< HEAD
     return withInstallAttemptLines({
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
@@ -7044,6 +7093,19 @@ function describeFatalError(err) {
     const failureReason =
       typeof err.details?.signatureFailureReason === "string" ? err.details.signatureFailureReason : null;
 
+=======
+    const expectedVersion =
+      typeof err.details?.version === "string" && err.details.version ? err.details.version : null;
+    const installedVersion =
+      typeof err.details?.installedVersion === "string" && err.details.installedVersion ? err.details.installedVersion : null;
+    const repoSlug = typeof err.details?.repoSlug === "string" && err.details.repoSlug ? err.details.repoSlug : null;
+    const releaseSource = repoSlug
+      ? expectedVersion
+        ? `${repoSlug} (tag v${expectedVersion})`
+        : repoSlug
+      : null;
+    const resolutionSource = typeof err.details?.source === "string" ? err.details.source : null;
+>>>>>>> mcoda/task/ops-01-us-03-t23
     return {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
@@ -7051,6 +7113,7 @@ function describeFatalError(err) {
       lines: [
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
+<<<<<<< HEAD
         signedName ? `[docdex] Signed metadata: ${signedName}` : null,
         signatureName ? `[docdex] Signature file: ${signatureName}` : null,
         signatureUrl ? `[docdex] Signature URL: ${signatureUrl}` : null,
@@ -7063,6 +7126,22 @@ function describeFatalError(err) {
         "[docdex] - If behind a proxy or mirror, bypass it; signature failures can indicate tampering.",
         "[docdex] - If you control the releases, regenerate and re-upload signed integrity metadata.",
         "[docdex] - If you cannot obtain signed releases, set `DOCDEX_SIGNATURE_POLICY=disabled` (at your own risk)."
+=======
+        expectedVersion ? `[docdex] Expected version: v${expectedVersion}` : null,
+        installedVersion ? `[docdex] Detected installed version: v${installedVersion}` : null,
+        releaseSource ? `[docdex] Release source: ${releaseSource}` : null,
+        err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
+        resolutionSource ? `[docdex] Resolution source: ${resolutionSource}` : null,
+        fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,
+        err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
+        err.details?.statusCode != null ? `[docdex] HTTP status: ${err.details.statusCode}` : null,
+        err.cause?.message ? `[docdex] Cause: ${err.cause.message}` : null,
+        "[docdex] Next steps:",
+        "[docdex] - Check network/proxy/firewall connectivity and retry.",
+        "[docdex] - If you are rate-limited or using private releases, set `DOCDEX_GITHUB_TOKEN` (or `GITHUB_TOKEN`).",
+        "[docdex] - Verify `DOCDEX_DOWNLOAD_REPO` (and `DOCDEX_DOWNLOAD_BASE` if set) point to the release assets.",
+        "[docdex] - If you are offline, re-run when online or build from source (`cargo build --release --locked`)."
+>>>>>>> mcoda/task/ops-01-us-03-t23
       ].filter(Boolean)
     };
   }
@@ -7228,7 +7307,20 @@ function describeFatalError(err) {
         : platformKey
           ? assetPatternForPlatformKey(platformKey)
           : assetPatternForPlatformKey(null);
+<<<<<<< HEAD
     const versionInfo = versionDiagnostics(err.details);
+=======
+    const expectedVersion =
+      typeof err.details?.version === "string" && err.details.version ? err.details.version : null;
+    const installedVersion =
+      typeof err.details?.installedVersion === "string" && err.details.installedVersion ? err.details.installedVersion : null;
+    const repoSlug = typeof err.details?.repoSlug === "string" && err.details.repoSlug ? err.details.repoSlug : null;
+    const releaseSource = repoSlug
+      ? expectedVersion
+        ? `${repoSlug} (tag v${expectedVersion})`
+        : repoSlug
+      : null;
+>>>>>>> mcoda/task/ops-01-us-03-t23
 
     const title =
       err.code === "DOCDEX_ASSET_NO_MATCH"
@@ -7259,12 +7351,18 @@ function describeFatalError(err) {
             "[docdex] install failed: missing artifact/version sync issue (manifest has no asset for this target)",
             `[docdex] error code: ${err.code}`,
 <<<<<<< HEAD
+<<<<<<< HEAD
             platformKey ? `[docdex] Platform key: ${platformKey}` : null,
 =======
             versionInfo.expected ? `[docdex] Expected version: ${versionInfo.expected}` : null,
             versionInfo.detected ? `[docdex] Detected version: ${versionInfo.detected}` : null,
             versionInfo.source ? `[docdex] Release source: ${versionInfo.source}` : null,
 >>>>>>> mcoda/task/ops-01-us-03-t39
+=======
+            expectedVersion ? `[docdex] Expected version: v${expectedVersion}` : null,
+            installedVersion ? `[docdex] Detected installed version: v${installedVersion}` : null,
+            releaseSource ? `[docdex] Release source: ${releaseSource}` : null,
+>>>>>>> mcoda/task/ops-01-us-03-t23
             err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
             `[docdex] Asset naming pattern: ${expectedAssetPattern}`,
             `[docdex] Details: ${err.message}`
@@ -7294,7 +7392,17 @@ function describeFatalError(err) {
     if (Array.isArray(err.details?.matches) && err.details.matches.length) {
       lines.push(`[docdex] matched assets: ${err.details.matches.join(", ")}`);
     }
+<<<<<<< HEAD
     return withInstallAttemptLines({
+=======
+    if (err.code === "DOCDEX_ASSET_NO_MATCH") {
+      lines.push("[docdex] Next steps:");
+      lines.push("[docdex] - Confirm the release tag exists and includes the expected asset for your target.");
+      lines.push("[docdex] - If installing from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` to the repo that hosts the assets.");
+      lines.push("[docdex] - Workaround: install a version with matching assets, or build from source (`cargo build --release --locked`).");
+    }
+    return {
+>>>>>>> mcoda/task/ops-01-us-03-t23
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),

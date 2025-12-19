@@ -225,6 +225,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+<<<<<<< HEAD
       - name: Upload release integrity signatures
         if: ${{ secrets.DOCDEX_RELEASE_SIGNING_PRIVATE_KEY != '' }}
         uses: softprops/action-gh-release@v1
@@ -237,6 +238,13 @@ jobs:
             artifacts/SHA256SUMS.txt.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+=======
+      - name: Guard npm publish against missing release assets
+        env:
+          DOCDEX_DOWNLOAD_REPO: ${{ github.repository }}
+          DOCDEX_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/verify_release_assets.cjs
+>>>>>>> mcoda/task/ops-01-us-03-t46
 
       - name: Update npm to latest (trusted publish requires >=11.5.1)
         run: npm install -g npm@latest

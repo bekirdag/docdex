@@ -128,6 +128,7 @@ function generateReleaseManifest(options) {
     const tarPath = path.join(assetsDir, tarName);
     const shaName = `${tarName}.sha256`;
     const shaPath = path.join(assetsDir, shaName);
+    const tarSize = fs.statSync(tarPath).size;
 
     const computedTarSha = sha256FileSync(tarPath);
     const shaText = fs.readFileSync(shaPath, "utf8");
@@ -147,11 +148,11 @@ function generateReleaseManifest(options) {
 
     targetsObj[t.targetTriple] = {
       asset: { name: tarName },
-      integrity: { sha256: computedTarSha }
+      integrity: { sha256: computedTarSha, size: tarSize }
     };
 
-    publishedAssets.push({ name: tarName, sha256: computedTarSha });
-    publishedAssets.push({ name: shaName, sha256: sha256FileSync(shaPath) });
+    publishedAssets.push({ name: tarName, sha256: computedTarSha, size: tarSize });
+    publishedAssets.push({ name: shaName, sha256: sha256FileSync(shaPath), size: fs.statSync(shaPath).size });
   }
 
   const manifest = {

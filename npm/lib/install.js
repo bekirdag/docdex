@@ -872,6 +872,7 @@ async function resolveInstallerDownloadPlan({
   version,
   platformKey,
   targetTriple,
+  detected = null,
   logger = console,
   downloadTextFn = downloadText,
   artifactNameFn = artifactName,
@@ -896,11 +897,13 @@ async function resolveInstallerDownloadPlan({
   } catch (err) {
     if (err instanceof ManifestResolutionError) {
       const expectedAsset = artifactNameFn(platformKey);
+      const detectedDetails = detected && typeof detected === "object" ? detected : null;
       err.details = {
         ...withBaseDetails(err.details),
         platformKey,
         expectedAsset,
-        expectedAssetPattern: assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset })
+        expectedAssetPattern: assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset }),
+        detected: detectedDetails
       };
     }
     throw err;
@@ -1070,6 +1073,7 @@ async function runInstaller(options) {
     version,
     platformKey,
     targetTriple,
+    detected: platformPolicy.detected,
     logger
   });
 
@@ -1085,7 +1089,11 @@ async function runInstaller(options) {
       if (err && typeof err.statusCode === "number" && err.statusCode === 404) {
         const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
         throw new MissingArtifactError({
-          detected: { os: detectedPlatform, arch: detectedArch },
+          detected: {
+            os: platformPolicy?.detected?.platform ?? detectedPlatform,
+            arch: platformPolicy?.detected?.arch ?? detectedArch,
+            libc: platformPolicy?.detected?.libc ?? null
+          },
           platformKey,
           targetTriple,
           assetName: archive,
@@ -1254,7 +1262,11 @@ function describeFatalError(err) {
   }
 
   if (err instanceof MissingArtifactError) {
-    const detected = err.details?.detected ? `${err.details.detected.os}/${err.details.detected.arch}` : null;
+    const detected = err.details?.detected
+      ? `${err.details.detected.os}/${err.details.detected.arch}${
+          err.details.detected.libc ? `/${err.details.detected.libc}` : ""
+        }`
+      : null;
     const platformKey = typeof err.details?.platformKey === "string" ? err.details.platformKey : null;
     const expectedAsset =
       typeof err.details?.expectedAsset === "string" && err.details.expectedAsset.trim()
@@ -1382,12 +1394,20 @@ function describeFatalError(err) {
         : platformKey
           ? assetPatternForPlatformKey(platformKey)
           : assetPatternForPlatformKey(null);
+    const detectedPlatform = err.details?.detected?.os ?? err.details?.detected?.platform;
+    const detectedArch = err.details?.detected?.arch;
+    const detectedLibc = err.details?.detected?.libc;
+    const detected =
+      detectedPlatform && detectedArch
+        ? `${detectedPlatform}/${detectedArch}${detectedLibc ? `/${detectedLibc}` : ""}`
+        : null;
 
     const lines =
       err.code === "DOCDEX_ASSET_NO_MATCH"
         ? [
             "[docdex] install failed: missing artifact/version sync issue (manifest has no asset for this target)",
             `[docdex] error code: ${err.code}`,
+            detected ? `[docdex] Detected platform: ${detected}` : null,
             err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
             `[docdex] Asset naming pattern: ${expectedAssetPattern}`,
             `[docdex] Details: ${err.message}`

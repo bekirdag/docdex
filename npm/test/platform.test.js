@@ -177,7 +177,7 @@ test("assetPatternForPlatformKey describes docdexd archive naming deterministica
 
 test("resolvePlatformPolicy returns platform key, target triple, and expected asset naming", () => {
   const policy = resolvePlatformPolicy({ platform: "darwin", arch: "arm64" });
-  assert.deepEqual(policy.detected, { platform: "darwin", arch: "arm64" });
+  assert.deepEqual(policy.detected, { platform: "darwin", arch: "arm64", libc: null });
   assert.equal(policy.platformKey, "darwin-arm64");
   assert.equal(policy.targetTriple, "aarch64-apple-darwin");
   assert.equal(policy.expectedAssetName, "docdexd-darwin-arm64.tar.gz");

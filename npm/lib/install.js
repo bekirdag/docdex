@@ -632,16 +632,23 @@ async function determineLocalInstallerOutcome({
   };
 }
 
-function parseSha256File(text, expectedFilename) {
+function parseSha256File(text, expectedFilename, options = {}) {
   const lines = String(text).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   for (const line of lines) {
     // Typical format: "<hex>  <filename>"
     const match = line.match(/^([0-9a-fA-F]{64})\s+\*?(.+)$/);
     if (!match) continue;
     const hash = match[1].toLowerCase();
-    const filename = match[2].trim();
-    if (!expectedFilename || filename === expectedFilename) return hash;
+    const rawFilename = match[2].trim();
+    const normalized = rawFilename.replace(/^(\.\/)+/, "");
+    const basename = normalized.split(/[\\/]/).pop();
+    if (!expectedFilename || normalized === expectedFilename || basename === expectedFilename) return hash;
   }
+
+  if (options.allowBareHash && expectedFilename && lines.length === 1 && /^[0-9a-fA-F]{64}$/.test(lines[0])) {
+    return lines[0].toLowerCase();
+  }
+
   return null;
 }
 
@@ -935,7 +942,7 @@ async function resolveInstallerDownloadPlan({
       const shaUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}.sha256`;
       try {
         const shaText = await downloadTextFn(shaUrl);
-        expectedSha256 = parseSha256File(shaText, archive);
+        expectedSha256 = parseSha256File(shaText, archive, { allowBareHash: true });
       } catch {
         expectedSha256 = null;
       }

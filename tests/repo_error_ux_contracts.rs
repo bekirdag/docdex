@@ -207,3 +207,207 @@ fn cli_repo_state_mismatch_fast_fails_with_fingerprint_and_guidance() -> Result<
 
     Ok(())
 }
+
+#[test]
+fn cli_repo_state_meta_drift_fails_closed() -> Result<(), Box<dyn Error>> {
+    let workspace = TempDir::new()?;
+    let state_root = TempDir::new()?;
+    let state_root = state_root.path().canonicalize()?;
+    let state_root_str = state_root.to_string_lossy().to_string();
+
+    let repo_a = workspace.path().join("repo-a");
+    write_repo(&repo_a, "a.md", "repo_a_token")?;
+
+    let out_a = Command::new(docdex_bin())
+        .args([
+            "index",
+            "--repo",
+            repo_a.to_string_lossy().as_ref(),
+            "--state-dir",
+            state_root_str.as_str(),
+        ])
+        .output()?;
+    assert!(out_a.status.success(), "index repo-a failed: {:?}", out_a);
+
+    let repos_dir = state_root.join("repos");
+    let mut repo_dir: Option<PathBuf> = None;
+    for entry in fs::read_dir(&repos_dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            repo_dir = Some(entry.path());
+            break;
+        }
+    }
+    let repo_dir = repo_dir.ok_or("expected repo state directory")?;
+    let meta_path = repo_dir.join("repo_meta.json");
+    let raw_meta = fs::read_to_string(&meta_path)?;
+    let mut meta: Value = serde_json::from_str(&raw_meta)?;
+    let original = meta
+        .get("fingerprint_sha256")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let drifted = if original == "deadbeef" {
+        "badbeef".to_string()
+    } else {
+        "deadbeef".to_string()
+    };
+    let obj = meta.as_object_mut().ok_or("repo meta must be an object")?;
+    obj.insert("fingerprint_sha256".to_string(), Value::String(drifted));
+    fs::write(&meta_path, serde_json::to_string_pretty(&meta)?)?;
+
+    let output = Command::new(docdex_bin())
+        .args([
+            "query",
+            "--repo",
+            repo_a.to_string_lossy().as_ref(),
+            "--state-dir",
+            state_root_str.as_str(),
+            "--query",
+            "shared_term",
+            "--limit",
+            "1",
+        ])
+        .output()?;
+    assert!(
+        !output.status.success(),
+        "expected repo query to fail closed on meta drift"
+    );
+    let payload = parse_error(&output.stderr)?;
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("repo_state_mismatch")
+    );
+    let details = payload
+        .get("error")
+        .and_then(|e| e.get("details"))
+        .ok_or("expected error.details")?;
+    assert!(
+        details
+            .get("attemptedFingerprint")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "expected attemptedFingerprint on repo_state_mismatch"
+    );
+    assert!(
+        details
+            .get("knownCanonicalPath")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "expected knownCanonicalPath on repo_state_mismatch"
+    );
+    assert!(
+        details
+            .get("recoverySteps")
+            .and_then(|v| v.as_array())
+            .is_some(),
+        "expected recoverySteps array on repo_state_mismatch"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn cli_repo_state_meta_drift_fails_closed() -> Result<(), Box<dyn Error>> {
+    let workspace = TempDir::new()?;
+    let state_root = TempDir::new()?;
+    let state_root = state_root.path().canonicalize()?;
+    let state_root_str = state_root.to_string_lossy().to_string();
+
+    let repo_a = workspace.path().join("repo-a");
+    write_repo(&repo_a, "a.md", "repo_a_token")?;
+
+    let out_a = Command::new(docdex_bin())
+        .args([
+            "index",
+            "--repo",
+            repo_a.to_string_lossy().as_ref(),
+            "--state-dir",
+            state_root_str.as_str(),
+        ])
+        .output()?;
+    assert!(out_a.status.success(), "index repo-a failed: {:?}", out_a);
+
+    let repos_dir = state_root.join("repos");
+    let mut repo_dir: Option<PathBuf> = None;
+    for entry in fs::read_dir(&repos_dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            repo_dir = Some(entry.path());
+            break;
+        }
+    }
+    let repo_dir = repo_dir.ok_or("expected repo state directory")?;
+    let meta_path = repo_dir.join("repo_meta.json");
+    let raw_meta = fs::read_to_string(&meta_path)?;
+    let mut meta: Value = serde_json::from_str(&raw_meta)?;
+    let original = meta
+        .get("fingerprint_sha256")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let drifted = if original == "deadbeef" {
+        "badbeef".to_string()
+    } else {
+        "deadbeef".to_string()
+    };
+    let obj = meta.as_object_mut().ok_or("repo meta must be an object")?;
+    obj.insert("fingerprint_sha256".to_string(), Value::String(drifted));
+    fs::write(&meta_path, serde_json::to_string_pretty(&meta)?)?;
+
+    let output = Command::new(docdex_bin())
+        .args([
+            "query",
+            "--repo",
+            repo_a.to_string_lossy().as_ref(),
+            "--state-dir",
+            state_root_str.as_str(),
+            "--query",
+            "shared_term",
+            "--limit",
+            "1",
+        ])
+        .output()?;
+    assert!(
+        !output.status.success(),
+        "expected repo query to fail closed on meta drift"
+    );
+    let payload = parse_error(&output.stderr)?;
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("repo_state_mismatch")
+    );
+    let details = payload
+        .get("error")
+        .and_then(|e| e.get("details"))
+        .ok_or("expected error.details")?;
+    assert!(
+        details
+            .get("attemptedFingerprint")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "expected attemptedFingerprint on repo_state_mismatch"
+    );
+    assert!(
+        details
+            .get("knownCanonicalPath")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "expected knownCanonicalPath on repo_state_mismatch"
+    );
+    assert!(
+        details
+            .get("recoverySteps")
+            .and_then(|v| v.as_array())
+            .is_some(),
+        "expected recoverySteps array on repo_state_mismatch"
+    );
+
+    Ok(())
+}

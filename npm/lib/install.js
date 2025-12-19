@@ -1848,6 +1848,37 @@ async function recoverAndCleanInstallerArtifacts({ fsModule, pathModule, distBas
   }
 }
 
+async function createStagingDir({ fsModule, pathModule, distBaseDir, platformKey }) {
+  await fsModule.promises.mkdir(distBaseDir, { recursive: true });
+  const prefix = pathModule.join(distBaseDir, `.docdexd-${platformKey}.`);
+  return fsModule.promises.mkdtemp(prefix);
+}
+
+async function swapInstallDir({ fsModule, distDir, stagingDir }) {
+  const backupDir = `${distDir}.backup.${process.pid}.${Date.now()}`;
+  let hasBackup = false;
+
+  try {
+    await fsModule.promises.rename(distDir, backupDir);
+    hasBackup = true;
+  } catch (err) {
+    if (!(err && err.code === "ENOENT")) throw err;
+  }
+
+  try {
+    await fsModule.promises.rename(stagingDir, distDir);
+  } catch (err) {
+    if (hasBackup) {
+      await fsModule.promises.rename(backupDir, distDir).catch(() => {});
+    }
+    throw err;
+  }
+
+  if (hasBackup) {
+    await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 function isValidInstallMetadata(meta) {
 >>>>>>> mcoda/task/ops-01-us-06-t35
   if (!meta || typeof meta !== "object") return false;
@@ -3447,6 +3478,7 @@ async function resolveInstallerDownloadPlan({
   let expectedSha256 = null;
   let source = "fallback";
 <<<<<<< HEAD
+<<<<<<< HEAD
   let assetId = null;
   let integritySourceType = null;
   let integritySourceName = null;
@@ -3455,6 +3487,9 @@ async function resolveInstallerDownloadPlan({
   let integritySource = null;
 >>>>>>> mcoda/task/ops-01-us-04-t18
   let integritySourceUrl = null;
+=======
+  let integritySource = null;
+>>>>>>> mcoda/task/ops-01-us-04-t11
 
 <<<<<<< HEAD
   function reportSignatureStatus(signature) {
@@ -3576,6 +3611,7 @@ async function resolveInstallerDownloadPlan({
     source = `manifest:${manifestAttempt.manifestName}`;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     integritySourceType = "manifest";
     integritySourceName = manifestAttempt.manifestName;
     integritySourceUrl = manifestAttempt.manifestUrl;
@@ -3588,6 +3624,9 @@ async function resolveInstallerDownloadPlan({
       integritySourceUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${manifestAttempt.manifestName}`;
     }
 >>>>>>> mcoda/task/ops-01-us-04-t18
+=======
+    integritySource = source;
+>>>>>>> mcoda/task/ops-01-us-04-t11
   } else if (manifestAttempt.errors && manifestAttempt.errors.length) {
     const safeErrors = manifestAttempt.errors.map((err) => redactValue(err));
     logger.warn(`[docdex] Manifest unavailable; falling back. Details: ${safeErrors.join(" | ")}`);
@@ -3626,6 +3665,7 @@ async function resolveInstallerDownloadPlan({
       expectedSha256 = checksumAttempt.sha256;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
       integritySourceType = "sha256sums";
       integritySourceName = checksumAttempt.checksumName;
       integritySourceUrl = checksumAttempt.checksumUrl;
@@ -3638,6 +3678,9 @@ async function resolveInstallerDownloadPlan({
         : "checksums";
       integritySourceUrl = checksumAttempt.checksumUrl || null;
 >>>>>>> mcoda/task/ops-01-us-04-t18
+=======
+      integritySource = `checksum:${checksumAttempt.checksumName}`;
+>>>>>>> mcoda/task/ops-01-us-04-t11
     } else {
       // Legacy fallback: per-asset .sha256 sidecar.
 =======
@@ -3682,6 +3725,7 @@ async function resolveInstallerDownloadPlan({
         if (expectedSha256) {
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
           integritySourceType = "sidecar";
           integritySourceName = `${archive}.sha256`;
           integritySourceUrl = shaUrl;
@@ -3694,6 +3738,9 @@ async function resolveInstallerDownloadPlan({
           integritySource = `sidecar:${archive}.sha256`;
           integritySourceUrl = shaUrl;
 >>>>>>> mcoda/task/ops-01-us-04-t18
+=======
+          integritySource = `checksum:${archive}.sha256`;
+>>>>>>> mcoda/task/ops-01-us-04-t11
         }
       } catch {
         expectedSha256 = null;
@@ -3701,7 +3748,12 @@ async function resolveInstallerDownloadPlan({
     }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     if (!expectedSha256) {
+=======
+    const normalized = normalizeSha256Hex(expectedSha256);
+    if (!normalized) {
+>>>>>>> mcoda/task/ops-01-us-04-t11
       const manifestCandidates = manifestCandidateNamesFn();
       const checksumCandidates = checksumCandidateNamesFn();
 <<<<<<< HEAD
@@ -3720,7 +3772,11 @@ async function resolveInstallerDownloadPlan({
           manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
           fallbackAttempted: true,
           fallbackReason: manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found",
+<<<<<<< HEAD
           manifestCandidates,
+=======
+          integritySource,
+>>>>>>> mcoda/task/ops-01-us-04-t11
           checksumCandidates,
           checksumErrors: Array.isArray(checksumAttempt?.errors) ? checksumAttempt.errors.map(redactValue) : null,
           checksumEvents: Array.isArray(checksumAttempt?.events) ? redactValue(checksumAttempt.events) : null
@@ -3755,8 +3811,12 @@ async function resolveInstallerDownloadPlan({
 >>>>>>> mcoda/task/ops-01-us-04-t17
       );
     }
+<<<<<<< HEAD
 =======
     if (integrityMissingPolicy === "abort") break;
+=======
+    expectedSha256 = normalized;
+>>>>>>> mcoda/task/ops-01-us-04-t11
   }
 
   if (!expectedSha256) {
@@ -3811,8 +3871,9 @@ async function resolveInstallerDownloadPlan({
 
   return {
     archive,
-    expectedSha256,
+    expectedSha256: normalizeSha256Hex(expectedSha256),
     source,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -3837,6 +3898,9 @@ async function resolveInstallerDownloadPlan({
     integritySource,
     integritySourceUrl,
 >>>>>>> mcoda/task/ops-01-us-04-t18
+=======
+    integritySource,
+>>>>>>> mcoda/task/ops-01-us-04-t11
     manifestAttempt: { ...manifestAttempt, fallbackAttempted: !manifestAttempt.resolved }
 =======
     manifestAttempt: { ...manifestAttempt, fallbackAttempted: !manifestAttempt.resolved },
@@ -3852,6 +3916,7 @@ async function verifyDownloadedFileIntegrity({
   sha256FileFn = sha256File,
   details
 }) {
+<<<<<<< HEAD
   const expected = normalizeSha256Hex(expectedSha256);
   if (!expected) {
     throw new ChecksumResolutionError(`Missing SHA-256 integrity metadata for ${archiveName}`, {
@@ -3924,6 +3989,22 @@ async function recoverInterruptedInstall({ fsModule, distDir, incomingDir, backu
   if (existsSync(distDir) && existsSync(backupDir)) {
     await rmTreeQuiet(fsModule, backupDir);
   }
+=======
+  const normalizedExpected = normalizeSha256Hex(expectedSha256);
+  if (!normalizedExpected) {
+    throw new ChecksumResolutionError(`Missing SHA-256 integrity metadata for ${archiveName}`, {
+      ...(details || {}),
+      assetName: archiveName,
+      expectedSha256: expectedSha256 ?? null
+    });
+  }
+  const actual = await sha256FileFn(filePath);
+  const normalizedActual = normalizeSha256Hex(actual);
+  if (!normalizedActual || normalizedActual !== normalizedExpected) {
+    throw new IntegrityMismatchError(archiveName, normalizedExpected, actual, details);
+  }
+  return normalizedActual;
+>>>>>>> mcoda/task/ops-01-us-04-t11
 }
 
 async function runInstaller(options) {
@@ -4293,6 +4374,7 @@ async function runInstaller(options) {
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   // Backward-compatible migration path: older installers stored the verified binary + metadata under package dist/.
   // If the state-root install dir is missing but the legacy one is verified, migrate without redownloading.
   if (local.reason === "binary_missing" || local.reason === "metadata_missing") {
@@ -4412,6 +4494,9 @@ async function runInstaller(options) {
     integritySourceUrl
   } = await resolveInstallerDownloadPlanFn({
 >>>>>>> mcoda/task/ops-01-us-04-t18
+=======
+  const { archive, expectedSha256, source, integritySource, manifestAttempt } = await resolveInstallerDownloadPlanFn({
+>>>>>>> mcoda/task/ops-01-us-04-t11
     repoSlug,
     version,
     platformKey,
@@ -4667,6 +4752,7 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-04-t05
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
+<<<<<<< HEAD
   let thrownError = null;
 =======
   const stagingDir = `${distDir}.staging.${process.pid}.${Date.now()}`;
@@ -4695,6 +4781,9 @@ async function runInstaller(options) {
   let stagePrepared = false;
 
 >>>>>>> mcoda/task/ops-01-us-05-t14
+=======
+  let stagingDir = null;
+>>>>>>> mcoda/task/ops-01-us-04-t11
   try {
 >>>>>>> mcoda/task/ops-01-us-05-t39
 =======
@@ -4904,6 +4993,7 @@ async function runInstaller(options) {
         expectedSha256: expectedSha256 || null,
 >>>>>>> mcoda/task/ops-01-us-04-t24
         source,
+<<<<<<< HEAD
 <<<<<<< HEAD
         repoSlug
       }
@@ -5216,6 +5306,9 @@ async function runInstaller(options) {
         integrityMetadataName: integrity?.metadataName ?? null,
         integrityMetadataSourcesConfigured: integrity?.metadataSourcesConfigured ?? null,
         integrityMissingPolicy: integrity?.missingPolicy ?? null,
+=======
+        integritySource: integritySource || source || null,
+>>>>>>> mcoda/task/ops-01-us-04-t11
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
 <<<<<<< HEAD
@@ -5224,6 +5317,7 @@ async function runInstaller(options) {
       }
     });
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
     await extractTarballFn(tmpFile, stageDir);
@@ -5288,6 +5382,15 @@ async function runInstaller(options) {
     if (!existsSync || !existsSync(stagingBinaryPath)) {
       throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
 >>>>>>> mcoda/task/ops-01-us-04-t05
+=======
+    // Stage the install before swapping it into place.
+    stagingDir = await createStagingDir({ fsModule, pathModule, distBaseDir, platformKey });
+    await extractTarballFn(tmpFile, stagingDir);
+
+    const stagedBinaryPath = pathModule.join(stagingDir, isWin32 ? "docdexd.exe" : "docdexd");
+    if (!fsModule.existsSync(stagedBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagedBinaryPath}`, {
+>>>>>>> mcoda/task/ops-01-us-04-t11
         platformKey,
         targetTriple,
         version,
@@ -5295,6 +5398,7 @@ async function runInstaller(options) {
         assetName: archive,
         downloadUrl: redactUrl(downloadUrl),
         source,
+        integritySource: integritySource || source || null,
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
 <<<<<<< HEAD
@@ -5316,6 +5420,7 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-06-t21
 =======
         fallbackAttempted: source === "fallback",
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5610,6 +5715,14 @@ async function runInstaller(options) {
     await fsModule.promises.chmod(stagingBinaryPath, 0o755).catch(() => {});
     const binarySha256 = await sha256FileFn(stagingBinaryPath);
 >>>>>>> mcoda/task/ops-01-us-04-t13
+=======
+        binaryPath: stagedBinaryPath
+      });
+    }
+
+    await fsModule.promises.chmod(stagedBinaryPath, 0o755).catch(() => {});
+    const binarySha256 = await sha256FileFn(stagedBinaryPath);
+>>>>>>> mcoda/task/ops-01-us-04-t11
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
 <<<<<<< HEAD
@@ -5669,6 +5782,7 @@ async function runInstaller(options) {
         source,
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null
       },
@@ -5701,6 +5815,9 @@ async function runInstaller(options) {
         integrityMetadataName: integrity?.metadataName ?? null,
         integrityMetadataSourcesConfigured: integrity?.metadataSourcesConfigured ?? null,
         integrityMissingPolicy: integrity?.missingPolicy ?? null,
+=======
+        integritySource: integritySource || source || null,
+>>>>>>> mcoda/task/ops-01-us-04-t11
         downloadUrl
 >>>>>>> mcoda/task/ops-01-us-04-t21
       }
@@ -5718,6 +5835,7 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-06-t35
       fsModule,
       pathModule,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -6098,6 +6216,17 @@ async function runInstaller(options) {
     const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
     logger.log(`[docdex] Installed binary to ${binaryPath}`);
 >>>>>>> mcoda/task/ops-01-us-04-t13
+=======
+      filePath: installMetadataPath(stagingDir, pathModule),
+      value: metadata
+    });
+
+    await swapInstallDir({ fsModule, distDir, stagingDir });
+    stagingDir = null;
+
+    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+    logger.log(`[docdex] Installed binary to ${binaryPath}`);
+>>>>>>> mcoda/task/ops-01-us-04-t11
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
     return { binaryPath, outcome: local.outcome };
   } catch (err) {
@@ -6211,6 +6340,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     installAttempt.cleanup.tmpFile = await safeRm({ fsModule, targetPath: tmpFile, options: { force: true } });
 
     const backupBinaryPath = pathModule.join(backupDir, binaryFilename);
@@ -6258,6 +6388,11 @@ async function runInstaller(options) {
     }
 >>>>>>> mcoda/task/ops-01-us-05-t39
 =======
+=======
+    if (stagingDir) {
+      await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    }
+>>>>>>> mcoda/task/ops-01-us-04-t11
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -6641,6 +6776,7 @@ function describeFatalError(err) {
         integrityMetadataSource ? `[docdex] Integrity metadata source: ${integrityMetadataSource}` : null,
         integrityMetadataName ? `[docdex] Integrity metadata name: ${integrityMetadataName}` : null,
         err.details?.source ? `[docdex] Source: ${err.details.source}` : null,
+        err.details?.integritySource ? `[docdex] Integrity source: ${err.details.integritySource}` : null,
         err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,
         err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,
         fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,

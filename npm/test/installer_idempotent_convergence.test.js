@@ -5,11 +5,21 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
 
 const { runInstaller, sha256File } = require("../lib/install");
 const { targetTripleForPlatformKey } = require("../lib/platform");
 
+<<<<<<< HEAD
 const EXPECTED_SHA256 = "a".repeat(64);
+=======
+function sha256String(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+const ARCHIVE_BYTES = "fake-archive-bytes";
+const ARCHIVE_SHA256 = sha256String(ARCHIVE_BYTES);
+>>>>>>> mcoda/task/ops-01-us-04-t11
 
 function createNoopLogger() {
   return {
@@ -704,8 +714,12 @@ test("installer: repair then converges to no-op without re-download", async (t) 
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
 <<<<<<< HEAD
+<<<<<<< HEAD
       expectedSha256: "a".repeat(64),
 <<<<<<< HEAD
+=======
+      expectedSha256: ARCHIVE_SHA256,
+>>>>>>> mcoda/task/ops-01-us-04-t11
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -717,9 +731,9 @@ test("installer: repair then converges to no-op without re-download", async (t) 
       downloadCalls += 1;
 >>>>>>> mcoda/task/ops-01-us-06-t14
       await ensureDir(path.dirname(dest));
-      await fs.promises.writeFile(dest, "fake-archive-bytes");
+      await fs.promises.writeFile(dest, ARCHIVE_BYTES);
     },
-    verifyDownloadedFileIntegrityFn: async () => null,
+    verifyDownloadedFileIntegrityFn: async () => ARCHIVE_SHA256,
     extractTarballFn: async (_archivePath, targetDir) => {
 <<<<<<< HEAD
       await ensureDir(targetDir);
@@ -868,6 +882,7 @@ test("installer: repair then converges to no-op without re-download", async (t) 
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 >>>>>>> mcoda/task/ops-01-us-06-t14
 =======
 >>>>>>> mcoda/task/ops-01-us-06-t03
@@ -877,3 +892,5 @@ test("installer: repair then converges to no-op without re-download", async (t) 
 >>>>>>> mcoda/task/ops-01-us-04-t17
 =======
 >>>>>>> mcoda/task/ops-01-us-04-t18
+=======
+>>>>>>> mcoda/task/ops-01-us-04-t11

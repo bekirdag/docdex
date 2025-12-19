@@ -21,6 +21,13 @@ const { artifactName, targetTripleForPlatformKey } = require("../lib/platform");
 
 const EXPECTED_SHA256 = "a".repeat(64);
 
+function sha256String(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+const ARCHIVE_BYTES = "fake-archive-bytes";
+const ARCHIVE_SHA256 = sha256String(ARCHIVE_BYTES);
+
 function createNoopLogger() {
   return {
     log: () => {},
@@ -371,6 +378,7 @@ test("installer outcome: downgrade installs when expected version is older and w
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -916,6 +924,9 @@ test("installer lifecycle: update calls restart hook when binary changes", async
 =======
       expectedSha256: EXPECTED_SHA256,
 >>>>>>> mcoda/task/ops-01-us-04-t18
+=======
+      expectedSha256: ARCHIVE_SHA256,
+>>>>>>> mcoda/task/ops-01-us-04-t11
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -923,12 +934,16 @@ test("installer lifecycle: update calls restart hook when binary changes", async
       downloadUrl = url;
       downloadDest = dest;
       await ensureDir(path.dirname(dest));
-      await fs.promises.writeFile(dest, "fake-archive-bytes");
+      await fs.promises.writeFile(dest, ARCHIVE_BYTES);
     },
     verifyDownloadedFileIntegrityFn: async ({ filePath, expectedSha256 }) => {
       assert.equal(filePath, downloadDest);
       assert.equal(expectedSha256, EXPECTED_SHA256);
       assert.ok(fs.existsSync(filePath));
+<<<<<<< HEAD
+=======
+      assert.equal(expectedSha256, ARCHIVE_SHA256);
+>>>>>>> mcoda/task/ops-01-us-04-t11
       return expectedSha256;
     },
     extractTarballFn: async (_archivePath, targetDir) => {
@@ -1062,19 +1077,27 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
 <<<<<<< HEAD
+<<<<<<< HEAD
       expectedSha256: "a".repeat(64),
 =======
       expectedSha256: EXPECTED_SHA256,
 >>>>>>> mcoda/task/ops-01-us-04-t18
+=======
+      expectedSha256: ARCHIVE_SHA256,
+>>>>>>> mcoda/task/ops-01-us-04-t11
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
 >>>>>>> mcoda/task/ops-01-us-04-t40
     downloadFn: async (_url, dest) => {
       await ensureDir(path.dirname(dest));
-      await fs.promises.writeFile(dest, "fake-archive-bytes");
+      await fs.promises.writeFile(dest, ARCHIVE_BYTES);
     },
+<<<<<<< HEAD
     verifyDownloadedFileIntegrityFn: async ({ expectedSha256 }) => expectedSha256,
+=======
+    verifyDownloadedFileIntegrityFn: async () => ARCHIVE_SHA256,
+>>>>>>> mcoda/task/ops-01-us-04-t11
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
       await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n");
@@ -1131,18 +1154,26 @@ test("installer lifecycle: reinstall_unknown does not restart when binary is unc
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
 <<<<<<< HEAD
+<<<<<<< HEAD
       expectedSha256: "a".repeat(64),
 =======
       expectedSha256: EXPECTED_SHA256,
 >>>>>>> mcoda/task/ops-01-us-04-t18
+=======
+      expectedSha256: ARCHIVE_SHA256,
+>>>>>>> mcoda/task/ops-01-us-04-t11
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
     downloadFn: async (_url, dest) => {
       await ensureDir(path.dirname(dest));
-      await fs.promises.writeFile(dest, "fake-archive-bytes");
+      await fs.promises.writeFile(dest, ARCHIVE_BYTES);
     },
+<<<<<<< HEAD
     verifyDownloadedFileIntegrityFn: async ({ expectedSha256 }) => expectedSha256,
+=======
+    verifyDownloadedFileIntegrityFn: async () => ARCHIVE_SHA256,
+>>>>>>> mcoda/task/ops-01-us-04-t11
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
       await fs.promises.writeFile(path.join(targetDir, "docdexd"), "same-binary\n");
@@ -1317,18 +1348,26 @@ test("installer rollback: failed extract keeps prior binary and rerun succeeds w
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
 <<<<<<< HEAD
+<<<<<<< HEAD
       expectedSha256: "a".repeat(64),
 =======
       expectedSha256: EXPECTED_SHA256,
 >>>>>>> mcoda/task/ops-01-us-04-t18
+=======
+      expectedSha256: ARCHIVE_SHA256,
+>>>>>>> mcoda/task/ops-01-us-04-t11
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
     downloadFn: async (_url, dest) => {
       await ensureDir(path.dirname(dest));
-      await fs.promises.writeFile(dest, "fake-archive-bytes");
+      await fs.promises.writeFile(dest, ARCHIVE_BYTES);
     },
+<<<<<<< HEAD
     verifyDownloadedFileIntegrityFn: async ({ expectedSha256 }) => expectedSha256,
+=======
+    verifyDownloadedFileIntegrityFn: async () => ARCHIVE_SHA256,
+>>>>>>> mcoda/task/ops-01-us-04-t11
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
       await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n");

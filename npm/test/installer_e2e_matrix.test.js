@@ -5,12 +5,22 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
 
 const { runInstaller } = require("../lib/install");
 const { artifactName, targetTripleForPlatformKey } = require("../lib/platform");
 const { PUBLISHED_PLATFORM_KEYS, PLATFORM_ENTRY_BY_KEY } = require("../lib/platform_matrix");
 
+<<<<<<< HEAD
 const EXPECTED_SHA256 = "a".repeat(64);
+=======
+function sha256String(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+const ARCHIVE_BYTES = "fake-archive-bytes";
+const ARCHIVE_SHA256 = sha256String(ARCHIVE_BYTES);
+>>>>>>> mcoda/task/ops-01-us-04-t11
 
 function createNoopLogger() {
   return {
@@ -80,6 +90,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
             expectedSha256,
 =======
             expectedSha256: expectedSha256Hex,
@@ -90,6 +101,9 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 =======
             expectedSha256: EXPECTED_SHA256,
 >>>>>>> mcoda/task/ops-01-us-04-t18
+=======
+            expectedSha256: ARCHIVE_SHA256,
+>>>>>>> mcoda/task/ops-01-us-04-t11
             source: "fallback",
             manifestAttempt: { errors: [], resolved: null, manifestName: null }
           };
@@ -98,10 +112,11 @@ test("installer e2e: supported platform matrix installs expected binary layout",
           downloadUrl = url;
           downloadDest = dest;
           await ensureParentDir(dest);
-          await fs.promises.writeFile(dest, "fake-archive-bytes");
+          await fs.promises.writeFile(dest, ARCHIVE_BYTES);
         },
         verifyDownloadedFileIntegrityFn: async ({ filePath, expectedSha256, archiveName, details }) => {
           assert.equal(filePath, downloadDest);
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -115,10 +130,14 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 =======
           assert.equal(expectedSha256, EXPECTED_SHA256);
 >>>>>>> mcoda/task/ops-01-us-04-t18
+=======
+          assert.equal(expectedSha256, ARCHIVE_SHA256);
+>>>>>>> mcoda/task/ops-01-us-04-t11
           assert.equal(archiveName, expectedArchive);
           assert.ok(fs.existsSync(filePath));
           assert.equal(details.platformKey, platformKey);
           assert.equal(details.targetTriple, targetTriple);
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
           return {
@@ -135,6 +154,9 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 =======
           return expectedSha256;
 >>>>>>> mcoda/task/ops-01-us-04-t18
+=======
+          return expectedSha256;
+>>>>>>> mcoda/task/ops-01-us-04-t11
         },
         extractTarballFn: async (archivePath, targetDir) => {
           extractArchive = archivePath;
@@ -147,6 +169,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
       });
 
       const isWin32 = entry.platform === "win32";
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
       const expectedBinaryPath = path.join(stateRootDir, "daemon", platformKey, isWin32 ? "docdexd.exe" : "docdexd");
@@ -263,6 +286,14 @@ test("installer e2e: supported platform matrix installs expected binary layout",
       assert.equal(path.dirname(extractDir), distBaseDir);
       assert.ok(path.basename(extractDir).startsWith(`${platformKey}.staging-`));
 >>>>>>> mcoda/task/ops-01-us-04-t05
+=======
+      const expectedBinaryPath = path.join(distBaseDir, platformKey, isWin32 ? "docdexd.exe" : "docdexd");
+      const relativeExtract = path.relative(distBaseDir, extractDir || "");
+
+      assert.equal(downloadUrl, expectedDownloadUrl);
+      assert.equal(extractArchive, downloadDest);
+      assert.ok(relativeExtract && !relativeExtract.startsWith(".."));
+>>>>>>> mcoda/task/ops-01-us-04-t11
       assert.equal(result.binaryPath, expectedBinaryPath);
       assert.ok(!fs.existsSync(extractDir), "staging dir should have been swapped into place");
       assert.ok(fs.existsSync(expectedBinaryPath));

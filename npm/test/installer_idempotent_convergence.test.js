@@ -9,6 +9,8 @@ const path = require("node:path");
 const { runInstaller, sha256File } = require("../lib/install");
 const { targetTripleForPlatformKey } = require("../lib/platform");
 
+const EXPECTED_SHA256 = "a".repeat(64);
+
 function createNoopLogger() {
   return {
     log: () => {},
@@ -701,6 +703,7 @@ test("installer: repair then converges to no-op without re-download", async (t) 
     getDownloadBaseFn: () => base,
     resolveInstallerDownloadPlanFn: async () => ({
       archive,
+<<<<<<< HEAD
       expectedSha256: "a".repeat(64),
 <<<<<<< HEAD
       source: "fallback",
@@ -765,6 +768,9 @@ test("installer: repair then converges to no-op without re-download", async (t) 
       expectedSha256: null,
 =======
 >>>>>>> mcoda/task/ops-01-us-04-t17
+=======
+      expectedSha256: EXPECTED_SHA256,
+>>>>>>> mcoda/task/ops-01-us-04-t18
       source: "fallback",
       manifestAttempt: { errors: [], resolved: null, manifestName: null }
     }),
@@ -774,7 +780,7 @@ test("installer: repair then converges to no-op without re-download", async (t) 
       await ensureDir(path.dirname(dest));
       await fs.promises.writeFile(dest, "fake-archive-bytes");
     },
-    verifyDownloadedFileIntegrityFn: async () => null,
+    verifyDownloadedFileIntegrityFn: async ({ expectedSha256 }) => expectedSha256,
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
       await fs.promises.writeFile(path.join(targetDir, "docdexd"), "repaired\n", "utf8");
@@ -861,6 +867,7 @@ test("installer: repair then converges to no-op without re-download", async (t) 
 });
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 >>>>>>> mcoda/task/ops-01-us-06-t14
 =======
 >>>>>>> mcoda/task/ops-01-us-06-t03
@@ -868,3 +875,5 @@ test("installer: repair then converges to no-op without re-download", async (t) 
 >>>>>>> mcoda/task/ops-01-us-04-t40
 =======
 >>>>>>> mcoda/task/ops-01-us-04-t17
+=======
+>>>>>>> mcoda/task/ops-01-us-04-t18

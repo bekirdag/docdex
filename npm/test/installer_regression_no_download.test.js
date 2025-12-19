@@ -7,6 +7,8 @@ const path = require("node:path");
 const { resolvePlatformPolicy } = require("../lib/platform");
 const { describeFatalError, runInstaller, resolveInstallerDownloadPlan } = require("../lib/install");
 
+const EXPECTED_SHA256 = "a".repeat(64);
+
 function createNoopLogger() {
   return {
     log: () => {},
@@ -357,7 +359,11 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
       getDownloadBaseFn: () => base,
       resolveInstallerDownloadPlanFn: async () => ({
         archive: "docdexd-linux-x64-gnu.tar.gz",
+<<<<<<< HEAD
         expectedSha256: "a".repeat(64),
+=======
+        expectedSha256: EXPECTED_SHA256,
+>>>>>>> mcoda/task/ops-01-us-04-t18
         source: "fallback",
         manifestAttempt: { errors: [], resolved: null, manifestName: null }
       }),

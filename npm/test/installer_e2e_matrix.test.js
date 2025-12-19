@@ -10,6 +10,8 @@ const { runInstaller } = require("../lib/install");
 const { artifactName, targetTripleForPlatformKey } = require("../lib/platform");
 const { PUBLISHED_PLATFORM_KEYS, PLATFORM_ENTRY_BY_KEY } = require("../lib/platform_matrix");
 
+const EXPECTED_SHA256 = "a".repeat(64);
+
 function createNoopLogger() {
   return {
     log: () => {},
@@ -77,6 +79,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
             archive: expectedArchive,
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
             expectedSha256,
 =======
             expectedSha256: expectedSha256Hex,
@@ -84,6 +87,9 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 =======
             expectedSha256: expectedArchiveSha256,
 >>>>>>> mcoda/task/ops-01-us-04-t17
+=======
+            expectedSha256: EXPECTED_SHA256,
+>>>>>>> mcoda/task/ops-01-us-04-t18
             source: "fallback",
             manifestAttempt: { errors: [], resolved: null, manifestName: null }
           };
@@ -98,6 +104,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
           assert.equal(filePath, downloadDest);
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
           assert.equal(expectedSha256, "a".repeat(64));
 =======
           assert.equal(expectedSha256, expectedSha256Hex);
@@ -105,10 +112,14 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 =======
           assert.equal(expectedSha256, expectedArchiveSha256);
 >>>>>>> mcoda/task/ops-01-us-04-t17
+=======
+          assert.equal(expectedSha256, EXPECTED_SHA256);
+>>>>>>> mcoda/task/ops-01-us-04-t18
           assert.equal(archiveName, expectedArchive);
           assert.ok(fs.existsSync(filePath));
           assert.equal(details.platformKey, platformKey);
           assert.equal(details.targetTriple, targetTriple);
+<<<<<<< HEAD
 <<<<<<< HEAD
           return {
             status: "verified_ok",
@@ -121,6 +132,9 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 =======
           return expectedArchiveSha256;
 >>>>>>> mcoda/task/ops-01-us-04-t17
+=======
+          return expectedSha256;
+>>>>>>> mcoda/task/ops-01-us-04-t18
         },
         extractTarballFn: async (archivePath, targetDir) => {
           extractArchive = archivePath;

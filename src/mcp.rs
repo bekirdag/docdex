@@ -1294,10 +1294,14 @@ impl McpServer {
             generated_at_epoch_ms: 0,
             index_last_updated_epoch_ms: None,
             repo_root: self.repo_root.display().to_string(),
+            repo_id: crate::symbols::repo_id_for_root(&self.repo_root).ok(),
             query: None,
             context_assembly: None,
         });
         meta.repo_root = project_root_path.clone();
+        meta.repo_id = meta
+            .repo_id
+            .or_else(|| crate::symbols::repo_id_for_root(&self.repo_root).ok());
         Ok(json!({
             "hits": hits_value.clone(),
             "results": hits_value,

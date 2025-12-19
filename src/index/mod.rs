@@ -153,9 +153,9 @@ const DEFAULT_EXCLUDED_RELATIVE_PREFIXES: &[&str] = &[
     "docker-data/",
     ".docker/",
 ];
-const MAX_SUMMARY_CHARS: usize = 360;
+pub(crate) const MAX_SUMMARY_CHARS: usize = 360;
 const MAX_SUMMARY_SEGMENTS: usize = 4;
-const MAX_SNIPPET_CHARS: usize = 420;
+pub(crate) const MAX_SNIPPET_CHARS: usize = 420;
 const FALLBACK_PREVIEW_LINES: usize = 60;
 
 #[derive(Clone)]

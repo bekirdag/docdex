@@ -582,17 +582,19 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
             "params": { "name": "docdex_open", "arguments": { "path": "docs/big.md" } }
         }),
     )?;
-    let open_err = read_line(&mut mcp.reader)?;
-    assert_eq!(mcp_error_code(&open_err), Some(-32602));
-    assert_eq!(mcp_error_data_code(&open_err), Some("max_content_exceeded"));
-    assert_eq!(
-        open_err.get("error")
-            .and_then(|v| v.get("data"))
-            .and_then(|v| v.get("details"))
-            .and_then(|v| v.get("max_bytes"))
-            .and_then(|v| v.as_u64()),
-        Some(512 * 1024),
-        "max_bytes should be reported"
+    let open_resp = read_line(&mut mcp.reader)?;
+    assert!(
+        open_resp.get("error").is_none(),
+        "docdex_open should clamp oversized content instead of erroring"
+    );
+    let open_body = parse_tool_result(&open_resp)?;
+    let content = open_body
+        .get("content")
+        .and_then(|v| v.as_str())
+        .ok_or("docdex_open should return content")?;
+    assert!(
+        content.len() <= 512 * 1024,
+        "docdex_open content should be bounded"
     );
 
     mcp.shutdown();

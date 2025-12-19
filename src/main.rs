@@ -10,6 +10,7 @@ mod impact;
 mod index;
 mod libs;
 mod libs_source_resolver;
+mod limits;
 mod memory;
 mod mcp;
 mod ollama;

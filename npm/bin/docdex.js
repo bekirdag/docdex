@@ -27,6 +27,29 @@ function printLines(lines, { stderr } = {}) {
   }
 }
 
+function ensureExecutable(binaryPath, fsModule = fs) {
+  if (process.platform === "win32") return true;
+  if (typeof fsModule?.accessSync !== "function") return true;
+  const xOk = fsModule?.constants?.X_OK;
+  if (typeof xOk !== "number") return true;
+
+  try {
+    fsModule.accessSync(binaryPath, xOk);
+    return true;
+  } catch {
+    if (typeof fsModule?.chmodSync === "function") {
+      try {
+        fsModule.chmodSync(binaryPath, 0o755);
+        fsModule.accessSync(binaryPath, xOk);
+        return true;
+      } catch {}
+    }
+  }
+
+  console.error(`[docdex] Binary is not executable: ${binaryPath}`);
+  return false;
+}
+
 function runDoctor() {
   const platform = process.platform;
   const arch = process.arch;
@@ -159,6 +182,10 @@ function run() {
       console.error(`[docdex] Expected target triple: ${targetTripleForPlatformKey(platformKey)}`);
       console.error(`[docdex] Asset naming pattern: ${assetPatternForPlatformKey(platformKey)}`);
     } catch {}
+    process.exit(1);
+  }
+
+  if (!ensureExecutable(binaryPath)) {
     process.exit(1);
   }
 

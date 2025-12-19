@@ -1044,6 +1044,11 @@ async function runInstaller(options) {
   const platformKey = platformPolicy.platformKey;
   const targetTriple = platformPolicy.targetTriple;
   const version = getVersionFn();
+  const detectedSummary = platformPolicy?.detected || { platform: detectedPlatform, arch: detectedArch };
+  logger.log(`[docdex] Detected platform: ${detectedSummary.platform}/${detectedSummary.arch}`);
+  logger.log(`[docdex] Target triple: ${targetTriple}`);
+  logger.log(`[docdex] Package version: v${version}`);
+
   const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
   const distDir = pathModule.join(distBaseDir, platformKey);
   const isWin32 = detectedPlatform === "win32";
@@ -1060,6 +1065,7 @@ async function runInstaller(options) {
 
   if (local.outcome === "no-op") {
     logger.log("[docdex] Install outcome: no-op");
+    logger.log("[docdex] Verify: docdex --version");
     return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
   }
 
@@ -1077,6 +1083,7 @@ async function runInstaller(options) {
   const tmpDir = opts.tmpDir || osModule.tmpdir();
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
 
+  logger.log(`[docdex] Resolved asset: ${archive}`);
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   try {
     try {
@@ -1189,6 +1196,7 @@ async function runInstaller(options) {
     });
 
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
+    logger.log("[docdex] Verify: docdex --version");
     return { binaryPath, outcome: local.outcome };
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});

@@ -1281,6 +1281,7 @@ impl McpServer {
     async fn handle_search(&self, args: SearchArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
         let query = args.query.trim();
+        let requested_limit = args.limit;
         let limit = args
             .limit
             .unwrap_or(self.max_results)
@@ -1303,9 +1304,37 @@ impl McpServer {
             context_assembly: None,
         });
         meta.repo_root = project_root_path.clone();
+<<<<<<< HEAD
         meta.repo_id = meta
             .repo_id
             .or_else(|| crate::symbols::repo_id_for_root(&self.repo_root).ok());
+=======
+        let token_estimate_sum_kept: u64 = hits.hits.iter().map(|hit| hit.token_estimate).sum();
+        meta.context_assembly = Some(search::ContextAssemblyMeta {
+            requested_limit,
+            effective_limit: limit,
+            snippet_policy: search::SnippetPolicy::Full,
+            max_tokens: None,
+            token_budget_mode: "per_hit_token_estimate",
+            hits_before_pruning: hits.hits.len(),
+            hits_after_pruning: hits.hits.len(),
+            token_estimate_sum_kept,
+            token_estimate_sum_pruned: 0,
+            pruned: Vec::new(),
+            selected_sources: hits
+                .hits
+                .iter()
+                .map(|hit| search::SelectedSourceMeta {
+                    doc_id: hit.doc_id.clone(),
+                    rel_path: hit.rel_path.clone(),
+                    score: hit.score,
+                    token_estimate: hit.token_estimate,
+                    snippet_origin: hit.snippet_origin.clone(),
+                    snippet_truncated: hit.snippet_truncated,
+                })
+                .collect(),
+        });
+>>>>>>> mcoda/task/bck-05-us-10-t12
         Ok(json!({
             "hits": hits_value.clone(),
             "results": hits_value,

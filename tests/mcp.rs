@@ -292,6 +292,74 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
         "docdex_search topScore should match top_score"
     );
 
+    assert_eq!(
+        search_body.get("limit").and_then(|v| v.as_u64()),
+        Some(4),
+        "docdex_search should clamp limit to server --max-results"
+    );
+    let context = search_body
+        .get("meta")
+        .and_then(|v| v.get("context_assembly"))
+        .ok_or("docdex_search meta.context_assembly should be present")?;
+    assert_eq!(
+        context.get("requested_limit").and_then(|v| v.as_u64()),
+        Some(5),
+        "context_assembly should record requested limit before clamp"
+    );
+    assert_eq!(
+        context.get("effective_limit").and_then(|v| v.as_u64()),
+        Some(4),
+        "context_assembly should record effective limit after clamp"
+    );
+    assert_eq!(
+        context
+            .get("snippet_policy")
+            .and_then(|v| v.as_str()),
+        Some("full"),
+        "context_assembly snippet_policy should be stable"
+    );
+    assert_eq!(
+        context
+            .get("token_budget_mode")
+            .and_then(|v| v.as_str()),
+        Some("per_hit_token_estimate"),
+        "context_assembly token_budget_mode should be stable"
+    );
+    let token_sum: u64 = hits
+        .iter()
+        .map(|hit| hit.get("token_estimate").and_then(|v| v.as_u64()).unwrap_or(0))
+        .sum();
+    assert_eq!(
+        context
+            .get("token_estimate_sum_kept")
+            .and_then(|v| v.as_u64()),
+        Some(token_sum),
+        "context_assembly token_estimate_sum_kept should match sum of returned hits"
+    );
+    assert_eq!(
+        context
+            .get("hits_before_pruning")
+            .and_then(|v| v.as_u64()),
+        Some(hits.len() as u64),
+        "context_assembly hits_before_pruning should be bounded"
+    );
+    assert_eq!(
+        context
+            .get("hits_after_pruning")
+            .and_then(|v| v.as_u64()),
+        Some(hits.len() as u64),
+        "context_assembly hits_after_pruning should be bounded"
+    );
+    let selected_sources = context
+        .get("selected_sources")
+        .and_then(|v| v.as_array())
+        .ok_or("context_assembly selected_sources should be an array")?;
+    assert_eq!(
+        selected_sources.len(),
+        hits.len(),
+        "context_assembly selected_sources should track returned hits"
+    );
+
     // no-match search should return empty results and a null top_score
     send_line(
         &mut harness.stdin,

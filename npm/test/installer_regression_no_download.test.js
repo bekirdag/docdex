@@ -2,6 +2,11 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+<<<<<<< HEAD
+=======
+const fs = require("node:fs");
+const os = require("node:os");
+>>>>>>> mcoda/task/ops-01-us-03-t15
 const path = require("node:path");
 
 const { resolvePlatformPolicy } = require("../lib/platform");
@@ -21,6 +26,31 @@ function httpError(statusCode, message) {
   const err = new Error(message || `HTTP ${statusCode}`);
   err.statusCode = statusCode;
   return err;
+}
+
+async function writeInstallMetadata({ distDir, platformKey, version, targetTriple, repoSlug = "owner/repo" }) {
+  await fs.promises.mkdir(distDir, { recursive: true });
+  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const payload = {
+    schemaVersion: 1,
+    installedAt: new Date().toISOString(),
+    version,
+    repoSlug,
+    platformKey,
+    targetTriple,
+    binary: {
+      filename: "docdexd",
+      sha256: "a".repeat(64)
+    },
+    archive: {
+      name: null,
+      sha256: null,
+      source: null,
+      downloadUrl: null
+    }
+  };
+  await fs.promises.writeFile(metadataPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  return metadataPath;
 }
 
 test("installer: unsupported OS/arch fails before any plan resolution or download", async () => {
@@ -567,4 +597,75 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
   assert.ok(stagingRmCalls >= 1, "should clean staging artifacts");
   assert.equal(tmpCleanupRmCalls, 0, "staged installs should not depend on tmp file cleanup");
 >>>>>>> mcoda/task/ops-01-us-05-t33
+});
+
+test("installer: missing release asset includes expected/detected versions and release source", async (t) => {
+  const base = "https://example.test/releases/download";
+  const expectedVersion = "0.2.0";
+  const installedVersion = "0.1.0";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = "x86_64-unknown-linux-gnu";
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-missing-asset-"));
+  t.after(async () => {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  const distBaseDir = path.join(tmpRoot, "dist");
+  const distDir = path.join(distBaseDir, platformKey);
+  await fs.promises.mkdir(distDir, { recursive: true });
+  await fs.promises.writeFile(path.join(distDir, "docdexd"), "old-binary\n", "utf8");
+  await writeInstallMetadata({ distDir, platformKey, version: installedVersion, targetTriple });
+
+  const tmpDir = path.join(tmpRoot, "tmp");
+  await fs.promises.mkdir(tmpDir, { recursive: true });
+
+  let err;
+  try {
+    await runInstaller({
+      logger: createNoopLogger(),
+      platform: "linux",
+      arch: "x64",
+      tmpDir,
+      distBaseDir,
+      detectPlatformKeyFn: () => platformKey,
+      targetTripleForPlatformKeyFn: () => targetTriple,
+      getVersionFn: () => expectedVersion,
+      parseRepoSlugFn: () => "owner/repo",
+      getDownloadBaseFn: () => base,
+      resolveInstallerDownloadPlanFn: async () => ({
+        archive: "docdexd-linux-x64-gnu.tar.gz",
+        expectedSha256: null,
+        source: "fallback",
+        manifestAttempt: { errors: [], resolved: null, manifestName: null }
+      }),
+      downloadFn: async () => {
+        throw httpError(404, "not found");
+      },
+      verifyDownloadedFileIntegrityFn: async () => {
+        throw new Error("unexpected integrity check");
+      },
+      extractTarballFn: async () => {
+        throw new Error("unexpected extract");
+      }
+    });
+  } catch (e) {
+    err = e;
+  }
+
+  assert.ok(err, "expected an error");
+  assert.equal(err.name, "MissingArtifactError");
+  assert.equal(err.details.version, expectedVersion);
+  assert.equal(err.details.installedVersion, installedVersion);
+
+  const report = describeFatalError(err);
+  assert.ok(report.lines.some((l) => l.includes(`Expected version: v${expectedVersion}`)));
+  assert.ok(report.lines.some((l) => l.includes(`Detected version: v${installedVersion}`)));
+  assert.ok(report.lines.some((l) => l.includes("Release source: fallback")));
+  assert.ok(report.lines.some((l) => l.includes("Download repo: owner/repo")));
+  assert.ok(
+    report.lines.some((l) =>
+      l.includes(`URL tried: ${base}/v${expectedVersion}/docdexd-linux-x64-gnu.tar.gz`)
+    )
+  );
 });

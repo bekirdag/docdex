@@ -250,6 +250,7 @@ test("installer outcome: no-op skips plan/download when local install is verifie
   assert.equal(downloadCalls, 0);
   assert.equal(extractCalls, 0);
 <<<<<<< HEAD
+<<<<<<< HEAD
 
   const metadataPath = path.join(distDir, "docdexd-install.json");
   const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
@@ -269,6 +270,13 @@ test("installer outcome: no-op skips plan/download when local install is verifie
   assert.ok(logs.some((line) => line.includes("Cache hit: existing docdexd matches expected version/target")));
   assert.ok(logs.some((line) => line.includes("Install outcome: no-op")));
 >>>>>>> mcoda/task/ops-01-us-01-t13
+=======
+
+  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
+  assert.equal(meta.version, version);
+  assert.equal(meta.platformKey, platformKey);
+>>>>>>> mcoda/task/ops-01-us-03-t15
 });
 
 test("installer outcome: upgrade installs when expected version is newer and writes fresh metadata", async (t) => {
@@ -1194,6 +1202,7 @@ test("installer outcome: update installs when installed version is newer", async
   const metadataPath = path.join(distDir, "docdexd-install.json");
   const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
   assert.equal(meta.version, expectedVersion);
+<<<<<<< HEAD
 });
 
 test("installer outcome: version mismatch after install fails and preserves existing binary", async (t) => {
@@ -1269,6 +1278,14 @@ test("installer outcome: version mismatch after install fails and preserves exis
   const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
   assert.equal(meta.version, installedVersion);
 >>>>>>> mcoda/task/ops-01-us-03-t44
+=======
+  assert.equal(meta.platformKey, platformKey);
+  assert.equal(typeof meta.binary?.sha256, "string");
+  assert.equal(meta.binary.sha256.length, 64);
+
+  const installedBinary = await fs.promises.readFile(path.join(distDir, "docdexd"), "utf8");
+  assert.equal(installedBinary, "new-binary\n");
+>>>>>>> mcoda/task/ops-01-us-03-t15
 });
 
 test("installer outcome: repair reinstalls when binary hash mismatches metadata", async (t) => {

@@ -6027,7 +6027,11 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-02-t14
           platformKey,
           targetTriple,
+<<<<<<< HEAD
           installedVersion: local.installedVersion ?? null,
+=======
+          installedVersion: local.installedVersion,
+>>>>>>> mcoda/task/ops-01-us-03-t15
           assetName: archive,
           source,
           manifestName: manifestAttempt?.manifestName ?? null,
@@ -8075,6 +8079,7 @@ function describeFatalError(err) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     let expectedTargetTriple =
       typeof err.details?.targetTriple === "string" && err.details.targetTriple.trim()
         ? err.details.targetTriple.trim()
@@ -8127,6 +8132,9 @@ function describeFatalError(err) {
         ? err.details.installedVersion
         : null;
 >>>>>>> mcoda/task/ops-01-us-03-t44
+=======
+    const installedVersion = typeof err.details?.installedVersion === "string" ? err.details.installedVersion : null;
+>>>>>>> mcoda/task/ops-01-us-03-t15
     const expectedAsset =
       typeof err.details?.expectedAsset === "string" && err.details.expectedAsset.trim()
         ? err.details.expectedAsset.trim()
@@ -8175,6 +8183,7 @@ function describeFatalError(err) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         err.details?.version ? `[docdex] Version: v${err.details.version}` : null,
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -8196,6 +8205,11 @@ function describeFatalError(err) {
         expectedVersion ? `[docdex] Expected version: v${expectedVersion}` : null,
         installedVersion ? `[docdex] Detected installed version: v${installedVersion}` : null,
 >>>>>>> mcoda/task/ops-01-us-03-t44
+=======
+        err.details?.version ? `[docdex] Expected version: v${err.details.version}` : null,
+        installedVersion ? `[docdex] Detected version: v${installedVersion}` : null,
+        err.details?.source ? `[docdex] Release source: ${err.details.source}` : null,
+>>>>>>> mcoda/task/ops-01-us-03-t15
         err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
 =======
         expectedVersion ? `[docdex] Expected version: v${expectedVersion}` : null,

@@ -1057,6 +1057,7 @@ async function runInstaller(options) {
     isWin32,
     sha256FileFn
   });
+  const detectedInstalledVersion = typeof local.installedVersion === "string" ? local.installedVersion : null;
 
   if (local.outcome === "no-op") {
     logger.log("[docdex] Install outcome: no-op");
@@ -1065,13 +1066,29 @@ async function runInstaller(options) {
 
   const repoSlug = parseRepoSlugFn();
 
-  const { archive, expectedSha256, source, manifestAttempt } = await resolveInstallerDownloadPlanFn({
-    repoSlug,
-    version,
-    platformKey,
-    targetTriple,
-    logger
-  });
+  let plan;
+  try {
+    plan = await resolveInstallerDownloadPlanFn({
+      repoSlug,
+      version,
+      platformKey,
+      targetTriple,
+      logger
+    });
+  } catch (err) {
+    if (err && typeof err === "object") {
+      const baseDetails = withBaseDetails(err.details);
+      err.details = {
+        ...baseDetails,
+        version: baseDetails.version ?? version,
+        repoSlug: baseDetails.repoSlug ?? repoSlug,
+        installedVersion: baseDetails.installedVersion ?? detectedInstalledVersion
+      };
+    }
+    throw err;
+  }
+
+  const { archive, expectedSha256, source, manifestAttempt } = plan;
 
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
   const tmpDir = opts.tmpDir || osModule.tmpdir();
@@ -1095,6 +1112,7 @@ async function runInstaller(options) {
           fallbackAttempted: source === "fallback",
           fallbackReason,
           version,
+          installedVersion: detectedInstalledVersion,
           repoSlug,
           downloadUrl,
           expectedAsset: archive,
@@ -1108,6 +1126,7 @@ async function runInstaller(options) {
           platformKey,
           targetTriple,
           version,
+          installedVersion: detectedInstalledVersion,
           repoSlug,
           assetName: archive,
           downloadUrl,
@@ -1266,6 +1285,17 @@ function describeFatalError(err) {
       typeof err.details?.expectedAssetPattern === "string" && err.details.expectedAssetPattern.trim()
         ? err.details.expectedAssetPattern.trim()
         : assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset || undefined });
+    const expectedVersion =
+      typeof err.details?.version === "string" && err.details.version ? err.details.version : null;
+    const installedVersion =
+      typeof err.details?.installedVersion === "string" && err.details.installedVersion ? err.details.installedVersion : null;
+    const repoSlug = typeof err.details?.repoSlug === "string" && err.details.repoSlug ? err.details.repoSlug : null;
+    const releaseSource = repoSlug
+      ? expectedVersion
+        ? `${repoSlug} (tag v${expectedVersion})`
+        : repoSlug
+      : null;
+    const resolutionSource = typeof err.details?.source === "string" ? err.details.source : null;
     return {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
@@ -1280,8 +1310,10 @@ function describeFatalError(err) {
         err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,
         fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,
         err.details?.fallbackReason ? `[docdex] Fallback reason: ${err.details.fallbackReason}` : null,
-        err.details?.version ? `[docdex] Version: v${err.details.version}` : null,
-        err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
+        expectedVersion ? `[docdex] Expected version: v${expectedVersion}` : null,
+        installedVersion ? `[docdex] Detected installed version: v${installedVersion}` : null,
+        releaseSource ? `[docdex] Release source: ${releaseSource}` : null,
+        resolutionSource ? `[docdex] Resolution source: ${resolutionSource}` : null,
         err.details?.expectedAsset ? `[docdex] Expected asset: ${err.details.expectedAsset}` : null,
         expectedAssetPattern ? `[docdex] Asset naming pattern: ${expectedAssetPattern}` : null,
         err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
@@ -1289,7 +1321,10 @@ function describeFatalError(err) {
         "[docdex] Next steps:",
         "[docdex] - Confirm the GitHub Release for this version contains the expected asset for your target.",
         "[docdex] - If installing from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` to the repo that hosts the assets.",
-        "[docdex] - Workaround: install a version with matching assets, or build from source (`cargo build --release --locked`)."
+        "[docdex] - Workaround: install a version with matching assets, or build from source (`cargo build --release --locked`).",
+        installedVersion && expectedVersion && installedVersion !== expectedVersion
+          ? `[docdex] - If you need the detected docdexd v${installedVersion}, install npm package v${installedVersion} (or set DOCDEX_VERSION=${installedVersion}).`
+          : null
       ].filter(Boolean)
     };
   }
@@ -1320,6 +1355,17 @@ function describeFatalError(err) {
   }
 
   if (err instanceof DownloadError) {
+    const expectedVersion =
+      typeof err.details?.version === "string" && err.details.version ? err.details.version : null;
+    const installedVersion =
+      typeof err.details?.installedVersion === "string" && err.details.installedVersion ? err.details.installedVersion : null;
+    const repoSlug = typeof err.details?.repoSlug === "string" && err.details.repoSlug ? err.details.repoSlug : null;
+    const releaseSource = repoSlug
+      ? expectedVersion
+        ? `${repoSlug} (tag v${expectedVersion})`
+        : repoSlug
+      : null;
+    const resolutionSource = typeof err.details?.source === "string" ? err.details.source : null;
     return {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
@@ -1327,9 +1373,20 @@ function describeFatalError(err) {
       lines: [
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
+        expectedVersion ? `[docdex] Expected version: v${expectedVersion}` : null,
+        installedVersion ? `[docdex] Detected installed version: v${installedVersion}` : null,
+        releaseSource ? `[docdex] Release source: ${releaseSource}` : null,
+        err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
+        resolutionSource ? `[docdex] Resolution source: ${resolutionSource}` : null,
+        fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,
         err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
         err.details?.statusCode != null ? `[docdex] HTTP status: ${err.details.statusCode}` : null,
-        err.cause?.message ? `[docdex] Cause: ${err.cause.message}` : null
+        err.cause?.message ? `[docdex] Cause: ${err.cause.message}` : null,
+        "[docdex] Next steps:",
+        "[docdex] - Check network/proxy/firewall connectivity and retry.",
+        "[docdex] - If you are rate-limited or using private releases, set `DOCDEX_GITHUB_TOKEN` (or `GITHUB_TOKEN`).",
+        "[docdex] - Verify `DOCDEX_DOWNLOAD_REPO` (and `DOCDEX_DOWNLOAD_BASE` if set) point to the release assets.",
+        "[docdex] - If you are offline, re-run when online or build from source (`cargo build --release --locked`)."
       ].filter(Boolean)
     };
   }
@@ -1382,12 +1439,25 @@ function describeFatalError(err) {
         : platformKey
           ? assetPatternForPlatformKey(platformKey)
           : assetPatternForPlatformKey(null);
+    const expectedVersion =
+      typeof err.details?.version === "string" && err.details.version ? err.details.version : null;
+    const installedVersion =
+      typeof err.details?.installedVersion === "string" && err.details.installedVersion ? err.details.installedVersion : null;
+    const repoSlug = typeof err.details?.repoSlug === "string" && err.details.repoSlug ? err.details.repoSlug : null;
+    const releaseSource = repoSlug
+      ? expectedVersion
+        ? `${repoSlug} (tag v${expectedVersion})`
+        : repoSlug
+      : null;
 
     const lines =
       err.code === "DOCDEX_ASSET_NO_MATCH"
         ? [
             "[docdex] install failed: missing artifact/version sync issue (manifest has no asset for this target)",
             `[docdex] error code: ${err.code}`,
+            expectedVersion ? `[docdex] Expected version: v${expectedVersion}` : null,
+            installedVersion ? `[docdex] Detected installed version: v${installedVersion}` : null,
+            releaseSource ? `[docdex] Release source: ${releaseSource}` : null,
             err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
             `[docdex] Asset naming pattern: ${expectedAssetPattern}`,
             `[docdex] Details: ${err.message}`
@@ -1402,6 +1472,12 @@ function describeFatalError(err) {
     }
     if (Array.isArray(err.details?.matches) && err.details.matches.length) {
       lines.push(`[docdex] matched assets: ${err.details.matches.join(", ")}`);
+    }
+    if (err.code === "DOCDEX_ASSET_NO_MATCH") {
+      lines.push("[docdex] Next steps:");
+      lines.push("[docdex] - Confirm the release tag exists and includes the expected asset for your target.");
+      lines.push("[docdex] - If installing from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` to the repo that hosts the assets.");
+      lines.push("[docdex] - Workaround: install a version with matching assets, or build from source (`cargo build --release --locked`).");
     }
     return {
       code: err.code,

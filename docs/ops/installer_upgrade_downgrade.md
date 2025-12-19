@@ -6,6 +6,26 @@ Assumptions (explicit):
 - You install via npm (`npm i -g docdex` or `npx docdex --version`) on Node.js >= 18.
 - “Expected version” is the npm package version (or `DOCDEX_VERSION` if set).
 - The installer uses the published release manifest/checksums contracts when it needs to fetch an archive; see `docs/contracts/release_manifest_schema_v1.md`.
+- Release assets live under the repo in `DOCDEX_DOWNLOAD_REPO` (or `package.json.repository.url`) with a tag `vX.Y.Z` that matches the expected version.
+
+## Version compatibility rule (npm wrapper ↔ docdexd)
+
+- The npm package version `X.Y.Z` maps to the GitHub Release tag `vX.Y.Z` in the download repo.
+- On install, the wrapper always targets `docdexd` `X.Y.Z` (or `DOCDEX_VERSION` if set). No cross-version compatibility is assumed.
+- If a different version is already installed (as recorded in `docdexd-install.json`), the installer replaces it so the final state is version-aligned.
+
+## Installer selection + install workflow (deterministic)
+
+1) Resolve the release source:
+   - Repo slug from `DOCDEX_DOWNLOAD_REPO` (or `package.json.repository.url`)
+   - Version from `DOCDEX_VERSION` (or `package.json`), then the tag `v<version>`
+2) Detect the runtime and compute `platformKey` + `targetTriple` (Linux includes libc selection; see `docs/ops/installer_supported_platforms.md`).
+3) Inspect local state in `dist/<platformKey>/` + `docdexd-install.json` to choose `no-op`, `update`, `repair`, or `reinstall_unknown`.
+4) If an install is needed, resolve exactly one asset deterministically:
+   - Try manifest candidates first; if a manifest is present but has no match/ambiguous matches, fail closed.
+   - Otherwise fall back to `docdexd-<platformKey>.tar.gz` with `SHA256SUMS`/`SHA256SUMS.txt` (or legacy `<archive>.sha256`).
+5) Download from GitHub Releases (or `DOCDEX_DOWNLOAD_BASE` if overridden), verify SHA-256, and extract into `dist/<platformKey>/`.
+6) Write `docdexd-install.json` with the resolved version, platform, hashes, and source. The existing install is removed only after a verified download.
 
 ## Deterministic installer outcomes
 
@@ -53,6 +73,7 @@ There are two relevant integrity checks:
 
 The installer writes a small JSON metadata file next to the installed binary:
 - `dist/<platformKey>/docdexd-install.json`
+- Binary path: `dist/<platformKey>/docdexd` (or `docdexd.exe` on Windows).
 
 This metadata enables deterministic `no-op` and `repair` decisions without downloading a new asset.
 
@@ -61,14 +82,43 @@ This metadata enables deterministic `no-op` and `repair` decisions without downl
 Local install (project dependency):
 - Package root: `<repo>/node_modules/docdex/`
 - Metadata: `<repo>/node_modules/docdex/dist/<platformKey>/docdexd-install.json`
+- Binary: `<repo>/node_modules/docdex/dist/<platformKey>/docdexd` (or `docdexd.exe`)
 
 Global install:
 - Find global `node_modules`: `npm root -g`
 - Metadata: `$(npm root -g)/docdex/dist/<platformKey>/docdexd-install.json`
+- Binary: `$(npm root -g)/docdex/dist/<platformKey>/docdexd` (or `docdexd.exe`)
 
 OS notes (common defaults; prefer `npm root -g` over guessing):
 - macOS/Linux: often under `/usr/local/lib/node_modules/docdex/...` or `~/.nvm/.../lib/node_modules/docdex/...`
 - Windows: often under `%APPDATA%\\npm\\node_modules\\docdex\\...`
+
+## Troubleshooting missing-release and mismatch errors
+
+### Missing release asset or tag (`DOCDEX_ASSET_MISSING`, `DOCDEX_ASSET_NO_MATCH`)
+
+What it means:
+- The expected release for `v<expected version>` does not contain the required asset for your `platformKey`/`targetTriple`.
+- The error report includes the expected target triple and asset naming pattern; `DOCDEX_ASSET_MISSING` also includes the expected version, download repo, and URL tried.
+
+Risk-mitigated checks:
+1) Confirm your platform + expected asset with `docdex doctor`.
+2) Verify the release tag `v<expected version>` exists in the target repo and includes:
+   - `docdexd-<platformKey>.tar.gz`
+   - `docdex-release-manifest.json` and/or `SHA256SUMS`
+3) If installing from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>`.
+4) If you installed from a local folder, ensure the package version is set (or `DOCDEX_VERSION` is defined).
+
+### Version or integrity mismatch (`Install outcome: update`, `DOCDEX_INTEGRITY_MISMATCH`)
+
+What it means:
+- `Install outcome: update` indicates the installed version (from `docdexd-install.json`) did not match the expected version.
+- `DOCDEX_INTEGRITY_MISMATCH` indicates the downloaded archive failed SHA-256 verification.
+
+Risk-mitigated checks:
+1) Inspect `docdexd-install.json` to see the detected installed version and platform.
+2) Re-run the installer after stopping any running `docdexd` process.
+3) For integrity mismatches, bypass proxies/caches and confirm the repo + version are correct; do not manually extract unverified downloads.
 
 ## Troubleshooting stale/corrupt daemon installs (risk-mitigated)
 
@@ -114,4 +164,3 @@ This is usually a repo state issue, not an installer issue:
 - Installer error codes + remediation: `docs/ops/installer_error_codes.md`
 - Release manifest contract: `docs/contracts/release_manifest_schema_v1.md`
 - Installer error contract: `docs/contracts/installer_error_contract_v1.md`
-

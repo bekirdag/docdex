@@ -1433,6 +1433,8 @@ if (require.main === module) {
 module.exports = {
   checksumCandidateNames,
   manifestCandidateNames,
+  parseRepoSlug,
+  getVersion,
   tryResolveAssetViaManifest,
   tryResolveSha256ViaChecksumFiles,
   resolveInstallerDownloadPlan,

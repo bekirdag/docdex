@@ -212,6 +212,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Guard npm publish against missing release assets
+        env:
+          DOCDEX_DOWNLOAD_REPO: ${{ github.repository }}
+          DOCDEX_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/verify_release_assets.cjs
+
       - name: Update npm to latest (trusted publish requires >=11.5.1)
         run: npm install -g npm@latest
 

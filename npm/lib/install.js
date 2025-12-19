@@ -5696,6 +5696,7 @@ async function runInstaller(options) {
   let swapped = false;
 >>>>>>> mcoda/task/ops-01-us-03-t44
 
+<<<<<<< HEAD
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
 <<<<<<< HEAD
   let thrownError = null;
@@ -5729,6 +5730,11 @@ async function runInstaller(options) {
 =======
   let stagingDir = null;
 >>>>>>> mcoda/task/ops-01-us-04-t11
+=======
+  logger.log(
+    `[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) on ${detectedPlatform}/${detectedArch} @ v${version} via ${source}...`
+  );
+>>>>>>> mcoda/task/ops-01-us-01-t45
   try {
 >>>>>>> mcoda/task/ops-01-us-05-t39
 =======

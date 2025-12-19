@@ -137,6 +137,50 @@ test("docdex CLI wrapper: supported platform with missing local binary exits non
   assert.equal(spawnCalls, 0);
 });
 
+test("docdex CLI wrapper: spawns installed binary and forwards argv", () => {
+  let spawnArgs = null;
+
+  const platformKey = "darwin-arm64";
+  const platformModule = {
+    UnsupportedPlatformError: class UnsupportedPlatformError extends Error {},
+    detectPlatformKey: () => platformKey
+  };
+
+  const scriptPath = path.join(__dirname, "..", "bin", "docdex.js");
+  const expectedBinaryPath = path.join(
+    path.dirname(scriptPath),
+    "..",
+    "dist",
+    platformKey,
+    "docdexd"
+  );
+
+  const result = runScriptWithMocks(scriptPath, {
+    mocks: {
+      "../lib/platform": platformModule,
+      "node:child_process": {
+        spawn: (cmd, args, opts) => {
+          spawnArgs = { cmd, args, opts };
+          return {
+            on: (event, cb) => {
+              if (event === "exit") cb(0);
+            }
+          };
+        }
+      },
+      "node:fs": { existsSync: (filePath) => filePath === expectedBinaryPath },
+      "node:path": require("node:path")
+    },
+    argv: ["node", scriptPath, "--version"]
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.ok(spawnArgs);
+  assert.equal(spawnArgs.cmd, expectedBinaryPath);
+  assert.deepEqual(spawnArgs.args, ["--version"]);
+  assert.equal(spawnArgs.opts.stdio, "inherit");
+});
+
 test("docdex CLI wrapper: `doctor` prints platform diagnostics without checking local binaries", () => {
   let spawnCalls = 0;
   let existsCalls = 0;

@@ -91,6 +91,19 @@ test("detectTargetTriple deterministically maps supported runtimes", () => {
   assert.equal(detectTargetTriple({ platform: "win32", arch: "x64" }), "x86_64-pc-windows-msvc");
 });
 
+test("detectTargetTriple maps published runtime matrix deterministically", () => {
+  const published = PLATFORM_MATRIX.filter((entry) => entry.published);
+  for (const entry of published) {
+    const env = entry.platform === "linux" ? { DOCDEX_LIBC: entry.libc } : {};
+    const resolved = detectTargetTriple({
+      platform: entry.platform,
+      arch: entry.arch,
+      env
+    });
+    assert.equal(resolved, entry.targetTriple);
+  }
+});
+
 test("unpublished targets are treated as unsupported (no download expected)", () => {
   assert.throws(
     () => detectPlatformKey({ platform: "linux", arch: "arm64", env: { DOCDEX_LIBC: "musl" } }),

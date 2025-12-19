@@ -3190,6 +3190,7 @@ function decideInstallAction(args) {
   return { outcome: decision.outcome, reason: decision.reason };
 }
 
+<<<<<<< HEAD
 async function discoverInstalledState({
   fsModule,
   pathModule,
@@ -3202,6 +3203,9 @@ async function discoverInstalledState({
   detectInstalledVersionFn
 >>>>>>> mcoda/task/ops-01-us-03-t45
 }) {
+=======
+async function discoverInstalledState({ fsModule, pathModule, distDir, platformKey, expectedTargetTriple, isWin32 }) {
+>>>>>>> mcoda/task/ops-01-us-01-t13
   const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
   const metadataPath = installMetadataPath(distDir, pathModule);
 
@@ -3306,6 +3310,11 @@ async function discoverInstalledState({
     };
   }
 
+  const expectedTarget =
+    typeof expectedTargetTriple === "string" && expectedTargetTriple ? expectedTargetTriple : null;
+  const recordedTarget = typeof meta.targetTriple === "string" && meta.targetTriple ? meta.targetTriple : null;
+  const targetMismatch = expectedTarget && recordedTarget && recordedTarget !== expectedTarget;
+
   return {
     binaryPath,
     metadataPath,
@@ -3322,12 +3331,16 @@ async function discoverInstalledState({
     metadataStatus: "valid",
     metadataStatusReason: null,
 <<<<<<< HEAD
+<<<<<<< HEAD
     platformMismatch: normalized.platformKey !== platformKey
 =======
     platformMismatch: meta.platformKey !== platformKey,
     reportedVersion,
     reportedVersionError
 >>>>>>> mcoda/task/ops-01-us-03-t37
+=======
+    platformMismatch: meta.platformKey !== platformKey || targetMismatch
+>>>>>>> mcoda/task/ops-01-us-01-t13
   };
 }
 
@@ -3372,6 +3385,7 @@ async function determineLocalInstallerOutcome({
   distDir,
   platformKey,
   expectedVersion,
+  expectedTargetTriple = null,
   isWin32,
   sha256FileFn = sha256File,
   expectedBinarySha256 = null,
@@ -3420,12 +3434,17 @@ async function determineLocalInstallerOutcome({
     pathModule,
     distDir,
     platformKey,
+<<<<<<< HEAD
     isWin32,
 <<<<<<< HEAD
     detectInstalledBinaryVersionFn
 =======
     detectInstalledVersionFn
 >>>>>>> mcoda/task/ops-01-us-03-t45
+=======
+    expectedTargetTriple,
+    isWin32
+>>>>>>> mcoda/task/ops-01-us-01-t13
   });
 >>>>>>> mcoda/task/ops-01-us-03-t37
 
@@ -3619,6 +3638,7 @@ async function determineLocalInstallerOutcome({
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     integrityResult,
 <<<<<<< HEAD
     binaryVersion,
@@ -3653,6 +3673,10 @@ async function determineLocalInstallerOutcome({
 >>>>>>> mcoda/task/ops-01-us-03-t43
     integrityResult
 >>>>>>> mcoda/task/ops-01-us-03-t37
+=======
+    integrityResult,
+    installedMetadata: discoveredInstalledState.metadata
+>>>>>>> mcoda/task/ops-01-us-01-t13
   };
 }
 
@@ -4938,6 +4962,7 @@ async function runInstaller(options) {
   const stagingRoot = stagingRootPath(distBaseDir, pathModule);
 
 <<<<<<< HEAD
+<<<<<<< HEAD
   await cleanupStagingArtifacts({
     fsModule,
     pathModule,
@@ -5051,11 +5076,18 @@ async function runInstaller(options) {
   logger.log(`[docdex] Resolved daemon version: v${version}`);
 
 >>>>>>> mcoda/task/ops-01-us-01-t33
+=======
+  logger.log(`[docdex] Detected platform: ${detectedPlatform}/${detectedArch}`);
+  logger.log(`[docdex] Expected target triple: ${targetTriple}`);
+  logger.log(`[docdex] Resolved daemon version: v${version}`);
+
+>>>>>>> mcoda/task/ops-01-us-01-t13
   const local = await determineLocalInstallerOutcome({
     fsModule,
     pathModule,
     distDir,
     platformKey,
+    expectedTargetTriple: targetTriple,
     expectedVersion: version,
     isWin32,
     sha256FileFn,
@@ -5123,6 +5155,7 @@ async function runInstaller(options) {
 =======
   if (local.outcome === "no-op") {
 <<<<<<< HEAD
+<<<<<<< HEAD
     if (local.integrityResult) {
       logIntegrityCheck({
         logger,
@@ -5138,6 +5171,13 @@ async function runInstaller(options) {
 =======
     logger.log(`[docdex] Resolved asset: ${expectedAssetName} (cached)`);
 >>>>>>> mcoda/task/ops-01-us-01-t33
+=======
+    const archivedName = local.installedMetadata?.archive?.name;
+    const resolvedAsset =
+      typeof archivedName === "string" && archivedName.trim() ? archivedName.trim() : artifactNameFn(platformKey);
+    logger.log(`[docdex] Resolved daemon asset: ${resolvedAsset}`);
+    logger.log("[docdex] Cache hit: existing docdexd matches expected version/target.");
+>>>>>>> mcoda/task/ops-01-us-01-t13
     logger.log("[docdex] Install outcome: no-op");
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5438,6 +5478,7 @@ async function runInstaller(options) {
   }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
   const { archive, expectedSha256, source, manifestAttempt } = plan;
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5520,6 +5561,10 @@ async function runInstaller(options) {
   logger.log(`[docdex] Resolved asset: ${archive} (${source})`);
 
 >>>>>>> mcoda/task/ops-01-us-01-t33
+=======
+  logger.log(`[docdex] Resolved daemon asset: ${archive}`);
+
+>>>>>>> mcoda/task/ops-01-us-01-t13
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
 <<<<<<< HEAD
   const tmpDir = opts.tmpDir || osModule.tmpdir();

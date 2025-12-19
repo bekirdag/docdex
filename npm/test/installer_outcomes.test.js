@@ -40,8 +40,25 @@ function createNoopLogger() {
   };
 }
 
+<<<<<<< HEAD
 async function readBinaryVersionStub({ expectedVersion }) {
   return { version: expectedVersion, output: `docdexd ${expectedVersion}` };
+=======
+function createCapturingLogger() {
+  const logs = [];
+  const warns = [];
+  const errors = [];
+  return {
+    logger: {
+      log: (...args) => logs.push(args.join(" ")),
+      warn: (...args) => warns.push(args.join(" ")),
+      error: (...args) => errors.push(args.join(" "))
+    },
+    logs,
+    warns,
+    errors
+  };
+>>>>>>> mcoda/task/ops-01-us-01-t13
 }
 
 async function ensureDir(dirPath) {
@@ -175,8 +192,9 @@ test("installer outcome: no-op skips plan/download when local install is verifie
   let downloadCalls = 0;
   let extractCalls = 0;
 
+  const { logger, logs } = createCapturingLogger();
   const result = await runInstaller({
-    logger: createNoopLogger(),
+    logger,
     platform: "linux",
     arch: "x64",
     stateRootDir,
@@ -231,6 +249,7 @@ test("installer outcome: no-op skips plan/download when local install is verifie
 >>>>>>> mcoda/task/ops-01-us-06-t03
   assert.equal(downloadCalls, 0);
   assert.equal(extractCalls, 0);
+<<<<<<< HEAD
 
   const metadataPath = path.join(distDir, "docdexd-install.json");
   const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
@@ -242,6 +261,14 @@ test("installer outcome: no-op skips plan/download when local install is verifie
   assert.equal(meta.sourceUri, `${base}/v${version}/${archive}`);
   assert.equal(meta.archive?.name, archive);
   assert.equal(meta.archive?.downloadUrl, `${base}/v${version}/${archive}`);
+=======
+  assert.ok(logs.some((line) => line.includes("Detected platform: linux/x64")));
+  assert.ok(logs.some((line) => line.includes(`Expected target triple: ${targetTriple}`)));
+  assert.ok(logs.some((line) => line.includes(`Resolved daemon version: v${version}`)));
+  assert.ok(logs.some((line) => line.includes("Resolved daemon asset: docdexd-linux-x64-gnu.tar.gz")));
+  assert.ok(logs.some((line) => line.includes("Cache hit: existing docdexd matches expected version/target")));
+  assert.ok(logs.some((line) => line.includes("Install outcome: no-op")));
+>>>>>>> mcoda/task/ops-01-us-01-t13
 });
 
 test("installer outcome: upgrade installs when expected version is newer and writes fresh metadata", async (t) => {

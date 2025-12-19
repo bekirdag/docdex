@@ -18,6 +18,10 @@ function createNoopLogger() {
   };
 }
 
+function createVersionDetector(version) {
+  return async () => ({ version, raw: `docdexd ${version}`, error: null });
+}
+
 async function ensureParentDir(filePath) {
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
 }
@@ -59,6 +63,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
         arch: entry.arch,
         tmpDir,
         distBaseDir,
+        getBinaryVersionFn: createVersionDetector(version),
         detectPlatformKeyFn: () => platformKey,
         targetTripleForPlatformKeyFn: (key) => targetTripleForPlatformKey(key),
         getVersionFn: () => version,
@@ -110,4 +115,3 @@ test("installer e2e: supported platform matrix installs expected binary layout",
     });
   }
 });
-

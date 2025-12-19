@@ -17,6 +17,10 @@ function createNoopLogger() {
   };
 }
 
+function createVersionDetector(version) {
+  return async () => ({ version, raw: `docdexd ${version}`, error: null });
+}
+
 async function ensureDir(dirPath) {
   await fs.promises.mkdir(dirPath, { recursive: true });
 }
@@ -47,6 +51,7 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
     arch: "x64",
     tmpDir,
     distBaseDir,
+    getBinaryVersionFn: createVersionDetector(version),
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
     getVersionFn: () => version,
@@ -93,6 +98,7 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
     arch: "x64",
     tmpDir,
     distBaseDir,
+    getBinaryVersionFn: createVersionDetector(version),
     detectPlatformKeyFn: () => platformKey,
     targetTripleForPlatformKeyFn: () => targetTriple,
     getVersionFn: () => version,
@@ -131,4 +137,3 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
   assert.equal(metadataAfterSecond, metadataAfterFirst);
   assert.equal(binaryAfterSecond, binaryAfterFirst);
 });
-

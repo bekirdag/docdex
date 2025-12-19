@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { pipeline } = require("node:stream/promises");
 const crypto = require("node:crypto");
+const { execFile } = require("node:child_process");
 
 const pkg = require("../package.json");
 const {
@@ -26,6 +27,8 @@ const MAX_MANIFEST_BYTES = 1024 * 1024; // 1 MiB cap for safety
 const INVALID_JSON_ERROR = "invalid JSON";
 const INSTALL_METADATA_SCHEMA_VERSION = 1;
 const INSTALL_METADATA_FILENAME = "docdexd-install.json";
+const VERSION_OUTPUT_REGEX = /\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/;
+const DEFAULT_VERSION_CHECK_TIMEOUT_MS = 5000;
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -167,7 +170,7 @@ function getDownloadBase(repoSlug) {
 
 function getVersion() {
   const envVersion = process.env.DOCDEX_VERSION;
-  const version = (envVersion || pkg.version || "").replace(/^v/, "");
+  const version = normalizeVersionString(envVersion || pkg.version || "");
 
   if (!version) {
     throw new InstallerConfigError("Missing package version; set DOCDEX_VERSION or package.json version", {
@@ -325,6 +328,42 @@ function normalizeSha256Hex(value) {
   const trimmed = value.trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(trimmed)) return null;
   return trimmed;
+}
+
+function normalizeVersionString(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.replace(/^v/i, "");
+}
+
+function parseVersionFromOutput(output) {
+  const match = String(output || "").match(VERSION_OUTPUT_REGEX);
+  return match ? match[0] : null;
+}
+
+async function detectDocdexdVersion({
+  execFileFn = execFile,
+  binaryPath,
+  timeoutMs = DEFAULT_VERSION_CHECK_TIMEOUT_MS
+}) {
+  return new Promise((resolve) => {
+    execFileFn(binaryPath, ["--version"], { timeout: timeoutMs }, (err, stdout, stderr) => {
+      const raw = [stdout, stderr].filter(Boolean).join("\n").trim();
+      if (err) {
+        resolve({ version: null, raw: raw || null, error: err?.message || String(err) });
+        return;
+      }
+
+      const parsed = normalizeVersionString(parseVersionFromOutput(raw));
+      if (!parsed) {
+        resolve({ version: null, raw: raw || null, error: "version_unparseable" });
+        return;
+      }
+
+      resolve({ version: parsed, raw: raw || null, error: null });
+    });
+  });
 }
 
 function integrityUnverifiable(reason, { expectedSha256, actualSha256, expectedSource, error } = {}) {
@@ -1009,6 +1048,10 @@ async function runInstaller(options) {
   const artifactNameFn = opts.artifactNameFn || artifactName;
   const assetPatternForPlatformKeyFn = opts.assetPatternForPlatformKeyFn || assetPatternForPlatformKey;
   const sha256FileFn = opts.sha256FileFn || sha256File;
+  const getBinaryVersionFn = opts.getBinaryVersionFn || detectDocdexdVersion;
+  const versionCheckTimeoutMs = Number.isFinite(opts.versionCheckTimeoutMs)
+    ? opts.versionCheckTimeoutMs
+    : DEFAULT_VERSION_CHECK_TIMEOUT_MS;
 
   const detectedPlatform = opts.platform || process.platform;
   const detectedArch = opts.arch || process.arch;
@@ -1048,7 +1091,7 @@ async function runInstaller(options) {
   const distDir = pathModule.join(distBaseDir, platformKey);
   const isWin32 = detectedPlatform === "win32";
 
-  const local = await determineLocalInstallerOutcome({
+  let local = await determineLocalInstallerOutcome({
     fsModule,
     pathModule,
     distDir,
@@ -1057,6 +1100,25 @@ async function runInstaller(options) {
     isWin32,
     sha256FileFn
   });
+
+  let detectedVersion = null;
+  let detectedVersionOutput = null;
+  let detectedVersionError = null;
+  const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+  if (existsSync && local?.binaryPath && existsSync(local.binaryPath)) {
+    const versionProbe = await getBinaryVersionFn({ binaryPath: local.binaryPath, timeoutMs: versionCheckTimeoutMs });
+    detectedVersion = normalizeVersionString(versionProbe?.version);
+    detectedVersionOutput = typeof versionProbe?.raw === "string" ? versionProbe.raw : null;
+    detectedVersionError = versionProbe?.error ? String(versionProbe.error) : null;
+  }
+
+  if (local.outcome === "no-op") {
+    if (!detectedVersion) {
+      local = { ...local, outcome: "reinstall_unknown", reason: "version_unverifiable" };
+    } else if (detectedVersion !== version) {
+      local = { ...local, outcome: "update", reason: "version_mismatch" };
+    }
+  }
 
   if (local.outcome === "no-op") {
     logger.log("[docdex] Install outcome: no-op");
@@ -1095,6 +1157,10 @@ async function runInstaller(options) {
           fallbackAttempted: source === "fallback",
           fallbackReason,
           version,
+          expectedVersion: version,
+          detectedVersion,
+          detectedVersionOutput,
+          detectedVersionError,
           repoSlug,
           downloadUrl,
           expectedAsset: archive,
@@ -1161,6 +1227,50 @@ async function runInstaller(options) {
 
     await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
     logger.log(`[docdex] Installed binary to ${binaryPath}`);
+
+    const versionProbe = await getBinaryVersionFn({ binaryPath, timeoutMs: versionCheckTimeoutMs });
+    const installedVersion = normalizeVersionString(versionProbe?.version);
+    if (!installedVersion) {
+      throw new ArchiveInvalidError("Installed binary did not report a usable version", {
+        platformKey,
+        targetTriple,
+        version,
+        expectedVersion: version,
+        detectedVersion: null,
+        versionCheckOutput: versionProbe?.raw ?? null,
+        versionCheckError: versionProbe?.error ?? null,
+        repoSlug,
+        assetName: archive,
+        downloadUrl,
+        source,
+        manifestName: manifestAttempt?.manifestName ?? null,
+        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+        fallbackAttempted: source === "fallback",
+        binaryPath
+      });
+    }
+    if (installedVersion !== version) {
+      throw new ArchiveInvalidError(
+        `Installed binary version ${installedVersion} does not match expected ${version}`,
+        {
+          platformKey,
+          targetTriple,
+          version,
+          expectedVersion: version,
+          detectedVersion: installedVersion,
+          versionCheckOutput: versionProbe?.raw ?? null,
+          versionCheckError: versionProbe?.error ?? null,
+          repoSlug,
+          assetName: archive,
+          downloadUrl,
+          source,
+          manifestName: manifestAttempt?.manifestName ?? null,
+          manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+          fallbackAttempted: source === "fallback",
+          binaryPath
+        }
+      );
+    }
 
     const binarySha256 = await sha256FileFn(binaryPath);
     const metadata = {
@@ -1256,6 +1366,16 @@ function describeFatalError(err) {
   if (err instanceof MissingArtifactError) {
     const detected = err.details?.detected ? `${err.details.detected.os}/${err.details.detected.arch}` : null;
     const platformKey = typeof err.details?.platformKey === "string" ? err.details.platformKey : null;
+    const expectedVersion =
+      typeof err.details?.expectedVersion === "string" && err.details.expectedVersion
+        ? err.details.expectedVersion
+        : typeof err.details?.version === "string" && err.details.version
+          ? err.details.version
+          : null;
+    const detectedVersion =
+      typeof err.details?.detectedVersion === "string" && err.details.detectedVersion
+        ? err.details.detectedVersion
+        : null;
     const expectedAsset =
       typeof err.details?.expectedAsset === "string" && err.details.expectedAsset.trim()
         ? err.details.expectedAsset.trim()
@@ -1278,9 +1398,11 @@ function describeFatalError(err) {
         err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
         err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,
         err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,
+        err.details?.source ? `[docdex] Release source: ${err.details.source}` : null,
         fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,
         err.details?.fallbackReason ? `[docdex] Fallback reason: ${err.details.fallbackReason}` : null,
-        err.details?.version ? `[docdex] Version: v${err.details.version}` : null,
+        expectedVersion ? `[docdex] Expected version: v${expectedVersion}` : null,
+        detectedVersion ? `[docdex] Detected version: v${detectedVersion}` : null,
         err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
         err.details?.expectedAsset ? `[docdex] Expected asset: ${err.details.expectedAsset}` : null,
         expectedAssetPattern ? `[docdex] Asset naming pattern: ${expectedAssetPattern}` : null,
@@ -1369,6 +1491,9 @@ function describeFatalError(err) {
       lines: [
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
+        err.details?.expectedVersion ? `[docdex] Expected version: v${err.details.expectedVersion}` : null,
+        err.details?.detectedVersion ? `[docdex] Detected version: v${err.details.detectedVersion}` : null,
+        err.details?.versionCheckError ? `[docdex] Version check error: ${err.details.versionCheckError}` : null,
         err.details?.binaryPath ? `[docdex] Expected binary path: ${err.details.binaryPath}` : null
       ].filter(Boolean)
     };

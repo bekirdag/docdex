@@ -134,12 +134,14 @@ How to verify release assets (publisher/operator checklist):
 1) Confirm the repo slug and version the installer is using:
    - `echo $DOCDEX_DOWNLOAD_REPO` (if set)
    - `echo $DOCDEX_VERSION` (if set; otherwise uses the npm package version)
-2) Confirm the GitHub Release tag exists for `v<version>` and contains:
+2) If you have a local install, note the detected daemon version:
+   - Read `dist/<platformKey>/docdexd-install.json` (field `version`) or run `docdexd --version`.
+3) Confirm the GitHub Release tag exists for `v<version>` and contains:
    - `docdex-release-manifest.json` and `docdex-release-manifest.json.sha256` (preferred), or
    - `SHA256SUMS` / `SHA256SUMS.txt` (fallback)
-3) Confirm the expected asset name is present:
+4) Confirm the expected asset name is present:
    - `docdexd-<platformKey>.tar.gz` (example in the support table above)
-4) If using a manifest, confirm it includes an entry for your expected Rust `targetTriple` and that the entry’s `asset.name` matches the asset filename.
+5) If using a manifest, confirm it includes an entry for your expected Rust `targetTriple` and that the entry’s `asset.name` matches the asset filename.
 
 See also:
 - `docs/contracts/release_manifest_schema_v1.md`

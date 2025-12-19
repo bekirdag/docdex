@@ -15,6 +15,7 @@ Assumptions (explicit):
 
 Related contracts:
 - `docs/contracts/installer_error_contract_v1.md`
+- `docs/contracts/version_sync_contract_v1.md`
 - `docs/contracts/release_manifest_schema_v1.md`
 - `docs/ops/installer_platform_audit.md`
 - `docs/ops/installer_supported_platforms.md`

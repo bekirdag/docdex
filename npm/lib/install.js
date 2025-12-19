@@ -4894,6 +4894,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   const stateRootDir = opts.stateRootDir || resolveInstallerStateRootDir({ osModule, pathModule, env });
   const distDir = resolveInstallerInstallDir({ stateRootDir, platformKey, pathModule });
   const legacyDistBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
@@ -4926,6 +4927,9 @@ async function runInstaller(options) {
   logger.log(`[docdex] Package version: v${version}`);
 
 >>>>>>> mcoda/task/ops-01-us-01-t19
+=======
+  const expectedAssetName = platformPolicy.expectedAssetName || artifactNameFn(platformKey);
+>>>>>>> mcoda/task/ops-01-us-01-t33
   const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
   const distDir = pathModule.join(distBaseDir, platformKey);
 >>>>>>> mcoda/task/ops-01-us-04-t24
@@ -4933,6 +4937,7 @@ async function runInstaller(options) {
   const binaryName = isWin32 ? "docdexd.exe" : "docdexd";
   const stagingRoot = stagingRootPath(distBaseDir, pathModule);
 
+<<<<<<< HEAD
   await cleanupStagingArtifacts({
     fsModule,
     pathModule,
@@ -5039,6 +5044,13 @@ async function runInstaller(options) {
   await recoverAndCleanInstallerArtifacts({ fsModule, pathModule, distBaseDir, platformKey, distDir, logger });
 
 >>>>>>> mcoda/task/ops-01-us-05-t14
+=======
+  logger.log(
+    `[docdex] Detected platform: ${detectedPlatform}/${detectedArch} -> ${platformKey} (${targetTriple})`
+  );
+  logger.log(`[docdex] Resolved daemon version: v${version}`);
+
+>>>>>>> mcoda/task/ops-01-us-01-t33
   const local = await determineLocalInstallerOutcome({
     fsModule,
     pathModule,
@@ -5110,6 +5122,7 @@ async function runInstaller(options) {
     });
 =======
   if (local.outcome === "no-op") {
+<<<<<<< HEAD
     if (local.integrityResult) {
       logIntegrityCheck({
         logger,
@@ -5122,6 +5135,9 @@ async function runInstaller(options) {
         actualSha256: local.integrityResult.actualSha256
       });
     }
+=======
+    logger.log(`[docdex] Resolved asset: ${expectedAssetName} (cached)`);
+>>>>>>> mcoda/task/ops-01-us-01-t33
     logger.log("[docdex] Install outcome: no-op");
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5421,6 +5437,7 @@ async function runInstaller(options) {
     throw err;
   }
 
+<<<<<<< HEAD
   const { archive, expectedSha256, source, manifestAttempt } = plan;
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5499,6 +5516,10 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-04-t17
 =======
 >>>>>>> mcoda/task/ops-01-us-04-t18
+=======
+  logger.log(`[docdex] Resolved asset: ${archive} (${source})`);
+
+>>>>>>> mcoda/task/ops-01-us-01-t33
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
 <<<<<<< HEAD
   const tmpDir = opts.tmpDir || osModule.tmpdir();

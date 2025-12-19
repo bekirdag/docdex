@@ -74,6 +74,7 @@ Release asset naming (expected):
 
 ---
 
+<<<<<<< HEAD
 ## Validate installation
 
 After install, confirm the wrapper and daemon are in place:
@@ -101,6 +102,27 @@ Locate the install safely:
 - Global install: `$(npm root -g)/docdex/dist/<platformKey>/`
 
 Tip: `dist/<platformKey>/docdexd-install.json` records the resolved version, repo, target triple, and asset name for the last verified install.
+=======
+## Version + asset resolution (postinstall)
+
+- The npm package ships JS only; platform-native `docdexd` binaries are downloaded at install time.
+- Version selection: `DOCDEX_VERSION` overrides; otherwise use `package.json` version (leading `v` is stripped).
+- Release tag for assets: `v<version>` (example: npm `0.1.6` -> GitHub Release `v0.1.6`).
+- Asset naming: `docdexd-<platformKey>.tar.gz` (or manifest-provided asset names when a release manifest is present).
+- Download URL shape: `https://github.com/<repo>/releases/download/v<version>/docdexd-<platformKey>.tar.gz`.
+- Deterministic mapping from runtime (`process.platform`/`process.arch` + Linux libc) to `platformKey` and `targetTriple` is defined in `npm/lib/platform_matrix.js` and summarized in the tables below.
+
+---
+
+## Version + asset resolution (postinstall)
+
+- The npm package ships JS only; platform-native `docdexd` binaries are downloaded at install time.
+- Version selection: `DOCDEX_VERSION` overrides; otherwise use `package.json` version (leading `v` is stripped).
+- Release tag for assets: `v<version>` (example: npm `0.1.6` -> GitHub Release `v0.1.6`).
+- Asset naming: `docdexd-<platformKey>.tar.gz` (or manifest-provided asset names when a release manifest is present).
+- Download URL shape: `https://github.com/<repo>/releases/download/v<version>/docdexd-<platformKey>.tar.gz`.
+- Deterministic mapping from runtime (`process.platform`/`process.arch` + Linux libc) to `platformKey` and `targetTriple` is defined in `npm/lib/platform_matrix.js` and summarized in the tables below.
+>>>>>>> mcoda/task/ops-01-us-01-t33
 
 ---
 

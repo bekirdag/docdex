@@ -1088,6 +1088,7 @@ async function runInstaller(options) {
           detected: { os: detectedPlatform, arch: detectedArch },
           platformKey,
           targetTriple,
+          installedVersion: local.installedVersion,
           assetName: archive,
           source,
           manifestName: manifestAttempt?.manifestName ?? null,
@@ -1256,6 +1257,7 @@ function describeFatalError(err) {
   if (err instanceof MissingArtifactError) {
     const detected = err.details?.detected ? `${err.details.detected.os}/${err.details.detected.arch}` : null;
     const platformKey = typeof err.details?.platformKey === "string" ? err.details.platformKey : null;
+    const installedVersion = typeof err.details?.installedVersion === "string" ? err.details.installedVersion : null;
     const expectedAsset =
       typeof err.details?.expectedAsset === "string" && err.details.expectedAsset.trim()
         ? err.details.expectedAsset.trim()
@@ -1280,7 +1282,9 @@ function describeFatalError(err) {
         err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,
         fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,
         err.details?.fallbackReason ? `[docdex] Fallback reason: ${err.details.fallbackReason}` : null,
-        err.details?.version ? `[docdex] Version: v${err.details.version}` : null,
+        err.details?.version ? `[docdex] Expected version: v${err.details.version}` : null,
+        installedVersion ? `[docdex] Detected version: v${installedVersion}` : null,
+        err.details?.source ? `[docdex] Release source: ${err.details.source}` : null,
         err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
         err.details?.expectedAsset ? `[docdex] Expected asset: ${err.details.expectedAsset}` : null,
         expectedAssetPattern ? `[docdex] Asset naming pattern: ${expectedAssetPattern}` : null,

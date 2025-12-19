@@ -33,7 +33,8 @@ test("generateReleaseManifest: emits targets mapping with sha256 and validates c
     fs.writeFileSync(tarPath, payload);
 
     const tarSha = sha256(payload);
-    expectedByTriple.set(entry.targetTriple, { tarName, tarSha });
+    const tarSize = payload.length;
+    expectedByTriple.set(entry.targetTriple, { tarName, tarSha, tarSize });
 
     const shaFilePath = `${tarPath}.sha256`;
     fs.writeFileSync(shaFilePath, `${tarSha}  ${tarName}\n`, "utf8");
@@ -78,6 +79,7 @@ test("generateReleaseManifest: emits targets mapping with sha256 and validates c
     const targetEntry = manifest.targets[triple];
     assert.equal(targetEntry.asset.name, expected.tarName);
     assert.equal(targetEntry.integrity.sha256, expected.tarSha);
+    assert.equal(targetEntry.integrity.size, expected.tarSize);
   }
 
   assert.ok(Array.isArray(manifest.publishedAssets));

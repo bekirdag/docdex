@@ -4398,6 +4398,7 @@ async function resolveInstallerDownloadPlan({
       const expectedAsset = artifactNameFn(platformKey);
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
       const detectedDetails = detected && typeof detected === "object" ? detected : null;
 =======
       const manifestName =
@@ -4407,6 +4408,9 @@ async function resolveInstallerDownloadPlan({
       const downloadBase = getDownloadBaseFn(repoSlug);
       const releaseTag = `v${version}`;
 >>>>>>> mcoda/task/ops-01-us-03-t45
+=======
+      const detectedDetails = detected && typeof detected === "object" ? detected : null;
+>>>>>>> mcoda/task/ops-01-us-02-t39
       err.details = {
         ...withBaseDetails(err.details),
         detected: detectedDetails,
@@ -4415,6 +4419,7 @@ async function resolveInstallerDownloadPlan({
         version,
         expectedAsset,
         expectedAssetPattern: assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset }),
+<<<<<<< HEAD
 <<<<<<< HEAD
         expectedVersion: version,
         version,
@@ -4426,6 +4431,9 @@ async function resolveInstallerDownloadPlan({
         downloadBase,
         releaseTag
 >>>>>>> mcoda/task/ops-01-us-03-t45
+=======
+        detected: detectedDetails
+>>>>>>> mcoda/task/ops-01-us-02-t39
       };
 >>>>>>> mcoda/task/ops-01-us-02-t41
     }
@@ -5560,9 +5568,14 @@ async function runInstaller(options) {
     platformKey,
     targetTriple,
 <<<<<<< HEAD
+<<<<<<< HEAD
     logger,
 <<<<<<< HEAD
     structuredLogger: structured
+=======
+    detected: platformPolicy.detected,
+    logger
+>>>>>>> mcoda/task/ops-01-us-02-t39
   });
 =======
     expectedArchiveName: preflightPlan?.archive ?? null,
@@ -6100,11 +6113,19 @@ async function runInstaller(options) {
         const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
         throw new MissingArtifactError({
 <<<<<<< HEAD
+<<<<<<< HEAD
           detected: { os: detectedPlatform, arch: detectedArch, ...(detectedLibc ? { libc: detectedLibc } : {}) },
 =======
           detected: { os: detectedPlatform, arch: detectedArch },
           libc: detectedLibc,
 >>>>>>> mcoda/task/ops-01-us-02-t14
+=======
+          detected: {
+            os: platformPolicy?.detected?.platform ?? detectedPlatform,
+            arch: platformPolicy?.detected?.arch ?? detectedArch,
+            libc: platformPolicy?.detected?.libc ?? null
+          },
+>>>>>>> mcoda/task/ops-01-us-02-t39
           platformKey,
           targetTriple,
 <<<<<<< HEAD
@@ -8186,6 +8207,7 @@ function describeFatalError(err) {
   if (err instanceof MissingArtifactError) {
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     const detectedOs =
       err.details?.detected && typeof err.details.detected === "object"
         ? err.details.detected.os ?? err.details.detected.platform
@@ -8209,6 +8231,13 @@ function describeFatalError(err) {
     const detected = err.details?.detected ? `${err.details.detected.os}/${err.details.detected.arch}` : null;
     const libc = err.details?.libc ? String(err.details.libc) : null;
 >>>>>>> mcoda/task/ops-01-us-02-t14
+=======
+    const detected = err.details?.detected
+      ? `${err.details.detected.os}/${err.details.detected.arch}${
+          err.details.detected.libc ? `/${err.details.detected.libc}` : ""
+        }`
+      : null;
+>>>>>>> mcoda/task/ops-01-us-02-t39
     const platformKey = typeof err.details?.platformKey === "string" ? err.details.platformKey : null;
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -8711,6 +8740,7 @@ function describeFatalError(err) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     const versionInfo = versionDiagnostics(err.details);
 =======
     const expectedVersion =
@@ -8754,6 +8784,15 @@ function describeFatalError(err) {
         ? `[docdex] Asset naming pattern: ${expectedAssetPattern}`
         : null;
 >>>>>>> mcoda/task/ops-01-us-02-t14
+=======
+    const detectedPlatform = err.details?.detected?.os ?? err.details?.detected?.platform;
+    const detectedArch = err.details?.detected?.arch;
+    const detectedLibc = err.details?.detected?.libc;
+    const detected =
+      detectedPlatform && detectedArch
+        ? `${detectedPlatform}/${detectedArch}${detectedLibc ? `/${detectedLibc}` : ""}`
+        : null;
+>>>>>>> mcoda/task/ops-01-us-02-t39
 
     const title =
       err.code === "DOCDEX_ASSET_NO_MATCH"
@@ -8787,6 +8826,7 @@ function describeFatalError(err) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
             platformKey ? `[docdex] Platform key: ${platformKey}` : null,
 =======
             versionInfo.expected ? `[docdex] Expected version: ${versionInfo.expected}` : null,
@@ -8805,6 +8845,9 @@ function describeFatalError(err) {
             downloadBase ? `[docdex] Download base: ${downloadBase}` : null,
             releaseTag ? `[docdex] Release tag: ${releaseTag}` : null,
 >>>>>>> mcoda/task/ops-01-us-03-t45
+=======
+            detected ? `[docdex] Detected platform: ${detected}` : null,
+>>>>>>> mcoda/task/ops-01-us-02-t39
             err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
             `[docdex] Asset naming pattern: ${expectedAssetPattern}`,
 =======

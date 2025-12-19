@@ -86,7 +86,7 @@ Optional (metadata; ignored by the installer unless noted):
 - `tag` (string): release tag, typically `vX.Y.Z`.
 - `version` (string): `X.Y.Z`.
 - `generatedAt` (string): ISO-8601 timestamp.
-- `publishedAssets` (array): `{name, sha256}` pairs for release automation auditing (installer ignores this).
+- `publishedAssets` (array): `{name, sha256}` pairs (optionally `size` in bytes) for release automation auditing (installer ignores this).
 
 ### `targets` entry object (required fields)
 
@@ -96,6 +96,7 @@ For each target triple key `T` in `targets`:
 
 Optional fields (tolerated by the installer):
 - `targets[T].asset.id` (string|number): provider-specific asset id (not used for resolution).
+- `targets[T].integrity.size` (number): asset size in bytes (optional integrity metadata; ignored by the installer).
 - Additional keys are permitted but ignored by the installer.
 
 ### Legacy-compatible shape (`assets` array)
@@ -117,7 +118,10 @@ and MUST include a canonical asset identifier/name plus SHA-256 under one of the
   "targets": {
     "x86_64-unknown-linux-gnu": {
       "asset": { "name": "docdexd-linux-x64-gnu.tar.gz" },
-      "integrity": { "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
+      "integrity": {
+        "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "size": 123456
+      }
     }
   }
 }

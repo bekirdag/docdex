@@ -57,6 +57,7 @@ const INSTALL_METADATA_FILENAME = "docdexd-install.json";
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 const INSTALL_OUTCOME_SCHEMA_VERSION = 1;
 
 const INSTALL_OUTCOME_CODE_BY_DECISION_OUTCOME = Object.freeze({
@@ -153,6 +154,11 @@ const STAGING_STAGE_PREFIX = "stage-";
 const STAGING_BACKUP_PREFIX = "backup-";
 const STAGING_TTL_MS = 24 * 60 * 60 * 1000;
 >>>>>>> mcoda/task/ops-01-us-05-t33
+=======
+const STAGING_ROOT_DIRNAME = ".docdexd-staging";
+const BACKUP_DIR_PREFIX = ".docdexd-backup-";
+const STAGING_EXTRACT_DIRNAME = "staged";
+>>>>>>> mcoda/task/ops-01-us-05-t34
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -751,6 +757,7 @@ function installMetadataPath(distDir, pathModule = path) {
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 function resolveInstallerStateRootDir({ osModule, pathModule, env }) {
   const override =
     typeof env?.DOCDEX_INSTALL_STATE_DIR === "string" && env.DOCDEX_INSTALL_STATE_DIR.trim()
@@ -879,6 +886,21 @@ async function cleanupStagingArtifacts({
 
   return { restored, cleaned };
 >>>>>>> mcoda/task/ops-01-us-05-t33
+=======
+function stagingRootPath(distBaseDir, pathModule = path) {
+  return pathModule.join(distBaseDir, STAGING_ROOT_DIRNAME);
+}
+
+function backupDirPath(distBaseDir, platformKey, pathModule = path) {
+  return pathModule.join(distBaseDir, `${BACKUP_DIR_PREFIX}${platformKey}`);
+}
+
+async function createStagingDir({ fsModule, pathModule, distBaseDir, platformKey }) {
+  const root = stagingRootPath(distBaseDir, pathModule);
+  await fsModule.promises.mkdir(root, { recursive: true });
+  const prefix = pathModule.join(root, `docdexd-${platformKey}-`);
+  return fsModule.promises.mkdtemp(prefix);
+>>>>>>> mcoda/task/ops-01-us-05-t34
 }
 
 function nowIso() {
@@ -2083,6 +2105,121 @@ async function swapInstallDir({ fsModule, distDir, stagingDir }) {
 
   if (hasBackup) {
     await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+function safeExistsSync(fsModule) {
+  return typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+}
+
+async function cleanupStagingRoot({ fsModule, pathModule, stagingRoot, logger }) {
+  if (!fsModule?.promises?.readdir || !fsModule?.promises?.rm) return;
+  let entries = null;
+  try {
+    entries = await fsModule.promises.readdir(stagingRoot, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === "ENOENT") return;
+    logger?.warn?.(`[docdex] Failed to scan staging dir ${stagingRoot}: ${err?.message || err}`);
+    return;
+  }
+
+  await Promise.all(
+    entries.map((entry) => {
+      const entryPath = pathModule.join(stagingRoot, entry.name);
+      return fsModule.promises.rm(entryPath, { recursive: true, force: true }).catch(() => {});
+    })
+  );
+}
+
+async function reconcileInstallArtifacts({ fsModule, pathModule, distDir, backupDir, stagingRoot, logger }) {
+  const existsSync = safeExistsSync(fsModule);
+  if (!existsSync) return;
+
+  const distExists = existsSync(distDir);
+  const backupExists = existsSync(backupDir);
+
+  if (!distExists && backupExists) {
+    try {
+      await fsModule.promises.rename(backupDir, distDir);
+      logger?.warn?.("[docdex] Restored previous install from backup after an interrupted update.");
+    } catch (err) {
+      logger?.warn?.(
+        `[docdex] Failed to restore backup from ${backupDir}: ${err?.message || err}`
+      );
+    }
+  } else if (distExists && backupExists) {
+    await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+  }
+
+  await cleanupStagingRoot({ fsModule, pathModule, stagingRoot, logger });
+}
+
+async function ensureExecutableBinary({ fsModule, binaryPath, isWin32, details }) {
+  let stat = null;
+  try {
+    stat = await fsModule.promises.stat(binaryPath);
+  } catch {
+    stat = null;
+  }
+
+  if (!stat || !stat.isFile()) {
+    throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
+      ...details,
+      binaryPath
+    });
+  }
+
+  if (!isWin32) {
+    await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
+    const constants = fsModule.constants || fs.constants;
+    try {
+      await fsModule.promises.access(binaryPath, constants.X_OK);
+    } catch (err) {
+      throw new ArchiveInvalidError(`Downloaded archive binary is not executable at ${binaryPath}`, {
+        ...details,
+        binaryPath,
+        error: err?.message || String(err)
+      });
+    }
+  }
+
+  if (stat.size === 0) {
+    throw new ArchiveInvalidError(`Downloaded archive binary is empty at ${binaryPath}`, {
+      ...details,
+      binaryPath
+    });
+  }
+}
+
+async function swapStagedInstall({ fsModule, distDir, backupDir, stagedDir }) {
+  const existsSync = safeExistsSync(fsModule);
+  const distExists = existsSync ? existsSync(distDir) : false;
+  let backupTaken = false;
+
+  if (distExists) {
+    await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+    await fsModule.promises.rename(distDir, backupDir);
+    backupTaken = true;
+  }
+
+  await fsModule.promises.rename(stagedDir, distDir);
+  return { backupTaken };
+}
+
+async function rollbackInstall({ fsModule, distDir, backupDir, backupTaken, logger }) {
+  if (!backupTaken) return;
+  const existsSync = safeExistsSync(fsModule);
+  if (!existsSync || !existsSync(backupDir)) return;
+
+  if (existsSync(distDir)) {
+    await fsModule.promises.rm(distDir, { recursive: true, force: true }).catch(() => {});
+  }
+
+  try {
+    await fsModule.promises.rename(backupDir, distDir);
+    logger?.warn?.("[docdex] Restored previous install after failed update.");
+  } catch (err) {
+    logger?.warn?.(`[docdex] Failed to restore backup: ${err?.message || err}`);
   }
 }
 
@@ -4515,6 +4652,10 @@ async function runInstaller(options) {
   const incomingDir = incomingInstallDir(distDir);
   const backupDir = backupInstallDir(distDir);
   const isWin32 = detectedPlatform === "win32";
+  const stagingRoot = stagingRootPath(distBaseDir, pathModule);
+  const backupDir = backupDirPath(distBaseDir, platformKey, pathModule);
+
+  await reconcileInstallArtifacts({ fsModule, pathModule, distDir, backupDir, stagingRoot, logger });
 
   await recoverInterruptedInstall({ fsModule, distDir, incomingDir, backupDir });
 
@@ -5146,10 +5287,17 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-03-t37
 =======
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
+<<<<<<< HEAD
   const stagingDir = await createStagingDir({ fsModule, pathModule, stagingRoot, platformKey });
   const stagingArchivePath = pathModule.join(stagingDir, archive);
   const stagingExtractDir = pathModule.join(stagingDir, "extract");
 >>>>>>> mcoda/task/ops-01-us-05-t33
+=======
+  const stagingDir = await createStagingDir({ fsModule, pathModule, distBaseDir, platformKey });
+  const tmpFile = pathModule.join(stagingDir, `${archive}.${process.pid}.tgz`);
+  const stagedDir = pathModule.join(stagingDir, STAGING_EXTRACT_DIRNAME);
+  let backupTaken = false;
+>>>>>>> mcoda/task/ops-01-us-05-t34
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
 <<<<<<< HEAD
@@ -5746,6 +5894,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     await extractTarballFn(tmpFile, stageDir);
 =======
         fallbackAttempted: source === "fallback",
@@ -5836,6 +5985,16 @@ async function runInstaller(options) {
     if (!fsModule.existsSync(stagingBinaryPath)) {
       throw new ArchiveInvalidError(`Downloaded archive missing binary at ${finalBinaryPath}`, {
 >>>>>>> mcoda/task/ops-01-us-05-t33
+=======
+    await extractTarballFn(tmpFile, stagedDir);
+
+    const binaryPath = pathModule.join(stagedDir, isWin32 ? "docdexd.exe" : "docdexd");
+    await ensureExecutableBinary({
+      fsModule,
+      binaryPath,
+      isWin32,
+      details: {
+>>>>>>> mcoda/task/ops-01-us-05-t34
         platformKey,
         targetTriple,
         version,
@@ -5846,6 +6005,7 @@ async function runInstaller(options) {
         integritySource: integritySource || source || null,
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
         fallbackAttempted: source === "fallback"
@@ -6188,6 +6348,25 @@ async function runInstaller(options) {
 
     const binarySha256 = await sha256FileFn(stagingBinaryPath);
 >>>>>>> mcoda/task/ops-01-us-05-t33
+=======
+        fallbackAttempted: source === "fallback"
+      }
+    });
+
+    const swapResult = await swapStagedInstall({
+      fsModule,
+      distDir,
+      backupDir,
+      stagedDir
+    });
+    backupTaken = swapResult.backupTaken;
+
+    const finalBinaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+    await fsModule.promises.chmod(finalBinaryPath, 0o755).catch(() => {});
+    logger.log(`[docdex] Installed binary to ${finalBinaryPath}`);
+
+    const binarySha256 = await sha256FileFn(finalBinaryPath);
+>>>>>>> mcoda/task/ops-01-us-05-t34
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
 <<<<<<< HEAD
@@ -6402,6 +6581,7 @@ async function runInstaller(options) {
       value: metadata
     });
 
+<<<<<<< HEAD
     // Atomic commit: only after verification + staged extraction succeed do we update the final install location.
     await fsModule.promises.mkdir(distDir, { recursive: true });
     const finalBinaryPath = pathModule.join(distDir, binaryFilename);
@@ -6951,6 +7131,19 @@ async function runInstaller(options) {
   } finally {
     await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
 >>>>>>> mcoda/task/ops-01-us-05-t33
+=======
+    if (backupTaken) {
+      await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+    }
+
+    logger.log(`[docdex] Install outcome: ${local.outcome}`);
+    return { binaryPath: finalBinaryPath, outcome: local.outcome };
+  } catch (err) {
+    await rollbackInstall({ fsModule, distDir, backupDir, backupTaken, logger });
+    throw err;
+  } finally {
+    await fsModule.promises.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+>>>>>>> mcoda/task/ops-01-us-05-t34
   }
 }
 

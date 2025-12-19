@@ -51,7 +51,12 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 
       const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), `docdex-installer-e2e-${platformKey}-`));
       const tmpDir = path.join(tmpRoot, "tmp");
+<<<<<<< HEAD
       const stateRootDir = path.join(tmpRoot, "state");
+=======
+      const distBaseDir = path.join(tmpRoot, "dist");
+      const stagingRoot = path.join(distBaseDir, ".docdexd-staging");
+>>>>>>> mcoda/task/ops-01-us-05-t34
       await fs.promises.mkdir(tmpDir, { recursive: true });
 
       st.after(async () => {
@@ -189,6 +194,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
       assert.equal(extractDir, path.join(stateRootDir, "daemon", platformKey));
 =======
       const expectedDistDir = path.join(distBaseDir, platformKey);
@@ -294,10 +300,17 @@ test("installer e2e: supported platform matrix installs expected binary layout",
       assert.equal(extractArchive, downloadDest);
       assert.ok(relativeExtract && !relativeExtract.startsWith(".."));
 >>>>>>> mcoda/task/ops-01-us-04-t11
+=======
+      assert.ok(path.resolve(extractDir).startsWith(path.resolve(stagingRoot)));
+>>>>>>> mcoda/task/ops-01-us-05-t34
       assert.equal(result.binaryPath, expectedBinaryPath);
       assert.ok(!fs.existsSync(extractDir), "staging dir should have been swapped into place");
       assert.ok(fs.existsSync(expectedBinaryPath));
+<<<<<<< HEAD
       assert.ok(!fs.existsSync(extractDir), "expected staging directory to be cleaned up");
+=======
+      assert.ok(!fs.existsSync(extractDir));
+>>>>>>> mcoda/task/ops-01-us-05-t34
     });
   }
 });

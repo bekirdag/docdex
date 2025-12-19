@@ -265,7 +265,8 @@ pub async fn serve(
         .into()
     })?);
     let libs_indexer = {
-        let libs_dir = libs::libs_state_dir_from_index_state_dir(indexer.state_dir());
+        let libs_dir =
+            libs::libs_state_dir_from_index_state_dir(indexer.repo_root(), indexer.state_dir());
         libs::LibsIndexer::open_read_only(libs_dir)
             .ok()
             .flatten()

@@ -1101,7 +1101,8 @@ mod latency_perf_tests {
             "# Serde\n\nLIBS_ONLY_TERM_123 appears only in library docs.\n",
         )?;
 
-        let libs_dir = libs::libs_state_dir_from_index_state_dir(indexer.state_dir());
+        let libs_dir =
+            libs::libs_state_dir_from_index_state_dir(indexer.repo_root(), indexer.state_dir());
         let libs_writer = libs::LibsIndexer::open_or_create(libs_dir.clone())?;
         let sources = [libs::LibSource {
             library: "serde".to_string(),

@@ -3,7 +3,7 @@
 You are interacting with Docdex, a local documentation indexer/search daemon. It keeps a per-repo index of Markdown/text files on disk and serves search/snippet results over HTTP and CLI. No external services are used; all data stays local.
 
 ## What Docdex does
-- Builds a tantivy-based index under `<repo>/.docdex/index`.
+- Builds a tantivy-based index under `~/.docdex/state/repos/<fingerprint>/index`.
 - Serves HTTP endpoints: `/search`, `/snippet`, `/healthz`.
 - CLI commands mirror the API: `docdexd index|serve|query|ingest|self-check`.
 - Optional MCP mode (stdio) exposes `docdex.search` and `docdex.index` tools for MCP-aware clients.
@@ -23,12 +23,12 @@ You are interacting with Docdex, a local documentation indexer/search daemon. It
 
 ## Paths and binaries
 - Binary name: `docdexd` (`docdex` alias via npm).
-- Index path: `<repo>/.docdex/index` (or `DOCDEX_STATE_DIR`).
+- Index path: `~/.docdex/state/repos/<fingerprint>/index` (or `DOCDEX_STATE_DIR` as a base override).
 - Supported published platforms: macOS (arm64/x64), Linux glibc (arm64/x64), Linux musl (x64), Windows (x64).
 - Unpublished/unsupported (fails gracefully): Linux musl (arm64), Windows (arm64).
 
 ## Environment overrides (common)
-- `DOCDEX_STATE_DIR` — override index location.
+- `DOCDEX_STATE_DIR` — override state base directory.
 - `DOCDEX_DOWNLOAD_REPO` — owner/repo for release assets (npm installer).
 - `DOCDEX_LIBC` — force `gnu` or `musl` on Linux.
 - `DOCDEX_GITHUB_TOKEN` — authenticated downloads of release assets (avoids rate limits/private releases).
@@ -38,5 +38,5 @@ You are interacting with Docdex, a local documentation indexer/search daemon. It
 - Avoid sending sensitive content elsewhere; Docdex is local—keep data local.
 - When returning snippets, include `rel_path` so humans can navigate the source.
 - If your client supports MCP, use `docdex.search` (concise queries, low `limit`) for repo-specific context, `docdex.index` when results look stale, `docdex.files` to list indexed docs, and `docdex.stats` to confirm doc counts/recency; otherwise keep using HTTP/CLI.
-- When integrating Docdex into a new repo, ensure `.docdex/` (especially `.docdex/index/`) is listed in `.gitignore` so index artifacts are never committed.
+- When integrating Docdex into a new repo, add `.docdex/` to `.gitignore` only if you opt into an in-repo `--state-dir`.
 - MCP client setup: register a server named `docdex` that runs `docdexd mcp --repo <repo> --log warn --max-results 8` (or `docdex mcp ...` from npm). Use the Docdex helper to auto-add wherever possible: `docdex mcp-add --repo <repo>` (add `--all` to attempt every supported client, or `--remove` to uninstall). Direct Codex CLI command: `codex mcp add docdex -- docdexd mcp --repo <repo> --log warn --max-results 8`. Then use the MCP tools instead of shelling out.

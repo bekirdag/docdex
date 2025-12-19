@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use crate::state_paths::{default_state_base_dir, StatePaths};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepoIdentityError {
@@ -147,8 +148,6 @@ struct RepoStateMetaV1 {
 
 const REPO_REGISTRY_VERSION: u32 = 1;
 const REPO_META_VERSION: u32 = 1;
-const REPO_REGISTRY_FILENAME: &str = "repo_registry.json";
-const REPO_META_FILENAME: &str = "repo_meta.json";
 
 pub fn legacy_repo_id_for_root(repo_root: &Path) -> String {
     let normalized = normalize_path(repo_root);
@@ -648,20 +647,37 @@ fn resolve_state_dir_for_inspect(repo_root: &Path, state_dir_override: Option<&P
             state_key: None,
         },
         None => {
-            let default_dir = repo_root.join(".docdex").join("index");
-            let legacy_dir = repo_root.join(".gpt-creator").join("docdex").join("index");
-            if !default_dir.exists() && legacy_dir.exists() {
-                InspectStateDirResolution {
-                    resolved_index_dir: legacy_dir,
+            let Ok(base_dir) = default_state_base_dir() else {
+                return InspectStateDirResolution {
+                    resolved_index_dir: repo_root.join(".docdex").join("index"),
                     shared_base_dir: None,
                     state_key: None,
+                };
+            };
+            let fingerprint = repo_fingerprint_sha256(repo_root).ok();
+            let state_key = fingerprint.clone().and_then(|fp| {
+                let registry = load_registry(&repo_registry_path(&base_dir)).ok()?;
+                if let Some(entry) = registry.repos.get(&fp) {
+                    return Some(entry.state_key.clone());
                 }
-            } else {
-                InspectStateDirResolution {
-                    resolved_index_dir: default_dir,
-                    shared_base_dir: None,
-                    state_key: None,
+
+                let preferred = shared_repo_root_dir(&base_dir, &fp).join("index");
+                let legacy = legacy_repo_id_for_root(repo_root);
+                let legacy_dir = shared_repo_root_dir(&base_dir, &legacy).join("index");
+                if preferred.exists() {
+                    Some(fp)
+                } else if legacy_dir.exists() {
+                    Some(legacy)
+                } else {
+                    Some(fp)
                 }
+            });
+            let expected_key = state_key.clone().unwrap_or_else(|| "<unknown>".to_string());
+            let resolved_index_dir = StatePaths::new(base_dir.clone()).repo_index_dir(&expected_key);
+            InspectStateDirResolution {
+                resolved_index_dir,
+                shared_base_dir: Some(base_dir),
+                state_key,
             }
         }
     }
@@ -674,15 +690,15 @@ fn read_repo_meta(shared_base_dir: &Path, state_key: &str) -> Option<RepoStateMe
 }
 
 fn repo_registry_path(shared_base_dir: &Path) -> PathBuf {
-    shared_base_dir.join("repos").join(REPO_REGISTRY_FILENAME)
+    StatePaths::new(shared_base_dir.to_path_buf()).repo_registry_path()
 }
 
 fn shared_repo_root_dir(shared_base_dir: &Path, state_key: &str) -> PathBuf {
-    shared_base_dir.join("repos").join(state_key)
+    StatePaths::new(shared_base_dir.to_path_buf()).repo_root(state_key)
 }
 
 fn repo_meta_path(shared_base_dir: &Path, state_key: &str) -> PathBuf {
-    shared_repo_root_dir(shared_base_dir, state_key).join(REPO_META_FILENAME)
+    StatePaths::new(shared_base_dir.to_path_buf()).repo_meta_path(state_key)
 }
 
 fn load_registry(path: &Path) -> Result<RepoRegistryFile> {
@@ -793,7 +809,7 @@ fn base_dir_and_state_key_from_index_dir(index_state_dir: &Path) -> Option<(Path
     Some((base_dir, state_key))
 }
 
-fn split_scoped_state_dir(custom_state_dir: &Path) -> Option<(PathBuf, Option<String>, bool)> {
+pub(crate) fn split_scoped_state_dir(custom_state_dir: &Path) -> Option<(PathBuf, Option<String>, bool)> {
     let name = custom_state_dir.file_name()?.to_string_lossy();
     if name == "index" {
         let state_key_dir = custom_state_dir.parent()?;
@@ -906,7 +922,7 @@ mod tests {
     fn registry_updates_canonical_path_and_keeps_state_key() -> Result<()> {
         let base = TempDir::new()?;
         let shared = base.path().join("state");
-        fs::create_dir_all(shared.join("repos"))?;
+        fs::create_dir_all(StatePaths::new(shared.clone()).repos_dir())?;
 
         let repo_root = base.path().join("repo-a");
         create_git_repo(&repo_root)?;
@@ -955,7 +971,7 @@ mod tests {
     fn canonical_path_collision_is_rejected() -> Result<()> {
         let base = TempDir::new()?;
         let shared = base.path().join("state");
-        fs::create_dir_all(shared.join("repos"))?;
+        fs::create_dir_all(StatePaths::new(shared.clone()).repos_dir())?;
 
         let repo_a = base.path().join("repo-a");
         let repo_b = base.path().join("repo-b");
@@ -995,7 +1011,7 @@ mod tests {
     fn inspect_reports_reassociation_required_after_repo_move() -> Result<()> {
         let base = TempDir::new()?;
         let shared = base.path().join("state");
-        fs::create_dir_all(shared.join("repos"))?;
+        fs::create_dir_all(StatePaths::new(shared.clone()).repos_dir())?;
 
         let repo_root = base.path().join("repo-a");
         create_git_repo(&repo_root)?;
@@ -1052,7 +1068,7 @@ mod tests {
     fn inspect_includes_shared_mapping_and_last_seen() -> Result<()> {
         let base = TempDir::new()?;
         let shared = base.path().join("state");
-        fs::create_dir_all(shared.join("repos"))?;
+        fs::create_dir_all(StatePaths::new(shared.clone()).repos_dir())?;
 
         let repo_root = base.path().join("repo-a");
         create_git_repo(&repo_root)?;

@@ -20,6 +20,7 @@ use crate::error::{
     repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
     ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
 };
+use crate::state_paths::{default_state_base_dir, RepoStatePaths, StatePaths};
 use crate::symbols;
 use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
 use walkdir::WalkDir;
@@ -161,6 +162,7 @@ const FALLBACK_PREVIEW_LINES: usize = 60;
 #[derive(Clone)]
 pub struct IndexConfig {
     state_dir: PathBuf,
+    repo_state_dir: PathBuf,
     excluded_dir_names: Vec<String>,
     excluded_relative_prefixes: Vec<String>,
     symbols_enabled: bool,
@@ -286,7 +288,10 @@ impl IndexConfig {
         extra_excluded_prefixes: Vec<String>,
         symbols_enabled: bool,
     ) -> Result<Self> {
-        let state_dir = resolve_state_dir(repo_root, state_dir)?;
+        let state_paths = resolve_state_paths(repo_root, state_dir)?;
+        state_paths.log_if_unexpected();
+        let state_dir = state_paths.index_dir().to_path_buf();
+        let repo_state_dir = state_paths.repo_state_dir().to_path_buf();
         let mut excluded_dir_names: Vec<String> = DEFAULT_EXCLUDED_DIR_NAMES
             .iter()
             .map(|value| value.to_string())
@@ -321,6 +326,7 @@ impl IndexConfig {
         }
         Ok(Self {
             state_dir,
+            repo_state_dir,
             excluded_dir_names,
             excluded_relative_prefixes,
             symbols_enabled,
@@ -329,6 +335,10 @@ impl IndexConfig {
 
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
+    }
+
+    pub fn repo_state_dir(&self) -> &Path {
+        &self.repo_state_dir
     }
 
     pub fn excluded_dir_names(&self) -> &[String] {
@@ -374,6 +384,7 @@ impl Indexer {
             .into());
         }
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
+        ensure_state_dir_secure(config.repo_state_dir())?;
         ensure_state_dir_secure(config.state_dir())?;
         let (schema, doc_id_field, path_field, body_field, summary_field, token_field) =
             build_schema();
@@ -387,7 +398,7 @@ impl Indexer {
             .try_into()?;
         let writer = index.writer(MAX_INDEX_RAM_BYTES)?;
         let symbols_store = if config.symbols_enabled() {
-            match SymbolsStore::new(&repo_root, config.state_dir()) {
+            match SymbolsStore::new(&repo_root, config.repo_state_dir()) {
                 Ok(store) => Some(store),
                 Err(err) => {
                     warn!(target: "docdexd", error = ?err, "symbols store init failed; symbol extraction disabled for this run");
@@ -452,7 +463,7 @@ impl Indexer {
         let summary_field = schema.get_field("summary").unwrap();
         let token_field = schema.get_field("token_estimate").unwrap();
         let symbols_store = if config.symbols_enabled() {
-            SymbolsStore::new(&repo_root, config.state_dir()).ok()
+            SymbolsStore::new(&repo_root, config.repo_state_dir()).ok()
         } else {
             None
         };
@@ -787,6 +798,10 @@ impl Indexer {
 
     pub fn state_dir(&self) -> &Path {
         self.config.state_dir()
+    }
+
+    pub fn repo_state_dir(&self) -> &Path {
+        self.config.repo_state_dir()
     }
 
     fn writer(&self) -> Result<Arc<Mutex<IndexWriter>>> {
@@ -1292,6 +1307,7 @@ pub(crate) fn should_index(path: &Path, repo_root: &Path, config: &IndexConfig) 
 mod file_decision_tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     #[test]
@@ -1324,8 +1340,14 @@ mod file_decision_tests {
     fn decide_file_excludes_state_dir_before_prefix_rules() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config =
-            IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false).expect("config");
+        let config = IndexConfig::with_overrides(
+            &repo_root,
+            Some(PathBuf::from(".docdex/index")),
+            Vec::new(),
+            Vec::new(),
+            false,
+        )
+        .expect("config");
         let file = config.state_dir().join("doc.md");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
         fs::write(&file, "# state dir\n").expect("write file");
@@ -1392,6 +1414,36 @@ mod file_decision_tests {
     }
 }
 
+#[cfg(test)]
+mod state_path_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn resolve_state_paths_scopes_under_base_and_isolated() -> Result<()> {
+        let base = TempDir::new()?;
+        let shared_base = base.path().join("state");
+        fs::create_dir_all(&shared_base)?;
+
+        let repo_a = TempDir::new()?;
+        let repo_b = TempDir::new()?;
+        fs::create_dir_all(repo_a.path().join(".git"))?;
+        fs::create_dir_all(repo_b.path().join(".git"))?;
+
+        let paths_a = resolve_state_paths(repo_a.path(), Some(shared_base.clone()))?;
+        let paths_b = resolve_state_paths(repo_b.path(), Some(shared_base.clone()))?;
+
+        assert_ne!(paths_a.index_dir(), paths_b.index_dir());
+        let expected_repos = shared_base.join("repos");
+        assert!(paths_a.index_dir().starts_with(&expected_repos));
+        assert!(paths_a.repo_state_dir().starts_with(&expected_repos));
+        assert!(paths_b.index_dir().starts_with(&expected_repos));
+        assert!(paths_b.repo_state_dir().starts_with(&expected_repos));
+        Ok(())
+    }
+}
+
 pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -1440,7 +1492,7 @@ fn known_canonical_path_from_repo_meta(index_state_dir: &Path) -> Option<String>
         return None;
     }
     let base_dir = repos_dir.parent()?;
-    let meta_path = base_dir.join("repos").join(state_key).join("repo_meta.json");
+    let meta_path = StatePaths::new(base_dir.to_path_buf()).repo_meta_path(&state_key);
     let raw = fs::read_to_string(&meta_path).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
     parsed
@@ -1500,7 +1552,7 @@ fn repo_state_mismatch_error(
     ))
 }
 
-fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<PathBuf> {
+fn resolve_state_paths(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<RepoStatePaths> {
     if !repo_root.exists() {
         return Err(missing_repo_path_error(repo_root).into());
     }
@@ -1522,45 +1574,47 @@ fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<Pat
                 .canonicalize()
                 .unwrap_or_else(|_| repo_root.to_path_buf());
             if custom.starts_with(&repo_root) {
-                return Ok(custom);
+                return Ok(RepoStatePaths::legacy(custom));
             }
-            match crate::repo_identity::resolve_shared_index_state_dir(&repo_root, &custom) {
-                Ok(path) => Ok(path),
-                Err(err) => {
-                    if let Some(identity) = err.downcast_ref::<crate::repo_identity::RepoIdentityError>() {
-                        let index_dir_hint = match identity {
-                            crate::repo_identity::RepoIdentityError::StateMetaFingerprintMismatch { state_key, .. } => {
-                                Some(custom.join("repos").join(state_key).join("index"))
-                            }
-                            crate::repo_identity::RepoIdentityError::StateKeyConflict {
-                                existing_state_key,
-                                ..
-                            } => Some(custom.join("repos").join(existing_state_key).join("index")),
-                            _ => None,
-                        };
-                        return Err(
-                            repo_state_mismatch_error(&repo_root, index_dir_hint.as_deref(), identity).into(),
-                        );
-                    }
-                    Err(err)
-                }
-            }
+            let (base_dir, _, _) =
+                crate::repo_identity::split_scoped_state_dir(&custom)
+                    .unwrap_or_else(|| (custom.to_path_buf(), None, false));
+            let index_dir = resolve_shared_index_dir(&repo_root, &custom)?;
+            RepoStatePaths::scoped(base_dir, index_dir)
         }
-        Some(custom) => Ok(repo_root.join(custom)),
+        Some(custom) => Ok(RepoStatePaths::legacy(repo_root.join(custom))),
         None => {
-            let default_dir = repo_root.join(".docdex").join("index");
-            let legacy_dir = repo_root.join(".gpt-creator").join("docdex").join("index");
-            if !default_dir.exists() && legacy_dir.exists() {
-                warn!(
-                    target: "docdexd",
-                    legacy = %legacy_dir.display(),
-                    default = %default_dir.display(),
-                    "using legacy docdex index path; consider migrating to the new default"
+            let base_dir = default_state_base_dir()?;
+            let index_dir = resolve_shared_index_dir(repo_root, &base_dir)?;
+            RepoStatePaths::scoped(base_dir, index_dir)
+        }
+    }
+}
+
+fn resolve_shared_index_dir(repo_root: &Path, custom_state_dir: &Path) -> Result<PathBuf> {
+    let (base_dir, _, _) =
+        crate::repo_identity::split_scoped_state_dir(custom_state_dir)
+            .unwrap_or_else(|| (custom_state_dir.to_path_buf(), None, false));
+    match crate::repo_identity::resolve_shared_index_state_dir(repo_root, custom_state_dir) {
+        Ok(path) => Ok(path),
+        Err(err) => {
+            if let Some(identity) = err.downcast_ref::<crate::repo_identity::RepoIdentityError>() {
+                let paths = StatePaths::new(base_dir.to_path_buf());
+                let index_dir_hint = match identity {
+                    crate::repo_identity::RepoIdentityError::StateMetaFingerprintMismatch { state_key, .. } => {
+                        Some(paths.repo_index_dir(state_key))
+                    }
+                    crate::repo_identity::RepoIdentityError::StateKeyConflict {
+                        existing_state_key,
+                        ..
+                    } => Some(paths.repo_index_dir(existing_state_key)),
+                    _ => None,
+                };
+                return Err(
+                    repo_state_mismatch_error(repo_root, index_dir_hint.as_deref(), identity).into(),
                 );
-                Ok(legacy_dir)
-            } else {
-                Ok(default_dir)
             }
+            Err(err)
         }
     }
 }

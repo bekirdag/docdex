@@ -25,13 +25,13 @@ Docdex is a lightweight, local documentation indexer/search daemon. It runs per-
 - AI-friendly: `GET /ai-help` returns a JSON playbook (endpoints, CLI commands, limits, best practices) for agents.
 
 ## What it does
-- Indexes Markdown/text docs inside a repo and stores them locally (tantivy-based index under `<repo>/.docdex/index` by default).
+- Indexes Markdown/text docs inside a repo and stores them locally (tantivy-based index under `~/.docdex/state/repos/<fingerprint>/index` by default).
 - Serves the same index over HTTP (`/search`, `/snippet`, `/healthz`) and via CLI (`query`, `ingest`, `self-check`), so automation and interactive use share one dataset.
 - Watches files while serving to incrementally ingest changes.
 - Hardened defaults: loopback binding, TLS enforcement on non-loopback, auth token required by default (disable with `--secure-mode=false`), loopback-only allowlist and default rate limit (60 req/min) in secure mode, audit log enabled, and strict state-dir perms.
 
 ## How it works
-1) `docdexd index` builds the on-disk index for your repo (or reuses a legacy `.gpt-creator/docdex/index` if present).  
+1) `docdexd index` builds the on-disk index for your repo under `~/.docdex/state/repos/<fingerprint>/index`.  
 2) `docdexd serve` loads that index, starts a file watcher for incremental updates, and exposes the HTTP API.  
 3) HTTP clients or the CLI (`docdexd query`) read from the same index; `ingest` can update a single file without full reindexing.  
 4) Optional TLS/auth/rate-limit settings secure remote access; audit logging can record access actions.
@@ -57,7 +57,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 
 ## TL;DR for agents
 - Use Docdex for repo docs: run `docdexd index --repo .` once, then either `docdexd serve --repo . --host 127.0.0.1 --port 46137` for HTTP, or `docdexd mcp --repo . --log warn` for MCP.
-- Add `.docdex/` to `.gitignore` so indexes aren't committed.
+- If you opt into in-repo state dirs (e.g., `--state-dir .docdex/index`), add `.docdex/` to `.gitignore` so indexes aren't committed.
 - When MCP-aware, register a server named `docdex` that runs `docdexd mcp --repo . --log warn --max-results 8`, then call `docdex_search` before coding and `docdex_index` when stale.
 - Prefer summary-first (snippets=false), fetch specific snippets only when needed, keep queries short, and respect token estimates.
 
@@ -67,7 +67,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - Secure serving: add `--auth-token <token>` (required by default); use TLS with `--tls-cert/--tls-key` or `--certbot-domain <domain>`.
 - Single-file ingest: `docdexd ingest --repo <path> --file docs/new.md` (honors excludes).
 - Query via CLI: `docdexd query --repo <path> --query "term" --limit 4` (add `--repo-only` to ignore libs index hits).
-- Git hygiene: add `.docdex/` (and especially `.docdex/index/`) to your repo's `.gitignore` so index artifacts never get committed.
+- Git hygiene: if you use an in-repo `--state-dir`, add `.docdex/` (and especially `.docdex/index/`) to your repo's `.gitignore` so index artifacts never get committed.
 - Health check: `curl http://127.0.0.1:46137/healthz`.
 - Summary-only search responses: `curl "http://127.0.0.1:46137/search?q=foo&snippets=false"`; fetch snippets only for top hits.
 - Repo-only HTTP search (ignore libs index hits): `curl "http://127.0.0.1:46137/search?q=foo&include_libs=false"`.
@@ -87,13 +87,13 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - If you build from source, the version comes from `Cargo.toml` in this repo; the npm wrapper uses the matching version to fetch binaries.
 
 ## Paths and defaults
-- State/index directory: `<repo>/.docdex/index` (if missing but legacy `<repo>/.gpt-creator/docdex/index` exists, Docdex will reuse it and warn). The directory is created with `0700` permissions by default.
+- State/index directory: `~/.docdex/state/repos/<fingerprint>/index` (override base with `--state-dir`; relative or in-repo paths keep the legacy in-repo layout). The directory is created with `0700` permissions by default.
 - HTTP API: defaults to `127.0.0.1:46137` when serving.
-- Docdex data and logs stay inside the repo; no external services.
+- Docdex data and logs stay local under `~/.docdex/state` (or a custom state dir); no external services.
 
 ## Configuration knobs
 - `--repo <path>`: workspace root to index (defaults to `.`).
-- `--state-dir <path>` / `DOCDEX_STATE_DIR`: override index storage path (relative paths are resolved under `repo`). When `--state-dir` is an absolute shared base used across repos, repo moves/renames require an explicit `docdexd repo reassociate` step before Docdex will reuse the existing state.
+- `--state-dir <path>` / `DOCDEX_STATE_DIR`: override the state base directory (default `~/.docdex/state`). Relative paths or absolute paths inside the repo keep legacy in-repo layout; absolute paths outside the repo are treated as shared bases and scoped under `repos/<fingerprint>/index`. When using a shared base, repo moves/renames require an explicit `docdexd repo reassociate` step before Docdex will reuse the existing state.
 - `--exclude-prefix a,b,c` / `DOCDEX_EXCLUDE_PREFIXES`: extra relative prefixes to skip.
 - `--exclude-dir a,b,c` / `DOCDEX_EXCLUDE_DIRS`: extra directory names to skip anywhere in the tree.
 - `DOCDEX_ENABLE_SYMBOL_EXTRACTION`: enable optional per-file symbol extraction during indexing; see `docs/symbols_store.md`.
@@ -110,7 +110,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - `--max-request-bytes <n>` / `DOCDEX_MAX_REQUEST_BYTES`: reject requests whose Content-Length or size hint exceeds `n` bytes (default: 16384).
 - `--rate-limit-per-min <n>` / `DOCDEX_RATE_LIMIT_PER_MIN`: per-IP request budget per minute (default 60 in secure mode when unset/0; 0 disables when secure mode is off).
 - `--rate-limit-burst <n>` / `DOCDEX_RATE_LIMIT_BURST`: optional burst capacity for the rate limiter (defaults to per-minute limit when 0).
-- `--audit-log-path <path>` / `DOCDEX_AUDIT_LOG_PATH`: write audit log JSONL to this path (default: `<state-dir>/audit.log`).
+- `--audit-log-path <path>` / `DOCDEX_AUDIT_LOG_PATH`: write audit log JSONL to this path (default: `<repo_state_dir>/audit.log`).
 - `--audit-max-bytes <n>` / `DOCDEX_AUDIT_MAX_BYTES`: rotate audit log after this many bytes (default: 5_000_000).
 - `--audit-max-files <n>` / `DOCDEX_AUDIT_MAX_FILES`: keep at most this many rotated audit files (default: 5).
 - `--audit-disable` / `DOCDEX_AUDIT_DISABLE=true`: disable audit logging entirely.
@@ -205,7 +205,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 
 Docdex is safety-first: it will not silently “cross-associate” an existing on-disk state directory with a different repo path when doing so could mix data between repos.
 
-If you use the default in-repo state dir (`<repo>/.docdex/index`), moves/renames typically require only updating `--repo` to the new location (because the state moves with the repo). The stricter “explicit re-association” flow below applies when you use an absolute shared `--state-dir` outside the repo root.
+The default state dir is shared under `~/.docdex/state/repos/<fingerprint>/index`, so moves/renames typically keep working when the repo fingerprint stays stable. If you opt into an in-repo `--state-dir`, moves/renames require moving that directory with the repo. The stricter “explicit re-association” flow below applies when you use an absolute shared `--state-dir` outside the repo root.
 
 Deterministic failures and what they mean:
 
@@ -256,7 +256,7 @@ Step-by-step recovery (shared `--state-dir` scenario):
 ## Integrating with LLM tools
 Docdex is tool-agnostic. Drop-in recipe for agents/codegen tools:
 - Start once per repo: `docdexd index --repo <repo>` then `docdexd serve --repo <repo> --host 127.0.0.1 --port 46137 --log warn` (or use the CLI directly without serving).
-- Configure via env: `DOCDEX_STATE_DIR` (index location), `DOCDEX_EXCLUDE_PREFIXES`, `DOCDEX_EXCLUDE_DIRS`, `RUST_LOG=docdexd=debug` (optional verbose logs).
+- Configure via env: `DOCDEX_STATE_DIR` (state base), `DOCDEX_EXCLUDE_PREFIXES`, `DOCDEX_EXCLUDE_DIRS`, `RUST_LOG=docdexd=debug` (optional verbose logs).
 - Query over HTTP: `GET /search?q=<text>&limit=<n>` returns `{"hits":[{"path","rel_path","doc_id","score","summary","snippet","token_estimate"}...],"top_score":<float|null>,"topScore":<float|null>,"meta":{...}}`; `GET /snippet/:doc_id` fetches a focused snippet plus doc metadata.
 - Or query via CLI: `docdexd query --repo <repo> --query "<text>" --limit 8` (JSON to stdout).
 - Health check: `GET /healthz` should return `ok` before issuing search requests.

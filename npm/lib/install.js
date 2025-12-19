@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { pipeline } = require("node:stream/promises");
 const crypto = require("node:crypto");
+const { spawnSync } = require("node:child_process");
 
 const pkg = require("../package.json");
 const {
@@ -49,6 +50,16 @@ function withBaseDetails(details) {
     assetName: null,
     ...(details || {})
   };
+}
+
+function mergeDetails(existing, extra) {
+  const merged = { ...(existing || {}) };
+  for (const [key, value] of Object.entries(extra || {})) {
+    if (merged[key] == null && value != null) {
+      merged[key] = value;
+    }
+  }
+  return merged;
 }
 
 class InstallerConfigError extends Error {
@@ -165,9 +176,16 @@ function getDownloadBase(repoSlug) {
   return process.env.DOCDEX_DOWNLOAD_BASE || `https://github.com/${repoSlug}/releases/download`;
 }
 
+function normalizeVersionString(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.replace(/^v/, "");
+}
+
 function getVersion() {
   const envVersion = process.env.DOCDEX_VERSION;
-  const version = (envVersion || pkg.version || "").replace(/^v/, "");
+  const version = normalizeVersionString(envVersion || pkg.version || "");
 
   if (!version) {
     throw new InstallerConfigError("Missing package version; set DOCDEX_VERSION or package.json version", {
@@ -176,6 +194,42 @@ function getVersion() {
   }
 
   return version;
+}
+
+function parseVersionFromOutput(output) {
+  if (typeof output !== "string") return null;
+  const match = output.match(/\bv?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/);
+  return match ? normalizeVersionString(match[1]) : null;
+}
+
+function detectInstalledBinaryVersion({
+  binaryPath,
+  env = process.env,
+  spawnSyncFn = spawnSync,
+  timeoutMs = 2000
+}) {
+  const candidates = [["--version"], ["-V"], ["version"]];
+  let lastError = null;
+
+  for (const args of candidates) {
+    const result = spawnSyncFn(binaryPath, args, {
+      encoding: "utf8",
+      timeout: timeoutMs,
+      env,
+      windowsHide: true
+    });
+
+    if (result?.error) {
+      lastError = result.error;
+      continue;
+    }
+
+    const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
+    const version = parseVersionFromOutput(output);
+    if (version) return { version };
+  }
+
+  return { version: null, error: lastError ? lastError.message || String(lastError) : null };
 }
 
 function requestOptions() {
@@ -445,7 +499,11 @@ function decideInstallAction({
     return { outcome: "reinstall_unknown", reason: "platform_mismatch" };
   }
 
-  if (discoveredInstalledState.installedVersion !== expectedVersion) {
+  const detectedBinaryVersion = normalizeVersionString(discoveredInstalledState.detectedBinaryVersion);
+  if (
+    discoveredInstalledState.installedVersion !== expectedVersion ||
+    (detectedBinaryVersion && detectedBinaryVersion !== expectedVersion)
+  ) {
     return { outcome: "update", reason: "version_mismatch" };
   }
 
@@ -465,7 +523,14 @@ function decideInstallAction({
   return { outcome: "reinstall_unknown", reason: "integrity_unverifiable" };
 }
 
-async function discoverInstalledState({ fsModule, pathModule, distDir, platformKey, isWin32 }) {
+async function discoverInstalledState({
+  fsModule,
+  pathModule,
+  distDir,
+  platformKey,
+  isWin32,
+  detectInstalledVersionFn
+}) {
   const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
   const metadataPath = installMetadataPath(distDir, pathModule);
 
@@ -476,6 +541,8 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
       metadataPath,
       binaryPresent: false,
       installedVersion: null,
+      detectedBinaryVersion: null,
+      detectedBinaryVersionError: null,
       metadata: null,
       metadataStatus: "unavailable",
       metadataStatusReason: "existsSync_unavailable",
@@ -489,11 +556,29 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
       metadataPath,
       binaryPresent: false,
       installedVersion: null,
+      detectedBinaryVersion: null,
+      detectedBinaryVersionError: null,
       metadata: null,
       metadataStatus: "missing",
       metadataStatusReason: "binary_missing",
       platformMismatch: false
     };
+  }
+
+  let detectedBinaryVersion = null;
+  let detectedBinaryVersionError = null;
+  if (typeof detectInstalledVersionFn === "function") {
+    try {
+      const detection = await detectInstalledVersionFn({ binaryPath, platformKey, isWin32 });
+      if (detection && typeof detection.version === "string") {
+        detectedBinaryVersion = normalizeVersionString(detection.version) || null;
+      }
+      if (detection && detection.error) {
+        detectedBinaryVersionError = detection.error;
+      }
+    } catch (err) {
+      detectedBinaryVersionError = err?.message || String(err);
+    }
   }
 
   const metaResult = await readJsonFileIfPossible({ fsModule, filePath: metadataPath });
@@ -504,6 +589,8 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
       metadataPath,
       binaryPresent: true,
       installedVersion: typeof meta?.version === "string" ? meta.version : null,
+      detectedBinaryVersion,
+      detectedBinaryVersionError,
       metadata: null,
       metadataStatus:
         metaResult.errorCode === "ENOENT"
@@ -526,6 +613,8 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
     metadataPath,
     binaryPresent: true,
     installedVersion: meta.version,
+    detectedBinaryVersion,
+    detectedBinaryVersionError,
     metadata: meta,
     metadataStatus: "valid",
     metadataStatusReason: null,
@@ -576,14 +665,16 @@ async function determineLocalInstallerOutcome({
   expectedVersion,
   isWin32,
   sha256FileFn = sha256File,
-  expectedBinarySha256 = null
+  expectedBinarySha256 = null,
+  detectInstalledVersionFn = null
 }) {
   const discoveredInstalledState = await discoverInstalledState({
     fsModule,
     pathModule,
     distDir,
     platformKey,
-    isWin32
+    isWin32,
+    detectInstalledVersionFn
   });
 
   const expectedIntegrityMaterial = {
@@ -594,10 +685,15 @@ async function determineLocalInstallerOutcome({
         : null
   };
 
+  const detectedBinaryVersion = normalizeVersionString(discoveredInstalledState.detectedBinaryVersion);
+  const detectedVersionMismatch =
+    detectedBinaryVersion && detectedBinaryVersion !== expectedVersion;
+
   const shouldVerifyIntegrity =
     discoveredInstalledState.binaryPresent &&
     !discoveredInstalledState.platformMismatch &&
     discoveredInstalledState.installedVersion === expectedVersion &&
+    !detectedVersionMismatch &&
     (normalizeSha256Hex(expectedBinarySha256) || discoveredInstalledState.metadataStatus === "valid");
 
   const integrityResult = shouldVerifyIntegrity
@@ -621,6 +717,10 @@ async function determineLocalInstallerOutcome({
 
   const installedVersion =
     typeof discoveredInstalledState.installedVersion === "string" ? discoveredInstalledState.installedVersion : null;
+  const detectedVersion =
+    typeof discoveredInstalledState.detectedBinaryVersion === "string"
+      ? discoveredInstalledState.detectedBinaryVersion
+      : null;
 
   return {
     outcome: decision.outcome,
@@ -628,6 +728,7 @@ async function determineLocalInstallerOutcome({
     binaryPath: discoveredInstalledState.binaryPath,
     metadataPath: discoveredInstalledState.metadataPath,
     installedVersion,
+    detectedVersion,
     integrityResult
   };
 }
@@ -896,11 +997,17 @@ async function resolveInstallerDownloadPlan({
   } catch (err) {
     if (err instanceof ManifestResolutionError) {
       const expectedAsset = artifactNameFn(platformKey);
+      const downloadBase = getDownloadBaseFn(repoSlug);
+      const releaseTag = `v${version}`;
       err.details = {
         ...withBaseDetails(err.details),
         platformKey,
         expectedAsset,
-        expectedAssetPattern: assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset })
+        expectedAssetPattern: assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset }),
+        version,
+        repoSlug,
+        downloadBase,
+        releaseTag
       };
     }
     throw err;
@@ -1009,6 +1116,9 @@ async function runInstaller(options) {
   const artifactNameFn = opts.artifactNameFn || artifactName;
   const assetPatternForPlatformKeyFn = opts.assetPatternForPlatformKeyFn || assetPatternForPlatformKey;
   const sha256FileFn = opts.sha256FileFn || sha256File;
+  const detectInstalledVersionFn =
+    opts.detectInstalledVersionFn ||
+    ((args) => detectInstalledBinaryVersion({ ...args, env: opts.env || process.env }));
 
   const detectedPlatform = opts.platform || process.platform;
   const detectedArch = opts.arch || process.arch;
@@ -1055,7 +1165,8 @@ async function runInstaller(options) {
     platformKey,
     expectedVersion: version,
     isWin32,
-    sha256FileFn
+    sha256FileFn,
+    detectInstalledVersionFn
   });
 
   if (local.outcome === "no-op") {
@@ -1064,16 +1175,38 @@ async function runInstaller(options) {
   }
 
   const repoSlug = parseRepoSlugFn();
+  const downloadBase = getDownloadBaseFn(repoSlug);
+  const releaseTag = `v${version}`;
 
-  const { archive, expectedSha256, source, manifestAttempt } = await resolveInstallerDownloadPlanFn({
-    repoSlug,
-    version,
-    platformKey,
-    targetTriple,
-    logger
-  });
+  let archive;
+  let expectedSha256;
+  let source;
+  let manifestAttempt;
 
-  const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
+  try {
+    ({ archive, expectedSha256, source, manifestAttempt } = await resolveInstallerDownloadPlanFn({
+      repoSlug,
+      version,
+      platformKey,
+      targetTriple,
+      logger
+    }));
+  } catch (err) {
+    if (err && typeof err === "object") {
+      err.details = mergeDetails(err.details, {
+        version,
+        detectedVersion: local.detectedVersion ?? null,
+        repoSlug,
+        downloadBase,
+        releaseTag,
+        platformKey,
+        targetTriple
+      });
+    }
+    throw err;
+  }
+
+  const downloadUrl = `${downloadBase}/${releaseTag}/${archive}`;
   const tmpDir = opts.tmpDir || osModule.tmpdir();
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
 
@@ -1095,7 +1228,10 @@ async function runInstaller(options) {
           fallbackAttempted: source === "fallback",
           fallbackReason,
           version,
+          detectedVersion: local.detectedVersion ?? null,
           repoSlug,
+          downloadBase,
+          releaseTag,
           downloadUrl,
           expectedAsset: archive,
           expectedAssetPattern: assetPatternForPlatformKeyFn(platformKey, { exampleAssetName: archive }),
@@ -1256,6 +1392,21 @@ function describeFatalError(err) {
   if (err instanceof MissingArtifactError) {
     const detected = err.details?.detected ? `${err.details.detected.os}/${err.details.detected.arch}` : null;
     const platformKey = typeof err.details?.platformKey === "string" ? err.details.platformKey : null;
+    const expectedVersion =
+      typeof err.details?.expectedVersion === "string"
+        ? err.details.expectedVersion
+        : typeof err.details?.version === "string"
+          ? err.details.version
+          : null;
+    const detectedVersion =
+      typeof err.details?.detectedVersion === "string" ? err.details.detectedVersion : null;
+    const downloadBase = typeof err.details?.downloadBase === "string" ? err.details.downloadBase : null;
+    const releaseTag =
+      typeof err.details?.releaseTag === "string"
+        ? err.details.releaseTag
+        : expectedVersion
+          ? `v${expectedVersion}`
+          : null;
     const expectedAsset =
       typeof err.details?.expectedAsset === "string" && err.details.expectedAsset.trim()
         ? err.details.expectedAsset.trim()
@@ -1280,8 +1431,11 @@ function describeFatalError(err) {
         err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,
         fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,
         err.details?.fallbackReason ? `[docdex] Fallback reason: ${err.details.fallbackReason}` : null,
-        err.details?.version ? `[docdex] Version: v${err.details.version}` : null,
+        expectedVersion ? `[docdex] Expected version: v${expectedVersion}` : null,
+        detectedVersion ? `[docdex] Detected version: v${detectedVersion}` : null,
         err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
+        downloadBase ? `[docdex] Download base: ${downloadBase}` : null,
+        releaseTag ? `[docdex] Release tag: ${releaseTag}` : null,
         err.details?.expectedAsset ? `[docdex] Expected asset: ${err.details.expectedAsset}` : null,
         expectedAssetPattern ? `[docdex] Asset naming pattern: ${expectedAssetPattern}` : null,
         err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
@@ -1382,12 +1536,32 @@ function describeFatalError(err) {
         : platformKey
           ? assetPatternForPlatformKey(platformKey)
           : assetPatternForPlatformKey(null);
+    const expectedVersion =
+      typeof err.details?.expectedVersion === "string"
+        ? err.details.expectedVersion
+        : typeof err.details?.version === "string"
+          ? err.details.version
+          : null;
+    const detectedVersion =
+      typeof err.details?.detectedVersion === "string" ? err.details.detectedVersion : null;
+    const downloadBase = typeof err.details?.downloadBase === "string" ? err.details.downloadBase : null;
+    const releaseTag =
+      typeof err.details?.releaseTag === "string"
+        ? err.details.releaseTag
+        : expectedVersion
+          ? `v${expectedVersion}`
+          : null;
 
     const lines =
       err.code === "DOCDEX_ASSET_NO_MATCH"
         ? [
             "[docdex] install failed: missing artifact/version sync issue (manifest has no asset for this target)",
             `[docdex] error code: ${err.code}`,
+            expectedVersion ? `[docdex] Expected version: v${expectedVersion}` : null,
+            detectedVersion ? `[docdex] Detected version: v${detectedVersion}` : null,
+            err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
+            downloadBase ? `[docdex] Download base: ${downloadBase}` : null,
+            releaseTag ? `[docdex] Release tag: ${releaseTag}` : null,
             err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
             `[docdex] Asset naming pattern: ${expectedAssetPattern}`,
             `[docdex] Details: ${err.message}`

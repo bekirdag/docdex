@@ -38,7 +38,10 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
     platformKey: "linux-arm64-gnu",
     targetTriple: "aarch64-unknown-linux-gnu",
     version: "0.1.11",
+    detectedVersion: "0.1.10",
     repoSlug: "owner/repo",
+    downloadBase: "https://example.test/releases/download",
+    releaseTag: "v0.1.11",
     downloadUrl: "https://example.test/releases/download/v0.1.11/docdexd-linux-arm64-gnu.tar.gz",
     assetName: "docdexd-linux-arm64-gnu.tar.gz",
     expectedAsset: "docdexd-linux-arm64-gnu.tar.gz",
@@ -52,6 +55,10 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
   assert.equal(report.details.manifestVersion, null);
   assert.equal(report.details.assetName, "docdexd-linux-arm64-gnu.tar.gz");
   assert.ok(report.lines.some((l) => l.includes("missing artifact/version sync issue")));
+  assert.ok(report.lines.some((l) => l.includes("Expected version: v0.1.11")));
+  assert.ok(report.lines.some((l) => l.includes("Detected version: v0.1.10")));
+  assert.ok(report.lines.some((l) => l.includes("Download base: https://example.test/releases/download")));
+  assert.ok(report.lines.some((l) => l.includes("Release tag: v0.1.11")));
   assert.ok(report.lines.some((l) => l.includes("Expected target triple: aarch64-unknown-linux-gnu")));
   assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platformKey>.tar.gz")));
 });
@@ -62,13 +69,22 @@ test("describeFatalError: manifest no-match reads as missing artifact/version sy
     "Manifest docdexd-manifest.json: No asset found in manifest for target triple x86_64-unknown-linux-gnu.",
     {
       targetTriple: "x86_64-unknown-linux-gnu",
-      platformKey: "linux-x64-gnu"
+      platformKey: "linux-x64-gnu",
+      version: "0.1.11",
+      detectedVersion: "0.1.10",
+      repoSlug: "owner/repo",
+      downloadBase: "https://example.test/releases/download",
+      releaseTag: "v0.1.11"
     }
   );
 
   const report = describeFatalError(err);
   assert.equal(report.code, "DOCDEX_ASSET_NO_MATCH");
   assert.ok(report.lines.some((l) => l.includes("missing artifact/version sync issue")));
+  assert.ok(report.lines.some((l) => l.includes("Expected version: v0.1.11")));
+  assert.ok(report.lines.some((l) => l.includes("Detected version: v0.1.10")));
+  assert.ok(report.lines.some((l) => l.includes("Download base: https://example.test/releases/download")));
+  assert.ok(report.lines.some((l) => l.includes("Release tag: v0.1.11")));
   assert.ok(report.lines.some((l) => l.includes("Expected target triple: x86_64-unknown-linux-gnu")));
   assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platformKey>.tar.gz")));
 });

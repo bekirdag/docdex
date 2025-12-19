@@ -281,6 +281,46 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function libcFromPlatformKey(platformKey) {
+  if (typeof platformKey !== "string" || !platformKey.startsWith("linux-")) return null;
+  const parts = platformKey.split("-");
+  return parts.length >= 3 ? parts[2] : null;
+}
+
+function formatDetectedPlatform({ platform, arch, platformKey }) {
+  const libc = libcFromPlatformKey(platformKey);
+  return `${platform}/${arch}${libc ? `/${libc}` : ""}`;
+}
+
+function logInstallSummary({
+  logger,
+  outcome,
+  platform,
+  arch,
+  platformKey,
+  targetTriple,
+  version,
+  assetName,
+  assetSource,
+  binaryPath
+}) {
+  const lines = [
+    "[docdex] Install summary:",
+    `[docdex] Outcome: ${outcome}`,
+    `[docdex] Detected platform: ${formatDetectedPlatform({ platform, arch, platformKey })}`,
+    `[docdex] Platform key: ${platformKey}`,
+    `[docdex] Target triple: ${targetTriple}`,
+    `[docdex] Daemon version: v${version}`,
+    assetName ? `[docdex] Asset: ${assetName}` : null,
+    assetSource ? `[docdex] Asset source: ${assetSource}` : null,
+    binaryPath ? `[docdex] Binary path: ${binaryPath}` : null,
+    "[docdex] Diagnostics: `docdex doctor` (or `docdex diagnostics`)",
+    "[docdex] Validate: `docdex --version` (or `docdexd --version`)"
+  ].filter(Boolean);
+
+  for (const line of lines) logger.log(line);
+}
+
 async function readJsonFileIfPossible({ fsModule, filePath }) {
   if (!fsModule?.promises?.readFile) {
     return { value: null, error: "readFile_unavailable", errorCode: "READFILE_UNAVAILABLE" };
@@ -1047,6 +1087,7 @@ async function runInstaller(options) {
   const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
   const distDir = pathModule.join(distBaseDir, platformKey);
   const isWin32 = detectedPlatform === "win32";
+  const expectedAssetName = artifactNameFn(platformKey);
 
   const local = await determineLocalInstallerOutcome({
     fsModule,
@@ -1060,6 +1101,18 @@ async function runInstaller(options) {
 
   if (local.outcome === "no-op") {
     logger.log("[docdex] Install outcome: no-op");
+    logInstallSummary({
+      logger,
+      outcome: local.outcome,
+      platform: detectedPlatform,
+      arch: detectedArch,
+      platformKey,
+      targetTriple,
+      version,
+      assetName: expectedAssetName,
+      assetSource: "local",
+      binaryPath: local.binaryPath
+    });
     return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
   }
 
@@ -1077,6 +1130,7 @@ async function runInstaller(options) {
   const tmpDir = opts.tmpDir || osModule.tmpdir();
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
 
+  logger.log("[docdex] Progress: download");
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   try {
     try {
@@ -1138,6 +1192,7 @@ async function runInstaller(options) {
       }
     });
 
+    logger.log("[docdex] Progress: extract");
     // Only replace an existing installation after we have successfully fetched + verified the archive.
     await fsModule.promises.rm(distDir, { recursive: true, force: true });
     await extractTarballFn(tmpFile, distDir);
@@ -1159,6 +1214,7 @@ async function runInstaller(options) {
       });
     }
 
+    logger.log("[docdex] Progress: install");
     await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
     logger.log(`[docdex] Installed binary to ${binaryPath}`);
 
@@ -1189,6 +1245,18 @@ async function runInstaller(options) {
     });
 
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
+    logInstallSummary({
+      logger,
+      outcome: local.outcome,
+      platform: detectedPlatform,
+      arch: detectedArch,
+      platformKey,
+      targetTriple,
+      version,
+      assetName: archive,
+      assetSource: source,
+      binaryPath
+    });
     return { binaryPath, outcome: local.outcome };
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});

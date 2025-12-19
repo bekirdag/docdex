@@ -4872,7 +4872,12 @@ async function runInstaller(options) {
 
   const platformKey = platformPolicy.platformKey;
   const targetTriple = platformPolicy.targetTriple;
+<<<<<<< HEAD
   const detectedLibc = platformPolicy?.detected?.libc ?? null;
+=======
+  const detectedLibc =
+    typeof platformKey === "string" && platformKey.startsWith("linux-") ? platformKey.split("-")[2] : null;
+>>>>>>> mcoda/task/ops-01-us-02-t14
   const version = getVersionFn();
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5185,6 +5190,7 @@ async function runInstaller(options) {
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   const repoSlug = parseRepoSlugFn();
 >>>>>>> mcoda/task/ops-01-us-03-t37
 
@@ -5336,6 +5342,8 @@ async function runInstaller(options) {
   const detectedVersion = local.installedVersion;
 =======
 >>>>>>> mcoda/task/ops-01-us-03-t23
+=======
+>>>>>>> mcoda/task/ops-01-us-02-t14
   let plan;
   try {
     plan = await resolveInstallerDownloadPlanFn({
@@ -5346,6 +5354,7 @@ async function runInstaller(options) {
       logger
     });
   } catch (err) {
+<<<<<<< HEAD
 <<<<<<< HEAD
     mergeErrorDetails(err, { expectedVersion: version, detectedVersion, repoSlug });
 =======
@@ -5359,10 +5368,23 @@ async function runInstaller(options) {
       };
     }
 >>>>>>> mcoda/task/ops-01-us-03-t23
+=======
+    if (err instanceof ManifestResolutionError) {
+      const existing = withBaseDetails(err.details);
+      err.details = {
+        ...existing,
+        platformKey: existing.platformKey ?? platformKey ?? null,
+        targetTriple: existing.targetTriple ?? targetTriple ?? null,
+        detected: existing.detected ?? { os: detectedPlatform, arch: detectedArch },
+        libc: existing.libc ?? detectedLibc
+      };
+    }
+>>>>>>> mcoda/task/ops-01-us-02-t14
     throw err;
   }
 
   const { archive, expectedSha256, source, manifestAttempt } = plan;
+<<<<<<< HEAD
 <<<<<<< HEAD
 >>>>>>> mcoda/task/ops-01-us-03-t39
 
@@ -5484,6 +5506,8 @@ async function runInstaller(options) {
       fallbackAttempted: Boolean(manifestAttempt?.fallbackAttempted)
     }
   });
+=======
+>>>>>>> mcoda/task/ops-01-us-02-t14
 
 <<<<<<< HEAD
   const resolutionEvents = Array.isArray(manifestAttempt?.events) ? manifestAttempt.events : [];
@@ -5818,7 +5842,12 @@ async function runInstaller(options) {
       if (err && typeof err.statusCode === "number" && err.statusCode === 404) {
         const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
         throw new MissingArtifactError({
+<<<<<<< HEAD
           detected: { os: detectedPlatform, arch: detectedArch, ...(detectedLibc ? { libc: detectedLibc } : {}) },
+=======
+          detected: { os: detectedPlatform, arch: detectedArch },
+          libc: detectedLibc,
+>>>>>>> mcoda/task/ops-01-us-02-t14
           platformKey,
           targetTriple,
           installedVersion: local.installedVersion ?? null,
@@ -7818,6 +7847,7 @@ function describeFatalError(err) {
 
   if (err instanceof MissingArtifactError) {
 <<<<<<< HEAD
+<<<<<<< HEAD
     const detectedOs =
       err.details?.detected && typeof err.details.detected === "object"
         ? err.details.detected.os ?? err.details.detected.platform
@@ -7837,6 +7867,10 @@ function describeFatalError(err) {
         ? `${err.details.detected.os}/${err.details.detected.arch}${detectedLibc ? `/${detectedLibc}` : ""}`
 >>>>>>> mcoda/task/ops-01-us-02-t40
         : null;
+=======
+    const detected = err.details?.detected ? `${err.details.detected.os}/${err.details.detected.arch}` : null;
+    const libc = err.details?.libc ? String(err.details.libc) : null;
+>>>>>>> mcoda/task/ops-01-us-02-t14
     const platformKey = typeof err.details?.platformKey === "string" ? err.details.platformKey : null;
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -7930,6 +7964,7 @@ function describeFatalError(err) {
         "[docdex] install failed: missing artifact/version sync issue (release asset not found)",
         `[docdex] error code: ${err.code}`,
         detected ? `[docdex] Detected platform: ${detected}` : null,
+        libc ? `[docdex] Detected libc: ${libc}` : null,
         err.details?.platformKey ? `[docdex] Platform key: ${err.details.platformKey}` : null,
         expectedTargetTriple ? `[docdex] Expected target triple: ${expectedTargetTriple}` : null,
         err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,
@@ -8301,6 +8336,7 @@ function describeFatalError(err) {
           : assetPatternForPlatformKey(null);
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     const versionInfo = versionDiagnostics(err.details);
 =======
     const expectedVersion =
@@ -8331,6 +8367,19 @@ function describeFatalError(err) {
           ? `v${expectedVersion}`
           : null;
 >>>>>>> mcoda/task/ops-01-us-03-t45
+=======
+    const detected = err.details?.detected ? `${err.details.detected.os}/${err.details.detected.arch}` : null;
+    const libc = err.details?.libc ? String(err.details.libc) : null;
+    const detectedLine = detected ? `[docdex] Detected platform: ${detected}` : null;
+    const libcLine = libc ? `[docdex] Detected libc: ${libc}` : null;
+    const targetTripleLine = err.details?.targetTriple
+      ? `[docdex] Expected target triple: ${err.details.targetTriple}`
+      : null;
+    const assetPatternLine =
+      err.code === "DOCDEX_ASSET_NO_MATCH" || err.code === "DOCDEX_ASSET_MULTI_MATCH"
+        ? `[docdex] Asset naming pattern: ${expectedAssetPattern}`
+        : null;
+>>>>>>> mcoda/task/ops-01-us-02-t14
 
     const title =
       err.code === "DOCDEX_ASSET_NO_MATCH"
@@ -8363,6 +8412,7 @@ function describeFatalError(err) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
             platformKey ? `[docdex] Platform key: ${platformKey}` : null,
 =======
             versionInfo.expected ? `[docdex] Expected version: ${versionInfo.expected}` : null,
@@ -8383,11 +8433,18 @@ function describeFatalError(err) {
 >>>>>>> mcoda/task/ops-01-us-03-t45
             err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
             `[docdex] Asset naming pattern: ${expectedAssetPattern}`,
+=======
+            detectedLine,
+            libcLine,
+            targetTripleLine,
+            assetPatternLine,
+>>>>>>> mcoda/task/ops-01-us-02-t14
             `[docdex] Details: ${err.message}`
           ].filter(Boolean)
         : [
             `[docdex] install failed: ${err.message}`,
             `[docdex] error code: ${err.code}`,
+<<<<<<< HEAD
 <<<<<<< HEAD
             platformKey ? `[docdex] Platform key: ${platformKey}` : null
           ].filter(Boolean);
@@ -8398,6 +8455,13 @@ function describeFatalError(err) {
             versionInfo.source ? `[docdex] Release source: ${versionInfo.source}` : null
           ].filter(Boolean);
 >>>>>>> mcoda/task/ops-01-us-03-t39
+=======
+            detectedLine,
+            libcLine,
+            targetTripleLine,
+            assetPatternLine
+          ].filter(Boolean);
+>>>>>>> mcoda/task/ops-01-us-02-t14
 
     if (fallbackAttempted === false) {
       lines.push(

@@ -4,6 +4,12 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const { ManifestResolutionError, resolveCanonicalAssetForTargetTriple } = require("../lib/release_manifest");
+const { PUBLISHED_RELEASE_TARGETS } = require("../lib/platform_matrix");
+
+function fakeSha(index) {
+  const hex = "abcdef";
+  return hex[index % hex.length].repeat(64);
+}
 
 test("resolves from manifest.targets map deterministically", () => {
   const manifest = {
@@ -19,6 +25,25 @@ test("resolves from manifest.targets map deterministically", () => {
   assert.equal(resolved.asset.name, "docdexd-linux-x64-gnu.tar.gz");
   assert.equal(resolved.asset.id, 123);
   assert.equal(resolved.integrity.sha256, "a".repeat(64));
+});
+
+test("resolves exactly one canonical asset per published target triple", () => {
+  const targets = {};
+  let index = 0;
+  for (const entry of PUBLISHED_RELEASE_TARGETS) {
+    targets[entry.targetTriple] = {
+      asset: { name: `${entry.archiveBase}.tar.gz` },
+      integrity: { sha256: fakeSha(index) }
+    };
+    index += 1;
+  }
+
+  const manifest = { manifestVersion: 1, targets };
+
+  for (const entry of PUBLISHED_RELEASE_TARGETS) {
+    const resolved = resolveCanonicalAssetForTargetTriple(manifest, entry.targetTriple);
+    assert.equal(resolved.asset.name, `${entry.archiveBase}.tar.gz`);
+  }
 });
 
 test("resolves from manifest.assets array with alternate field names", () => {

@@ -235,6 +235,8 @@ test("installer: supported runtime with missing manifest target triple never dow
   try {
     await runInstaller({
       logger: createNoopLogger(),
+      platform: "linux",
+      arch: "x64",
       detectPlatformKeyFn: () => "linux-x64-gnu",
       getVersionFn: () => version,
       parseRepoSlugFn: () => "owner/repo",
@@ -264,16 +266,98 @@ test("installer: supported runtime with missing manifest target triple never dow
   assert.equal(report.code, "DOCDEX_ASSET_NO_MATCH");
   assert.ok(report.lines.some((l) => l.includes("missing artifact/version sync issue")));
 <<<<<<< HEAD
+<<<<<<< HEAD
   assert.ok(report.lines.some((l) => l.includes("Expected version: v0.0.0")));
   assert.ok(report.lines.some((l) => l.includes("Release source: manifest:docdexd-manifest.json")));
 =======
   assert.ok(report.lines.some((l) => l.includes(`Expected version: v${version}`)));
   assert.ok(report.lines.some((l) => l.includes(`Release source: owner/repo (tag v${version})`)));
 >>>>>>> mcoda/task/ops-01-us-03-t23
+=======
+  assert.ok(report.lines.some((l) => l.includes("Detected platform: linux/x64")));
+  assert.ok(report.lines.some((l) => l.includes("Detected libc: gnu")));
+>>>>>>> mcoda/task/ops-01-us-02-t14
   assert.ok(report.lines.some((l) => l.includes("Expected target triple: x86_64-unknown-linux-gnu")));
   assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platformKey>.tar.gz")));
 
   assert.ok(downloadTextCalls >= 1, "expected metadata fetches (manifest/signature) but no asset download");
+  assert.equal(assetDownloadCalls, 0);
+  assert.equal(extractCalls, 0);
+});
+
+test("installer: supported runtime with ambiguous manifest entries reports detected details and pattern", async () => {
+  let downloadTextCalls = 0;
+  let assetDownloadCalls = 0;
+  let extractCalls = 0;
+
+  const base = "https://example.test/releases/download";
+  const version = "0.0.0";
+  const manifestName = "docdexd-manifest.json";
+  const manifestText = JSON.stringify(
+    {
+      assets: [
+        {
+          target_triple: "x86_64-unknown-linux-gnu",
+          name: "docdexd-linux-x64-gnu.tar.gz",
+          sha256: "a".repeat(64)
+        },
+        {
+          target_triple: "x86_64-unknown-linux-gnu",
+          name: "docdexd-linux-x64-gnu-alt.tar.gz",
+          sha256: "b".repeat(64)
+        }
+      ]
+    },
+    null,
+    2
+  );
+
+  const downloadTextFn = async (url) => {
+    downloadTextCalls += 1;
+    if (url === `${base}/v${version}/${manifestName}`) return manifestText;
+    throw httpError(404, `not found: ${url}`);
+  };
+
+  let err;
+  try {
+    await runInstaller({
+      logger: createNoopLogger(),
+      platform: "linux",
+      arch: "x64",
+      detectPlatformKeyFn: () => "linux-x64-gnu",
+      getVersionFn: () => version,
+      parseRepoSlugFn: () => "owner/repo",
+      getDownloadBaseFn: () => base,
+      resolveInstallerDownloadPlanFn: (args) =>
+        resolveInstallerDownloadPlan({
+          ...args,
+          downloadTextFn,
+          getDownloadBaseFn: () => base,
+          manifestCandidateNamesFn: () => [manifestName]
+        }),
+      downloadFn: async () => {
+        assetDownloadCalls += 1;
+        throw new Error("unexpected asset download");
+      },
+      extractTarballFn: async () => {
+        extractCalls += 1;
+        throw new Error("unexpected extract");
+      }
+    });
+  } catch (e) {
+    err = e;
+  }
+
+  assert.ok(err, "expected an error");
+  const report = describeFatalError(err);
+  assert.equal(report.code, "DOCDEX_ASSET_MULTI_MATCH");
+  assert.ok(report.lines.some((l) => l.includes("Detected platform: linux/x64")));
+  assert.ok(report.lines.some((l) => l.includes("Detected libc: gnu")));
+  assert.ok(report.lines.some((l) => l.includes("Expected target triple: x86_64-unknown-linux-gnu")));
+  assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platformKey>.tar.gz")));
+  assert.ok(report.lines.some((l) => l.includes("Fallback was not attempted")));
+
+  assert.equal(downloadTextCalls, 1, "expected a metadata fetch (manifest) but no asset download");
   assert.equal(assetDownloadCalls, 0);
   assert.equal(extractCalls, 0);
 });
@@ -424,12 +508,16 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
   assert.ok(report.lines.some((l) => l.includes("missing artifact/version sync issue")));
   assert.ok(report.lines.some((l) => l.includes("Detected platform: linux/x64")));
 <<<<<<< HEAD
+<<<<<<< HEAD
   assert.ok(report.lines.some((l) => l.includes("Expected version: v0.0.0")));
   assert.ok(report.lines.some((l) => l.includes("Release source: fallback")));
 =======
   assert.ok(report.lines.some((l) => l.includes(`Expected version: v${version}`)));
   assert.ok(report.lines.some((l) => l.includes(`Release source: owner/repo (tag v${version})`)));
 >>>>>>> mcoda/task/ops-01-us-03-t23
+=======
+  assert.ok(report.lines.some((l) => l.includes("Detected libc: gnu")));
+>>>>>>> mcoda/task/ops-01-us-02-t14
   assert.ok(report.lines.some((l) => l.includes("Expected target triple: x86_64-unknown-linux-gnu")));
   assert.ok(report.lines.some((l) => l.includes("Asset naming pattern: docdexd-<platformKey>.tar.gz")));
   assert.ok(!report.lines.some((l) => l.includes("unsupported platform")));

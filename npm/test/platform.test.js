@@ -10,13 +10,14 @@ const {
   detectLibcFromRuntime,
   detectPlatformKey,
   detectTargetTriple,
+  artifactName,
   assetPatternForPlatformKey,
   resolvePlatformPolicy,
   targetTripleForPlatformKey,
   UnsupportedPlatformError
 } = require("../lib/platform");
 
-const { PUBLISHED_RELEASE_TARGETS } = require("../lib/platform_matrix");
+const { PLATFORM_MATRIX, PUBLISHED_RELEASE_TARGETS } = require("../lib/platform_matrix");
 const { DEFAULT_TARGETS } = require("../../scripts/generate_release_manifest.cjs");
 
 function writeElf64WithInterpreter(filePath, interpreter) {
@@ -122,6 +123,30 @@ test("unpublished targets are treated as unsupported (no download expected)", ()
 
 test("published platform keys match manifest generator defaults", () => {
   assert.deepEqual(DEFAULT_TARGETS, PUBLISHED_RELEASE_TARGETS);
+});
+
+test("published target triples and asset names are unique", () => {
+  const published = PLATFORM_MATRIX.filter((entry) => entry.published);
+  const assetNames = published.map((entry) => artifactName(entry.platformKey));
+  const targetTriples = published.map((entry) => entry.targetTriple);
+
+  assert.equal(new Set(assetNames).size, assetNames.length);
+  assert.equal(new Set(targetTriples).size, targetTriples.length);
+});
+
+test("detectTargetTriple maps published runtimes deterministically (including libc overrides)", () => {
+  for (const entry of PLATFORM_MATRIX.filter((value) => value.published)) {
+    const env = entry.libc ? { DOCDEX_LIBC: entry.libc } : {};
+    const resolved = detectTargetTriple({ platform: entry.platform, arch: entry.arch, env });
+    assert.equal(resolved, entry.targetTriple);
+  }
+});
+
+test("DOCDEX_LIBC=glibc normalizes to gnu for target triple mapping", () => {
+  assert.equal(
+    detectTargetTriple({ platform: "linux", arch: "x64", env: { DOCDEX_LIBC: "glibc" } }),
+    "x86_64-unknown-linux-gnu"
+  );
 });
 
 test("DOCDEX_LIBC invalid value fails with actionable error", () => {

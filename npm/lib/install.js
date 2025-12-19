@@ -1043,6 +1043,8 @@ async function runInstaller(options) {
 
   const platformKey = platformPolicy.platformKey;
   const targetTriple = platformPolicy.targetTriple;
+  const detectedLibc =
+    typeof platformKey === "string" && platformKey.startsWith("linux-") ? platformKey.split("-")[2] : null;
   const version = getVersionFn();
   const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
   const distDir = pathModule.join(distBaseDir, platformKey);
@@ -1065,13 +1067,30 @@ async function runInstaller(options) {
 
   const repoSlug = parseRepoSlugFn();
 
-  const { archive, expectedSha256, source, manifestAttempt } = await resolveInstallerDownloadPlanFn({
-    repoSlug,
-    version,
-    platformKey,
-    targetTriple,
-    logger
-  });
+  let plan;
+  try {
+    plan = await resolveInstallerDownloadPlanFn({
+      repoSlug,
+      version,
+      platformKey,
+      targetTriple,
+      logger
+    });
+  } catch (err) {
+    if (err instanceof ManifestResolutionError) {
+      const existing = withBaseDetails(err.details);
+      err.details = {
+        ...existing,
+        platformKey: existing.platformKey ?? platformKey ?? null,
+        targetTriple: existing.targetTriple ?? targetTriple ?? null,
+        detected: existing.detected ?? { os: detectedPlatform, arch: detectedArch },
+        libc: existing.libc ?? detectedLibc
+      };
+    }
+    throw err;
+  }
+
+  const { archive, expectedSha256, source, manifestAttempt } = plan;
 
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
   const tmpDir = opts.tmpDir || osModule.tmpdir();
@@ -1086,6 +1105,7 @@ async function runInstaller(options) {
         const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
         throw new MissingArtifactError({
           detected: { os: detectedPlatform, arch: detectedArch },
+          libc: detectedLibc,
           platformKey,
           targetTriple,
           assetName: archive,
@@ -1255,6 +1275,7 @@ function describeFatalError(err) {
 
   if (err instanceof MissingArtifactError) {
     const detected = err.details?.detected ? `${err.details.detected.os}/${err.details.detected.arch}` : null;
+    const libc = err.details?.libc ? String(err.details.libc) : null;
     const platformKey = typeof err.details?.platformKey === "string" ? err.details.platformKey : null;
     const expectedAsset =
       typeof err.details?.expectedAsset === "string" && err.details.expectedAsset.trim()
@@ -1274,6 +1295,7 @@ function describeFatalError(err) {
         "[docdex] install failed: missing artifact/version sync issue (release asset not found)",
         `[docdex] error code: ${err.code}`,
         detected ? `[docdex] Detected platform: ${detected}` : null,
+        libc ? `[docdex] Detected libc: ${libc}` : null,
         err.details?.platformKey ? `[docdex] Platform key: ${err.details.platformKey}` : null,
         err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
         err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,
@@ -1382,17 +1404,37 @@ function describeFatalError(err) {
         : platformKey
           ? assetPatternForPlatformKey(platformKey)
           : assetPatternForPlatformKey(null);
+    const detected = err.details?.detected ? `${err.details.detected.os}/${err.details.detected.arch}` : null;
+    const libc = err.details?.libc ? String(err.details.libc) : null;
+    const detectedLine = detected ? `[docdex] Detected platform: ${detected}` : null;
+    const libcLine = libc ? `[docdex] Detected libc: ${libc}` : null;
+    const targetTripleLine = err.details?.targetTriple
+      ? `[docdex] Expected target triple: ${err.details.targetTriple}`
+      : null;
+    const assetPatternLine =
+      err.code === "DOCDEX_ASSET_NO_MATCH" || err.code === "DOCDEX_ASSET_MULTI_MATCH"
+        ? `[docdex] Asset naming pattern: ${expectedAssetPattern}`
+        : null;
 
     const lines =
       err.code === "DOCDEX_ASSET_NO_MATCH"
         ? [
             "[docdex] install failed: missing artifact/version sync issue (manifest has no asset for this target)",
             `[docdex] error code: ${err.code}`,
-            err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
-            `[docdex] Asset naming pattern: ${expectedAssetPattern}`,
+            detectedLine,
+            libcLine,
+            targetTripleLine,
+            assetPatternLine,
             `[docdex] Details: ${err.message}`
           ].filter(Boolean)
-        : [`[docdex] install failed: ${err.message}`, `[docdex] error code: ${err.code}`];
+        : [
+            `[docdex] install failed: ${err.message}`,
+            `[docdex] error code: ${err.code}`,
+            detectedLine,
+            libcLine,
+            targetTripleLine,
+            assetPatternLine
+          ].filter(Boolean);
 
     if (fallbackAttempted === false) {
       lines.push("[docdex] Fallback was not attempted because a manifest was present but unusable.");

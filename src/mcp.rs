@@ -93,6 +93,7 @@ const MAX_ERROR_MESSAGE_BYTES: usize = 256;
 const MAX_ERROR_REASON_BYTES: usize = 768;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 >>>>>>> mcoda/task/bck-05-us-10-t25
 =======
@@ -115,6 +116,9 @@ fn effective_rate_limit_burst(per_minute: u32, burst: u32) -> u32 {
 =======
 const MCP_RATE_LIMIT_PAYLOAD_MAX_BYTES: usize = 2048;
 >>>>>>> mcoda/task/bck-05-us-09-t40
+=======
+const MAX_RATE_LIMIT_FIELD_BYTES: usize = 64;
+>>>>>>> mcoda/task/bck-05-us-09-t30
 
 #[derive(Error, Debug)]
 #[error("path must be relative and not contain parent components")]
@@ -203,6 +207,7 @@ fn mcp_error_data(
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn rate_limit_fields(err: &RateLimited) -> serde_json::Map<String, serde_json::Value> {
     let mut fields = serde_json::Map::new();
     fields.insert("retry_after_ms".to_string(), json!(err.retry_after_ms));
@@ -249,6 +254,28 @@ fn schema_version_details(schema_name: &'static str, requested: u32) -> serde_js
                 "max": TOOL_SCHEMA_VERSION_MAX
             }
         }
+=======
+fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
+    #[derive(Serialize)]
+    struct RateLimitData {
+        code: &'static str,
+        retry_after_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_at: Option<String>,
+        limit_key: String,
+        scope: String,
+    }
+
+    serde_json::to_value(RateLimitData {
+        code: ERR_RATE_LIMITED,
+        retry_after_ms: err.retry_after_ms,
+        retry_at: err
+            .retry_at
+            .as_ref()
+            .map(|at| truncate_bytes(at.to_rfc3339(), MAX_RATE_LIMIT_FIELD_BYTES)),
+        limit_key: truncate_bytes(err.limit_key.clone(), MAX_RATE_LIMIT_FIELD_BYTES),
+        scope: truncate_bytes(err.scope.clone(), MAX_RATE_LIMIT_FIELD_BYTES),
+>>>>>>> mcoda/task/bck-05-us-09-t30
     })
 =======
 fn mcp_retry_data(hint: RetryHint) -> serde_json::Value {
@@ -2403,7 +2430,9 @@ mod tests {
 
     #[test]
     fn rate_limited_rpc_truncates_long_message_and_allows_retry_at() {
-        let err = RateLimited::new(Duration::from_millis(1234), "bucket".to_string(), "global".to_string())
+        let long_key = "k".repeat(2048);
+        let long_scope = "s".repeat(2048);
+        let err = RateLimited::new(Duration::from_millis(1234), long_key, long_scope)
             .with_message("x".repeat(10_000))
             .with_retry_at(Utc::now());
         let rpc = rpc_rate_limited(&err, None);
@@ -2416,6 +2445,7 @@ mod tests {
         assert_rate_limit_keys(obj, true);
         assert!(obj.get("retry_at").and_then(|v| v.as_str()).is_some());
         assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(1234));
+<<<<<<< HEAD
         let message = obj
             .get("message")
             .and_then(|v| v.as_str())
@@ -2454,6 +2484,23 @@ mod tests {
             payload_bytes.len() <= MCP_RATE_LIMIT_PAYLOAD_MAX_BYTES,
             "rpc rate-limit payload should remain small (got {} bytes)",
             payload_bytes.len()
+=======
+        let limit_key = obj
+            .get("limit_key")
+            .and_then(|v| v.as_str())
+            .expect("rate-limit data should include limit_key");
+        assert!(
+            limit_key.len() <= MAX_RATE_LIMIT_FIELD_BYTES + "…".len(),
+            "limit_key should be bounded"
+        );
+        let scope = obj
+            .get("scope")
+            .and_then(|v| v.as_str())
+            .expect("rate-limit data should include scope");
+        assert!(
+            scope.len() <= MAX_RATE_LIMIT_FIELD_BYTES + "…".len(),
+            "scope should be bounded"
+>>>>>>> mcoda/task/bck-05-us-09-t30
         );
     }
 

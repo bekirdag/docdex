@@ -41,7 +41,11 @@ const DEFAULT_SNIPPET_WINDOW: usize = 40;
 const MIN_SNIPPET_WINDOW: usize = 10;
 const MAX_SNIPPET_WINDOW: usize = 400;
 const MAX_RATE_LIMIT_MESSAGE_BYTES: usize = 256;
+<<<<<<< HEAD
 const HTTP_RATE_LIMIT_PAYLOAD_MAX_BYTES: usize = 1024;
+=======
+const MAX_RATE_LIMIT_FIELD_BYTES: usize = 64;
+>>>>>>> mcoda/task/bck-05-us-09-t30
 
 >>>>>>> mcoda/task/bck-05-us-09-t40
 // Rate limiting is shared with MCP and other surfaces via crate::ratelimit.
@@ -1064,6 +1068,7 @@ impl ErrorDetail {
             code: ERR_RATE_LIMITED,
             message: truncate_utf8_bytes(&err.message, MAX_RATE_LIMIT_MESSAGE_BYTES),
             retry_after_ms: Some(err.retry_after_ms),
+<<<<<<< HEAD
             retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
             limit_key: Some(err.limit_key.clone()),
             scope: Some(err.scope.clone()),
@@ -1082,6 +1087,14 @@ impl ErrorDetail {
 >>>>>>> mcoda/task/bck-05-us-09-t34
 =======
 >>>>>>> mcoda/task/bck-05-us-09-t32
+=======
+            retry_at: err.retry_at.as_ref().map(|at| {
+                let raw = at.to_rfc3339();
+                truncate_bytes(&raw, MAX_RATE_LIMIT_FIELD_BYTES)
+            }),
+            limit_key: Some(truncate_bytes(&err.limit_key, MAX_RATE_LIMIT_FIELD_BYTES)),
+            scope: Some(truncate_bytes(&err.scope, MAX_RATE_LIMIT_FIELD_BYTES)),
+>>>>>>> mcoda/task/bck-05-us-09-t30
         }
     }
 }
@@ -1113,6 +1126,7 @@ mod rate_limit_contract_tests {
 
     #[test]
     fn http_rate_limited_error_truncates_message_and_bounds_payload() {
+<<<<<<< HEAD
         let long = "x".repeat(MAX_RATE_LIMIT_FIELD_BYTES * 8);
         let err = RateLimited::new(
             Duration::from_millis(1234),
@@ -1121,6 +1135,13 @@ mod rate_limit_contract_tests {
         )
         .with_message("x".repeat(10_000))
         .with_retry_at(Utc::now());
+=======
+        let long_key = "k".repeat(2048);
+        let long_scope = "s".repeat(2048);
+        let err = RateLimited::new(Duration::from_millis(1234), long_key, long_scope)
+            .with_message("x".repeat(10_000))
+            .with_retry_at(Utc::now());
+>>>>>>> mcoda/task/bck-05-us-09-t30
 
         let body = ErrorBody {
             error: ErrorDetail::rate_limited(&err),
@@ -1153,6 +1174,7 @@ mod rate_limit_contract_tests {
             .get("retry_after_ms")
             .and_then(|v| v.as_u64())
             .is_some());
+<<<<<<< HEAD
         assert!(error.get("limit_key").and_then(|v| v.as_str()).is_some());
         assert!(error.get("scope").and_then(|v| v.as_str()).is_some());
         let limit_key = error
@@ -1170,6 +1192,23 @@ mod rate_limit_contract_tests {
         assert!(
             scope.len() <= MAX_RATE_LIMIT_FIELD_BYTES,
             "scope should be truncated"
+=======
+        let limit_key = error
+            .get("limit_key")
+            .and_then(|v| v.as_str())
+            .expect("rate-limit response should contain limit_key");
+        assert!(
+            limit_key.len() <= MAX_RATE_LIMIT_FIELD_BYTES + "…".len(),
+            "limit_key should be bounded"
+        );
+        let scope = error
+            .get("scope")
+            .and_then(|v| v.as_str())
+            .expect("rate-limit response should contain scope");
+        assert!(
+            scope.len() <= MAX_RATE_LIMIT_FIELD_BYTES + "…".len(),
+            "scope should be bounded"
+>>>>>>> mcoda/task/bck-05-us-09-t30
         );
     }
 }

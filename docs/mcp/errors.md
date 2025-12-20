@@ -137,6 +137,7 @@ Notes:
 <<<<<<< HEAD
 - MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with `details.max_bytes` and `details.actual_bytes`.
 <<<<<<< HEAD
+<<<<<<< HEAD
 
 ## Tool result size limits (server-scoped)
 
@@ -172,3 +173,6 @@ Docdex enforces repo-invariant bounds on MCP tool outputs. When a client request
 - MCP `docdex_search` snippet text is capped at 420 characters (truncated when needed).
 - MCP `docdex_memory_recall` clamps `top_k` to `<= 50`.
 >>>>>>> mcoda/task/bck-05-us-10-t21
+=======
+- Global tool output limits policy: `docs/mcp/tool_limits.md`.
+>>>>>>> mcoda/task/bck-05-us-10-t18

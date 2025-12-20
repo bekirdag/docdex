@@ -59,6 +59,42 @@ pub struct RepoStateKeyResolution {
     pub state_key: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct RepoRootResolution {
+    pub canonical_path: PathBuf,
+    pub normalized_path: String,
+}
+
+pub fn resolve_repo_root(repo_root: &Path, recovery_steps: Vec<String>) -> Result<RepoRootResolution> {
+    if !repo_root.exists() {
+        return Err(AppError::new(ERR_MISSING_REPO_PATH, "repo path not found")
+            .with_details(repo_resolution_details(
+                normalize_input_path(repo_root),
+                None,
+                None,
+                recovery_steps,
+            ))
+            .into());
+    }
+    if !repo_root.is_dir() {
+        return Err(AppError::new(
+            ERR_INVALID_ARGUMENT,
+            format!("repo root is not a directory: {}", repo_root.display()),
+        )
+        .into());
+    }
+
+    let canonical_path = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    let normalized_path = normalize_path(&canonical_path);
+
+    Ok(RepoRootResolution {
+        canonical_path,
+        normalized_path,
+    })
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RepoReassociateResult {
     pub fingerprint: String,
@@ -569,6 +605,10 @@ pub fn reassociate_repo_path(
         canonical_path,
         prior_canonical_path: prior,
     })
+}
+
+pub(crate) fn normalize_input_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn normalize_path(path: &Path) -> String {

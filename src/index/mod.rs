@@ -1426,7 +1426,7 @@ pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
 }
 
 fn normalize_for_error(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    crate::repo_identity::normalize_input_path(path)
 }
 
 fn known_canonical_path_from_repo_meta(index_state_dir: &Path) -> Option<String> {
@@ -1501,16 +1501,16 @@ fn repo_state_mismatch_error(
 }
 
 fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<PathBuf> {
-    if !repo_root.exists() {
-        return Err(missing_repo_path_error(repo_root).into());
-    }
-    if !repo_root.is_dir() {
-        return Err(AppError::new(
-            ERR_INVALID_ARGUMENT,
-            format!("repo root is not a directory: {}", repo_root.display()),
-        )
-        .into());
-    }
+    let resolution = crate::repo_identity::resolve_repo_root(
+        repo_root,
+        vec![
+            "Repo may have moved or been renamed.".to_string(),
+            "Re-run with the repo's current path.".to_string(),
+            "If you previously indexed this repo, you may need to reindex after moving it: `docdexd index --repo <repo>`."
+                .to_string(),
+        ],
+    )?;
+    let repo_root = resolution.canonical_path;
 
     match state_dir {
         Some(custom) if custom.is_absolute() => {
@@ -1518,9 +1518,6 @@ fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<Pat
             // treat it as a shared *base* directory and scope all state under a repo id.
             // This prevents accidental cross-repo mixing when the same `--state-dir` is
             // used across multiple repos.
-            let repo_root = repo_root
-                .canonicalize()
-                .unwrap_or_else(|_| repo_root.to_path_buf());
             if custom.starts_with(&repo_root) {
                 return Ok(custom);
             }

@@ -1584,32 +1584,20 @@ impl McpServer {
     }
 
     fn ensure_same_repo(&self, candidate: &Path) -> Result<()> {
-        if !candidate.exists() {
-            let normalized_path = candidate.to_string_lossy().replace('\\', "/");
+        let resolution = crate::repo_identity::resolve_repo_root(
+            candidate,
+            vec![
+                "Repo may have moved or been renamed.".to_string(),
+                "Pass the current repo path (or omit `project_root` to use the MCP server default)."
+                    .to_string(),
+                "If the MCP server is pointed at the wrong path, restart it with `docdexd mcp --repo <repo>`."
+                    .to_string(),
+            ],
+        )?;
+        if resolution.canonical_path != self.repo_root {
+            let attempted_fingerprint = crate::repo_identity::repo_fingerprint_sha256(&resolution.canonical_path).ok();
             let details = repo_resolution_details(
-                normalized_path,
-                None,
-                Some(self.repo_root.to_string_lossy().replace('\\', "/")),
-                vec![
-                    "Repo may have moved or been renamed.".to_string(),
-                    "Pass the current repo path (or omit `project_root` to use the MCP server default)."
-                        .to_string(),
-                    "If the MCP server is pointed at the wrong path, restart it with `docdexd mcp --repo <repo>`."
-                        .to_string(),
-                ],
-            );
-            return Err(
-                AppError::new(ERR_MISSING_REPO_PATH, "repo path not found")
-                    .with_details(details)
-                    .into(),
-            );
-        }
-
-        let normalized = candidate.canonicalize().unwrap_or_else(|_| candidate.to_path_buf());
-        if normalized != self.repo_root {
-            let attempted_fingerprint = crate::repo_identity::repo_fingerprint_sha256(&normalized).ok();
-            let details = repo_resolution_details(
-                normalized.to_string_lossy().replace('\\', "/"),
+                resolution.normalized_path,
                 attempted_fingerprint,
                 Some(self.repo_root.to_string_lossy().replace('\\', "/")),
                 vec![

@@ -90,3 +90,71 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod latency_perf_tests {
+    use super::RateLimiter;
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    fn percentile(sorted: &[u128], p: f64) -> u128 {
+        if sorted.is_empty() {
+            return 0;
+        }
+        let p = p.clamp(0.0, 1.0);
+        let idx = ((p * ((sorted.len() - 1) as f64)).ceil() as usize).min(sorted.len() - 1);
+        sorted[idx]
+    }
+
+    fn summarize(mut samples_ns: Vec<u128>) -> (u128, u128, u128) {
+        samples_ns.sort_unstable();
+        let p50 = percentile(&samples_ns, 0.50);
+        let p95 = percentile(&samples_ns, 0.95);
+        let max = *samples_ns.last().unwrap_or(&0);
+        (p50, p95, max)
+    }
+
+    /// NFR check: rate-limiter fast path should remain negligible for non-rate-limited tool calls.
+    #[test]
+    #[ignore]
+    fn mcp_rate_limiter_fast_path_p95_under_50us() {
+        let limiter = RateLimiter::<()>::new(10_000_000, 10_000_000);
+        for _ in 0..10_000 {
+            let _ = limiter.check_or_rate_limited((), "mcp_tools", "global");
+        }
+
+        const BATCH: usize = 10_000;
+        const BATCHES: usize = 200;
+        let mut samples_ns = Vec::with_capacity(BATCHES);
+        for _ in 0..BATCHES {
+            let start = Instant::now();
+            for _ in 0..BATCH {
+                black_box(
+                    limiter
+                        .check_or_rate_limited((), "mcp_tools", "global")
+                        .expect("should not rate limit"),
+                );
+            }
+            samples_ns.push(start.elapsed().as_nanos() / (BATCH as u128));
+        }
+
+        let (p50, p95, max) = summarize(samples_ns);
+        eprintln!(
+            "rate limiter fast-path check: p50={}ns p95={}ns max={}ns (batched)",
+            p50, p95, max
+        );
+
+        if cfg!(debug_assertions) {
+            eprintln!(
+                "note: perf assertions are enforced in release builds; re-run with `cargo test --release ... -- --ignored --nocapture`"
+            );
+            return;
+        }
+
+        assert!(
+            p95 < 50_000,
+            "rate limiter fast-path p95 {}ns exceeds 50us",
+            p95
+        );
+    }
+}

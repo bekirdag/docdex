@@ -166,6 +166,11 @@ These errors apply to detached signatures over integrity metadata (manifest/chec
   - Note: with `DOCDEX_INTEGRITY_POLICY=allow-missing|off`, this condition is handled deterministically but may not be fatal (installer warns and proceeds unverified).
 >>>>>>> mcoda/task/ops-01-us-04-t17
 
+### Filesystem / permissions (fatal)
+
+- `DOCDEX_PERMISSION_DENIED` → exit `25`
+  - The installer could not write to the temp directory or install location (EACCES/EPERM/EROFS).
+
 ### Installer configuration (fatal)
 
 - `DOCDEX_INSTALLER_CONFIG` → exit `2`

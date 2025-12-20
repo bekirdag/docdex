@@ -8,9 +8,11 @@ const path = require("node:path");
 
 const { detectPlatformKey } = require("../lib/platform");
 const {
+  DownloadError,
   ChecksumResolutionError,
   IntegritySignatureError,
   MissingArtifactError,
+  PermissionDeniedError,
   describeFatalError,
   verifyDownloadedFileIntegrity,
   runInstaller
@@ -228,6 +230,7 @@ test("describeFatalError: checksum unusable includes candidates and next steps",
 });
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 test("describeFatalError: integrity signature errors include method and remediation", () => {
   const err = new IntegritySignatureError(
     "DOCDEX_INTEGRITY_SIGNATURE_INVALID",
@@ -285,4 +288,49 @@ test("runInstaller: required integrity policy fails closed when download plan ha
     await fs.promises.rm(tmpRoot, { recursive: true, force: true });
   }
 >>>>>>> mcoda/task/ops-01-us-04-t17
+=======
+test("describeFatalError: download error includes network hints and platform details", () => {
+  const err = new DownloadError(
+    "Download failed for docdexd-linux-x64-gnu.tar.gz",
+    {
+      detected: { os: "linux", arch: "x64" },
+      platformKey: "linux-x64-gnu",
+      targetTriple: "x86_64-unknown-linux-gnu",
+      version: "0.1.11",
+      repoSlug: "owner/repo",
+      assetName: "docdexd-linux-x64-gnu.tar.gz",
+      downloadUrl: "https://example.test/releases/download/v0.1.11/docdexd-linux-x64-gnu.tar.gz",
+      source: "fallback",
+      fallbackAttempted: true,
+      fallbackReason: "manifest_not_found",
+      statusCode: 502
+    },
+    new Error("ECONNRESET")
+  );
+
+  const report = describeFatalError(err);
+  assert.equal(report.code, "DOCDEX_DOWNLOAD_FAILED");
+  assert.ok(report.lines.some((l) => l.includes("Target triple: x86_64-unknown-linux-gnu")));
+  assert.ok(report.lines.some((l) => l.includes("Asset: docdexd-linux-x64-gnu.tar.gz")));
+  assert.ok(report.lines.some((l) => l.includes("HTTP_PROXY")));
+  assert.ok(report.lines.some((l) => l.includes("DOCDEX_GITHUB_TOKEN")));
+});
+
+test("describeFatalError: permission denied includes operation, path, and next steps", () => {
+  const err = new PermissionDeniedError("Permission denied while extracting archive", {
+    detected: { os: "linux", arch: "x64" },
+    platformKey: "linux-x64-gnu",
+    targetTriple: "x86_64-unknown-linux-gnu",
+    assetName: "docdexd-linux-x64-gnu.tar.gz",
+    operation: "extract_archive",
+    path: "/tmp/docdex",
+    downloadUrl: "https://example.test/releases/download/v0.1.11/docdexd-linux-x64-gnu.tar.gz"
+  });
+
+  const report = describeFatalError(err);
+  assert.equal(report.code, "DOCDEX_PERMISSION_DENIED");
+  assert.ok(report.lines.some((l) => l.includes("Operation: extract_archive")));
+  assert.ok(report.lines.some((l) => l.includes("Path: /tmp/docdex")));
+  assert.ok(report.lines.some((l) => l.includes("Next steps")));
+>>>>>>> mcoda/task/ops-01-us-01-t35
 });

@@ -183,19 +183,20 @@ impl SymbolsStore {
         };
         let mut parsed: SymbolsResponseV1 =
             serde_json::from_str(&data).context("parse symbols payload")?;
-        if parsed.repo_id.is_empty() {
-            parsed.repo_id = self.repo_id.clone();
+        let normalized_rel = rel_path.replace('\\', "/");
+        if !parsed.repo_id.is_empty() && parsed.repo_id != self.repo_id {
+            return Ok(None);
         }
-        if parsed.file.is_empty() {
-            parsed.file = rel_path.to_string();
+        if !parsed.file.is_empty() && parsed.file.replace('\\', "/") != normalized_rel {
+            return Ok(None);
         }
+        parsed.repo_id = self.repo_id.clone();
+        parsed.file = normalized_rel.clone();
         let repo_id = parsed.repo_id.clone();
         let file = parsed.file.clone();
         for symbol in &mut parsed.symbols {
-            if symbol.symbol_id.is_empty() {
-                symbol.symbol_id =
-                    make_symbol_id(&repo_id, &file, &symbol.range, &symbol.kind, &symbol.name);
-            }
+            symbol.symbol_id =
+                make_symbol_id(&repo_id, &file, &symbol.range, &symbol.kind, &symbol.name);
         }
         parsed.symbols.sort_by(|a, b| a.symbol_id.cmp(&b.symbol_id));
         Ok(Some(parsed))
@@ -283,6 +284,56 @@ fn make_symbol(
         kind: kind.to_string(),
         range,
         signature,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
+
+    #[test]
+    fn read_symbols_rejects_repo_mismatch() -> Result<(), Box<dyn Error>> {
+        let repo_root = tempfile::TempDir::new()?;
+        let state_dir = tempfile::TempDir::new()?;
+        let store = SymbolsStore::new(repo_root.path(), state_dir.path())?;
+        let rel_path = "src/lib.rs";
+        let payload = SymbolsResponseV1 {
+            schema: default_symbols_schema(),
+            repo_id: "other_repo".to_string(),
+            file: rel_path.to_string(),
+            symbols: Vec::new(),
+            outcome: None,
+        };
+        let dest = store.file_record_path(rel_path);
+        std::fs::create_dir_all(dest.parent().unwrap())?;
+        std::fs::write(dest, serde_json::to_string(&payload)?)?;
+
+        let read = store.read_symbols(rel_path)?;
+        assert!(read.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn read_symbols_rejects_file_mismatch() -> Result<(), Box<dyn Error>> {
+        let repo_root = tempfile::TempDir::new()?;
+        let state_dir = tempfile::TempDir::new()?;
+        let store = SymbolsStore::new(repo_root.path(), state_dir.path())?;
+        let rel_path = "src/lib.rs";
+        let payload = SymbolsResponseV1 {
+            schema: default_symbols_schema(),
+            repo_id: store.repo_id().to_string(),
+            file: "src/other.rs".to_string(),
+            symbols: Vec::new(),
+            outcome: None,
+        };
+        let dest = store.file_record_path(rel_path);
+        std::fs::create_dir_all(dest.parent().unwrap())?;
+        std::fs::write(dest, serde_json::to_string(&payload)?)?;
+
+        let read = store.read_symbols(rel_path)?;
+        assert!(read.is_none());
+        Ok(())
     }
 }
 

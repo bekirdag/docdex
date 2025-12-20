@@ -33,6 +33,9 @@ const FILES_DEFAULT_LIMIT: usize = 200;
 const FILES_MAX_LIMIT: usize = 1000;
 const FILES_MAX_OFFSET: usize = 50_000;
 const OPEN_MAX_BYTES: usize = 512 * 1024; // guard rail for returning file content
+const INDEX_MAX_PATHS: usize = 1000;
+const SYMBOLS_MAX_ITEMS: usize = 5000;
+const SYMBOLS_MAX_BYTES: usize = 512 * 1024;
 const MAX_ERROR_MESSAGE_BYTES: usize = 256;
 const MAX_ERROR_REASON_BYTES: usize = 768;
 
@@ -1160,14 +1163,15 @@ impl McpServer {
             ToolDefinition {
                 name: "docdex_index",
                 description:
-                    "Rebuild the index (or ingest specific files) for the current repo root.",
+                    "Rebuild the index (or ingest specific files) for the current repo root (paths capped).",
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "paths": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Optional list of files to ingest; empty => full reindex"
+                            "maxItems": INDEX_MAX_PATHS,
+                            "description": "Optional list of files to ingest; empty => full reindex (max 1000 items)"
                         },
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
                     }
@@ -1189,7 +1193,7 @@ impl McpServer {
             ToolDefinition {
                 name: "docdex_open",
                 description:
-                    "Read a file from the repo (optional line window); rejects paths outside the repo.",
+                    "Read a file from the repo (optional line window); rejects paths outside the repo and large files (max 512 KiB).",
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1225,7 +1229,7 @@ impl McpServer {
             },
             ToolDefinition {
                 name: "docdex_symbols",
-                description: "Read the symbol extraction result for a file, including per-file outcome (ok/skipped/failed).",
+                description: "Read the symbol extraction result for a file, including per-file outcome (ok/skipped/failed); payloads capped to 5000 symbols / 512 KiB.",
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1328,7 +1332,14 @@ impl McpServer {
                     .to_string(),
             }));
         }
-        let mut ingested = Vec::new();
+        if args.paths.len() > INDEX_MAX_PATHS {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                format!("paths exceeds max of {}", INDEX_MAX_PATHS),
+            )
+            .into());
+        }
+        let mut ingested: Vec<String> = Vec::new();
         let mut decisions = Vec::new();
         for path in args.paths {
             let resolved = if path.is_absolute() {
@@ -1336,9 +1347,18 @@ impl McpServer {
             } else {
                 self.repo_root.join(path)
             };
-            let path_display = resolved.display().to_string();
-            let decision = self.indexer.ingest_file(resolved.clone()).await?;
-            ingested.push(resolved);
+            let canonical = resolved
+                .canonicalize()
+                .with_context(|| format!("resolve path {}", resolved.display()))?;
+            if !canonical.starts_with(&self.repo_root) {
+                return Err(PathOutsideRepoError.into());
+            }
+            let path_display = canonical
+                .strip_prefix(&self.repo_root)
+                .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| canonical.display().to_string());
+            let decision = self.indexer.ingest_file(canonical.clone()).await?;
+            ingested.push(path_display.clone());
             decisions.push(json!({
                 "path": path_display,
                 "decision": decision.decision,
@@ -1348,7 +1368,7 @@ impl McpServer {
         Ok(json!({
             "status": "ok",
             "action": "ingest",
-            "paths": ingested.into_iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            "paths": ingested,
             "decisions": decisions,
             "project_root": self
                 .default_project_root
@@ -1488,12 +1508,24 @@ impl McpServer {
         let rel_str = rel_path.to_string_lossy().replace('\\', "/");
         let store = SymbolsStore::new(self.indexer.repo_root(), self.indexer.config().state_dir())
             .context("open symbols store")?;
-        let payload = store
+        let mut payload = store
             .read_symbols(&rel_str)?
             .ok_or_else(|| MissingSymbolsIndexError {
                 rel_path: rel_str.to_string(),
             })?;
-        Ok(serde_json::to_value(payload).context("serialize symbols payload")?)
+        if payload.symbols.len() > SYMBOLS_MAX_ITEMS {
+            payload.symbols.truncate(SYMBOLS_MAX_ITEMS);
+        }
+        let bytes = serde_json::to_vec(&payload).context("serialize symbols payload")?;
+        if bytes.len() > SYMBOLS_MAX_BYTES {
+            return Err(MaxContentError {
+                actual_bytes: bytes.len(),
+                max_bytes: SYMBOLS_MAX_BYTES,
+            }
+            .into());
+        }
+        let value = serde_json::from_slice(&bytes).context("deserialize symbols payload")?;
+        Ok(value)
     }
 
     async fn handle_memory_store(&self, args: MemoryStoreArgs) -> Result<serde_json::Value> {

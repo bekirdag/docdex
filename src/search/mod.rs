@@ -774,7 +774,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             },
             AiHelpMcpTool {
                 name: "docdex_index",
-                description: "Rebuild index or ingest specific files for the repo.",
+                description: "Rebuild index or ingest specific files for the repo (paths capped at 1000).",
                 args: &["paths (array of file paths, empty => full reindex)", "project_root (string, optional)"],
                 returns: &["status", "action", "paths?"],
             },
@@ -786,9 +786,15 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             },
             AiHelpMcpTool {
                 name: "docdex_open",
-                description: "Read a file from the repo; optional line range; rejects paths outside the repo.",
+                description: "Read a file from the repo; optional line range; rejects paths outside the repo; max 512 KiB.",
                 args: &["path (string, required, relative)", "start_line (int, optional)", "end_line (int, optional)", "project_root (string, optional)"],
                 returns: &["path", "start_line", "end_line", "total_lines", "content", "repo_root"],
+            },
+            AiHelpMcpTool {
+                name: "docdex_symbols",
+                description: "Read the symbol extraction result for a file, including per-file outcome (ok/skipped/failed); capped to 5000 symbols / 512 KiB.",
+                args: &["path (string, required, relative)", "project_root (string, optional)"],
+                returns: &["schema", "repo_id", "file", "symbols[]", "outcome"],
             },
             AiHelpMcpTool {
                 name: "docdex_stats",

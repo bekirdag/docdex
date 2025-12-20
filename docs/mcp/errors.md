@@ -93,6 +93,7 @@ These codes are the **required** set for repo/index/dependency failures and are 
 - `missing_dependency`: a required optional feature/dependency is disabled (e.g. symbols extraction disabled).
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 - `rate_limited`: request rejected due to rate limiting (see `docs/contracts/rate_limit_error_contract_v1.md`).
 =======
 - `rate_limited`: request rejected due to rate limiting; MCP uses JSON-RPC code `-32029` with retry hints in `error.data`.
@@ -101,6 +102,10 @@ These codes are the **required** set for repo/index/dependency failures and are 
 - `rate_limited`: request rejected due to rate limiting.
 >>>>>>> mcoda/task/bck-05-us-09-t22
 - `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable).
+=======
+- `rate_limited`: request rejected due to rate limiting; includes stable retry hints.
+- `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable); includes retry hints.
+>>>>>>> mcoda/task/bck-05-us-09-t37
 - `internal_error`: unexpected server failure.
 
 ### Parameter/argument validation codes
@@ -129,6 +134,25 @@ Docdex also uses feature-specific codes in some tools:
 - `embedding_model_not_found`
 - `embedding_failed`
 - `tier2_unavailable`
+
+## Rate-limit/backoff retry hints (stable contract)
+
+When rate limiting or backoff is triggered, MCP uses the canonical error envelope and includes
+retry hints at the top level of `error.data`:
+
+- `retry_after_ms` (integer, required): milliseconds to wait before retrying.
+- `retry_at` (string, optional): RFC3339 timestamp when retry is allowed.
+- `limit_key` (string, required): stable identifier for the constrained resource.
+- `scope` (string, required): scope of the limit (for example `global`, `repo`, or `ip`).
+
+`error.data.code` is `rate_limited` or `backoff_required`. `error.data.message` is a short,
+bounded string. The same retry fields are mirrored in `error.data.error.details`.
+
+Payload bounds for retryable errors:
+
+- `error.message` is capped at 256 bytes; `error.reason` at 768 bytes.
+- `limit_key` and `scope` are capped at 64 bytes each.
+- MCP rate-limit/backoff payloads are kept under 2 KiB; HTTP rate-limit payloads under 1 KiB.
 
 ## Repo moved/renamed (deterministic behavior + recovery)
 
@@ -166,6 +190,7 @@ Docdex presents the same underlying failures in three different wrappers:
 | Index missing (query/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
 | Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Not currently emitted by the per-repo CLI |
 <<<<<<< HEAD
+<<<<<<< HEAD
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |
 <<<<<<< HEAD
 | Rate limited | `rate_limited` | `-32029` | `429` with JSON error envelope + retry hints | N/A (CLI not rate limited) |
@@ -176,6 +201,10 @@ Docdex presents the same underlying failures in three different wrappers:
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Exit `1`, `stderr` JSON `{error:{code,message,retry_after_ms,...}}` |
 | Rate limited | `rate_limited` | `-32029` | `429` with JSON `{error:{code,message,retry_after_ms,...}}` | N/A (CLI does not rate-limit) |
 >>>>>>> mcoda/task/bck-05-us-09-t22
+=======
+| Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Exit `1`, `stderr` JSON `{error:{code:"backoff_required",...}}` |
+| Rate limited | `rate_limited` | `-32029` | `429` with JSON `{error:{code,message,retry_after_ms,limit_key,scope,...}}` and `Retry-After` | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
+>>>>>>> mcoda/task/bck-05-us-09-t37
 | Optional dependency disabled (e.g. symbols) | `missing_dependency` | `-32602` | N/A (no HTTP endpoint for MCP symbols) | N/A (no CLI symbols command) |
 | Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_params` | `-32602` | N/A | N/A |
 | Invalid path for `docdex_open` | `invalid_path` | `-32602` | N/A | N/A |

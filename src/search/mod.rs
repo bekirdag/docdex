@@ -55,10 +55,15 @@ const MIN_SNIPPET_WINDOW: usize = 10;
 const MAX_SNIPPET_WINDOW: usize = 400;
 const MAX_RATE_LIMIT_MESSAGE_BYTES: usize = 256;
 <<<<<<< HEAD
+<<<<<<< HEAD
 const HTTP_RATE_LIMIT_PAYLOAD_MAX_BYTES: usize = 1024;
 =======
 const MAX_RATE_LIMIT_FIELD_BYTES: usize = 64;
 >>>>>>> mcoda/task/bck-05-us-09-t30
+=======
+const MAX_RATE_LIMIT_LABEL_BYTES: usize = 64;
+const MAX_RATE_LIMIT_PAYLOAD_BYTES: usize = 1024;
+>>>>>>> mcoda/task/bck-05-us-09-t37
 
 >>>>>>> mcoda/task/bck-05-us-09-t40
 // Rate limiting is shared with MCP and other surfaces via crate::ratelimit.
@@ -1048,6 +1053,26 @@ struct ErrorBody {
     error: ErrorDetail,
 }
 
+<<<<<<< HEAD
+=======
+fn truncate_bytes(input: &str, max_bytes: usize) -> String {
+    if input.len() <= max_bytes {
+        return input.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = input[..end].to_string();
+    out.push_str("…");
+    out
+}
+
+fn truncate_label(input: &str) -> String {
+    truncate_bytes(input, MAX_RATE_LIMIT_LABEL_BYTES)
+}
+
+>>>>>>> mcoda/task/bck-05-us-09-t37
 #[derive(Serialize)]
 struct ErrorDetail {
     code: &'static str,
@@ -1088,6 +1113,7 @@ impl ErrorDetail {
             retry_after_ms: Some(err.retry_after_ms),
 <<<<<<< HEAD
             retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
+<<<<<<< HEAD
             limit_key: Some(err.limit_key.clone()),
             scope: Some(err.scope.clone()),
 <<<<<<< HEAD
@@ -1124,6 +1150,10 @@ impl ErrorDetail {
 =======
             details: None,
 >>>>>>> mcoda/task/bck-05-us-08-t33
+=======
+            limit_key: Some(truncate_label(&err.limit_key)),
+            scope: Some(truncate_label(&err.scope)),
+>>>>>>> mcoda/task/bck-05-us-09-t37
         }
     }
 
@@ -1221,7 +1251,11 @@ mod rate_limit_contract_tests {
 
         let bytes = serde_json::to_vec(&body).expect("rate-limit error body should serialize");
         assert!(
+<<<<<<< HEAD
             bytes.len() <= HTTP_RATE_LIMIT_PAYLOAD_MAX_BYTES,
+=======
+            bytes.len() <= MAX_RATE_LIMIT_PAYLOAD_BYTES,
+>>>>>>> mcoda/task/bck-05-us-09-t37
             "rate-limit payload should remain small (got {} bytes)",
             bytes.len()
         );

@@ -41,6 +41,7 @@ use crate::state_layout::{
 use crate::error::{
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     repo_resolution_details, AppError, BackoffRequired, ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX,
     ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
 >>>>>>> mcoda/task/bck-05-us-09-t07
@@ -69,6 +70,10 @@ use crate::error::{
     index_state_error, repo_resolution_details, AppError, IndexState, ERR_BACKOFF_REQUIRED,
     ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
 >>>>>>> mcoda/task/bck-05-us-08-t31
+=======
+    backoff_required_details, repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED,
+    ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+>>>>>>> mcoda/task/bck-05-us-09-t37
 };
 use crate::state_paths::{default_state_base_dir, RepoStatePaths, StatePaths};
 =======
@@ -1409,6 +1414,7 @@ impl Indexer {
                 )
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
                 .with_message(
                     "index writer unavailable (another docdexd may be indexing); retry later",
 >>>>>>> mcoda/task/bck-05-us-09-t22
@@ -1424,6 +1430,9 @@ impl Indexer {
 =======
                 .with_details(backoff_retry_details(DEFAULT_BACKOFF_RETRY_AFTER_MS))
 >>>>>>> mcoda/task/bck-05-us-09-t24
+=======
+                .with_details(backoff_required_details("index_writer", "repo"))
+>>>>>>> mcoda/task/bck-05-us-09-t37
                 .into()
             })
     }

@@ -1276,6 +1276,7 @@ impl McpServer {
 
     async fn handle_search(&self, args: SearchArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.indexer.ensure_index_fresh()?;
         let query = args.query.trim();
         let limit = args
             .limit
@@ -1361,6 +1362,7 @@ impl McpServer {
 
     async fn handle_files(&self, args: FilesArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.indexer.ensure_index_fresh()?;
         let limit = args
             .limit
             .unwrap_or(FILES_DEFAULT_LIMIT)
@@ -1384,6 +1386,7 @@ impl McpServer {
 
     async fn handle_stats(&self, args: StatsArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.indexer.ensure_index_fresh()?;
         let stats = self.indexer.stats()?;
         Ok(json!({
             "num_docs": stats.num_docs,

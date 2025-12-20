@@ -1,8 +1,10 @@
 use std::error::Error;
 use std::fmt;
+use std::path::Path;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
 
@@ -82,6 +84,74 @@ impl AppError {
         self.details = Some(details);
         self
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexState {
+    Missing,
+    Stale,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct IndexStateDetails {
+    pub index_state: IndexState,
+    pub repo_root: String,
+    pub state_dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_last_updated_epoch_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_last_modified_epoch_ms: Option<u128>,
+    pub hint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remediation: Option<Vec<String>>,
+}
+
+pub fn index_state_error(
+    state: IndexState,
+    repo_root: &Path,
+    state_dir: &Path,
+    index_last_updated_epoch_ms: Option<u128>,
+    repo_last_modified_epoch_ms: Option<u128>,
+    message: Option<String>,
+) -> AppError {
+    let (code, default_message, hint, remediation) = match state {
+        IndexState::Missing => (
+            ERR_MISSING_INDEX,
+            "index not found; run `docdex_index`",
+            "Run `docdex_index` (or `docdexd index --repo <repo>`) to build the index.".to_string(),
+            vec![
+                "Run `docdex_index` to build the repo index.".to_string(),
+                "Or run `docdexd index --repo <repo>` if you are using the CLI.".to_string(),
+            ],
+        ),
+        IndexState::Stale => (
+            ERR_STALE_INDEX,
+            "index is stale; run `docdex_index`",
+            "Run `docdex_index` (or `docdexd index --repo <repo>`) to refresh the index.".to_string(),
+            vec![
+                "Run `docdex_index` to refresh the repo index.".to_string(),
+                "Or run `docdexd index --repo <repo>` if you are using the CLI.".to_string(),
+            ],
+        ),
+    };
+    let details = IndexStateDetails {
+        index_state: state,
+        repo_root: repo_root.display().to_string(),
+        state_dir: state_dir.display().to_string(),
+        index_last_updated_epoch_ms,
+        repo_last_modified_epoch_ms,
+        hint,
+        remediation: if remediation.is_empty() {
+            None
+        } else {
+            Some(remediation)
+        },
+    };
+    let details_value =
+        serde_json::to_value(details).expect("index state details should serialize");
+    AppError::new(code, message.unwrap_or_else(|| default_message.to_string()))
+        .with_details(details_value)
 }
 
 pub fn repo_resolution_details(

@@ -9,6 +9,7 @@ use crate::error::{
 use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
+use crate::repo_manager::RepoManagerConfig;
 use crate::ratelimit::RateLimiter;
 use anyhow::Result;
 use axum::body::HttpBody;
@@ -162,6 +163,7 @@ pub struct AppState {
     pub audit: Option<crate::audit::AuditLogger>,
     pub metrics: Arc<crate::metrics::Metrics>,
     pub memory: Option<MemoryState>,
+    pub repo_manager_config: RepoManagerConfig,
 }
 
 #[derive(Clone)]

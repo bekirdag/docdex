@@ -8,6 +8,7 @@ use crate::index::{IndexConfig, Indexer};
 use crate::libs;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
+use crate::repo_manager::RepoManagerConfig;
 use crate::ratelimit::RateLimiter;
 use crate::search;
 use crate::symbols::SymbolsStore;
@@ -431,6 +432,7 @@ pub async fn serve(
     max_results: usize,
     rate_limit_per_min: u32,
     rate_limit_burst: u32,
+    repo_manager_config: RepoManagerConfig,
 ) -> Result<()> {
     let repo_root = repo_root
         .canonicalize()
@@ -496,6 +498,7 @@ pub async fn serve(
         default_project_root: None,
         memory,
         tool_rate_limit,
+        repo_manager_config,
     };
     server.run().await
 }
@@ -514,6 +517,7 @@ struct McpServer {
     default_project_root: Option<PathBuf>,
     memory: Option<McpMemoryState>,
     tool_rate_limit: Option<RateLimiter<()>>,
+    repo_manager_config: RepoManagerConfig,
 }
 
 impl McpServer {

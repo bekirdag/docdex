@@ -4,6 +4,7 @@ Scope: the npm installer/downloader (`npm/lib/install.js`) and CLI wrapper (`npm
 
 Source of truth for platform mapping + published support:
 - `npm/lib/platform_matrix.js` (detected runtime → `platformKey` → Rust target triple → published?)
+- `docs/contracts/installer_platform_mapping_v1.md` (canonical runtime → `platformKey`/`targetTriple` contract)
 - `npm/lib/platform.js` (Linux libc detection + `DOCDEX_LIBC` override; `platformKey` resolution)
 - `docs/contracts/release_manifest_schema_v1.md` (manifest + asset naming expectations)
 - `docs/contracts/installer_error_contract_v1.md` and `docs/ops/installer_error_codes.md` (how failures are reported)

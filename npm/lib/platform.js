@@ -287,18 +287,27 @@ function detectTargetTriple(options) {
 function resolvePlatformPolicy(options) {
   const platform = options?.platform ?? process.platform;
   const arch = options?.arch ?? process.arch;
+<<<<<<< HEAD
   const libc =
     platform === "linux" ? normalizeLibc(options?.libc) ?? detectLibcFromRuntime(options) : null;
   const detectOptions = { ...(options || {}), platform, arch, libc };
   const platformKey = detectPlatformKey(detectOptions);
+=======
+  const libc = platform === "linux" ? normalizeLibc(options?.libc) ?? detectLibcFromRuntime(options) : null;
+  const platformKey = detectPlatformKey({ ...(options || {}), platform, arch, libc });
+>>>>>>> mcoda/task/ops-01-us-01-t38
   const targetTriple = targetTripleForPlatformKey(platformKey);
   const libc = platform === "linux" ? libcForPlatformKey(platformKey) : null;
   return {
+<<<<<<< HEAD
 <<<<<<< HEAD
     detected: { platform, arch, ...(libc ? { libc } : {}) },
 =======
     detected: { platform, arch, libc },
 >>>>>>> mcoda/task/ops-01-us-02-t39
+=======
+    detected: { platform, arch, libc },
+>>>>>>> mcoda/task/ops-01-us-01-t38
     platformKey,
     targetTriple,
     expectedAssetName: artifactName(platformKey),

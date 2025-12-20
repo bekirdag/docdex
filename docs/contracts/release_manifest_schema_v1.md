@@ -46,6 +46,7 @@ Published targets are the `published: true` entries in `npm/lib/platform_matrix.
 | `x86_64-pc-windows-msvc` | n/a | `win32-x64` | `docdexd-win32-x64.tar.gz` |
 
 If additional targets are added in the platform matrix, the manifest generator (`scripts/generate_release_manifest.cjs`) will include them automatically for published entries.
+Runtime mapping (Node OS/arch/libc -> `platformKey` -> `targetTriple`) is defined in `docs/contracts/installer_platform_mapping_v1.md`.
 
 ## Artifact names (manifest + fallbacks)
 

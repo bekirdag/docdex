@@ -3,6 +3,7 @@
 /**
  * Single source of truth for:
  *   detected runtime (platform/arch/libc) -> platformKey -> Rust target triple -> release asset naming.
+ * Contract: docs/contracts/installer_platform_mapping_v1.md
  *
  * Notes:
  * - `platformKey` is the suffix used in release assets: `docdexd-<platformKey>.tar.gz`.
@@ -124,4 +125,3 @@ module.exports = {
   archiveBaseForPlatformKey,
   assetNameForPlatformKey
 };
-

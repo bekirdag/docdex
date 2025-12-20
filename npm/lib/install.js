@@ -5577,6 +5577,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   const stateRootDir = opts.stateRootDir || resolveInstallerStateRootDir({ osModule, pathModule, env });
   const distDir = resolveInstallerInstallDir({ stateRootDir, platformKey, pathModule });
   const legacyDistBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
@@ -5612,6 +5613,13 @@ async function runInstaller(options) {
 =======
   const expectedAssetName = platformPolicy.expectedAssetName || artifactNameFn(platformKey);
 >>>>>>> mcoda/task/ops-01-us-01-t33
+=======
+  const expectedAssetName = platformPolicy.expectedAssetName || artifactNameFn(platformKey);
+  const detectedLibc = platformPolicy.detected?.libc ? `/${platformPolicy.detected.libc}` : "";
+  const detectedPlatformLabel = `${
+    platformPolicy.detected?.platform || detectedPlatform
+  }/${platformPolicy.detected?.arch || detectedArch}${detectedLibc}`;
+>>>>>>> mcoda/task/ops-01-us-01-t38
   const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
   const distDir = pathModule.join(distBaseDir, platformKey);
 >>>>>>> mcoda/task/ops-01-us-04-t24
@@ -5676,6 +5684,11 @@ async function runInstaller(options) {
   const binaryFilename = isWin32 ? "docdexd.exe" : "docdexd";
   const binaryPath = pathModule.join(distDir, binaryFilename);
 >>>>>>> mcoda/task/ops-01-us-01-t43
+
+  logger.log(`[docdex] Detected platform: ${detectedPlatformLabel}`);
+  logger.log(`[docdex] Resolved target triple: ${targetTriple}`);
+  logger.log(`[docdex] Resolved daemon version: v${version}`);
+  logger.log(`[docdex] Resolved asset name: ${expectedAssetName}`);
 
   const local = await determineLocalInstallerOutcome({
 >>>>>>> mcoda/task/ops-01-us-01-t41

@@ -151,6 +151,13 @@ impl RateLimited {
         }
     }
 
+    pub fn backoff_required(retry_after: Duration, limit_key: String, scope: String) -> Self {
+        let mut err = Self::new(retry_after, limit_key, scope);
+        err.code = ERR_BACKOFF_REQUIRED;
+        err.message = "backoff required".to_string();
+        err
+    }
+
     #[allow(dead_code)]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.message = message.into();

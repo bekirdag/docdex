@@ -218,6 +218,7 @@ pub fn classify_browser_session_failure(err: &BrowserSessionError) -> Option<Tie
                 "tier 2 browser crashed or became unavailable",
             ))
         }
+        BrowserSessionError::RateLimited(_) => None,
         BrowserSessionError::Cancelled => None,
     }
 }

@@ -1,3 +1,4 @@
+use crate::browser_session::BrowserSessionError;
 use crate::error::{
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -330,8 +331,13 @@ fn mcp_backoff_required_data(err: &BackoffRequired) -> serde_json::Value {
         scope: &'a str,
     }
 
+<<<<<<< HEAD
     serde_json::to_value(BackoffData {
         code: ERR_BACKOFF_REQUIRED,
+=======
+    serde_json::to_value(RateLimitData {
+        code: err.code,
+>>>>>>> mcoda/task/bck-05-us-09-t18
         retry_after_ms: err.retry_after_ms,
         retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
         limit_key: &err.limit_key,
@@ -490,6 +496,11 @@ fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
     }
     if let Some(unavailable) = err.downcast_ref::<Tier2Unavailable>() {
         return rpc_tier2_unavailable(unavailable, tool);
+    }
+    if let Some(browser_err) = err.downcast_ref::<BrowserSessionError>() {
+        if let BrowserSessionError::RateLimited(rate) = browser_err {
+            return rpc_rate_limited(rate);
+        }
     }
     let (mcp_code, details) = classify_tool_error(err);
     rpc_error(
@@ -2555,6 +2566,22 @@ mod tests {
             Some("mcp_tools")
         );
         assert_eq!(details.get("scope").and_then(|v| v.as_str()), Some("global"));
+    }
+
+    #[test]
+    fn backoff_required_rpc_preserves_code_and_retry_hints() {
+        let err = RateLimited::backoff_required(
+            Duration::from_millis(500),
+            "browser_session".to_string(),
+            "global".to_string(),
+        );
+        let rpc = rpc_rate_limited(&err);
+        let data = rpc.data.expect("backoff rpc should include data");
+        let obj = data.as_object().expect("backoff data should be object");
+        assert_eq!(obj.get("code").and_then(|v| v.as_str()), Some(ERR_BACKOFF_REQUIRED));
+        assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(500));
+        assert_eq!(obj.get("limit_key").and_then(|v| v.as_str()), Some("browser_session"));
+        assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
     }
 
     #[test]

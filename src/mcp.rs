@@ -21,7 +21,7 @@ use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::ratelimit::RateLimiter;
 use crate::search;
-use crate::symbols::SymbolsStore;
+use crate::symbols::{SymbolsResponseV1, SymbolsStore};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -50,12 +50,18 @@ const FILES_MAX_LIMIT: usize = 1000;
 const FILES_MAX_OFFSET: usize = 50_000;
 const OPEN_MAX_BYTES: usize = 512 * 1024; // guard rail for returning file content
 <<<<<<< HEAD
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-10-t21
 =======
 const INDEX_MAX_PATHS: usize = 1000;
 const SYMBOLS_MAX_ITEMS: usize = 5000;
 const SYMBOLS_MAX_BYTES: usize = 512 * 1024;
 >>>>>>> mcoda/task/bck-05-us-10-t14
+=======
+const SYMBOLS_MAX_LIMIT: usize = 1000;
+const SYMBOLS_MAX_SIGNATURE_BYTES: usize = 512;
+const SYMBOLS_MAX_OUTCOME_BYTES: usize = 512;
+>>>>>>> mcoda/task/bck-05-us-10-t07
 const MAX_ERROR_MESSAGE_BYTES: usize = 256;
 const MAX_ERROR_REASON_BYTES: usize = 768;
 =======
@@ -198,8 +204,30 @@ fn truncate_bytes(input: String, max_bytes: usize) -> String {
     out
 }
 
+<<<<<<< HEAD
 =======
 >>>>>>> mcoda/task/bck-05-us-10-t25
+=======
+fn clamp_symbols_payload(payload: &mut SymbolsResponseV1, limit: usize) {
+    if payload.symbols.len() > limit {
+        payload.symbols.truncate(limit);
+    }
+    for symbol in &mut payload.symbols {
+        if let Some(signature) = symbol.signature.take() {
+            symbol.signature = Some(truncate_bytes(signature, SYMBOLS_MAX_SIGNATURE_BYTES));
+        }
+    }
+    if let Some(outcome) = payload.outcome.as_mut() {
+        if let Some(reason) = outcome.reason.take() {
+            outcome.reason = Some(truncate_bytes(reason, SYMBOLS_MAX_OUTCOME_BYTES));
+        }
+        if let Some(summary) = outcome.error_summary.take() {
+            outcome.error_summary = Some(truncate_bytes(summary, SYMBOLS_MAX_OUTCOME_BYTES));
+        }
+    }
+}
+
+>>>>>>> mcoda/task/bck-05-us-10-t07
 fn rpc_error(
     rpc_code: i32,
     message: impl Into<String>,
@@ -478,6 +506,8 @@ struct OpenArgs {
 #[derive(Deserialize)]
 struct SymbolsArgs {
     path: String,
+    #[serde(default)]
+    limit: Option<usize>,
     #[serde(default)]
     project_root: Option<PathBuf>,
     #[serde(default)]
@@ -1335,8 +1365,13 @@ impl McpServer {
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "minLength": 1, "description": "Relative path under the repo" },
+<<<<<<< HEAD
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
                         "schema_version": { "type": "integer", "minimum": TOOL_SCHEMA_VERSION_MIN as i64, "maximum": TOOL_SCHEMA_VERSION_MAX as i64, "default": TOOL_SCHEMA_VERSION_MAX as i64, "description": "Optional response schema version to request" }
+=======
+                        "limit": { "type": "integer", "minimum": 1, "maximum": SYMBOLS_MAX_LIMIT as i64, "default": SYMBOLS_MAX_LIMIT, "description": "Max symbols to return (clamped)" },
+                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+>>>>>>> mcoda/task/bck-05-us-10-t07
                     },
                     "required": ["path"]
                 }),
@@ -1705,7 +1740,15 @@ impl McpServer {
                 rel_path: rel_str.to_string(),
             })?;
 <<<<<<< HEAD
+<<<<<<< HEAD
         apply_symbols_bounds(&self.limits, &mut payload);
+=======
+        let limit = args
+            .limit
+            .unwrap_or(SYMBOLS_MAX_LIMIT)
+            .clamp(1, SYMBOLS_MAX_LIMIT);
+        clamp_symbols_payload(&mut payload, limit);
+>>>>>>> mcoda/task/bck-05-us-10-t07
         Ok(serde_json::to_value(payload).context("serialize symbols payload")?)
 =======
         if payload.symbols.len() > SYMBOLS_MAX_ITEMS {

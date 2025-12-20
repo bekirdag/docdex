@@ -85,13 +85,19 @@ Tool name aliases: `docdex_symbols` and `docdex.symbols`.
 Arguments:
 
 ```json
-{ "path": "path/relative/to/repo.ext", "project_root": "/path/to/repo (optional)" }
+{ "path": "path/relative/to/repo.ext", "limit": 200, "project_root": "/path/to/repo (optional)" }
 ```
 
 Return value:
 
 - A `docdex.symbols` payload, as defined in `docs/contracts/code_intelligence_schema_v1.md`.
 - The MCP response is bounded to 5000 symbols or 512 KiB; larger payloads fail with a `max_content_exceeded` error.
+
+Bounds and determinism:
+
+- `limit` clamps the number of returned symbols to `<= 1000` (minimum `1`); omitted means "use the max".
+- Symbols are sorted by `symbol_id`, then truncated, so the cap is deterministic.
+- `symbols[].signature`, `outcome.reason`, and `outcome.error_summary` are truncated to `<= 512` bytes (ellipsis added when truncated).
 
 Failure semantics (MCP JSON-RPC errors):
 

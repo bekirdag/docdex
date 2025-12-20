@@ -135,6 +135,10 @@ Notes:
 - HTTP `/search` enforces `limit` by clamping to the daemon’s configured max and does not error on over-limit; MCP `docdex_search` similarly clamps `limit` to the MCP server’s `--max-results`.
 - MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`.
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+- MCP `docdex_symbols` clamps `limit` to `<= 1000` and truncates `symbols[].signature` plus `outcome.reason`/`outcome.error_summary` to `<= 512` bytes.
+>>>>>>> mcoda/task/bck-05-us-10-t07
 - MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with `details.max_bytes` and `details.actual_bytes`.
 <<<<<<< HEAD
 <<<<<<< HEAD

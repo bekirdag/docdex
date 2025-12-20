@@ -11,10 +11,14 @@ use crate::error::{
     AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
 <<<<<<< HEAD
+<<<<<<< HEAD
     ERR_RATE_LIMITED, ERR_TIER2_UNAVAILABLE,
 >>>>>>> mcoda/task/bck-05-us-09-t21
 =======
 >>>>>>> mcoda/task/bck-05-us-09-t07
+=======
+    ERR_MISSING_INDEX, ERR_RATE_LIMITED, ERR_STALE_INDEX,
+>>>>>>> mcoda/task/bck-05-us-08-t33
 };
 use crate::libs::LibsIndexer;
 use crate::max_size::{
@@ -1056,6 +1060,8 @@ struct ErrorDetail {
     limit_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<serde_json::Value>,
 }
 
 impl ErrorDetail {
@@ -1067,6 +1073,7 @@ impl ErrorDetail {
             retry_at: None,
             limit_key: None,
             scope: None,
+            details: None,
         }
     }
 
@@ -1083,6 +1090,7 @@ impl ErrorDetail {
             retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
             limit_key: Some(err.limit_key.clone()),
             scope: Some(err.scope.clone()),
+<<<<<<< HEAD
 =======
 =======
         let hint = err.retry_hint();
@@ -1113,8 +1121,49 @@ impl ErrorDetail {
 >>>>>>> mcoda/task/bck-05-us-09-t30
 =======
 >>>>>>> mcoda/task/bck-05-us-09-t07
+=======
+            details: None,
+>>>>>>> mcoda/task/bck-05-us-08-t33
         }
     }
+
+    fn from_app_error(app: &AppError) -> Self {
+        Self {
+            code: app.code,
+            message: app.message.clone(),
+            retry_after_ms: None,
+            retry_at: None,
+            limit_key: None,
+            scope: None,
+            details: app.details.clone(),
+        }
+    }
+}
+
+fn index_state_error_response(app: &AppError) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(ErrorBody {
+            error: ErrorDetail::from_app_error(app),
+        }),
+    )
+        .into_response()
+}
+
+fn preflight_index_state(state: &AppState) -> Result<(), Response> {
+    if let Err(err) = state.indexer.preflight_index_state() {
+        if let Some(app) = err.downcast_ref::<AppError>() {
+            if matches!(app.code, ERR_MISSING_INDEX | ERR_STALE_INDEX) {
+                return Err(index_state_error_response(app));
+            }
+        }
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal error",
+        )
+            .into_response());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1369,6 +1418,7 @@ pub async fn run_query(
     query: &str,
     limit: usize,
 ) -> Result<SearchResponse> {
+    indexer.preflight_index_state()?;
     let (hits, query_meta) = search_with_optional_libs(indexer, libs_indexer, query, limit)?;
     let top_score = hits.first().map(|hit| hit.score);
     let token_estimate_sum_kept: u64 = hits.iter().map(|hit| hit.token_estimate).sum();
@@ -1518,6 +1568,9 @@ async fn search_handler(
         )
             .into_response();
     }
+    if let Err(resp) = preflight_index_state(&state) {
+        return resp;
+    }
 
     let include_libs = params.include_libs.unwrap_or(true);
     let libs_indexer = if include_libs {
@@ -1662,12 +1715,22 @@ async fn snippet_handler(
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
     Query(params): Query<SnippetParams>,
 ) -> impl IntoResponse {
+<<<<<<< HEAD
     let window = clamp_option(
         params.window,
         DEFAULT_SNIPPET_WINDOW,
         MIN_SNIPPET_WINDOW,
         MAX_SNIPPET_WINDOW,
     );
+=======
+    if let Err(resp) = preflight_index_state(&state) {
+        return resp;
+    }
+    let window = params
+        .window
+        .unwrap_or(DEFAULT_SNIPPET_WINDOW)
+        .clamp(MIN_SNIPPET_WINDOW, MAX_SNIPPET_WINDOW);
+>>>>>>> mcoda/task/bck-05-us-08-t33
     let strip_html_flag = params.strip_html.unwrap_or(false)
         | params.text_only.unwrap_or(false)
         | state.security.strip_snippet_html;

@@ -2,7 +2,11 @@ use anyhow::{anyhow, Context, Result};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use regex::Regex;
+<<<<<<< HEAD
 use serde::{Deserialize, Serialize};
+=======
+use serde_json::json;
+>>>>>>> mcoda/task/bck-05-us-08-t33
 use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
@@ -38,6 +42,7 @@ use crate::error::{
 <<<<<<< HEAD
     repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
     ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-08-t32
 =======
     repo_resolution_details, retry_hint_details, AppError, DEFAULT_BACKOFF_RETRY_AFTER_MS,
@@ -49,6 +54,8 @@ use crate::error::{
     ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH,
     ERR_REPO_STATE_MISMATCH,
 >>>>>>> mcoda/task/bck-05-us-09-t24
+=======
+>>>>>>> mcoda/task/bck-05-us-08-t33
 };
 use crate::state_paths::{default_state_base_dir, RepoStatePaths, StatePaths};
 =======
@@ -212,6 +219,7 @@ pub(crate) const MAX_SNIPPET_CHARS: usize = 420;
 >>>>>>> mcoda/task/bck-05-us-10-t25
 const FALLBACK_PREVIEW_LINES: usize = 60;
 <<<<<<< HEAD
+<<<<<<< HEAD
 pub const RUN_SUMMARY_DEFAULT_LIMIT: usize = 5;
 pub const RUN_SUMMARY_MAX_LIMIT: usize = 20;
 const RUN_SUMMARY_MAX_SKIP_SAMPLES: usize = 25;
@@ -225,6 +233,10 @@ const INDEX_STATE_FILENAME: &str = "index_state.json";
 const INDEX_STATE_VERSION: u32 = 1;
 const INDEX_STATE_CACHE_TTL_MS: u128 = 2000;
 >>>>>>> mcoda/task/bck-05-us-08-t32
+=======
+const INDEX_STATE_VERSION: u32 = 1;
+const INDEX_STATE_FILENAME: &str = "index_state.json";
+>>>>>>> mcoda/task/bck-05-us-08-t33
 
 #[derive(Clone)]
 pub struct IndexConfig {
@@ -265,6 +277,12 @@ struct IndexStateV1 {
 struct IndexStateCache {
     last_scan_epoch_ms: Option<u128>,
     last_repo_mtime_epoch_ms: Option<u128>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct IndexStateFile {
+    version: u32,
+    indexed_at_epoch_ms: u128,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -538,10 +556,234 @@ impl IndexConfig {
     }
 }
 
+<<<<<<< HEAD
 pub fn clamp_run_summary_limit(limit: Option<usize>) -> usize {
     limit
         .unwrap_or(RUN_SUMMARY_DEFAULT_LIMIT)
         .clamp(1, RUN_SUMMARY_MAX_LIMIT)
+=======
+fn index_state_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(INDEX_STATE_FILENAME)
+}
+
+fn now_epoch_ms() -> Result<u128> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis())
+}
+
+fn read_index_state(state_dir: &Path) -> Result<Option<IndexStateFile>> {
+    let path = index_state_path(state_dir);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    let parsed: IndexStateFile =
+        serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
+    Ok(Some(parsed))
+}
+
+fn write_index_state(state_dir: &Path, state: IndexStateFile) -> Result<()> {
+    fs::create_dir_all(state_dir)
+        .with_context(|| format!("create {}", state_dir.display()))?;
+    let path = index_state_path(state_dir);
+    let bytes = serde_json::to_vec_pretty(&state).context("serialize index state")?;
+    let tmp = path.with_extension(format!("tmp.{}", uuid::Uuid::new_v4()));
+    fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
+    if path.exists() {
+        let _ = fs::remove_file(&path);
+    }
+    fs::rename(&tmp, &path)
+        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
+    Ok(())
+}
+
+fn update_index_state(state_dir: &Path) -> Result<()> {
+    let indexed_at_epoch_ms = now_epoch_ms()?;
+    write_index_state(
+        state_dir,
+        IndexStateFile {
+            version: INDEX_STATE_VERSION,
+            indexed_at_epoch_ms,
+        },
+    )
+}
+
+fn latest_repo_modification_epoch_ms(repo_root: &Path, config: &IndexConfig) -> Option<u128> {
+    let mut latest: Option<u128> = None;
+    for entry in WalkDir::new(repo_root).into_iter().filter_map(|e| e.ok()) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if !should_index(path, repo_root, config) {
+            continue;
+        }
+        if let Ok(meta) = entry.metadata() {
+            if let Ok(modified) = meta.modified() {
+                if let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
+                    let millis = dur.as_millis();
+                    if latest.map(|current| millis > current).unwrap_or(true) {
+                        latest = Some(millis);
+                    }
+                }
+            }
+        }
+    }
+    latest
+}
+
+fn index_state_remediation_steps(repo_root: &Path) -> Vec<String> {
+    let repo_display = repo_root.display();
+    vec![
+        format!(
+            "Run `docdexd index --repo {repo_display}` to build the index."
+        ),
+        "For MCP clients: call `docdex_index` with no paths to rebuild the index.".to_string(),
+    ]
+}
+
+fn index_state_error_details(
+    repo_root: &Path,
+    state_dir: &Path,
+    hint: String,
+    indexed_at_epoch_ms: Option<u128>,
+    repo_last_modified_epoch_ms: Option<u128>,
+    reason: Option<String>,
+) -> serde_json::Value {
+    let mut details = serde_json::Map::new();
+    details.insert(
+        "repoRoot".to_string(),
+        serde_json::Value::String(repo_root.display().to_string()),
+    );
+    details.insert(
+        "stateDir".to_string(),
+        serde_json::Value::String(state_dir.display().to_string()),
+    );
+    details.insert("hint".to_string(), serde_json::Value::String(hint));
+    if let Some(indexed_at) = indexed_at_epoch_ms {
+        details.insert("indexedAtEpochMs".to_string(), json!(indexed_at));
+    }
+    if let Some(repo_last_modified) = repo_last_modified_epoch_ms {
+        details.insert(
+            "repoLastModifiedEpochMs".to_string(),
+            json!(repo_last_modified),
+        );
+    }
+    if let Some(reason) = reason {
+        details.insert("reason".to_string(), serde_json::Value::String(reason));
+    }
+    details.insert(
+        "recoverySteps".to_string(),
+        serde_json::Value::Array(
+            index_state_remediation_steps(repo_root)
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
+    );
+    serde_json::Value::Object(details)
+}
+
+fn missing_index_error(repo_root: &Path, state_dir: &Path) -> AppError {
+    let hint = "Index is missing; build it before searching.".to_string();
+    AppError::new(
+        ERR_MISSING_INDEX,
+        format!(
+            "index not found at {}; run `docdexd index --repo {}`",
+            state_dir.display(),
+            repo_root.display()
+        ),
+    )
+    .with_details(index_state_error_details(
+        repo_root,
+        state_dir,
+        hint,
+        None,
+        None,
+        None,
+    ))
+}
+
+fn stale_index_error(
+    repo_root: &Path,
+    state_dir: &Path,
+    indexed_at_epoch_ms: Option<u128>,
+    repo_last_modified_epoch_ms: Option<u128>,
+    reason: Option<String>,
+) -> AppError {
+    let hint = "Index is stale; re-run indexing before searching.".to_string();
+    AppError::new(
+        ERR_STALE_INDEX,
+        format!(
+            "index is stale; run `docdexd index --repo {}`",
+            repo_root.display()
+        ),
+    )
+    .with_details(index_state_error_details(
+        repo_root,
+        state_dir,
+        hint,
+        indexed_at_epoch_ms,
+        repo_last_modified_epoch_ms,
+        reason,
+    ))
+}
+
+pub fn preflight_index_state(repo_root: &Path, config: &IndexConfig) -> Result<()> {
+    let state_dir = config.state_dir();
+    if !state_dir.exists() {
+        return Err(missing_index_error(repo_root, state_dir).into());
+    }
+    let state = match read_index_state(state_dir) {
+        Ok(Some(state)) => state,
+        Ok(None) => return Err(missing_index_error(repo_root, state_dir).into()),
+        Err(err) => {
+            return Err(
+                stale_index_error(
+                    repo_root,
+                    state_dir,
+                    None,
+                    None,
+                    Some(err.to_string()),
+                )
+                .into(),
+            );
+        }
+    };
+    if state.version != INDEX_STATE_VERSION {
+        return Err(
+            stale_index_error(
+                repo_root,
+                state_dir,
+                Some(state.indexed_at_epoch_ms),
+                None,
+                Some(format!(
+                    "unsupported index state version {}; expected {}",
+                    state.version, INDEX_STATE_VERSION
+                )),
+            )
+            .into(),
+        );
+    }
+    let repo_last_modified_epoch_ms = latest_repo_modification_epoch_ms(repo_root, config);
+    if let Some(repo_last_modified) = repo_last_modified_epoch_ms {
+        if repo_last_modified > state.indexed_at_epoch_ms {
+            return Err(
+                stale_index_error(
+                    repo_root,
+                    state_dir,
+                    Some(state.indexed_at_epoch_ms),
+                    Some(repo_last_modified),
+                    None,
+                )
+                .into(),
+            );
+        }
+    }
+    Ok(())
+>>>>>>> mcoda/task/bck-05-us-08-t33
 }
 
 impl Indexer {
@@ -633,6 +875,7 @@ impl Indexer {
         }
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
         if !config.state_dir().exists() {
+<<<<<<< HEAD
             return Err(missing_index_error(
                 &repo_root,
                 config.state_dir(),
@@ -640,6 +883,9 @@ impl Indexer {
                 Some("state_dir_missing".to_string()),
             )
             .into());
+=======
+            return Err(missing_index_error(&repo_root, config.state_dir()).into());
+>>>>>>> mcoda/task/bck-05-us-08-t33
         }
         let index = Index::open_in_dir(config.state_dir())?;
         let reader = index
@@ -725,7 +971,11 @@ impl Indexer {
         }
         writer.commit()?;
         self.reader.reload()?;
+<<<<<<< HEAD
         self.write_index_state(now_epoch_ms()?)?;
+=======
+        update_index_state(self.config.state_dir())?;
+>>>>>>> mcoda/task/bck-05-us-08-t33
         Ok(())
     }
 
@@ -776,7 +1026,11 @@ impl Indexer {
 >>>>>>> mcoda/task/bck-05-us-10-t05
         writer.commit()?;
         self.reader.reload()?;
+<<<<<<< HEAD
         self.write_index_state(now_epoch_ms()?)?;
+=======
+        update_index_state(self.config.state_dir())?;
+>>>>>>> mcoda/task/bck-05-us-08-t33
         Ok(decision)
     }
 
@@ -829,7 +1083,11 @@ impl Indexer {
         writer.delete_term(term);
         writer.commit()?;
         self.reader.reload()?;
+<<<<<<< HEAD
         self.write_index_state(now_epoch_ms()?)?;
+=======
+        update_index_state(self.config.state_dir())?;
+>>>>>>> mcoda/task/bck-05-us-08-t33
         if let Some(store) = self.symbols_store.as_ref() {
             if let Err(err) = store.delete_symbols(&rel) {
                 warn!(target: "docdexd", error = ?err, rel_path = %rel, "failed to delete symbols record");
@@ -1141,6 +1399,7 @@ impl Indexer {
     }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     pub fn symbols_store_ready(&self) -> bool {
         self.symbols_store.is_some()
 =======
@@ -1213,6 +1472,10 @@ impl Indexer {
         }
         Ok(())
 >>>>>>> mcoda/task/bck-05-us-08-t32
+=======
+    pub fn preflight_index_state(&self) -> Result<()> {
+        preflight_index_state(&self.repo_root, &self.config)
+>>>>>>> mcoda/task/bck-05-us-08-t33
     }
 
     pub fn stats(&self) -> Result<IndexStats> {

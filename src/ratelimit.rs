@@ -90,3 +90,57 @@ where
         }
     }
 }
+
+#[derive(Clone, Default)]
+pub struct ResourceLimiter {
+    inner: Arc<Mutex<HashMap<String, RateLimiter<()>>>>,
+}
+
+impl ResourceLimiter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert_limit(&self, resource: impl Into<String>, per_minute: u32, burst: u32) {
+        if per_minute == 0 {
+            return;
+        }
+        let resource = resource.into();
+        let effective_burst = if burst == 0 { per_minute } else { burst };
+        let limiter = RateLimiter::<()>::new(per_minute, effective_burst);
+        self.inner.lock().insert(resource, limiter);
+    }
+
+    pub fn check_or_rate_limited(
+        &self,
+        resource: &str,
+        scope: impl Into<String>,
+    ) -> Result<(), RateLimited> {
+        let limiter = { self.inner.lock().get(resource).cloned() };
+        match limiter {
+            Some(limiter) => limiter.check_or_rate_limited((), resource.to_string(), scope),
+            None => Ok(()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_limiter_shares_limits_per_key() {
+        let limiter = ResourceLimiter::new();
+        limiter.insert_limit("web_research", 60, 1);
+
+        assert!(limiter
+            .check_or_rate_limited("web_research", "global")
+            .is_ok());
+
+        let err = limiter
+            .check_or_rate_limited("web_research", "global")
+            .expect_err("second call should be rate limited");
+        assert_eq!(err.limit_key, "web_research");
+        assert_eq!(err.scope, "global");
+    }
+}

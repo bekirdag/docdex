@@ -8,6 +8,8 @@ use crate::index::{IndexConfig, Indexer};
 use crate::libs;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
+use crate::ratelimit::ResourceLimiter;
+#[cfg(test)]
 use crate::ratelimit::RateLimiter;
 use crate::search;
 use crate::symbols::SymbolsStore;
@@ -478,11 +480,9 @@ pub async fn serve(
     } else {
         rate_limit_burst
     };
-    let tool_rate_limit = if rate_limit_per_min > 0 {
-        Some(RateLimiter::<()>::new(rate_limit_per_min, effective_burst))
-    } else {
-        None
-    };
+    let tool_rate_limits = ResourceLimiter::new();
+    tool_rate_limits.insert_limit("mcp_tools", rate_limit_per_min, effective_burst);
+    tool_rate_limits.insert_limit("web_research", rate_limit_per_min, effective_burst);
     let libs_indexer = libs::LibsIndexer::open_read_only(libs::libs_state_dir_from_index_state_dir(
         indexer.state_dir(),
     ))
@@ -495,7 +495,7 @@ pub async fn serve(
         max_results: max_results.max(1),
         default_project_root: None,
         memory,
-        tool_rate_limit,
+        tool_rate_limits,
     };
     server.run().await
 }
@@ -513,10 +513,17 @@ struct McpServer {
     max_results: usize,
     default_project_root: Option<PathBuf>,
     memory: Option<McpMemoryState>,
-    tool_rate_limit: Option<RateLimiter<()>>,
+    tool_rate_limits: ResourceLimiter,
 }
 
 impl McpServer {
+    fn constrained_limit_key(tool: &str) -> Option<&'static str> {
+        match tool {
+            "docdex_web_research" | "docdex.web_research" => Some("web_research"),
+            _ => None,
+        }
+    }
+
     async fn run(&mut self) -> Result<()> {
         let stdin = io::stdin();
         let stdout = io::stdout();
@@ -775,8 +782,22 @@ impl McpServer {
                         }))
                     }
                 };
-                if let Some(limiter) = self.tool_rate_limit.as_ref() {
-                    if let Err(err) = limiter.check_or_rate_limited((), "mcp_tools", "global") {
+                if let Err(err) = self
+                    .tool_rate_limits
+                    .check_or_rate_limited("mcp_tools", "global")
+                {
+                    return Ok(Some(RpcResponse {
+                        jsonrpc: JSONRPC_VERSION,
+                        id: id.clone(),
+                        result: None,
+                        error: Some(rpc_rate_limited(&err)),
+                    }));
+                }
+                if let Some(resource_key) = Self::constrained_limit_key(params.name.as_str()) {
+                    if let Err(err) =
+                        self.tool_rate_limits
+                            .check_or_rate_limited(resource_key, "global")
+                    {
                         return Ok(Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,
                             id: id.clone(),

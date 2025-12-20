@@ -4,6 +4,7 @@ use parking_lot::Mutex;
 use regex::Regex;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 use serde::{Deserialize, Serialize};
 =======
 use serde_json::json;
@@ -11,6 +12,9 @@ use serde_json::json;
 =======
 use serde::{Deserialize, Serialize};
 >>>>>>> mcoda/task/bck-05-us-08-t31
+=======
+use serde::{Deserialize, Serialize};
+>>>>>>> mcoda/task/bck-05-us-08-t30
 use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
@@ -240,6 +244,7 @@ pub(crate) const MAX_SNIPPET_CHARS: usize = 420;
 const FALLBACK_PREVIEW_LINES: usize = 60;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 pub const RUN_SUMMARY_DEFAULT_LIMIT: usize = 5;
 pub const RUN_SUMMARY_MAX_LIMIT: usize = 20;
 const RUN_SUMMARY_MAX_SKIP_SAMPLES: usize = 25;
@@ -257,6 +262,10 @@ const INDEX_STATE_CACHE_TTL_MS: u128 = 2000;
 const INDEX_STATE_VERSION: u32 = 1;
 const INDEX_STATE_FILENAME: &str = "index_state.json";
 >>>>>>> mcoda/task/bck-05-us-08-t33
+=======
+const INDEX_STATE_VERSION: u32 = 1;
+const INDEX_STATE_FILENAME: &str = "docdex_index_state.json";
+>>>>>>> mcoda/task/bck-05-us-08-t30
 
 #[derive(Clone)]
 pub struct IndexConfig {
@@ -392,6 +401,7 @@ pub struct IndexStats {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IndexRunType {
@@ -474,6 +484,17 @@ struct IndexStateManifest {
     version: u32,
     index_last_updated_epoch_ms: u128,
 >>>>>>> mcoda/task/bck-05-us-08-t31
+=======
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IndexStateFile {
+    version: u32,
+    indexed_at_epoch_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexStateSnapshot {
+    pub indexed_at_epoch_ms: u64,
+>>>>>>> mcoda/task/bck-05-us-08-t30
 }
 
 impl IndexConfig {
@@ -1000,6 +1021,7 @@ impl Indexer {
         self.reader.reload()?;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.write_index_state(now_epoch_ms()?)?;
 =======
         update_index_state(self.config.state_dir())?;
@@ -1007,6 +1029,9 @@ impl Indexer {
 =======
         self.record_index_state()?;
 >>>>>>> mcoda/task/bck-05-us-08-t31
+=======
+        self.write_index_state_now()?;
+>>>>>>> mcoda/task/bck-05-us-08-t30
         Ok(())
     }
 
@@ -1059,6 +1084,7 @@ impl Indexer {
         self.reader.reload()?;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.write_index_state(now_epoch_ms()?)?;
 =======
         update_index_state(self.config.state_dir())?;
@@ -1066,6 +1092,9 @@ impl Indexer {
 =======
         self.record_index_state()?;
 >>>>>>> mcoda/task/bck-05-us-08-t31
+=======
+        self.write_index_state_now()?;
+>>>>>>> mcoda/task/bck-05-us-08-t30
         Ok(decision)
     }
 
@@ -1120,6 +1149,7 @@ impl Indexer {
         self.reader.reload()?;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.write_index_state(now_epoch_ms()?)?;
 =======
         update_index_state(self.config.state_dir())?;
@@ -1127,6 +1157,9 @@ impl Indexer {
 =======
         self.record_index_state()?;
 >>>>>>> mcoda/task/bck-05-us-08-t31
+=======
+        self.write_index_state_now()?;
+>>>>>>> mcoda/task/bck-05-us-08-t30
         if let Some(store) = self.symbols_store.as_ref() {
             if let Err(err) = store.delete_symbols(&rel) {
                 warn!(target: "docdexd", error = ?err, rel_path = %rel, "failed to delete symbols record");
@@ -1631,6 +1664,7 @@ impl Indexer {
     }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     pub fn run_summaries(&self, limit: Option<usize>) -> Result<RunSummaryResponse> {
         let limit = clamp_run_summary_limit(limit);
         let history = load_run_history(self.config.state_dir());
@@ -1658,6 +1692,50 @@ impl Indexer {
     fn latest_repo_mtime_epoch_ms(&self) -> Result<Option<u128>> {
         let mut latest: Option<u128> = None;
         for entry in WalkDir::new(&self.repo_root).into_iter().flatten() {
+=======
+    pub fn index_state_path(&self) -> PathBuf {
+        self.config.state_dir().join(INDEX_STATE_FILENAME)
+    }
+
+    pub fn read_index_state(&self) -> Result<Option<IndexStateSnapshot>> {
+        let path = self.index_state_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let raw =
+            fs::read_to_string(&path).with_context(|| format!("read index state {}", path.display()))?;
+        let parsed: IndexStateFile =
+            serde_json::from_str(&raw).context("parse index state json")?;
+        if parsed.version != INDEX_STATE_VERSION {
+            return Ok(None);
+        }
+        Ok(Some(IndexStateSnapshot {
+            indexed_at_epoch_ms: parsed.indexed_at_epoch_ms,
+        }))
+    }
+
+    fn write_index_state(&self, indexed_at_epoch_ms: u64) -> Result<()> {
+        let path = self.index_state_path();
+        let payload = IndexStateFile {
+            version: INDEX_STATE_VERSION,
+            indexed_at_epoch_ms,
+        };
+        let serialized =
+            serde_json::to_string_pretty(&payload).context("serialize index state json")?;
+        fs::write(&path, serialized)
+            .with_context(|| format!("write index state {}", path.display()))?;
+        Ok(())
+    }
+
+    fn write_index_state_now(&self) -> Result<()> {
+        let now = now_epoch_ms_u64()?;
+        self.write_index_state(now)
+    }
+
+    pub fn latest_repo_mtime_epoch_ms(&self) -> Result<Option<u64>> {
+        let mut latest: Option<u64> = None;
+        for entry in WalkDir::new(&self.repo_root).into_iter().filter_map(|e| e.ok()) {
+>>>>>>> mcoda/task/bck-05-us-08-t30
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -1671,6 +1749,7 @@ impl Indexer {
             let Ok(modified) = meta.modified() else {
                 continue;
             };
+<<<<<<< HEAD
             let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) else {
                 continue;
             };
@@ -1678,10 +1757,18 @@ impl Indexer {
             if latest.map(|current| millis > current).unwrap_or(true) {
                 latest = Some(millis);
             }
+=======
+            let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) else {
+                continue;
+            };
+            let ms = duration.as_millis().min(u128::from(u64::MAX)) as u64;
+            latest = Some(latest.map_or(ms, |current| current.max(ms)));
+>>>>>>> mcoda/task/bck-05-us-08-t30
         }
         Ok(latest)
     }
 
+<<<<<<< HEAD
     fn write_index_state(&self, last_indexed_epoch_ms: u128) -> Result<()> {
         let state = IndexStateV1 {
             version: INDEX_STATE_VERSION,
@@ -1700,6 +1787,8 @@ impl Indexer {
 >>>>>>> mcoda/task/bck-05-us-08-t32
     }
 
+=======
+>>>>>>> mcoda/task/bck-05-us-08-t30
     pub fn snapshot_with_snippet(
         &self,
         doc_id: &str,
@@ -3022,6 +3111,14 @@ fn normalize_prefix(input: &str) -> String {
         cleaned.push('/');
     }
     cleaned
+}
+
+fn now_epoch_ms_u64() -> Result<u64> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64)
 }
 
 fn summarize(content: &str) -> String {

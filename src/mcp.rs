@@ -699,6 +699,93 @@ fn default_message_for_code(code: &str) -> &'static str {
     }
 }
 
+fn index_recovery_steps(repo_root: &Path) -> Vec<String> {
+    vec![
+        "Run the MCP tool `docdex_index` with paths: [] to build a fresh index.".to_string(),
+        format!("Or run `docdexd index --repo {}`.", repo_root.display()),
+    ]
+}
+
+fn index_state_details(
+    repo_root: &Path,
+    state_dir: &Path,
+    state_file: &Path,
+    indexed_at_epoch_ms: Option<u64>,
+    latest_repo_mtime_epoch_ms: Option<u64>,
+    state_error: Option<String>,
+) -> serde_json::Value {
+    let mut details = serde_json::Map::new();
+    details.insert(
+        "repo_root".to_string(),
+        json!(repo_root.display().to_string()),
+    );
+    details.insert(
+        "state_dir".to_string(),
+        json!(state_dir.display().to_string()),
+    );
+    details.insert(
+        "state_file".to_string(),
+        json!(state_file.display().to_string()),
+    );
+    if let Some(indexed_at_epoch_ms) = indexed_at_epoch_ms {
+        details.insert(
+            "indexed_at_epoch_ms".to_string(),
+            json!(indexed_at_epoch_ms),
+        );
+    }
+    if let Some(latest_repo_mtime_epoch_ms) = latest_repo_mtime_epoch_ms {
+        details.insert(
+            "latest_repo_mtime_epoch_ms".to_string(),
+            json!(latest_repo_mtime_epoch_ms),
+        );
+    }
+    if let Some(state_error) = state_error {
+        details.insert("state_error".to_string(), json!(state_error));
+    }
+    details.insert(
+        "recoverySteps".to_string(),
+        json!(index_recovery_steps(repo_root)),
+    );
+    serde_json::Value::Object(details)
+}
+
+fn missing_index_error(repo_root: &Path, state_dir: &Path, state_file: &Path) -> AppError {
+    AppError::new(
+        ERR_MISSING_INDEX,
+        "index not found; run docdex_index to build it",
+    )
+    .with_details(index_state_details(
+        repo_root,
+        state_dir,
+        state_file,
+        None,
+        None,
+        None,
+    ))
+}
+
+fn stale_index_error(
+    repo_root: &Path,
+    state_dir: &Path,
+    state_file: &Path,
+    indexed_at_epoch_ms: Option<u64>,
+    latest_repo_mtime_epoch_ms: Option<u64>,
+    state_error: Option<String>,
+) -> AppError {
+    AppError::new(
+        ERR_STALE_INDEX,
+        "index is stale; run docdex_index to refresh it",
+    )
+    .with_details(index_state_details(
+        repo_root,
+        state_dir,
+        state_file,
+        indexed_at_epoch_ms,
+        latest_repo_mtime_epoch_ms,
+        state_error,
+    ))
+}
+
 fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
     if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
         return (backoff.code, Some(mcp_backoff_required_data(backoff)));
@@ -2027,6 +2114,7 @@ impl McpServer {
         self.ensure_project_root(args.project_root.as_deref())?;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.ensure_schema_version("docdex_search", args.schema_version)?;
 =======
         self.ensure_index_fresh()?;
@@ -2034,6 +2122,9 @@ impl McpServer {
 =======
         self.indexer.ensure_index_fresh()?;
 >>>>>>> mcoda/task/bck-05-us-08-t31
+=======
+        self.ensure_index_ready()?;
+>>>>>>> mcoda/task/bck-05-us-08-t30
         let query = args.query.trim();
 <<<<<<< HEAD
         let requested_limit = args.limit;
@@ -2218,6 +2309,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
         self.ensure_schema_version("docdex_files", args.schema_version)?;
 >>>>>>> mcoda/task/bck-05-us-10-t21
@@ -2230,6 +2322,9 @@ impl McpServer {
 =======
         self.indexer.ensure_index_fresh()?;
 >>>>>>> mcoda/task/bck-05-us-08-t31
+=======
+        self.ensure_index_ready()?;
+>>>>>>> mcoda/task/bck-05-us-08-t30
         let limit = args
             .limit
             .unwrap_or(limits::MCP_FILES_DEFAULT_LIMIT)
@@ -2260,6 +2355,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.ensure_schema_version("docdex_stats", args.schema_version)?;
 =======
         self.ensure_index_fresh()?;
@@ -2270,6 +2366,9 @@ impl McpServer {
 =======
         self.indexer.ensure_index_fresh()?;
 >>>>>>> mcoda/task/bck-05-us-08-t31
+=======
+        self.ensure_index_ready()?;
+>>>>>>> mcoda/task/bck-05-us-08-t30
         let stats = self.indexer.stats()?;
         let run_summaries = self.indexer.run_summaries(args.runs_limit)?;
         Ok(json!({
@@ -2291,6 +2390,43 @@ impl McpServer {
                 .display()
                 .to_string(),
         }))
+    }
+
+    fn ensure_index_ready(&self) -> Result<()> {
+        let state_dir = self.indexer.config().state_dir();
+        let state_file = self.indexer.index_state_path();
+        let state = match self.indexer.read_index_state() {
+            Ok(Some(state)) => state,
+            Ok(None) => {
+                return Err(missing_index_error(&self.repo_root, state_dir, &state_file).into())
+            }
+            Err(err) => {
+                return Err(stale_index_error(
+                    &self.repo_root,
+                    state_dir,
+                    &state_file,
+                    None,
+                    None,
+                    Some(err.to_string()),
+                )
+                .into())
+            }
+        };
+        let latest_repo_mtime_epoch_ms = self.indexer.latest_repo_mtime_epoch_ms()?;
+        if let Some(latest_repo_mtime_epoch_ms) = latest_repo_mtime_epoch_ms {
+            if latest_repo_mtime_epoch_ms > state.indexed_at_epoch_ms {
+                return Err(stale_index_error(
+                    &self.repo_root,
+                    state_dir,
+                    &state_file,
+                    Some(state.indexed_at_epoch_ms),
+                    Some(latest_repo_mtime_epoch_ms),
+                    None,
+                )
+                .into());
+            }
+        }
+        Ok(())
     }
 
     async fn handle_repo_inspect(&self, args: RepoInspectArgs) -> Result<serde_json::Value> {

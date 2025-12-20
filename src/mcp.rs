@@ -72,8 +72,26 @@ const SYMBOLS_MAX_OUTCOME_BYTES: usize = 512;
 >>>>>>> mcoda/task/bck-05-us-10-t07
 const MAX_ERROR_MESSAGE_BYTES: usize = 256;
 const MAX_ERROR_REASON_BYTES: usize = 768;
+<<<<<<< HEAD
 =======
 >>>>>>> mcoda/task/bck-05-us-10-t25
+=======
+const MCP_RATE_LIMIT_DEFAULT_PER_MIN: u32 = 0;
+const MCP_RATE_LIMIT_DEFAULT_BURST: u32 = 0;
+const MCP_RATE_LIMIT_SCOPE: &str = "global";
+const MCP_RATE_LIMIT_KEY: &str = "mcp_tools";
+
+fn effective_rate_limit_burst(per_minute: u32, burst: u32) -> u32 {
+    if per_minute == 0 {
+        return 0;
+    }
+    if burst == 0 {
+        per_minute
+    } else {
+        burst
+    }
+}
+>>>>>>> mcoda/task/bck-05-us-09-t41
 
 #[derive(Error, Debug)]
 #[error("path must be relative and not contain parent components")]
@@ -589,13 +607,16 @@ pub async fn serve(
         .context("resolve repo root for MCP server")?;
     // Try to open with a writer; if the index is already locked (another docdexd
     // instance is indexing), fall back to read-only so search/open still work.
-    let indexer = match Indexer::with_config(repo_root.clone(), index_config.clone()) {
-        Ok(ix) => ix,
+    let (indexer, index_writer_available) = match Indexer::with_config(repo_root.clone(), index_config.clone()) {
+        Ok(ix) => (ix, true),
         Err(err) if is_lock_busy(&err) => {
             eprintln!(
                 "docdex mcp: index writer is busy; opening read-only (disable other docdexd to enable indexing)"
             );
-            Indexer::with_config_read_only(repo_root.clone(), index_config)?
+            (
+                Indexer::with_config_read_only(repo_root.clone(), index_config)?,
+                false,
+            )
         }
         Err(err) => return Err(err),
     };
@@ -625,12 +646,16 @@ pub async fn serve(
     } else {
         None
     };
+<<<<<<< HEAD
     let explainability = ExplainabilityStore::new(indexer.state_dir());
     let effective_burst = if rate_limit_per_min > 0 && rate_limit_burst == 0 {
         rate_limit_per_min
     } else {
         rate_limit_burst
     };
+=======
+    let effective_burst = effective_rate_limit_burst(rate_limit_per_min, rate_limit_burst);
+>>>>>>> mcoda/task/bck-05-us-09-t41
     let tool_rate_limit = if rate_limit_per_min > 0 {
         Some(RateLimiter::<()>::new(rate_limit_per_min, effective_burst))
     } else {
@@ -655,6 +680,10 @@ pub async fn serve(
         memory,
         explainability,
         tool_rate_limit,
+        rate_limit_per_min,
+        rate_limit_burst,
+        effective_rate_limit_burst: effective_burst,
+        index_writer_available,
     };
     server.run().await
 }
@@ -678,9 +707,98 @@ struct McpServer {
     memory: Option<McpMemoryState>,
     explainability: ExplainabilityStore,
     tool_rate_limit: Option<RateLimiter<()>>,
+    rate_limit_per_min: u32,
+    rate_limit_burst: u32,
+    effective_rate_limit_burst: u32,
+    index_writer_available: bool,
 }
 
 impl McpServer {
+    fn policy_snapshot(&self) -> serde_json::Value {
+        #[derive(Serialize)]
+        struct PolicySnapshot<'a> {
+            schema_version: u32,
+            rate_limit: RateLimitPolicy<'a>,
+            backoff: Vec<BackoffPolicy<'a>>,
+        }
+
+        #[derive(Serialize)]
+        struct RateLimitPolicy<'a> {
+            enabled: bool,
+            per_minute: u32,
+            burst: u32,
+            limit_key: &'a str,
+            scope: &'a str,
+            shared_across_tools: bool,
+            configured_per_minute: u32,
+            configured_burst: u32,
+            default_per_minute: u32,
+            default_burst: u32,
+            override_active: bool,
+        }
+
+        #[derive(Serialize)]
+        struct BackoffPolicy<'a> {
+            code: &'a str,
+            scope: &'a str,
+            reason: &'a str,
+            applies_to: &'a [&'a str],
+            active: bool,
+            retry_hint: BackoffRetryHint<'a>,
+        }
+
+        #[derive(Serialize)]
+        struct BackoffRetryHint<'a> {
+            kind: &'a str,
+            message: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            retry_after_ms: Option<u64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            retry_at: Option<String>,
+        }
+
+        let enabled = self.rate_limit_per_min > 0;
+        let override_active = self.rate_limit_per_min != MCP_RATE_LIMIT_DEFAULT_PER_MIN
+            || self.rate_limit_burst != MCP_RATE_LIMIT_DEFAULT_BURST;
+        let rate_limit = RateLimitPolicy {
+            enabled,
+            per_minute: self.rate_limit_per_min,
+            burst: if enabled {
+                self.effective_rate_limit_burst
+            } else {
+                0
+            },
+            limit_key: MCP_RATE_LIMIT_KEY,
+            scope: MCP_RATE_LIMIT_SCOPE,
+            shared_across_tools: true,
+            configured_per_minute: self.rate_limit_per_min,
+            configured_burst: self.rate_limit_burst,
+            default_per_minute: MCP_RATE_LIMIT_DEFAULT_PER_MIN,
+            default_burst: MCP_RATE_LIMIT_DEFAULT_BURST,
+            override_active,
+        };
+        let backoff = vec![BackoffPolicy {
+            code: ERR_BACKOFF_REQUIRED,
+            scope: "index_writer",
+            reason: "index_writer_unavailable",
+            applies_to: &["docdex_index"],
+            active: !self.index_writer_available,
+            retry_hint: BackoffRetryHint {
+                kind: "wait_for_lock",
+                message: "retry once indexing completes",
+                retry_after_ms: None,
+                retry_at: None,
+            },
+        }];
+
+        serde_json::to_value(PolicySnapshot {
+            schema_version: 1,
+            rate_limit,
+            backoff,
+        })
+        .expect("policy snapshot should serialize")
+    }
+
     async fn run(&mut self) -> Result<()> {
         let stdin = io::stdin();
         let stdout = io::stdout();
@@ -835,6 +953,7 @@ impl McpServer {
                     .protocol_version
                     .unwrap_or_else(|| "2024-11-05".to_string());
                 let instructions = "Use docdex_search to find repo-local docs before changing code.\nUse docdex_index to refresh the index if results seem stale.";
+                let policy = self.policy_snapshot();
                 let mut caps = json!({
                     "tools": { "listChanged": false },
                     "resources": { "listChanged": false },
@@ -855,6 +974,9 @@ impl McpServer {
                         "serverInfo": {
                             "name": "docdex-mcp",
                             "version": env!("CARGO_PKG_VERSION"),
+                            "docdex": {
+                                "policy": policy
+                            }
                         },
                         "capabilities": caps,
                         "instructions": instructions,
@@ -926,7 +1048,9 @@ impl McpServer {
                     }
                 };
                 if let Some(limiter) = self.tool_rate_limit.as_ref() {
-                    if let Err(err) = limiter.check_or_rate_limited((), "mcp_tools", "global") {
+                    if let Err(err) =
+                        limiter.check_or_rate_limited((), MCP_RATE_LIMIT_KEY, MCP_RATE_LIMIT_SCOPE)
+                    {
                         return Ok(Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,
                             id: id.clone(),

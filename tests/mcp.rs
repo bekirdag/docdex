@@ -199,6 +199,47 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
         Some(true),
         "initialize should advertise tools capability"
     );
+    let policy = init_resp
+        .get("result")
+        .and_then(|v| v.get("serverInfo"))
+        .and_then(|v| v.get("docdex"))
+        .and_then(|v| v.get("policy"))
+        .ok_or("initialize should include serverInfo.docdex.policy")?;
+    assert_eq!(
+        policy.get("schema_version").and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    let rate_limit = policy
+        .get("rate_limit")
+        .and_then(|v| v.as_object())
+        .ok_or("policy.rate_limit should be an object")?;
+    assert_eq!(
+        rate_limit.get("enabled").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        rate_limit.get("per_minute").and_then(|v| v.as_u64()),
+        Some(0)
+    );
+    assert_eq!(rate_limit.get("burst").and_then(|v| v.as_u64()), Some(0));
+    assert_eq!(
+        rate_limit.get("limit_key").and_then(|v| v.as_str()),
+        Some("mcp_tools")
+    );
+    assert_eq!(
+        rate_limit.get("scope").and_then(|v| v.as_str()),
+        Some("global")
+    );
+    let backoff = policy
+        .get("backoff")
+        .and_then(|v| v.as_array())
+        .ok_or("policy.backoff should be an array")?;
+    assert!(
+        backoff.iter().any(|entry| {
+            entry.get("code").and_then(|v| v.as_str()) == Some("backoff_required")
+        }),
+        "policy.backoff should advertise backoff_required"
+    );
 
     // tools/list
     send_line(

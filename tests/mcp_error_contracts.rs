@@ -1,10 +1,12 @@
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::error::Error;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -12,6 +14,8 @@ use tempfile::TempDir;
 fn docdex_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
+
+const MCP_RATE_LIMIT_PAYLOAD_MAX_BYTES: usize = 2048;
 
 struct McpHarness {
     child: std::process::Child,
@@ -150,6 +154,25 @@ fn mcp_error_data_code(resp: &Value) -> Option<&str> {
         .and_then(|v| v.as_str())
 }
 
+fn rate_limit_data_signature(data: &serde_json::Map<String, Value>) -> Vec<(String, &'static str)> {
+    let mut out: Vec<(String, &'static str)> = data
+        .iter()
+        .map(|(k, v)| {
+            let kind = match v {
+                Value::Null => "null",
+                Value::Bool(_) => "bool",
+                Value::Number(_) => "number",
+                Value::String(_) => "string",
+                Value::Array(_) => "array",
+                Value::Object(_) => "object",
+            };
+            (k.clone(), kind)
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
 #[test]
 fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
@@ -258,32 +281,147 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         .and_then(|v| v.as_object())
         .ok_or("rate-limit error missing error.data object (docdex_search)")?;
 
-    fn shape_signature(data: &serde_json::Map<String, Value>) -> Vec<(String, &'static str)> {
-        let mut out: Vec<(String, &'static str)> = data
-            .iter()
-            .map(|(k, v)| {
-                let kind = match v {
-                    Value::Null => "null",
-                    Value::Bool(_) => "bool",
-                    Value::Number(_) => "number",
-                    Value::String(_) => "string",
-                    Value::Array(_) => "array",
-                    Value::Object(_) => "object",
-                };
-                (k.clone(), kind)
-            })
-            .collect();
-        out.sort_by(|a, b| a.0.cmp(&b.0));
-        out
-    }
-
     assert_eq!(
-        shape_signature(data_files),
-        shape_signature(data_search),
+        rate_limit_data_signature(data_files),
+        rate_limit_data_signature(data_search),
         "rate-limit error schema should be identical across tools sharing the limiter"
     );
 
     mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_rate_limit_schema_is_stable_under_concurrent_tool_bursts() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let McpHarness {
+        mut child,
+        stdin,
+        mut reader,
+    } = McpHarness::spawn_with_env(
+        repo.path(),
+        &[
+            ("DOCDEX_MCP_RATE_LIMIT_PER_MIN", "60"),
+            ("DOCDEX_MCP_RATE_LIMIT_BURST", "2"),
+        ],
+    )?;
+
+    let threads = 32usize;
+    let barrier = Arc::new(Barrier::new(threads));
+    let stdin = Arc::new(Mutex::new(stdin));
+    let mut handles = Vec::with_capacity(threads);
+
+    for i in 0..threads {
+        let barrier = barrier.clone();
+        let stdin = stdin.clone();
+        handles.push(thread::spawn(move || -> Result<(), String> {
+            let id = (i + 1) as u64;
+            let payload = match i % 4 {
+                0 => json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "tools/call",
+                    "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1 } }
+                }),
+                1 => json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "tools/call",
+                    "params": { "name": "docdex_files", "arguments": {} }
+                }),
+                2 => json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "tools/call",
+                    "params": { "name": "docdex_stats", "arguments": {} }
+                }),
+                _ => json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "tools/call",
+                    "params": { "name": "docdex_open", "arguments": { "path": "docs/overview.md", "start_line": 1, "end_line": 3 } }
+                }),
+            };
+            barrier.wait();
+            let mut guard = stdin
+                .lock()
+                .map_err(|_| "stdin lock poisoned".to_string())?;
+            send_line(&mut *guard, payload).map_err(|err| err.to_string())?;
+            Ok(())
+        }));
+    }
+
+    for handle in handles {
+        handle.join().expect("thread panicked")?;
+    }
+
+    let allowed_keys: HashSet<&str> = [
+        "code",
+        "retry_after_ms",
+        "retry_at",
+        "limit_key",
+        "scope",
+    ]
+    .into_iter()
+    .collect();
+    let mut rate_limited = 0usize;
+    let mut schema_variants: HashSet<Vec<(String, &'static str)>> = HashSet::new();
+    for _ in 0..threads {
+        let resp = read_line(&mut reader)?;
+        if mcp_error_code(&resp) == Some(-32029) {
+            rate_limited += 1;
+            assert_eq!(mcp_error_data_code(&resp), Some("rate_limited"));
+            let data = resp
+                .get("error")
+                .and_then(|v| v.get("data"))
+                .and_then(|v| v.as_object())
+                .ok_or("rate-limit error missing error.data object")?;
+            for key in data.keys() {
+                if !allowed_keys.contains(key.as_str()) {
+                    return Err(format!("unexpected rate-limit data field: {key}").into());
+                }
+            }
+            assert_eq!(data.get("code").and_then(|v| v.as_str()), Some("rate_limited"));
+            assert!(
+                data.get("retry_after_ms").and_then(|v| v.as_u64()).is_some(),
+                "retry_after_ms must be an integer"
+            );
+            if let Some(retry_at) = data.get("retry_at") {
+                retry_at
+                    .as_str()
+                    .ok_or("retry_at must be a string when present")?;
+            }
+            assert_eq!(
+                data.get("limit_key").and_then(|v| v.as_str()),
+                Some("mcp_tools")
+            );
+            assert_eq!(data.get("scope").and_then(|v| v.as_str()), Some("global"));
+
+            schema_variants.insert(rate_limit_data_signature(data));
+            let payload_bytes = serde_json::to_vec(&resp)?;
+            assert!(
+                payload_bytes.len() <= MCP_RATE_LIMIT_PAYLOAD_MAX_BYTES,
+                "rate-limit rpc payload should remain small (got {} bytes)",
+                payload_bytes.len()
+            );
+        }
+    }
+
+    assert!(
+        rate_limited >= threads / 2,
+        "expected rate limiting under concurrency (got {rate_limited} out of {threads})"
+    );
+    assert_eq!(
+        schema_variants.len(),
+        1,
+        "rate-limit error schema should not vary across concurrent tools"
+    );
+
+    child.kill().ok();
+    child.wait().ok();
     Ok(())
 }
 

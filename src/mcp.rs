@@ -1081,6 +1081,14 @@ impl McpServer {
                         }))
                     }
                 };
+                if let Err(err) = self.check_tool_rate_limit() {
+                    return Ok(Some(RpcResponse {
+                        jsonrpc: JSONRPC_VERSION,
+                        id: id.clone(),
+                        result: None,
+                        error: Some(rpc_rate_limited(&err)),
+                    }));
+                }
                 match self.handle_resource_read(params).await {
                     Ok(value) => Ok(Some(RpcResponse {
                         jsonrpc: JSONRPC_VERSION,
@@ -1110,6 +1118,7 @@ impl McpServer {
                         }))
                     }
                 };
+<<<<<<< HEAD
                 if let Some(limiter) = self.tool_rate_limit.as_ref() {
                     if let Err(err) =
                         limiter.check_or_rate_limited((), MCP_RATE_LIMIT_KEY, MCP_RATE_LIMIT_SCOPE)
@@ -1121,6 +1130,15 @@ impl McpServer {
                             error: Some(rpc_rate_limited(&err, Some(params.name.as_str()))),
                         }));
                     }
+=======
+                if let Err(err) = self.check_tool_rate_limit() {
+                    return Ok(Some(RpcResponse {
+                        jsonrpc: JSONRPC_VERSION,
+                        id: id.clone(),
+                        result: None,
+                        error: Some(rpc_rate_limited(&err)),
+                    }));
+>>>>>>> mcoda/task/bck-05-us-09-t33
                 }
                 let result = match params.name.as_str() {
                     "docdex_search" | "docdex.search" => {
@@ -1456,6 +1474,13 @@ impl McpServer {
                 )),
             })),
         }
+    }
+
+    fn check_tool_rate_limit(&self) -> Result<(), RateLimited> {
+        if let Some(limiter) = self.tool_rate_limit.as_ref() {
+            limiter.check_or_rate_limited((), "mcp_tools", "global")?;
+        }
+        Ok(())
     }
 
     fn tool_defs(&self) -> Vec<ToolDefinition> {

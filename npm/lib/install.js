@@ -13,6 +13,7 @@ const crypto = require("node:crypto");
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 const util = require("node:util");
 =======
 const { execFile } = require("node:child_process");
@@ -36,6 +37,9 @@ const { promisify } = require("node:util");
 =======
 const { execFile } = require("node:child_process");
 >>>>>>> mcoda/task/ops-01-us-03-t06
+=======
+const { execFile } = require("node:child_process");
+>>>>>>> mcoda/task/ops-01-us-01-t41
 
 const pkg = require("../package.json");
 const {
@@ -67,6 +71,7 @@ const MAX_MANIFEST_BYTES = 1024 * 1024; // 1 MiB cap for safety
 const INVALID_JSON_ERROR = "invalid JSON";
 const INSTALL_METADATA_SCHEMA_VERSION = 2;
 const INSTALL_METADATA_FILENAME = "docdexd-install.json";
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -186,6 +191,9 @@ const execFileAsync = promisify(execFile);
 const VERSION_OUTPUT_REGEX = /\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/;
 const DEFAULT_VERSION_CHECK_TIMEOUT_MS = 5000;
 >>>>>>> mcoda/task/ops-01-us-03-t06
+=======
+const DEFAULT_SMOKE_TEST_TIMEOUT_MS = 5000;
+>>>>>>> mcoda/task/ops-01-us-01-t41
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -697,6 +705,47 @@ async function extractTarball(archivePath, targetDir) {
   await fs.promises.mkdir(targetDir, { recursive: true });
   // Security: do not preserve executable bits from the archive while staging.
   await tar.x({ file: archivePath, cwd: targetDir, gzip: true, noChmod: true });
+}
+
+async function smokeTestBinary({
+  binaryPath,
+  args,
+  timeoutMs,
+  details
+}) {
+  const smokeArgs = Array.isArray(args) && args.length ? args.slice() : ["--version"];
+  const timeout =
+    typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? timeoutMs
+      : DEFAULT_SMOKE_TEST_TIMEOUT_MS;
+
+  return new Promise((resolve, reject) => {
+    execFile(
+      binaryPath,
+      smokeArgs,
+      { timeout, windowsHide: true },
+      (err, stdout, stderr) => {
+        if (err) {
+          const message = `Installed binary failed smoke check: ${binaryPath} ${smokeArgs.join(" ")} (${err.message})`;
+          return reject(
+            new ArchiveInvalidError(message, {
+              ...(details || {}),
+              binaryPath,
+              smokeTest: {
+                args: smokeArgs,
+                timeoutMs: timeout,
+                errorCode: typeof err.code === "string" ? err.code : null,
+                signal: typeof err.signal === "string" ? err.signal : null,
+                stdout: typeof stdout === "string" ? stdout.trim() : null,
+                stderr: typeof stderr === "string" ? stderr.trim() : null
+              }
+            })
+          );
+        }
+        resolve({ stdout, stderr });
+      }
+    );
+  });
 }
 
 async function sha256File(filePath) {
@@ -4943,6 +4992,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   const execFileFn = opts.execFileFn || execFile;
   const readInstalledBinaryVersionFn =
     opts.readInstalledBinaryVersionFn ||
@@ -4976,6 +5026,14 @@ async function runInstaller(options) {
     ? opts.versionCheckTimeoutMs
     : DEFAULT_VERSION_CHECK_TIMEOUT_MS;
 >>>>>>> mcoda/task/ops-01-us-03-t06
+=======
+  const smokeTestBinaryFn = opts.smokeTestBinaryFn || smokeTestBinary;
+  const smokeTestArgs = opts.smokeTestArgs || ["--version"];
+  const smokeTestTimeoutMs =
+    typeof opts.smokeTestTimeoutMs === "number" && Number.isFinite(opts.smokeTestTimeoutMs)
+      ? opts.smokeTestTimeoutMs
+      : DEFAULT_SMOKE_TEST_TIMEOUT_MS;
+>>>>>>> mcoda/task/ops-01-us-01-t41
 
   const detectedPlatform = opts.platform || process.platform;
   const detectedArch = opts.arch || process.arch;
@@ -5013,11 +5071,18 @@ async function runInstaller(options) {
   const platformKey = platformPolicy.platformKey;
   const targetTriple = platformPolicy.targetTriple;
 <<<<<<< HEAD
+<<<<<<< HEAD
   const detectedLibc = platformPolicy?.detected?.libc ?? null;
 =======
   const detectedLibc =
     typeof platformKey === "string" && platformKey.startsWith("linux-") ? platformKey.split("-")[2] : null;
 >>>>>>> mcoda/task/ops-01-us-02-t14
+=======
+  const expectedAssetName =
+    typeof platformPolicy.expectedAssetName === "string" && platformPolicy.expectedAssetName.trim()
+      ? platformPolicy.expectedAssetName
+      : artifactNameFn(platformKey);
+>>>>>>> mcoda/task/ops-01-us-01-t41
   const version = getVersionFn();
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5073,6 +5138,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   await cleanupStagingArtifacts({
     fsModule,
     pathModule,
@@ -5098,6 +5164,15 @@ async function runInstaller(options) {
 
 =======
   const discoveredInstalledState = await discoverInstalledState({
+=======
+  logger.log(`[docdex] Detected platform: ${detectedPlatform}/${detectedArch}`);
+  logger.log(`[docdex] Platform key: ${platformKey}`);
+  logger.log(`[docdex] Target triple: ${targetTriple}`);
+  logger.log(`[docdex] Resolved daemon version: v${version}`);
+  logger.log(`[docdex] Resolved release asset: ${expectedAssetName}`);
+
+  const local = await determineLocalInstallerOutcome({
+>>>>>>> mcoda/task/ops-01-us-01-t41
     fsModule,
     pathModule,
     distDir,
@@ -5634,6 +5709,7 @@ async function runInstaller(options) {
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   const { archive, expectedSha256, source, manifestAttempt } = plan;
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5720,6 +5796,12 @@ async function runInstaller(options) {
   logger.log(`[docdex] Resolved daemon asset: ${archive}`);
 
 >>>>>>> mcoda/task/ops-01-us-01-t13
+=======
+  if (archive && archive !== expectedAssetName) {
+    logger.log(`[docdex] Resolved release asset (manifest): ${archive}`);
+  }
+
+>>>>>>> mcoda/task/ops-01-us-01-t41
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
 <<<<<<< HEAD
   const tmpDir = opts.tmpDir || osModule.tmpdir();
@@ -7196,7 +7278,30 @@ async function runInstaller(options) {
       );
     }
 
+<<<<<<< HEAD
 >>>>>>> mcoda/task/ops-01-us-03-t06
+=======
+    await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
+    await smokeTestBinaryFn({
+      binaryPath,
+      args: smokeTestArgs,
+      timeoutMs: smokeTestTimeoutMs,
+      details: {
+        platformKey,
+        targetTriple,
+        version,
+        repoSlug,
+        assetName: archive,
+        downloadUrl,
+        source,
+        manifestName: manifestAttempt?.manifestName ?? null,
+        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+        fallbackAttempted: source === "fallback"
+      }
+    });
+    logger.log(`[docdex] Installed binary to ${binaryPath}`);
+
+>>>>>>> mcoda/task/ops-01-us-01-t41
     const binarySha256 = await sha256FileFn(binaryPath);
     const versionProbe =
       typeof probeVersionFn === "function"

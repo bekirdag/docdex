@@ -42,6 +42,7 @@ function createNoopLogger() {
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 async function readBinaryVersionStub({ expectedVersion }) {
   return { version: expectedVersion, output: `docdexd ${expectedVersion}` };
 =======
@@ -74,6 +75,9 @@ function createSequencedVersionDetector(versions) {
   };
 >>>>>>> mcoda/task/ops-01-us-03-t06
 }
+=======
+const noopSmokeTest = async () => {};
+>>>>>>> mcoda/task/ops-01-us-01-t41
 
 async function ensureDir(dirPath) {
   await fs.promises.mkdir(dirPath, { recursive: true });
@@ -208,7 +212,12 @@ test("installer outcome: no-op skips plan/download when local install is verifie
 
   const { logger, logs } = createCapturingLogger();
   const result = await runInstaller({
+<<<<<<< HEAD
     logger,
+=======
+    logger: createNoopLogger(),
+    smokeTestBinaryFn: noopSmokeTest,
+>>>>>>> mcoda/task/ops-01-us-01-t41
     platform: "linux",
     arch: "x64",
 <<<<<<< HEAD
@@ -513,9 +522,15 @@ test("installer outcome: downgrade installs when expected version is older and w
 
   let downloadUrl = null;
   let downloadDest = null;
+  let smokeCalls = 0;
+  let smokeBinaryPath = null;
 
   const result = await runInstaller({
     logger: createNoopLogger(),
+    smokeTestBinaryFn: async ({ binaryPath }) => {
+      smokeCalls += 1;
+      smokeBinaryPath = binaryPath;
+    },
     platform: "linux",
     arch: "x64",
     tmpDir,
@@ -1288,6 +1303,12 @@ test("installer outcome: update installs when installed version is newer", async
   });
 
   assert.equal(result.outcome, "update");
+<<<<<<< HEAD
+=======
+  assert.equal(smokeCalls, 1);
+  assert.equal(smokeBinaryPath, path.join(distDir, "docdexd"));
+
+>>>>>>> mcoda/task/ops-01-us-01-t41
   const metadataPath = path.join(distDir, "docdexd-install.json");
   const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
   assert.equal(meta.version, expectedVersion);
@@ -1404,6 +1425,7 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
 
   const result = await runInstaller({
     logger: createNoopLogger(),
+    smokeTestBinaryFn: noopSmokeTest,
     platform: "linux",
     arch: "x64",
     tmpDir,
@@ -1489,6 +1511,7 @@ test("installer lifecycle: reinstall_unknown does not restart when binary is unc
 
   const result = await runInstaller({
     logger: createNoopLogger(),
+    smokeTestBinaryFn: noopSmokeTest,
     platform: "linux",
     arch: "x64",
     tmpDir,
@@ -1967,6 +1990,7 @@ test("installer recovery: restores backup before no-op decision", async (t) => {
 
   const result = await runInstaller({
     logger: createNoopLogger(),
+    smokeTestBinaryFn: noopSmokeTest,
     platform: "linux",
     arch: "x64",
     distBaseDir,

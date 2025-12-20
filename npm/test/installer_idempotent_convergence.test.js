@@ -29,9 +29,13 @@ function createNoopLogger() {
   };
 }
 
+<<<<<<< HEAD
 function createVersionDetector(version) {
   return async () => ({ version, raw: `docdexd ${version}`, error: null });
 }
+=======
+const noopSmokeTest = async () => {};
+>>>>>>> mcoda/task/ops-01-us-01-t41
 
 async function ensureDir(dirPath) {
   await fs.promises.mkdir(dirPath, { recursive: true });
@@ -101,6 +105,7 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
 
   const first = await runInstaller({
     logger: createNoopLogger(),
+    smokeTestBinaryFn: noopSmokeTest,
     platform: "linux",
     arch: "x64",
     tmpDir,
@@ -154,6 +159,7 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
 
   const second = await runInstaller({
     logger: createNoopLogger(),
+    smokeTestBinaryFn: noopSmokeTest,
     platform: "linux",
     arch: "x64",
     tmpDir,
@@ -201,6 +207,7 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
   assert.equal(metadataAfterSecond, metadataAfterFirst);
   assert.equal(binaryAfterSecond, binaryAfterFirst);
 });
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -910,3 +917,5 @@ test("installer: repair then converges to no-op without re-download", async (t) 
 >>>>>>> mcoda/task/ops-01-us-03-t44
 =======
 >>>>>>> mcoda/task/ops-01-us-03-t06
+=======
+>>>>>>> mcoda/task/ops-01-us-01-t41

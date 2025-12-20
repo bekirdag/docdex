@@ -30,9 +30,13 @@ function createNoopLogger() {
   };
 }
 
+<<<<<<< HEAD
 function createVersionDetector(version) {
   return async () => ({ version, raw: `docdexd ${version}`, error: null });
 }
+=======
+const noopSmokeTest = async () => {};
+>>>>>>> mcoda/task/ops-01-us-01-t41
 
 async function ensureParentDir(filePath) {
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
@@ -82,6 +86,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 
       const result = await runInstaller({
         logger: createNoopLogger(),
+        smokeTestBinaryFn: noopSmokeTest,
         platform: entry.platform,
         arch: entry.arch,
         tmpDir,

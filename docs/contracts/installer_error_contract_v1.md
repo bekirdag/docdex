@@ -136,7 +136,11 @@ If all fallback paths fail (e.g., checksums are also unavailable), the resulting
 - `DOCDEX_INTEGRITY_MISMATCH` → exit `22`
   - SHA-256 verification failed for the downloaded archive.
 - `DOCDEX_ARCHIVE_INVALID` → exit `23`
+<<<<<<< HEAD
   - Archive extracted but the expected binary is missing or reports an unexpected version.
+=======
+  - Archive extracted but the expected binary is missing or fails the smoke check (`--version`).
+>>>>>>> mcoda/task/ops-01-us-01-t41
 - `DOCDEX_CHECKSUM_UNUSABLE` → exit `24`
   - The installer could not obtain SHA-256 integrity metadata for the selected asset (manifest missing/unusable and checksum fallback missing/malformed).
 <<<<<<< HEAD

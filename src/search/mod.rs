@@ -1,5 +1,6 @@
 use crate::index::{
-    DocSnapshot, Hit, Indexer, SearchError, SearchQueryMeta, SnippetOrigin, SnippetResult,
+    DocSnapshot, Hit, Indexer, RunSummaryResponse, SearchError, SearchQueryMeta, SnippetOrigin,
+    SnippetResult,
 };
 use crate::error::{
     AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
@@ -179,6 +180,7 @@ pub fn router(state: AppState) -> Router {
         .route("/search", get(search_handler))
         .route("/snippet/*doc_id", get(snippet_handler))
         .route("/v1/graph/impact", get(impact_graph_handler))
+        .route("/v1/stats", get(stats_handler))
         .route("/v1/memory/store", post(memory_store_handler))
         .route("/v1/memory/recall", post(memory_recall_handler))
         .route("/ai-help", get(ai_help_handler))
@@ -630,6 +632,49 @@ async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     state.metrics.render_prometheus()
 }
 
+async fn stats_handler(
+    State(state): State<AppState>,
+    Query(params): Query<StatsParams>,
+) -> impl IntoResponse {
+    let stats = match state.indexer.stats() {
+        Ok(stats) => stats,
+        Err(err) => {
+            state.metrics.inc_error();
+            warn!(target: "docdexd", error = ?err, "stats read failed");
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "stats unavailable",
+            );
+        }
+    };
+    let run_summaries = match state.indexer.run_summaries(params.runs_limit) {
+        Ok(summaries) => summaries,
+        Err(err) => {
+            state.metrics.inc_error();
+            warn!(target: "docdexd", error = ?err, "run summaries read failed");
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "stats unavailable",
+            );
+        }
+    };
+    Json(StatsResponse {
+        num_docs: stats.num_docs,
+        state_dir: stats.state_dir.display().to_string(),
+        index_size_bytes: stats.index_size_bytes,
+        segments: stats.segments,
+        avg_bytes_per_doc: stats.avg_bytes_per_doc,
+        generated_at_epoch_ms: stats.generated_at_epoch_ms,
+        last_updated_epoch_ms: stats.last_updated_epoch_ms,
+        symbols_enabled: state.indexer.config().symbols_enabled(),
+        symbols_store_ready: state.indexer.symbols_store_ready(),
+        run_summaries,
+        repo_root: state.indexer.repo_root().display().to_string(),
+    })
+}
+
 #[derive(Serialize)]
 struct AiHelpEndpoint {
     method: &'static str,
@@ -720,6 +765,12 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 ],
             },
             AiHelpEndpoint {
+                method: "GET",
+                path: "/v1/stats",
+                description: "Report index metadata, symbols enablement, and recent run summaries (max 20 runs; sample lists capped at 25; error summaries truncated to 240 chars).",
+                params: &["runs_limit=<int optional, max 20, clamped>"],
+            },
+            AiHelpEndpoint {
                 method: "POST",
                 path: "/v1/memory/store",
                 description: "Store a memory item (requires --enable-memory=true).",
@@ -753,6 +804,11 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 command: "docdexd query --repo <path> --query \"text\" [--limit 8]",
                 description: "Ad-hoc search via CLI (JSON to stdout).",
                 example: "docdexd query --repo /workspace --query \"payment flow\" --limit 5",
+            },
+            AiHelpCli {
+                command: "docdexd stats --repo <path> [--runs-limit 5]",
+                description: "Report index metadata, symbols enablement, and recent run summaries (runs clamped to 20).",
+                example: "docdexd stats --repo /workspace --runs-limit 5",
             },
             AiHelpCli {
                 command: "docdexd ingest --repo <path> --file <file>",
@@ -792,9 +848,24 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             },
             AiHelpMcpTool {
                 name: "docdex_stats",
-                description: "Report index metadata.",
-                args: &["project_root (string, optional)"],
-                returns: &["num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "repo_root"],
+                description: "Report index metadata, symbols enablement, and recent run summaries (max 20 runs; sample lists capped at 25; error summaries truncated to 240 chars).",
+                args: &[
+                    "project_root (string, optional)",
+                    "runs_limit (int, optional, max 20, clamped)",
+                ],
+                returns: &[
+                    "num_docs",
+                    "state_dir",
+                    "index_size_bytes",
+                    "segments",
+                    "avg_bytes_per_doc",
+                    "generated_at_epoch_ms",
+                    "last_updated_epoch_ms",
+                    "symbols_enabled",
+                    "symbols_store_ready",
+                    "run_summaries",
+                    "repo_root",
+                ],
             },
             AiHelpMcpTool {
                 name: "docdex_memory_store",
@@ -840,10 +911,34 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             "avg_bytes_per_doc",
             "generated_at_epoch_ms",
             "last_updated_epoch_ms",
+            "symbols_enabled",
+            "symbols_store_ready",
+            "run_summaries",
             "repo_root",
         ],
     };
     Json(payload)
+}
+
+#[derive(Deserialize)]
+struct StatsParams {
+    #[serde(default)]
+    runs_limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct StatsResponse {
+    num_docs: u64,
+    state_dir: String,
+    index_size_bytes: u64,
+    segments: usize,
+    avg_bytes_per_doc: Option<u64>,
+    generated_at_epoch_ms: u128,
+    last_updated_epoch_ms: Option<u128>,
+    symbols_enabled: bool,
+    symbols_store_ready: bool,
+    run_summaries: RunSummaryResponse,
+    repo_root: String,
 }
 
 #[derive(Deserialize)]

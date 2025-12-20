@@ -357,6 +357,8 @@ struct IndexArgs {
 struct StatsArgs {
     #[serde(default)]
     project_root: Option<PathBuf>,
+    #[serde(default)]
+    runs_limit: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -1204,11 +1206,12 @@ impl McpServer {
             ToolDefinition {
                 name: "docdex_stats",
                 description:
-                    "Inspect index metadata: doc count, state dir, size on disk, and last update time.",
+                    "Inspect index metadata, symbols enablement, and recent run summaries (max 20 runs; sample lists capped at 25; error summaries truncated to 240 chars).",
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
+                        "runs_limit": { "type": "integer", "minimum": 1, "maximum": crate::index::RUN_SUMMARY_MAX_LIMIT as i64, "default": crate::index::RUN_SUMMARY_DEFAULT_LIMIT, "description": "Max run summaries to return (clamped)" }
                     }
                 }),
             },
@@ -1314,7 +1317,7 @@ impl McpServer {
     async fn handle_index(&mut self, args: IndexArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
         if args.paths.is_empty() {
-            self.indexer.reindex_all().await?;
+            let _ = self.indexer.reindex_all_with_summary().await?;
             return Ok(json!({
                 "status": "ok",
                 "action": "reindex_all",
@@ -1337,7 +1340,7 @@ impl McpServer {
                 self.repo_root.join(path)
             };
             let path_display = resolved.display().to_string();
-            let decision = self.indexer.ingest_file(resolved.clone()).await?;
+            let (decision, _summary) = self.indexer.ingest_file_with_summary(resolved.clone()).await?;
             ingested.push(resolved);
             decisions.push(json!({
                 "path": path_display,
@@ -1385,6 +1388,7 @@ impl McpServer {
     async fn handle_stats(&self, args: StatsArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
         let stats = self.indexer.stats()?;
+        let run_summaries = self.indexer.run_summaries(args.runs_limit)?;
         Ok(json!({
             "num_docs": stats.num_docs,
             "state_dir": stats.state_dir.display().to_string(),
@@ -1393,6 +1397,9 @@ impl McpServer {
             "avg_bytes_per_doc": stats.avg_bytes_per_doc,
             "generated_at_epoch_ms": stats.generated_at_epoch_ms,
             "last_updated_epoch_ms": stats.last_updated_epoch_ms,
+            "symbols_enabled": self.indexer.config().symbols_enabled(),
+            "symbols_store_ready": self.indexer.symbols_store_ready(),
+            "run_summaries": run_summaries,
             "repo_root": self.repo_root.display().to_string(),
             "project_root": self
                 .default_project_root

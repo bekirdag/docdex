@@ -4,7 +4,7 @@ use crate::index::{
 use crate::error::{
     AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    ERR_RATE_LIMITED,
+    ERR_MISSING_INDEX, ERR_RATE_LIMITED, ERR_STALE_INDEX,
 };
 use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
@@ -430,6 +430,8 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_EMBEDDING_FAILED => StatusCode::BAD_GATEWAY,
         ERR_INVALID_ARGUMENT => StatusCode::BAD_REQUEST,
         ERR_MEMORY_DISABLED => StatusCode::CONFLICT,
+        ERR_MISSING_INDEX => StatusCode::CONFLICT,
+        ERR_STALE_INDEX => StatusCode::CONFLICT,
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -440,6 +442,21 @@ fn json_error(status: StatusCode, code: &'static str, message: impl Into<String>
         status,
         Json(ErrorBody {
             error: ErrorDetail::new(code, message),
+        }),
+    )
+        .into_response()
+}
+
+fn json_error_with_details(
+    status: StatusCode,
+    code: &'static str,
+    message: impl Into<String>,
+    details: Option<serde_json::Value>,
+) -> Response {
+    (
+        status,
+        Json(ErrorBody {
+            error: ErrorDetail::new(code, message).with_details(details),
         }),
     )
         .into_response()
@@ -952,6 +969,8 @@ struct ErrorDetail {
     limit_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<serde_json::Value>,
 }
 
 impl ErrorDetail {
@@ -963,7 +982,13 @@ impl ErrorDetail {
             retry_at: None,
             limit_key: None,
             scope: None,
+            details: None,
         }
+    }
+
+    fn with_details(mut self, details: Option<serde_json::Value>) -> Self {
+        self.details = details;
+        self
     }
 
     fn rate_limited(err: &RateLimited) -> Self {
@@ -974,6 +999,7 @@ impl ErrorDetail {
             retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
             limit_key: Some(err.limit_key.clone()),
             scope: Some(err.scope.clone()),
+            details: None,
         }
     }
 }
@@ -1371,6 +1397,14 @@ async fn search_handler(
                 )
                     .into_response();
             }
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                return json_error_with_details(
+                    status_for_app_error(app.code),
+                    app.code,
+                    app.message.clone(),
+                    app.details.clone(),
+                );
+            }
             state.metrics.inc_error();
             warn!(
                 target: "docdexd",
@@ -1461,6 +1495,14 @@ async fn snippet_handler(
         })
         .into_response(),
         Err(err) => {
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                return json_error_with_details(
+                    status_for_app_error(app.code),
+                    app.code,
+                    app.message.clone(),
+                    app.details.clone(),
+                );
+            }
             state.metrics.inc_error();
             warn!(
                 target: "docdexd",

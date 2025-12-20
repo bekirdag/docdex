@@ -1384,7 +1384,7 @@ impl McpServer {
 
     async fn handle_stats(&self, args: StatsArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
-        let stats = self.indexer.stats()?;
+        let stats = self.indexer.stats_checked()?;
         Ok(json!({
             "num_docs": stats.num_docs,
             "state_dir": stats.state_dir.display().to_string(),

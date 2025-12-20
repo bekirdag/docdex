@@ -27,7 +27,7 @@ On failure, the MCP server returns a JSON-RPC error response:
 - `message` (string, required): short summary message (often mirrors `error.message`).
 - `reason` (string, optional): a more specific reason (typically an underlying error string).
 - `tool` (string, optional): tool name (for `tools/call` failures), e.g. `docdex_search`.
-- `details` (object, optional): structured context (limits, fields, expected/got, etc). For repo move/rename/mismatch errors, `details` may include `normalizedPath`, `attemptedFingerprint`, `knownCanonicalPath`, and `recoverySteps` (often including `docdexd repo inspect` for diagnostics and `docdexd repo reassociate` for moved repos under shared state dirs).
+- `details` (object, optional): structured context (limits, fields, expected/got, etc). For repo move/rename/mismatch errors, `details` may include `normalizedPath`, `attemptedFingerprint`, `knownCanonicalPath`, and `recoverySteps` (often including `docdexd repo inspect` for diagnostics and `docdexd repo reassociate` for moved repos under shared state dirs). For index-state errors, `details` may include `stateDir`, `repoRoot`, `staleReason`, `indexLastUpdatedEpochMs`, `repoLastModifiedEpochMs`, `hint`, and `recoverySteps`.
 - `error` (object, required): the canonical envelope, containing the same fields as above (`code/message/reason/tool/details`).
 
 Compatibility guidance for clients:
@@ -55,7 +55,7 @@ These codes are the **required** set for repo/index/dependency failures and are 
 - `unknown_repo`: provided repo context does not match the server’s configured repo root.
 - `repo_state_mismatch`: per-repo state cannot be safely associated (fingerprint/meta/registry mismatch); Docdex must fast-fail to prevent cross-repo mixing.
 - `missing_index`: on-disk index is not present (e.g. `docdexd query` before indexing).
-- `stale_index`: index exists but is known to be stale (reserved for future use).
+- `stale_index`: index exists but is stale (repo contents modified after last index, or legacy index missing index-state metadata).
 - `missing_dependency`: a required optional feature/dependency is disabled (e.g. symbols extraction disabled).
 - `rate_limited`: request rejected due to rate limiting (reserved for future use in MCP).
 - `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable).
@@ -99,12 +99,20 @@ Diagnostics:
 
 - For these errors, `error.data.details` may include `normalizedPath`, `attemptedFingerprint`, `knownCanonicalPath`, and a `recoverySteps` array intended to be directly actionable in UX.
 
+## Index-state errors (missing/stale)
+
+Docdex fast-fails on missing or stale index state to avoid serving out-of-date results. These errors include actionable hints and recovery steps (no auto-fixing).
+
+- `missing_index`: `details` includes `stateDir`, `repoRoot`, `hint`, and `recoverySteps`.
+- `stale_index`: `details` includes `stateDir`, `repoRoot`, `staleReason`, optional `indexLastUpdatedEpochMs`, optional `repoLastModifiedEpochMs`, plus `hint` and `recoverySteps`.
+  - `staleReason` values: `index_state_missing` (legacy index without state metadata) or `repo_modified_since_index`.
+
 ## Parity mapping (HTTP / CLI / MCP)
 
 Docdex presents the same underlying failures in three different wrappers:
 
-- **HTTP daemon**: JSON error body (where implemented) is `{ "error": { "code": "<docdex_code>", "message": "<string>" } }`.
-- **CLI**: non-zero exit (currently always `1`) and a JSON error line to `stderr` when the error is a `StartupError`/`AppError` (same `{error:{code,message}}` shape as HTTP).
+- **HTTP daemon**: JSON error body (where implemented) is `{ "error": { "code": "<docdex_code>", "message": "<string>", "details"?: { ... } } }`.
+- **CLI**: non-zero exit (currently always `1`) and a JSON error line to `stderr` when the error is a `StartupError`/`AppError` (same `{error:{code,message,details?}}` shape as HTTP).
 - **MCP**: JSON-RPC error with Docdex code in `error.data.code`.
 
 ### Mapping table (common failures)
@@ -115,8 +123,8 @@ Docdex presents the same underlying failures in three different wrappers:
 | Repo path missing on disk | `missing_repo_path` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"missing_repo_path",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"missing_repo_path",...}}` |
 | Repo mismatch (`project_root` does not match server repo) | `unknown_repo` | `-32602` | N/A (daemon is started per-repo) | N/A (CLI always has `--repo`; mismatch is not represented) |
 | Repo state mismatch (unsafe to associate state) | `repo_state_mismatch` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"repo_state_mismatch",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"repo_state_mismatch",...}}` |
-| Index missing (query/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
-| Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Not currently emitted by the per-repo CLI |
+| Index missing (query/open without prior `index`) | `missing_index` | `-32602` | `409` with JSON `{error:{code:"missing_index",message,details}}` (if index is missing) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",message,details}}` |
+| Index stale | `stale_index` | `-32602` | `409` with JSON `{error:{code:"stale_index",message,details}}` | Exit `1`, `stderr` JSON `{error:{code:"stale_index",message,details}}` |
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |
 | Rate limited | `rate_limited` | `-32602` | `429` (security middleware returns status-only; no JSON envelope) | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
 | Optional dependency disabled (e.g. symbols) | `missing_dependency` | `-32602` | N/A (no HTTP endpoint for MCP symbols) | N/A (no CLI symbols command) |

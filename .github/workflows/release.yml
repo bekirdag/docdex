@@ -269,6 +269,10 @@ jobs:
         working-directory: npm
         run: npm pack --ignore-scripts
 
+      - name: Verify npm tarball excludes native binaries
+        working-directory: npm
+        run: npm run pack:verify
+
       - name: Publish to npm
         working-directory: npm
         env:

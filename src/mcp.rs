@@ -21,6 +21,7 @@ use tantivy::directory::error::LockError;
 use tantivy::TantivyError;
 use thiserror::Error;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use walkdir::WalkDir;
 
 const JSONRPC_VERSION: &str = "2.0";
 const ERR_PARSE: i32 = -32700;
@@ -71,6 +72,41 @@ struct MissingSymbolsDependencyError;
 #[error("no symbols record found for {rel_path}; run docdex_index")]
 struct MissingSymbolsIndexError {
     rel_path: String,
+}
+
+#[derive(Default)]
+struct RepoIndexScan {
+    indexable_files: u64,
+    latest_mtime_epoch_ms: Option<u128>,
+}
+
+fn scan_repo_indexable_files(repo_root: &Path, config: &IndexConfig) -> RepoIndexScan {
+    let mut scan = RepoIndexScan::default();
+    for entry in WalkDir::new(repo_root).into_iter().filter_map(|entry| entry.ok()) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if !crate::index::should_index(path, repo_root, config) {
+            continue;
+        }
+        scan.indexable_files = scan.indexable_files.saturating_add(1);
+        if let Ok(meta) = entry.metadata() {
+            if let Ok(modified) = meta.modified() {
+                if let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
+                    let millis = dur.as_millis();
+                    if scan
+                        .latest_mtime_epoch_ms
+                        .map(|current| millis > current)
+                        .unwrap_or(true)
+                    {
+                        scan.latest_mtime_epoch_ms = Some(millis);
+                    }
+                }
+            }
+        }
+    }
+    scan
 }
 
 fn mcp_error_data(
@@ -1276,6 +1312,7 @@ impl McpServer {
 
     async fn handle_search(&self, args: SearchArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_index_ready()?;
         let query = args.query.trim();
         let limit = args
             .limit
@@ -1361,6 +1398,7 @@ impl McpServer {
 
     async fn handle_files(&self, args: FilesArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_index_ready()?;
         let limit = args
             .limit
             .unwrap_or(FILES_DEFAULT_LIMIT)
@@ -1384,6 +1422,7 @@ impl McpServer {
 
     async fn handle_stats(&self, args: StatsArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_index_ready()?;
         let stats = self.indexer.stats()?;
         Ok(json!({
             "num_docs": stats.num_docs,
@@ -1414,6 +1453,7 @@ impl McpServer {
 
     async fn handle_open(&self, args: OpenArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_index_ready()?;
         let rel_path = normalize_rel_path(&args.path).ok_or(InvalidPathError)?;
         let abs_path = self.repo_root.join(&rel_path);
         let canonical = abs_path
@@ -1480,6 +1520,7 @@ impl McpServer {
 
     async fn handle_symbols(&self, args: SymbolsArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_index_ready()?;
         if !self.indexer.config().symbols_enabled() {
             return Err(MissingSymbolsDependencyError.into());
         }
@@ -1636,6 +1677,110 @@ impl McpServer {
         }
         if let Some(default_root) = self.default_project_root.as_ref() {
             return self.ensure_same_repo(default_root);
+        }
+        Ok(())
+    }
+
+    fn index_recovery_steps(&self) -> Vec<String> {
+        vec![
+            "Run `docdex_index` (empty `paths`) to build or refresh the index.".to_string(),
+            format!(
+                "CLI alternative: `docdexd index --repo {}`",
+                self.repo_root.display()
+            ),
+        ]
+    }
+
+    fn index_state_details(
+        &self,
+        stats: Option<&crate::index::IndexStats>,
+        scan: &RepoIndexScan,
+    ) -> serde_json::Value {
+        let mut details = serde_json::Map::new();
+        details.insert(
+            "repo_root".to_string(),
+            json!(self.repo_root.display().to_string()),
+        );
+        details.insert(
+            "state_dir".to_string(),
+            json!(self.indexer.config().state_dir().display().to_string()),
+        );
+        details.insert(
+            "repo_indexable_files".to_string(),
+            json!(scan.indexable_files),
+        );
+        if let Some(mtime) = scan.latest_mtime_epoch_ms {
+            details.insert("repo_last_modified_epoch_ms".to_string(), json!(mtime));
+        }
+        if let Some(stats) = stats {
+            details.insert("index_doc_count".to_string(), json!(stats.num_docs));
+            details.insert("index_segments".to_string(), json!(stats.segments));
+            if let Some(last_updated) = stats.last_updated_epoch_ms {
+                details.insert(
+                    "index_last_updated_epoch_ms".to_string(),
+                    json!(last_updated),
+                );
+            }
+        }
+        details.insert(
+            "recoverySteps".to_string(),
+            serde_json::Value::Array(
+                self.index_recovery_steps()
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            ),
+        );
+        serde_json::Value::Object(details)
+    }
+
+    fn ensure_index_ready(&self) -> Result<()> {
+        let state_dir = self.indexer.config().state_dir();
+        let scan = scan_repo_indexable_files(self.indexer.repo_root(), self.indexer.config());
+        if !state_dir.exists() {
+            return Err(
+                AppError::new(
+                    ERR_MISSING_INDEX,
+                    format!(
+                        "index state dir not found at {}; run `docdex_index` or `docdexd index --repo {}`",
+                        state_dir.display(),
+                        self.repo_root.display()
+                    ),
+                )
+                .with_details(self.index_state_details(None, &scan))
+                .into(),
+            );
+        }
+        let stats = self.indexer.stats()?;
+        if stats.num_docs == 0 && scan.indexable_files > 0 {
+            return Err(
+                AppError::new(
+                    ERR_MISSING_INDEX,
+                    format!(
+                        "index has no documents; run `docdex_index` or `docdexd index --repo {}`",
+                        self.repo_root.display()
+                    ),
+                )
+                .with_details(self.index_state_details(Some(&stats), &scan))
+                .into(),
+            );
+        }
+        if let (Some(index_updated), Some(repo_latest)) =
+            (stats.last_updated_epoch_ms, scan.latest_mtime_epoch_ms)
+        {
+            if repo_latest > index_updated {
+                return Err(
+                    AppError::new(
+                        ERR_STALE_INDEX,
+                        format!(
+                            "index is stale; run `docdex_index` or `docdexd index --repo {}`",
+                            self.repo_root.display()
+                        ),
+                    )
+                    .with_details(self.index_state_details(Some(&stats), &scan))
+                    .into(),
+                );
+            }
         }
         Ok(())
     }

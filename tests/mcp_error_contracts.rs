@@ -464,6 +464,89 @@ fn search_hit_ids(
 }
 
 #[test]
+fn mcp_missing_index_returns_actionable_hint() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let mut mcp = McpHarness::spawn(repo.path())?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1 } }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("missing_index"));
+    let details = resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("details"))
+        .ok_or("missing_index should include details")?;
+    let steps = details
+        .get("recoverySteps")
+        .and_then(|v| v.as_array())
+        .ok_or("missing_index details should include recoverySteps")?;
+    assert!(
+        steps
+            .iter()
+            .any(|v| v.as_str().unwrap_or_default().contains("docdexd index")),
+        "expected recoverySteps to mention docdexd index; got: {details}"
+    );
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_stale_index_returns_actionable_hint() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let state_path = repo
+        .path()
+        .join(".docdex")
+        .join("index")
+        .join("index_state.json");
+    let mut state: Value = serde_json::from_str(&std::fs::read_to_string(&state_path)?)?;
+    state["status"] = Value::String("stale".to_string());
+    std::fs::write(&state_path, serde_json::to_string_pretty(&state)?)?;
+
+    let mut mcp = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1 } }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("stale_index"));
+    let details = resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("details"))
+        .ok_or("stale_index should include details")?;
+    let steps = details
+        .get("recoverySteps")
+        .and_then(|v| v.as_array())
+        .ok_or("stale_index details should include recoverySteps")?;
+    assert!(
+        steps
+            .iter()
+            .any(|v| v.as_str().unwrap_or_default().contains("docdexd index")),
+        "expected recoverySteps to mention docdexd index; got: {details}"
+    );
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
 fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;

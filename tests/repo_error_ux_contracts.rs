@@ -209,6 +209,7 @@ fn cli_repo_state_mismatch_fast_fails_with_fingerprint_and_guidance() -> Result<
 }
 
 #[test]
+<<<<<<< HEAD
 fn cli_repo_state_meta_drift_fails_closed() -> Result<(), Box<dyn Error>> {
     let workspace = TempDir::new()?;
     let state_root = TempDir::new()?;
@@ -255,36 +256,64 @@ fn cli_repo_state_meta_drift_fails_closed() -> Result<(), Box<dyn Error>> {
     let obj = meta.as_object_mut().ok_or("repo meta must be an object")?;
     obj.insert("fingerprint_sha256".to_string(), Value::String(drifted));
     fs::write(&meta_path, serde_json::to_string_pretty(&meta)?)?;
+=======
+fn cli_missing_index_returns_actionable_hint() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    write_repo(repo.path(), "a.md", "missing_index_token")?;
+>>>>>>> mcoda/task/bck-05-us-08-t09
 
     let output = Command::new(docdex_bin())
         .args([
             "query",
             "--repo",
+<<<<<<< HEAD
             repo_a.to_string_lossy().as_ref(),
             "--state-dir",
             state_root_str.as_str(),
+=======
+            repo.path().to_string_lossy().as_ref(),
+>>>>>>> mcoda/task/bck-05-us-08-t09
             "--query",
             "shared_term",
             "--limit",
             "1",
         ])
         .output()?;
+<<<<<<< HEAD
     assert!(
         !output.status.success(),
         "expected repo query to fail closed on meta drift"
     );
+=======
+
+    assert!(!output.status.success(), "expected non-zero exit");
+>>>>>>> mcoda/task/bck-05-us-08-t09
     let payload = parse_error(&output.stderr)?;
     assert_eq!(
         payload
             .get("error")
             .and_then(|e| e.get("code"))
             .and_then(|v| v.as_str()),
+<<<<<<< HEAD
         Some("repo_state_mismatch")
+=======
+        Some("missing_index")
+    );
+    let message = payload
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        message.contains("docdexd index"),
+        "expected missing_index message to include index hint; got: {message}"
+>>>>>>> mcoda/task/bck-05-us-08-t09
     );
     let details = payload
         .get("error")
         .and_then(|e| e.get("details"))
         .ok_or("expected error.details")?;
+<<<<<<< HEAD
     assert!(
         details
             .get("attemptedFingerprint")
@@ -307,10 +336,23 @@ fn cli_repo_state_meta_drift_fails_closed() -> Result<(), Box<dyn Error>> {
         "expected recoverySteps array on repo_state_mismatch"
     );
 
+=======
+    let steps = details
+        .get("recoverySteps")
+        .and_then(|v| v.as_array())
+        .ok_or("expected details.recoverySteps array")?;
+    assert!(
+        steps
+            .iter()
+            .any(|v| v.as_str().unwrap_or_default().contains("docdexd index")),
+        "expected recoverySteps to mention docdexd index; got: {details}"
+    );
+>>>>>>> mcoda/task/bck-05-us-08-t09
     Ok(())
 }
 
 #[test]
+<<<<<<< HEAD
 fn cli_repo_state_meta_drift_fails_closed() -> Result<(), Box<dyn Error>> {
     let workspace = TempDir::new()?;
     let state_root = TempDir::new()?;
@@ -357,36 +399,79 @@ fn cli_repo_state_meta_drift_fails_closed() -> Result<(), Box<dyn Error>> {
     let obj = meta.as_object_mut().ok_or("repo meta must be an object")?;
     obj.insert("fingerprint_sha256".to_string(), Value::String(drifted));
     fs::write(&meta_path, serde_json::to_string_pretty(&meta)?)?;
+=======
+fn cli_stale_index_returns_actionable_hint() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    write_repo(repo.path(), "a.md", "stale_index_token")?;
+
+    let repo_str = repo.path().to_string_lossy().to_string();
+    let index_out = Command::new(docdex_bin())
+        .args(["index", "--repo", repo_str.as_str()])
+        .output()?;
+    assert!(index_out.status.success(), "index failed: {:?}", index_out);
+
+    let state_path = repo
+        .path()
+        .join(".docdex")
+        .join("index")
+        .join("index_state.json");
+    let mut state: Value = serde_json::from_str(&fs::read_to_string(&state_path)?)?;
+    state["status"] = Value::String("stale".to_string());
+    fs::write(&state_path, serde_json::to_string_pretty(&state)?)?;
+>>>>>>> mcoda/task/bck-05-us-08-t09
 
     let output = Command::new(docdex_bin())
         .args([
             "query",
             "--repo",
+<<<<<<< HEAD
             repo_a.to_string_lossy().as_ref(),
             "--state-dir",
             state_root_str.as_str(),
+=======
+            repo_str.as_str(),
+>>>>>>> mcoda/task/bck-05-us-08-t09
             "--query",
             "shared_term",
             "--limit",
             "1",
         ])
         .output()?;
+<<<<<<< HEAD
     assert!(
         !output.status.success(),
         "expected repo query to fail closed on meta drift"
     );
+=======
+
+    assert!(!output.status.success(), "expected non-zero exit");
+>>>>>>> mcoda/task/bck-05-us-08-t09
     let payload = parse_error(&output.stderr)?;
     assert_eq!(
         payload
             .get("error")
             .and_then(|e| e.get("code"))
             .and_then(|v| v.as_str()),
+<<<<<<< HEAD
         Some("repo_state_mismatch")
+=======
+        Some("stale_index")
+    );
+    let message = payload
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        message.contains("docdexd index"),
+        "expected stale_index message to include index hint; got: {message}"
+>>>>>>> mcoda/task/bck-05-us-08-t09
     );
     let details = payload
         .get("error")
         .and_then(|e| e.get("details"))
         .ok_or("expected error.details")?;
+<<<<<<< HEAD
     assert!(
         details
             .get("attemptedFingerprint")
@@ -409,5 +494,17 @@ fn cli_repo_state_meta_drift_fails_closed() -> Result<(), Box<dyn Error>> {
         "expected recoverySteps array on repo_state_mismatch"
     );
 
+=======
+    let steps = details
+        .get("recoverySteps")
+        .and_then(|v| v.as_array())
+        .ok_or("expected details.recoverySteps array")?;
+    assert!(
+        steps
+            .iter()
+            .any(|v| v.as_str().unwrap_or_default().contains("docdexd index")),
+        "expected recoverySteps to mention docdexd index; got: {details}"
+    );
+>>>>>>> mcoda/task/bck-05-us-08-t09
     Ok(())
 }

@@ -21,7 +21,7 @@ use crate::index::{
 };
 use crate::state_paths::StatePaths;
 use anyhow::{Context, Result};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,7 +33,7 @@ use std::time::Duration;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
-use tantivy::{doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
+use tantivy::{doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, Searcher, Term};
 use tracing::warn;
 
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
@@ -161,10 +161,26 @@ struct LibsManifestEntry {
 }
 
 #[derive(Clone)]
+struct ReaderSnapshot {
+    _reader: Arc<IndexReader>,
+    searcher: Searcher,
+}
+
+impl ReaderSnapshot {
+    fn new(reader: Arc<IndexReader>) -> Self {
+        let searcher = reader.searcher();
+        Self {
+            _reader: reader,
+            searcher,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct LibsIndexer {
     libs_state_dir: PathBuf,
     index: Index,
-    reader: IndexReader,
+    reader: Arc<RwLock<Arc<IndexReader>>>,
     doc_id_field: tantivy::schema::Field,
     rel_path_field: tantivy::schema::Field,
     body_field: tantivy::schema::Field,
@@ -199,15 +215,17 @@ impl LibsIndexer {
             tantivy::directory::MmapDirectory::open(&libs_state_dir)?,
             schema.clone(),
         )?;
-        let reader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommit)
-            .try_into()?;
+        let reader = Arc::new(
+            index
+                .reader_builder()
+                .reload_policy(ReloadPolicy::Manual)
+                .try_into()?,
+        );
         let writer = index.writer(MAX_INDEX_RAM_BYTES)?;
         Ok(Self {
             libs_state_dir,
             index,
-            reader,
+            reader: Arc::new(RwLock::new(reader)),
             doc_id_field: fields.doc_id,
             rel_path_field: fields.rel_path,
             body_field: fields.body,
@@ -237,10 +255,12 @@ impl LibsIndexer {
         }
         let index = Index::open_in_dir(&libs_state_dir)
             .with_context(|| format!("open libs index at {}", libs_state_dir.display()))?;
-        let reader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommit)
-            .try_into()?;
+        let reader = Arc::new(
+            index
+                .reader_builder()
+                .reload_policy(ReloadPolicy::Manual)
+                .try_into()?,
+        );
         let schema = index.schema();
         let doc_id_field = schema.get_field("doc_id").unwrap();
         let rel_path_field = schema.get_field("rel_path").unwrap();
@@ -254,7 +274,7 @@ impl LibsIndexer {
         Ok(Some(Self {
             libs_state_dir,
             index,
-            reader,
+            reader: Arc::new(RwLock::new(reader)),
             doc_id_field,
             rel_path_field,
             body_field,
@@ -311,6 +331,22 @@ impl LibsIndexer {
         })
     }
 
+    fn snapshot(&self) -> ReaderSnapshot {
+        let reader = self.reader.read().clone();
+        ReaderSnapshot::new(reader)
+    }
+
+    fn refresh_reader(&self) -> Result<()> {
+        let reader = Arc::new(
+            self.index
+                .reader_builder()
+                .reload_policy(ReloadPolicy::Manual)
+                .try_into()?,
+        );
+        *self.reader.write() = reader;
+        Ok(())
+    }
+
     pub fn search_with_query_meta(
         &self,
         query: &str,
@@ -330,7 +366,8 @@ impl LibsIndexer {
             .into());
         }
 
-        let searcher = self.reader.searcher();
+        let snapshot = self.snapshot();
+        let searcher = &snapshot.searcher;
         let parser = QueryParser::for_index(
             &self.index,
             vec![
@@ -379,7 +416,7 @@ impl LibsIndexer {
         };
 
         let mut snippet_generator =
-            tantivy::SnippetGenerator::create(&searcher, tantivy_query.as_ref(), self.body_field)
+            tantivy::SnippetGenerator::create(searcher, tantivy_query.as_ref(), self.body_field)
                 .ok();
         if let Some(generator) = snippet_generator.as_mut() {
             generator.set_max_num_chars(420);
@@ -458,17 +495,16 @@ impl LibsIndexer {
         query: Option<&str>,
         fallback_lines: usize,
     ) -> Result<Option<(DocSnapshot, Option<SnippetResult>)>> {
-        let Some(doc) = self.fetch_document(doc_id)? else {
+        let snapshot = self.snapshot();
+        let Some(doc) = self.fetch_document(&snapshot.searcher, doc_id)? else {
             return Ok(None);
         };
         let snapshot = self.snapshot_from_document(doc_id, &doc);
-        let snippet =
-            self.snippet_from_document(&doc, query, fallback_lines)?;
+        let snippet = self.snippet_from_document(&snapshot.searcher, &doc, query, fallback_lines)?;
         Ok(Some((snapshot, snippet)))
     }
 
-    fn fetch_document(&self, doc_id: &str) -> Result<Option<Document>> {
-        let searcher = self.reader.searcher();
+    fn fetch_document(&self, searcher: &Searcher, doc_id: &str) -> Result<Option<Document>> {
         let term = Term::from_field_text(self.doc_id_field, doc_id);
         let term_query =
             tantivy::query::TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
@@ -503,11 +539,11 @@ impl LibsIndexer {
 
     fn snippet_from_document(
         &self,
+        searcher: &Searcher,
         doc: &Document,
         query: Option<&str>,
         fallback_lines: usize,
     ) -> Result<Option<SnippetResult>> {
-        let searcher = self.reader.searcher();
         if let Some(query) = query.and_then(|q| {
             let trimmed = q.trim();
             if trimmed.is_empty() { None } else { Some(trimmed) }
@@ -515,7 +551,7 @@ impl LibsIndexer {
             let parser = QueryParser::for_index(&self.index, vec![self.body_field]);
             if let Ok(parsed) = parser.parse_query(query) {
                 if let Ok(mut generator) =
-                    tantivy::SnippetGenerator::create(&searcher, parsed.as_ref(), self.body_field)
+                    tantivy::SnippetGenerator::create(searcher, parsed.as_ref(), self.body_field)
                 {
                     generator.set_max_num_chars(420);
                     let snippet = generator.snippet_from_doc(doc);
@@ -700,7 +736,7 @@ impl LibsIndexer {
             if let Some(writer) = writer_guard.as_mut() {
                 writer.commit()?;
             }
-            self.reader.reload()?;
+            self.refresh_reader()?;
         }
 
         manifest.input_sources = normalized_sources

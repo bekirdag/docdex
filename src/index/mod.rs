@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use once_cell::sync::Lazy;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use regex::Regex;
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -19,18 +19,27 @@ use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
+<<<<<<< HEAD
 use std::sync::Arc;
 <<<<<<< HEAD
 use std::time::Duration;
 =======
 use std::time::{SystemTime, UNIX_EPOCH};
 >>>>>>> mcoda/task/bck-05-us-08-t31
+=======
+use std::sync::{
+    atomic::{AtomicU64, Ordering as AtomicOrdering},
+    Arc,
+};
+use serde::{Deserialize, Serialize};
+>>>>>>> mcoda/task/bck-05-us-08-t09
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
 use tantivy::DocAddress;
 use tantivy::{
-    doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, SnippetGenerator, Term,
+    doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, Searcher, SnippetGenerator,
+    Term,
 };
 <<<<<<< HEAD
 use thiserror::Error;
@@ -57,6 +66,7 @@ use crate::error::{
     repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
     ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
 <<<<<<< HEAD
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-08-t32
 =======
     repo_resolution_details, retry_hint_details, AppError, DEFAULT_BACKOFF_RETRY_AFTER_MS,
@@ -78,6 +88,8 @@ use crate::error::{
     backoff_required_details, repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED,
     ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
 >>>>>>> mcoda/task/bck-05-us-09-t37
+=======
+>>>>>>> mcoda/task/bck-05-us-08-t09
 };
 use crate::state_paths::{default_state_base_dir, RepoStatePaths, StatePaths};
 =======
@@ -245,6 +257,7 @@ const FALLBACK_PREVIEW_LINES: usize = 60;
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 pub const RUN_SUMMARY_DEFAULT_LIMIT: usize = 5;
 pub const RUN_SUMMARY_MAX_LIMIT: usize = 20;
 const RUN_SUMMARY_MAX_SKIP_SAMPLES: usize = 25;
@@ -266,6 +279,56 @@ const INDEX_STATE_FILENAME: &str = "index_state.json";
 const INDEX_STATE_VERSION: u32 = 1;
 const INDEX_STATE_FILENAME: &str = "docdex_index_state.json";
 >>>>>>> mcoda/task/bck-05-us-08-t30
+=======
+const INDEX_STATE_FILENAME: &str = "index_state.json";
+const INDEX_STATE_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum IndexStateStatus {
+    Ready,
+    Stale,
+}
+
+impl IndexStateStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            IndexStateStatus::Ready => "ready",
+            IndexStateStatus::Stale => "stale",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IndexStateFile {
+    version: u32,
+    status: IndexStateStatus,
+    generation: u64,
+    updated_at_epoch_ms: u64,
+}
+
+enum IndexStateOutcome {
+    Ready(IndexStateFile),
+    Missing,
+    Stale { reason: String },
+}
+
+#[derive(Clone)]
+struct ReaderSnapshot {
+    _reader: Arc<IndexReader>,
+    searcher: Searcher,
+}
+
+impl ReaderSnapshot {
+    fn new(reader: Arc<IndexReader>) -> Self {
+        let searcher = reader.searcher();
+        Self {
+            _reader: reader,
+            searcher,
+        }
+    }
+}
+>>>>>>> mcoda/task/bck-05-us-08-t09
 
 #[derive(Clone)]
 pub struct IndexConfig {
@@ -285,7 +348,7 @@ pub struct Indexer {
     repo_root: PathBuf,
     config: IndexConfig,
     index: Index,
-    reader: IndexReader,
+    reader: Arc<RwLock<Arc<IndexReader>>>,
     doc_id_field: tantivy::schema::Field,
     path_field: tantivy::schema::Field,
     body_field: tantivy::schema::Field,
@@ -293,6 +356,7 @@ pub struct Indexer {
     token_field: tantivy::schema::Field,
     writer: Option<Arc<Mutex<IndexWriter>>>,
     symbols_store: Option<SymbolsStore>,
+<<<<<<< HEAD
     index_state_cache: Arc<Mutex<IndexStateCache>>,
 }
 
@@ -312,6 +376,9 @@ struct IndexStateCache {
 struct IndexStateFile {
     version: u32,
     indexed_at_epoch_ms: u128,
+=======
+    generation: Arc<AtomicU64>,
+>>>>>>> mcoda/task/bck-05-us-08-t09
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -872,10 +939,13 @@ impl Indexer {
             tantivy::directory::MmapDirectory::open(config.state_dir())?,
             schema.clone(),
         )?;
-        let reader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommit)
-            .try_into()?;
+        let reader = Arc::new(
+            index
+                .reader_builder()
+                .reload_policy(ReloadPolicy::Manual)
+                .try_into()?,
+        );
+        let generation = Arc::new(AtomicU64::new(read_index_generation(config.state_dir())));
         let writer = index.writer(MAX_INDEX_RAM_BYTES)?;
         let symbols_store = if config.symbols_enabled() {
             match SymbolsStore::new(&repo_root, config.repo_state_dir()) {
@@ -898,7 +968,7 @@ impl Indexer {
             repo_root,
             config,
             index,
-            reader,
+            reader: Arc::new(RwLock::new(reader)),
             doc_id_field,
             path_field,
             body_field,
@@ -906,7 +976,11 @@ impl Indexer {
             token_field,
             writer: Some(Arc::new(Mutex::new(writer))),
             symbols_store,
+<<<<<<< HEAD
             index_state_cache: Arc::new(Mutex::new(IndexStateCache::default())),
+=======
+            generation,
+>>>>>>> mcoda/task/bck-05-us-08-t09
         })
     }
 
@@ -922,6 +996,7 @@ impl Indexer {
             .into());
         }
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
+<<<<<<< HEAD
         if !config.state_dir().exists() {
 <<<<<<< HEAD
             return Err(missing_index_error(
@@ -935,11 +1010,16 @@ impl Indexer {
             return Err(missing_index_error(&repo_root, config.state_dir()).into());
 >>>>>>> mcoda/task/bck-05-us-08-t33
         }
+=======
+        ensure_index_state_ready(config.state_dir())?;
+>>>>>>> mcoda/task/bck-05-us-08-t09
         let index = Index::open_in_dir(config.state_dir())?;
-        let reader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommit)
-            .try_into()?;
+        let reader = Arc::new(
+            index
+                .reader_builder()
+                .reload_policy(ReloadPolicy::Manual)
+                .try_into()?,
+        );
         let schema = index.schema();
         let doc_id_field = schema.get_field("doc_id").unwrap();
         let path_field = schema.get_field("rel_path").unwrap();
@@ -957,11 +1037,12 @@ impl Indexer {
             }
             return Err(err).context("validate repo identity metadata");
         }
+        let generation = Arc::new(AtomicU64::new(read_index_generation(config.state_dir())));
         Ok(Self {
             repo_root,
             config,
             index,
-            reader,
+            reader: Arc::new(RwLock::new(reader)),
             doc_id_field,
             path_field,
             body_field,
@@ -969,7 +1050,11 @@ impl Indexer {
             token_field,
             writer: None,
             symbols_store,
+<<<<<<< HEAD
             index_state_cache: Arc::new(Mutex::new(IndexStateCache::default())),
+=======
+            generation,
+>>>>>>> mcoda/task/bck-05-us-08-t09
         })
     }
 
@@ -1018,6 +1103,7 @@ impl Indexer {
 >>>>>>> mcoda/task/bck-05-us-10-t05
         }
         writer.commit()?;
+<<<<<<< HEAD
         self.reader.reload()?;
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1032,6 +1118,9 @@ impl Indexer {
 =======
         self.write_index_state_now()?;
 >>>>>>> mcoda/task/bck-05-us-08-t30
+=======
+        self.commit_index_update()?;
+>>>>>>> mcoda/task/bck-05-us-08-t09
         Ok(())
     }
 
@@ -1081,6 +1170,7 @@ impl Indexer {
         self.maybe_update_symbols(&ingest, budget);
 >>>>>>> mcoda/task/bck-05-us-10-t05
         writer.commit()?;
+<<<<<<< HEAD
         self.reader.reload()?;
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1095,6 +1185,9 @@ impl Indexer {
 =======
         self.write_index_state_now()?;
 >>>>>>> mcoda/task/bck-05-us-08-t30
+=======
+        self.commit_index_update()?;
+>>>>>>> mcoda/task/bck-05-us-08-t09
         Ok(decision)
     }
 
@@ -1146,6 +1239,7 @@ impl Indexer {
         let term = Term::from_field_text(self.doc_id_field, &rel);
         writer.delete_term(term);
         writer.commit()?;
+<<<<<<< HEAD
         self.reader.reload()?;
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1160,6 +1254,9 @@ impl Indexer {
 =======
         self.write_index_state_now()?;
 >>>>>>> mcoda/task/bck-05-us-08-t30
+=======
+        self.commit_index_update()?;
+>>>>>>> mcoda/task/bck-05-us-08-t09
         if let Some(store) = self.symbols_store.as_ref() {
             if let Err(err) = store.delete_symbols(&rel) {
                 warn!(target: "docdexd", error = ?err, rel_path = %rel, "failed to delete symbols record");
@@ -1195,7 +1292,9 @@ impl Indexer {
             }
             .into());
         }
-        let searcher = self.reader.searcher();
+        self.ensure_index_ready()?;
+        let snapshot = self.snapshot();
+        let searcher = &snapshot.searcher;
         let parser = QueryParser::for_index(
             &self.index,
             vec![self.body_field, self.summary_field, self.path_field],
@@ -1238,7 +1337,7 @@ impl Indexer {
             }
         };
         let mut snippet_generator =
-            SnippetGenerator::create(&searcher, tantivy_query.as_ref(), self.body_field).ok();
+            SnippetGenerator::create(searcher, tantivy_query.as_ref(), self.body_field).ok();
         if let Some(generator) = snippet_generator.as_mut() {
             generator.set_max_num_chars(MAX_SNIPPET_CHARS);
         }
@@ -1334,8 +1433,7 @@ impl Indexer {
         Ok((results, query_meta))
     }
 
-    fn fetch_document(&self, doc_id: &str) -> Result<Option<Document>> {
-        let searcher = self.reader.searcher();
+    fn fetch_document(&self, searcher: &Searcher, doc_id: &str) -> Result<Option<Document>> {
         let term = Term::from_field_text(self.doc_id_field, doc_id);
         let term_query =
             tantivy::query::TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
@@ -1417,12 +1515,18 @@ impl Indexer {
     }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     pub fn repo_state_dir(&self) -> &Path {
         self.config.repo_state_dir()
 =======
     fn index_state_path(&self) -> PathBuf {
         self.config.state_dir().join(INDEX_STATE_FILENAME)
 >>>>>>> mcoda/task/bck-05-us-08-t32
+=======
+    fn snapshot(&self) -> ReaderSnapshot {
+        let reader = self.reader.read().clone();
+        ReaderSnapshot::new(reader)
+>>>>>>> mcoda/task/bck-05-us-08-t09
     }
 
     fn writer(&self) -> Result<Arc<Mutex<IndexWriter>>> {
@@ -1474,6 +1578,7 @@ impl Indexer {
         &self.config
     }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1606,10 +1711,35 @@ impl Indexer {
         write_index_state_manifest(self.config.state_dir(), &manifest)?;
         Ok(())
 >>>>>>> mcoda/task/bck-05-us-08-t31
+=======
+    fn ensure_index_ready(&self) -> Result<()> {
+        ensure_index_state_ready(self.config.state_dir())
+    }
+
+    fn next_generation(&self) -> u64 {
+        self.generation
+            .fetch_add(1, AtomicOrdering::SeqCst)
+            .saturating_add(1)
+    }
+
+    fn commit_index_update(&self) -> Result<()> {
+        let reader = Arc::new(
+            self.index
+                .reader_builder()
+                .reload_policy(ReloadPolicy::Manual)
+                .try_into()?,
+        );
+        let generation = self.next_generation();
+        write_index_state(self.config.state_dir(), IndexStateStatus::Ready, generation)?;
+        *self.reader.write() = reader;
+        Ok(())
+>>>>>>> mcoda/task/bck-05-us-08-t09
     }
 
     pub fn stats(&self) -> Result<IndexStats> {
-        let searcher = self.reader.searcher();
+        self.ensure_index_ready()?;
+        let snapshot = self.snapshot();
+        let searcher = &snapshot.searcher;
         let mut num_docs: u64 = 0;
         let mut segments: usize = 0;
         for segment_reader in searcher.segment_readers() {
@@ -1795,17 +1925,26 @@ impl Indexer {
         query: Option<&str>,
         fallback_lines: usize,
     ) -> Result<Option<(DocSnapshot, Option<SnippetResult>)>> {
-        let Some(doc) = self.fetch_document(doc_id)? else {
+        self.ensure_index_ready()?;
+        let snapshot = self.snapshot();
+        let Some(doc) = self.fetch_document(&snapshot.searcher, doc_id)? else {
             return Ok(None);
         };
         let snapshot = self.snapshot_from_document(doc_id, &doc);
-        let snippet =
-            self.snippet_from_document(&doc, Some(&snapshot.rel_path), query, fallback_lines)?;
+        let snippet = self.snippet_from_document(
+            &snapshot.searcher,
+            &doc,
+            Some(&snapshot.rel_path),
+            query,
+            fallback_lines,
+        )?;
         Ok(Some((snapshot, snippet)))
     }
 
     pub fn list_docs(&self, offset: usize, limit: usize) -> Result<(Vec<DocSnapshot>, u64)> {
-        let searcher = self.reader.searcher();
+        self.ensure_index_ready()?;
+        let snapshot = self.snapshot();
+        let searcher = &snapshot.searcher;
         let mut snapshots = Vec::new();
         let mut skipped = 0usize;
         let mut total_live: u64 = 0;
@@ -2079,12 +2218,12 @@ impl Indexer {
 
     fn snippet_from_document(
         &self,
+        searcher: &Searcher,
         doc: &Document,
         rel_path_hint: Option<&str>,
         query: Option<&str>,
         fallback_lines: usize,
     ) -> Result<Option<SnippetResult>> {
-        let searcher = self.reader.searcher();
         if let Some(query) = query.and_then(|q| {
             let trimmed = q.trim();
             if trimmed.is_empty() {
@@ -2096,7 +2235,7 @@ impl Indexer {
             let parser = QueryParser::for_index(&self.index, vec![self.body_field]);
             if let Ok(parsed) = parser.parse_query(query) {
                 if let Ok(mut generator) =
-                    SnippetGenerator::create(&searcher, parsed.as_ref(), self.body_field)
+                    SnippetGenerator::create(searcher, parsed.as_ref(), self.body_field)
                 {
                     generator.set_max_num_chars(MAX_SNIPPET_CHARS);
                     let snippet = generator.snippet_from_doc(doc);
@@ -2978,6 +3117,51 @@ fn known_canonical_path_from_repo_meta(index_state_dir: &Path) -> Option<String>
         .map(|s| s.to_string())
 }
 
+fn index_state_details(state_dir: &Path, reason: Option<&str>) -> serde_json::Value {
+    let mut details = serde_json::Map::new();
+    details.insert(
+        "stateDir".to_string(),
+        serde_json::Value::String(state_dir.display().to_string()),
+    );
+    if let Some(reason) = reason {
+        details.insert(
+            "reason".to_string(),
+            serde_json::Value::String(reason.to_string()),
+        );
+    }
+    details.insert(
+        "recoverySteps".to_string(),
+        serde_json::Value::Array(vec![
+            serde_json::Value::String(
+                "Run `docdexd index --repo <repo>` to build or refresh the index.".to_string(),
+            ),
+            serde_json::Value::String(
+                "If you expect a different state directory, pass `--state-dir <path>` explicitly."
+                    .to_string(),
+            ),
+        ]),
+    );
+    serde_json::Value::Object(details)
+}
+
+fn missing_index_error(state_dir: &Path) -> AppError {
+    AppError::new(
+        ERR_MISSING_INDEX,
+        "index not initialized; run `docdexd index --repo <repo>` first",
+    )
+    .with_details(index_state_details(state_dir, None))
+}
+
+fn stale_index_error(state_dir: &Path, reason: String) -> AppError {
+    AppError::new(
+        ERR_STALE_INDEX,
+        format!(
+            "index is stale ({reason}); run `docdexd index --repo <repo>` to rebuild"
+        ),
+    )
+    .with_details(index_state_details(state_dir, Some(&reason)))
+}
+
 fn missing_repo_path_error(repo_root: &Path) -> AppError {
     AppError::new(ERR_MISSING_REPO_PATH, "repo path not found").with_details(repo_resolution_details(
         normalize_for_error(repo_root),
@@ -3029,7 +3213,101 @@ fn repo_state_mismatch_error(
     ))
 }
 
+<<<<<<< HEAD
 fn resolve_state_paths(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<RepoStatePaths> {
+=======
+fn ensure_index_state_ready(state_dir: &Path) -> Result<()> {
+    match read_index_state(state_dir) {
+        IndexStateOutcome::Ready(_) => Ok(()),
+        IndexStateOutcome::Missing => Err(missing_index_error(state_dir).into()),
+        IndexStateOutcome::Stale { reason } => Err(stale_index_error(state_dir, reason).into()),
+    }
+}
+
+fn read_index_generation(state_dir: &Path) -> u64 {
+    match read_index_state(state_dir) {
+        IndexStateOutcome::Ready(state) => state.generation,
+        IndexStateOutcome::Stale { .. } => 0,
+        IndexStateOutcome::Missing => 0,
+    }
+}
+
+fn read_index_state(state_dir: &Path) -> IndexStateOutcome {
+    if !state_dir.exists() {
+        return IndexStateOutcome::Missing;
+    }
+    let path = state_dir.join(INDEX_STATE_FILENAME);
+    if !path.exists() {
+        return IndexStateOutcome::Missing;
+    }
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) => {
+            return IndexStateOutcome::Stale {
+                reason: format!("failed to read index state: {err}"),
+            }
+        }
+    };
+    let parsed: IndexStateFile = match serde_json::from_str(&raw) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            return IndexStateOutcome::Stale {
+                reason: format!("invalid index state: {err}"),
+            }
+        }
+    };
+    if parsed.version != INDEX_STATE_VERSION {
+        return IndexStateOutcome::Stale {
+            reason: format!(
+                "index state version mismatch (expected {INDEX_STATE_VERSION}, found {})",
+                parsed.version
+            ),
+        };
+    }
+    if parsed.status != IndexStateStatus::Ready {
+        return IndexStateOutcome::Stale {
+            reason: format!("index state status {}", parsed.status.as_str()),
+        };
+    }
+    IndexStateOutcome::Ready(parsed)
+}
+
+fn now_epoch_ms_u64() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
+}
+
+fn write_index_state(state_dir: &Path, status: IndexStateStatus, generation: u64) -> Result<()> {
+    let state = IndexStateFile {
+        version: INDEX_STATE_VERSION,
+        status,
+        generation,
+        updated_at_epoch_ms: now_epoch_ms_u64(),
+    };
+    let payload = serde_json::to_string_pretty(&state)?;
+    let path = state_dir.join(INDEX_STATE_FILENAME);
+    write_atomic(&path, payload.as_bytes())
+}
+
+fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("missing parent dir for {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("index_state.json");
+    let tmp = parent.join(format!(".{}.{}.tmp", file_name, std::process::id()));
+    fs::write(&tmp, contents)?;
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<PathBuf> {
+>>>>>>> mcoda/task/bck-05-us-08-t09
     if !repo_root.exists() {
         return Err(missing_repo_path_error(repo_root).into());
     }

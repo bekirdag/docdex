@@ -199,6 +199,122 @@ test("installer: unpublished win32 arm64 fails before any plan resolution or dow
   assert.equal(repoSlugCalls, 0);
 });
 
+test("installer: custom policy with unpublished platform key fails before any plan resolution or download", async () => {
+  let planCalls = 0;
+  let downloadCalls = 0;
+  let extractCalls = 0;
+  let versionCalls = 0;
+  let repoSlugCalls = 0;
+
+  let err;
+  try {
+    await runInstaller({
+      logger: createNoopLogger(),
+      resolvePlatformPolicyFn: () => ({
+        detected: { platform: "linux", arch: "arm64", libc: "musl" },
+        platformKey: "linux-arm64-musl",
+        targetTriple: "aarch64-unknown-linux-musl",
+        expectedAssetName: "docdexd-linux-arm64-musl.tar.gz",
+        expectedAssetPattern: "docdexd-<platformKey>.tar.gz (e.g. docdexd-linux-arm64-musl.tar.gz)"
+      }),
+      getVersionFn: () => {
+        versionCalls += 1;
+        throw new Error("unexpected version resolution");
+      },
+      parseRepoSlugFn: () => {
+        repoSlugCalls += 1;
+        throw new Error("unexpected repo slug resolution");
+      },
+      resolveInstallerDownloadPlanFn: async () => {
+        planCalls += 1;
+        throw new Error("unexpected plan resolution");
+      },
+      downloadFn: async () => {
+        downloadCalls += 1;
+        throw new Error("unexpected download");
+      },
+      extractTarballFn: async () => {
+        extractCalls += 1;
+        throw new Error("unexpected extract");
+      }
+    });
+  } catch (e) {
+    err = e;
+  }
+
+  assert.ok(err, "expected an error");
+  const report = describeFatalError(err);
+  assert.equal(report.code, "DOCDEX_UNSUPPORTED_PLATFORM");
+  assert.ok(report.lines.some((l) => l.includes("unsupported platform (linux/arm64)")));
+  assert.ok(report.lines.some((l) => l.includes("Detected libc: musl")));
+  assert.ok(report.lines.some((l) => l.includes("no published binary")));
+  assert.ok(report.lines.some((l) => l.includes("No download was attempted")));
+
+  assert.equal(planCalls, 0);
+  assert.equal(downloadCalls, 0);
+  assert.equal(extractCalls, 0);
+  assert.equal(versionCalls, 0);
+  assert.equal(repoSlugCalls, 0);
+});
+
+test("installer: custom policy with unpublished platform key fails before any plan resolution or download", async () => {
+  let planCalls = 0;
+  let downloadCalls = 0;
+  let extractCalls = 0;
+  let versionCalls = 0;
+  let repoSlugCalls = 0;
+
+  let err;
+  try {
+    await runInstaller({
+      logger: createNoopLogger(),
+      resolvePlatformPolicyFn: () => ({
+        detected: { platform: "linux", arch: "arm64", libc: "musl" },
+        platformKey: "linux-arm64-musl",
+        targetTriple: "aarch64-unknown-linux-musl",
+        expectedAssetName: "docdexd-linux-arm64-musl.tar.gz",
+        expectedAssetPattern: "docdexd-<platformKey>.tar.gz (e.g. docdexd-linux-arm64-musl.tar.gz)"
+      }),
+      getVersionFn: () => {
+        versionCalls += 1;
+        throw new Error("unexpected version resolution");
+      },
+      parseRepoSlugFn: () => {
+        repoSlugCalls += 1;
+        throw new Error("unexpected repo slug resolution");
+      },
+      resolveInstallerDownloadPlanFn: async () => {
+        planCalls += 1;
+        throw new Error("unexpected plan resolution");
+      },
+      downloadFn: async () => {
+        downloadCalls += 1;
+        throw new Error("unexpected download");
+      },
+      extractTarballFn: async () => {
+        extractCalls += 1;
+        throw new Error("unexpected extract");
+      }
+    });
+  } catch (e) {
+    err = e;
+  }
+
+  assert.ok(err, "expected an error");
+  const report = describeFatalError(err);
+  assert.equal(report.code, "DOCDEX_UNSUPPORTED_PLATFORM");
+  assert.ok(report.lines.some((l) => l.includes("unsupported platform (linux/arm64)")));
+  assert.ok(report.lines.some((l) => l.includes("Detected libc: musl")));
+  assert.ok(report.lines.some((l) => l.includes("no published binary")));
+  assert.ok(report.lines.some((l) => l.includes("No download was attempted")));
+
+  assert.equal(planCalls, 0);
+  assert.equal(downloadCalls, 0);
+  assert.equal(extractCalls, 0);
+  assert.equal(versionCalls, 0);
+  assert.equal(repoSlugCalls, 0);
+});
+
 test("installer: supported runtime with missing manifest target triple never downloads/extracts the docdexd asset", async () => {
   let downloadTextCalls = 0;
   let assetDownloadCalls = 0;

@@ -17,6 +17,7 @@ const {
   targetTripleForPlatformKey,
   UnsupportedPlatformError
 } = require("./platform");
+const { PLATFORM_ENTRY_BY_KEY, PUBLISHED_PLATFORM_KEYS, PUBLISHED_TARGET_TRIPLES } = require("./platform_matrix");
 const { ManifestResolutionError, resolveCanonicalAssetForTargetTriple } = require("./release_manifest");
 
 const MAX_REDIRECTS = 5;
@@ -142,6 +143,41 @@ class ChecksumResolutionError extends Error {
     this.exitCode = EXIT_CODE_BY_ERROR_CODE[this.code];
     this.details = withBaseDetails(details);
   }
+}
+
+function assertSupportedPlatformPolicy({ platformKey, targetTriple, detected }, { detectedPlatform, detectedArch }) {
+  const normalizedPlatformKey = typeof platformKey === "string" ? platformKey.trim() : null;
+  if (!normalizedPlatformKey) {
+    throw new InstallerConfigError("Platform policy is missing platformKey", {
+      platformKey: null,
+      targetTriple: typeof targetTriple === "string" ? targetTriple : null
+    });
+  }
+
+  const entry = PLATFORM_ENTRY_BY_KEY[normalizedPlatformKey];
+  if (!entry || !entry.published) {
+    const platform = detected?.platform ?? detectedPlatform;
+    const arch = detected?.arch ?? detectedArch;
+    const libc =
+      typeof detected?.libc === "string" && detected.libc.trim() ? detected.libc.trim() : null;
+    const candidateTargetTriple =
+      entry?.targetTriple ??
+      (typeof targetTriple === "string" && targetTriple.trim() ? targetTriple.trim() : null);
+    const reason = entry && entry.published === false ? "target_not_published" : "unknown_or_unsupported_runtime";
+
+    throw new UnsupportedPlatformError({
+      platform,
+      arch,
+      libc,
+      candidatePlatformKey: normalizedPlatformKey,
+      candidateTargetTriple,
+      reason,
+      supportedPlatformKeys: PUBLISHED_PLATFORM_KEYS,
+      supportedTargetTriples: PUBLISHED_TARGET_TRIPLES
+    });
+  }
+
+  return { entry, platformKey: normalizedPlatformKey };
 }
 
 function parseRepoSlug() {
@@ -1016,15 +1052,18 @@ async function runInstaller(options) {
   const resolvePlatformPolicyFn =
     opts.resolvePlatformPolicyFn ||
     (opts.detectPlatformKeyFn || opts.targetTripleForPlatformKeyFn
-      ? () => {
-          const platformKey = detectPlatformKeyFn();
+      ? (policyOptions) => {
+          const platformKey = detectPlatformKeyFn(policyOptions);
           const targetTriple = targetTripleForPlatformKeyFn(platformKey);
           const expectedAssetName = artifactNameFn(platformKey);
           const expectedAssetPattern = assetPatternForPlatformKeyFn(platformKey, {
             exampleAssetName: expectedAssetName
           });
           return {
-            detected: { platform: detectedPlatform, arch: detectedArch },
+            detected: {
+              platform: policyOptions?.platform ?? detectedPlatform,
+              arch: policyOptions?.arch ?? detectedArch
+            },
             platformKey,
             targetTriple,
             expectedAssetName,
@@ -1041,8 +1080,15 @@ async function runInstaller(options) {
     execPath: opts.execPath
   });
 
-  const platformKey = platformPolicy.platformKey;
-  const targetTriple = platformPolicy.targetTriple;
+  const { entry: platformEntry, platformKey } = assertSupportedPlatformPolicy(
+    {
+      platformKey: platformPolicy.platformKey,
+      targetTriple: platformPolicy.targetTriple,
+      detected: platformPolicy.detected
+    },
+    { detectedPlatform, detectedArch }
+  );
+  const targetTriple = platformEntry.targetTriple;
   const version = getVersionFn();
   const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
   const distDir = pathModule.join(distBaseDir, platformKey);

@@ -14,6 +14,7 @@ use crate::error::{
 =======
     AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
 <<<<<<< HEAD
+<<<<<<< HEAD
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -66,6 +67,11 @@ use crate::error::{
     ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR,
     ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_RATE_LIMITED,
 >>>>>>> mcoda/task/bck-05-us-07-t15
+=======
+    ERR_EMBEDDING_TIMEOUT, ERR_INDEX_MIGRATION_REQUIRED, ERR_INDEX_SCHEMA_UNSUPPORTED,
+    ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_MISSING_INDEX,
+    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH,
+>>>>>>> mcoda/task/bck-05-us-07-t11
 };
 use crate::libs::LibsIndexer;
 use crate::max_size::{
@@ -319,6 +325,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/search", get(search_handler))
         .route("/snippet/*doc_id", get(snippet_handler))
+        .route("/v1/index/status", get(index_status_handler))
         .route("/v1/graph/impact", get(impact_graph_handler))
         .route("/v1/stats", get(stats_handler))
         .route("/v1/memory/store", post(memory_store_handler))
@@ -341,6 +348,33 @@ pub fn router(state: AppState) -> Router {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+async fn index_status_handler(State(state): State<AppState>) -> impl IntoResponse {
+    match crate::index::index_compatibility_report(state.indexer.repo_root(), state.indexer.state_dir()) {
+        Ok(report) => Json(report).into_response(),
+        Err(err) => {
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                return json_error_with_details(
+                    status_for_app_error(app.code),
+                    app.code,
+                    app.message.clone(),
+                    app.details.clone(),
+                );
+            }
+            state.metrics.inc_error();
+            warn!(
+                target: "docdexd",
+                error = ?err,
+                "index status handler failed"
+            );
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "index status failed",
+            )
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -585,6 +619,7 @@ fn status_for_app_error(code: &str) -> StatusCode {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         ERR_TIER2_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
 =======
         ERR_MISSING_INDEX => StatusCode::CONFLICT,
@@ -612,6 +647,13 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_MISSING_DEPENDENCY => StatusCode::CONFLICT,
         ERR_BACKOFF_REQUIRED => StatusCode::TOO_MANY_REQUESTS,
 >>>>>>> mcoda/task/bck-05-us-07-t16
+=======
+        ERR_MISSING_REPO_PATH => StatusCode::NOT_FOUND,
+        ERR_MISSING_INDEX => StatusCode::NOT_FOUND,
+        ERR_REPO_STATE_MISMATCH => StatusCode::CONFLICT,
+        ERR_INDEX_MIGRATION_REQUIRED => StatusCode::CONFLICT,
+        ERR_INDEX_SCHEMA_UNSUPPORTED => StatusCode::UPGRADE_REQUIRED,
+>>>>>>> mcoda/task/bck-05-us-07-t11
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -787,6 +829,21 @@ fn ensure_index_fresh(state: &AppState) -> Result<IndexStateSnapshot, Response> 
 
 fn json_error_detail(status: StatusCode, detail: ErrorDetail) -> Response {
     (status, Json(ErrorBody { error: detail })).into_response()
+}
+
+fn json_error_with_details(
+    status: StatusCode,
+    code: &'static str,
+    message: impl Into<String>,
+    details: Option<serde_json::Value>,
+) -> Response {
+    (
+        status,
+        Json(ErrorBody {
+            error: ErrorDetail::new(code, message).with_details(details),
+        }),
+    )
+        .into_response()
 }
 
 fn json_error_with_details(
@@ -1142,9 +1199,15 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             },
             AiHelpEndpoint {
                 method: "GET",
+<<<<<<< HEAD
                 path: "/v1/stats",
                 description: "Report index metadata, symbols enablement, and recent run summaries (max 20 runs; sample lists capped at 25; error summaries truncated to 240 chars).",
                 params: &["runs_limit=<int optional, max 20, clamped>"],
+=======
+                path: "/v1/index/status",
+                description: "Report index schema compatibility/migration status.",
+                params: &[],
+>>>>>>> mcoda/task/bck-05-us-07-t11
             },
             AiHelpEndpoint {
                 method: "POST",
@@ -1170,6 +1233,11 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 command: "docdexd index --repo <path>",
                 description: "Build or rebuild the index for a repo.",
                 example: "docdexd index --repo /workspace",
+            },
+            AiHelpCli {
+                command: "docdexd index-status --repo <path>",
+                description: "Report index schema compatibility/migration status.",
+                example: "docdexd index-status --repo /workspace",
             },
             AiHelpCli {
                 command: "docdexd serve --repo <path> [--host 127.0.0.1] [--port 46137]",
@@ -1496,6 +1564,7 @@ struct ErrorDetail {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     details: Option<serde_json::Value>,
 =======
     resource_key: Option<String>,
@@ -1519,6 +1588,9 @@ struct ErrorDetail {
 =======
     details: Option<serde_json::Value>,
 >>>>>>> mcoda/task/bck-05-us-08-t01
+=======
+    details: Option<serde_json::Value>,
+>>>>>>> mcoda/task/bck-05-us-07-t11
 }
 
 impl ErrorDetail {
@@ -1530,6 +1602,7 @@ impl ErrorDetail {
             retry_at: None,
             limit_key: None,
             scope: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1576,6 +1649,14 @@ impl ErrorDetail {
     fn with_details(mut self, details: Option<serde_json::Value>) -> Self {
         self.details = details;
 >>>>>>> mcoda/task/bck-05-us-08-t01
+=======
+            details: None,
+        }
+    }
+
+    fn with_details(mut self, details: Option<serde_json::Value>) -> Self {
+        self.details = details;
+>>>>>>> mcoda/task/bck-05-us-07-t11
         self
     }
 
@@ -1713,6 +1794,7 @@ fn preflight_index_state(state: &AppState) -> Result<(), Response> {
             retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
             limit_key: Some(err.limit_key.clone()),
             scope: Some(err.scope.clone()),
+            details: None,
         }
     }
 >>>>>>> mcoda/task/bck-05-us-07-t15

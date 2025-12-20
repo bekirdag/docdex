@@ -109,7 +109,12 @@ These codes are the **required** set for repo/index/dependency failures and are 
 =======
 - `index_schema_mismatch`: on-disk index schema is incompatible with the running Docdex version; reindex required.
 - `stale_index`: index exists but is known to be stale (reserved for future use).
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-07-t09
+=======
+- `index_migration_required`: index schema is older than the minimum compatible version and must be migrated/rebuilt.
+- `index_schema_unsupported`: index schema or manifest is newer/unsupported (upgrade Docdex or rebuild).
+>>>>>>> mcoda/task/bck-05-us-07-t11
 - `missing_dependency`: a required optional feature/dependency is disabled (e.g. symbols extraction disabled).
 <<<<<<< HEAD
 <<<<<<< HEAD

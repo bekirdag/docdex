@@ -332,6 +332,11 @@ enum Command {
         )]
         include_default_patterns: bool,
     },
+    /// Report index schema compatibility/migration status for a repo.
+    IndexStatus {
+        #[command(flatten)]
+        repo: RepoArgs,
+    },
     /// Build or rebuild the entire index for a repo.
     Index {
         #[command(flatten)]
@@ -881,6 +886,18 @@ async fn run() -> Result<()> {
             });
 >>>>>>> mcoda/task/ops-01-us-03-t02
             return Err(anyhow!("sensitive terms detected in index"));
+        }
+        Command::IndexStatus { repo } => {
+            let repo_root = repo.repo_root();
+            let index_config = index::IndexConfig::with_overrides(
+                &repo_root,
+                repo.state_dir_override(),
+                repo.exclude_dir_overrides(),
+                repo.exclude_prefix_overrides(),
+                repo.symbols_enabled(),
+            )?;
+            let report = index::index_compatibility_report(&repo_root, index_config.state_dir())?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
         }
         Command::Index { repo } => {
             let repo_root = repo.repo_root();
@@ -1499,6 +1516,7 @@ fn print_full_help() -> Result<()> {
     for name in [
         "serve",
         "self-check",
+        "index-status",
         "index",
         "ingest",
         "query",

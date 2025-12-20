@@ -40,6 +40,8 @@ pub const ERR_TIER2_UNAVAILABLE: &str = "tier2_unavailable";
 pub const ERR_RATE_LIMITED: &str = "rate_limited";
 pub const ERR_BACKOFF_REQUIRED: &str = "backoff_required";
 pub const ERR_REPO_STATE_MISMATCH: &str = "repo_state_mismatch";
+pub const ERR_INDEX_MIGRATION_REQUIRED: &str = "index_migration_required";
+pub const ERR_INDEX_SCHEMA_UNSUPPORTED: &str = "index_schema_unsupported";
 pub const ERR_INTERNAL_ERROR: &str = "internal_error";
 <<<<<<< HEAD
 <<<<<<< HEAD

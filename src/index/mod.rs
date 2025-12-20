@@ -5,6 +5,7 @@ use regex::Regex;
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 use serde::{Deserialize, Serialize};
 =======
 use serde_json::json;
@@ -15,6 +16,9 @@ use serde::{Deserialize, Serialize};
 =======
 use serde::{Deserialize, Serialize};
 >>>>>>> mcoda/task/bck-05-us-08-t30
+=======
+use serde_json::json;
+>>>>>>> mcoda/task/bck-05-us-09-t13
 use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
@@ -34,11 +38,16 @@ use std::sync::{
 use serde::{Deserialize, Serialize};
 >>>>>>> mcoda/task/bck-05-us-08-t09
 use tantivy::collector::TopDocs;
+use tantivy::directory::error::LockError;
 use tantivy::query::QueryParser;
 use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
 use tantivy::DocAddress;
 use tantivy::{
+<<<<<<< HEAD
     doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, Searcher, SnippetGenerator,
+=======
+    doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, SnippetGenerator, TantivyError,
+>>>>>>> mcoda/task/bck-05-us-09-t13
     Term,
 };
 <<<<<<< HEAD
@@ -117,8 +126,12 @@ use crate::symbols::{SymbolOutcomeStatus, SymbolsStore};
 use walkdir::WalkDir;
 
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
+<<<<<<< HEAD
 const INDEX_STATE_FILENAME: &str = "index_state.json";
 const INDEX_STATE_VERSION: u32 = 1;
+=======
+const INDEX_WRITER_BACKOFF_MS: u64 = 1000;
+>>>>>>> mcoda/task/bck-05-us-09-t13
 const DEFAULT_EXTENSIONS: &[&str] = &[".md", ".markdown", ".mdx", ".txt"];
 const DEFAULT_EXCLUDED_DIR_NAMES: &[&str] = &[
     // Core VCS / tooling
@@ -939,6 +952,7 @@ impl Indexer {
             tantivy::directory::MmapDirectory::open(config.state_dir())?,
             schema.clone(),
         )?;
+<<<<<<< HEAD
         let reader = Arc::new(
             index
                 .reader_builder()
@@ -947,6 +961,21 @@ impl Indexer {
         );
         let generation = Arc::new(AtomicU64::new(read_index_generation(config.state_dir())));
         let writer = index.writer(MAX_INDEX_RAM_BYTES)?;
+=======
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::OnCommit)
+            .try_into()?;
+        let writer = match index.writer(MAX_INDEX_RAM_BYTES) {
+            Ok(writer) => writer,
+            Err(err) => {
+                if is_lock_busy(&err) {
+                    return Err(index_writer_backoff_error().into());
+                }
+                return Err(err.into());
+            }
+        };
+>>>>>>> mcoda/task/bck-05-us-09-t13
         let symbols_store = if config.symbols_enabled() {
             match SymbolsStore::new(&repo_root, config.repo_state_dir()) {
                 Ok(store) => Some(store),
@@ -1532,6 +1561,7 @@ impl Indexer {
     fn writer(&self) -> Result<Arc<Mutex<IndexWriter>>> {
         self.writer
             .clone()
+<<<<<<< HEAD
             .ok_or_else(|| {
                 BackoffRequired::new(
 <<<<<<< HEAD
@@ -1572,6 +1602,9 @@ impl Indexer {
 >>>>>>> mcoda/task/bck-05-us-09-t37
                 .into()
             })
+=======
+            .ok_or_else(|| index_writer_backoff_error().into())
+>>>>>>> mcoda/task/bck-05-us-09-t13
     }
 
     pub fn config(&self) -> &IndexConfig {
@@ -2987,6 +3020,7 @@ fn normalize_for_error(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+<<<<<<< HEAD
 fn now_epoch_ms() -> Result<u128> {
     Ok(std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
@@ -3095,6 +3129,29 @@ fn stale_index_error(
         latest_repo_mtime_epoch_ms,
         reason,
     ))
+=======
+fn index_writer_backoff_details() -> serde_json::Value {
+    json!({
+        "retry_after_ms": INDEX_WRITER_BACKOFF_MS,
+        "limit_key": "index_writer",
+        "scope": "repo",
+    })
+}
+
+fn index_writer_backoff_error() -> AppError {
+    AppError::new(
+        ERR_BACKOFF_REQUIRED,
+        "index writer unavailable (another docdexd may be indexing); retry later",
+    )
+    .with_details(index_writer_backoff_details())
+}
+
+fn is_lock_busy(err: &TantivyError) -> bool {
+    matches!(
+        err,
+        TantivyError::LockFailure(lock_err, _) if matches!(lock_err, LockError::LockBusy)
+    )
+>>>>>>> mcoda/task/bck-05-us-09-t13
 }
 
 fn known_canonical_path_from_repo_meta(index_state_dir: &Path) -> Option<String> {

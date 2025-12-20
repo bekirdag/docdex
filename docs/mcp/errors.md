@@ -15,6 +15,7 @@ On failure, the MCP server returns a JSON-RPC error response:
   - `-32600` invalid request (`invalid_request`)
   - `-32601` unknown method/tool (`method_not_found`)
   - `-32602` tool failures and argument validation (`invalid_params` *and* domain failures like `missing_index`)
+  - `-32029` rate limiting for MCP tool calls (`rate_limited`)
   - `-32000` internal server error (`internal_error`) when the MCP server fails outside tool handling
   - `-32029` rate limiting for MCP tool calls (`rate_limited`)
 - `error.message` (string): a short, stable category message.
@@ -37,6 +38,7 @@ Compatibility guidance for clients:
 - Ignore unknown fields; new `details` keys may be added without breaking changes.
 - `error.data.error` is redundant; it exists for convenience where clients expect a nested `error` object.
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 Note: `rate_limited` uses a specialized `error.data` shape for retry hints (see
@@ -69,6 +71,15 @@ Stable fields in `error.data` for rate-limit/backoff:
 - `limit_key` (string): limiter key or resource name
 - `scope` (string): limiter scope (e.g., `global`, `index`, `tier2`)
 >>>>>>> mcoda/task/bck-05-us-09-t22
+=======
+### Retry hints (rate limiting/backoff)
+
+Rate limiting/backoff responses include stable retry hint fields:
+
+- **MCP `rate_limited`**: `error.data` is a compact retry-hint object: `{ "code": "rate_limited", "retry_after_ms": <int>, "retry_at"?: <RFC3339>, "limit_key": <string>, "scope": <string> }` (no nested `error` envelope).
+- **MCP/CLI `backoff_required`**: retry hints appear under `error.data.details` (MCP) or `error.details` (CLI) using the same field names (`retry_after_ms`, `retry_at`, `limit_key`, `scope`).
+- **HTTP 429**: JSON error body uses `{ "error": { "code": "rate_limited", "message": "...", "retry_after_ms": <int>, "retry_at"?: <RFC3339>, "limit_key": <string>, "scope": <string> } }` and includes a `Retry-After` header.
+>>>>>>> mcoda/task/bck-05-us-09-t13
 
 ## Code taxonomy (machine-readable)
 
@@ -94,6 +105,7 @@ These codes are the **required** set for repo/index/dependency failures and are 
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 - `rate_limited`: request rejected due to rate limiting (see `docs/contracts/rate_limit_error_contract_v1.md`).
 =======
 - `rate_limited`: request rejected due to rate limiting; MCP uses JSON-RPC code `-32029` with retry hints in `error.data`.
@@ -106,6 +118,10 @@ These codes are the **required** set for repo/index/dependency failures and are 
 - `rate_limited`: request rejected due to rate limiting; includes stable retry hints.
 - `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable); includes retry hints.
 >>>>>>> mcoda/task/bck-05-us-09-t37
+=======
+- `rate_limited`: request rejected due to rate limiting; MCP emits a retry-hint object in `error.data`.
+- `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable); retry hints live in `details`.
+>>>>>>> mcoda/task/bck-05-us-09-t13
 - `internal_error`: unexpected server failure.
 
 ### Parameter/argument validation codes
@@ -191,6 +207,7 @@ Docdex presents the same underlying failures in three different wrappers:
 | Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Not currently emitted by the per-repo CLI |
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |
 <<<<<<< HEAD
 | Rate limited | `rate_limited` | `-32029` | `429` with JSON error envelope + retry hints | N/A (CLI not rate limited) |
@@ -205,6 +222,10 @@ Docdex presents the same underlying failures in three different wrappers:
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Exit `1`, `stderr` JSON `{error:{code:"backoff_required",...}}` |
 | Rate limited | `rate_limited` | `-32029` | `429` with JSON `{error:{code,message,retry_after_ms,limit_key,scope,...}}` and `Retry-After` | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
 >>>>>>> mcoda/task/bck-05-us-09-t37
+=======
+| Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"backoff_required",details:{retry_after_ms,...}}}`) | Exit `1`, `stderr` JSON `{error:{code:"backoff_required",details:{retry_after_ms,...}}}` |
+| Rate limited | `rate_limited` | `-32029` | `429` with JSON error body + `Retry-After` header | N/A (CLI commands are not rate-limited) |
+>>>>>>> mcoda/task/bck-05-us-09-t13
 | Optional dependency disabled (e.g. symbols) | `missing_dependency` | `-32602` | N/A (no HTTP endpoint for MCP symbols) | N/A (no CLI symbols command) |
 | Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_params` | `-32602` | N/A | N/A |
 | Invalid path for `docdex_open` | `invalid_path` | `-32602` | N/A | N/A |

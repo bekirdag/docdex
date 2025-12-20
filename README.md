@@ -177,6 +177,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - `GET /ai-help` — returns a JSON quickstart for agents (endpoints, CLI commands, limits, best practices).
 - `GET /metrics` — returns Prometheus-style counters/gauges for rate-limit/auth/error and browser guard metrics (see `docs/ops/browser_guard.md`).
 - If `--auth-token` is set, include `Authorization: Bearer <token>` on HTTP calls (including `/ai-help`).
+- Rate limits: `429` responses include a JSON error body (`{error:{code:"rate_limited",message,...,retry_after_ms,...}}`) and a `Retry-After` header (seconds).
 
 ## CLI commands
 - `serve --repo <path> [--host 127.0.0.1] [--port 46137] [--log info]` — start HTTP API with file watching for incremental updates.

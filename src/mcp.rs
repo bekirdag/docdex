@@ -157,6 +157,17 @@ const MAX_RETRY_HINT_LABEL_BYTES: usize = 64;
 const MAX_RATE_LIMIT_PAYLOAD_BYTES: usize = 2048;
 >>>>>>> mcoda/task/bck-05-us-09-t37
 
+fn mcp_rate_limit_note(rate_limit_per_min: u32, rate_limit_burst: u32, effective_burst: u32) -> String {
+    if rate_limit_per_min == 0 {
+        "Rate limits (MCP): disabled (DOCDEX_MCP_RATE_LIMIT_PER_MIN=0); backoff_required errors include retry_after_ms in error.data.details.".to_string()
+    } else {
+        let burst_source = if rate_limit_burst == 0 { "default" } else { "explicit" };
+        format!(
+            "Rate limits (MCP): {rate_limit_per_min}/min burst {effective_burst} (burst source: {burst_source}); rate_limited errors include retry_after_ms in error.data; backoff_required errors include retry_after_ms in error.data.details."
+        )
+    }
+}
+
 #[derive(Error, Debug)]
 #[error("path must be relative and not contain parent components")]
 struct InvalidPathError;
@@ -1109,9 +1120,13 @@ pub async fn serve(
         rate_limit_burst
     };
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
     let effective_burst = effective_rate_limit_burst(rate_limit_per_min, rate_limit_burst);
 >>>>>>> mcoda/task/bck-05-us-09-t41
+=======
+    let rate_limit_note = mcp_rate_limit_note(rate_limit_per_min, rate_limit_burst, effective_burst);
+>>>>>>> mcoda/task/bck-05-us-09-t13
     let tool_rate_limit = if rate_limit_per_min > 0 {
         Some(RateLimiter::<()>::new(rate_limit_per_min, effective_burst))
     } else {
@@ -1145,6 +1160,7 @@ pub async fn serve(
 <<<<<<< HEAD
         explainability,
         tool_rate_limit,
+<<<<<<< HEAD
         rate_limit_per_min,
         rate_limit_burst,
         effective_rate_limit_burst: effective_burst,
@@ -1152,6 +1168,9 @@ pub async fn serve(
 =======
         tool_rate_limits,
 >>>>>>> mcoda/task/bck-05-us-09-t20
+=======
+        rate_limit_note,
+>>>>>>> mcoda/task/bck-05-us-09-t13
     };
     server.run().await
 }
@@ -1176,10 +1195,14 @@ struct McpServer {
 <<<<<<< HEAD
     explainability: ExplainabilityStore,
     tool_rate_limit: Option<RateLimiter<()>>,
+<<<<<<< HEAD
     rate_limit_per_min: u32,
     rate_limit_burst: u32,
     effective_rate_limit_burst: u32,
     index_writer_available: bool,
+=======
+    rate_limit_note: String,
+>>>>>>> mcoda/task/bck-05-us-09-t13
 }
 
 impl McpServer {
@@ -1432,8 +1455,15 @@ impl McpServer {
                 let protocol_version = init_params
                     .protocol_version
                     .unwrap_or_else(|| "2024-11-05".to_string());
+<<<<<<< HEAD
                 let instructions = "Use docdex_search to find repo-local docs before changing code.\nUse docdex_index to refresh the index if results seem stale.";
                 let policy = self.policy_snapshot();
+=======
+                let instructions = format!(
+                    "Use docdex_search to find repo-local docs before changing code.\nUse docdex_index to refresh the index if results seem stale.\n{}",
+                    self.rate_limit_note
+                );
+>>>>>>> mcoda/task/bck-05-us-09-t13
                 let mut caps = json!({
                     "tools": { "listChanged": false },
                     "resources": { "listChanged": false },
@@ -2815,6 +2845,9 @@ fn apply_symbols_bounds(limits: &MaxSizePolicy, payload: &mut crate::symbols::Sy
 
 fn is_lock_busy(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
+        if let Some(app) = cause.downcast_ref::<AppError>() {
+            return app.code == ERR_BACKOFF_REQUIRED;
+        }
         if let Some(tantivy_err) = cause.downcast_ref::<TantivyError>() {
             if let TantivyError::LockFailure(lock_err, _) = tantivy_err {
                 return matches!(lock_err, LockError::LockBusy);

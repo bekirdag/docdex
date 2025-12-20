@@ -80,6 +80,10 @@ pub struct SecurityConfig {
     pub max_query_bytes: usize,
     pub max_request_bytes: usize,
     pub rate_limit: Option<RateLimiter<IpAddr>>,
+    pub rate_limit_per_min: Option<u32>,
+    pub rate_limit_burst: Option<u32>,
+    pub rate_limit_source: &'static str,
+    pub rate_limit_burst_source: &'static str,
     pub strip_snippet_html: bool,
     pub disable_snippet_text: bool,
 }
@@ -130,12 +134,49 @@ impl SecurityConfig {
             ])
             .into());
         }
+<<<<<<< HEAD
         let rate_limit = RateLimitConfig::for_http(
             rate_limit_per_min,
             rate_limit_burst,
             secure_mode,
         )?
         .limiter();
+=======
+        let effective_per_min = if secure_mode && rate_limit_per_min == 0 {
+            60
+        } else {
+            rate_limit_per_min
+        };
+        let effective_burst = if effective_per_min == 0 {
+            0
+        } else if rate_limit_burst == 0 {
+            effective_per_min
+        } else {
+            rate_limit_burst
+        };
+        let rate_limit_source = if effective_per_min == 0 {
+            "disabled"
+        } else if secure_mode && rate_limit_per_min == 0 {
+            "secure_mode_default"
+        } else {
+            "explicit"
+        };
+        let rate_limit_burst_source = if effective_per_min == 0 {
+            "disabled"
+        } else if rate_limit_burst == 0 {
+            "default"
+        } else {
+            "explicit"
+        };
+        let rate_limit = if effective_per_min > 0 {
+            Some(RateLimiter::new(
+                effective_per_min,
+                effective_burst,
+            ))
+        } else {
+            None
+        };
+>>>>>>> mcoda/task/bck-05-us-09-t13
         Ok(Self {
             auth_token,
             allow_nets,
@@ -143,6 +184,18 @@ impl SecurityConfig {
             max_query_bytes,
             max_request_bytes,
             rate_limit,
+            rate_limit_per_min: if effective_per_min > 0 {
+                Some(effective_per_min)
+            } else {
+                None
+            },
+            rate_limit_burst: if effective_per_min > 0 {
+                Some(effective_burst)
+            } else {
+                None
+            },
+            rate_limit_source,
+            rate_limit_burst_source,
             strip_snippet_html,
             disable_snippet_text,
         })
@@ -741,13 +794,32 @@ struct AiHelpPayload {
     http_endpoints: Vec<AiHelpEndpoint>,
     cli_commands: Vec<AiHelpCli>,
     mcp_tools: Vec<AiHelpMcpTool>,
-    best_practices: Vec<&'static str>,
+    best_practices: Vec<String>,
     limits: AiHelpLimits,
     index_stats_fields: Vec<&'static str>,
 }
 
 fn rate_limit_hint(security: &SecurityConfig) -> Option<u32> {
-    security.rate_limit.as_ref().map(|lim| lim.per_minute())
+    security.rate_limit_per_min
+}
+
+fn rate_limit_best_practice(security: &SecurityConfig) -> String {
+    if let Some(per_min) = security.rate_limit_per_min {
+        let burst = security.rate_limit_burst.unwrap_or(per_min);
+        format!(
+            "Rate limits (HTTP): {per_min}/min burst {burst} (per_min source: {}, burst source: {}).",
+            security.rate_limit_source, security.rate_limit_burst_source
+        )
+    } else {
+        format!(
+            "Rate limits (HTTP): disabled (source: {}).",
+            security.rate_limit_source
+        )
+    }
+}
+
+fn retry_hint_best_practice() -> String {
+    "Backoff guidance: rate_limited errors include retry_after_ms (retry_at optional) and HTTP adds Retry-After; backoff_required errors include the same fields under error.details (CLI/MCP).".to_string()
 }
 
 async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
@@ -918,6 +990,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             },
         ],
         best_practices: vec![
+<<<<<<< HEAD
             "Prefer narrow queries (file names, headings, concepts) to keep snippets focused.",
             "Use /search to get doc_id, then /snippet/:doc_id for a larger window when needed.",
             "Use /search with snippets=false to read summaries first; only fetch 1-2 snippets you need.",
@@ -931,6 +1004,35 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             "Trim noisy content up front with --exclude-dir/--exclude-prefix so snippets stay relevant and short.",
             "Cache doc_id/rel_path/summary client-side to avoid repeat snippet fetches; only call /snippet for new doc_ids.",
             "For MCP-aware agents, register a server named docdex that runs `docdexd mcp --repo <repo> --log warn --max-results 8`, then use docdex_search before edits and docdex_index when results look stale.",
+=======
+            "Prefer narrow queries (file names, headings, concepts) to keep snippets focused."
+                .to_string(),
+            "Use /search to get doc_id, then /snippet/:doc_id for a larger window when needed."
+                .to_string(),
+            "Use /search with snippets=false to read summaries first; only fetch 1-2 snippets you need."
+                .to_string(),
+            "Keep q short; long query strings are rejected by max_query_bytes to save bandwidth/tokens."
+                .to_string(),
+            "Respect the reported `token_estimate` to avoid oversized prompts.".to_string(),
+            "When running remote, set --auth-token and TLS (certbot or manual cert/key)."
+                .to_string(),
+            "Keep server logging minimal for agent pipelines (e.g., --log warn --access-log=false)."
+                .to_string(),
+            "Use state_dir per project to keep indexes isolated; run separate serve instances per repo."
+                .to_string(),
+            "Use text_only=true on /snippet or --strip-snippet-html/--disable-snippet-text to trim payloads."
+                .to_string(),
+            "When building prompts, keep rel_path + summary + trimmed snippet; drop score/token_estimate/doc_id and normalize whitespace."
+                .to_string(),
+            "Trim noisy content up front with --exclude-dir/--exclude-prefix so snippets stay relevant and short."
+                .to_string(),
+            "Cache doc_id/rel_path/summary client-side to avoid repeat snippet fetches; only call /snippet for new doc_ids."
+                .to_string(),
+            "For MCP-aware agents, register a server named docdex that runs `docdexd mcp --repo <repo> --log warn --max-results 8`, then use docdex_search before edits and docdex_index when results look stale."
+                .to_string(),
+            rate_limit_best_practice(&state.security),
+            retry_hint_best_practice(),
+>>>>>>> mcoda/task/bck-05-us-09-t13
         ],
         limits: AiHelpLimits {
             max_limit: state.security.max_size.max_results,

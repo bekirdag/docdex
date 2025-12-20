@@ -25,6 +25,9 @@ async function writeInstalledBinary({ distDir, isWin32, bytes }) {
   await ensureDir(distDir);
   const binaryPath = path.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
   await fs.promises.writeFile(binaryPath, bytes);
+  if (!isWin32) {
+    await fs.promises.chmod(binaryPath, 0o755).catch(() => {});
+  }
   return binaryPath;
 }
 

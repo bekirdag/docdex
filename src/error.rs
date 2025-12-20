@@ -3,7 +3,7 @@ use std::fmt;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use serde_json::Value;
+use serde_json::{json, Value};
 use thiserror::Error;
 
 pub const ERR_EMBEDDING_TIMEOUT: &str = "embedding_timeout";
@@ -21,6 +21,15 @@ pub const ERR_RATE_LIMITED: &str = "rate_limited";
 pub const ERR_BACKOFF_REQUIRED: &str = "backoff_required";
 pub const ERR_REPO_STATE_MISMATCH: &str = "repo_state_mismatch";
 pub const ERR_INTERNAL_ERROR: &str = "internal_error";
+pub const DEFAULT_BACKOFF_REQUIRED_MS: u64 = 1000;
+
+pub fn backoff_required_details(limit_key: impl Into<String>, scope: impl Into<String>) -> Value {
+    json!({
+        "retry_after_ms": DEFAULT_BACKOFF_REQUIRED_MS,
+        "limit_key": limit_key.into(),
+        "scope": scope.into(),
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct StartupError {

@@ -33,6 +33,8 @@ const DEFAULT_SNIPPET_WINDOW: usize = 40;
 const MIN_SNIPPET_WINDOW: usize = 10;
 const MAX_SNIPPET_WINDOW: usize = 400;
 const MAX_RATE_LIMIT_MESSAGE_BYTES: usize = 256;
+const MAX_RATE_LIMIT_LABEL_BYTES: usize = 64;
+const MAX_RATE_LIMIT_PAYLOAD_BYTES: usize = 1024;
 
 // Rate limiting is shared with MCP and other surfaces via crate::ratelimit.
 
@@ -940,6 +942,10 @@ fn truncate_bytes(input: &str, max_bytes: usize) -> String {
     out
 }
 
+fn truncate_label(input: &str) -> String {
+    truncate_bytes(input, MAX_RATE_LIMIT_LABEL_BYTES)
+}
+
 #[derive(Serialize)]
 struct ErrorDetail {
     code: &'static str,
@@ -972,8 +978,8 @@ impl ErrorDetail {
             message: truncate_bytes(&err.message, MAX_RATE_LIMIT_MESSAGE_BYTES),
             retry_after_ms: Some(err.retry_after_ms),
             retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
-            limit_key: Some(err.limit_key.clone()),
-            scope: Some(err.scope.clone()),
+            limit_key: Some(truncate_label(&err.limit_key)),
+            scope: Some(truncate_label(&err.scope)),
         }
     }
 }
@@ -1006,7 +1012,7 @@ mod rate_limit_contract_tests {
 
         let bytes = serde_json::to_vec(&body).expect("rate-limit error body should serialize");
         assert!(
-            bytes.len() <= 1024,
+            bytes.len() <= MAX_RATE_LIMIT_PAYLOAD_BYTES,
             "rate-limit payload should remain small (got {} bytes)",
             bytes.len()
         );

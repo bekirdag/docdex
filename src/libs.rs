@@ -1,4 +1,4 @@
-use crate::error::{AppError, ERR_BACKOFF_REQUIRED};
+use crate::error::{backoff_required_details, AppError, ERR_BACKOFF_REQUIRED};
 use crate::index::{
     DocSnapshot, Hit, QueryRewrite, SearchError, SearchQueryMeta, SearchSnippetOrigin,
     SnippetOrigin, SnippetResult,
@@ -221,6 +221,7 @@ impl LibsIndexer {
                 ERR_BACKOFF_REQUIRED,
                 "libs index writer unavailable (another docdexd may be indexing); retry later",
             )
+            .with_details(backoff_required_details("libs_writer", "repo"))
             .into()
         })
     }

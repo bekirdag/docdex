@@ -35,6 +35,8 @@ const FILES_MAX_OFFSET: usize = 50_000;
 const OPEN_MAX_BYTES: usize = 512 * 1024; // guard rail for returning file content
 const MAX_ERROR_MESSAGE_BYTES: usize = 256;
 const MAX_ERROR_REASON_BYTES: usize = 768;
+const MAX_RETRY_HINT_LABEL_BYTES: usize = 64;
+const MAX_RATE_LIMIT_PAYLOAD_BYTES: usize = 2048;
 
 #[derive(Error, Debug)]
 #[error("path must be relative and not contain parent components")]
@@ -112,25 +114,76 @@ fn mcp_error_data(
     serde_json::Value::Object(data)
 }
 
-fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
-    #[derive(Serialize)]
-    struct RateLimitData<'a> {
-        code: &'static str,
-        retry_after_ms: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        retry_at: Option<String>,
-        limit_key: &'a str,
-        scope: &'a str,
-    }
+#[derive(Clone)]
+struct RetryHints {
+    retry_after_ms: u64,
+    retry_at: Option<String>,
+    limit_key: String,
+    scope: String,
+}
 
-    serde_json::to_value(RateLimitData {
-        code: ERR_RATE_LIMITED,
+fn truncate_label(input: &str) -> String {
+    truncate_bytes(input.to_string(), MAX_RETRY_HINT_LABEL_BYTES)
+}
+
+fn retry_hints_from_rate_limited(err: &RateLimited) -> RetryHints {
+    RetryHints {
         retry_after_ms: err.retry_after_ms,
         retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
-        limit_key: &err.limit_key,
-        scope: &err.scope,
+        limit_key: truncate_label(&err.limit_key),
+        scope: truncate_label(&err.scope),
+    }
+}
+
+fn retry_hints_from_details(details: &serde_json::Value) -> Option<RetryHints> {
+    let obj = details.as_object()?;
+    let retry_after_ms = obj.get("retry_after_ms")?.as_u64()?;
+    let limit_key = obj.get("limit_key")?.as_str()?.to_string();
+    let scope = obj.get("scope")?.as_str()?.to_string();
+    let retry_at = obj
+        .get("retry_at")
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
+    Some(RetryHints {
+        retry_after_ms,
+        retry_at,
+        limit_key: truncate_label(&limit_key),
+        scope: truncate_label(&scope),
     })
-    .expect("rate-limit data should serialize")
+}
+
+fn retry_hints_to_value(hints: &RetryHints) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    map.insert("retry_after_ms".to_string(), json!(hints.retry_after_ms));
+    if let Some(retry_at) = hints.retry_at.as_ref() {
+        map.insert("retry_at".to_string(), json!(retry_at));
+    }
+    map.insert("limit_key".to_string(), json!(hints.limit_key));
+    map.insert("scope".to_string(), json!(hints.scope));
+    serde_json::Value::Object(map)
+}
+
+fn insert_retry_hints(
+    data: &mut serde_json::Map<String, serde_json::Value>,
+    hints: &RetryHints,
+) {
+    data.insert("retry_after_ms".to_string(), json!(hints.retry_after_ms));
+    if let Some(retry_at) = hints.retry_at.as_ref() {
+        data.insert("retry_at".to_string(), json!(retry_at));
+    }
+    data.insert("limit_key".to_string(), json!(hints.limit_key));
+    data.insert("scope".to_string(), json!(hints.scope));
+}
+
+fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
+    let hints = retry_hints_from_rate_limited(err);
+    let details = retry_hints_to_value(&hints);
+    let mut data = match mcp_error_data(err.code, err.message.clone(), None, None, Some(details)) {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    insert_retry_hints(&mut data, &hints);
+    serde_json::Value::Object(data)
 }
 
 fn truncate_bytes(input: String, max_bytes: usize) -> String {
@@ -155,10 +208,19 @@ fn rpc_error(
     details: Option<serde_json::Value>,
 ) -> RpcError {
     let message = truncate_bytes(message.into(), MAX_ERROR_MESSAGE_BYTES);
+    let details_for_retry = details.clone();
+    let mut data = mcp_error_data(mcp_code, message.clone(), reason, tool, details);
+    if mcp_code == ERR_BACKOFF_REQUIRED {
+        if let Some(hints) = details_for_retry.as_ref().and_then(retry_hints_from_details) {
+            if let serde_json::Value::Object(ref mut map) = data {
+                insert_retry_hints(map, &hints);
+            }
+        }
+    }
     RpcError {
         code: rpc_code,
         message: message.clone(),
-        data: Some(mcp_error_data(mcp_code, message, reason, tool, details)),
+        data: Some(data),
     }
 }
 
@@ -1699,6 +1761,27 @@ mod tests {
         let data = rpc.data.expect("rate limited rpc should include data");
         let obj = data.as_object().expect("rate limited data should be object");
         assert_eq!(obj.get("code").and_then(|v| v.as_str()), Some(ERR_RATE_LIMITED));
+        assert_eq!(obj.get("message").and_then(|v| v.as_str()), Some("rate limited"));
+        let envelope = obj
+            .get("error")
+            .and_then(|value| value.as_object())
+            .expect("rate limited data should include error envelope");
+        assert_eq!(
+            envelope.get("code").and_then(|v| v.as_str()),
+            Some(ERR_RATE_LIMITED)
+        );
+        assert_eq!(
+            envelope.get("message").and_then(|v| v.as_str()),
+            Some("rate limited")
+        );
+        let details = envelope
+            .get("details")
+            .and_then(|value| value.as_object())
+            .expect("rate limited data should include details");
+        assert_eq!(
+            details.get("retry_after_ms").and_then(|v| v.as_u64()),
+            Some(0)
+        );
         assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(0));
         assert_eq!(obj.get("limit_key").and_then(|v| v.as_str()), Some("mcp_tools"));
         assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
@@ -1717,6 +1800,14 @@ mod tests {
         );
         let data = rpc.data.expect("rate limited rpc should include data");
         let obj = data.as_object().expect("rate limited data should be object");
+        let data_message = obj
+            .get("message")
+            .and_then(|value| value.as_str())
+            .expect("rate limited data should include message");
+        assert!(
+            data_message.len() <= MAX_ERROR_MESSAGE_BYTES + "…".len(),
+            "rate limited data message should be bounded"
+        );
         assert!(obj.get("retry_at").and_then(|v| v.as_str()).is_some());
         assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(1234));
     }
@@ -1772,7 +1863,7 @@ mod tests {
 
                     let payload_bytes = serde_json::to_vec(&rpc).expect("rpc error should serialize");
                     assert!(
-                        payload_bytes.len() <= 2048,
+                        payload_bytes.len() <= MAX_RATE_LIMIT_PAYLOAD_BYTES,
                         "rpc rate-limit payload should remain small (got {} bytes)",
                         payload_bytes.len()
                     );
@@ -1788,6 +1879,39 @@ mod tests {
             schema_variants.len(),
             1,
             "rate-limit data schema should not vary under concurrency"
+        );
+    }
+
+    #[test]
+    fn backoff_required_rpc_includes_retry_hints() {
+        let details = crate::error::backoff_required_details("index_writer", "repo");
+        let rpc = rpc_error(
+            ERR_INVALID_PARAMS,
+            default_message_for_code(ERR_BACKOFF_REQUIRED),
+            ERR_BACKOFF_REQUIRED,
+            None,
+            Some("docdex_index"),
+            Some(details),
+        );
+        let data = rpc.data.expect("backoff required rpc should include data");
+        let obj = data.as_object().expect("backoff required data should be object");
+        assert_eq!(
+            obj.get("code").and_then(|v| v.as_str()),
+            Some(ERR_BACKOFF_REQUIRED)
+        );
+        assert_eq!(
+            obj.get("retry_after_ms").and_then(|v| v.as_u64()),
+            Some(crate::error::DEFAULT_BACKOFF_REQUIRED_MS)
+        );
+        assert_eq!(obj.get("limit_key").and_then(|v| v.as_str()), Some("index_writer"));
+        assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("repo"));
+        assert!(obj.get("retry_at").is_none(), "retry_at should be omitted when unset");
+
+        let payload_bytes = serde_json::to_vec(&rpc).expect("rpc error should serialize");
+        assert!(
+            payload_bytes.len() <= MAX_RATE_LIMIT_PAYLOAD_BYTES,
+            "rpc backoff payload should remain small (got {} bytes)",
+            payload_bytes.len()
         );
     }
 }

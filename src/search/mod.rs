@@ -10,8 +10,11 @@ use crate::error::{
 =======
     AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
+<<<<<<< HEAD
     ERR_RATE_LIMITED, ERR_TIER2_UNAVAILABLE,
 >>>>>>> mcoda/task/bck-05-us-09-t21
+=======
+>>>>>>> mcoda/task/bck-05-us-09-t07
 };
 use crate::libs::LibsIndexer;
 use crate::max_size::{
@@ -1069,6 +1072,7 @@ impl ErrorDetail {
 
     fn rate_limited(err: &RateLimited) -> Self {
 <<<<<<< HEAD
+<<<<<<< HEAD
         let hint = RetryHint::from_rate_limited(err);
         Self {
 <<<<<<< HEAD
@@ -1084,12 +1088,17 @@ impl ErrorDetail {
         let hint = err.retry_hint();
         Self {
 >>>>>>> mcoda/task/bck-05-us-09-t32
+=======
+        let hint = err.retry_hint();
+        Self {
+>>>>>>> mcoda/task/bck-05-us-09-t07
             code: hint.code,
             message: truncate_bytes(&err.message, MAX_RATE_LIMIT_MESSAGE_BYTES),
             retry_after_ms: Some(hint.retry_after_ms),
             retry_at: hint.retry_at,
             limit_key: Some(hint.limit_key),
             scope: Some(hint.scope),
+<<<<<<< HEAD
 <<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-09-t34
 =======
@@ -1102,6 +1111,8 @@ impl ErrorDetail {
             limit_key: Some(truncate_bytes(&err.limit_key, MAX_RATE_LIMIT_FIELD_BYTES)),
             scope: Some(truncate_bytes(&err.scope, MAX_RATE_LIMIT_FIELD_BYTES)),
 >>>>>>> mcoda/task/bck-05-us-09-t30
+=======
+>>>>>>> mcoda/task/bck-05-us-09-t07
         }
     }
 }

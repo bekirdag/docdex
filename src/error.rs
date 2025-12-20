@@ -25,6 +25,7 @@ pub const ERR_BACKOFF_REQUIRED: &str = "backoff_required";
 pub const ERR_REPO_STATE_MISMATCH: &str = "repo_state_mismatch";
 pub const ERR_INTERNAL_ERROR: &str = "internal_error";
 <<<<<<< HEAD
+<<<<<<< HEAD
 pub const MAX_RATE_LIMIT_FIELD_BYTES: usize = 128;
 
 fn clamp_utf8(mut input: String, max_bytes: usize) -> String {
@@ -41,6 +42,9 @@ fn clamp_utf8(mut input: String, max_bytes: usize) -> String {
 =======
 pub const ERR_RATE_LIMITED_RPC: i32 = -32029;
 >>>>>>> mcoda/task/bck-05-us-09-t32
+=======
+const DEFAULT_BACKOFF_RETRY_AFTER_MS: u64 = 1000;
+>>>>>>> mcoda/task/bck-05-us-09-t07
 
 #[derive(Debug, Clone)]
 pub struct StartupError {
@@ -331,5 +335,81 @@ impl BackoffRequired {
     pub fn with_retry_at(mut self, retry_at: DateTime<Utc>) -> Self {
         self.retry_at = Some(retry_at);
         self
+    }
+
+    pub fn retry_hint(&self) -> RetryHint {
+        RetryHint {
+            code: self.code,
+            retry_after_ms: self.retry_after_ms,
+            retry_at: self.retry_at.as_ref().map(|at| at.to_rfc3339()),
+            limit_key: self.limit_key.clone(),
+            scope: self.scope.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Error)]
+#[error("{message}")]
+pub struct BackoffRequired {
+    pub code: &'static str,
+    pub message: String,
+    pub retry_after_ms: u64,
+    pub retry_at: Option<DateTime<Utc>>,
+    pub limit_key: String,
+    pub scope: String,
+}
+
+impl BackoffRequired {
+    pub fn new(
+        message: impl Into<String>,
+        limit_key: impl Into<String>,
+        scope: impl Into<String>,
+    ) -> Self {
+        Self {
+            code: ERR_BACKOFF_REQUIRED,
+            message: message.into(),
+            retry_after_ms: DEFAULT_BACKOFF_RETRY_AFTER_MS,
+            retry_at: None,
+            limit_key: limit_key.into(),
+            scope: scope.into(),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_retry_after(mut self, retry_after: Duration) -> Self {
+        self.retry_after_ms = retry_after.as_millis().min(u128::from(u64::MAX)) as u64;
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn with_retry_at(mut self, retry_at: DateTime<Utc>) -> Self {
+        self.retry_at = Some(retry_at);
+        self
+    }
+
+    pub fn retry_hint(&self) -> RetryHint {
+        RetryHint {
+            code: self.code,
+            retry_after_ms: self.retry_after_ms,
+            retry_at: self.retry_at.as_ref().map(|at| at.to_rfc3339()),
+            limit_key: self.limit_key.clone(),
+            scope: self.scope.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RetryHint {
+    pub code: &'static str,
+    pub retry_after_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<String>,
+    pub limit_key: String,
+    pub scope: String,
+}
+
+impl RetryHint {
+    pub fn to_value(&self) -> Value {
+        serde_json::to_value(self).expect("retry hint should serialize")
     }
 }

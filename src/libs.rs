@@ -256,6 +256,7 @@ impl LibsIndexer {
         self.writer.clone().ok_or_else(|| {
             BackoffRequired::new(
 <<<<<<< HEAD
+<<<<<<< HEAD
                 Duration::from_secs(1),
                 "libs_writer".to_string(),
                 "repo".to_string(),
@@ -263,6 +264,11 @@ impl LibsIndexer {
                 Duration::from_millis(0),
                 "libs_index_writer".to_string(),
                 "libs_index".to_string(),
+=======
+                "libs index writer unavailable (another docdexd may be indexing); retry later",
+                "libs_index_writer",
+                "repo",
+>>>>>>> mcoda/task/bck-05-us-09-t07
             )
             .with_message(
                 "libs index writer unavailable (another docdexd may be indexing); retry later",

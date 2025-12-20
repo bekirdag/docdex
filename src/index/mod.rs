@@ -18,10 +18,16 @@ use tantivy::{
 <<<<<<< HEAD
 use thiserror::Error;
 use tracing::warn;
+<<<<<<< HEAD
 use crate::error::{AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX};
 use crate::state_layout::{
     ensure_state_dir_secure, missing_repo_path_error, repo_state_mismatch_error, resolve_state_paths,
     StatePaths,
+=======
+use crate::error::{
+    repo_resolution_details, AppError, BackoffRequired, ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX,
+    ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+>>>>>>> mcoda/task/bck-05-us-09-t07
 };
 use crate::state_paths::{default_state_base_dir, RepoStatePaths, StatePaths};
 =======
@@ -1046,6 +1052,7 @@ impl Indexer {
             .ok_or_else(|| {
                 BackoffRequired::new(
 <<<<<<< HEAD
+<<<<<<< HEAD
                     Duration::from_secs(1),
                     "index_writer".to_string(),
                     "repo".to_string(),
@@ -1053,6 +1060,11 @@ impl Indexer {
                     Duration::from_millis(0),
                     "index_writer".to_string(),
                     "index".to_string(),
+=======
+                    "index writer unavailable (another docdexd may be indexing); retry later",
+                    "index_writer",
+                    "repo",
+>>>>>>> mcoda/task/bck-05-us-09-t07
                 )
                 .with_message(
                     "index writer unavailable (another docdexd may be indexing); retry later",

@@ -3,6 +3,7 @@ use crate::error::{
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
 <<<<<<< HEAD
@@ -14,10 +15,14 @@ use crate::error::{
 =======
     AppError, BackoffRequired, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
 >>>>>>> mcoda/task/bck-05-us-09-t22
+=======
+    AppError, BackoffRequired, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
+>>>>>>> mcoda/task/bck-05-us-09-t07
     ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
     ERR_MEMORY_DISABLED, repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX,
     ERR_MISSING_REPO, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH,
     ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
+<<<<<<< HEAD
 <<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-09-t34
 =======
@@ -34,6 +39,8 @@ use crate::error::{
     ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
     ERR_TIER2_UNAVAILABLE, ERR_UNKNOWN_REPO,
 >>>>>>> mcoda/task/bck-05-us-09-t21
+=======
+>>>>>>> mcoda/task/bck-05-us-09-t07
 };
 <<<<<<< HEAD
 use crate::explainability::ExplainabilityStore;
@@ -281,6 +288,7 @@ fn schema_version_details(schema_name: &'static str, requested: u32) -> serde_js
         }
 =======
 fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
+<<<<<<< HEAD
     #[derive(Serialize)]
     struct RateLimitData {
         code: &'static str,
@@ -353,6 +361,13 @@ fn tier2_unavailable_details(err: &Tier2Unavailable) -> serde_json::Value {
         details.insert("correlation_id".to_string(), json!(correlation_id));
     }
     serde_json::Value::Object(details)
+=======
+    err.retry_hint().to_value()
+}
+
+fn mcp_backoff_required_data(err: &BackoffRequired) -> serde_json::Value {
+    err.retry_hint().to_value()
+>>>>>>> mcoda/task/bck-05-us-09-t07
 }
 
 fn truncate_bytes(input: String, max_bytes: usize) -> String {
@@ -434,6 +449,7 @@ fn rpc_rate_limited(err: &RateLimited, tool: Option<&str>) -> RpcError {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn rpc_invalid_params_for_method(method: &'static str, err: impl std::fmt::Display) -> RpcError {
     rpc_error(
         ERR_INVALID_PARAMS,
@@ -457,10 +473,13 @@ fn rpc_invalid_params_for_tool(tool: &'static str, err: impl std::fmt::Display) 
 =======
 =======
 >>>>>>> mcoda/task/bck-05-us-09-t22
+=======
+>>>>>>> mcoda/task/bck-05-us-09-t07
 fn rpc_backoff_required(err: &BackoffRequired) -> RpcError {
     RpcError {
         code: ERR_INVALID_PARAMS,
         message: truncate_bytes(err.message.clone(), MAX_ERROR_MESSAGE_BYTES),
+<<<<<<< HEAD
 <<<<<<< HEAD
         data: Some(mcp_backoff_data(err)),
     }
@@ -484,7 +503,16 @@ fn rpc_tier2_unavailable(err: &Tier2Unavailable, tool: Option<&str>) -> RpcError
 }
 
 >>>>>>> mcoda/task/bck-05-us-09-t21
+=======
+        data: Some(mcp_backoff_required_data(err)),
+    }
+}
+
+>>>>>>> mcoda/task/bck-05-us-09-t07
 fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
+    if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
+        return rpc_backoff_required(backoff);
+    }
     if let Some(rate) = err.downcast_ref::<RateLimited>() {
         return rpc_rate_limited(rate, tool);
     }
@@ -543,6 +571,9 @@ fn default_message_for_code(code: &str) -> &'static str {
 }
 
 fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
+    if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
+        return (backoff.code, Some(mcp_backoff_required_data(backoff)));
+    }
     if let Some(rate) = err.downcast_ref::<RateLimited>() {
         return (
             rate.code,
@@ -2715,6 +2746,64 @@ mod tests {
             "rpc backoff payload should remain small (got {} bytes)",
             payload_bytes.len()
         );
+    }
+
+    #[test]
+    fn backoff_required_rpc_has_stable_data_shape() {
+        let err = BackoffRequired::new(
+            "index writer unavailable (another docdexd may be indexing); retry later",
+            "index_writer",
+            "repo",
+        );
+        let rpc = rpc_backoff_required(&err);
+        assert_eq!(rpc.code, ERR_INVALID_PARAMS);
+        let data = rpc
+            .data
+            .expect("backoff required rpc should include data");
+        let obj = data
+            .as_object()
+            .expect("backoff required data should be object");
+        assert_eq!(
+            obj.get("code").and_then(|v| v.as_str()),
+            Some(ERR_BACKOFF_REQUIRED)
+        );
+        assert!(
+            obj.get("retry_after_ms").and_then(|v| v.as_u64()).is_some(),
+            "retry_after_ms must be an integer"
+        );
+        assert_eq!(
+            obj.get("limit_key").and_then(|v| v.as_str()),
+            Some("index_writer")
+        );
+        assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("repo"));
+        assert!(obj.get("retry_at").is_none(), "retry_at should be omitted when unset");
+        assert!(
+            obj.keys().all(|k| {
+                matches!(
+                    k.as_str(),
+                    "code" | "retry_after_ms" | "retry_at" | "limit_key" | "scope"
+                )
+            }),
+            "backoff data should only include stable keys"
+        );
+    }
+
+    #[test]
+    fn backoff_required_rpc_truncates_long_message_and_allows_retry_at() {
+        let err = BackoffRequired::new("x".repeat(10_000), "index_writer", "repo")
+            .with_retry_at(Utc::now());
+        let rpc = rpc_backoff_required(&err);
+        assert!(
+            rpc.message.len() <= MAX_ERROR_MESSAGE_BYTES + "…".len(),
+            "rpc error message should be bounded"
+        );
+        let data = rpc
+            .data
+            .expect("backoff required rpc should include data");
+        let obj = data
+            .as_object()
+            .expect("backoff required data should be object");
+        assert!(obj.get("retry_at").and_then(|v| v.as_str()).is_some());
     }
 
     #[test]

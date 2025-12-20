@@ -27,6 +27,7 @@ mod state_layout;
 mod symbols;
 mod state_paths;
 mod util;
+mod web_discovery;
 mod watcher;
 
 use crate::config::RepoArgs;

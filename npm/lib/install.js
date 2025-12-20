@@ -66,6 +66,8 @@ const { createInstallerStructuredLogger, parseBooleanEnv, redactUrl, redactValue
 
 const MAX_REDIRECTS = 5;
 const USER_AGENT = "docdex-installer";
+const DEFAULT_RELEASE_API_BASE = "https://api.github.com";
+const RELEASE_API_ACCEPT = "application/vnd.github+json";
 const PLACEHOLDER_REPO_TOKEN = /OWNER|REPO/i;
 const MAX_MANIFEST_BYTES = 1024 * 1024; // 1 MiB cap for safety
 const INVALID_JSON_ERROR = "invalid JSON";
@@ -260,6 +262,7 @@ function withBaseDetails(details) {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 function normalizeVersionForDisplay(value) {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -309,6 +312,35 @@ function mergeDetails(existing, extra) {
 >>>>>>> mcoda/task/ops-01-us-03-t45
 }
 
+=======
+function stripTrailingSlash(value) {
+  if (typeof value !== "string") return value;
+  return value.replace(/\/+$/, "");
+}
+
+function summarizeReleaseApiAssets(assets, limit = 12) {
+  if (!Array.isArray(assets)) return null;
+  const names = assets.filter((name) => typeof name === "string" && name);
+  if (!names.length) return null;
+  return names.slice(0, limit);
+}
+
+function releaseApiDetails(attempt) {
+  if (!attempt || !attempt.attempted) return {};
+  return {
+    releaseApiUrl: attempt.releaseApiUrl ?? null,
+    releaseApiStatus: attempt.statusCode ?? null,
+    releaseApiAssetName: attempt.asset?.name ?? null,
+    releaseApiAssetId: attempt.asset?.id ?? null,
+    releaseApiAssetUrl: attempt.asset?.downloadUrl ?? null,
+    releaseApiAssetMissing: attempt.missing === true ? true : false,
+    releaseApiErrorCode: attempt.errorCode ?? null,
+    releaseApiError: attempt.error ?? null,
+    releaseApiAssets: summarizeReleaseApiAssets(attempt.assets)
+  };
+}
+
+>>>>>>> mcoda/task/ops-01-us-01-t39
 class InstallerConfigError extends Error {
   /**
    * @param {string} message
@@ -576,11 +608,22 @@ function getDownloadBase(repoSlug) {
   return process.env.DOCDEX_DOWNLOAD_BASE || `https://github.com/${repoSlug}/releases/download`;
 }
 
+<<<<<<< HEAD
 function normalizeVersionString(value) {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
   return trimmed.replace(/^v/, "");
+=======
+function getReleaseApiBase() {
+  return DEFAULT_RELEASE_API_BASE;
+}
+
+function shouldAttemptReleaseApi({ repoSlug, getDownloadBaseFn }) {
+  const downloadBase = stripTrailingSlash(getDownloadBaseFn(repoSlug));
+  const defaultBase = `https://github.com/${repoSlug}/releases/download`;
+  return downloadBase === defaultBase;
+>>>>>>> mcoda/task/ops-01-us-01-t39
 }
 
 function getVersion() {
@@ -596,6 +639,7 @@ function getVersion() {
   return version;
 }
 
+<<<<<<< HEAD
 function parseVersionFromOutput(output) {
   if (typeof output !== "string") return null;
   const match = output.match(/\bv?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/);
@@ -634,11 +678,16 @@ function detectInstalledBinaryVersion({
 
 function requestOptions() {
   const headers = { "User-Agent": USER_AGENT };
+=======
+function requestOptions(extraHeaders) {
+  const headers = { "User-Agent": USER_AGENT, ...(extraHeaders || {}) };
+>>>>>>> mcoda/task/ops-01-us-01-t39
   const token = process.env.DOCDEX_GITHUB_TOKEN || process.env.GITHUB_TOKEN;
   if (token) headers.Authorization = `Bearer ${token}`;
   return { headers };
 }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 function requestOptionsWithExtras(extras) {
   const base = requestOptions();
@@ -684,16 +733,26 @@ function isRetryableDownloadError(err) {
 
 function downloadText(url, redirects = 0) {
 >>>>>>> mcoda/task/ops-01-us-01-t40
+=======
+function downloadText(url, redirects = 0, extraHeaders = null) {
+>>>>>>> mcoda/task/ops-01-us-01-t39
   if (redirects > MAX_REDIRECTS) {
     throw new Error(`Too many redirects while fetching ${url}`);
   }
 
   return new Promise((resolve, reject) => {
     https
+<<<<<<< HEAD
       .get(url, requestOptionsWithExtras({ signal: opts.signal }), (res) => {
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume();
           return downloadText(res.headers.location, redirects + 1, opts).then(resolve, reject);
+=======
+      .get(url, requestOptions(extraHeaders), (res) => {
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          res.resume();
+          return downloadText(res.headers.location, redirects + 1, extraHeaders).then(resolve, reject);
+>>>>>>> mcoda/task/ops-01-us-01-t39
         }
 
         if (res.statusCode !== 200) {
@@ -4416,6 +4475,141 @@ async function tryResolveAssetViaManifest({
 >>>>>>> mcoda/task/ops-01-us-04-t39
 }
 
+async function tryResolveReleaseAssetViaApi({
+  repoSlug,
+  version,
+  assetName,
+  downloadTextFn = downloadText,
+  getDownloadBaseFn = getDownloadBase,
+  getReleaseApiBaseFn = getReleaseApiBase
+}) {
+  if (!shouldAttemptReleaseApi({ repoSlug, getDownloadBaseFn })) {
+    return {
+      attempted: false,
+      releaseApiUrl: null,
+      statusCode: null,
+      asset: null,
+      assets: null,
+      missing: false,
+      errorCode: null,
+      error: null
+    };
+  }
+
+  const apiBase = stripTrailingSlash(getReleaseApiBaseFn());
+  if (!apiBase) {
+    return {
+      attempted: false,
+      releaseApiUrl: null,
+      statusCode: null,
+      asset: null,
+      assets: null,
+      missing: false,
+      errorCode: null,
+      error: null
+    };
+  }
+  const releaseApiUrl = `${apiBase}/repos/${repoSlug}/releases/tags/v${version}`;
+
+  try {
+    const text = await downloadTextFn(releaseApiUrl, 0, { Accept: RELEASE_API_ACCEPT });
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch (err) {
+      return {
+        attempted: true,
+        releaseApiUrl,
+        statusCode: 200,
+        asset: null,
+        assets: null,
+        missing: false,
+        errorCode: "DOCDEX_RELEASE_API_JSON_INVALID",
+        error: err?.message || String(err)
+      };
+    }
+
+    const assets = Array.isArray(payload?.assets) ? payload.assets : null;
+    if (!assets) {
+      return {
+        attempted: true,
+        releaseApiUrl,
+        statusCode: 200,
+        asset: null,
+        assets: null,
+        missing: false,
+        errorCode: "DOCDEX_RELEASE_API_ASSETS_INVALID",
+        error: "Release API response missing assets array"
+      };
+    }
+
+    const matches = assets.filter((asset) => asset && asset.name === assetName);
+    if (matches.length === 1) {
+      const match = matches[0];
+      const downloadUrl = typeof match?.browser_download_url === "string" ? match.browser_download_url : null;
+      if (!downloadUrl) {
+        return {
+          attempted: true,
+          releaseApiUrl,
+          statusCode: 200,
+          asset: null,
+          assets: null,
+          missing: false,
+          errorCode: "DOCDEX_RELEASE_API_ASSET_URL_MISSING",
+          error: `Release API asset missing browser_download_url for ${assetName}`
+        };
+      }
+      return {
+        attempted: true,
+        releaseApiUrl,
+        statusCode: 200,
+        asset: { name: assetName, id: match?.id ?? null, downloadUrl },
+        assets: null,
+        missing: false,
+        errorCode: null,
+        error: null
+      };
+    }
+
+    if (matches.length === 0) {
+      return {
+        attempted: true,
+        releaseApiUrl,
+        statusCode: 200,
+        asset: null,
+        assets: assets
+          .map((asset) => (asset && typeof asset.name === "string" ? asset.name : null))
+          .filter(Boolean),
+        missing: true,
+        errorCode: null,
+        error: null
+      };
+    }
+
+    return {
+      attempted: true,
+      releaseApiUrl,
+      statusCode: 200,
+      asset: null,
+      assets: null,
+      missing: false,
+      errorCode: "DOCDEX_RELEASE_API_MULTI_MATCH",
+      error: `Multiple release assets matched ${assetName}`
+    };
+  } catch (err) {
+    return {
+      attempted: true,
+      releaseApiUrl,
+      statusCode: typeof err?.statusCode === "number" ? err.statusCode : null,
+      asset: null,
+      assets: null,
+      missing: false,
+      errorCode: "DOCDEX_RELEASE_API_FETCH_FAILED",
+      error: err?.message || String(err)
+    };
+  }
+}
+
 async function resolveInstallerDownloadPlan({
   repoSlug,
   version,
@@ -4431,6 +4625,7 @@ async function resolveInstallerDownloadPlan({
   downloadTextFn = downloadText,
   artifactNameFn = artifactName,
   getDownloadBaseFn = getDownloadBase,
+  getReleaseApiBaseFn = getReleaseApiBase,
   manifestCandidateNamesFn = manifestCandidateNames,
   checksumCandidateNamesFn = checksumCandidateNames,
   integrityConfigFn = resolveIntegrityConfigFromEnv
@@ -4829,6 +5024,7 @@ async function resolveInstallerDownloadPlan({
 >>>>>>> mcoda/task/ops-01-us-04-t11
   }
 
+<<<<<<< HEAD
   if (!expectedSha256) {
     if (!archive) archive = defaultArchive;
     const manifestCandidates = configuredIntegritySources.includes("manifest") ? manifestCandidateNamesFn() : [];
@@ -4879,10 +5075,25 @@ async function resolveInstallerDownloadPlan({
     }
   });
 
+=======
+  const releaseAssetAttempt = await tryResolveReleaseAssetViaApi({
+    repoSlug,
+    version,
+    assetName: archive,
+    downloadTextFn,
+    getDownloadBaseFn,
+    getReleaseApiBaseFn
+  });
+
+  const fallbackDownloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
+  const downloadUrl = releaseAssetAttempt?.asset?.downloadUrl || fallbackDownloadUrl;
+
+>>>>>>> mcoda/task/ops-01-us-01-t39
   return {
     archive,
     expectedSha256: normalizeSha256Hex(expectedSha256),
     source,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -4911,6 +5122,10 @@ async function resolveInstallerDownloadPlan({
 =======
     integritySource,
 >>>>>>> mcoda/task/ops-01-us-04-t11
+=======
+    downloadUrl,
+    releaseAssetAttempt,
+>>>>>>> mcoda/task/ops-01-us-01-t39
     manifestAttempt: { ...manifestAttempt, fallbackAttempted: !manifestAttempt.resolved }
 =======
     manifestAttempt: { ...manifestAttempt, fallbackAttempted: !manifestAttempt.resolved },
@@ -5099,6 +5314,7 @@ async function runInstaller(options) {
   const parseRepoSlugFn = opts.parseRepoSlugFn || parseRepoSlug;
   const resolveInstallerDownloadPlanFn = opts.resolveInstallerDownloadPlanFn || resolveInstallerDownloadPlan;
   const getDownloadBaseFn = opts.getDownloadBaseFn || getDownloadBase;
+  const getReleaseApiBaseFn = opts.getReleaseApiBaseFn || getReleaseApiBase;
   const downloadFn = opts.downloadFn || download;
   const verifyDownloadedFileIntegrityFn = opts.verifyDownloadedFileIntegrityFn || verifyDownloadedFileIntegrity;
   const extractTarballFn = opts.extractTarballFn || extractTarball;
@@ -5329,6 +5545,7 @@ async function runInstaller(options) {
   // Best-effort cleanup of stale staging artifacts from prior interrupted installs.
   await cleanupTransientInstallerArtifacts({ fsModule, pathModule, distBaseDir, platformKey, distDir });
 
+<<<<<<< HEAD
 >>>>>>> mcoda/task/ops-01-us-05-t37
 =======
   const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
@@ -5763,10 +5980,15 @@ async function runInstaller(options) {
 =======
   const { archive, expectedSha256, source, integritySource, manifestAttempt } = await resolveInstallerDownloadPlanFn({
 >>>>>>> mcoda/task/ops-01-us-04-t11
+=======
+  const { archive, expectedSha256, source, manifestAttempt, downloadUrl, releaseAssetAttempt } =
+    await resolveInstallerDownloadPlanFn({
+>>>>>>> mcoda/task/ops-01-us-01-t39
     repoSlug,
     version,
     platformKey,
     targetTriple,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
     logger,
@@ -5776,6 +5998,11 @@ async function runInstaller(options) {
     detected: platformPolicy.detected,
     logger
 >>>>>>> mcoda/task/ops-01-us-02-t39
+=======
+    logger,
+    getDownloadBaseFn,
+    getReleaseApiBaseFn
+>>>>>>> mcoda/task/ops-01-us-01-t39
   });
 =======
     expectedArchiveName: preflightPlan?.archive ?? null,
@@ -5832,6 +6059,7 @@ async function runInstaller(options) {
     throw err;
   }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -6149,12 +6377,19 @@ async function runInstaller(options) {
 
   const downloadUrl = `${downloadBase}/${releaseTag}/${archive}`;
 >>>>>>> mcoda/task/ops-01-us-03-t45
+=======
+  const resolvedDownloadUrl =
+    typeof downloadUrl === "string" && downloadUrl
+      ? downloadUrl
+      : `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
+>>>>>>> mcoda/task/ops-01-us-01-t39
   const tmpDir = opts.tmpDir || osModule.tmpdir();
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
   const stagingDir = pathModule.join(distBaseDir, `${platformKey}.staging.${process.pid}.${Date.now()}`);
 <<<<<<< HEAD
   const backupDir = pathModule.join(distBaseDir, `${platformKey}.backup.${process.pid}.${Date.now()}`);
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
   let backupActive = false;
@@ -6209,6 +6444,33 @@ async function runInstaller(options) {
     `[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) on ${detectedPlatform}/${detectedArch} @ v${version} via ${source}...`
   );
 >>>>>>> mcoda/task/ops-01-us-01-t45
+=======
+  if (releaseAssetAttempt?.missing) {
+    const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
+    throw new MissingArtifactError({
+      detected: { os: detectedPlatform, arch: detectedArch },
+      platformKey,
+      targetTriple,
+      assetName: archive,
+      source,
+      manifestName: manifestAttempt?.manifestName ?? null,
+      manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+      fallbackAttempted: source === "fallback",
+      fallbackReason,
+      version,
+      repoSlug,
+      downloadUrl: resolvedDownloadUrl,
+      expectedAsset: archive,
+      expectedAssetPattern: assetPatternForPlatformKeyFn(platformKey, { exampleAssetName: archive }),
+      note: "Release API listing did not include the expected asset name for this version.",
+      ...releaseApiDetails(releaseAssetAttempt)
+    });
+  }
+
+  logger.log(
+    `[docdex] Fetching ${archive} for ${detectedPlatform}/${detectedArch} -> ${platformKey} (${targetTriple}) v${version} via ${source}...`
+  );
+>>>>>>> mcoda/task/ops-01-us-01-t39
   try {
 >>>>>>> mcoda/task/ops-01-us-05-t39
 =======
@@ -6218,6 +6480,7 @@ async function runInstaller(options) {
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
 >>>>>>> mcoda/task/ops-01-us-05-t27
     try {
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -6328,6 +6591,9 @@ async function runInstaller(options) {
         sleepFn: opts.sleepFn
       });
 >>>>>>> mcoda/task/ops-01-us-01-t40
+=======
+      await downloadFn(resolvedDownloadUrl, tmpFile);
+>>>>>>> mcoda/task/ops-01-us-01-t39
     } catch (err) {
       if (err && typeof err.statusCode === "number" && err.statusCode === 404) {
         const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
@@ -6395,6 +6661,7 @@ async function runInstaller(options) {
           detectedVersionError,
 >>>>>>> mcoda/task/ops-01-us-03-t06
           repoSlug,
+<<<<<<< HEAD
           downloadUrl: redactUrl(downloadUrl),
 =======
           detectedVersion: local.detectedVersion ?? null,
@@ -6408,9 +6675,13 @@ async function runInstaller(options) {
           retryAttempts: typeof err?.retryAttempts === "number" ? err.retryAttempts : null,
           retryLimit: typeof err?.retryLimit === "number" ? err.retryLimit : null,
 >>>>>>> mcoda/task/ops-01-us-01-t40
+=======
+          downloadUrl: resolvedDownloadUrl,
+>>>>>>> mcoda/task/ops-01-us-01-t39
           expectedAsset: archive,
           expectedAssetPattern: assetPatternForPlatformKeyFn(platformKey, { exampleAssetName: archive }),
-          note: "This usually means the GitHub release assets are missing or the npm version is out of sync with the release."
+          note: "This usually means the GitHub release assets are missing or the npm version is out of sync with the release.",
+          ...releaseApiDetails(releaseAssetAttempt)
         });
       }
       throw new DownloadError(
@@ -6422,14 +6693,23 @@ async function runInstaller(options) {
           installedVersion: detectedInstalledVersion,
           repoSlug,
           assetName: archive,
+<<<<<<< HEAD
           downloadUrl: redactUrl(downloadUrl),
+=======
+          downloadUrl: resolvedDownloadUrl,
+>>>>>>> mcoda/task/ops-01-us-01-t39
           source,
           manifestName: manifestAttempt?.manifestName ?? null,
           manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
           fallbackAttempted: source === "fallback",
+<<<<<<< HEAD
           statusCode: typeof err?.statusCode === "number" ? err.statusCode : null,
           retryAttempts: typeof err?.retryAttempts === "number" ? err.retryAttempts : null,
           retryLimit: typeof err?.retryLimit === "number" ? err.retryLimit : null
+=======
+          ...releaseApiDetails(releaseAssetAttempt),
+          statusCode: typeof err?.statusCode === "number" ? err.statusCode : null
+>>>>>>> mcoda/task/ops-01-us-01-t39
         },
         err
       );
@@ -6491,6 +6771,7 @@ async function runInstaller(options) {
         targetTriple,
         version,
         repoSlug,
+<<<<<<< HEAD
         downloadUrl,
 =======
     structured.emit({
@@ -6503,6 +6784,9 @@ async function runInstaller(options) {
         verificationMethod: expectedSha256 ? "sha256" : null,
         expectedSha256: expectedSha256 || null,
 >>>>>>> mcoda/task/ops-01-us-04-t24
+=======
+        downloadUrl: resolvedDownloadUrl,
+>>>>>>> mcoda/task/ops-01-us-01-t39
         source,
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -6823,6 +7107,7 @@ async function runInstaller(options) {
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
 <<<<<<< HEAD
+<<<<<<< HEAD
         fallbackAttempted: source === "fallback"
 >>>>>>> mcoda/task/ops-01-us-04-t21
       }
@@ -6961,6 +7246,10 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
         fallbackAttempted: source === "fallback"
+=======
+        fallbackAttempted: source === "fallback",
+        ...releaseApiDetails(releaseAssetAttempt)
+>>>>>>> mcoda/task/ops-01-us-01-t39
       }
     });
 
@@ -7392,11 +7681,12 @@ async function runInstaller(options) {
         versionCheckError: versionProbe?.error ?? null,
         repoSlug,
         assetName: archive,
-        downloadUrl,
+        downloadUrl: resolvedDownloadUrl,
         source,
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
         fallbackAttempted: source === "fallback",
+        ...releaseApiDetails(releaseAssetAttempt),
         binaryPath
       });
     }
@@ -7535,6 +7825,7 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null
       },
@@ -7572,6 +7863,9 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-04-t11
         downloadUrl
 >>>>>>> mcoda/task/ops-01-us-04-t21
+=======
+        downloadUrl: resolvedDownloadUrl
+>>>>>>> mcoda/task/ops-01-us-01-t39
       }
 >>>>>>> mcoda/task/ops-01-us-06-t21
     };
@@ -8603,7 +8897,16 @@ function describeFatalError(err) {
         expectedTargetTriple ? `[docdex] Expected target triple: ${expectedTargetTriple}` : null,
         err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,
         err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,
+<<<<<<< HEAD
         err.details?.source ? `[docdex] Release source: ${err.details.source}` : null,
+=======
+        err.details?.releaseApiUrl ? `[docdex] Release API: ${err.details.releaseApiUrl}` : null,
+        err.details?.releaseApiStatus != null ? `[docdex] Release API status: ${err.details.releaseApiStatus}` : null,
+        err.details?.releaseApiError ? `[docdex] Release API error: ${err.details.releaseApiError}` : null,
+        err.details?.releaseApiAssetMissing
+          ? "[docdex] Release API did not list the expected asset name."
+          : null,
+>>>>>>> mcoda/task/ops-01-us-01-t39
         fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,
         err.details?.fallbackReason ? `[docdex] Fallback reason: ${err.details.fallbackReason}` : null,
 <<<<<<< HEAD

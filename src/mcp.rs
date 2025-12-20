@@ -1276,13 +1276,20 @@ impl McpServer {
 
     async fn handle_search(&self, args: SearchArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_index_fresh()?;
         let query = args.query.trim();
         let limit = args
             .limit
             .unwrap_or(self.max_results)
             .clamp(1, self.max_results);
-        let hits =
+        let mut hits =
             search::run_query(&self.indexer, self.libs_indexer.as_ref(), query, limit).await?;
+        if hits.hits.len() > limit {
+            hits.hits.truncate(limit);
+            let top_score = hits.hits.first().map(|hit| hit.score);
+            hits.top_score = top_score;
+            hits.top_score_camel = top_score;
+        }
         let hits_value = serde_json::to_value(&hits.hits)?;
         let project_root_path = self
             .default_project_root
@@ -1361,6 +1368,7 @@ impl McpServer {
 
     async fn handle_files(&self, args: FilesArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_index_fresh()?;
         let limit = args
             .limit
             .unwrap_or(FILES_DEFAULT_LIMIT)
@@ -1384,6 +1392,7 @@ impl McpServer {
 
     async fn handle_stats(&self, args: StatsArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_index_fresh()?;
         let stats = self.indexer.stats()?;
         Ok(json!({
             "num_docs": stats.num_docs,
@@ -1483,6 +1492,7 @@ impl McpServer {
         if !self.indexer.config().symbols_enabled() {
             return Err(MissingSymbolsDependencyError.into());
         }
+        self.ensure_index_fresh()?;
         let rel_path = normalize_rel_path(&args.path)
             .ok_or(InvalidPathError)?;
         let rel_str = rel_path.to_string_lossy().replace('\\', "/");
@@ -1581,6 +1591,10 @@ impl McpServer {
             end_line: None,
         };
         self.handle_open(open_args).await
+    }
+
+    fn ensure_index_fresh(&self) -> Result<()> {
+        self.indexer.ensure_index_fresh()
     }
 
     fn ensure_same_repo(&self, candidate: &Path) -> Result<()> {

@@ -21,7 +21,7 @@ use crate::error::{
     ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
 };
 use crate::symbols;
-use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
+use crate::symbols::{SymbolOutcomeStatus, SymbolsStore};
 use walkdir::WalkDir;
 
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
@@ -957,11 +957,12 @@ impl Indexer {
                 store.repo_id(),
                 &ingest.rel_path,
                 Vec::new(),
-                SymbolOutcome {
-                    status: SymbolOutcomeStatus::Skipped,
-                    reason: Some("unsupported_language".to_string()),
-                    error_summary: None,
-                },
+                symbols::build_symbol_outcome(
+                    SymbolOutcomeStatus::Skipped,
+                    Some("unsupported_language".to_string()),
+                    None,
+                    None,
+                ),
             );
             if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
                 warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");
@@ -974,11 +975,12 @@ impl Indexer {
                 store.repo_id(),
                 &ingest.rel_path,
                 Vec::new(),
-                SymbolOutcome {
-                    status: SymbolOutcomeStatus::Failed,
-                    reason: Some(format!("read_failed ({})", language.as_str())),
-                    error_summary: Some(err.clone()),
-                },
+                symbols::build_symbol_outcome(
+                    SymbolOutcomeStatus::Failed,
+                    Some(format!("read_failed ({})", language.as_str())),
+                    Some(err.clone()),
+                    Some(language),
+                ),
             );
             if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
                 warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");
@@ -997,11 +999,12 @@ impl Indexer {
                     store.repo_id(),
                     &ingest.rel_path,
                     symbols,
-                    SymbolOutcome {
-                        status: SymbolOutcomeStatus::Ok,
-                        reason: None,
-                        error_summary: None,
-                    },
+                    symbols::build_symbol_outcome(
+                        SymbolOutcomeStatus::Ok,
+                        None,
+                        None,
+                        Some(language),
+                    ),
                 );
                 if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
                     warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");
@@ -1012,11 +1015,12 @@ impl Indexer {
                     store.repo_id(),
                     &ingest.rel_path,
                     Vec::new(),
-                    SymbolOutcome {
-                        status: SymbolOutcomeStatus::Failed,
-                        reason: Some(format!("extract_failed ({})", language.as_str())),
-                        error_summary: Some(err.to_string()),
-                    },
+                    symbols::build_symbol_outcome(
+                        SymbolOutcomeStatus::Failed,
+                        Some(format!("extract_failed ({})", language.as_str())),
+                        Some(err.to_string()),
+                        Some(language),
+                    ),
                 );
                 if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
                     warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");

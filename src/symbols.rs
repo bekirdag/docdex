@@ -6,6 +6,18 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const MAX_SYMBOLS_PER_FILE: usize = 512;
+const MAX_SYMBOL_NAME_CHARS: usize = 200;
+const MAX_SYMBOL_KIND_CHARS: usize = 32;
+const MAX_SYMBOL_SIGNATURE_CHARS: usize = 240;
+const MAX_OUTCOME_REASON_CHARS: usize = 160;
+const MAX_OUTCOME_ERROR_SUMMARY_CHARS: usize = 360;
+const MAX_METADATA_NAME_CHARS: usize = 64;
+const MAX_METADATA_VERSION_CHARS: usize = 64;
+const SYMBOL_PARSER_NAME: &str = "regex";
+const SYMBOL_PARSER_VERSION: &str = "1";
+const SYMBOL_RUNTIME_NAME: &str = "docdexd";
+
 fn default_symbols_schema() -> SchemaInfo {
     SchemaInfo {
         name: "docdex.symbols".to_string(),
@@ -36,12 +48,23 @@ pub enum SymbolOutcomeStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SymbolToolInfo {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolOutcome {
     pub status: SymbolOutcomeStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parser: Option<SymbolToolInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<SymbolToolInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,15 +212,7 @@ impl SymbolsStore {
         if parsed.file.is_empty() {
             parsed.file = rel_path.to_string();
         }
-        let repo_id = parsed.repo_id.clone();
-        let file = parsed.file.clone();
-        for symbol in &mut parsed.symbols {
-            if symbol.symbol_id.is_empty() {
-                symbol.symbol_id =
-                    make_symbol_id(&repo_id, &file, &symbol.range, &symbol.kind, &symbol.name);
-            }
-        }
-        parsed.symbols.sort_by(|a, b| a.symbol_id.cmp(&b.symbol_id));
+        normalize_symbols_payload(&mut parsed);
         Ok(Some(parsed))
     }
 
@@ -224,13 +239,15 @@ pub fn build_symbols_payload(
     symbols: Vec<SymbolItem>,
     outcome: SymbolOutcome,
 ) -> SymbolsResponseV1 {
-    SymbolsResponseV1 {
+    let mut payload = SymbolsResponseV1 {
         schema: default_symbols_schema(),
         repo_id: repo_id.to_string(),
         file: file.to_string(),
         symbols,
         outcome: Some(outcome),
-    }
+    };
+    normalize_symbols_payload(&mut payload);
+    payload
 }
 
 pub fn extract_symbols_best_effort(
@@ -252,6 +269,23 @@ pub fn extract_symbols_best_effort(
     Ok(symbols)
 }
 
+pub fn build_symbol_outcome(
+    status: SymbolOutcomeStatus,
+    reason: Option<String>,
+    error_summary: Option<String>,
+    language: Option<SourceLanguage>,
+) -> SymbolOutcome {
+    let mut outcome = SymbolOutcome {
+        status,
+        reason,
+        error_summary,
+        parser: language.map(symbol_parser_info),
+        runtime: Some(symbol_runtime_info()),
+    };
+    normalize_outcome(&mut outcome);
+    outcome
+}
+
 fn make_symbol_id(repo_id: &str, file: &str, range: &SymbolRange, kind: &str, name: &str) -> String {
     format!(
         "{repo_id}:{file}#{}:{}-{}:{}:{kind}:{name}",
@@ -270,20 +304,98 @@ fn make_symbol(
     end_col: u32,
     signature: Option<String>,
 ) -> SymbolItem {
+    let name = clamp_chars(&name, MAX_SYMBOL_NAME_CHARS);
+    let kind = clamp_chars(kind, MAX_SYMBOL_KIND_CHARS);
+    let signature = signature.map(|sig| clamp_chars(&sig, MAX_SYMBOL_SIGNATURE_CHARS));
     let range = SymbolRange {
         start_line,
         start_col,
         end_line,
         end_col,
     };
-    let symbol_id = make_symbol_id(repo_id, file, &range, kind, &name);
+    let symbol_id = make_symbol_id(repo_id, file, &range, &kind, &name);
     SymbolItem {
         symbol_id,
         name,
-        kind: kind.to_string(),
+        kind,
         range,
         signature,
     }
+}
+
+fn symbol_parser_info(language: SourceLanguage) -> SymbolToolInfo {
+    let name = format!("{SYMBOL_PARSER_NAME}-{}", language.as_str());
+    SymbolToolInfo {
+        name: clamp_chars(&name, MAX_METADATA_NAME_CHARS),
+        version: Some(clamp_chars(SYMBOL_PARSER_VERSION, MAX_METADATA_VERSION_CHARS)),
+    }
+}
+
+fn symbol_runtime_info() -> SymbolToolInfo {
+    SymbolToolInfo {
+        name: clamp_chars(SYMBOL_RUNTIME_NAME, MAX_METADATA_NAME_CHARS),
+        version: Some(clamp_chars(env!("CARGO_PKG_VERSION"), MAX_METADATA_VERSION_CHARS)),
+    }
+}
+
+fn normalize_symbols_payload(payload: &mut SymbolsResponseV1) {
+    if let Some(outcome) = payload.outcome.as_mut() {
+        normalize_outcome(outcome);
+    }
+    let repo_id = payload.repo_id.clone();
+    let file = payload.file.clone();
+    for symbol in &mut payload.symbols {
+        normalize_symbol_item(&repo_id, &file, symbol);
+    }
+    payload.symbols.sort_by(|a, b| a.symbol_id.cmp(&b.symbol_id));
+    if payload.symbols.len() > MAX_SYMBOLS_PER_FILE {
+        payload.symbols.truncate(MAX_SYMBOLS_PER_FILE);
+    }
+}
+
+fn normalize_symbol_item(repo_id: &str, file: &str, symbol: &mut SymbolItem) {
+    symbol.name = clamp_chars(&symbol.name, MAX_SYMBOL_NAME_CHARS);
+    symbol.kind = clamp_chars(&symbol.kind, MAX_SYMBOL_KIND_CHARS);
+    symbol.signature = symbol
+        .signature
+        .as_ref()
+        .map(|sig| clamp_chars(sig, MAX_SYMBOL_SIGNATURE_CHARS));
+    symbol.symbol_id = make_symbol_id(repo_id, file, &symbol.range, &symbol.kind, &symbol.name);
+}
+
+fn normalize_outcome(outcome: &mut SymbolOutcome) {
+    outcome.reason = outcome
+        .reason
+        .as_ref()
+        .map(|reason| clamp_chars(reason, MAX_OUTCOME_REASON_CHARS));
+    outcome.error_summary = outcome
+        .error_summary
+        .as_ref()
+        .map(|summary| clamp_chars(summary, MAX_OUTCOME_ERROR_SUMMARY_CHARS));
+    if let Some(parser) = outcome.parser.as_mut() {
+        normalize_tool_info(parser);
+    }
+    if let Some(runtime) = outcome.runtime.as_mut() {
+        normalize_tool_info(runtime);
+    }
+}
+
+fn normalize_tool_info(info: &mut SymbolToolInfo) {
+    info.name = clamp_chars(&info.name, MAX_METADATA_NAME_CHARS);
+    info.version = info
+        .version
+        .as_ref()
+        .map(|version| clamp_chars(version, MAX_METADATA_VERSION_CHARS));
+}
+
+fn clamp_chars(input: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    if input.chars().count() <= max_chars {
+        return input.to_string();
+    }
+    input.chars().take(max_chars).collect()
 }
 
 fn extract_markdown_symbols(repo_id: &str, rel_path: &str, content: &str) -> Result<Vec<SymbolItem>> {

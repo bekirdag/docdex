@@ -109,8 +109,30 @@ Each stored record is a `docdex.symbols` JSON payload:
 `SymbolsStore::read_symbols()` is backward-tolerant for older/missing fields:
 
 - If `repo_id` or `file` are missing/empty, it fills them from the store context and the read path.
-- If `symbol_id` is missing/empty on any symbol, it is recomputed.
+- Symbol IDs are recomputed after normalization to stay consistent with truncated fields.
 - Symbols are sorted by `symbol_id` for deterministic outputs.
+
+### Outcome metadata
+
+`outcome` may include parser/runtime metadata:
+
+- `outcome.parser`: `{ name, version? }` for the extractor parser (when known).
+- `outcome.runtime`: `{ name, version? }` for the Docdex runtime.
+
+### Limits and truncation
+
+To keep payload sizes predictable, Docdex clamps symbol outputs deterministically:
+
+- Max symbols per file: 512
+- Max symbol `name`: 200 chars
+- Max symbol `kind`: 32 chars
+- Max symbol `signature`: 240 chars
+- Max `outcome.reason`: 160 chars
+- Max `outcome.error_summary`: 360 chars
+- Max `outcome.parser.name`/`outcome.runtime.name`: 64 chars
+- Max `outcome.parser.version`/`outcome.runtime.version`: 64 chars
+
+Lengths are Unicode scalar chars; truncation does not add extra fields.
 
 ## Stable identifiers
 

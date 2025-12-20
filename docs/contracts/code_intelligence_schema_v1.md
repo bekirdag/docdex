@@ -41,6 +41,12 @@ Symbol responses represent extracted symbols within a repo, scoped to a file.
   - `status` (string, required): `ok` | `skipped` | `failed`
   - `reason` (string, optional): Short stable reason code/message (e.g. `unsupported_language`, `read_failed (markdown)`).
   - `error_summary` (string, optional): Best-effort human-readable error summary (must be bounded; avoid stack traces).
+  - `parser` (object, optional): Parser metadata for the extractor.
+    - `name` (string, required)
+    - `version` (string, optional)
+  - `runtime` (object, optional): Runtime metadata for the extractor process.
+    - `name` (string, required)
+    - `version` (string, optional)
 
 **Symbol item fields (v1)**
 
@@ -51,6 +57,21 @@ Symbol responses represent extracted symbols within a repo, scoped to a file.
 - `range` (object, required): 1-based positions within `file`.
   - `start_line`, `start_col`, `end_line`, `end_col` (integers)
 - `signature` (string, optional): Language-specific display signature if available.
+
+### Symbols limits (v1)
+
+Docdex clamps symbol outputs deterministically to keep schemas stable:
+
+- Max symbols per file: 512
+- Max symbol `name`: 200 chars
+- Max symbol `kind`: 32 chars
+- Max symbol `signature`: 240 chars
+- Max `outcome.reason`: 160 chars
+- Max `outcome.error_summary`: 360 chars
+- Max `outcome.parser.name`/`outcome.runtime.name`: 64 chars
+- Max `outcome.parser.version`/`outcome.runtime.version`: 64 chars
+
+Lengths are Unicode scalar chars; truncation is deterministic and does not add extra fields.
 
 ## Impact graph response (`docdex.impact_graph`)
 

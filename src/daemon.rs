@@ -5,6 +5,7 @@ use crate::libs;
 use crate::memory::MemoryStore;
 use crate::metrics;
 use crate::ollama::OllamaEmbedder;
+use crate::repo_manager::RepoManagerConfig;
 use crate::search::{self, AppState, SecurityConfig};
 use crate::web;
 use crate::util;
@@ -227,6 +228,7 @@ pub async fn serve(
     ollama_base_url: String,
     embedding_model: String,
     embedding_timeout_ms: u64,
+    repo_manager_config: RepoManagerConfig,
 ) -> Result<()> {
     #[cfg(unix)]
     {
@@ -325,7 +327,11 @@ pub async fn serve(
         metrics: metrics.clone(),
         web_discovery,
         memory,
+<<<<<<< HEAD
         index_state: Arc::new(Mutex::new(Default::default())),
+=======
+        repo_manager_config,
+>>>>>>> mcoda/task/bck-05-us-07-t02
     };
     watcher::spawn(indexer.clone()).map_err(|err| {
         StartupError::new(

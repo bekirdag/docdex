@@ -26,6 +26,7 @@ mod memory;
 mod mcp;
 mod ollama;
 mod ratelimit;
+mod repo_manager;
 mod repo_identity;
 mod search;
 mod state_layout;
@@ -156,6 +157,14 @@ enum Command {
             help = "Maximum allowed request size (Content-Length or body hint) in bytes"
         )]
         max_request_bytes: usize,
+        #[arg(
+            long,
+            env = "DOCDEX_MAX_OPEN_REPOS",
+            default_value_t = repo_manager::DEFAULT_MAX_OPEN_REPOS,
+            value_parser = repo_manager::parse_max_open_repos,
+            help = "Cap concurrently open repos for the shared repo manager (4-16)"
+        )]
+        max_open_repos: usize,
         #[arg(
             long,
             env = "DOCDEX_RATE_LIMIT_PER_MIN",
@@ -517,6 +526,14 @@ enum Command {
         max_results: usize,
         #[arg(
             long,
+            env = "DOCDEX_MAX_OPEN_REPOS",
+            default_value_t = repo_manager::DEFAULT_MAX_OPEN_REPOS,
+            value_parser = repo_manager::parse_max_open_repos,
+            help = "Cap concurrently open repos for the shared repo manager (4-16)"
+        )]
+        max_open_repos: usize,
+        #[arg(
+            long,
             env = "DOCDEX_MCP_RATE_LIMIT_PER_MIN",
             default_value_t = 0u32,
             help = "Optional global tool-call rate limit per minute for MCP (0 disables)"
@@ -641,6 +658,7 @@ async fn run() -> Result<()> {
             max_limit,
             max_query_bytes,
             max_request_bytes,
+            max_open_repos,
             rate_limit_per_min,
             rate_limit_burst,
             strip_snippet_html,
@@ -684,6 +702,7 @@ async fn run() -> Result<()> {
                 )
                 .with_hint("Verify repo/state-dir paths and permissions; consider removing --state-dir or running `docdexd index` once to initialize metadata.")
             })?;
+            let repo_manager_config = repo_manager::RepoManagerConfig::new(max_open_repos)?;
             let tls = daemon::TlsConfig::from_options(
                 tls_cert,
                 tls_key,
@@ -744,6 +763,7 @@ async fn run() -> Result<()> {
                 embedding_base_url,
                 embedding_model,
                 embedding_timeout_ms,
+                repo_manager_config,
             )
             .await?;
         }
@@ -1307,6 +1327,7 @@ async fn run() -> Result<()> {
             repo,
             log,
             max_results,
+            max_open_repos,
             rate_limit_per_min,
             rate_limit_burst,
         } => {
@@ -1315,6 +1336,7 @@ async fn run() -> Result<()> {
                 .and_then(|v| v.parse::<usize>().ok())
                 .unwrap_or(max_results)
                 .max(1);
+            let repo_manager_config = repo_manager::RepoManagerConfig::new(max_open_repos)?;
             let repo_root = repo.repo_root();
             let index_config = index::IndexConfig::with_overrides(
                 &repo_root,
@@ -1331,6 +1353,7 @@ async fn run() -> Result<()> {
                 max_results,
                 rate_limit_per_min,
                 rate_limit_burst,
+                repo_manager_config,
             )
             .await?;
         }

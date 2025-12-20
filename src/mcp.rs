@@ -76,10 +76,14 @@ use crate::max_size::{
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 <<<<<<< HEAD
+<<<<<<< HEAD
 use crate::ratelimit::{RateLimitConfig, RateLimiter};
 =======
 use crate::ratelimit::ResourceLimiter;
 #[cfg(test)]
+=======
+use crate::repo_manager::RepoManagerConfig;
+>>>>>>> mcoda/task/bck-05-us-07-t02
 use crate::ratelimit::RateLimiter;
 >>>>>>> mcoda/task/bck-05-us-09-t20
 use crate::search;
@@ -1222,6 +1226,7 @@ pub async fn serve(
     max_results: usize,
     rate_limit_per_min: u32,
     rate_limit_burst: u32,
+    repo_manager_config: RepoManagerConfig,
 ) -> Result<()> {
     let repo_root = repo_root
         .canonicalize()
@@ -1321,6 +1326,7 @@ pub async fn serve(
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         rate_limit_per_min,
         rate_limit_burst,
         effective_rate_limit_burst: effective_burst,
@@ -1337,6 +1343,9 @@ pub async fn serve(
 =======
         web_discovery,
 >>>>>>> mcoda/task/bck-05-us-07-t16
+=======
+        repo_manager_config,
+>>>>>>> mcoda/task/bck-05-us-07-t02
     };
     server.run().await
 }
@@ -1364,6 +1373,7 @@ struct McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     rate_limit_per_min: u32,
     rate_limit_burst: u32,
     effective_rate_limit_burst: u32,
@@ -1377,6 +1387,9 @@ struct McpServer {
 =======
     web_discovery: web::ddg::DdgDiscovery,
 >>>>>>> mcoda/task/bck-05-us-07-t16
+=======
+    repo_manager_config: RepoManagerConfig,
+>>>>>>> mcoda/task/bck-05-us-07-t02
 }
 
 impl McpServer {

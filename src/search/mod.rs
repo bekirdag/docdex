@@ -82,8 +82,12 @@ use crate::max_size::{
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 <<<<<<< HEAD
+<<<<<<< HEAD
 use crate::ratelimit::{RateLimitConfig, RateLimiter};
 =======
+=======
+use crate::repo_manager::RepoManagerConfig;
+>>>>>>> mcoda/task/bck-05-us-07-t02
 use crate::ratelimit::RateLimiter;
 use crate::web::ddg::DdgDiscovery;
 >>>>>>> mcoda/task/bck-05-us-07-t16
@@ -308,7 +312,11 @@ pub struct AppState {
     pub metrics: Arc<crate::metrics::Metrics>,
     pub web_discovery: DdgDiscovery,
     pub memory: Option<MemoryState>,
+<<<<<<< HEAD
     pub index_state: Arc<Mutex<IndexStateCache>>,
+=======
+    pub repo_manager_config: RepoManagerConfig,
+>>>>>>> mcoda/task/bck-05-us-07-t02
 }
 
 #[derive(Clone)]

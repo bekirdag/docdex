@@ -33,9 +33,13 @@ use crate::max_size::{
 };
 >>>>>>> mcoda/task/bck-05-us-10-t25
 use crate::symbols;
+<<<<<<< HEAD
 use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
 use thiserror::Error;
 use tracing::warn;
+=======
+use crate::symbols::{SymbolOutcomeStatus, SymbolsStore};
+>>>>>>> mcoda/task/bck-05-us-10-t04
 use walkdir::WalkDir;
 
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
@@ -1224,7 +1228,16 @@ impl Indexer {
                 store.repo_id(),
                 &ingest.rel_path,
                 Vec::new(),
+<<<<<<< HEAD
                 outcome.clone(),
+=======
+                symbols::build_symbol_outcome(
+                    SymbolOutcomeStatus::Skipped,
+                    Some("unsupported_language".to_string()),
+                    None,
+                    None,
+                ),
+>>>>>>> mcoda/task/bck-05-us-10-t04
             );
             if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
                 warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");
@@ -1246,6 +1259,7 @@ impl Indexer {
                 &ingest.rel_path,
                 Vec::new(),
 <<<<<<< HEAD
+<<<<<<< HEAD
                 outcome.clone(),
 =======
                 SymbolOutcome {
@@ -1254,6 +1268,14 @@ impl Indexer {
                     error_summary: Some(symbols::clamp_error_summary(err)),
                 },
 >>>>>>> mcoda/task/bck-05-us-10-t05
+=======
+                symbols::build_symbol_outcome(
+                    SymbolOutcomeStatus::Failed,
+                    Some(format!("read_failed ({})", language.as_str())),
+                    Some(err.clone()),
+                    Some(language),
+                ),
+>>>>>>> mcoda/task/bck-05-us-10-t04
             );
             if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
                 warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");
@@ -1306,7 +1328,16 @@ impl Indexer {
                     store.repo_id(),
                     &ingest.rel_path,
                     symbols,
+<<<<<<< HEAD
                     outcome.clone(),
+=======
+                    symbols::build_symbol_outcome(
+                        SymbolOutcomeStatus::Ok,
+                        None,
+                        None,
+                        Some(language),
+                    ),
+>>>>>>> mcoda/task/bck-05-us-10-t04
                 );
                 if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
                     warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");
@@ -1327,6 +1358,7 @@ impl Indexer {
                     &ingest.rel_path,
                     Vec::new(),
 <<<<<<< HEAD
+<<<<<<< HEAD
                     outcome.clone(),
 =======
                     SymbolOutcome {
@@ -1335,6 +1367,14 @@ impl Indexer {
                         error_summary: Some(symbols::clamp_error_summary(&err.to_string())),
                     },
 >>>>>>> mcoda/task/bck-05-us-10-t05
+=======
+                    symbols::build_symbol_outcome(
+                        SymbolOutcomeStatus::Failed,
+                        Some(format!("extract_failed ({})", language.as_str())),
+                        Some(err.to_string()),
+                        Some(language),
+                    ),
+>>>>>>> mcoda/task/bck-05-us-10-t04
                 );
                 if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
                     warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");

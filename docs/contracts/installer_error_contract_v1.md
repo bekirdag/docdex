@@ -108,6 +108,11 @@ If all fallback paths fail (e.g., checksums are also unavailable), the resulting
 - `DOCDEX_CHECKSUM_UNUSABLE` → exit `24`
   - The installer could not obtain SHA-256 integrity metadata for the selected asset (manifest missing/unusable and checksum fallback missing/malformed).
 
+### Filesystem / permissions (fatal)
+
+- `DOCDEX_PERMISSION_DENIED` → exit `25`
+  - The installer could not write to the temp directory or install location (EACCES/EPERM/EROFS).
+
 ### Installer configuration (fatal)
 
 - `DOCDEX_INSTALLER_CONFIG` → exit `2`

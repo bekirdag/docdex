@@ -26,6 +26,7 @@ const MAX_MANIFEST_BYTES = 1024 * 1024; // 1 MiB cap for safety
 const INVALID_JSON_ERROR = "invalid JSON";
 const INSTALL_METADATA_SCHEMA_VERSION = 1;
 const INSTALL_METADATA_FILENAME = "docdexd-install.json";
+const PERMISSION_ERROR_CODES = new Set(["EACCES", "EPERM", "EROFS"]);
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -39,7 +40,8 @@ const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_DOWNLOAD_FAILED: 20,
   DOCDEX_ASSET_MISSING: 21,
   DOCDEX_INTEGRITY_MISMATCH: 22,
-  DOCDEX_ARCHIVE_INVALID: 23
+  DOCDEX_ARCHIVE_INVALID: 23,
+  DOCDEX_PERMISSION_DENIED: 25
 });
 
 function withBaseDetails(details) {
@@ -51,6 +53,17 @@ function withBaseDetails(details) {
   };
 }
 
+function isPermissionError(err) {
+  return !!(err && typeof err.code === "string" && PERMISSION_ERROR_CODES.has(err.code));
+}
+
+function permissionPathFromError(err, fallbackPath) {
+  if (err && typeof err.path === "string" && err.path) return err.path;
+  if (err && typeof err.dest === "string" && err.dest) return err.dest;
+  if (fallbackPath) return fallbackPath;
+  return null;
+}
+
 class InstallerConfigError extends Error {
   /**
    * @param {string} message
@@ -60,6 +73,21 @@ class InstallerConfigError extends Error {
     super(message);
     this.name = "InstallerConfigError";
     this.code = "DOCDEX_INSTALLER_CONFIG";
+    this.exitCode = EXIT_CODE_BY_ERROR_CODE[this.code];
+    this.details = withBaseDetails(details);
+  }
+}
+
+class PermissionDeniedError extends Error {
+  /**
+   * @param {string} message
+   * @param {object} [details]
+   * @param {Error} [cause]
+   */
+  constructor(message, details, cause) {
+    super(message, cause ? { cause } : undefined);
+    this.name = "PermissionDeniedError";
+    this.code = "DOCDEX_PERMISSION_DENIED";
     this.exitCode = EXIT_CODE_BY_ERROR_CODE[this.code];
     this.details = withBaseDetails(details);
   }
@@ -1076,14 +1104,42 @@ async function runInstaller(options) {
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
   const tmpDir = opts.tmpDir || osModule.tmpdir();
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
+  const fallbackReason =
+    source === "fallback" ? (manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found") : null;
+  const baseErrorDetails = {
+    detected: { os: detectedPlatform, arch: detectedArch },
+    platformKey,
+    targetTriple,
+    version,
+    repoSlug,
+    assetName: archive,
+    downloadUrl,
+    source,
+    manifestName: manifestAttempt?.manifestName ?? null,
+    manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+    fallbackAttempted: source === "fallback",
+    fallbackReason
+  };
+  const permissionDetails = (err, operation, fallbackPath) => ({
+    ...baseErrorDetails,
+    operation,
+    path: permissionPathFromError(err, fallbackPath),
+    errorCode: typeof err?.code === "string" ? err.code : null
+  });
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   try {
     try {
       await downloadFn(downloadUrl, tmpFile);
     } catch (err) {
+      if (isPermissionError(err)) {
+        throw new PermissionDeniedError(
+          "Permission denied while writing download file",
+          permissionDetails(err, "download", tmpFile),
+          err
+        );
+      }
       if (err && typeof err.statusCode === "number" && err.statusCode === 404) {
-        const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
         throw new MissingArtifactError({
           detected: { os: detectedPlatform, arch: detectedArch },
           platformKey,
@@ -1105,42 +1161,66 @@ async function runInstaller(options) {
       throw new DownloadError(
         `Download failed for ${archive}`,
         {
-          platformKey,
-          targetTriple,
-          version,
-          repoSlug,
-          assetName: archive,
-          downloadUrl,
-          source,
-          manifestName: manifestAttempt?.manifestName ?? null,
-          manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
-          fallbackAttempted: source === "fallback",
+          ...baseErrorDetails,
           statusCode: typeof err?.statusCode === "number" ? err.statusCode : null
         },
         err
       );
     }
 
-    await verifyDownloadedFileIntegrityFn({
-      filePath: tmpFile,
-      expectedSha256,
-      archiveName: archive,
-      details: {
-        platformKey,
-        targetTriple,
-        version,
-        repoSlug,
-        downloadUrl,
-        source,
-        manifestName: manifestAttempt?.manifestName ?? null,
-        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
-        fallbackAttempted: source === "fallback"
+    try {
+      await verifyDownloadedFileIntegrityFn({
+        filePath: tmpFile,
+        expectedSha256,
+        archiveName: archive,
+        details: {
+          platformKey,
+          targetTriple,
+          version,
+          repoSlug,
+          downloadUrl,
+          source,
+          manifestName: manifestAttempt?.manifestName ?? null,
+          manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+          fallbackAttempted: source === "fallback"
+        }
+      });
+    } catch (err) {
+      if (isPermissionError(err)) {
+        throw new PermissionDeniedError(
+          "Permission denied while verifying downloaded archive",
+          permissionDetails(err, "verify_archive", tmpFile),
+          err
+        );
       }
-    });
+      throw err;
+    }
 
     // Only replace an existing installation after we have successfully fetched + verified the archive.
-    await fsModule.promises.rm(distDir, { recursive: true, force: true });
-    await extractTarballFn(tmpFile, distDir);
+    try {
+      await fsModule.promises.rm(distDir, { recursive: true, force: true });
+    } catch (err) {
+      if (isPermissionError(err)) {
+        throw new PermissionDeniedError(
+          "Permission denied while preparing install directory",
+          permissionDetails(err, "prepare_install_dir", distDir),
+          err
+        );
+      }
+      throw err;
+    }
+    try {
+      await extractTarballFn(tmpFile, distDir);
+    } catch (err) {
+      if (isPermissionError(err)) {
+        throw new PermissionDeniedError(
+          "Permission denied while extracting archive",
+          permissionDetails(err, "extract_archive", distDir),
+          err
+        );
+      }
+      throw err;
+    }
 
     const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
     if (!fsModule.existsSync(binaryPath)) {
@@ -1162,7 +1242,19 @@ async function runInstaller(options) {
     await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
     logger.log(`[docdex] Installed binary to ${binaryPath}`);
 
-    const binarySha256 = await sha256FileFn(binaryPath);
+    let binarySha256;
+    try {
+      binarySha256 = await sha256FileFn(binaryPath);
+    } catch (err) {
+      if (isPermissionError(err)) {
+        throw new PermissionDeniedError(
+          "Permission denied while reading installed binary",
+          permissionDetails(err, "hash_binary", binaryPath),
+          err
+        );
+      }
+      throw err;
+    }
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
       installedAt: nowIso(),
@@ -1181,12 +1273,23 @@ async function runInstaller(options) {
         downloadUrl
       }
     };
-    await writeJsonFileAtomic({
-      fsModule,
-      pathModule,
-      filePath: installMetadataPath(distDir, pathModule),
-      value: metadata
-    });
+    try {
+      await writeJsonFileAtomic({
+        fsModule,
+        pathModule,
+        filePath: installMetadataPath(distDir, pathModule),
+        value: metadata
+      });
+    } catch (err) {
+      if (isPermissionError(err)) {
+        throw new PermissionDeniedError(
+          "Permission denied while writing install metadata",
+          permissionDetails(err, "write_metadata", installMetadataPath(distDir, pathModule)),
+          err
+        );
+      }
+      throw err;
+    }
 
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
     return { binaryPath, outcome: local.outcome };
@@ -1307,6 +1410,7 @@ function describeFatalError(err) {
         err.details?.targetTriple ? `[docdex] Expected target triple: ${err.details.targetTriple}` : null,
         err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,
         err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,
+        fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,
         checksumCandidates.length
           ? `[docdex] Checksum candidates tried: ${checksumCandidates.join(", ")}`
           : null,
@@ -1319,6 +1423,31 @@ function describeFatalError(err) {
     };
   }
 
+  if (err instanceof PermissionDeniedError) {
+    const detected = err.details?.detected ? `${err.details.detected.os}/${err.details.detected.arch}` : null;
+    return {
+      code: err.code,
+      exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
+      details: withBaseDetails(err.details),
+      lines: [
+        `[docdex] install failed: ${err.message}`,
+        `[docdex] error code: ${err.code}`,
+        detected ? `[docdex] Detected platform: ${detected}` : null,
+        err.details?.platformKey ? `[docdex] Platform key: ${err.details.platformKey}` : null,
+        err.details?.targetTriple ? `[docdex] Target triple: ${err.details.targetTriple}` : null,
+        err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
+        err.details?.operation ? `[docdex] Operation: ${err.details.operation}` : null,
+        err.details?.path ? `[docdex] Path: ${err.details.path}` : null,
+        err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
+        err.cause?.message ? `[docdex] Cause: ${err.cause.message}` : null,
+        "[docdex] Next steps:",
+        "[docdex] - Ensure the install location and temp directory are writable (node_modules/docdex/dist and TMPDIR/TEMP).",
+        "[docdex] - If installing globally, use a user-writable npm prefix or re-run with appropriate permissions.",
+        "[docdex] - Re-run the install after adjusting permissions."
+      ].filter(Boolean)
+    };
+  }
+
   if (err instanceof DownloadError) {
     return {
       code: err.code,
@@ -1327,9 +1456,27 @@ function describeFatalError(err) {
       lines: [
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
+        err.details?.detected ? `[docdex] Detected platform: ${err.details.detected.os}/${err.details.detected.arch}` : null,
+        err.details?.platformKey ? `[docdex] Platform key: ${err.details.platformKey}` : null,
+        err.details?.targetTriple ? `[docdex] Target triple: ${err.details.targetTriple}` : null,
+        err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
+        err.details?.version ? `[docdex] Version: v${err.details.version}` : null,
+        err.details?.repoSlug ? `[docdex] Download repo: ${err.details.repoSlug}` : null,
         err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
+        err.details?.source ? `[docdex] Source: ${err.details.source}` : null,
+        err.details?.manifestName ? `[docdex] Manifest name: ${err.details.manifestName}` : null,
+        err.details?.manifestVersion != null ? `[docdex] Manifest version: ${err.details.manifestVersion}` : null,
+        fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,
+        err.details?.fallbackReason ? `[docdex] Fallback reason: ${err.details.fallbackReason}` : null,
         err.details?.statusCode != null ? `[docdex] HTTP status: ${err.details.statusCode}` : null,
-        err.cause?.message ? `[docdex] Cause: ${err.cause.message}` : null
+        err.cause?.message ? `[docdex] Cause: ${err.cause.message}` : null,
+        "[docdex] Next steps:",
+        "[docdex] - Check network/proxy/firewall settings; set HTTPS_PROXY/HTTP_PROXY/NO_PROXY if needed.",
+        "[docdex] - If GitHub rate-limited or accessing a private release, set DOCDEX_GITHUB_TOKEN (or GITHUB_TOKEN).",
+        "[docdex] - Verify DOCDEX_DOWNLOAD_REPO and DOCDEX_DOWNLOAD_BASE (if using a mirror).",
+        err.details?.assetName && err.details?.platformKey
+          ? `[docdex] - Manual workaround: download ${err.details.assetName} and extract into dist/${err.details.platformKey}/ within the installed package.`
+          : "[docdex] - Manual workaround: download the release asset and extract into dist/<platformKey>/ within the installed package."
       ].filter(Boolean)
     };
   }
@@ -1369,7 +1516,14 @@ function describeFatalError(err) {
       lines: [
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
-        err.details?.binaryPath ? `[docdex] Expected binary path: ${err.details.binaryPath}` : null
+        err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
+        err.details?.targetTriple ? `[docdex] Target triple: ${err.details.targetTriple}` : null,
+        err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
+        err.details?.binaryPath ? `[docdex] Expected binary path: ${err.details.binaryPath}` : null,
+        "[docdex] Next steps:",
+        "[docdex] - Reinstall or try a different version.",
+        "[docdex] - Ensure the release asset includes docdexd/docdexd.exe at the expected path.",
+        "[docdex] - If needed, build from source (`cargo build --release --locked`)."
       ].filter(Boolean)
     };
   }
@@ -1393,6 +1547,20 @@ function describeFatalError(err) {
             `[docdex] Details: ${err.message}`
           ].filter(Boolean)
         : [`[docdex] install failed: ${err.message}`, `[docdex] error code: ${err.code}`];
+
+    if (err.code === "DOCDEX_ASSET_NO_MATCH") {
+      lines.push(
+        "[docdex] Next steps:",
+        "[docdex] - Install a version that supports your platform or build from source (`cargo build --release --locked`).",
+        "[docdex] - If installing from a fork, verify the release manifest lists your target triple."
+      );
+    } else if (err.code === "DOCDEX_ASSET_MULTI_MATCH") {
+      lines.push(
+        "[docdex] Next steps:",
+        "[docdex] - Install a different version or build from source (`cargo build --release --locked`).",
+        "[docdex] - For publishers: ensure each target triple maps to exactly one asset."
+      );
+    }
 
     if (fallbackAttempted === false) {
       lines.push("[docdex] Fallback was not attempted because a manifest was present but unusable.");
@@ -1442,8 +1610,10 @@ module.exports = {
   decideInstallAction,
   determineLocalInstallerOutcome,
   verifyDownloadedFileIntegrity,
+  DownloadError,
   MissingArtifactError,
   ChecksumResolutionError,
+  PermissionDeniedError,
   runInstaller,
   describeFatalError,
   handleFatal

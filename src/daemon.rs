@@ -17,7 +17,10 @@ use rustls_pemfile;
 use std::env;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::{io, sync::Arc};
+use std::{
+    io,
+    sync::{Arc, Mutex},
+};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio_rustls::{
@@ -311,6 +314,7 @@ pub async fn serve(
         audit,
         metrics: metrics.clone(),
         memory,
+        index_state: Arc::new(Mutex::new(Default::default())),
     };
     watcher::spawn(indexer.clone()).map_err(|err| {
         StartupError::new(

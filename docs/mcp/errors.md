@@ -71,7 +71,12 @@ Use these codes for invalid inputs:
 - `invalid_query`: invalid query text (empty/whitespace-only, or query parser rejects it).
 - `invalid_path`: invalid or unsafe path (absolute path, parent traversal, outside repo, etc).
 - `invalid_range`: invalid line window (`start_line`/`end_line` out of bounds).
+<<<<<<< HEAD
 - `max_content_exceeded`: reserved for cases where content cannot be safely truncated (not currently emitted; MCP tools clamp/truncate content to MaxSizePolicy).
+=======
+- `unsupported_version`: requested schema version is outside the supported range for the tool response.
+- `max_content_exceeded`: response content would exceed server limits (e.g. `docdex_open` file too large).
+>>>>>>> mcoda/task/bck-05-us-10-t21
 
 ### Feature/domain codes (currently emitted)
 
@@ -131,6 +136,7 @@ Notes:
 - MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`.
 <<<<<<< HEAD
 - MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with `details.max_bytes` and `details.actual_bytes`.
+<<<<<<< HEAD
 
 ## Tool result size limits (server-scoped)
 
@@ -161,3 +167,8 @@ Docdex enforces repo-invariant bounds on MCP tool outputs. When a client request
 - `docdex_memory_recall`: `top_k` ≤ 50; `content` is truncated to 512 KiB per item.
 - `docdex_open`: `content` is truncated to 512 KiB.
 >>>>>>> mcoda/task/bck-05-us-10-t26
+=======
+- MCP tool arguments may include `schema_version`; unsupported values return `unsupported_version` with `details.schema` including `name`, `requested`, and `supported` `{min,max}`.
+- MCP `docdex_search` snippet text is capped at 420 characters (truncated when needed).
+- MCP `docdex_memory_recall` clamps `top_k` to `<= 50`.
+>>>>>>> mcoda/task/bck-05-us-10-t21

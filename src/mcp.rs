@@ -1,8 +1,9 @@
 use crate::error::{
     AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
-    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
+    ERR_UNSUPPORTED_VERSION, repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX,
+    ERR_MISSING_REPO, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
+    ERR_UNKNOWN_REPO,
 };
 use crate::explainability::ExplainabilityStore;
 use crate::index::{IndexConfig, Indexer};
@@ -40,6 +41,15 @@ const ERR_INVALID_PARAMS: i32 = -32602;
 const ERR_INTERNAL: i32 = -32000;
 const ERR_RATE_LIMITED_RPC: i32 = -32029;
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+const TOOL_SCHEMA_VERSION_MIN: u32 = 1;
+const TOOL_SCHEMA_VERSION_MAX: u32 = 1;
+const FILES_DEFAULT_LIMIT: usize = 200;
+const FILES_MAX_LIMIT: usize = 1000;
+const FILES_MAX_OFFSET: usize = 50_000;
+const OPEN_MAX_BYTES: usize = 512 * 1024; // guard rail for returning file content
+>>>>>>> mcoda/task/bck-05-us-10-t21
 const MAX_ERROR_MESSAGE_BYTES: usize = 256;
 const MAX_ERROR_REASON_BYTES: usize = 768;
 =======
@@ -152,7 +162,24 @@ fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn truncate_error_bytes(input: String, max_bytes: usize) -> String {
+=======
+fn schema_version_details(schema_name: &'static str, requested: u32) -> serde_json::Value {
+    json!({
+        "schema": {
+            "name": schema_name,
+            "requested": requested,
+            "supported": {
+                "min": TOOL_SCHEMA_VERSION_MIN,
+                "max": TOOL_SCHEMA_VERSION_MAX
+            }
+        }
+    })
+}
+
+fn truncate_bytes(input: String, max_bytes: usize) -> String {
+>>>>>>> mcoda/task/bck-05-us-10-t21
     if input.len() <= max_bytes {
         return input;
     }
@@ -247,6 +274,7 @@ fn default_message_for_code(code: &str) -> &'static str {
         "invalid_path" => "invalid path",
         "invalid_range" => "invalid range",
         "max_content_exceeded" => "content too large",
+        ERR_UNSUPPORTED_VERSION => "unsupported version",
         ERR_EMBEDDING_TIMEOUT => "embedding timeout",
         ERR_EMBEDDING_MODEL_NOT_FOUND => "embedding model not found",
         ERR_EMBEDDING_FAILED => "embedding failed",
@@ -386,6 +414,8 @@ struct SearchArgs {
     limit: Option<usize>,
     #[serde(default)]
     project_root: Option<PathBuf>,
+    #[serde(default)]
+    schema_version: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -394,18 +424,24 @@ struct IndexArgs {
     paths: Vec<PathBuf>,
     #[serde(default)]
     project_root: Option<PathBuf>,
+    #[serde(default)]
+    schema_version: Option<u32>,
 }
 
 #[derive(Deserialize)]
 struct StatsArgs {
     #[serde(default)]
     project_root: Option<PathBuf>,
+    #[serde(default)]
+    schema_version: Option<u32>,
 }
 
 #[derive(Deserialize)]
 struct RepoInspectArgs {
     #[serde(default)]
     project_root: Option<PathBuf>,
+    #[serde(default)]
+    schema_version: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -416,6 +452,8 @@ struct FilesArgs {
     limit: Option<usize>,
     #[serde(default)]
     offset: Option<usize>,
+    #[serde(default)]
+    schema_version: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -427,6 +465,8 @@ struct OpenArgs {
     start_line: Option<usize>,
     #[serde(default)]
     end_line: Option<usize>,
+    #[serde(default)]
+    schema_version: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -434,6 +474,8 @@ struct SymbolsArgs {
     path: String,
     #[serde(default)]
     project_root: Option<PathBuf>,
+    #[serde(default)]
+    schema_version: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -443,6 +485,8 @@ struct MemoryStoreArgs {
     metadata: Option<serde_json::Value>,
     #[serde(default)]
     project_root: Option<PathBuf>,
+    #[serde(default)]
+    schema_version: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -463,6 +507,8 @@ struct ExplainabilityRecordArgs {
     record: serde_json::Value,
     #[serde(default)]
     project_root: Option<PathBuf>,
+    #[serde(default)]
+    schema_version: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -1184,11 +1230,17 @@ impl McpServer {
                     "properties": {
                         "query": { "type": "string", "minLength": 1, "description": "Concise search query (will be rejected if empty)" },
 <<<<<<< HEAD
+<<<<<<< HEAD
                         "limit": { "type": "integer", "minimum": 1, "maximum": self.limits.max_search_items as i64, "default": self.limits.max_search_items, "description": "Max results to return (clamped to server max)" },
 =======
                         "limit": { "type": "integer", "minimum": 1, "maximum": self.size_policy.max_results as i64, "default": self.size_policy.max_results, "description": "Max results to return (clamped to server max)" },
 >>>>>>> mcoda/task/bck-05-us-10-t25
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+=======
+                        "limit": { "type": "integer", "minimum": 1, "maximum": self.max_results as i64, "default": self.max_results, "description": "Max results to return (clamped to server max)" },
+                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
+                        "schema_version": { "type": "integer", "minimum": TOOL_SCHEMA_VERSION_MIN as i64, "maximum": TOOL_SCHEMA_VERSION_MAX as i64, "default": TOOL_SCHEMA_VERSION_MAX as i64, "description": "Optional response schema version to request" }
+>>>>>>> mcoda/task/bck-05-us-10-t21
                     },
                     "required": ["query"]
                 }),
@@ -1205,7 +1257,8 @@ impl McpServer {
                             "items": { "type": "string" },
                             "description": "Optional list of files to ingest; empty => full reindex"
                         },
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
+                        "schema_version": { "type": "integer", "minimum": TOOL_SCHEMA_VERSION_MIN as i64, "maximum": TOOL_SCHEMA_VERSION_MAX as i64, "default": TOOL_SCHEMA_VERSION_MAX as i64, "description": "Optional response schema version to request" }
                     }
                 }),
             },
@@ -1217,8 +1270,14 @@ impl McpServer {
                     "type": "object",
                     "properties": {
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
+<<<<<<< HEAD
                         "limit": { "type": "integer", "minimum": 1, "maximum": self.limits.max_files_limit as i64, "default": limits::MCP_FILES_DEFAULT_LIMIT, "description": "Max documents to return (clamped)" },
                         "offset": { "type": "integer", "minimum": 0, "maximum": self.limits.max_files_offset as i64, "default": 0, "description": "Number of docs to skip before listing (clamped)" }
+=======
+                        "limit": { "type": "integer", "minimum": 1, "maximum": FILES_MAX_LIMIT as i64, "default": FILES_DEFAULT_LIMIT, "description": "Max documents to return (clamped)" },
+                        "offset": { "type": "integer", "minimum": 0, "maximum": FILES_MAX_OFFSET as i64, "default": 0, "description": "Number of docs to skip before listing (clamped)" },
+                        "schema_version": { "type": "integer", "minimum": TOOL_SCHEMA_VERSION_MIN as i64, "maximum": TOOL_SCHEMA_VERSION_MAX as i64, "default": TOOL_SCHEMA_VERSION_MAX as i64, "description": "Optional response schema version to request" }
+>>>>>>> mcoda/task/bck-05-us-10-t21
                     }
                 }),
             },
@@ -1232,7 +1291,8 @@ impl McpServer {
                         "path": { "type": "string", "minLength": 1, "description": "Relative path under the repo" },
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
                         "start_line": { "type": "integer", "minimum": 1, "description": "Optional start line (1-based, inclusive)" },
-                        "end_line": { "type": "integer", "minimum": 1, "description": "Optional end line (1-based, inclusive)" }
+                        "end_line": { "type": "integer", "minimum": 1, "description": "Optional end line (1-based, inclusive)" },
+                        "schema_version": { "type": "integer", "minimum": TOOL_SCHEMA_VERSION_MIN as i64, "maximum": TOOL_SCHEMA_VERSION_MAX as i64, "default": TOOL_SCHEMA_VERSION_MAX as i64, "description": "Optional response schema version to request" }
                     },
                     "required": ["path"]
                 }),
@@ -1244,7 +1304,8 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
+                        "schema_version": { "type": "integer", "minimum": TOOL_SCHEMA_VERSION_MIN as i64, "maximum": TOOL_SCHEMA_VERSION_MAX as i64, "default": TOOL_SCHEMA_VERSION_MAX as i64, "description": "Optional response schema version to request" }
                     }
                 }),
             },
@@ -1255,7 +1316,8 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
+                        "schema_version": { "type": "integer", "minimum": TOOL_SCHEMA_VERSION_MIN as i64, "maximum": TOOL_SCHEMA_VERSION_MAX as i64, "default": TOOL_SCHEMA_VERSION_MAX as i64, "description": "Optional response schema version to request" }
                     }
                 }),
             },
@@ -1266,7 +1328,8 @@ impl McpServer {
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "minLength": 1, "description": "Relative path under the repo" },
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
+                        "schema_version": { "type": "integer", "minimum": TOOL_SCHEMA_VERSION_MIN as i64, "maximum": TOOL_SCHEMA_VERSION_MAX as i64, "default": TOOL_SCHEMA_VERSION_MAX as i64, "description": "Optional response schema version to request" }
                     },
                     "required": ["path"]
                 }),
@@ -1279,7 +1342,8 @@ impl McpServer {
                     "properties": {
                         "text": { "type": "string", "minLength": 1, "description": "Memory text to store" },
                         "metadata": { "type": "object", "description": "Optional metadata object", "additionalProperties": true },
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
+                        "schema_version": { "type": "integer", "minimum": TOOL_SCHEMA_VERSION_MIN as i64, "maximum": TOOL_SCHEMA_VERSION_MAX as i64, "default": TOOL_SCHEMA_VERSION_MAX as i64, "description": "Optional response schema version to request" }
                     },
                     "required": ["text"]
                 }),
@@ -1292,11 +1356,17 @@ impl McpServer {
                     "properties": {
                         "query": { "type": "string", "minLength": 1, "description": "Query text to embed" },
 <<<<<<< HEAD
+<<<<<<< HEAD
                         "top_k": { "type": "integer", "minimum": 1, "maximum": self.limits.max_memory_items as i64, "default": 5, "description": "Max results to return" },
 =======
                         "top_k": { "type": "integer", "minimum": 1, "maximum": MAX_MEMORY_RECALL as i64, "default": DEFAULT_MEMORY_RECALL, "description": "Max results to return" },
 >>>>>>> mcoda/task/bck-05-us-10-t25
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+=======
+                        "top_k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 5, "description": "Max results to return" },
+                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
+                        "schema_version": { "type": "integer", "minimum": TOOL_SCHEMA_VERSION_MIN as i64, "maximum": TOOL_SCHEMA_VERSION_MAX as i64, "default": TOOL_SCHEMA_VERSION_MAX as i64, "description": "Optional response schema version to request" }
+>>>>>>> mcoda/task/bck-05-us-10-t21
                     },
                     "required": ["query"]
                 }),
@@ -1328,6 +1398,7 @@ impl McpServer {
 
     async fn handle_search(&self, args: SearchArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_schema_version("docdex_search", args.schema_version)?;
         let query = args.query.trim();
 <<<<<<< HEAD
         let requested_limit = args.limit;
@@ -1409,6 +1480,7 @@ impl McpServer {
 
     async fn handle_index(&mut self, args: IndexArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_schema_version("docdex_index", args.schema_version)?;
         if args.paths.is_empty() {
             self.indexer.reindex_all().await?;
             return Ok(json!({
@@ -1464,6 +1536,10 @@ impl McpServer {
     async fn handle_files(&self, args: FilesArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+        self.ensure_schema_version("docdex_files", args.schema_version)?;
+>>>>>>> mcoda/task/bck-05-us-10-t21
         let limit = args
             .limit
             .unwrap_or(limits::MCP_FILES_DEFAULT_LIMIT)
@@ -1491,6 +1567,7 @@ impl McpServer {
 
     async fn handle_stats(&self, args: StatsArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_schema_version("docdex_stats", args.schema_version)?;
         let stats = self.indexer.stats()?;
         Ok(json!({
             "num_docs": stats.num_docs,
@@ -1512,6 +1589,7 @@ impl McpServer {
 
     async fn handle_repo_inspect(&self, args: RepoInspectArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_schema_version("docdex_repo_inspect", args.schema_version)?;
         let report = crate::repo_identity::inspect_repo(
             &self.repo_root,
             Some(self.indexer.config().state_dir()),
@@ -1521,6 +1599,7 @@ impl McpServer {
 
     async fn handle_open(&self, args: OpenArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_schema_version("docdex_open", args.schema_version)?;
         let rel_path = normalize_rel_path(&args.path).ok_or(InvalidPathError)?;
         let abs_path = self.repo_root.join(&rel_path);
         let canonical = abs_path
@@ -1581,6 +1660,7 @@ impl McpServer {
 
     async fn handle_symbols(&self, args: SymbolsArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_schema_version("docdex_symbols", args.schema_version)?;
         if !self.indexer.config().symbols_enabled() {
             return Err(MissingSymbolsDependencyError.into());
         }
@@ -1607,6 +1687,7 @@ impl McpServer {
 
     async fn handle_memory_store(&self, args: MemoryStoreArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_schema_version("docdex_memory_store", args.schema_version)?;
         let Some(memory) = self.memory.clone() else {
             return Err(AppError::new(
                 ERR_MEMORY_DISABLED,
@@ -1643,6 +1724,7 @@ impl McpServer {
 
     async fn handle_memory_recall(&self, args: MemoryRecallArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_schema_version("docdex_memory_recall", args.schema_version)?;
         let Some(memory) = self.memory.clone() else {
             return Err(AppError::new(
                 ERR_MEMORY_DISABLED,
@@ -1737,8 +1819,22 @@ impl McpServer {
             project_root: None,
             start_line: None,
             end_line: None,
+            schema_version: None,
         };
         self.handle_open(open_args).await
+    }
+
+    fn ensure_schema_version(&self, schema_name: &'static str, requested: Option<u32>) -> Result<()> {
+        if let Some(version) = requested {
+            if version < TOOL_SCHEMA_VERSION_MIN || version > TOOL_SCHEMA_VERSION_MAX {
+                return Err(
+                    AppError::new(ERR_UNSUPPORTED_VERSION, "unsupported schema version")
+                        .with_details(schema_version_details(schema_name, version))
+                        .into(),
+                );
+            }
+        }
+        Ok(())
     }
 
     fn ensure_same_repo(&self, candidate: &Path) -> Result<()> {

@@ -600,6 +600,98 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
 }
 
 #[test]
+fn mcp_schema_version_negotiation_rejects_unsupported_versions() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let mut mcp = McpHarness::spawn(repo.path())?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": {
+                    "query": "MCP_ROADMAP",
+                    "schema_version": 99
+                }
+            }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("unsupported_version"));
+    let details = resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("details"))
+        .ok_or("unsupported version error should include details")?;
+    let schema = details
+        .get("schema")
+        .ok_or("unsupported version details should include schema")?;
+    assert_eq!(
+        schema.get("name").and_then(|v| v.as_str()),
+        Some("docdex_search")
+    );
+    assert_eq!(schema.get("requested").and_then(|v| v.as_u64()), Some(99));
+    let supported = schema
+        .get("supported")
+        .ok_or("unsupported version details should include supported range")?;
+    assert_eq!(supported.get("min").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(supported.get("max").and_then(|v| v.as_u64()), Some(1));
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_schema_version_negotiation_rejects_unsupported_versions() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let mut mcp = McpHarness::spawn(repo.path())?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": {
+                    "query": "MCP_ROADMAP",
+                    "schema_version": 99
+                }
+            }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("unsupported_version"));
+    let details = resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("details"))
+        .ok_or("unsupported version error should include details")?;
+    let schema = details
+        .get("schema")
+        .ok_or("unsupported version details should include schema")?;
+    assert_eq!(
+        schema.get("name").and_then(|v| v.as_str()),
+        Some("docdex_search")
+    );
+    assert_eq!(schema.get("requested").and_then(|v| v.as_u64()), Some(99));
+    let supported = schema
+        .get("supported")
+        .ok_or("unsupported version details should include supported range")?;
+    assert_eq!(supported.get("min").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(supported.get("max").and_then(|v| v.as_u64()), Some(1));
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
 fn mcp_missing_project_root_path_is_missing_repo_path() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;

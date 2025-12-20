@@ -385,6 +385,7 @@ impl BackoffRequired {
     }
 }
 
+<<<<<<< HEAD
 #[derive(Debug, Clone, Serialize)]
 pub struct RetryHint {
     pub code: &'static str,
@@ -417,6 +418,8 @@ impl RetryHint {
     }
 }
 
+=======
+>>>>>>> mcoda/task/bck-05-us-07-t15
 #[derive(Debug, Clone, Error)]
 #[error("{message}")]
 pub struct BackoffRequired {
@@ -489,6 +492,7 @@ impl BackoffRequired {
         self.retry_at = Some(retry_at);
         self
     }
+<<<<<<< HEAD
 
     pub fn retry_hint(&self) -> RetryHint {
         RetryHint {
@@ -565,4 +569,6 @@ impl RetryHint {
     pub fn to_value(&self) -> Value {
         serde_json::to_value(self).expect("retry hint should serialize")
     }
+=======
+>>>>>>> mcoda/task/bck-05-us-07-t15
 }

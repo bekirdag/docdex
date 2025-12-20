@@ -2,7 +2,11 @@ mod audit;
 mod browser_session;
 mod chrome_watchdog;
 mod config;
+<<<<<<< HEAD
 mod dag;
+=======
+mod ddg_discovery;
+>>>>>>> mcoda/task/bck-05-us-07-t15
 mod daemon;
 mod error;
 <<<<<<< HEAD
@@ -37,10 +41,14 @@ mod watcher;
 
 use crate::config::RepoArgs;
 <<<<<<< HEAD
+<<<<<<< HEAD
 use crate::error::{BackoffRequired, StartupError};
 =======
 use crate::error::{StartupError, ERR_MISSING_INDEX, ERR_STALE_INDEX};
 >>>>>>> mcoda/task/bck-05-us-08-t05
+=======
+use crate::error::{BackoffRequired, StartupError};
+>>>>>>> mcoda/task/bck-05-us-07-t15
 use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use serde_json::json;
@@ -1449,6 +1457,27 @@ fn render_error_and_exit(err: anyhow::Error) -> ! {
             Err(_) => eprintln!("{}", app.message),
         }
         std::process::exit(exit_code_for_app_error(app));
+    }
+    if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
+        let mut body = serde_json::Map::new();
+        body.insert("code".to_string(), json!(backoff.code));
+        body.insert("message".to_string(), json!(backoff.message.as_str()));
+        body.insert("retry_after_ms".to_string(), json!(backoff.retry_after_ms));
+        if let Some(retry_at) = backoff.retry_at.as_ref() {
+            body.insert("retry_at".to_string(), json!(retry_at.to_rfc3339()));
+        }
+        body.insert("limit_key".to_string(), json!(backoff.limit_key.as_str()));
+        body.insert("scope".to_string(), json!(backoff.scope.as_str()));
+        let payload = serde_json::Value::Object({
+            let mut root = serde_json::Map::new();
+            root.insert("error".to_string(), serde_json::Value::Object(body));
+            root
+        });
+        match serde_json::to_string(&payload) {
+            Ok(line) => eprintln!("{line}"),
+            Err(_) => eprintln!("{}", backoff.message),
+        }
+        std::process::exit(1);
     }
 
     eprintln!("{err}");

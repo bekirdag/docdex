@@ -5,6 +5,7 @@ use crate::error::{
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
 <<<<<<< HEAD
@@ -19,10 +20,14 @@ use crate::error::{
 =======
     AppError, BackoffRequired, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
 >>>>>>> mcoda/task/bck-05-us-09-t07
+=======
+    AppError, BackoffRequired, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
+>>>>>>> mcoda/task/bck-05-us-07-t15
     ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
     ERR_MEMORY_DISABLED, repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX,
     ERR_MISSING_REPO, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH,
     ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-09-t34
@@ -49,6 +54,8 @@ use crate::error::{
     ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED,
     ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
 >>>>>>> mcoda/task/bck-05-us-07-t09
+=======
+>>>>>>> mcoda/task/bck-05-us-07-t15
 };
 <<<<<<< HEAD
 use crate::explainability::ExplainabilityStore;
@@ -112,11 +119,15 @@ const ERR_INTERNAL: i32 = -32000;
 const ERR_RATE_LIMITED_RPC: i32 = -32029;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 const TOOL_SCHEMA_VERSION_MIN: u32 = 1;
 const TOOL_SCHEMA_VERSION_MAX: u32 = 1;
 =======
 >>>>>>> mcoda/task/bck-05-us-09-t32
+=======
+const ERR_BACKOFF_REQUIRED_RPC: i32 = -32030;
+>>>>>>> mcoda/task/bck-05-us-07-t15
 const FILES_DEFAULT_LIMIT: usize = 200;
 const FILES_MAX_LIMIT: usize = 1000;
 const FILES_MAX_OFFSET: usize = 50_000;
@@ -580,6 +591,27 @@ fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
 >>>>>>> mcoda/task/bck-05-us-09-t37
 }
 
+fn mcp_backoff_required_data(err: &BackoffRequired) -> serde_json::Value {
+    #[derive(Serialize)]
+    struct BackoffData<'a> {
+        code: &'static str,
+        retry_after_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_at: Option<String>,
+        limit_key: &'a str,
+        scope: &'a str,
+    }
+
+    serde_json::to_value(BackoffData {
+        code: ERR_BACKOFF_REQUIRED,
+        retry_after_ms: err.retry_after_ms,
+        retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
+        limit_key: &err.limit_key,
+        scope: &err.scope,
+    })
+    .expect("backoff data should serialize")
+}
+
 fn truncate_bytes(input: String, max_bytes: usize) -> String {
 >>>>>>> mcoda/task/bck-05-us-10-t21
     if input.len() <= max_bytes {
@@ -681,6 +713,7 @@ fn rpc_rate_limited(err: &RateLimited, tool: Option<&str>) -> RpcError {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn rpc_invalid_params_for_method(method: &'static str, err: impl std::fmt::Display) -> RpcError {
     rpc_error(
         ERR_INVALID_PARAMS,
@@ -735,11 +768,20 @@ fn rpc_tier2_unavailable(err: &Tier2Unavailable, tool: Option<&str>) -> RpcError
 
 >>>>>>> mcoda/task/bck-05-us-09-t21
 =======
+=======
+fn rpc_backoff_required(err: &BackoffRequired) -> RpcError {
+    RpcError {
+        code: ERR_BACKOFF_REQUIRED_RPC,
+        message: truncate_bytes(err.message.clone(), MAX_ERROR_MESSAGE_BYTES),
+>>>>>>> mcoda/task/bck-05-us-07-t15
         data: Some(mcp_backoff_required_data(err)),
     }
 }
 
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-09-t07
+=======
+>>>>>>> mcoda/task/bck-05-us-07-t15
 fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
     if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
         return rpc_backoff_required(backoff);
@@ -763,6 +805,9 @@ fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
         }
 =======
 >>>>>>> mcoda/task/bck-05-us-09-t24
+    }
+    if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
+        return rpc_backoff_required(backoff);
     }
     let (mcp_code, details) = classify_tool_error(err);
     rpc_error(
@@ -915,6 +960,9 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
         let retry_at = rate.retry_at.as_ref().map(|at| at.to_rfc3339());
         return (rate.code, Some(rate_limit_details(rate, retry_at.as_deref())));
 >>>>>>> mcoda/task/bck-05-us-09-t24
+    }
+    if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
+        return (backoff.code, Some(mcp_backoff_required_data(backoff)));
     }
     if let Some(app) = err.downcast_ref::<AppError>() {
         return (app.code, app.details.clone());

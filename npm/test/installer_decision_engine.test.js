@@ -455,6 +455,48 @@ test("decision engine: binary hash mismatch => repair (binary_integrity_mismatch
   assert.equal(shaCalls, 1);
 });
 
+test("decision engine: non-executable binary => repair (binary_not_executable)", async () => {
+  const platformKey = "linux-x64-gnu";
+  const distDir = path.posix.join("/dist", platformKey);
+  const binaryPath = path.posix.join(distDir, "docdexd");
+  const metadataPath = path.posix.join(distDir, "docdexd-install.json");
+
+  const fsModule = createMockFs({
+    existingPaths: [binaryPath],
+    filesByPath: {
+      [metadataPath]: JSON.stringify(
+        validInstallMetadata({ platformKey, version: "0.1.0", binarySha256: "a".repeat(64) }),
+        null,
+        2
+      )
+    }
+  });
+  fsModule.constants = { X_OK: 1 };
+  fsModule.statSync = () => ({ isFile: () => true });
+  fsModule.accessSync = (filePath) => {
+    assert.equal(filePath, binaryPath);
+    const err = new Error("EACCES: permission denied");
+    err.code = "EACCES";
+    throw err;
+  };
+
+  const outcome = await determineLocalInstallerOutcome({
+    fsModule,
+    pathModule: path.posix,
+    distDir,
+    platformKey,
+    expectedVersion: "0.1.0",
+    isWin32: false,
+    sha256FileFn: async () => {
+      throw new Error("unexpected sha256");
+    }
+  });
+
+  assert.equal(outcome.outcome, "repair");
+  assert.equal(outcome.reason, "binary_not_executable");
+  assert.equal(outcome.integrityResult, null);
+});
+
 test("decision engine: verified => no-op (verified)", async () => {
   const platformKey = "linux-x64-gnu";
   const distDir = path.posix.join("/dist", platformKey);

@@ -938,6 +938,7 @@ async function sha256File(filePath) {
   });
 }
 
+<<<<<<< HEAD
 function docdexBinaryFilename(isWin32) {
   return isWin32 ? "docdexd.exe" : "docdexd";
 }
@@ -1123,6 +1124,41 @@ async function finalizeWindowsBinaryReplace({
 
   await rmForce(fsModule, oldBinaryPath);
   return finalBinaryPath;
+=======
+function checkBinaryExecutable({ fsModule, binaryPath, isWin32 }) {
+  const statSync = typeof fsModule?.statSync === "function" ? fsModule.statSync.bind(fsModule) : null;
+  if (statSync) {
+    try {
+      const stat = statSync(binaryPath);
+      if (!stat.isFile()) {
+        return { executable: false, reason: "binary_not_file", error: null };
+      }
+    } catch (err) {
+      return { executable: false, reason: "binary_stat_failed", error: err?.message || String(err) };
+    }
+  }
+
+  if (isWin32) {
+    return { executable: true, reason: null, error: null };
+  }
+
+  const accessSync = typeof fsModule?.accessSync === "function" ? fsModule.accessSync.bind(fsModule) : null;
+  const accessFlag = fsModule?.constants?.X_OK;
+  if (!accessSync || typeof accessFlag !== "number") {
+    return { executable: null, reason: "executable_check_unavailable", error: null };
+  }
+
+  try {
+    accessSync(binaryPath, accessFlag);
+    return { executable: true, reason: null, error: null };
+  } catch (err) {
+    return {
+      executable: false,
+      reason: "binary_not_executable",
+      error: err?.code || err?.message || String(err)
+    };
+  }
+>>>>>>> mcoda/task/ops-01-us-01-t15
 }
 
 function installMetadataPath(distDir, pathModule = path) {
@@ -3433,6 +3469,24 @@ function decideInstallDecision({
     return { outcome: "update", reason: "reported_version_mismatch" };
   }
 
+  if (discoveredInstalledState.binaryExecutable === false) {
+    const reason =
+      typeof discoveredInstalledState.binaryExecutableReason === "string" &&
+      discoveredInstalledState.binaryExecutableReason
+        ? discoveredInstalledState.binaryExecutableReason
+        : "binary_not_executable";
+
+    if (
+      discoveredInstalledState.metadataStatus === "valid" &&
+      !discoveredInstalledState.platformMismatch &&
+      discoveredInstalledState.installedVersion === expectedVersion
+    ) {
+      return { outcome: "repair", reason };
+    }
+
+    return { outcome: "reinstall_unknown", reason };
+  }
+
   if (discoveredInstalledState.metadataStatus !== "valid") {
     return {
       outcome: "reinstall_unknown",
@@ -3558,6 +3612,7 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
       metadataStatus: "missing",
       metadataStatusReason: "binary_missing",
       platformMismatch: false,
+<<<<<<< HEAD
       reportedVersion: null,
       reportedVersionError: null
     };
@@ -3589,6 +3644,14 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
     }
 >>>>>>> mcoda/task/ops-01-us-03-t45
   }
+=======
+      binaryExecutable: null,
+      binaryExecutableReason: "binary_missing"
+    };
+  }
+
+  const executableState = checkBinaryExecutable({ fsModule, binaryPath, isWin32 });
+>>>>>>> mcoda/task/ops-01-us-01-t15
 
   const metaResult = await readJsonFileIfPossible({ fsModule, filePath: metadataPath });
   const meta = metaResult.value;
@@ -3624,8 +3687,13 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
             ? "metadata_unreadable"
             : "metadata_invalid",
       platformMismatch: false,
+<<<<<<< HEAD
       reportedVersion,
       reportedVersionError
+=======
+      binaryExecutable: executableState.executable,
+      binaryExecutableReason: executableState.reason
+>>>>>>> mcoda/task/ops-01-us-01-t15
     };
   }
 
@@ -3651,6 +3719,7 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
     metadataStatusReason: null,
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     platformMismatch: normalized.platformKey !== platformKey
 =======
     platformMismatch: meta.platformKey !== platformKey,
@@ -3660,6 +3729,11 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
 =======
     platformMismatch: meta.platformKey !== platformKey || targetMismatch
 >>>>>>> mcoda/task/ops-01-us-01-t13
+=======
+    platformMismatch: meta.platformKey !== platformKey,
+    binaryExecutable: executableState.executable,
+    binaryExecutableReason: executableState.reason
+>>>>>>> mcoda/task/ops-01-us-01-t15
   };
 }
 
@@ -3781,9 +3855,18 @@ async function determineLocalInstallerOutcome({
         : null
   };
 
+<<<<<<< HEAD
   const detectedBinaryVersion = normalizeVersionString(discoveredInstalledState.detectedBinaryVersion);
   const detectedVersionMismatch =
     detectedBinaryVersion && detectedBinaryVersion !== expectedVersion;
+=======
+  const shouldVerifyIntegrity =
+    discoveredInstalledState.binaryPresent &&
+    !discoveredInstalledState.platformMismatch &&
+    discoveredInstalledState.installedVersion === expectedVersion &&
+    discoveredInstalledState.binaryExecutable !== false &&
+    (normalizeSha256Hex(expectedBinarySha256) || discoveredInstalledState.metadataStatus === "valid");
+>>>>>>> mcoda/task/ops-01-us-01-t15
 
   const shouldVerifyIntegrity =
 <<<<<<< HEAD
@@ -5466,6 +5549,7 @@ async function runInstaller(options) {
 >>>>>>> mcoda/task/ops-01-us-04-t24
   const isWin32 = detectedPlatform === "win32";
 <<<<<<< HEAD
+<<<<<<< HEAD
   const binaryName = isWin32 ? "docdexd.exe" : "docdexd";
   const stagingRoot = stagingRootPath(distBaseDir, pathModule);
 =======
@@ -5511,6 +5595,14 @@ async function runInstaller(options) {
   logger.log(`[docdex] Detected platform: ${detectedPlatform}/${detectedArch}`);
   logger.log(`[docdex] Target triple: ${targetTriple}`);
   logger.log(`[docdex] Daemon version: v${version}`);
+=======
+  const detectedLabel = `${platformPolicy?.detected?.platform ?? detectedPlatform}/${platformPolicy?.detected?.arch ?? detectedArch}`;
+  const expectedAssetName = platformPolicy?.expectedAssetName || artifactNameFn(platformKey);
+
+  logger.log(`[docdex] Detected platform: ${detectedLabel}`);
+  logger.log(`[docdex] Target triple: ${targetTriple}`);
+  logger.log(`[docdex] Resolved asset: ${expectedAssetName} (v${version})`);
+>>>>>>> mcoda/task/ops-01-us-01-t15
 
   const local = await determineLocalInstallerOutcome({
 >>>>>>> mcoda/task/ops-01-us-01-t41

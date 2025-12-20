@@ -36,6 +36,17 @@ const OPEN_MAX_BYTES: usize = 512 * 1024; // guard rail for returning file conte
 const MAX_ERROR_MESSAGE_BYTES: usize = 256;
 const MAX_ERROR_REASON_BYTES: usize = 768;
 
+fn mcp_rate_limit_note(rate_limit_per_min: u32, rate_limit_burst: u32, effective_burst: u32) -> String {
+    if rate_limit_per_min == 0 {
+        "Rate limits (MCP): disabled (DOCDEX_MCP_RATE_LIMIT_PER_MIN=0); backoff_required errors include retry_after_ms in error.data.details.".to_string()
+    } else {
+        let burst_source = if rate_limit_burst == 0 { "default" } else { "explicit" };
+        format!(
+            "Rate limits (MCP): {rate_limit_per_min}/min burst {effective_burst} (burst source: {burst_source}); rate_limited errors include retry_after_ms in error.data; backoff_required errors include retry_after_ms in error.data.details."
+        )
+    }
+}
+
 #[derive(Error, Debug)]
 #[error("path must be relative and not contain parent components")]
 struct InvalidPathError;
@@ -478,6 +489,7 @@ pub async fn serve(
     } else {
         rate_limit_burst
     };
+    let rate_limit_note = mcp_rate_limit_note(rate_limit_per_min, rate_limit_burst, effective_burst);
     let tool_rate_limit = if rate_limit_per_min > 0 {
         Some(RateLimiter::<()>::new(rate_limit_per_min, effective_burst))
     } else {
@@ -496,6 +508,7 @@ pub async fn serve(
         default_project_root: None,
         memory,
         tool_rate_limit,
+        rate_limit_note,
     };
     server.run().await
 }
@@ -514,6 +527,7 @@ struct McpServer {
     default_project_root: Option<PathBuf>,
     memory: Option<McpMemoryState>,
     tool_rate_limit: Option<RateLimiter<()>>,
+    rate_limit_note: String,
 }
 
 impl McpServer {
@@ -670,7 +684,10 @@ impl McpServer {
                 let protocol_version = init_params
                     .protocol_version
                     .unwrap_or_else(|| "2024-11-05".to_string());
-                let instructions = "Use docdex_search to find repo-local docs before changing code.\nUse docdex_index to refresh the index if results seem stale.";
+                let instructions = format!(
+                    "Use docdex_search to find repo-local docs before changing code.\nUse docdex_index to refresh the index if results seem stale.\n{}",
+                    self.rate_limit_note
+                );
                 let mut caps = json!({
                     "tools": { "listChanged": false },
                     "resources": { "listChanged": false },
@@ -1643,6 +1660,9 @@ impl McpServer {
 
 fn is_lock_busy(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
+        if let Some(app) = cause.downcast_ref::<AppError>() {
+            return app.code == ERR_BACKOFF_REQUIRED;
+        }
         if let Some(tantivy_err) = cause.downcast_ref::<TantivyError>() {
             if let TantivyError::LockFailure(lock_err, _) = tantivy_err {
                 return matches!(lock_err, LockError::LockBusy);

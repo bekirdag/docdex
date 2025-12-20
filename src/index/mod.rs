@@ -2,17 +2,20 @@ use anyhow::{anyhow, Context, Result};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use regex::Regex;
+use serde_json::json;
 use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tantivy::collector::TopDocs;
+use tantivy::directory::error::LockError;
 use tantivy::query::QueryParser;
 use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
 use tantivy::DocAddress;
 use tantivy::{
-    doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, SnippetGenerator, Term,
+    doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, SnippetGenerator, TantivyError,
+    Term,
 };
 use thiserror::Error;
 use tracing::warn;
@@ -25,6 +28,7 @@ use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
 use walkdir::WalkDir;
 
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
+const INDEX_WRITER_BACKOFF_MS: u64 = 1000;
 const DEFAULT_EXTENSIONS: &[&str] = &[".md", ".markdown", ".mdx", ".txt"];
 const DEFAULT_EXCLUDED_DIR_NAMES: &[&str] = &[
     // Core VCS / tooling
@@ -385,7 +389,15 @@ impl Indexer {
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommit)
             .try_into()?;
-        let writer = index.writer(MAX_INDEX_RAM_BYTES)?;
+        let writer = match index.writer(MAX_INDEX_RAM_BYTES) {
+            Ok(writer) => writer,
+            Err(err) => {
+                if is_lock_busy(&err) {
+                    return Err(index_writer_backoff_error().into());
+                }
+                return Err(err.into());
+            }
+        };
         let symbols_store = if config.symbols_enabled() {
             match SymbolsStore::new(&repo_root, config.state_dir()) {
                 Ok(store) => Some(store),
@@ -792,13 +804,7 @@ impl Indexer {
     fn writer(&self) -> Result<Arc<Mutex<IndexWriter>>> {
         self.writer
             .clone()
-            .ok_or_else(|| {
-                AppError::new(
-                    ERR_BACKOFF_REQUIRED,
-                    "index writer unavailable (another docdexd may be indexing); retry later",
-                )
-                .into()
-            })
+            .ok_or_else(|| index_writer_backoff_error().into())
     }
 
     pub fn config(&self) -> &IndexConfig {
@@ -1427,6 +1433,29 @@ pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
 
 fn normalize_for_error(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn index_writer_backoff_details() -> serde_json::Value {
+    json!({
+        "retry_after_ms": INDEX_WRITER_BACKOFF_MS,
+        "limit_key": "index_writer",
+        "scope": "repo",
+    })
+}
+
+fn index_writer_backoff_error() -> AppError {
+    AppError::new(
+        ERR_BACKOFF_REQUIRED,
+        "index writer unavailable (another docdexd may be indexing); retry later",
+    )
+    .with_details(index_writer_backoff_details())
+}
+
+fn is_lock_busy(err: &TantivyError) -> bool {
+    matches!(
+        err,
+        TantivyError::LockFailure(lock_err, _) if matches!(lock_err, LockError::LockBusy)
+    )
 }
 
 fn known_canonical_path_from_repo_meta(index_state_dir: &Path) -> Option<String> {

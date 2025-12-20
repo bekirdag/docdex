@@ -15,6 +15,7 @@ On failure, the MCP server returns a JSON-RPC error response:
   - `-32600` invalid request (`invalid_request`)
   - `-32601` unknown method/tool (`method_not_found`)
   - `-32602` tool failures and argument validation (`invalid_params` *and* domain failures like `missing_index`)
+  - `-32029` rate limiting for MCP tool calls (`rate_limited`)
   - `-32000` internal server error (`internal_error`) when the MCP server fails outside tool handling
 - `error.message` (string): a short, stable category message.
 - `error.data` (object): Docdex error envelope (below).
@@ -35,6 +36,14 @@ Compatibility guidance for clients:
 - Treat `error.data.code` as the primary stable signal.
 - Ignore unknown fields; new `details` keys may be added without breaking changes.
 - `error.data.error` is redundant; it exists for convenience where clients expect a nested `error` object.
+
+### Retry hints (rate limiting/backoff)
+
+Rate limiting/backoff responses include stable retry hint fields:
+
+- **MCP `rate_limited`**: `error.data` is a compact retry-hint object: `{ "code": "rate_limited", "retry_after_ms": <int>, "retry_at"?: <RFC3339>, "limit_key": <string>, "scope": <string> }` (no nested `error` envelope).
+- **MCP/CLI `backoff_required`**: retry hints appear under `error.data.details` (MCP) or `error.details` (CLI) using the same field names (`retry_after_ms`, `retry_at`, `limit_key`, `scope`).
+- **HTTP 429**: JSON error body uses `{ "error": { "code": "rate_limited", "message": "...", "retry_after_ms": <int>, "retry_at"?: <RFC3339>, "limit_key": <string>, "scope": <string> } }` and includes a `Retry-After` header.
 
 ## Code taxonomy (machine-readable)
 
@@ -57,8 +66,8 @@ These codes are the **required** set for repo/index/dependency failures and are 
 - `missing_index`: on-disk index is not present (e.g. `docdexd query` before indexing).
 - `stale_index`: index exists but is known to be stale (reserved for future use).
 - `missing_dependency`: a required optional feature/dependency is disabled (e.g. symbols extraction disabled).
-- `rate_limited`: request rejected due to rate limiting (reserved for future use in MCP).
-- `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable).
+- `rate_limited`: request rejected due to rate limiting; MCP emits a retry-hint object in `error.data`.
+- `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable); retry hints live in `details`.
 - `internal_error`: unexpected server failure.
 
 ### Parameter/argument validation codes
@@ -117,8 +126,8 @@ Docdex presents the same underlying failures in three different wrappers:
 | Repo state mismatch (unsafe to associate state) | `repo_state_mismatch` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"repo_state_mismatch",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"repo_state_mismatch",...}}` |
 | Index missing (query/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
 | Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Not currently emitted by the per-repo CLI |
-| Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |
-| Rate limited | `rate_limited` | `-32602` | `429` (security middleware returns status-only; no JSON envelope) | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
+| Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"backoff_required",details:{retry_after_ms,...}}}`) | Exit `1`, `stderr` JSON `{error:{code:"backoff_required",details:{retry_after_ms,...}}}` |
+| Rate limited | `rate_limited` | `-32029` | `429` with JSON error body + `Retry-After` header | N/A (CLI commands are not rate-limited) |
 | Optional dependency disabled (e.g. symbols) | `missing_dependency` | `-32602` | N/A (no HTTP endpoint for MCP symbols) | N/A (no CLI symbols command) |
 | Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_params` | `-32602` | N/A | N/A |
 | Invalid path for `docdex_open` | `invalid_path` | `-32602` | N/A | N/A |

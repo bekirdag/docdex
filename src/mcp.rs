@@ -1,8 +1,9 @@
 use crate::error::{
-    AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
-    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
-    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
+    AppError, BackoffRequired, RateLimited, RetryHint, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
+    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
+    ERR_MEMORY_DISABLED, repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX,
+    ERR_MISSING_REPO, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH,
+    ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
 };
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
@@ -112,25 +113,16 @@ fn mcp_error_data(
     serde_json::Value::Object(data)
 }
 
-fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
-    #[derive(Serialize)]
-    struct RateLimitData<'a> {
-        code: &'static str,
-        retry_after_ms: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        retry_at: Option<String>,
-        limit_key: &'a str,
-        scope: &'a str,
-    }
+fn mcp_retry_data(hint: RetryHint) -> serde_json::Value {
+    serde_json::to_value(hint).expect("retry-hint data should serialize")
+}
 
-    serde_json::to_value(RateLimitData {
-        code: ERR_RATE_LIMITED,
-        retry_after_ms: err.retry_after_ms,
-        retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
-        limit_key: &err.limit_key,
-        scope: &err.scope,
-    })
-    .expect("rate-limit data should serialize")
+fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
+    mcp_retry_data(RetryHint::from_rate_limited(err))
+}
+
+fn mcp_backoff_data(err: &BackoffRequired) -> serde_json::Value {
+    mcp_retry_data(RetryHint::from_backoff(err))
 }
 
 fn truncate_bytes(input: String, max_bytes: usize) -> String {
@@ -170,9 +162,20 @@ fn rpc_rate_limited(err: &RateLimited) -> RpcError {
     }
 }
 
+fn rpc_backoff_required(err: &BackoffRequired) -> RpcError {
+    RpcError {
+        code: ERR_INVALID_PARAMS,
+        message: truncate_bytes(err.message.clone(), MAX_ERROR_MESSAGE_BYTES),
+        data: Some(mcp_backoff_data(err)),
+    }
+}
+
 fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
     if let Some(rate) = err.downcast_ref::<RateLimited>() {
         return rpc_rate_limited(rate);
+    }
+    if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
+        return rpc_backoff_required(backoff);
     }
     let (mcp_code, details) = classify_tool_error(err);
     rpc_error(
@@ -215,6 +218,9 @@ fn default_message_for_code(code: &str) -> &'static str {
 fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
     if let Some(rate) = err.downcast_ref::<RateLimited>() {
         return (rate.code, Some(mcp_rate_limited_data(rate)));
+    }
+    if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
+        return (backoff.code, Some(mcp_backoff_data(backoff)));
     }
     if let Some(app) = err.downcast_ref::<AppError>() {
         return (app.code, app.details.clone());
@@ -1788,6 +1794,56 @@ mod tests {
             schema_variants.len(),
             1,
             "rate-limit data schema should not vary under concurrency"
+        );
+    }
+
+    #[test]
+    fn backoff_required_rpc_has_stable_data_shape() {
+        let err = BackoffRequired::new(
+            Duration::from_millis(500),
+            "index_writer".to_string(),
+            "repo".to_string(),
+        )
+        .with_message("x".repeat(10_000))
+        .with_retry_at(Utc::now());
+        let rpc = rpc_backoff_required(&err);
+        assert_eq!(rpc.code, ERR_INVALID_PARAMS);
+        assert!(
+            rpc.message.len() <= MAX_ERROR_MESSAGE_BYTES + "…".len(),
+            "rpc error message should be bounded"
+        );
+        let data = rpc.data.expect("backoff rpc should include data");
+        let obj = data.as_object().expect("backoff data should be object");
+        assert_eq!(
+            obj.get("code").and_then(|v| v.as_str()),
+            Some(ERR_BACKOFF_REQUIRED)
+        );
+        assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(500));
+        assert_eq!(
+            obj.get("limit_key").and_then(|v| v.as_str()),
+            Some("index_writer")
+        );
+        assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("repo"));
+        assert!(obj.get("retry_at").and_then(|v| v.as_str()).is_some());
+
+        let mut keys: Vec<String> = obj.keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "code".to_string(),
+                "limit_key".to_string(),
+                "retry_after_ms".to_string(),
+                "retry_at".to_string(),
+                "scope".to_string(),
+            ]
+        );
+
+        let payload_bytes = serde_json::to_vec(&rpc).expect("rpc error should serialize");
+        assert!(
+            payload_bytes.len() <= 2048,
+            "rpc backoff payload should remain small (got {} bytes)",
+            payload_bytes.len()
         );
     }
 }

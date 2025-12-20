@@ -131,3 +131,4 @@ Notes:
 - HTTP `/search` enforces `limit` by clamping to the daemon’s configured max and does not error on over-limit; MCP `docdex_search` similarly clamps `limit` to the MCP server’s `--max-results`.
 - MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`.
 - MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with `details.max_bytes` and `details.actual_bytes`.
+- MCP `rate_limited` and `backoff_required` errors include a stable retry-hint payload in `error.data`: `{ "code": "<string>", "retry_after_ms": <int>, "retry_at"?: "<RFC3339>", "limit_key": "<string>", "scope": "<string>" }`.

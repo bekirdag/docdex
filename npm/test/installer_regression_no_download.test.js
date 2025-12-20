@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { resolvePlatformPolicy } = require("../lib/platform");
+const { resolvePlatformPolicy, detectPlatformKey } = require("../lib/platform");
 const { describeFatalError, runInstaller, resolveInstallerDownloadPlan } = require("../lib/install");
 
 function createNoopLogger() {
@@ -74,6 +74,58 @@ test("installer: unsupported OS/arch fails before any plan resolution or downloa
   assert.equal(downloadCalls, 0);
   assert.equal(extractCalls, 0);
   assert.equal(tripleCalls, 0);
+  assert.equal(versionCalls, 0);
+  assert.equal(repoSlugCalls, 0);
+});
+
+test("installer: unsupported OS/arch with injected detectPlatformKeyFn honors overrides", async () => {
+  let planCalls = 0;
+  let downloadCalls = 0;
+  let extractCalls = 0;
+  let versionCalls = 0;
+  let repoSlugCalls = 0;
+
+  let err;
+  try {
+    await runInstaller({
+      logger: createNoopLogger(),
+      platform: "freebsd",
+      arch: "x64",
+      detectPlatformKeyFn: (options) => detectPlatformKey(options),
+      getVersionFn: () => {
+        versionCalls += 1;
+        throw new Error("unexpected version resolution");
+      },
+      parseRepoSlugFn: () => {
+        repoSlugCalls += 1;
+        throw new Error("unexpected repo slug resolution");
+      },
+      resolveInstallerDownloadPlanFn: async () => {
+        planCalls += 1;
+        throw new Error("unexpected plan resolution");
+      },
+      downloadFn: async () => {
+        downloadCalls += 1;
+        throw new Error("unexpected download");
+      },
+      extractTarballFn: async () => {
+        extractCalls += 1;
+        throw new Error("unexpected extract");
+      }
+    });
+  } catch (e) {
+    err = e;
+  }
+
+  assert.ok(err, "expected an error");
+  const report = describeFatalError(err);
+  assert.equal(report.code, "DOCDEX_UNSUPPORTED_PLATFORM");
+  assert.ok(report.lines.some((l) => l.includes("unsupported platform (freebsd/x64)")));
+  assert.ok(report.lines.some((l) => l.includes("No download was attempted")));
+
+  assert.equal(planCalls, 0);
+  assert.equal(downloadCalls, 0);
+  assert.equal(extractCalls, 0);
   assert.equal(versionCalls, 0);
   assert.equal(repoSlugCalls, 0);
 });

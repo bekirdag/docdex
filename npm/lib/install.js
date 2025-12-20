@@ -1016,8 +1016,8 @@ async function runInstaller(options) {
   const resolvePlatformPolicyFn =
     opts.resolvePlatformPolicyFn ||
     (opts.detectPlatformKeyFn || opts.targetTripleForPlatformKeyFn
-      ? () => {
-          const platformKey = detectPlatformKeyFn();
+      ? (options) => {
+          const platformKey = detectPlatformKeyFn(options);
           const targetTriple = targetTripleForPlatformKeyFn(platformKey);
           const expectedAssetName = artifactNameFn(platformKey);
           const expectedAssetPattern = assetPatternForPlatformKeyFn(platformKey, {

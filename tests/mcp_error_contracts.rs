@@ -63,6 +63,42 @@ impl McpHarness {
         })
     }
 
+    fn spawn_with_state_dir(repo: &Path, state_dir: &Path) -> Result<Self, Box<dyn Error>> {
+        let repo_str = repo.to_string_lossy().to_string();
+        let state_dir_str = state_dir.to_string_lossy().to_string();
+        let mut cmd = Command::new(docdex_bin());
+        cmd.args([
+            "mcp",
+            "--repo",
+            repo_str.as_str(),
+            "--state-dir",
+            state_dir_str.as_str(),
+            "--log",
+            "warn",
+            "--max-results",
+            "4",
+        ]);
+        let mut child = cmd
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or("failed to take child stdin for MCP server")?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or("failed to take child stdout for MCP server")?;
+        Ok(Self {
+            child,
+            stdin,
+            reader: BufReader::new(stdout),
+        })
+    }
+
     fn shutdown(&mut self) {
         self.child.kill().ok();
         self.child.wait().ok();
@@ -89,6 +125,16 @@ This repository contains the MCP_ROADMAP notes used for testing.
     Ok(())
 }
 
+fn write_repo_with_token(repo_root: &Path, token: &str) -> Result<(), Box<dyn Error>> {
+    let docs_dir = repo_root.join("docs");
+    std::fs::create_dir_all(&docs_dir)?;
+    std::fs::write(
+        docs_dir.join("overview.md"),
+        format!("# Overview\n\n{token}\n"),
+    )?;
+    Ok(())
+}
+
 fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
     let temp = TempDir::new()?;
     write_fixture_repo(temp.path())?;
@@ -101,6 +147,15 @@ where
     S: AsRef<std::ffi::OsStr>,
 {
     Ok(Command::new(docdex_bin()).args(args).output()?)
+}
+
+fn parse_cli_error(stderr: &[u8]) -> Result<Value, Box<dyn Error>> {
+    let raw = String::from_utf8_lossy(stderr);
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("expected CLI error payload".into());
+    }
+    Ok(serde_json::from_str(trimmed)?)
 }
 
 fn send_line(
@@ -148,6 +203,37 @@ fn mcp_error_data_code(resp: &Value) -> Option<&str> {
         .and_then(|v| v.get("data"))
         .and_then(|v| v.get("code"))
         .and_then(|v| v.as_str())
+}
+
+fn search_hit_ids(
+    mcp: &mut McpHarness,
+    id: i64,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": { "name": "docdex_search", "arguments": { "query": query, "limit": limit } }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    if resp.get("error").is_some() {
+        return Err(format!("search failed: {resp}").into());
+    }
+    let body = parse_tool_result(&resp)?;
+    let hits = body
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .ok_or("docdex_search response missing hits array")?;
+    Ok(hits
+        .iter()
+        .filter_map(|hit| hit.get("doc_id").and_then(|v| v.as_str()))
+        .map(|doc_id| doc_id.to_string())
+        .collect())
 }
 
 #[test]
@@ -628,5 +714,185 @@ fn cli_invalid_query_error_matches_machine_reason() -> Result<(), Box<dyn Error>
         stderr.contains("invalid query"),
         "CLI should report invalid query: {stderr}"
     );
+    Ok(())
+}
+
+#[test]
+fn cli_missing_index_includes_hint_and_no_auto_state_dir() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    let state_dir = repo.path().join(".docdex").join("index");
+
+    let output = run_docdex([
+        "query",
+        "--repo",
+        repo_str.as_str(),
+        "--query",
+        "MCP_ROADMAP",
+        "--limit",
+        "1",
+    ])?;
+    assert!(
+        !output.status.success(),
+        "expected query to fail without an index"
+    );
+    let payload = parse_cli_error(&output.stderr)?;
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("missing_index")
+    );
+    let message = payload
+        .get("error")
+        .and_then(|v| v.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        message.contains("docdexd index"),
+        "missing_index should include remediation hint; got: {message}"
+    );
+    assert!(
+        !state_dir.exists(),
+        "missing_index should not create state dir automatically"
+    );
+    Ok(())
+}
+
+#[test]
+fn mcp_shared_state_dir_does_not_leak_cross_repo_hits() -> Result<(), Box<dyn Error>> {
+    let state_root = TempDir::new()?;
+    let repo_a = TempDir::new()?;
+    let repo_b = TempDir::new()?;
+    write_repo_with_token(repo_a.path(), "REPO_A_ONLY_TOKEN")?;
+    write_repo_with_token(repo_b.path(), "REPO_B_ONLY_TOKEN")?;
+
+    let state_root_str = state_root.path().to_string_lossy().to_string();
+    let repo_a_str = repo_a.path().to_string_lossy().to_string();
+    run_docdex([
+        "index",
+        "--repo",
+        repo_a_str.as_str(),
+        "--state-dir",
+        &state_root_str,
+    ])?;
+
+    let mut mcp = McpHarness::spawn_with_state_dir(repo_b.path(), state_root.path())?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 30,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": { "query": "REPO_A_ONLY_TOKEN", "limit": 5 }
+            }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert!(
+        resp.get("result").is_some(),
+        "expected search to return a result payload"
+    );
+    let body = parse_tool_result(&resp)?;
+    let hits = body
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .ok_or("search response missing hits array")?;
+    assert!(
+        hits.is_empty(),
+        "expected repo-b search to ignore repo-a index hits"
+    );
+    let expected_root = repo_b
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| repo_b.path().to_path_buf())
+        .to_string_lossy()
+        .to_string();
+    assert_eq!(
+        body.get("repo_root").and_then(|v| v.as_str()),
+        Some(expected_root.as_str()),
+        "search should report repo-b root"
+    );
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_index_writer_backoff_is_machine_readable() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(repo.path(), host, port)?;
+    wait_for_health(host, port)?;
+
+    let mut mcp = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 31,
+            "method": "tools/call",
+            "params": { "name": "docdex_index", "arguments": { "paths": [] } }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("backoff_required"));
+    let reason = resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("reason"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        reason.contains("retry"),
+        "backoff_required should include retry guidance; got: {reason}"
+    );
+
+    mcp.shutdown();
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn mcp_tool_failure_does_not_corrupt_search_state() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let mut mcp = McpHarness::spawn(repo.path())?;
+    let baseline = search_hit_ids(&mut mcp, 40, "MCP_ROADMAP", 3)?;
+    assert!(
+        !baseline.is_empty(),
+        "expected search to return initial hits"
+    );
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 41,
+            "method": "tools/call",
+            "params": { "name": "docdex_open", "arguments": { "path": "../secrets.md" } }
+        }),
+    )?;
+    let open_err = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&open_err), Some(-32602));
+    assert_eq!(mcp_error_data_code(&open_err), Some("invalid_path"));
+
+    let after = search_hit_ids(&mut mcp, 42, "MCP_ROADMAP", 3)?;
+    assert_eq!(baseline, after, "search results should be deterministic");
+
+    mcp.shutdown();
     Ok(())
 }

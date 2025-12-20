@@ -4975,7 +4975,7 @@ fn has_index_meta(data_dir: &Path) -> bool {
 }
 
 fn normalize_for_error(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    crate::repo_identity::normalize_input_path(path)
 }
 
 <<<<<<< HEAD
@@ -5586,6 +5586,7 @@ fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
 }
 
 fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<PathBuf> {
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-08-t09
     if !repo_root.exists() {
         return Err(missing_repo_path_error(repo_root).into());
@@ -5597,6 +5598,18 @@ fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<Pat
         )
         .into());
     }
+=======
+    let resolution = crate::repo_identity::resolve_repo_root(
+        repo_root,
+        vec![
+            "Repo may have moved or been renamed.".to_string(),
+            "Re-run with the repo's current path.".to_string(),
+            "If you previously indexed this repo, you may need to reindex after moving it: `docdexd index --repo <repo>`."
+                .to_string(),
+        ],
+    )?;
+    let repo_root = resolution.canonical_path;
+>>>>>>> mcoda/task/bck-05-us-07-t29
 
     match state_dir {
         Some(custom) if custom.is_absolute() => {
@@ -5604,9 +5617,6 @@ fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<Pat
             // treat it as a shared *base* directory and scope all state under a repo id.
             // This prevents accidental cross-repo mixing when the same `--state-dir` is
             // used across multiple repos.
-            let repo_root = repo_root
-                .canonicalize()
-                .unwrap_or_else(|_| repo_root.to_path_buf());
             if custom.starts_with(&repo_root) {
                 return Ok(RepoStatePaths::legacy(custom));
             }

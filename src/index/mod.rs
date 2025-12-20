@@ -2,6 +2,8 @@ use anyhow::{anyhow, Context, Result};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
@@ -17,8 +19,9 @@ use tantivy::{
 use thiserror::Error;
 use tracing::warn;
 use crate::error::{
-    repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
-    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+    repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INTERNAL_ERROR,
+    ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+    ERR_STALE_INDEX,
 };
 use crate::symbols;
 use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
@@ -157,6 +160,8 @@ const MAX_SUMMARY_CHARS: usize = 360;
 const MAX_SUMMARY_SEGMENTS: usize = 4;
 const MAX_SNIPPET_CHARS: usize = 420;
 const FALLBACK_PREVIEW_LINES: usize = 60;
+const INDEX_STATE_FILENAME: &str = "index_state.json";
+const MAX_INDEX_STATE_ERROR_BYTES: usize = 512;
 
 #[derive(Clone)]
 pub struct IndexConfig {
@@ -177,6 +182,7 @@ pub struct Indexer {
     body_field: tantivy::schema::Field,
     summary_field: tantivy::schema::Field,
     token_field: tantivy::schema::Field,
+    index_state_preexisting: bool,
     writer: Option<Arc<Mutex<IndexWriter>>>,
     symbols_store: Option<SymbolsStore>,
 }
@@ -265,6 +271,45 @@ pub struct IndexStats {
     pub generated_at_epoch_ms: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_updated_epoch_ms: Option<u128>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum IndexStateStatus {
+    Fresh,
+    Stale,
+    Missing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IndexState {
+    status: IndexStateStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_success_epoch_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_attempt_epoch_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_error: Option<String>,
+}
+
+impl IndexState {
+    fn fresh(epoch_ms: u128) -> Self {
+        Self {
+            status: IndexStateStatus::Fresh,
+            last_success_epoch_ms: Some(epoch_ms),
+            last_attempt_epoch_ms: Some(epoch_ms),
+            last_error: None,
+        }
+    }
+
+    fn missing() -> Self {
+        Self {
+            status: IndexStateStatus::Missing,
+            last_success_epoch_ms: None,
+            last_attempt_epoch_ms: None,
+            last_error: None,
+        }
+    }
 }
 
 impl IndexConfig {
@@ -374,6 +419,7 @@ impl Indexer {
             .into());
         }
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
+        let state_dir_preexisting = state_dir_has_entries(config.state_dir());
         ensure_state_dir_secure(config.state_dir())?;
         let (schema, doc_id_field, path_field, body_field, summary_field, token_field) =
             build_schema();
@@ -403,7 +449,7 @@ impl Indexer {
             }
             return Err(err).context("record repo identity metadata");
         }
-        Ok(Self {
+        let indexer = Self {
             repo_root,
             config,
             index,
@@ -413,9 +459,12 @@ impl Indexer {
             body_field,
             summary_field,
             token_field,
+            index_state_preexisting: state_dir_preexisting,
             writer: Some(Arc::new(Mutex::new(writer))),
             symbols_store,
-        })
+        };
+        indexer.init_index_state()?;
+        Ok(indexer)
     }
 
     pub fn with_config_read_only(repo_root: PathBuf, config: IndexConfig) -> Result<Self> {
@@ -430,6 +479,7 @@ impl Indexer {
             .into());
         }
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
+        let state_dir_preexisting = state_dir_has_entries(config.state_dir());
         if !config.state_dir().exists() {
             return Err(AppError::new(
                 ERR_MISSING_INDEX,
@@ -472,36 +522,51 @@ impl Indexer {
             body_field,
             summary_field,
             token_field,
+            index_state_preexisting: state_dir_preexisting,
             writer: None,
             symbols_store,
         })
     }
 
     pub async fn reindex_all(&self) -> Result<()> {
-        let writer_arc = self.writer()?;
-        let mut writer = writer_arc.lock();
-        writer.delete_all_documents()?;
-        if let Some(store) = self.symbols_store.as_ref() {
-            if let Err(err) = store.reset() {
-                warn!(target: "docdexd", error = ?err, "failed to reset symbols store; continuing without clearing old symbols");
+        let result = (|| -> Result<()> {
+            let writer_arc = self.writer()?;
+            let mut writer = writer_arc.lock();
+            writer.delete_all_documents()?;
+            if let Some(store) = self.symbols_store.as_ref() {
+                if let Err(err) = store.reset() {
+                    warn!(target: "docdexd", error = ?err, "failed to reset symbols store; continuing without clearing old symbols");
+                }
+            }
+            for entry in WalkDir::new(&self.repo_root)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_file())
+            {
+                let path = entry.path();
+                let decision = decide_file(path, &self.repo_root, &self.config);
+                if !decision.should_index() {
+                    continue;
+                }
+                let ingest = self.add_document(&mut writer, path)?;
+                self.maybe_update_symbols(&ingest);
+            }
+            writer.commit()?;
+            self.reader.reload()?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                if let Err(err) = self.record_index_success() {
+                    warn!(target: "docdexd", error = ?err, "failed to record index success");
+                }
+                Ok(())
+            }
+            Err(err) => {
+                self.record_index_failure(&err);
+                Err(err)
             }
         }
-        for entry in WalkDir::new(&self.repo_root)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-        {
-            let path = entry.path();
-            let decision = decide_file(path, &self.repo_root, &self.config);
-            if !decision.should_index() {
-                continue;
-            }
-            let ingest = self.add_document(&mut writer, path)?;
-            self.maybe_update_symbols(&ingest);
-        }
-        writer.commit()?;
-        self.reader.reload()?;
-        Ok(())
     }
 
     pub async fn ingest_file(&self, file: PathBuf) -> Result<FileDecision> {
@@ -510,16 +575,30 @@ impl Indexer {
         if !decision.should_index() {
             return Ok(decision);
         }
-        let writer_arc = self.writer()?;
-        let mut writer = writer_arc.lock();
-        let rel = self.rel_path(&path)?;
-        let term = Term::from_field_text(self.doc_id_field, &rel);
-        writer.delete_term(term);
-        let ingest = self.add_document(&mut writer, &path)?;
-        self.maybe_update_symbols(&ingest);
-        writer.commit()?;
-        self.reader.reload()?;
-        Ok(decision)
+        let result = (|| -> Result<FileDecision> {
+            let writer_arc = self.writer()?;
+            let mut writer = writer_arc.lock();
+            let rel = self.rel_path(&path)?;
+            let term = Term::from_field_text(self.doc_id_field, &rel);
+            writer.delete_term(term);
+            let ingest = self.add_document(&mut writer, &path)?;
+            self.maybe_update_symbols(&ingest);
+            writer.commit()?;
+            self.reader.reload()?;
+            Ok(decision)
+        })();
+        match result {
+            Ok(decision) => {
+                if let Err(err) = self.record_index_success() {
+                    warn!(target: "docdexd", error = ?err, "failed to record index success");
+                }
+                Ok(decision)
+            }
+            Err(err) => {
+                self.record_index_failure(&err);
+                Err(err)
+            }
+        }
     }
 
     pub async fn delete_file(&self, file: PathBuf) -> Result<()> {
@@ -527,18 +606,32 @@ impl Indexer {
             Ok(rel) => rel,
             Err(_) => return Ok(()),
         };
-        let writer_arc = self.writer()?;
-        let mut writer = writer_arc.lock();
-        let term = Term::from_field_text(self.doc_id_field, &rel);
-        writer.delete_term(term);
-        writer.commit()?;
-        self.reader.reload()?;
-        if let Some(store) = self.symbols_store.as_ref() {
-            if let Err(err) = store.delete_symbols(&rel) {
-                warn!(target: "docdexd", error = ?err, rel_path = %rel, "failed to delete symbols record");
+        let result = (|| -> Result<()> {
+            let writer_arc = self.writer()?;
+            let mut writer = writer_arc.lock();
+            let term = Term::from_field_text(self.doc_id_field, &rel);
+            writer.delete_term(term);
+            writer.commit()?;
+            self.reader.reload()?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                if let Some(store) = self.symbols_store.as_ref() {
+                    if let Err(err) = store.delete_symbols(&rel) {
+                        warn!(target: "docdexd", error = ?err, rel_path = %rel, "failed to delete symbols record");
+                    }
+                }
+                if let Err(err) = self.record_index_success() {
+                    warn!(target: "docdexd", error = ?err, "failed to record index success");
+                }
+                Ok(())
+            }
+            Err(err) => {
+                self.record_index_failure(&err);
+                Err(err)
             }
         }
-        Ok(())
     }
 
     #[allow(dead_code)]
@@ -552,6 +645,7 @@ impl Indexer {
         query: &str,
         limit: usize,
     ) -> Result<(Vec<Hit>, SearchQueryMeta)> {
+        self.ensure_index_fresh()?;
         let raw = query.trim();
         if raw.is_empty() {
             return Err(SearchError::InvalidQuery {
@@ -805,7 +899,87 @@ impl Indexer {
         &self.config
     }
 
+    fn init_index_state(&self) -> Result<()> {
+        let state_path = index_state_path(self.config.state_dir());
+        if state_path.exists() {
+            return Ok(());
+        }
+        let mut last_success = None;
+        if self.index_state_preexisting {
+            last_success = index_last_updated_epoch_ms(self.config.state_dir())
+                .or_else(|| now_epoch_ms().ok());
+        }
+        let state = match (self.index_state_preexisting, last_success) {
+            (true, Some(epoch)) => IndexState::fresh(epoch),
+            _ => IndexState::missing(),
+        };
+        write_index_state(self.config.state_dir(), &state)?;
+        Ok(())
+    }
+
+    fn load_index_state(&self) -> Result<IndexState> {
+        match read_index_state(self.config.state_dir()) {
+            Ok(Some(state)) => return Ok(state),
+            Ok(None) => {}
+            Err(err) => {
+                warn!(target: "docdexd", error = ?err, "failed to read index state; inferring from disk");
+            }
+        }
+        if self.index_state_preexisting {
+            if let Some(epoch) = index_last_updated_epoch_ms(self.config.state_dir())
+                .or_else(|| now_epoch_ms().ok())
+            {
+                return Ok(IndexState::fresh(epoch));
+            }
+        }
+        Ok(IndexState::missing())
+    }
+
+    fn ensure_index_fresh(&self) -> Result<()> {
+        let state = self.load_index_state()?;
+        match state.status {
+            IndexStateStatus::Fresh => Ok(()),
+            IndexStateStatus::Missing | IndexStateStatus::Stale => {
+                Err(index_state_error(&self.repo_root, &state).into())
+            }
+        }
+    }
+
+    fn record_index_success(&self) -> Result<()> {
+        let now = now_epoch_ms()?;
+        let state = IndexState::fresh(now);
+        write_index_state(self.config.state_dir(), &state)
+    }
+
+    fn record_index_failure(&self, err: &anyhow::Error) {
+        if let Some(app) = err.downcast_ref::<AppError>() {
+            if app.code == ERR_BACKOFF_REQUIRED {
+                return;
+            }
+        }
+        let mut state = match self.load_index_state() {
+            Ok(state) => state,
+            Err(load_err) => {
+                warn!(target: "docdexd", error = ?load_err, "failed to load index state after update failure");
+                return;
+            }
+        };
+        if let Ok(epoch) = now_epoch_ms() {
+            state.last_attempt_epoch_ms = Some(epoch);
+        }
+        state.last_error = Some(truncate_state_error(&err.to_string()));
+        if state.last_success_epoch_ms.is_some() {
+            state.status = IndexStateStatus::Stale;
+        } else {
+            state.status = IndexStateStatus::Missing;
+        }
+        if let Err(write_err) = write_index_state(self.config.state_dir(), &state) {
+            warn!(target: "docdexd", error = ?write_err, "failed to record index failure state");
+        }
+    }
+
     pub fn stats(&self) -> Result<IndexStats> {
+        self.ensure_index_fresh()?;
         let searcher = self.reader.searcher();
         let mut num_docs: u64 = 0;
         let mut segments: usize = 0;
@@ -824,22 +998,7 @@ impl Indexer {
             .filter_map(|entry| entry.metadata().ok())
             .map(|meta| meta.len())
             .sum();
-        let mut last_updated_epoch_ms: Option<u128> = None;
-        for entry in walkdir::WalkDir::new(&state_dir).into_iter().flatten() {
-            if let Ok(meta) = entry.metadata() {
-                if let Ok(modified) = meta.modified() {
-                    if let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
-                        let millis = dur.as_millis();
-                        if last_updated_epoch_ms
-                            .map(|current| millis > current)
-                            .unwrap_or(true)
-                        {
-                            last_updated_epoch_ms = Some(millis);
-                        }
-                    }
-                }
-            }
-        }
+        let last_updated_epoch_ms = index_last_updated_epoch_ms(&state_dir);
         let generated_at_epoch_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -866,6 +1025,7 @@ impl Indexer {
         query: Option<&str>,
         fallback_lines: usize,
     ) -> Result<Option<(DocSnapshot, Option<SnippetResult>)>> {
+        self.ensure_index_fresh()?;
         let Some(doc) = self.fetch_document(doc_id)? else {
             return Ok(None);
         };
@@ -876,6 +1036,7 @@ impl Indexer {
     }
 
     pub fn list_docs(&self, offset: usize, limit: usize) -> Result<(Vec<DocSnapshot>, u64)> {
+        self.ensure_index_fresh()?;
         let searcher = self.reader.searcher();
         let mut snapshots = Vec::new();
         let mut skipped = 0usize;
@@ -1425,8 +1586,118 @@ pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn state_dir_has_entries(path: &Path) -> bool {
+    match fs::read_dir(path) {
+        Ok(mut entries) => entries.next().is_some(),
+        Err(_) => false,
+    }
+}
+
+fn index_state_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(INDEX_STATE_FILENAME)
+}
+
+fn read_index_state(state_dir: &Path) -> Result<Option<IndexState>> {
+    let path = index_state_path(state_dir);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    let state = serde_json::from_str(&raw)?;
+    Ok(Some(state))
+}
+
+fn write_index_state(state_dir: &Path, state: &IndexState) -> Result<()> {
+    let path = index_state_path(state_dir);
+    let temp_path = path.with_extension("json.tmp");
+    let payload = serde_json::to_vec_pretty(state)?;
+    fs::write(&temp_path, payload)?;
+    if let Err(err) = fs::rename(&temp_path, &path) {
+        if path.exists() {
+            let _ = fs::remove_file(&path);
+        }
+        fs::rename(&temp_path, &path).map_err(|_| err)?;
+    }
+    Ok(())
+}
+
+fn index_last_updated_epoch_ms(state_dir: &Path) -> Option<u128> {
+    let mut last_updated_epoch_ms: Option<u128> = None;
+    for entry in walkdir::WalkDir::new(state_dir).into_iter().flatten() {
+        if let Ok(meta) = entry.metadata() {
+            if let Ok(modified) = meta.modified() {
+                if let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
+                    let millis = dur.as_millis();
+                    if last_updated_epoch_ms
+                        .map(|current| millis > current)
+                        .unwrap_or(true)
+                    {
+                        last_updated_epoch_ms = Some(millis);
+                    }
+                }
+            }
+        }
+    }
+    last_updated_epoch_ms
+}
+
+fn now_epoch_ms() -> Result<u128> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis())
+}
+
+fn truncate_state_error(message: &str) -> String {
+    if message.len() <= MAX_INDEX_STATE_ERROR_BYTES {
+        return message.to_string();
+    }
+    let mut end = MAX_INDEX_STATE_ERROR_BYTES;
+    while end > 0 && !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = message[..end].to_string();
+    out.push_str("…");
+    out
+}
+
 fn normalize_for_error(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn index_state_error(repo_root: &Path, state: &IndexState) -> AppError {
+    let remediation = match state.status {
+        IndexStateStatus::Missing => "run `docdexd index --repo <repo>` to build a fresh index",
+        IndexStateStatus::Stale => "run `docdexd index --repo <repo>` to refresh the index",
+        IndexStateStatus::Fresh => "run `docdexd index --repo <repo>` to rebuild the index",
+    };
+    let message = match state.status {
+        IndexStateStatus::Missing => format!("index missing; {remediation}"),
+        IndexStateStatus::Stale => format!("index stale after failed update; {remediation}"),
+        IndexStateStatus::Fresh => format!("index ready; {remediation}"),
+    };
+    let code = match state.status {
+        IndexStateStatus::Missing => ERR_MISSING_INDEX,
+        IndexStateStatus::Stale => ERR_STALE_INDEX,
+        IndexStateStatus::Fresh => ERR_INTERNAL_ERROR,
+    };
+    let mut details = serde_json::Map::new();
+    details.insert("indexState".to_string(), json!(state.status));
+    details.insert(
+        "repoRoot".to_string(),
+        json!(normalize_for_error(repo_root)),
+    );
+    if let Some(value) = state.last_success_epoch_ms {
+        details.insert("lastSuccessEpochMs".to_string(), json!(value));
+    }
+    if let Some(value) = state.last_attempt_epoch_ms {
+        details.insert("lastAttemptEpochMs".to_string(), json!(value));
+    }
+    if let Some(value) = state.last_error.as_ref() {
+        details.insert("lastError".to_string(), json!(value));
+    }
+    details.insert("remediation".to_string(), json!([remediation]));
+    AppError::new(code, message).with_details(serde_json::Value::Object(details))
 }
 
 fn known_canonical_path_from_repo_meta(index_state_dir: &Path) -> Option<String> {

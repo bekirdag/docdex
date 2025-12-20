@@ -3,8 +3,12 @@ use std::fmt;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+<<<<<<< HEAD
 use serde::Serialize;
 use serde_json::Value;
+=======
+use serde_json::{json, Value};
+>>>>>>> mcoda/task/bck-05-us-09-t28
 use thiserror::Error;
 
 pub const ERR_EMBEDDING_TIMEOUT: &str = "embedding_timeout";
@@ -26,6 +30,7 @@ pub const ERR_REPO_STATE_MISMATCH: &str = "repo_state_mismatch";
 pub const ERR_INTERNAL_ERROR: &str = "internal_error";
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 pub const MAX_RATE_LIMIT_FIELD_BYTES: usize = 128;
 
 fn clamp_utf8(mut input: String, max_bytes: usize) -> String {
@@ -45,6 +50,11 @@ pub const ERR_RATE_LIMITED_RPC: i32 = -32029;
 =======
 const DEFAULT_BACKOFF_RETRY_AFTER_MS: u64 = 1000;
 >>>>>>> mcoda/task/bck-05-us-09-t07
+=======
+pub const DEFAULT_BACKOFF_RETRY_AFTER_MS: u64 = 1000;
+pub const MAX_RETRY_HINT_KEY_BYTES: usize = 64;
+pub const MAX_RETRY_HINT_SCOPE_BYTES: usize = 64;
+>>>>>>> mcoda/task/bck-05-us-09-t28
 
 #[derive(Debug, Clone)]
 pub struct StartupError {
@@ -129,6 +139,27 @@ pub fn repo_resolution_details(
     Value::Object(details)
 }
 
+fn truncate_bytes_ascii(input: &str, max_bytes: usize) -> String {
+    if input.len() <= max_bytes {
+        return input.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    input[..end].to_string()
+}
+
+pub fn retry_hint_details(retry_after_ms: u64, limit_key: &str, scope: &str) -> Value {
+    let limit_key = truncate_bytes_ascii(limit_key, MAX_RETRY_HINT_KEY_BYTES);
+    let scope = truncate_bytes_ascii(scope, MAX_RETRY_HINT_SCOPE_BYTES);
+    json!({
+        "retry_after_ms": retry_after_ms,
+        "limit_key": limit_key,
+        "scope": scope,
+    })
+}
+
 #[derive(Debug, Clone, Error)]
 #[error("{message}")]
 pub struct RateLimited {
@@ -143,8 +174,13 @@ pub struct RateLimited {
 impl RateLimited {
     pub fn new(retry_after: Duration, limit_key: String, scope: String) -> Self {
         let retry_after_ms = retry_after.as_millis().min(u128::from(u64::MAX)) as u64;
+<<<<<<< HEAD
         let limit_key = clamp_utf8(limit_key, MAX_RATE_LIMIT_FIELD_BYTES);
         let scope = clamp_utf8(scope, MAX_RATE_LIMIT_FIELD_BYTES);
+=======
+        let limit_key = truncate_bytes_ascii(&limit_key, MAX_RETRY_HINT_KEY_BYTES);
+        let scope = truncate_bytes_ascii(&scope, MAX_RETRY_HINT_SCOPE_BYTES);
+>>>>>>> mcoda/task/bck-05-us-09-t28
         Self {
             code: ERR_RATE_LIMITED,
             message: "rate limited".to_string(),

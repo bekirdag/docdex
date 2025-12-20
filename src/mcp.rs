@@ -2604,6 +2604,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.ensure_schema_version("docdex_stats", args.schema_version)?;
 =======
         self.ensure_index_fresh()?;
@@ -2628,6 +2629,9 @@ impl McpServer {
 >>>>>>> mcoda/task/bck-05-us-08-t05
         let stats = self.indexer.stats()?;
         let run_summaries = self.indexer.run_summaries(args.runs_limit)?;
+=======
+        let stats = self.indexer.stats_checked()?;
+>>>>>>> mcoda/task/bck-05-us-08-t01
         Ok(json!({
             "num_docs": stats.num_docs,
             "state_dir": stats.state_dir.display().to_string(),

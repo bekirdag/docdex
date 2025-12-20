@@ -16,6 +16,7 @@ use crate::error::{
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     ERR_RATE_LIMITED, ERR_TIER2_UNAVAILABLE,
 >>>>>>> mcoda/task/bck-05-us-09-t21
 =======
@@ -45,6 +46,9 @@ use crate::error::{
     ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_MISSING_INDEX, ERR_RATE_LIMITED,
     ERR_STALE_INDEX,
 >>>>>>> mcoda/task/bck-05-us-08-t03
+=======
+    ERR_MISSING_INDEX, ERR_RATE_LIMITED, ERR_STALE_INDEX,
+>>>>>>> mcoda/task/bck-05-us-08-t01
 };
 use crate::libs::LibsIndexer;
 use crate::max_size::{
@@ -553,6 +557,7 @@ fn status_for_app_error(code: &str) -> StatusCode {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         ERR_TIER2_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
 =======
         ERR_MISSING_INDEX => StatusCode::CONFLICT,
@@ -572,6 +577,10 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_MISSING_INDEX | ERR_STALE_INDEX => StatusCode::CONFLICT,
         ERR_BACKOFF_REQUIRED => StatusCode::SERVICE_UNAVAILABLE,
 >>>>>>> mcoda/task/bck-05-us-08-t03
+=======
+        ERR_MISSING_INDEX => StatusCode::CONFLICT,
+        ERR_STALE_INDEX => StatusCode::CONFLICT,
+>>>>>>> mcoda/task/bck-05-us-08-t01
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -747,6 +756,21 @@ fn ensure_index_fresh(state: &AppState) -> Result<IndexStateSnapshot, Response> 
 
 fn json_error_detail(status: StatusCode, detail: ErrorDetail) -> Response {
     (status, Json(ErrorBody { error: detail })).into_response()
+}
+
+fn json_error_with_details(
+    status: StatusCode,
+    code: &'static str,
+    message: impl Into<String>,
+    details: Option<serde_json::Value>,
+) -> Response {
+    (
+        status,
+        Json(ErrorBody {
+            error: ErrorDetail::new(code, message).with_details(details),
+        }),
+    )
+        .into_response()
 }
 
 async fn memory_store_handler(
@@ -1434,6 +1458,7 @@ struct ErrorDetail {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     details: Option<serde_json::Value>,
 =======
     resource_key: Option<String>,
@@ -1454,6 +1479,9 @@ struct ErrorDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     hint: Option<String>,
 >>>>>>> mcoda/task/bck-05-us-08-t03
+=======
+    details: Option<serde_json::Value>,
+>>>>>>> mcoda/task/bck-05-us-08-t01
 }
 
 impl ErrorDetail {
@@ -1465,6 +1493,7 @@ impl ErrorDetail {
             retry_at: None,
             limit_key: None,
             scope: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1501,6 +1530,14 @@ impl ErrorDetail {
     #[allow(dead_code)]
     fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
+=======
+            details: None,
+        }
+    }
+
+    fn with_details(mut self, details: Option<serde_json::Value>) -> Self {
+        self.details = details;
+>>>>>>> mcoda/task/bck-05-us-08-t01
         self
     }
 
@@ -1518,6 +1555,7 @@ impl ErrorDetail {
 <<<<<<< HEAD
             limit_key: Some(err.limit_key.clone()),
             scope: Some(err.scope.clone()),
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1572,6 +1610,9 @@ impl ErrorDetail {
             remediation: None,
             hint: None,
 >>>>>>> mcoda/task/bck-05-us-08-t03
+=======
+            details: None,
+>>>>>>> mcoda/task/bck-05-us-08-t01
         }
     }
 
@@ -2389,6 +2430,7 @@ async fn search_handler(
             if let Some(app) = err.downcast_ref::<AppError>() {
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
                 return json_error(
                     status_for_app_error(app.code),
                     app.code,
@@ -2411,6 +2453,14 @@ async fn search_handler(
 =======
                 return app_error_response(&state, app);
 >>>>>>> mcoda/task/bck-05-us-08-t03
+=======
+                return json_error_with_details(
+                    status_for_app_error(app.code),
+                    app.code,
+                    app.message.clone(),
+                    app.details.clone(),
+                );
+>>>>>>> mcoda/task/bck-05-us-08-t01
             }
             state.metrics.inc_error();
             warn!(
@@ -2521,6 +2571,7 @@ async fn snippet_handler(
         Err(err) => {
             if let Some(app) = err.downcast_ref::<AppError>() {
 <<<<<<< HEAD
+<<<<<<< HEAD
                 return json_error(
                     status_for_app_error(app.code),
                     app.code,
@@ -2529,6 +2580,14 @@ async fn snippet_handler(
 =======
                 return app_error_response(&state, app);
 >>>>>>> mcoda/task/bck-05-us-08-t03
+=======
+                return json_error_with_details(
+                    status_for_app_error(app.code),
+                    app.code,
+                    app.message.clone(),
+                    app.details.clone(),
+                );
+>>>>>>> mcoda/task/bck-05-us-08-t01
             }
             state.metrics.inc_error();
             if let Some(app) = err.downcast_ref::<AppError>() {

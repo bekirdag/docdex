@@ -85,6 +85,246 @@ fn cli_missing_repo_path_includes_move_hint_and_details() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn cli_missing_index_includes_hint_and_recovery_steps() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    write_repo(repo.path(), "a.md", "repo_token")?;
+
+    let output = Command::new(docdex_bin())
+        .args([
+            "query",
+            "--repo",
+            repo.path().to_string_lossy().as_ref(),
+            "--query",
+            "shared_term",
+            "--limit",
+            "1",
+        ])
+        .output()?;
+
+    assert!(!output.status.success(), "expected non-zero exit");
+    let payload = parse_error(&output.stderr)?;
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("missing_index")
+    );
+    let details = payload
+        .get("error")
+        .and_then(|e| e.get("details"))
+        .ok_or("expected error.details")?;
+    let expected_state_dir = format!("{}/.docdex/index", normalize_path(repo.path()));
+    assert_eq!(
+        details.get("stateDir").and_then(|v| v.as_str()),
+        Some(expected_state_dir.as_str())
+    );
+    assert!(
+        details
+            .get("hint")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("docdexd index"),
+        "expected hint to mention docdexd index; got: {details}"
+    );
+    let steps = details
+        .get("recoverySteps")
+        .and_then(|v| v.as_array())
+        .ok_or("expected details.recoverySteps array")?;
+    assert!(
+        !steps.is_empty(),
+        "expected recoverySteps to include at least one entry; got: {details}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn cli_stale_index_returns_reason_and_timestamps() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    write_repo(repo.path(), "a.md", "repo_token")?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+
+    let out_index = Command::new(docdex_bin())
+        .args(["index", "--repo", repo_str.as_str()])
+        .output()?;
+    assert!(out_index.status.success(), "index failed: {:?}", out_index);
+
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fs::write(
+        repo.path().join("a.md"),
+        "# Fixture\n\nshared_term\nrepo_token\nupdated\n",
+    )?;
+
+    let output = Command::new(docdex_bin())
+        .args([
+            "query",
+            "--repo",
+            repo_str.as_str(),
+            "--query",
+            "shared_term",
+            "--limit",
+            "1",
+        ])
+        .output()?;
+
+    assert!(!output.status.success(), "expected non-zero exit");
+    let payload = parse_error(&output.stderr)?;
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("stale_index")
+    );
+    let details = payload
+        .get("error")
+        .and_then(|e| e.get("details"))
+        .ok_or("expected error.details")?;
+    assert_eq!(
+        details.get("staleReason").and_then(|v| v.as_str()),
+        Some("repo_modified_since_index")
+    );
+    assert!(
+        details
+            .get("indexLastUpdatedEpochMs")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "expected indexLastUpdatedEpochMs; got: {details}"
+    );
+    assert!(
+        details
+            .get("repoLastModifiedEpochMs")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "expected repoLastModifiedEpochMs; got: {details}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn cli_missing_index_includes_hint_and_recovery_steps() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    write_repo(repo.path(), "a.md", "repo_token")?;
+
+    let output = Command::new(docdex_bin())
+        .args([
+            "query",
+            "--repo",
+            repo.path().to_string_lossy().as_ref(),
+            "--query",
+            "shared_term",
+            "--limit",
+            "1",
+        ])
+        .output()?;
+
+    assert!(!output.status.success(), "expected non-zero exit");
+    let payload = parse_error(&output.stderr)?;
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("missing_index")
+    );
+    let details = payload
+        .get("error")
+        .and_then(|e| e.get("details"))
+        .ok_or("expected error.details")?;
+    let expected_state_dir = format!("{}/.docdex/index", normalize_path(repo.path()));
+    assert_eq!(
+        details.get("stateDir").and_then(|v| v.as_str()),
+        Some(expected_state_dir.as_str())
+    );
+    assert!(
+        details
+            .get("hint")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("docdexd index"),
+        "expected hint to mention docdexd index; got: {details}"
+    );
+    let steps = details
+        .get("recoverySteps")
+        .and_then(|v| v.as_array())
+        .ok_or("expected details.recoverySteps array")?;
+    assert!(
+        !steps.is_empty(),
+        "expected recoverySteps to include at least one entry; got: {details}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn cli_stale_index_returns_reason_and_timestamps() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    write_repo(repo.path(), "a.md", "repo_token")?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+
+    let out_index = Command::new(docdex_bin())
+        .args(["index", "--repo", repo_str.as_str()])
+        .output()?;
+    assert!(out_index.status.success(), "index failed: {:?}", out_index);
+
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fs::write(
+        repo.path().join("a.md"),
+        "# Fixture\n\nshared_term\nrepo_token\nupdated\n",
+    )?;
+
+    let output = Command::new(docdex_bin())
+        .args([
+            "query",
+            "--repo",
+            repo_str.as_str(),
+            "--query",
+            "shared_term",
+            "--limit",
+            "1",
+        ])
+        .output()?;
+
+    assert!(!output.status.success(), "expected non-zero exit");
+    let payload = parse_error(&output.stderr)?;
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("stale_index")
+    );
+    let details = payload
+        .get("error")
+        .and_then(|e| e.get("details"))
+        .ok_or("expected error.details")?;
+    assert_eq!(
+        details.get("staleReason").and_then(|v| v.as_str()),
+        Some("repo_modified_since_index")
+    );
+    assert!(
+        details
+            .get("indexLastUpdatedEpochMs")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "expected indexLastUpdatedEpochMs; got: {details}"
+    );
+    assert!(
+        details
+            .get("repoLastModifiedEpochMs")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "expected repoLastModifiedEpochMs; got: {details}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn cli_repo_state_mismatch_fast_fails_with_fingerprint_and_guidance() -> Result<(), Box<dyn Error>> {
     let workspace = TempDir::new()?;
     let state_root = TempDir::new()?;

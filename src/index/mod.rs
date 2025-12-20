@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
@@ -157,6 +158,8 @@ const MAX_SUMMARY_CHARS: usize = 360;
 const MAX_SUMMARY_SEGMENTS: usize = 4;
 const MAX_SNIPPET_CHARS: usize = 420;
 const FALLBACK_PREVIEW_LINES: usize = 60;
+const INDEX_STATE_VERSION: u32 = 1;
+const INDEX_STATE_FILENAME: &str = "docdex_index_state.json";
 
 #[derive(Clone)]
 pub struct IndexConfig {
@@ -265,6 +268,17 @@ pub struct IndexStats {
     pub generated_at_epoch_ms: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_updated_epoch_ms: Option<u128>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IndexStateFile {
+    version: u32,
+    indexed_at_epoch_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexStateSnapshot {
+    pub indexed_at_epoch_ms: u64,
 }
 
 impl IndexConfig {
@@ -501,6 +515,7 @@ impl Indexer {
         }
         writer.commit()?;
         self.reader.reload()?;
+        self.write_index_state_now()?;
         Ok(())
     }
 
@@ -519,6 +534,7 @@ impl Indexer {
         self.maybe_update_symbols(&ingest);
         writer.commit()?;
         self.reader.reload()?;
+        self.write_index_state_now()?;
         Ok(decision)
     }
 
@@ -533,6 +549,7 @@ impl Indexer {
         writer.delete_term(term);
         writer.commit()?;
         self.reader.reload()?;
+        self.write_index_state_now()?;
         if let Some(store) = self.symbols_store.as_ref() {
             if let Err(err) = store.delete_symbols(&rel) {
                 warn!(target: "docdexd", error = ?err, rel_path = %rel, "failed to delete symbols record");
@@ -858,6 +875,70 @@ impl Indexer {
             generated_at_epoch_ms,
             last_updated_epoch_ms,
         })
+    }
+
+    pub fn index_state_path(&self) -> PathBuf {
+        self.config.state_dir().join(INDEX_STATE_FILENAME)
+    }
+
+    pub fn read_index_state(&self) -> Result<Option<IndexStateSnapshot>> {
+        let path = self.index_state_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let raw =
+            fs::read_to_string(&path).with_context(|| format!("read index state {}", path.display()))?;
+        let parsed: IndexStateFile =
+            serde_json::from_str(&raw).context("parse index state json")?;
+        if parsed.version != INDEX_STATE_VERSION {
+            return Ok(None);
+        }
+        Ok(Some(IndexStateSnapshot {
+            indexed_at_epoch_ms: parsed.indexed_at_epoch_ms,
+        }))
+    }
+
+    fn write_index_state(&self, indexed_at_epoch_ms: u64) -> Result<()> {
+        let path = self.index_state_path();
+        let payload = IndexStateFile {
+            version: INDEX_STATE_VERSION,
+            indexed_at_epoch_ms,
+        };
+        let serialized =
+            serde_json::to_string_pretty(&payload).context("serialize index state json")?;
+        fs::write(&path, serialized)
+            .with_context(|| format!("write index state {}", path.display()))?;
+        Ok(())
+    }
+
+    fn write_index_state_now(&self) -> Result<()> {
+        let now = now_epoch_ms_u64()?;
+        self.write_index_state(now)
+    }
+
+    pub fn latest_repo_mtime_epoch_ms(&self) -> Result<Option<u64>> {
+        let mut latest: Option<u64> = None;
+        for entry in WalkDir::new(&self.repo_root).into_iter().filter_map(|e| e.ok()) {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if !should_index(path, &self.repo_root, &self.config) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            let Ok(modified) = meta.modified() else {
+                continue;
+            };
+            let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) else {
+                continue;
+            };
+            let ms = duration.as_millis().min(u128::from(u64::MAX)) as u64;
+            latest = Some(latest.map_or(ms, |current| current.max(ms)));
+        }
+        Ok(latest)
     }
 
     pub fn snapshot_with_snippet(
@@ -1578,6 +1659,14 @@ fn normalize_prefix(input: &str) -> String {
         cleaned.push('/');
     }
     cleaned
+}
+
+fn now_epoch_ms_u64() -> Result<u64> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64)
 }
 
 fn summarize(content: &str) -> String {

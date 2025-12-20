@@ -515,6 +515,106 @@ fn mcp_missing_project_root_path_is_missing_repo_path() -> Result<(), Box<dyn Er
 }
 
 #[test]
+fn mcp_missing_and_stale_index_errors_are_distinct() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+
+    let mut mcp = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 13,
+            "method": "tools/call",
+            "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1 } }
+        }),
+    )?;
+    let missing = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&missing), Some(-32602));
+    assert_eq!(
+        mcp_error_data_code(&missing),
+        Some("missing_index"),
+        "missing index should return missing_index code"
+    );
+    mcp.shutdown();
+
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    thread::sleep(Duration::from_millis(1100));
+    std::fs::write(repo.path().join("docs").join("overview.md"), "# Overview\n\nMCP_ROADMAP updated.\n")?;
+
+    let mut mcp = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 14,
+            "method": "tools/call",
+            "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1 } }
+        }),
+    )?;
+    let stale = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&stale), Some(-32602));
+    assert_eq!(
+        mcp_error_data_code(&stale),
+        Some("stale_index"),
+        "stale index should return stale_index code"
+    );
+    mcp.shutdown();
+
+    Ok(())
+}
+
+#[test]
+fn mcp_missing_and_stale_index_errors_are_distinct() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+
+    let mut mcp = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 13,
+            "method": "tools/call",
+            "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1 } }
+        }),
+    )?;
+    let missing = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&missing), Some(-32602));
+    assert_eq!(
+        mcp_error_data_code(&missing),
+        Some("missing_index"),
+        "missing index should return missing_index code"
+    );
+    mcp.shutdown();
+
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    thread::sleep(Duration::from_millis(1100));
+    std::fs::write(repo.path().join("docs").join("overview.md"), "# Overview\n\nMCP_ROADMAP updated.\n")?;
+
+    let mut mcp = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 14,
+            "method": "tools/call",
+            "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1 } }
+        }),
+    )?;
+    let stale = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&stale), Some(-32602));
+    assert_eq!(
+        mcp_error_data_code(&stale),
+        Some("stale_index"),
+        "stale index should return stale_index code"
+    );
+    mcp.shutdown();
+
+    Ok(())
+}
+
+#[test]
 fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let repo_str = repo.path().to_string_lossy().to_string();

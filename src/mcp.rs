@@ -1891,12 +1891,17 @@ impl McpServer {
 
     async fn handle_search(&self, args: SearchArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+<<<<<<< HEAD
         self.ensure_schema_version("docdex_search", args.schema_version)?;
+=======
+        self.ensure_index_fresh()?;
+>>>>>>> mcoda/task/bck-05-us-08-t32
         let query = args.query.trim();
 <<<<<<< HEAD
         let requested_limit = args.limit;
         let limit = args
             .limit
+<<<<<<< HEAD
             .unwrap_or(self.limits.max_search_items)
             .clamp(1, self.limits.max_search_items);
         let mut hits =
@@ -1911,6 +1916,18 @@ impl McpServer {
 >>>>>>> mcoda/task/bck-05-us-10-t25
             search::run_query(&self.indexer, self.libs_indexer.as_ref(), query, limit).await?;
         apply_search_bounds(&self.limits, &mut hits.hits);
+=======
+            .unwrap_or(self.max_results)
+            .clamp(1, self.max_results);
+        let mut hits =
+            search::run_query(&self.indexer, self.libs_indexer.as_ref(), query, limit).await?;
+        if hits.hits.len() > limit {
+            hits.hits.truncate(limit);
+            let top_score = hits.hits.first().map(|hit| hit.score);
+            hits.top_score = top_score;
+            hits.top_score_camel = top_score;
+        }
+>>>>>>> mcoda/task/bck-05-us-08-t32
         let hits_value = serde_json::to_value(&hits.hits)?;
         let project_root_path = self
             .default_project_root
@@ -2060,9 +2077,13 @@ impl McpServer {
         self.ensure_project_root(args.project_root.as_deref())?;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
         self.ensure_schema_version("docdex_files", args.schema_version)?;
 >>>>>>> mcoda/task/bck-05-us-10-t21
+=======
+        self.ensure_index_fresh()?;
+>>>>>>> mcoda/task/bck-05-us-08-t32
         let limit = args
             .limit
             .unwrap_or(limits::MCP_FILES_DEFAULT_LIMIT)
@@ -2090,7 +2111,11 @@ impl McpServer {
 
     async fn handle_stats(&self, args: StatsArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+<<<<<<< HEAD
         self.ensure_schema_version("docdex_stats", args.schema_version)?;
+=======
+        self.ensure_index_fresh()?;
+>>>>>>> mcoda/task/bck-05-us-08-t32
         let stats = self.indexer.stats()?;
         let run_summaries = self.indexer.run_summaries(args.runs_limit)?;
         Ok(json!({
@@ -2191,6 +2216,7 @@ impl McpServer {
         if !self.indexer.config().symbols_enabled() {
             return Err(MissingSymbolsDependencyError.into());
         }
+        self.ensure_index_fresh()?;
         let rel_path = normalize_rel_path(&args.path)
             .ok_or(InvalidPathError)?;
         let rel_str = rel_path.to_string_lossy().replace('\\', "/");
@@ -2385,6 +2411,7 @@ impl McpServer {
         self.handle_open(open_args).await
     }
 
+<<<<<<< HEAD
     fn ensure_schema_version(&self, schema_name: &'static str, requested: Option<u32>) -> Result<()> {
         if let Some(version) = requested {
             if version < TOOL_SCHEMA_VERSION_MIN || version > TOOL_SCHEMA_VERSION_MAX {
@@ -2396,6 +2423,10 @@ impl McpServer {
             }
         }
         Ok(())
+=======
+    fn ensure_index_fresh(&self) -> Result<()> {
+        self.indexer.ensure_index_fresh()
+>>>>>>> mcoda/task/bck-05-us-08-t32
     }
 
     fn ensure_same_repo(&self, candidate: &Path) -> Result<()> {

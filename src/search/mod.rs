@@ -978,6 +978,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             },
             AiHelpMcpTool {
                 name: "docdex_stats",
+<<<<<<< HEAD
                 description: "Report index metadata, symbols enablement, and recent run summaries (max 20 runs; sample lists capped at 25; error summaries truncated to 240 chars).",
                 args: &[
                     "project_root (string, optional)",
@@ -996,6 +997,11 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                     "run_summaries",
                     "repo_root",
                 ],
+=======
+                description: "Report index metadata.",
+                args: &["project_root (string, optional)"],
+                returns: &["num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "index_status", "repo_root"],
+>>>>>>> mcoda/task/bck-05-us-08-t12
             },
             AiHelpMcpTool {
                 name: "docdex_memory_store",
@@ -1077,9 +1083,13 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             "avg_bytes_per_doc",
             "generated_at_epoch_ms",
             "last_updated_epoch_ms",
+<<<<<<< HEAD
             "symbols_enabled",
             "symbols_store_ready",
             "run_summaries",
+=======
+            "index_status",
+>>>>>>> mcoda/task/bck-05-us-08-t12
             "repo_root",
         ],
     };

@@ -2429,9 +2429,13 @@ impl McpServer {
             "avg_bytes_per_doc": stats.avg_bytes_per_doc,
             "generated_at_epoch_ms": stats.generated_at_epoch_ms,
             "last_updated_epoch_ms": stats.last_updated_epoch_ms,
+<<<<<<< HEAD
             "symbols_enabled": self.indexer.config().symbols_enabled(),
             "symbols_store_ready": self.indexer.symbols_store_ready(),
             "run_summaries": run_summaries,
+=======
+            "index_status": stats.index_status,
+>>>>>>> mcoda/task/bck-05-us-08-t12
             "repo_root": self.repo_root.display().to_string(),
             "project_root": self
                 .default_project_root

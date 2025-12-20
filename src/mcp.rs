@@ -1486,7 +1486,7 @@ impl McpServer {
         let rel_path = normalize_rel_path(&args.path)
             .ok_or(InvalidPathError)?;
         let rel_str = rel_path.to_string_lossy().replace('\\', "/");
-        let store = SymbolsStore::new(self.indexer.repo_root(), self.indexer.config().state_dir())
+        let store = SymbolsStore::new(self.indexer.repo_root(), &self.indexer.index_data_dir())
             .context("open symbols store")?;
         let payload = store
             .read_symbols(&rel_str)?

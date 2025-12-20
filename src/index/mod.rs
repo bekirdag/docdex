@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use once_cell::sync::Lazy;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use regex::Regex;
 use std::cmp::Ordering;
 use std::fs::{self, File};
@@ -18,7 +18,7 @@ use thiserror::Error;
 use tracing::warn;
 use crate::error::{
     repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
-    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
 };
 use crate::symbols;
 use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
@@ -157,6 +157,27 @@ const MAX_SUMMARY_CHARS: usize = 360;
 const MAX_SUMMARY_SEGMENTS: usize = 4;
 const MAX_SNIPPET_CHARS: usize = 420;
 const FALLBACK_PREVIEW_LINES: usize = 60;
+const INDEX_STATE_VERSION: u32 = 1;
+const INDEX_STATE_FILENAME: &str = "index_state.json";
+const INDEX_GENERATIONS_DIR: &str = "index_gens";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct IndexStateFile {
+    version: u32,
+    active_generation: String,
+    activated_at_epoch_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+enum IndexLayout {
+    LegacyRoot,
+    Generation { active_generation: String },
+}
+
+struct IndexDataResolution {
+    data_dir: PathBuf,
+    layout: IndexLayout,
+}
 
 #[derive(Clone)]
 pub struct IndexConfig {
@@ -166,10 +187,8 @@ pub struct IndexConfig {
     symbols_enabled: bool,
 }
 
-#[derive(Clone)]
-pub struct Indexer {
-    repo_root: PathBuf,
-    config: IndexConfig,
+struct IndexState {
+    data_dir: PathBuf,
     index: Index,
     reader: IndexReader,
     doc_id_field: tantivy::schema::Field,
@@ -179,6 +198,13 @@ pub struct Indexer {
     token_field: tantivy::schema::Field,
     writer: Option<Arc<Mutex<IndexWriter>>>,
     symbols_store: Option<SymbolsStore>,
+}
+
+#[derive(Clone)]
+pub struct Indexer {
+    repo_root: PathBuf,
+    config: IndexConfig,
+    state: Arc<RwLock<IndexState>>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -331,6 +357,19 @@ impl IndexConfig {
         &self.state_dir
     }
 
+    pub(crate) fn clone_with_state_dir(&self, state_dir: PathBuf) -> Self {
+        Self {
+            state_dir,
+            excluded_dir_names: self.excluded_dir_names.clone(),
+            excluded_relative_prefixes: self.excluded_relative_prefixes.clone(),
+            symbols_enabled: self.symbols_enabled,
+        }
+    }
+
+    fn resolve_data_dir(&self) -> Result<IndexDataResolution> {
+        resolve_index_data_dir(&self.state_dir)
+    }
+
     pub fn excluded_dir_names(&self) -> &[String] {
         &self.excluded_dir_names
     }
@@ -341,6 +380,114 @@ impl IndexConfig {
 
     pub fn symbols_enabled(&self) -> bool {
         self.symbols_enabled
+    }
+}
+
+fn require_field(schema: &Schema, name: &str) -> Result<tantivy::schema::Field> {
+    let field = schema.get_field(name).map_err(|_| {
+        AppError::new(
+            ERR_STALE_INDEX,
+            format!("index schema missing `{name}`; reindex required"),
+        )
+    })?;
+    Ok(field)
+}
+
+fn open_index_state(
+    repo_root: &Path,
+    config: &IndexConfig,
+    data_dir: PathBuf,
+    read_only: bool,
+) -> Result<IndexState> {
+    if read_only {
+        if !data_dir.exists() {
+            return Err(AppError::new(
+                ERR_MISSING_INDEX,
+                format!(
+                    "index not found at {}; run `docdexd index --repo <repo>` first",
+                    data_dir.display()
+                ),
+            )
+            .into());
+        }
+        let index = Index::open_in_dir(&data_dir)
+            .with_context(|| format!("open index at {}", data_dir.display()))?;
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::OnCommit)
+            .try_into()?;
+        let schema = index.schema();
+        let doc_id_field = require_field(&schema, "doc_id")?;
+        let path_field = require_field(&schema, "rel_path")?;
+        let body_field = require_field(&schema, "body")?;
+        let summary_field = require_field(&schema, "summary")?;
+        let token_field = require_field(&schema, "token_estimate")?;
+        let symbols_store = if config.symbols_enabled() {
+            SymbolsStore::new(repo_root, &data_dir).ok()
+        } else {
+            None
+        };
+        if let Err(err) = crate::repo_identity::validate_repo_state_dir(repo_root, config.state_dir()) {
+            if let Some(identity) = err.downcast_ref::<crate::repo_identity::RepoIdentityError>() {
+                return Err(repo_state_mismatch_error(repo_root, Some(config.state_dir()), identity).into());
+            }
+            return Err(err).context("validate repo identity metadata");
+        }
+        Ok(IndexState {
+            data_dir,
+            index,
+            reader,
+            doc_id_field,
+            path_field,
+            body_field,
+            summary_field,
+            token_field,
+            writer: None,
+            symbols_store,
+        })
+    } else {
+        ensure_state_dir_secure(config.state_dir())?;
+        ensure_state_dir_secure(&data_dir)?;
+        let (schema, doc_id_field, path_field, body_field, summary_field, token_field) =
+            build_schema();
+        let index = Index::open_or_create(
+            tantivy::directory::MmapDirectory::open(&data_dir)?,
+            schema.clone(),
+        )?;
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::OnCommit)
+            .try_into()?;
+        let writer = index.writer(MAX_INDEX_RAM_BYTES)?;
+        let symbols_store = if config.symbols_enabled() {
+            match SymbolsStore::new(repo_root, &data_dir) {
+                Ok(store) => Some(store),
+                Err(err) => {
+                    warn!(target: "docdexd", error = ?err, "symbols store init failed; symbol extraction disabled for this run");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        if let Err(err) = crate::repo_identity::record_repo_opened(repo_root, config.state_dir()) {
+            if let Some(identity) = err.downcast_ref::<crate::repo_identity::RepoIdentityError>() {
+                return Err(repo_state_mismatch_error(repo_root, Some(config.state_dir()), identity).into());
+            }
+            return Err(err).context("record repo identity metadata");
+        }
+        Ok(IndexState {
+            data_dir,
+            index,
+            reader,
+            doc_id_field,
+            path_field,
+            body_field,
+            summary_field,
+            token_field,
+            writer: Some(Arc::new(Mutex::new(writer))),
+            symbols_store,
+        })
     }
 }
 
@@ -374,47 +521,12 @@ impl Indexer {
             .into());
         }
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
-        ensure_state_dir_secure(config.state_dir())?;
-        let (schema, doc_id_field, path_field, body_field, summary_field, token_field) =
-            build_schema();
-        let index = Index::open_or_create(
-            tantivy::directory::MmapDirectory::open(config.state_dir())?,
-            schema.clone(),
-        )?;
-        let reader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommit)
-            .try_into()?;
-        let writer = index.writer(MAX_INDEX_RAM_BYTES)?;
-        let symbols_store = if config.symbols_enabled() {
-            match SymbolsStore::new(&repo_root, config.state_dir()) {
-                Ok(store) => Some(store),
-                Err(err) => {
-                    warn!(target: "docdexd", error = ?err, "symbols store init failed; symbol extraction disabled for this run");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        if let Err(err) = crate::repo_identity::record_repo_opened(&repo_root, config.state_dir()) {
-            if let Some(identity) = err.downcast_ref::<crate::repo_identity::RepoIdentityError>() {
-                return Err(repo_state_mismatch_error(&repo_root, Some(config.state_dir()), identity).into());
-            }
-            return Err(err).context("record repo identity metadata");
-        }
+        let resolution = config.resolve_data_dir()?;
+        let state = open_index_state(&repo_root, &config, resolution.data_dir, false)?;
         Ok(Self {
             repo_root,
             config,
-            index,
-            reader,
-            doc_id_field,
-            path_field,
-            body_field,
-            summary_field,
-            token_field,
-            writer: Some(Arc::new(Mutex::new(writer))),
-            symbols_store,
+            state: Arc::new(RwLock::new(state)),
         })
     }
 
@@ -430,58 +542,70 @@ impl Indexer {
             .into());
         }
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
-        if !config.state_dir().exists() {
-            return Err(AppError::new(
-                ERR_MISSING_INDEX,
-                format!(
-                    "index not found at {}; run `docdexd index --repo <repo>` first",
-                    config.state_dir().display()
-                ),
-            )
-            .into());
-        }
-        let index = Index::open_in_dir(config.state_dir())?;
-        let reader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommit)
-            .try_into()?;
-        let schema = index.schema();
-        let doc_id_field = schema.get_field("doc_id").unwrap();
-        let path_field = schema.get_field("rel_path").unwrap();
-        let body_field = schema.get_field("body").unwrap();
-        let summary_field = schema.get_field("summary").unwrap();
-        let token_field = schema.get_field("token_estimate").unwrap();
-        let symbols_store = if config.symbols_enabled() {
-            SymbolsStore::new(&repo_root, config.state_dir()).ok()
-        } else {
-            None
-        };
-        if let Err(err) = crate::repo_identity::validate_repo_state_dir(&repo_root, config.state_dir()) {
-            if let Some(identity) = err.downcast_ref::<crate::repo_identity::RepoIdentityError>() {
-                return Err(repo_state_mismatch_error(&repo_root, Some(config.state_dir()), identity).into());
-            }
-            return Err(err).context("validate repo identity metadata");
-        }
+        let resolution = config.resolve_data_dir()?;
+        let state = open_index_state(&repo_root, &config, resolution.data_dir, true)?;
         Ok(Self {
             repo_root,
             config,
-            index,
-            reader,
-            doc_id_field,
-            path_field,
-            body_field,
-            summary_field,
-            token_field,
-            writer: None,
-            symbols_store,
+            state: Arc::new(RwLock::new(state)),
         })
     }
 
     pub async fn reindex_all(&self) -> Result<()> {
-        let writer_arc = self.writer()?;
+        let state_dir = self.config.state_dir().to_path_buf();
+        ensure_state_dir_secure(&state_dir)?;
+        let resolution = resolve_index_data_dir(&state_dir)?;
+        if !has_index_meta(&resolution.data_dir) {
+            self.reindex_all_in_place()?;
+            return Ok(());
+        }
+
+        let (generation, staging_dir) = create_generation_dir(&state_dir)?;
+        let staging_config = self.config.clone_with_state_dir(staging_dir.clone());
+        let staging_state = open_index_state(&self.repo_root, &staging_config, staging_dir.clone(), false)?;
+        let staging_indexer = Indexer {
+            repo_root: self.repo_root.clone(),
+            config: staging_config,
+            state: Arc::new(RwLock::new(staging_state)),
+        };
+        if let Err(err) = staging_indexer.reindex_all_in_place() {
+            let _ = fs::remove_dir_all(&staging_dir);
+            return Err(err);
+        }
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let next_state = IndexStateFile {
+            version: INDEX_STATE_VERSION,
+            active_generation: generation,
+            activated_at_epoch_ms: now_ms,
+        };
+        if let Err(err) = write_index_state_atomic(&state_dir, &next_state) {
+            let _ = fs::remove_dir_all(&staging_dir);
+            return Err(err);
+        }
+
+        let new_resolution = resolve_index_data_dir(&state_dir)?;
+        let new_state = open_index_state(&self.repo_root, &self.config, new_resolution.data_dir, false)
+            .or_else(|err| {
+                let _ = restore_index_state(&state_dir, &resolution.layout);
+                Err(err)
+            })?;
+        let mut guard = self.state.write();
+        *guard = new_state;
+        Ok(())
+    }
+
+    fn reindex_all_in_place(&self) -> Result<()> {
+        let state = self.state.read();
+        let writer_arc = state.writer.clone().ok_or_else(|| {
+            AppError::new(
+                ERR_BACKOFF_REQUIRED,
+                "index writer unavailable (another docdexd may be indexing); retry later",
+            )
+        })?;
         let mut writer = writer_arc.lock();
         writer.delete_all_documents()?;
-        if let Some(store) = self.symbols_store.as_ref() {
+        if let Some(store) = state.symbols_store.as_ref() {
             if let Err(err) = store.reset() {
                 warn!(target: "docdexd", error = ?err, "failed to reset symbols store; continuing without clearing old symbols");
             }
@@ -496,11 +620,11 @@ impl Indexer {
             if !decision.should_index() {
                 continue;
             }
-            let ingest = self.add_document(&mut writer, path)?;
-            self.maybe_update_symbols(&ingest);
+            let ingest = self.add_document(&state, &mut writer, path)?;
+            self.maybe_update_symbols(&state, &ingest);
         }
         writer.commit()?;
-        self.reader.reload()?;
+        state.reader.reload()?;
         Ok(())
     }
 
@@ -510,15 +634,21 @@ impl Indexer {
         if !decision.should_index() {
             return Ok(decision);
         }
-        let writer_arc = self.writer()?;
+        let state = self.state.read();
+        let writer_arc = state.writer.clone().ok_or_else(|| {
+            AppError::new(
+                ERR_BACKOFF_REQUIRED,
+                "index writer unavailable (another docdexd may be indexing); retry later",
+            )
+        })?;
         let mut writer = writer_arc.lock();
         let rel = self.rel_path(&path)?;
-        let term = Term::from_field_text(self.doc_id_field, &rel);
+        let term = Term::from_field_text(state.doc_id_field, &rel);
         writer.delete_term(term);
-        let ingest = self.add_document(&mut writer, &path)?;
-        self.maybe_update_symbols(&ingest);
+        let ingest = self.add_document(&state, &mut writer, &path)?;
+        self.maybe_update_symbols(&state, &ingest);
         writer.commit()?;
-        self.reader.reload()?;
+        state.reader.reload()?;
         Ok(decision)
     }
 
@@ -527,13 +657,19 @@ impl Indexer {
             Ok(rel) => rel,
             Err(_) => return Ok(()),
         };
-        let writer_arc = self.writer()?;
+        let state = self.state.read();
+        let writer_arc = state.writer.clone().ok_or_else(|| {
+            AppError::new(
+                ERR_BACKOFF_REQUIRED,
+                "index writer unavailable (another docdexd may be indexing); retry later",
+            )
+        })?;
         let mut writer = writer_arc.lock();
-        let term = Term::from_field_text(self.doc_id_field, &rel);
+        let term = Term::from_field_text(state.doc_id_field, &rel);
         writer.delete_term(term);
         writer.commit()?;
-        self.reader.reload()?;
-        if let Some(store) = self.symbols_store.as_ref() {
+        state.reader.reload()?;
+        if let Some(store) = state.symbols_store.as_ref() {
             if let Err(err) = store.delete_symbols(&rel) {
                 warn!(target: "docdexd", error = ?err, rel_path = %rel, "failed to delete symbols record");
             }
@@ -568,10 +704,11 @@ impl Indexer {
             }
             .into());
         }
-        let searcher = self.reader.searcher();
+        let state = self.state.read();
+        let searcher = state.reader.searcher();
         let parser = QueryParser::for_index(
-            &self.index,
-            vec![self.body_field, self.summary_field, self.path_field],
+            &state.index,
+            vec![state.body_field, state.summary_field, state.path_field],
         );
         let (tantivy_query, query_meta) = match parser.parse_query(raw) {
             Ok(q) => (
@@ -611,7 +748,7 @@ impl Indexer {
             }
         };
         let mut snippet_generator =
-            SnippetGenerator::create(&searcher, tantivy_query.as_ref(), self.body_field).ok();
+            SnippetGenerator::create(&searcher, tantivy_query.as_ref(), state.body_field).ok();
         if let Some(generator) = snippet_generator.as_mut() {
             generator.set_max_num_chars(MAX_SNIPPET_CHARS);
         }
@@ -620,25 +757,25 @@ impl Indexer {
         for (score, addr) in top_docs {
             let retrieved = searcher.doc(addr)?;
             let body_text = retrieved
-                .get_first(self.body_field)
+                .get_first(state.body_field)
                 .and_then(|v| v.as_text())
                 .unwrap_or_default()
                 .to_string();
             let doc_id = retrieved
-                .get_first(self.doc_id_field)
+                .get_first(state.doc_id_field)
                 .and_then(|v| v.as_text().map(|s| s.to_string()))
                 .unwrap_or_default();
             let rel_path = retrieved
-                .get_first(self.path_field)
+                .get_first(state.path_field)
                 .and_then(|v| v.as_text().map(|s| s.to_string()))
                 .unwrap_or_default();
             let path = rel_path.clone();
             let summary = retrieved
-                .get_first(self.summary_field)
+                .get_first(state.summary_field)
                 .and_then(|v| v.as_text().map(|s| s.to_string()))
                 .unwrap_or_default();
             let token_estimate = retrieved
-                .get_first(self.token_field)
+                .get_first(state.token_field)
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
             let (snippet, snippet_origin, snippet_truncated, line_start, line_end) =
@@ -707,9 +844,9 @@ impl Indexer {
         Ok((results, query_meta))
     }
 
-    fn fetch_document(&self, doc_id: &str) -> Result<Option<Document>> {
-        let searcher = self.reader.searcher();
-        let term = Term::from_field_text(self.doc_id_field, doc_id);
+    fn fetch_document(&self, state: &IndexState, doc_id: &str) -> Result<Option<Document>> {
+        let searcher = state.reader.searcher();
+        let term = Term::from_field_text(state.doc_id_field, doc_id);
         let term_query =
             tantivy::query::TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
         let top_docs = searcher.search(&term_query, &TopDocs::with_limit(1))?;
@@ -789,16 +926,8 @@ impl Indexer {
         self.config.state_dir()
     }
 
-    fn writer(&self) -> Result<Arc<Mutex<IndexWriter>>> {
-        self.writer
-            .clone()
-            .ok_or_else(|| {
-                AppError::new(
-                    ERR_BACKOFF_REQUIRED,
-                    "index writer unavailable (another docdexd may be indexing); retry later",
-                )
-                .into()
-            })
+    pub(crate) fn index_data_dir(&self) -> PathBuf {
+        self.state.read().data_dir.clone()
     }
 
     pub fn config(&self) -> &IndexConfig {
@@ -806,7 +935,8 @@ impl Indexer {
     }
 
     pub fn stats(&self) -> Result<IndexStats> {
-        let searcher = self.reader.searcher();
+        let state = self.state.read();
+        let searcher = state.reader.searcher();
         let mut num_docs: u64 = 0;
         let mut segments: usize = 0;
         for segment_reader in searcher.segment_readers() {
@@ -818,14 +948,14 @@ impl Indexer {
             num_docs = num_docs.saturating_add(live_docs);
         }
         let state_dir = self.config.state_dir().to_path_buf();
-        let index_size_bytes = walkdir::WalkDir::new(&state_dir)
+        let index_size_bytes = walkdir::WalkDir::new(&state.data_dir)
             .into_iter()
             .filter_map(|entry| entry.ok())
             .filter_map(|entry| entry.metadata().ok())
             .map(|meta| meta.len())
             .sum();
         let mut last_updated_epoch_ms: Option<u128> = None;
-        for entry in walkdir::WalkDir::new(&state_dir).into_iter().flatten() {
+        for entry in walkdir::WalkDir::new(&state.data_dir).into_iter().flatten() {
             if let Ok(meta) = entry.metadata() {
                 if let Ok(modified) = meta.modified() {
                     if let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
@@ -866,17 +996,19 @@ impl Indexer {
         query: Option<&str>,
         fallback_lines: usize,
     ) -> Result<Option<(DocSnapshot, Option<SnippetResult>)>> {
-        let Some(doc) = self.fetch_document(doc_id)? else {
+        let state = self.state.read();
+        let Some(doc) = self.fetch_document(&state, doc_id)? else {
             return Ok(None);
         };
-        let snapshot = self.snapshot_from_document(doc_id, &doc);
+        let snapshot = self.snapshot_from_document(&state, doc_id, &doc);
         let snippet =
-            self.snippet_from_document(&doc, Some(&snapshot.rel_path), query, fallback_lines)?;
+            self.snippet_from_document(&state, &doc, Some(&snapshot.rel_path), query, fallback_lines)?;
         Ok(Some((snapshot, snippet)))
     }
 
     pub fn list_docs(&self, offset: usize, limit: usize) -> Result<(Vec<DocSnapshot>, u64)> {
-        let searcher = self.reader.searcher();
+        let state = self.state.read();
+        let searcher = state.reader.searcher();
         let mut snapshots = Vec::new();
         let mut skipped = 0usize;
         let mut total_live: u64 = 0;
@@ -903,23 +1035,28 @@ impl Indexer {
                 let address = DocAddress::new(segment_ord as u32, doc_id);
                 let doc = searcher.doc(address)?;
                 let doc_id_text = doc
-                    .get_first(self.doc_id_field)
+                    .get_first(state.doc_id_field)
                     .and_then(|v| v.as_text())
                     .unwrap_or_default();
-                snapshots.push(self.snapshot_from_document(doc_id_text, &doc));
+                snapshots.push(self.snapshot_from_document(&state, doc_id_text, &doc));
             }
         }
         Ok((snapshots, total_live))
     }
 
-    fn add_document(&self, writer: &mut IndexWriter, path: &Path) -> Result<DocumentIngest> {
+    fn add_document(
+        &self,
+        state: &IndexState,
+        writer: &mut IndexWriter,
+        path: &Path,
+    ) -> Result<DocumentIngest> {
         let rel = self.rel_path(path)?;
         let rel_for_return = rel.clone();
         let (content, read_error) = match fs::read_to_string(path) {
             Ok(content) => (content, None),
             Err(err) => (String::new(), Some(err.to_string())),
         };
-        let content_for_symbols = if self.symbols_store.is_some() {
+        let content_for_symbols = if state.symbols_store.is_some() {
             content.clone()
         } else {
             String::new()
@@ -927,11 +1064,11 @@ impl Indexer {
         let summary = summarize(&content);
         let tokens = estimate_tokens(&content);
         writer.add_document(doc!(
-            self.doc_id_field => rel.clone(),
-            self.path_field => rel,
-            self.body_field => content,
-            self.summary_field => summary,
-            self.token_field => tokens,
+            state.doc_id_field => rel.clone(),
+            state.path_field => rel,
+            state.body_field => content,
+            state.summary_field => summary,
+            state.token_field => tokens,
         ))?;
         Ok(DocumentIngest {
             rel_path: rel_for_return,
@@ -947,8 +1084,8 @@ impl Indexer {
         Ok(rel.to_string_lossy().replace('\\', "/"))
     }
 
-    fn maybe_update_symbols(&self, ingest: &DocumentIngest) {
-        let Some(store) = self.symbols_store.as_ref() else {
+    fn maybe_update_symbols(&self, state: &IndexState, ingest: &DocumentIngest) {
+        let Some(store) = state.symbols_store.as_ref() else {
             return;
         };
 
@@ -1025,17 +1162,17 @@ impl Indexer {
         };
     }
 
-    fn snapshot_from_document(&self, doc_id: &str, doc: &Document) -> DocSnapshot {
+    fn snapshot_from_document(&self, state: &IndexState, doc_id: &str, doc: &Document) -> DocSnapshot {
         let rel_path = doc
-            .get_first(self.path_field)
+            .get_first(state.path_field)
             .and_then(|v| v.as_text().map(|s| s.to_string()))
             .unwrap_or_default();
         let summary = doc
-            .get_first(self.summary_field)
+            .get_first(state.summary_field)
             .and_then(|v| v.as_text().map(|s| s.to_string()))
             .unwrap_or_default();
         let token_estimate = doc
-            .get_first(self.token_field)
+            .get_first(state.token_field)
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         DocSnapshot {
@@ -1048,12 +1185,13 @@ impl Indexer {
 
     fn snippet_from_document(
         &self,
+        state: &IndexState,
         doc: &Document,
         rel_path_hint: Option<&str>,
         query: Option<&str>,
         fallback_lines: usize,
     ) -> Result<Option<SnippetResult>> {
-        let searcher = self.reader.searcher();
+        let searcher = state.reader.searcher();
         if let Some(query) = query.and_then(|q| {
             let trimmed = q.trim();
             if trimmed.is_empty() {
@@ -1062,10 +1200,10 @@ impl Indexer {
                 Some(trimmed)
             }
         }) {
-            let parser = QueryParser::for_index(&self.index, vec![self.body_field]);
+            let parser = QueryParser::for_index(&state.index, vec![state.body_field]);
             if let Ok(parsed) = parser.parse_query(query) {
                 if let Ok(mut generator) =
-                    SnippetGenerator::create(&searcher, parsed.as_ref(), self.body_field)
+                    SnippetGenerator::create(&searcher, parsed.as_ref(), state.body_field)
                 {
                     generator.set_max_num_chars(MAX_SNIPPET_CHARS);
                     let snippet = generator.snippet_from_doc(doc);
@@ -1085,7 +1223,7 @@ impl Indexer {
         }
 
         let rel_path = rel_path_hint.map(|p| p.to_string()).or_else(|| {
-            doc.get_first(self.path_field)
+            doc.get_first(state.path_field)
                 .and_then(|v| v.as_text().map(|s| s.to_string()))
                 .map(|text| text.to_string())
         });
@@ -1423,6 +1561,99 @@ pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn resolve_index_data_dir(state_dir: &Path) -> Result<IndexDataResolution> {
+    let state_path = state_dir.join(INDEX_STATE_FILENAME);
+    if !state_path.exists() {
+        return Ok(IndexDataResolution {
+            data_dir: state_dir.to_path_buf(),
+            layout: IndexLayout::LegacyRoot,
+        });
+    }
+    let raw = fs::read_to_string(&state_path)
+        .with_context(|| format!("read {}", state_path.display()))?;
+    let mut parsed: IndexStateFile =
+        serde_json::from_str(&raw).with_context(|| format!("parse {}", state_path.display()))?;
+    if parsed.version == 0 {
+        parsed.version = INDEX_STATE_VERSION;
+    }
+    if parsed.version != INDEX_STATE_VERSION {
+        return Err(AppError::new(
+            ERR_STALE_INDEX,
+            format!("unsupported index state version {}", parsed.version),
+        )
+        .into());
+    }
+    let active_generation = parsed.active_generation.trim().to_string();
+    if active_generation.is_empty() {
+        return Err(AppError::new(
+            ERR_MISSING_INDEX,
+            format!("index state missing active generation at {}", state_path.display()),
+        )
+        .into());
+    }
+    let data_dir = state_dir
+        .join(INDEX_GENERATIONS_DIR)
+        .join(&active_generation);
+    if !data_dir.exists() {
+        return Err(AppError::new(
+            ERR_MISSING_INDEX,
+            format!("index generation not found at {}", data_dir.display()),
+        )
+        .into());
+    }
+    Ok(IndexDataResolution {
+        data_dir,
+        layout: IndexLayout::Generation { active_generation },
+    })
+}
+
+fn write_index_state_atomic(state_dir: &Path, state: &IndexStateFile) -> Result<()> {
+    let path = state_dir.join(INDEX_STATE_FILENAME);
+    let tmp = path.with_extension(format!("tmp.{}", uuid::Uuid::new_v4()));
+    let bytes = serde_json::to_vec_pretty(state).context("serialize index state")?;
+    fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
+    if path.exists() {
+        let _ = fs::remove_file(&path);
+    }
+    fs::rename(&tmp, &path)
+        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
+    Ok(())
+}
+
+fn restore_index_state(state_dir: &Path, layout: &IndexLayout) -> Result<()> {
+    match layout {
+        IndexLayout::LegacyRoot => {
+            let path = state_dir.join(INDEX_STATE_FILENAME);
+            if path.exists() {
+                fs::remove_file(&path)
+                    .with_context(|| format!("remove {}", path.display()))?;
+            }
+            Ok(())
+        }
+        IndexLayout::Generation { active_generation } => {
+            let payload = IndexStateFile {
+                version: INDEX_STATE_VERSION,
+                active_generation: active_generation.clone(),
+                activated_at_epoch_ms: chrono::Utc::now().timestamp_millis(),
+            };
+            write_index_state_atomic(state_dir, &payload)
+        }
+    }
+}
+
+fn create_generation_dir(state_dir: &Path) -> Result<(String, PathBuf)> {
+    let gens_dir = state_dir.join(INDEX_GENERATIONS_DIR);
+    ensure_state_dir_secure(&gens_dir)?;
+    let generation = format!("gen-{}", uuid::Uuid::new_v4());
+    let gen_dir = gens_dir.join(&generation);
+    ensure_state_dir_secure(&gen_dir)?;
+    Ok((generation, gen_dir))
+}
+
+fn has_index_meta(data_dir: &Path) -> bool {
+    data_dir.join("meta.json").is_file()
 }
 
 fn normalize_for_error(path: &Path) -> String {

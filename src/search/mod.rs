@@ -2,9 +2,10 @@ use crate::index::{
     DocSnapshot, Hit, Indexer, SearchError, SearchQueryMeta, SnippetOrigin, SnippetResult,
 };
 use crate::error::{
-    AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
-    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    ERR_RATE_LIMITED,
+    AppError, RateLimited, StartupError, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
+    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
+    ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_RATE_LIMITED,
+    ERR_STALE_INDEX,
 };
 use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
@@ -430,6 +431,10 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_EMBEDDING_FAILED => StatusCode::BAD_GATEWAY,
         ERR_INVALID_ARGUMENT => StatusCode::BAD_REQUEST,
         ERR_MEMORY_DISABLED => StatusCode::CONFLICT,
+        ERR_MISSING_INDEX => StatusCode::CONFLICT,
+        ERR_STALE_INDEX => StatusCode::CONFLICT,
+        ERR_BACKOFF_REQUIRED => StatusCode::CONFLICT,
+        ERR_MISSING_DEPENDENCY => StatusCode::CONFLICT,
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -443,6 +448,10 @@ fn json_error(status: StatusCode, code: &'static str, message: impl Into<String>
         }),
     )
         .into_response()
+}
+
+fn json_error_detail(status: StatusCode, detail: ErrorDetail) -> Response {
+    (status, Json(ErrorBody { error: detail })).into_response()
 }
 
 async fn memory_store_handler(
@@ -952,6 +961,8 @@ struct ErrorDetail {
     limit_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<serde_json::Value>,
 }
 
 impl ErrorDetail {
@@ -963,6 +974,7 @@ impl ErrorDetail {
             retry_at: None,
             limit_key: None,
             scope: None,
+            details: None,
         }
     }
 
@@ -974,6 +986,19 @@ impl ErrorDetail {
             retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
             limit_key: Some(err.limit_key.clone()),
             scope: Some(err.scope.clone()),
+            details: None,
+        }
+    }
+
+    fn from_app_error(app: &AppError) -> Self {
+        Self {
+            code: app.code,
+            message: app.message.clone(),
+            retry_after_ms: None,
+            retry_at: None,
+            limit_key: None,
+            scope: None,
+            details: app.details.clone(),
         }
     }
 }
@@ -1371,6 +1396,21 @@ async fn search_handler(
                 )
                     .into_response();
             }
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                state.metrics.inc_error();
+                warn!(
+                    target: "docdexd",
+                    error = ?err,
+                    request_id = %request_id.0,
+                    error_code = %app.code,
+                    limit,
+                    "search handler failed"
+                );
+                return json_error_detail(
+                    status_for_app_error(app.code),
+                    ErrorDetail::from_app_error(app),
+                );
+            }
             state.metrics.inc_error();
             warn!(
                 target: "docdexd",
@@ -1462,6 +1502,20 @@ async fn snippet_handler(
         .into_response(),
         Err(err) => {
             state.metrics.inc_error();
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                warn!(
+                    target: "docdexd",
+                    error = ?err,
+                    request_id = %request_id.0,
+                    window,
+                    error_code = %app.code,
+                    "snippet handler failed"
+                );
+                return json_error_detail(
+                    status_for_app_error(app.code),
+                    ErrorDetail::from_app_error(app),
+                );
+            }
             warn!(
                 target: "docdexd",
                 error = ?err,

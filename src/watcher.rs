@@ -3,9 +3,15 @@ use anyhow::Result;
 use notify::event::{ModifyKind, RemoveKind};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
+
+const WATCH_QUEUE_LIMIT: usize = 512;
+const WATCH_BACKPRESSURE_REASON: &str = "watcher_backpressure";
 
 #[derive(Debug)]
 enum WatchAction {
@@ -13,11 +19,28 @@ enum WatchAction {
     Delete(PathBuf),
 }
 
+#[derive(Default)]
+struct WatchBackpressure {
+    dropped: AtomicUsize,
+}
+
+impl WatchBackpressure {
+    fn record_drop(&self) -> bool {
+        let previous = self.dropped.fetch_add(1, Ordering::SeqCst);
+        previous == 0
+    }
+
+    fn take_dropped(&self) -> usize {
+        self.dropped.swap(0, Ordering::SeqCst)
+    }
+}
+
 pub fn spawn(indexer: Arc<Indexer>) -> Result<()> {
     let repo_root = indexer.repo_root().to_path_buf();
     let config = indexer.config().clone();
-    let (tx, mut rx) = mpsc::unbounded_channel::<WatchAction>();
-    start_blocking_watcher(repo_root.clone(), config, tx)?;
+    let backpressure = Arc::new(WatchBackpressure::default());
+    let (tx, mut rx) = mpsc::channel::<WatchAction>(WATCH_QUEUE_LIMIT);
+    start_blocking_watcher(repo_root.clone(), config, tx, backpressure.clone())?;
     info!(
         target: "docdexd",
         repo = %repo_root.display(),
@@ -25,6 +48,17 @@ pub fn spawn(indexer: Arc<Indexer>) -> Result<()> {
     );
     tokio::spawn(async move {
         while let Some(action) = rx.recv().await {
+            let dropped = backpressure.take_dropped();
+            if dropped > 0 {
+                if let Err(err) = indexer.mark_stale(WATCH_BACKPRESSURE_REASON, Some(dropped as u64)) {
+                    warn!(
+                        target: "docdexd",
+                        error = ?err,
+                        dropped,
+                        "failed to mark index stale after watcher overflow"
+                    );
+                }
+            }
             let idx = indexer.clone();
             match action {
                 WatchAction::Upsert(path) => {
@@ -80,7 +114,8 @@ pub fn spawn(indexer: Arc<Indexer>) -> Result<()> {
 fn start_blocking_watcher(
     repo_root: PathBuf,
     config: index::IndexConfig,
-    tx: mpsc::UnboundedSender<WatchAction>,
+    tx: mpsc::Sender<WatchAction>,
+    backpressure: Arc<WatchBackpressure>,
 ) -> Result<()> {
     std::thread::Builder::new()
         .name("docdexd-watcher".into())
@@ -116,7 +151,7 @@ fn start_blocking_watcher(
                 return;
             }
             for res in event_rx {
-                if let Err(err) = handle_event(&repo_root, &config, &tx, res) {
+                if let Err(err) = handle_event(&repo_root, &config, &tx, &backpressure, res) {
                     warn!(
                         target: "docdexd",
                         error = ?err,
@@ -132,7 +167,8 @@ fn start_blocking_watcher(
 fn handle_event(
     repo_root: &Path,
     config: &index::IndexConfig,
-    tx: &mpsc::UnboundedSender<WatchAction>,
+    tx: &mpsc::Sender<WatchAction>,
+    backpressure: &WatchBackpressure,
     result: Result<Event, notify::Error>,
 ) -> Result<(), notify::Error> {
     let event = result?;
@@ -142,20 +178,45 @@ fn handle_event(
                 if !should_track_path(path, repo_root, config, false) {
                     continue;
                 }
-                if tx.send(WatchAction::Upsert(path.clone())).is_err() {
-                    return Ok(());
+                if let Err(err) = tx.try_send(WatchAction::Upsert(path.clone())) {
+                    if err.is_full() && backpressure.record_drop() {
+                        warn!(
+                            target: "docdexd",
+                            queue_limit = WATCH_QUEUE_LIMIT,
+                            "watcher queue full; marking index stale until reindex"
+                        );
+                    }
+                    if err.is_closed() {
+                        return Ok(());
+                    }
                 }
             }
         }
         EventKind::Modify(ModifyKind::Name(_)) => {
             if let Some(old) = event.paths.get(0) {
                 if should_track_path(old, repo_root, config, true) {
-                    let _ = tx.send(WatchAction::Delete(old.clone()));
+                    if let Err(err) = tx.try_send(WatchAction::Delete(old.clone())) {
+                        if err.is_full() && backpressure.record_drop() {
+                            warn!(
+                                target: "docdexd",
+                                queue_limit = WATCH_QUEUE_LIMIT,
+                                "watcher queue full; marking index stale until reindex"
+                            );
+                        }
+                    }
                 }
             }
             if let Some(new_path) = event.paths.get(1) {
                 if should_track_path(new_path, repo_root, config, false) {
-                    let _ = tx.send(WatchAction::Upsert(new_path.clone()));
+                    if let Err(err) = tx.try_send(WatchAction::Upsert(new_path.clone())) {
+                        if err.is_full() && backpressure.record_drop() {
+                            warn!(
+                                target: "docdexd",
+                                queue_limit = WATCH_QUEUE_LIMIT,
+                                "watcher queue full; marking index stale until reindex"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -164,8 +225,17 @@ fn handle_event(
                 if !should_track_path(path, repo_root, config, true) {
                     continue;
                 }
-                if tx.send(WatchAction::Delete(path.clone())).is_err() {
-                    return Ok(());
+                if let Err(err) = tx.try_send(WatchAction::Delete(path.clone())) {
+                    if err.is_full() && backpressure.record_drop() {
+                        warn!(
+                            target: "docdexd",
+                            queue_limit = WATCH_QUEUE_LIMIT,
+                            "watcher queue full; marking index stale until reindex"
+                        );
+                    }
+                    if err.is_closed() {
+                        return Ok(());
+                    }
                 }
             }
         }

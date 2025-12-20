@@ -215,7 +215,59 @@ fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
     Ok(temp)
 }
 
+<<<<<<< HEAD
 fn run_docdex<I, S>(state_root: &Path, args: I) -> Result<std::process::Output, Box<dyn Error>>
+=======
+fn write_large_fixture_repo(
+    repo_root: &Path,
+    term: &str,
+    file_count: usize,
+    bytes_per_file: usize,
+) -> Result<(), Box<dyn Error>> {
+    let docs_dir = repo_root.join("docs");
+    std::fs::create_dir_all(&docs_dir)?;
+    let mut content = String::new();
+    let chunk = format!("{term} concurrency test filler.\n");
+    while content.len() < bytes_per_file {
+        content.push_str(&chunk);
+    }
+    for i in 0..file_count {
+        std::fs::write(docs_dir.join(format!("doc_{i}.md")), &content)?;
+    }
+    Ok(())
+}
+
+fn setup_large_repo(
+    term: &str,
+    file_count: usize,
+    bytes_per_file: usize,
+) -> Result<TempDir, Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    write_large_fixture_repo(temp.path(), term, file_count, bytes_per_file)?;
+    Ok(temp)
+}
+
+fn wait_for_writer_lock(
+    state_dir: &Path,
+    child: &mut Child,
+    timeout: Duration,
+) -> Result<(), Box<dyn Error>> {
+    let lock_path = state_dir.join(".tantivy-writer.lock");
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if let Some(status) = child.try_wait()? {
+            return Err(format!("index process exited early: {status}").into());
+        }
+        if lock_path.exists() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    Err("timed out waiting for index writer lock".into())
+}
+
+fn run_docdex<I, S>(args: I) -> Result<std::process::Output, Box<dyn Error>>
+>>>>>>> mcoda/task/bck-05-us-08-t13
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
@@ -2303,6 +2355,7 @@ fn cli_invalid_query_error_matches_machine_reason() -> Result<(), Box<dyn Error>
 
 #[test]
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn cli_missing_vs_stale_index_errors_are_distinct_and_actionable() -> Result<(), Box<dyn Error>> {
     let repo = TempDir::new()?;
     write_repo_with_tokens(repo.path(), "repo_token", "COMMON_TERM", 1)?;
@@ -2669,27 +2722,130 @@ fn mcp_index_writer_backoff_is_machine_readable() -> Result<(), Box<dyn Error>> 
 =======
     let mut server = spawn_server(repo.path(), host, port)?;
     wait_for_health(host, port)?;
+=======
+fn mcp_search_remains_repo_scoped_during_concurrent_reindex() -> Result<(), Box<dyn Error>> {
+    const TERM: &str = "CONCURRENCY_TERM";
+    let repo = setup_large_repo(TERM, 120, 128 * 1024)?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    let index_out = run_docdex(["index", "--repo", repo_str.as_str()])?;
+    assert!(
+        index_out.status.success(),
+        "index should succeed: {}",
+        String::from_utf8_lossy(&index_out.stderr)
+    );
+
+    let mut reindex = Command::new(docdex_bin())
+        .args(["index", "--repo", repo_str.as_str()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let state_dir = repo.path().join(".docdex").join("index");
+    wait_for_writer_lock(&state_dir, &mut reindex, Duration::from_secs(10))?;
+>>>>>>> mcoda/task/bck-05-us-08-t13
 
     let mut mcp = McpHarness::spawn(repo.path())?;
     send_line(
         &mut mcp.stdin,
         json!({
             "jsonrpc": "2.0",
+<<<<<<< HEAD
             "id": 31,
+=======
+            "id": 301,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": { "query": TERM, "limit": 999 }
+            }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    let body = parse_tool_result(&resp)?;
+    let hits = body
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .ok_or("docdex_search should return hits array")?;
+    assert!(!hits.is_empty(), "expected search hits during reindex");
+    assert!(
+        hits.len() <= 4,
+        "docdex_search should clamp to max-results (expected <= 4, got {})",
+        hits.len()
+    );
+    assert_eq!(
+        body.get("limit").and_then(|v| v.as_u64()),
+        Some(4),
+        "docdex_search should report the clamped limit"
+    );
+    for hit in hits {
+        let path = hit
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or("hit missing path")?;
+        assert!(
+            path.starts_with("docs/"),
+            "expected repo-local path, got {path}"
+        );
+        assert!(
+            repo.path().join(path).exists(),
+            "hit path should exist in repo; got {path}"
+        );
+    }
+
+    mcp.shutdown();
+    reindex.kill().ok();
+    reindex.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn mcp_index_returns_backoff_required_during_concurrent_updates() -> Result<(), Box<dyn Error>> {
+    const TERM: &str = "CONCURRENCY_TERM";
+    let repo = setup_large_repo(TERM, 120, 128 * 1024)?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    let index_out = run_docdex(["index", "--repo", repo_str.as_str()])?;
+    assert!(
+        index_out.status.success(),
+        "index should succeed: {}",
+        String::from_utf8_lossy(&index_out.stderr)
+    );
+
+    let mut reindex = Command::new(docdex_bin())
+        .args(["index", "--repo", repo_str.as_str()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let state_dir = repo.path().join(".docdex").join("index");
+    wait_for_writer_lock(&state_dir, &mut reindex, Duration::from_secs(10))?;
+
+    let mut mcp = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 401,
+>>>>>>> mcoda/task/bck-05-us-08-t13
             "method": "tools/call",
             "params": { "name": "docdex_index", "arguments": { "paths": [] } }
         }),
     )?;
+<<<<<<< HEAD
     let resp = read_line(&mut mcp.reader)?;
     assert_eq!(mcp_error_code(&resp), Some(-32602));
     assert_eq!(mcp_error_data_code(&resp), Some("backoff_required"));
     let reason = resp
+=======
+    let full_err = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&full_err), Some(-32602));
+    assert_eq!(mcp_error_data_code(&full_err), Some("backoff_required"));
+    let reason = full_err
+>>>>>>> mcoda/task/bck-05-us-08-t13
         .get("error")
         .and_then(|v| v.get("data"))
         .and_then(|v| v.get("reason"))
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     assert!(
+<<<<<<< HEAD
         reason.contains("retry"),
         "backoff_required should include retry guidance; got: {reason}"
     );
@@ -2714,12 +2870,17 @@ fn mcp_tool_failure_does_not_corrupt_search_state() -> Result<(), Box<dyn Error>
     assert!(
         !baseline.is_empty(),
         "expected search to return initial hits"
+=======
+        reason.contains("index writer unavailable") || reason.contains("retry later"),
+        "backoff_required should include a retry hint; got: {reason}"
+>>>>>>> mcoda/task/bck-05-us-08-t13
     );
 
     send_line(
         &mut mcp.stdin,
         json!({
             "jsonrpc": "2.0",
+<<<<<<< HEAD
             "id": 41,
             "method": "tools/call",
             "params": { "name": "docdex_open", "arguments": { "path": "../secrets.md" } }
@@ -2736,3 +2897,19 @@ fn mcp_tool_failure_does_not_corrupt_search_state() -> Result<(), Box<dyn Error>
     Ok(())
 }
 >>>>>>> mcoda/task/bck-05-us-08-t22
+=======
+            "id": 402,
+            "method": "tools/call",
+            "params": { "name": "docdex_index", "arguments": { "paths": ["docs/doc_0.md"] } }
+        }),
+    )?;
+    let incremental_err = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&incremental_err), Some(-32602));
+    assert_eq!(mcp_error_data_code(&incremental_err), Some("backoff_required"));
+
+    mcp.shutdown();
+    reindex.kill().ok();
+    reindex.wait().ok();
+    Ok(())
+}
+>>>>>>> mcoda/task/bck-05-us-08-t13

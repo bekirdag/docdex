@@ -17,6 +17,8 @@ function createNoopLogger() {
   };
 }
 
+const noopSmokeTest = async () => {};
+
 async function ensureDir(dirPath) {
   await fs.promises.mkdir(dirPath, { recursive: true });
 }
@@ -43,6 +45,7 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
 
   const first = await runInstaller({
     logger: createNoopLogger(),
+    smokeTestBinaryFn: noopSmokeTest,
     platform: "linux",
     arch: "x64",
     tmpDir,
@@ -89,6 +92,7 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
 
   const second = await runInstaller({
     logger: createNoopLogger(),
+    smokeTestBinaryFn: noopSmokeTest,
     platform: "linux",
     arch: "x64",
     tmpDir,
@@ -131,4 +135,3 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
   assert.equal(metadataAfterSecond, metadataAfterFirst);
   assert.equal(binaryAfterSecond, binaryAfterFirst);
 });
-

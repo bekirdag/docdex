@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { pipeline } = require("node:stream/promises");
 const crypto = require("node:crypto");
+const { execFile } = require("node:child_process");
 
 const pkg = require("../package.json");
 const {
@@ -26,6 +27,7 @@ const MAX_MANIFEST_BYTES = 1024 * 1024; // 1 MiB cap for safety
 const INVALID_JSON_ERROR = "invalid JSON";
 const INSTALL_METADATA_SCHEMA_VERSION = 1;
 const INSTALL_METADATA_FILENAME = "docdexd-install.json";
+const DEFAULT_SMOKE_TEST_TIMEOUT_MS = 5000;
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -261,6 +263,47 @@ async function extractTarball(archivePath, targetDir) {
   const tar = require("tar");
   await fs.promises.mkdir(targetDir, { recursive: true });
   await tar.x({ file: archivePath, cwd: targetDir, gzip: true });
+}
+
+async function smokeTestBinary({
+  binaryPath,
+  args,
+  timeoutMs,
+  details
+}) {
+  const smokeArgs = Array.isArray(args) && args.length ? args.slice() : ["--version"];
+  const timeout =
+    typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? timeoutMs
+      : DEFAULT_SMOKE_TEST_TIMEOUT_MS;
+
+  return new Promise((resolve, reject) => {
+    execFile(
+      binaryPath,
+      smokeArgs,
+      { timeout, windowsHide: true },
+      (err, stdout, stderr) => {
+        if (err) {
+          const message = `Installed binary failed smoke check: ${binaryPath} ${smokeArgs.join(" ")} (${err.message})`;
+          return reject(
+            new ArchiveInvalidError(message, {
+              ...(details || {}),
+              binaryPath,
+              smokeTest: {
+                args: smokeArgs,
+                timeoutMs: timeout,
+                errorCode: typeof err.code === "string" ? err.code : null,
+                signal: typeof err.signal === "string" ? err.signal : null,
+                stdout: typeof stdout === "string" ? stdout.trim() : null,
+                stderr: typeof stderr === "string" ? stderr.trim() : null
+              }
+            })
+          );
+        }
+        resolve({ stdout, stderr });
+      }
+    );
+  });
 }
 
 async function sha256File(filePath) {
@@ -1009,6 +1052,12 @@ async function runInstaller(options) {
   const artifactNameFn = opts.artifactNameFn || artifactName;
   const assetPatternForPlatformKeyFn = opts.assetPatternForPlatformKeyFn || assetPatternForPlatformKey;
   const sha256FileFn = opts.sha256FileFn || sha256File;
+  const smokeTestBinaryFn = opts.smokeTestBinaryFn || smokeTestBinary;
+  const smokeTestArgs = opts.smokeTestArgs || ["--version"];
+  const smokeTestTimeoutMs =
+    typeof opts.smokeTestTimeoutMs === "number" && Number.isFinite(opts.smokeTestTimeoutMs)
+      ? opts.smokeTestTimeoutMs
+      : DEFAULT_SMOKE_TEST_TIMEOUT_MS;
 
   const detectedPlatform = opts.platform || process.platform;
   const detectedArch = opts.arch || process.arch;
@@ -1043,10 +1092,20 @@ async function runInstaller(options) {
 
   const platformKey = platformPolicy.platformKey;
   const targetTriple = platformPolicy.targetTriple;
+  const expectedAssetName =
+    typeof platformPolicy.expectedAssetName === "string" && platformPolicy.expectedAssetName.trim()
+      ? platformPolicy.expectedAssetName
+      : artifactNameFn(platformKey);
   const version = getVersionFn();
   const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
   const distDir = pathModule.join(distBaseDir, platformKey);
   const isWin32 = detectedPlatform === "win32";
+
+  logger.log(`[docdex] Detected platform: ${detectedPlatform}/${detectedArch}`);
+  logger.log(`[docdex] Platform key: ${platformKey}`);
+  logger.log(`[docdex] Target triple: ${targetTriple}`);
+  logger.log(`[docdex] Resolved daemon version: v${version}`);
+  logger.log(`[docdex] Resolved release asset: ${expectedAssetName}`);
 
   const local = await determineLocalInstallerOutcome({
     fsModule,
@@ -1072,6 +1131,10 @@ async function runInstaller(options) {
     targetTriple,
     logger
   });
+
+  if (archive && archive !== expectedAssetName) {
+    logger.log(`[docdex] Resolved release asset (manifest): ${archive}`);
+  }
 
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
   const tmpDir = opts.tmpDir || osModule.tmpdir();
@@ -1160,6 +1223,23 @@ async function runInstaller(options) {
     }
 
     await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
+    await smokeTestBinaryFn({
+      binaryPath,
+      args: smokeTestArgs,
+      timeoutMs: smokeTestTimeoutMs,
+      details: {
+        platformKey,
+        targetTriple,
+        version,
+        repoSlug,
+        assetName: archive,
+        downloadUrl,
+        source,
+        manifestName: manifestAttempt?.manifestName ?? null,
+        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+        fallbackAttempted: source === "fallback"
+      }
+    });
     logger.log(`[docdex] Installed binary to ${binaryPath}`);
 
     const binarySha256 = await sha256FileFn(binaryPath);

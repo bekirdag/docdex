@@ -17,6 +17,8 @@ function createNoopLogger() {
   };
 }
 
+const noopSmokeTest = async () => {};
+
 async function ensureDir(dirPath) {
   await fs.promises.mkdir(dirPath, { recursive: true });
 }
@@ -85,6 +87,7 @@ test("installer outcome: no-op skips plan/download when local install is verifie
 
   const result = await runInstaller({
     logger: createNoopLogger(),
+    smokeTestBinaryFn: noopSmokeTest,
     platform: "linux",
     arch: "x64",
     distBaseDir,
@@ -151,9 +154,15 @@ test("installer outcome: update installs when version differs and writes fresh m
 
   let downloadUrl = null;
   let downloadDest = null;
+  let smokeCalls = 0;
+  let smokeBinaryPath = null;
 
   const result = await runInstaller({
     logger: createNoopLogger(),
+    smokeTestBinaryFn: async ({ binaryPath }) => {
+      smokeCalls += 1;
+      smokeBinaryPath = binaryPath;
+    },
     platform: "linux",
     arch: "x64",
     tmpDir,
@@ -189,6 +198,8 @@ test("installer outcome: update installs when version differs and writes fresh m
 
   assert.equal(downloadUrl, expectedDownloadUrl);
   assert.equal(result.outcome, "update");
+  assert.equal(smokeCalls, 1);
+  assert.equal(smokeBinaryPath, path.join(distDir, "docdexd"));
 
   const metadataPath = path.join(distDir, "docdexd-install.json");
   assert.ok(fs.existsSync(metadataPath));
@@ -226,6 +237,7 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
 
   const result = await runInstaller({
     logger: createNoopLogger(),
+    smokeTestBinaryFn: noopSmokeTest,
     platform: "linux",
     arch: "x64",
     tmpDir,
@@ -286,6 +298,7 @@ test("installer outcome: reinstall_unknown reinstalls when metadata is missing",
 
   const result = await runInstaller({
     logger: createNoopLogger(),
+    smokeTestBinaryFn: noopSmokeTest,
     platform: "linux",
     arch: "x64",
     tmpDir,
@@ -350,6 +363,7 @@ test("installer outcome: reinstall_unknown reinstalls when integrity cannot be v
 
   const result = await runInstaller({
     logger: createNoopLogger(),
+    smokeTestBinaryFn: noopSmokeTest,
     platform: "linux",
     arch: "x64",
     tmpDir,

@@ -32,7 +32,7 @@ Related contracts:
 3) Fallback: deterministic asset naming `docdexd-<platformKey>.tar.gz` and checksum discovery:
    - Prefer `SHA256SUMS` / `SHA256SUMS.txt` from the same release.
    - Legacy fallback: `docdexd-<platformKey>.tar.gz.sha256` sidecar.
-4) Download, verify SHA-256 (when available), extract, and verify the expected `docdexd` binary exists.
+4) Download, verify SHA-256 (when available), extract, and verify the expected `docdexd` binary exists and passes a lightweight smoke check (`--version`).
 
 When install fails, output includes `[docdex] error code: <CODE>` and the process exits with a stable numeric exit code.
 
@@ -68,7 +68,7 @@ Legend:
 | `DOCDEX_DOWNLOAD_FAILED` | 20 | Download failed for the selected asset (non-404 HTTP status or transport failure). | `true/false` (printed when available) | Check network/proxy/firewall; retry; set `DOCDEX_GITHUB_TOKEN` if rate limited; verify `DOCDEX_DOWNLOAD_REPO` and (if set) `DOCDEX_DOWNLOAD_BASE`. | Ensure release assets are publicly readable (or document token usage for private releases). |
 | `DOCDEX_ASSET_MISSING` | 21 | The expected asset returned HTTP 404 (release is missing the artifact or version is out of sync). | `true/false` (printed when available) | Confirm you’re installing a version whose GitHub Release contains the expected asset name; set `DOCDEX_DOWNLOAD_REPO` if using a fork; consider installing a different version. | Upload the missing release asset(s) and ensure npm version ↔ release tag are in sync. |
 | `DOCDEX_INTEGRITY_MISMATCH` | 22 | SHA-256 verification failed for the downloaded archive. | `true/false` (printed when available) | Re-run install; bypass/disable proxies/caches; verify you are using the intended repo/version. Treat as a potential tampering signal; do not “work around” integrity failures by manual extraction. | Regenerate and re-upload correct checksums/manifest for the release; invalidate any cached/mirrored corrupted artifacts. |
-| `DOCDEX_ARCHIVE_INVALID` | 23 | Archive extracted, but the expected `docdexd` binary was missing from the extracted directory. | `true/false` (printed when available) | Install a different version; or build from source. | Fix packaging (ensure tarball contains `docdexd`/`docdexd.exe` at the expected path). |
+| `DOCDEX_ARCHIVE_INVALID` | 23 | Archive extracted, but the expected `docdexd` binary was missing or failed the executable smoke check (`--version`). | `true/false` (printed when available) | Install a different version; or build from source. | Fix packaging (ensure tarball contains `docdexd`/`docdexd.exe` at the expected path and runs). |
 | `DOCDEX_CHECKSUM_UNUSABLE` | 24 | Installer could not obtain SHA-256 integrity metadata (no usable manifest + no usable checksum fallback). | `true` | Install a different version; or build from source. If installing from a fork, confirm the fork’s releases publish checksums/manifest. | Ensure the release includes `docdex-release-manifest.json` (with `integrity.sha256`) or `SHA256SUMS`/`SHA256SUMS.txt` with an entry for the asset; see `scripts/generate_release_manifest.cjs`. |
 
 Notes:

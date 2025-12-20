@@ -18,6 +18,8 @@ function createNoopLogger() {
   };
 }
 
+const noopSmokeTest = async () => {};
+
 async function ensureParentDir(filePath) {
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
 }
@@ -55,6 +57,7 @@ test("installer e2e: supported platform matrix installs expected binary layout",
 
       const result = await runInstaller({
         logger: createNoopLogger(),
+        smokeTestBinaryFn: noopSmokeTest,
         platform: entry.platform,
         arch: entry.arch,
         tmpDir,
@@ -110,4 +113,3 @@ test("installer e2e: supported platform matrix installs expected binary layout",
     });
   }
 });
-

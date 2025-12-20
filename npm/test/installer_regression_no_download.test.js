@@ -14,6 +14,8 @@ function createNoopLogger() {
   };
 }
 
+const noopSmokeTest = async () => {};
+
 function httpError(statusCode, message) {
   const err = new Error(message || `HTTP ${statusCode}`);
   err.statusCode = statusCode;
@@ -32,6 +34,7 @@ test("installer: unsupported OS/arch fails before any plan resolution or downloa
   try {
     await runInstaller({
       logger: createNoopLogger(),
+      smokeTestBinaryFn: noopSmokeTest,
       platform: "freebsd",
       arch: "x64",
       resolvePlatformPolicyFn: (args) => resolvePlatformPolicy(args),
@@ -90,6 +93,7 @@ test("installer: unpublished linux arm64 musl fails before any plan resolution o
   try {
     await runInstaller({
       logger: createNoopLogger(),
+      smokeTestBinaryFn: noopSmokeTest,
       platform: "linux",
       arch: "arm64",
       env: { DOCDEX_LIBC: "musl" },
@@ -152,6 +156,7 @@ test("installer: unpublished win32 arm64 fails before any plan resolution or dow
   try {
     await runInstaller({
       logger: createNoopLogger(),
+      smokeTestBinaryFn: noopSmokeTest,
       platform: "win32",
       arch: "arm64",
       resolvePlatformPolicyFn: (args) => resolvePlatformPolicy(args),
@@ -232,6 +237,7 @@ test("installer: supported runtime with missing manifest target triple never dow
   try {
     await runInstaller({
       logger: createNoopLogger(),
+      smokeTestBinaryFn: noopSmokeTest,
       detectPlatformKeyFn: () => "linux-x64-gnu",
       getVersionFn: () => version,
       parseRepoSlugFn: () => "owner/repo",
@@ -292,6 +298,7 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
   try {
     await runInstaller({
       logger: createNoopLogger(),
+      smokeTestBinaryFn: noopSmokeTest,
       platform: "linux",
       arch: "x64",
       tmpDir: "/tmp/docdex-installer-test",

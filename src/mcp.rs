@@ -2796,6 +2796,7 @@ impl McpServer {
             .ok_or(InvalidPathError)?;
         let rel_str = rel_path.to_string_lossy().replace('\\', "/");
 <<<<<<< HEAD
+<<<<<<< HEAD
         let store = SymbolsStore::new(
             self.indexer.repo_root(),
             self.indexer.config().repo_state_dir(),
@@ -2803,6 +2804,9 @@ impl McpServer {
 =======
         let store = SymbolsStore::new(self.indexer.repo_root(), self.indexer.repo_state_dir())
 >>>>>>> mcoda/task/ops-01-us-03-t02
+=======
+        let store = SymbolsStore::new(self.indexer.repo_root(), &self.indexer.index_data_dir())
+>>>>>>> mcoda/task/bck-05-us-07-t10
             .context("open symbols store")?;
         let mut payload = store
             .read_symbols(&rel_str)?

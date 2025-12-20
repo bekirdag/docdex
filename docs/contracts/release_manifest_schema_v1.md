@@ -18,25 +18,29 @@ The release workflow that generates and uploads these is `.github/workflows/rele
 
 ## Asset naming (canonical identifiers)
 
-Docdex publishes one tarball per supported platform, named deterministically:
+Docdex publishes one tarball per supported platform **per release tag** `vX.Y.Z`. The canonical release asset identifier includes the version tag and the per-platform filename:
 
-- Archive: `docdexd-<platformKey>.tar.gz`
+- Release tag (version): `v<version>`
+- Archive filename: `docdexd-<platformKey>.tar.gz`
+- Canonical release asset id (tag + filename): `v<version>/docdexd-<platformKey>.tar.gz`
 - Per-asset checksum sidecar (legacy fallback): `docdexd-<platformKey>.tar.gz.sha256`
 
-`platformKey` is the installer’s stable platform identifier (see `npm/lib/platform_matrix.js` and `docs/ops/installer_supported_platforms.md`).
+`platformKey` is the installer’s stable platform identifier (see `npm/lib/platform_matrix.js` and `docs/ops/installer_supported_platforms.md`). It maps 1:1 to the Rust target triple and encodes Linux libc (`gnu` vs `musl`) in the key.
+
+The manifest stores only the filename under `asset.name`; the version is implied by the release tag that the manifest is attached to.
 
 ## Supported target triples (published artifacts)
 
 Published targets are the `published: true` entries in `npm/lib/platform_matrix.js` and are the ones the manifest for a release is expected to include under `targets`:
 
-| Rust target triple | `platformKey` | Canonical archive asset |
-|---|---|---|
-| `aarch64-apple-darwin` | `darwin-arm64` | `docdexd-darwin-arm64.tar.gz` |
-| `x86_64-apple-darwin` | `darwin-x64` | `docdexd-darwin-x64.tar.gz` |
-| `aarch64-unknown-linux-gnu` | `linux-arm64-gnu` | `docdexd-linux-arm64-gnu.tar.gz` |
-| `x86_64-unknown-linux-gnu` | `linux-x64-gnu` | `docdexd-linux-x64-gnu.tar.gz` |
-| `x86_64-unknown-linux-musl` | `linux-x64-musl` | `docdexd-linux-x64-musl.tar.gz` |
-| `x86_64-pc-windows-msvc` | `win32-x64` | `docdexd-win32-x64.tar.gz` |
+| Rust target triple | Linux libc | `platformKey` | Canonical archive asset (filename) |
+|---|---|---|---|
+| `aarch64-apple-darwin` | n/a | `darwin-arm64` | `docdexd-darwin-arm64.tar.gz` |
+| `x86_64-apple-darwin` | n/a | `darwin-x64` | `docdexd-darwin-x64.tar.gz` |
+| `aarch64-unknown-linux-gnu` | `gnu` | `linux-arm64-gnu` | `docdexd-linux-arm64-gnu.tar.gz` |
+| `x86_64-unknown-linux-gnu` | `gnu` | `linux-x64-gnu` | `docdexd-linux-x64-gnu.tar.gz` |
+| `x86_64-unknown-linux-musl` | `musl` | `linux-x64-musl` | `docdexd-linux-x64-musl.tar.gz` |
+| `x86_64-pc-windows-msvc` | n/a | `win32-x64` | `docdexd-win32-x64.tar.gz` |
 
 If additional targets are added in the platform matrix, the manifest generator (`scripts/generate_release_manifest.cjs`) will include them automatically for published entries.
 
@@ -84,7 +88,7 @@ Optional (metadata; ignored by the installer unless noted):
 ### `targets` entry object (required fields)
 
 For each target triple key `T` in `targets`:
-- `targets[T].asset.name` (string): canonical GitHub Release asset name (e.g. `docdexd-linux-x64-gnu.tar.gz`).
+- `targets[T].asset.name` (string): canonical GitHub Release asset filename (e.g. `docdexd-linux-x64-gnu.tar.gz`; version comes from the release tag).
 - `targets[T].integrity.sha256` (string): lowercase 64-hex SHA-256 of the asset file bytes for `asset.name`.
 
 Optional fields (tolerated by the installer):
@@ -131,6 +135,8 @@ The npm installer resolves an install plan deterministically (see `npm/lib/insta
    - Prefer `SHA256SUMS` / `SHA256SUMS.txt` entries for that filename.
    - Legacy fallback: `<archive>.sha256` sidecar for that filename.
 4) Download, verify SHA-256 (fatal on mismatch), extract, and confirm the expected `docdexd` binary exists.
+
+If a supported target triple resolves but the archive is missing (404), the installer fails with `DOCDEX_ASSET_MISSING` and prints the detected platform, `platformKey`, `targetTriple`, and expected asset naming pattern.
 
 If installation fails, fatal errors are deterministic and include whether fallback was attempted; see `docs/contracts/installer_error_contract_v1.md` and `docs/ops/installer_error_codes.md`.
 

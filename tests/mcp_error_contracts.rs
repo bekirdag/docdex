@@ -45,8 +45,12 @@ impl McpHarness {
         Self::spawn_with_env(repo, state_root, &[])
 =======
     fn spawn(repo: &Path) -> Result<Self, Box<dyn Error>> {
+<<<<<<< HEAD
         Self::spawn_with_options(repo, &[], None, 4)
 >>>>>>> mcoda/task/bck-05-us-08-t34
+=======
+        Self::spawn_with_env_and_args(repo, &[], &[])
+>>>>>>> mcoda/task/bck-05-us-08-t06
     }
 
     fn spawn_with_env(
@@ -54,6 +58,7 @@ impl McpHarness {
         state_root: &Path,
         envs: &[(&str, &str)],
     ) -> Result<Self, Box<dyn Error>> {
+<<<<<<< HEAD
         Self::spawn_with_options(repo, envs, None, 4)
     }
 
@@ -62,6 +67,15 @@ impl McpHarness {
         envs: &[(&str, &str)],
         state_dir: Option<&Path>,
         max_results: usize,
+=======
+        Self::spawn_with_env_and_args(repo, envs, &[])
+    }
+
+    fn spawn_with_env_and_args(
+        repo: &Path,
+        envs: &[(&str, &str)],
+        extra_args: &[&str],
+>>>>>>> mcoda/task/bck-05-us-08-t06
     ) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo.to_string_lossy().to_string();
         let max_results = max_results.max(1).to_string();
@@ -76,6 +90,7 @@ impl McpHarness {
             max_results.as_str(),
         ]);
 <<<<<<< HEAD
+<<<<<<< HEAD
         cmd.env("DOCDEX_STATE_DIR", state_root);
 =======
         if let Some(state_dir) = state_dir {
@@ -83,6 +98,11 @@ impl McpHarness {
             cmd.args(["--state-dir", state_dir.as_str()]);
         }
 >>>>>>> mcoda/task/bck-05-us-08-t34
+=======
+        if !extra_args.is_empty() {
+            cmd.args(extra_args);
+        }
+>>>>>>> mcoda/task/bck-05-us-08-t06
         for (key, value) in envs {
             cmd.env(key, value);
         }
@@ -465,6 +485,7 @@ fn mcp_error_data_code(resp: &Value) -> Option<&str> {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn rate_limit_data_signature(data: &serde_json::Map<String, Value>) -> Vec<(String, &'static str)> {
     let mut out: Vec<(String, &'static str)> = data
         .iter()
@@ -513,6 +534,49 @@ fn search_hit_ids(
         .map(|doc_id| doc_id.to_string())
         .collect())
 >>>>>>> mcoda/task/bck-05-us-08-t22
+=======
+fn assert_index_state_error(
+    resp: &Value,
+    expected_code: &str,
+    expected_message: &str,
+    tool: &str,
+) -> Result<(), Box<dyn Error>> {
+    assert_eq!(mcp_error_code(resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(resp), Some(expected_code));
+    let data = resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.as_object())
+        .ok_or("index-state error missing error.data object")?;
+    assert_eq!(
+        data.get("code").and_then(|v| v.as_str()),
+        Some(expected_code)
+    );
+    assert_eq!(
+        data.get("message").and_then(|v| v.as_str()),
+        Some(expected_message)
+    );
+    assert_eq!(data.get("tool").and_then(|v| v.as_str()), Some(tool));
+    let reason = data.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        reason.contains("docdex_index") || reason.contains("docdexd index"),
+        "expected remediation hint in reason; got: {reason}"
+    );
+    let nested = data
+        .get("error")
+        .and_then(|v| v.as_object())
+        .ok_or("index-state error missing error.data.error object")?;
+    assert_eq!(
+        nested.get("code").and_then(|v| v.as_str()),
+        Some(expected_code)
+    );
+    assert_eq!(
+        nested.get("message").and_then(|v| v.as_str()),
+        Some(expected_message)
+    );
+    assert_eq!(nested.get("tool").and_then(|v| v.as_str()), Some(tool));
+    Ok(())
+>>>>>>> mcoda/task/bck-05-us-08-t06
 }
 
 #[test]
@@ -2356,6 +2420,7 @@ fn cli_invalid_query_error_matches_machine_reason() -> Result<(), Box<dyn Error>
 #[test]
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn cli_missing_vs_stale_index_errors_are_distinct_and_actionable() -> Result<(), Box<dyn Error>> {
     let repo = TempDir::new()?;
     write_repo_with_tokens(repo.path(), "repo_token", "COMMON_TERM", 1)?;
@@ -2464,10 +2529,75 @@ fn cli_missing_index_includes_hint_and_no_auto_state_dir() -> Result<(), Box<dyn
         "missing_index should not create state dir automatically"
     );
 >>>>>>> mcoda/task/bck-05-us-08-t22
+=======
+fn mcp_missing_index_errors_are_consistent_across_tools() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let mut mcp = McpHarness::spawn(repo.path())?;
+
+    let calls = [
+        ("docdex_search", json!({ "query": "MCP_ROADMAP" })),
+        ("docdex_files", json!({})),
+        ("docdex_stats", json!({})),
+    ];
+
+    for (idx, (tool, args)) in calls.iter().enumerate() {
+        send_line(
+            &mut mcp.stdin,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 300 + idx as i64,
+                "method": "tools/call",
+                "params": { "name": tool, "arguments": args }
+            }),
+        )?;
+        let resp = read_line(&mut mcp.reader)?;
+        assert_index_state_error(&resp, "missing_index", "missing index", tool)?;
+    }
+
+    mcp.shutdown();
     Ok(())
 }
 
 #[test]
+fn mcp_stale_index_errors_are_consistent_across_tools() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    thread::sleep(Duration::from_millis(1100));
+    std::fs::write(
+        repo.path().join("docs").join("overview.md"),
+        "# Overview\n\nMCP_ROADMAP term appears here.\n\nstale change\n",
+    )?;
+
+    let mut mcp = McpHarness::spawn(repo.path())?;
+    let calls = [
+        ("docdex_search", json!({ "query": "MCP_ROADMAP" })),
+        ("docdex_files", json!({})),
+        ("docdex_stats", json!({})),
+    ];
+
+    for (idx, (tool, args)) in calls.iter().enumerate() {
+        send_line(
+            &mut mcp.stdin,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 400 + idx as i64,
+                "method": "tools/call",
+                "params": { "name": tool, "arguments": args }
+            }),
+        )?;
+        let resp = read_line(&mut mcp.reader)?;
+        assert_index_state_error(&resp, "stale_index", "stale index", tool)?;
+    }
+
+    mcp.shutdown();
+>>>>>>> mcoda/task/bck-05-us-08-t06
+    Ok(())
+}
+
+#[test]
+<<<<<<< HEAD
 <<<<<<< HEAD
 fn cli_search_is_repo_isolated_and_respects_limit() -> Result<(), Box<dyn Error>> {
     let workspace = TempDir::new()?;
@@ -2559,10 +2689,28 @@ fn mcp_shared_state_dir_does_not_leak_cross_repo_hits() -> Result<(), Box<dyn Er
     let state_root_str = state_root.path().to_string_lossy().to_string();
     let repo_a_str = repo_a.path().to_string_lossy().to_string();
     run_docdex([
+=======
+fn mcp_search_is_repo_scoped_and_clamped() -> Result<(), Box<dyn Error>> {
+    let repo_a = setup_repo()?;
+    let repo_b = TempDir::new()?;
+    let b_docs = repo_b.path().join("docs");
+    std::fs::create_dir_all(&b_docs)?;
+    std::fs::write(
+        b_docs.join("b_only.md"),
+        "# B Only\n\nB_ONLY_TOKEN\n",
+    )?;
+
+    let shared_state = TempDir::new()?;
+    let shared_state_str = shared_state.path().to_string_lossy().to_string();
+    let repo_a_str = repo_a.path().to_string_lossy().to_string();
+    let repo_b_str = repo_b.path().to_string_lossy().to_string();
+    let index_a = run_docdex([
+>>>>>>> mcoda/task/bck-05-us-08-t06
         "index",
         "--repo",
         repo_a_str.as_str(),
         "--state-dir",
+<<<<<<< HEAD
         &state_root_str,
     ])?;
 
@@ -2591,11 +2739,39 @@ fn mcp_shared_state_dir_does_not_leak_cross_repo_hits() -> Result<(), Box<dyn Er
         isolate_hits.is_empty(),
         "repo-scoped MCP query must not return cross-repo hits"
     );
+=======
+        shared_state_str.as_str(),
+    ])?;
+    assert!(
+        index_a.status.success(),
+        "index repo-a failed: {}",
+        String::from_utf8_lossy(&index_a.stderr)
+    );
+    let index_b = run_docdex([
+        "index",
+        "--repo",
+        repo_b_str.as_str(),
+        "--state-dir",
+        shared_state_str.as_str(),
+    ])?;
+    assert!(
+        index_b.status.success(),
+        "index repo-b failed: {}",
+        String::from_utf8_lossy(&index_b.stderr)
+    );
+
+    let mut mcp = McpHarness::spawn_with_env_and_args(
+        repo_a.path(),
+        &[("DOCDEX_MCP_MAX_RESULTS", "3")],
+        &["--state-dir", shared_state_str.as_str()],
+    )?;
+>>>>>>> mcoda/task/bck-05-us-08-t06
 
     send_line(
         &mut mcp.stdin,
         json!({
             "jsonrpc": "2.0",
+<<<<<<< HEAD
             "id": 31,
             "method": "tools/call",
             "params": {
@@ -2612,10 +2788,29 @@ fn mcp_shared_state_dir_does_not_leak_cross_repo_hits() -> Result<(), Box<dyn Er
         "MCP should report the clamped limit"
     );
     let limit_hits_len = limit_body
+=======
+            "id": 500,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": { "query": "MCP_ROADMAP", "limit": 99 }
+            }
+        }),
+    )?;
+    let search_resp = read_line(&mut mcp.reader)?;
+    let search_body = parse_tool_result(&search_resp)?;
+    assert_eq!(
+        search_body.get("limit").and_then(|v| v.as_u64()),
+        Some(3),
+        "docdex_search should report the clamped limit"
+    );
+    let hits_len = search_body
+>>>>>>> mcoda/task/bck-05-us-08-t06
         .get("hits")
         .and_then(|v| v.as_array())
         .map(|v| v.len())
         .unwrap_or(0);
+<<<<<<< HEAD
     assert!(
         limit_hits_len <= 3,
         "MCP max results should cap returned hits"
@@ -2744,10 +2939,26 @@ fn mcp_search_remains_repo_scoped_during_concurrent_reindex() -> Result<(), Box<
 >>>>>>> mcoda/task/bck-05-us-08-t13
 
     let mut mcp = McpHarness::spawn(repo.path())?;
+=======
+    assert!(hits_len <= 3, "docdex_search hits should not exceed max-results");
+    let expected_root = repo_a
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| repo_a.path().to_path_buf())
+        .to_string_lossy()
+        .replace('\\', "/");
+    assert_eq!(
+        search_body.get("repo_root").and_then(|v| v.as_str()),
+        Some(expected_root.as_str()),
+        "docdex_search should remain scoped to the MCP repo"
+    );
+
+>>>>>>> mcoda/task/bck-05-us-08-t06
     send_line(
         &mut mcp.stdin,
         json!({
             "jsonrpc": "2.0",
+<<<<<<< HEAD
 <<<<<<< HEAD
             "id": 31,
 =======
@@ -2892,10 +3103,31 @@ fn mcp_tool_failure_does_not_corrupt_search_state() -> Result<(), Box<dyn Error>
 
     let after = search_hit_ids(&mut mcp, 42, "MCP_ROADMAP", 3)?;
     assert_eq!(baseline, after, "search results should be deterministic");
+=======
+            "id": 501,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": { "query": "B_ONLY_TOKEN", "limit": 3 }
+            }
+        }),
+    )?;
+    let cross_resp = read_line(&mut mcp.reader)?;
+    let cross_body = parse_tool_result(&cross_resp)?;
+    let cross_hits = cross_body
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .ok_or("docdex_search should return hits array")?;
+    assert!(
+        cross_hits.is_empty(),
+        "docdex_search should not return cross-repo hits"
+    );
+>>>>>>> mcoda/task/bck-05-us-08-t06
 
     mcp.shutdown();
     Ok(())
 }
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-08-t22
 =======
             "id": 402,
@@ -2913,3 +3145,5 @@ fn mcp_tool_failure_does_not_corrupt_search_state() -> Result<(), Box<dyn Error>
     Ok(())
 }
 >>>>>>> mcoda/task/bck-05-us-08-t13
+=======
+>>>>>>> mcoda/task/bck-05-us-08-t06

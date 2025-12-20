@@ -2564,7 +2564,11 @@ impl McpServer {
         if !self.indexer.config().symbols_enabled() {
             return Err(MissingSymbolsDependencyError.into());
         }
+<<<<<<< HEAD
         self.ensure_index_fresh()?;
+=======
+        self.indexer.ensure_index_state()?;
+>>>>>>> mcoda/task/bck-05-us-08-t06
         let rel_path = normalize_rel_path(&args.path)
             .ok_or(InvalidPathError)?;
         let rel_str = rel_path.to_string_lossy().replace('\\', "/");

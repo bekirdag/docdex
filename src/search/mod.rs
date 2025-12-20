@@ -2,14 +2,15 @@ use crate::index::{
     DocSnapshot, Hit, Indexer, SearchError, SearchQueryMeta, SnippetOrigin, SnippetResult,
 };
 use crate::error::{
-    AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
-    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    ERR_RATE_LIMITED,
+    AppError, RateLimited, StartupError, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
+    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
+    ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY, ERR_RATE_LIMITED,
 };
 use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::ratelimit::RateLimiter;
+use crate::web::ddg::DdgDiscovery;
 use anyhow::Result;
 use axum::body::HttpBody;
 use axum::{
@@ -161,6 +162,7 @@ pub struct AppState {
     pub access_log: bool,
     pub audit: Option<crate::audit::AuditLogger>,
     pub metrics: Arc<crate::metrics::Metrics>,
+    pub web_discovery: DdgDiscovery,
     pub memory: Option<MemoryState>,
 }
 
@@ -181,6 +183,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/graph/impact", get(impact_graph_handler))
         .route("/v1/memory/store", post(memory_store_handler))
         .route("/v1/memory/recall", post(memory_recall_handler))
+        .route("/v1/web/search", get(web_search_handler))
         .route("/ai-help", get(ai_help_handler))
         .route("/metrics", get(metrics_handler))
         .route_layer(middleware::from_fn_with_state(
@@ -430,6 +433,8 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_EMBEDDING_FAILED => StatusCode::BAD_GATEWAY,
         ERR_INVALID_ARGUMENT => StatusCode::BAD_REQUEST,
         ERR_MEMORY_DISABLED => StatusCode::CONFLICT,
+        ERR_MISSING_DEPENDENCY => StatusCode::CONFLICT,
+        ERR_BACKOFF_REQUIRED => StatusCode::TOO_MANY_REQUESTS,
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -853,6 +858,12 @@ struct SearchParams {
     snippets: Option<bool>,
     max_tokens: Option<u64>,
     include_libs: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct WebSearchParams {
+    query: Option<String>,
+    limit: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -1384,6 +1395,59 @@ async fn search_handler(
                 format!("internal error (request id: {})", request_id.0),
             )
                 .into_response()
+        }
+    }
+}
+
+async fn web_search_handler(
+    State(state): State<AppState>,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    Query(params): Query<WebSearchParams>,
+) -> impl IntoResponse {
+    let raw = match params.query.as_deref() {
+        Some(value) => value,
+        None => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                "query is required",
+            );
+        }
+    };
+    let query = raw.trim();
+    if query.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "query must not be empty",
+        );
+    }
+    let limit = params
+        .limit
+        .unwrap_or_else(|| state.web_discovery.max_results())
+        .max(1);
+
+    match state.web_discovery.discover(query, limit).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => {
+            let (code, status, message) = if let Some(app) = err.downcast_ref::<AppError>() {
+                (app.code, status_for_app_error(app.code), app.message.clone())
+            } else {
+                (
+                    ERR_INTERNAL_ERROR,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "web discovery failed".to_string(),
+                )
+            };
+            state.metrics.inc_error();
+            warn!(
+                target: "docdexd",
+                request_id = %request_id.0,
+                code = %code,
+                error = %err,
+                "web discovery failed"
+            );
+            json_error(status, code, message)
         }
     }
 }

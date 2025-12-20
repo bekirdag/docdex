@@ -6,6 +6,7 @@ use crate::memory::MemoryStore;
 use crate::metrics;
 use crate::ollama::OllamaEmbedder;
 use crate::search::{self, AppState, SecurityConfig};
+use crate::web;
 use crate::util;
 use crate::watcher;
 use anyhow::{anyhow, Context, Result};
@@ -296,6 +297,15 @@ pub async fn serve(
     } else {
         None
     };
+    let web_config = web::WebConfig::from_env();
+    let web_discovery =
+        web::ddg::DdgDiscovery::new(web_config).map_err(|err| {
+            StartupError::new(
+                "startup_config_invalid",
+                format!("failed to initialize web discovery: {err}"),
+            )
+            .with_hint("Check DOCDEX_WEB_* settings or disable with DOCDEX_WEB_ENABLED=0.")
+        })?;
     let metrics = Arc::new(metrics::Metrics::default());
     metrics::set_global(metrics.clone());
     let state = AppState {
@@ -305,6 +315,7 @@ pub async fn serve(
         access_log,
         audit,
         metrics: metrics.clone(),
+        web_discovery,
         memory,
     };
     watcher::spawn(indexer.clone()).map_err(|err| {

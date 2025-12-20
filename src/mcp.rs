@@ -11,6 +11,7 @@ use crate::ollama::OllamaEmbedder;
 use crate::ratelimit::RateLimiter;
 use crate::search;
 use crate::symbols::SymbolsStore;
+use crate::web;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -346,6 +347,13 @@ struct SearchArgs {
 }
 
 #[derive(Deserialize)]
+struct WebSearchArgs {
+    query: String,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
 struct IndexArgs {
     #[serde(default)]
     paths: Vec<PathBuf>,
@@ -488,6 +496,8 @@ pub async fn serve(
     ))
     .ok()
     .flatten();
+    let web_config = web::WebConfig::from_env();
+    let web_discovery = web::ddg::DdgDiscovery::new(web_config)?;
     let mut server = McpServer {
         repo_root,
         indexer,
@@ -496,6 +506,7 @@ pub async fn serve(
         default_project_root: None,
         memory,
         tool_rate_limit,
+        web_discovery,
     };
     server.run().await
 }
@@ -514,6 +525,7 @@ struct McpServer {
     default_project_root: Option<PathBuf>,
     memory: Option<McpMemoryState>,
     tool_rate_limit: Option<RateLimiter<()>>,
+    web_discovery: web::ddg::DdgDiscovery,
 }
 
 impl McpServer {
@@ -819,6 +831,39 @@ impl McpServer {
                             }
                         }
                     }
+                    "docdex_web_search" | "docdex.web_search" => {
+                        let args_res: Result<WebSearchArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_web_search"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_web_search" })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_web_search(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_web_search"))),
+                                }))
+                            }
+                        }
+                    }
                     "docdex_index" | "docdex.index" => {
                         let args_res: Result<IndexArgs, _> =
                             serde_json::from_value(params.arguments.clone());
@@ -1096,9 +1141,10 @@ impl McpServer {
                                 None,
                                 Some(json!({
                                     "known_tools": [
-                                        "docdex_search",
-                                        "docdex_index",
-                                        "docdex_files",
+                                    "docdex_search",
+                                    "docdex_web_search",
+                                    "docdex_index",
+                                    "docdex_files",
                                     "docdex_open",
                                     "docdex_stats",
                                     "docdex_repo_inspect",
@@ -1153,6 +1199,19 @@ impl McpServer {
                         "query": { "type": "string", "minLength": 1, "description": "Concise search query (will be rejected if empty)" },
                         "limit": { "type": "integer", "minimum": 1, "maximum": self.max_results as i64, "default": self.max_results, "description": "Max results to return (clamped to server max)" },
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_web_search",
+                description:
+                    "Perform DuckDuckGo HTML discovery and return a deduplicated URL list.",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "minLength": 1, "description": "Search query string" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": self.web_discovery.max_results() as i64, "default": self.web_discovery.max_results() as i64, "description": "Max results to return (clamped)" }
                     },
                     "required": ["query"]
                 }),
@@ -1309,6 +1368,19 @@ impl McpServer {
             "project_root": project_root_path,
             "meta": meta
         }))
+    }
+
+    async fn handle_web_search(&self, args: WebSearchArgs) -> Result<serde_json::Value> {
+        let query = args.query.trim();
+        if query.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "query must not be empty").into());
+        }
+        let limit = args
+            .limit
+            .unwrap_or_else(|| self.web_discovery.max_results())
+            .clamp(1, self.web_discovery.max_results());
+        let response = self.web_discovery.discover(query, limit).await?;
+        Ok(serde_json::to_value(&response).context("serialize docdex_web_search")?)
     }
 
     async fn handle_index(&mut self, args: IndexArgs) -> Result<serde_json::Value> {

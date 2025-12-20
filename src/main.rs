@@ -18,6 +18,7 @@ mod repo_identity;
 mod search;
 mod symbols;
 mod util;
+mod web;
 mod watcher;
 
 use crate::config::RepoArgs;
@@ -323,6 +324,13 @@ enum Command {
             help = "Only search the repo index (ignore any repo-scoped libs index, if present)"
         )]
         repo_only: bool,
+    },
+    /// Perform DuckDuckGo HTML discovery (JSON output).
+    WebSearch {
+        #[arg(long, value_parser = config::non_empty_string, help = "Search query string")]
+        query: String,
+        #[arg(long, default_value_t = 8, help = "Max results to return (clamped to config)")]
+        limit: usize,
     },
     /// Ingest library documentation sources into the repo-scoped libs index.
     LibsIngest {
@@ -835,6 +843,13 @@ async fn run() -> Result<()> {
             let hits = search::run_query(&server, libs_indexer.as_ref(), &query, limit).await?;
             println!("{}", serde_json::to_string_pretty(&hits)?);
         }
+        Command::WebSearch { query, limit } => {
+            util::init_logging("warn")?;
+            let config = web::WebConfig::from_env();
+            let discovery = web::ddg::DdgDiscovery::new(config)?;
+            let response = discovery.discover(&query, limit).await?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
         Command::Repo { command } => match command {
             RepoCommand::Reassociate {
                 repo,
@@ -1216,6 +1231,7 @@ fn print_full_help() -> Result<()> {
         "index",
         "ingest",
         "query",
+        "web-search",
         "repo",
         "memory-store",
         "memory-recall",

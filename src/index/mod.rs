@@ -17,11 +17,12 @@ use tantivy::{
 use thiserror::Error;
 use tracing::warn;
 use crate::error::{
-    repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
-    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+    repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INDEX_MIGRATION_REQUIRED,
+    ERR_INDEX_SCHEMA_UNSUPPORTED, ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX,
+    ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
 };
 use crate::symbols;
-use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
+use crate::symbols::{SchemaCompatibleRange, SchemaInfo, SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
 use walkdir::WalkDir;
 
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
@@ -157,6 +158,12 @@ const MAX_SUMMARY_CHARS: usize = 360;
 const MAX_SUMMARY_SEGMENTS: usize = 4;
 const MAX_SNIPPET_CHARS: usize = 420;
 const FALLBACK_PREVIEW_LINES: usize = 60;
+const INDEX_SCHEMA_NAME: &str = "docdex.index";
+const INDEX_SCHEMA_VERSION: u32 = 1;
+const INDEX_SCHEMA_COMPAT_MIN: u32 = 1;
+const INDEX_SCHEMA_COMPAT_MAX: u32 = 1;
+const INDEX_MANIFEST_VERSION: u32 = 1;
+const INDEX_MANIFEST_FILENAME: &str = "docdex_index_manifest.json";
 
 #[derive(Clone)]
 pub struct IndexConfig {
@@ -265,6 +272,239 @@ pub struct IndexStats {
     pub generated_at_epoch_ms: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_updated_epoch_ms: Option<u128>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IndexManifestV1 {
+    version: u32,
+    schema: SchemaInfo,
+    created_at_epoch_ms: i64,
+    updated_at_epoch_ms: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexCompatibilityStatus {
+    Compatible,
+    NeedsMigration,
+    Unsupported,
+    MissingIndex,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexCompatibilityReport {
+    pub status: IndexCompatibilityStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    pub state_dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest_path: Option<String>,
+    pub expected_schema: SchemaInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_schema: Option<SchemaInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub recovery_steps: Vec<String>,
+}
+
+fn current_index_schema() -> SchemaInfo {
+    SchemaInfo {
+        name: INDEX_SCHEMA_NAME.to_string(),
+        version: INDEX_SCHEMA_VERSION,
+        compatible: SchemaCompatibleRange {
+            min: INDEX_SCHEMA_COMPAT_MIN,
+            max: INDEX_SCHEMA_COMPAT_MAX,
+        },
+    }
+}
+
+fn index_manifest_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(INDEX_MANIFEST_FILENAME)
+}
+
+fn read_index_manifest(state_dir: &Path) -> Result<Option<IndexManifestV1>> {
+    let path = index_manifest_path(state_dir);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    let parsed: IndexManifestV1 =
+        serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
+    Ok(Some(parsed))
+}
+
+fn write_index_manifest(state_dir: &Path) -> Result<()> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let (created_at, existing_version) = match read_index_manifest(state_dir) {
+        Ok(Some(existing)) => (existing.created_at_epoch_ms, existing.version),
+        _ => (now_ms, INDEX_MANIFEST_VERSION),
+    };
+    let manifest = IndexManifestV1 {
+        version: existing_version.max(INDEX_MANIFEST_VERSION),
+        schema: current_index_schema(),
+        created_at_epoch_ms: created_at.max(1),
+        updated_at_epoch_ms: now_ms.max(1),
+    };
+    let bytes = serde_json::to_vec_pretty(&manifest).context("serialize index manifest")?;
+    let path = index_manifest_path(state_dir);
+    let tmp = path.with_extension(format!("tmp.{}", uuid::Uuid::new_v4()));
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
+    if path.exists() {
+        let _ = fs::remove_file(&path);
+    }
+    fs::rename(&tmp, &path).with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
+    Ok(())
+}
+
+pub fn index_compatibility_report(repo_root: &Path, state_dir: &Path) -> Result<IndexCompatibilityReport> {
+    let expected = current_index_schema();
+    let repo_display = repo_root.to_string_lossy().replace('\\', "/");
+    let state_dir_display = state_dir.to_string_lossy().replace('\\', "/");
+    let manifest_path = index_manifest_path(state_dir).to_string_lossy().replace('\\', "/");
+
+    if !state_dir.exists() {
+        return Ok(IndexCompatibilityReport {
+            status: IndexCompatibilityStatus::MissingIndex,
+            code: Some(ERR_MISSING_INDEX.to_string()),
+            state_dir: state_dir_display,
+            manifest_path: Some(manifest_path),
+            expected_schema: expected,
+            observed_schema: None,
+            message: Some("index not found on disk".to_string()),
+            recovery_steps: vec![format!(
+                "Run: `docdexd index --repo {}`",
+                repo_display
+            )],
+        });
+    }
+
+    let manifest = match read_index_manifest(state_dir) {
+        Ok(Some(manifest)) => manifest,
+        Ok(None) => {
+            return Ok(IndexCompatibilityReport {
+                status: IndexCompatibilityStatus::NeedsMigration,
+                code: Some(ERR_INDEX_MIGRATION_REQUIRED.to_string()),
+                state_dir: state_dir_display,
+                manifest_path: Some(manifest_path),
+                expected_schema: expected,
+                observed_schema: None,
+                message: Some("index manifest missing; index predates schema versioning".to_string()),
+                recovery_steps: vec![format!(
+                    "Rebuild the index to write a compatibility manifest: `docdexd index --repo {}`",
+                    repo_display
+                )],
+            });
+        }
+        Err(err) => {
+            return Ok(IndexCompatibilityReport {
+                status: IndexCompatibilityStatus::Unsupported,
+                code: Some(ERR_INDEX_SCHEMA_UNSUPPORTED.to_string()),
+                state_dir: state_dir_display,
+                manifest_path: Some(manifest_path),
+                expected_schema: expected,
+                observed_schema: None,
+                message: Some(format!("index manifest unreadable: {err}")),
+                recovery_steps: vec![
+                    format!("Rebuild the index: `docdexd index --repo {}`", repo_display),
+                    "If the issue persists, remove the existing index directory and re-run indexing."
+                        .to_string(),
+                ],
+            });
+        }
+    };
+
+    if manifest.version != INDEX_MANIFEST_VERSION {
+        return Ok(IndexCompatibilityReport {
+            status: IndexCompatibilityStatus::Unsupported,
+            code: Some(ERR_INDEX_SCHEMA_UNSUPPORTED.to_string()),
+            state_dir: state_dir_display,
+            manifest_path: Some(manifest_path),
+            expected_schema: expected,
+            observed_schema: Some(manifest.schema),
+            message: Some(format!(
+                "index manifest version {} is unsupported",
+                manifest.version
+            )),
+            recovery_steps: vec![
+                format!("Rebuild the index: `docdexd index --repo {}`", repo_display),
+                "If you created this index with a newer Docdex, upgrade this binary."
+                    .to_string(),
+            ],
+        });
+    }
+
+    if manifest.schema.name != INDEX_SCHEMA_NAME {
+        return Ok(IndexCompatibilityReport {
+            status: IndexCompatibilityStatus::Unsupported,
+            code: Some(ERR_INDEX_SCHEMA_UNSUPPORTED.to_string()),
+            state_dir: state_dir_display,
+            manifest_path: Some(manifest_path),
+            expected_schema: expected,
+            observed_schema: Some(manifest.schema),
+            message: Some("index schema name mismatch".to_string()),
+            recovery_steps: vec![
+                format!("Rebuild the index: `docdexd index --repo {}`", repo_display),
+                "If you created this index with a newer Docdex, upgrade this binary."
+                    .to_string(),
+            ],
+        });
+    }
+
+    let observed = manifest.schema;
+    if observed.version < expected.compatible.min {
+        return Ok(IndexCompatibilityReport {
+            status: IndexCompatibilityStatus::NeedsMigration,
+            code: Some(ERR_INDEX_MIGRATION_REQUIRED.to_string()),
+            state_dir: state_dir_display,
+            manifest_path: Some(manifest_path),
+            expected_schema: expected,
+            observed_schema: Some(observed),
+            message: Some(format!(
+                "index schema version {} is below minimum compatible {}",
+                observed.version, expected.compatible.min
+            )),
+            recovery_steps: vec![format!(
+                "Rebuild the index to migrate schema: `docdexd index --repo {}`",
+                repo_display
+            )],
+        });
+    }
+    if observed.version > expected.compatible.max {
+        return Ok(IndexCompatibilityReport {
+            status: IndexCompatibilityStatus::Unsupported,
+            code: Some(ERR_INDEX_SCHEMA_UNSUPPORTED.to_string()),
+            state_dir: state_dir_display,
+            manifest_path: Some(manifest_path),
+            expected_schema: expected,
+            observed_schema: Some(observed),
+            message: Some(format!(
+                "index schema version {} exceeds supported maximum {}",
+                observed.version, expected.compatible.max
+            )),
+            recovery_steps: vec![format!(
+                "Upgrade Docdex to a version that supports schema v{}",
+                observed.version
+            )],
+        });
+    }
+
+    Ok(IndexCompatibilityReport {
+        status: IndexCompatibilityStatus::Compatible,
+        code: None,
+        state_dir: state_dir_display,
+        manifest_path: Some(manifest_path),
+        expected_schema: expected,
+        observed_schema: Some(observed),
+        message: None,
+        recovery_steps: Vec::new(),
+    })
 }
 
 impl IndexConfig {
@@ -501,6 +741,7 @@ impl Indexer {
         }
         writer.commit()?;
         self.reader.reload()?;
+        write_index_manifest(self.config.state_dir())?;
         Ok(())
     }
 
@@ -1989,5 +2230,74 @@ mod tests {
                 (1.0, "docs/b.md", "b"),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod index_compatibility_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write_manifest(state_dir: &Path, schema_version: u32) -> Result<()> {
+        fs::create_dir_all(state_dir)?;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let manifest = IndexManifestV1 {
+            version: INDEX_MANIFEST_VERSION,
+            schema: SchemaInfo {
+                name: INDEX_SCHEMA_NAME.to_string(),
+                version: schema_version,
+                compatible: SchemaCompatibleRange {
+                    min: schema_version,
+                    max: schema_version,
+                },
+            },
+            created_at_epoch_ms: now_ms,
+            updated_at_epoch_ms: now_ms,
+        };
+        let bytes = serde_json::to_vec_pretty(&manifest)?;
+        fs::write(index_manifest_path(state_dir), bytes)?;
+        Ok(())
+    }
+
+    #[test]
+    fn compatibility_report_compatible_when_schema_in_range() -> Result<()> {
+        let repo = TempDir::new()?;
+        let state_dir = repo.path().join("index");
+        write_manifest(&state_dir, INDEX_SCHEMA_VERSION)?;
+        let report = index_compatibility_report(repo.path(), &state_dir)?;
+        assert!(matches!(
+            report.status,
+            IndexCompatibilityStatus::Compatible
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn compatibility_report_needs_migration_for_older_schema() -> Result<()> {
+        let repo = TempDir::new()?;
+        let state_dir = repo.path().join("index");
+        let older = INDEX_SCHEMA_COMPAT_MIN.saturating_sub(1);
+        write_manifest(&state_dir, older)?;
+        let report = index_compatibility_report(repo.path(), &state_dir)?;
+        assert!(matches!(
+            report.status,
+            IndexCompatibilityStatus::NeedsMigration
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn compatibility_report_unsupported_for_newer_schema() -> Result<()> {
+        let repo = TempDir::new()?;
+        let state_dir = repo.path().join("index");
+        let newer = INDEX_SCHEMA_COMPAT_MAX.saturating_add(1);
+        write_manifest(&state_dir, newer)?;
+        let report = index_compatibility_report(repo.path(), &state_dir)?;
+        assert!(matches!(
+            report.status,
+            IndexCompatibilityStatus::Unsupported
+        ));
+        Ok(())
     }
 }

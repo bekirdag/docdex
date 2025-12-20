@@ -56,6 +56,8 @@ These codes are the **required** set for repo/index/dependency failures and are 
 - `repo_state_mismatch`: per-repo state cannot be safely associated (fingerprint/meta/registry mismatch); Docdex must fast-fail to prevent cross-repo mixing.
 - `missing_index`: on-disk index is not present (e.g. `docdexd query` before indexing).
 - `stale_index`: index exists but is known to be stale (reserved for future use).
+- `index_migration_required`: index schema is older than the minimum compatible version and must be migrated/rebuilt.
+- `index_schema_unsupported`: index schema or manifest is newer/unsupported (upgrade Docdex or rebuild).
 - `missing_dependency`: a required optional feature/dependency is disabled (e.g. symbols extraction disabled).
 - `rate_limited`: request rejected due to rate limiting (reserved for future use in MCP).
 - `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable).

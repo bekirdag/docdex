@@ -3,8 +3,9 @@ use crate::index::{
 };
 use crate::error::{
     AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
-    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    ERR_RATE_LIMITED,
+    ERR_EMBEDDING_TIMEOUT, ERR_INDEX_MIGRATION_REQUIRED, ERR_INDEX_SCHEMA_UNSUPPORTED,
+    ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_MISSING_INDEX,
+    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH,
 };
 use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
@@ -178,6 +179,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/search", get(search_handler))
         .route("/snippet/*doc_id", get(snippet_handler))
+        .route("/v1/index/status", get(index_status_handler))
         .route("/v1/graph/impact", get(impact_graph_handler))
         .route("/v1/memory/store", post(memory_store_handler))
         .route("/v1/memory/recall", post(memory_recall_handler))
@@ -198,6 +200,33 @@ pub fn router(state: AppState) -> Router {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+async fn index_status_handler(State(state): State<AppState>) -> impl IntoResponse {
+    match crate::index::index_compatibility_report(state.indexer.repo_root(), state.indexer.state_dir()) {
+        Ok(report) => Json(report).into_response(),
+        Err(err) => {
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                return json_error_with_details(
+                    status_for_app_error(app.code),
+                    app.code,
+                    app.message.clone(),
+                    app.details.clone(),
+                );
+            }
+            state.metrics.inc_error();
+            warn!(
+                target: "docdexd",
+                error = ?err,
+                "index status handler failed"
+            );
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "index status failed",
+            )
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -430,6 +459,11 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_EMBEDDING_FAILED => StatusCode::BAD_GATEWAY,
         ERR_INVALID_ARGUMENT => StatusCode::BAD_REQUEST,
         ERR_MEMORY_DISABLED => StatusCode::CONFLICT,
+        ERR_MISSING_REPO_PATH => StatusCode::NOT_FOUND,
+        ERR_MISSING_INDEX => StatusCode::NOT_FOUND,
+        ERR_REPO_STATE_MISMATCH => StatusCode::CONFLICT,
+        ERR_INDEX_MIGRATION_REQUIRED => StatusCode::CONFLICT,
+        ERR_INDEX_SCHEMA_UNSUPPORTED => StatusCode::UPGRADE_REQUIRED,
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -440,6 +474,21 @@ fn json_error(status: StatusCode, code: &'static str, message: impl Into<String>
         status,
         Json(ErrorBody {
             error: ErrorDetail::new(code, message),
+        }),
+    )
+        .into_response()
+}
+
+fn json_error_with_details(
+    status: StatusCode,
+    code: &'static str,
+    message: impl Into<String>,
+    details: Option<serde_json::Value>,
+) -> Response {
+    (
+        status,
+        Json(ErrorBody {
+            error: ErrorDetail::new(code, message).with_details(details),
         }),
     )
         .into_response()
@@ -720,6 +769,12 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 ],
             },
             AiHelpEndpoint {
+                method: "GET",
+                path: "/v1/index/status",
+                description: "Report index schema compatibility/migration status.",
+                params: &[],
+            },
+            AiHelpEndpoint {
                 method: "POST",
                 path: "/v1/memory/store",
                 description: "Store a memory item (requires --enable-memory=true).",
@@ -743,6 +798,11 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 command: "docdexd index --repo <path>",
                 description: "Build or rebuild the index for a repo.",
                 example: "docdexd index --repo /workspace",
+            },
+            AiHelpCli {
+                command: "docdexd index-status --repo <path>",
+                description: "Report index schema compatibility/migration status.",
+                example: "docdexd index-status --repo /workspace",
             },
             AiHelpCli {
                 command: "docdexd serve --repo <path> [--host 127.0.0.1] [--port 46137]",
@@ -952,6 +1012,8 @@ struct ErrorDetail {
     limit_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<serde_json::Value>,
 }
 
 impl ErrorDetail {
@@ -963,7 +1025,13 @@ impl ErrorDetail {
             retry_at: None,
             limit_key: None,
             scope: None,
+            details: None,
         }
+    }
+
+    fn with_details(mut self, details: Option<serde_json::Value>) -> Self {
+        self.details = details;
+        self
     }
 
     fn rate_limited(err: &RateLimited) -> Self {
@@ -974,6 +1042,7 @@ impl ErrorDetail {
             retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
             limit_key: Some(err.limit_key.clone()),
             scope: Some(err.scope.clone()),
+            details: None,
         }
     }
 }

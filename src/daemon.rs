@@ -5,6 +5,7 @@ use crate::libs;
 use crate::memory::MemoryStore;
 use crate::metrics;
 use crate::ollama::OllamaEmbedder;
+use crate::policy;
 use crate::search::{self, AppState, SecurityConfig};
 use crate::util;
 use crate::watcher;
@@ -298,6 +299,7 @@ pub async fn serve(
     };
     let metrics = Arc::new(metrics::Metrics::default());
     metrics::set_global(metrics.clone());
+    let web_gate = policy::web_gate_from_env();
     let state = AppState {
         indexer: indexer.clone(),
         libs_indexer,
@@ -306,6 +308,7 @@ pub async fn serve(
         audit,
         metrics: metrics.clone(),
         memory,
+        web_gate,
     };
     watcher::spawn(indexer.clone()).map_err(|err| {
         StartupError::new(

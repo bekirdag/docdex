@@ -5,6 +5,7 @@ mod config;
 mod daemon;
 mod error;
 mod metrics;
+mod policy;
 mod tier2;
 mod impact;
 mod index;

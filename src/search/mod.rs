@@ -9,6 +9,7 @@ use crate::error::{
 use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
+use crate::policy::{self, Dependency};
 use crate::ratelimit::RateLimiter;
 use anyhow::Result;
 use axum::body::HttpBody;
@@ -162,6 +163,7 @@ pub struct AppState {
     pub audit: Option<crate::audit::AuditLogger>,
     pub metrics: Arc<crate::metrics::Metrics>,
     pub memory: Option<MemoryState>,
+    pub web_gate: policy::WebGateDecision,
 }
 
 #[derive(Clone)]
@@ -450,12 +452,11 @@ async fn memory_store_handler(
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
     Json(req): Json<MemoryStoreRequest>,
 ) -> impl IntoResponse {
-    let Some(memory) = state.memory.clone() else {
-        return json_error(
-            StatusCode::CONFLICT,
-            ERR_MEMORY_DISABLED,
-            "memory is disabled; start the daemon with --enable-memory=true",
-        );
+    let memory = match policy::require_option(Dependency::Memory, state.memory.clone()) {
+        Ok(memory) => memory,
+        Err(err) => {
+            return json_error(status_for_app_error(err.code), err.code, err.message);
+        }
     };
     let text = req.text.trim();
     if text.is_empty() {
@@ -541,12 +542,11 @@ async fn memory_recall_handler(
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
     Json(req): Json<MemoryRecallRequest>,
 ) -> impl IntoResponse {
-    let Some(memory) = state.memory.clone() else {
-        return json_error(
-            StatusCode::CONFLICT,
-            ERR_MEMORY_DISABLED,
-            "memory is disabled; start the daemon with --enable-memory=true",
-        );
+    let memory = match policy::require_option(Dependency::Memory, state.memory.clone()) {
+        Ok(memory) => memory,
+        Err(err) => {
+            return json_error(status_for_app_error(err.code), err.code, err.message);
+        }
     };
     let query = req.query.trim();
     if query.is_empty() {

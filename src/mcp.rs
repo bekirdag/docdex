@@ -1,8 +1,8 @@
 use crate::error::{
     AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
-    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
+    ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_MISSING_REPO_PATH,
+    ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
 };
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
@@ -11,6 +11,7 @@ use crate::ollama::OllamaEmbedder;
 use crate::ratelimit::RateLimiter;
 use crate::search;
 use crate::symbols::SymbolsStore;
+use crate::{policy, policy::Dependency, policy::RepoSurface};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -62,10 +63,6 @@ struct PathOutsideRepoError;
 #[derive(Error, Debug)]
 #[error("unsupported uri scheme")]
 struct InvalidUriError;
-
-#[derive(Error, Debug)]
-#[error("symbol extraction is disabled; re-run with --enable-symbol-extraction=true (or set DOCDEX_ENABLE_SYMBOL_EXTRACTION=1) and reindex")]
-struct MissingSymbolsDependencyError;
 
 #[derive(Error, Debug)]
 #[error("no symbols record found for {rel_path}; run docdex_index")]
@@ -249,15 +246,6 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
             Some(json!({
                 "max_bytes": max_err.max_bytes,
                 "actual_bytes": max_err.actual_bytes,
-            })),
-        );
-    }
-    if err.downcast_ref::<MissingSymbolsDependencyError>().is_some() {
-        return (
-            ERR_MISSING_DEPENDENCY,
-            Some(json!({
-                "dependency": "DOCDEX_ENABLE_SYMBOL_EXTRACTION",
-                "flag": "--enable-symbol-extraction=true"
             })),
         );
     }
@@ -488,6 +476,7 @@ pub async fn serve(
     ))
     .ok()
     .flatten();
+    let web_gate = policy::web_gate_from_env();
     let mut server = McpServer {
         repo_root,
         indexer,
@@ -495,6 +484,7 @@ pub async fn serve(
         max_results: max_results.max(1),
         default_project_root: None,
         memory,
+        web_gate,
         tool_rate_limit,
     };
     server.run().await
@@ -513,6 +503,7 @@ struct McpServer {
     max_results: usize,
     default_project_root: Option<PathBuf>,
     memory: Option<McpMemoryState>,
+    web_gate: policy::WebGateDecision,
     tool_rate_limit: Option<RateLimiter<()>>,
 }
 
@@ -628,26 +619,12 @@ impl McpServer {
                     .or(init_params.project_root)
                     .as_ref()
                 {
-                    match client_root.canonicalize() {
+                    match policy::ensure_repo_match(
+                        client_root,
+                        &self.repo_root,
+                        RepoSurface::Mcp,
+                    ) {
                         Ok(canon) => {
-                            if canon != self.repo_root {
-                                return Ok(Some(RpcResponse {
-                                    jsonrpc: JSONRPC_VERSION,
-                                    id: id.clone(),
-                                    result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_REQUEST,
-                                        default_message_for_code(ERR_UNKNOWN_REPO),
-                                        ERR_UNKNOWN_REPO,
-                                        None,
-                                        None,
-                                        Some(json!({
-                                            "expected": self.repo_root.display().to_string(),
-                                            "got": canon.display().to_string()
-                                        })),
-                                    )),
-                                }));
-                            }
                             self.default_project_root = Some(canon);
                         }
                         Err(err) => {
@@ -655,14 +632,14 @@ impl McpServer {
                                 jsonrpc: JSONRPC_VERSION,
                                 id: id.clone(),
                                 result: None,
-                            error: Some(rpc_error(
-                                ERR_INVALID_REQUEST,
-                                default_message_for_code("invalid_request"),
-                                "invalid_request",
-                                Some(err.to_string()),
-                                None,
-                                None,
-                            )),
+                                error: Some(rpc_error(
+                                    ERR_INVALID_REQUEST,
+                                    default_message_for_code(err.code),
+                                    err.code,
+                                    None,
+                                    None,
+                                    err.details,
+                                )),
                             }));
                         }
                     }
@@ -1480,9 +1457,7 @@ impl McpServer {
 
     async fn handle_symbols(&self, args: SymbolsArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
-        if !self.indexer.config().symbols_enabled() {
-            return Err(MissingSymbolsDependencyError.into());
-        }
+        policy::require_enabled(Dependency::Symbols, self.indexer.config().symbols_enabled())?;
         let rel_path = normalize_rel_path(&args.path)
             .ok_or(InvalidPathError)?;
         let rel_str = rel_path.to_string_lossy().replace('\\', "/");
@@ -1498,13 +1473,7 @@ impl McpServer {
 
     async fn handle_memory_store(&self, args: MemoryStoreArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
-        let Some(memory) = self.memory.clone() else {
-            return Err(AppError::new(
-                ERR_MEMORY_DISABLED,
-                "memory is disabled; set DOCDEX_ENABLE_MEMORY=1",
-            )
-            .into());
-        };
+        let memory = policy::require_option(Dependency::Memory, self.memory.clone())?;
         let text = args.text.trim();
         if text.is_empty() {
             return Err(AppError::new(ERR_INVALID_ARGUMENT, "text must not be empty").into());
@@ -1534,13 +1503,7 @@ impl McpServer {
 
     async fn handle_memory_recall(&self, args: MemoryRecallArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
-        let Some(memory) = self.memory.clone() else {
-            return Err(AppError::new(
-                ERR_MEMORY_DISABLED,
-                "memory is disabled; set DOCDEX_ENABLE_MEMORY=1",
-            )
-            .into());
-        };
+        let memory = policy::require_option(Dependency::Memory, self.memory.clone())?;
         let query = args.query.trim();
         if query.is_empty() {
             return Err(AppError::new(ERR_INVALID_ARGUMENT, "query must not be empty").into());
@@ -1584,60 +1547,19 @@ impl McpServer {
     }
 
     fn ensure_same_repo(&self, candidate: &Path) -> Result<()> {
-        if !candidate.exists() {
-            let normalized_path = candidate.to_string_lossy().replace('\\', "/");
-            let details = repo_resolution_details(
-                normalized_path,
-                None,
-                Some(self.repo_root.to_string_lossy().replace('\\', "/")),
-                vec![
-                    "Repo may have moved or been renamed.".to_string(),
-                    "Pass the current repo path (or omit `project_root` to use the MCP server default)."
-                        .to_string(),
-                    "If the MCP server is pointed at the wrong path, restart it with `docdexd mcp --repo <repo>`."
-                        .to_string(),
-                ],
-            );
-            return Err(
-                AppError::new(ERR_MISSING_REPO_PATH, "repo path not found")
-                    .with_details(details)
-                    .into(),
-            );
-        }
-
-        let normalized = candidate.canonicalize().unwrap_or_else(|_| candidate.to_path_buf());
-        if normalized != self.repo_root {
-            let attempted_fingerprint = crate::repo_identity::repo_fingerprint_sha256(&normalized).ok();
-            let details = repo_resolution_details(
-                normalized.to_string_lossy().replace('\\', "/"),
-                attempted_fingerprint,
-                Some(self.repo_root.to_string_lossy().replace('\\', "/")),
-                vec![
-                    "Repo may have moved or been renamed.".to_string(),
-                    "Restart the MCP server with `docdexd mcp --repo <repo>` matching the repo you want to use."
-                        .to_string(),
-                    "Alternatively, omit `project_root` in tool arguments to use the MCP server default."
-                        .to_string(),
-                ],
-            );
-            return Err(
-                AppError::new(ERR_UNKNOWN_REPO, "unknown repo")
-                    .with_details(details)
-                    .into(),
-            );
-        }
-
-        Ok(())
+        policy::ensure_repo_match(candidate, &self.repo_root, RepoSurface::Mcp)
+            .map(|_| ())
+            .map_err(Into::into)
     }
 
     fn ensure_project_root(&self, candidate: Option<&Path>) -> Result<()> {
-        if let Some(path) = candidate {
-            return self.ensure_same_repo(path);
-        }
-        if let Some(default_root) = self.default_project_root.as_ref() {
-            return self.ensure_same_repo(default_root);
-        }
-        Ok(())
+        policy::ensure_project_root(
+            candidate,
+            self.default_project_root.as_deref(),
+            &self.repo_root,
+            RepoSurface::Mcp,
+        )
+        .map_err(Into::into)
     }
 }
 

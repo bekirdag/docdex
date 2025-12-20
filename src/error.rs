@@ -17,6 +17,7 @@ pub const ERR_UNKNOWN_REPO: &str = "unknown_repo";
 pub const ERR_MISSING_INDEX: &str = "missing_index";
 pub const ERR_STALE_INDEX: &str = "stale_index";
 pub const ERR_MISSING_DEPENDENCY: &str = "missing_dependency";
+pub const ERR_TIER2_UNAVAILABLE: &str = "tier2_unavailable";
 pub const ERR_RATE_LIMITED: &str = "rate_limited";
 pub const ERR_BACKOFF_REQUIRED: &str = "backoff_required";
 pub const ERR_REPO_STATE_MISMATCH: &str = "repo_state_mismatch";

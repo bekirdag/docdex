@@ -8,9 +8,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::browser_session::BrowserSessionError;
+use crate::error::ERR_TIER2_UNAVAILABLE;
 use crate::metrics;
-
-pub const ERR_TIER2_UNAVAILABLE: &str = "tier2_unavailable";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -20,6 +19,18 @@ pub enum Tier2UnavailableReason {
     Timeout,
     Crashed,
     Disabled,
+}
+
+impl Tier2UnavailableReason {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::StartupFailed => "startup_failed",
+            Self::Overload => "overload",
+            Self::Timeout => "timeout",
+            Self::Crashed => "crashed",
+            Self::Disabled => "disabled",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -52,6 +63,8 @@ impl fmt::Display for Tier2Unavailable {
         write!(f, "{} ({:?})", self.message, self.reason)
     }
 }
+
+impl std::error::Error for Tier2Unavailable {}
 
 #[derive(Clone, Debug, Default)]
 pub struct Tier2Config {

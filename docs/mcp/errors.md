@@ -81,6 +81,7 @@ Docdex also uses feature-specific codes in some tools:
 - `embedding_timeout`
 - `embedding_model_not_found`
 - `embedding_failed`
+- `tier2_unavailable`
 
 ## Repo moved/renamed (deterministic behavior + recovery)
 

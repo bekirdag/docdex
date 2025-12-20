@@ -4,7 +4,7 @@ use crate::index::{
 use crate::error::{
     AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    ERR_RATE_LIMITED,
+    ERR_RATE_LIMITED, ERR_TIER2_UNAVAILABLE,
 };
 use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
@@ -430,6 +430,7 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_EMBEDDING_FAILED => StatusCode::BAD_GATEWAY,
         ERR_INVALID_ARGUMENT => StatusCode::BAD_REQUEST,
         ERR_MEMORY_DISABLED => StatusCode::CONFLICT,
+        ERR_TIER2_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }

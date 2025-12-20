@@ -1,5 +1,6 @@
 use crate::error::{
 <<<<<<< HEAD
+<<<<<<< HEAD
     AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
     ERR_UNSUPPORTED_VERSION, repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX,
@@ -12,6 +13,13 @@ use crate::error::{
     ERR_MISSING_REPO, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH,
     ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
 >>>>>>> mcoda/task/bck-05-us-09-t34
+=======
+    repo_resolution_details, AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
+    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
+    ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
+    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_RATE_LIMITED_RPC, ERR_REPO_STATE_MISMATCH,
+    ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
+>>>>>>> mcoda/task/bck-05-us-09-t32
 };
 <<<<<<< HEAD
 use crate::explainability::ExplainabilityStore;
@@ -55,12 +63,15 @@ const ERR_INVALID_REQUEST: i32 = -32600;
 const ERR_METHOD_NOT_FOUND: i32 = -32601;
 const ERR_INVALID_PARAMS: i32 = -32602;
 const ERR_INTERNAL: i32 = -32000;
+<<<<<<< HEAD
 const ERR_RATE_LIMITED_RPC: i32 = -32029;
 <<<<<<< HEAD
 <<<<<<< HEAD
 =======
 const TOOL_SCHEMA_VERSION_MIN: u32 = 1;
 const TOOL_SCHEMA_VERSION_MAX: u32 = 1;
+=======
+>>>>>>> mcoda/task/bck-05-us-09-t32
 const FILES_DEFAULT_LIMIT: usize = 200;
 const FILES_MAX_LIMIT: usize = 1000;
 const FILES_MAX_OFFSET: usize = 50_000;
@@ -191,6 +202,7 @@ fn mcp_error_data(
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn rate_limit_fields(err: &RateLimited) -> serde_json::Map<String, serde_json::Value> {
     let mut fields = serde_json::Map::new();
     fields.insert("retry_after_ms".to_string(), json!(err.retry_after_ms));
@@ -250,6 +262,10 @@ fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
 fn mcp_backoff_data(err: &BackoffRequired) -> serde_json::Value {
     mcp_retry_data(RetryHint::from_backoff(err))
 >>>>>>> mcoda/task/bck-05-us-09-t34
+=======
+fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
+    serde_json::to_value(err.retry_hint()).expect("rate-limit data should serialize")
+>>>>>>> mcoda/task/bck-05-us-09-t32
 }
 
 fn truncate_bytes(input: String, max_bytes: usize) -> String {

@@ -1057,6 +1057,7 @@ impl ErrorDetail {
     }
 
     fn rate_limited(err: &RateLimited) -> Self {
+<<<<<<< HEAD
         let hint = RetryHint::from_rate_limited(err);
         Self {
 <<<<<<< HEAD
@@ -1067,13 +1068,20 @@ impl ErrorDetail {
             limit_key: Some(err.limit_key.clone()),
             scope: Some(err.scope.clone()),
 =======
+=======
+        let hint = err.retry_hint();
+        Self {
+>>>>>>> mcoda/task/bck-05-us-09-t32
             code: hint.code,
             message: truncate_bytes(&err.message, MAX_RATE_LIMIT_MESSAGE_BYTES),
             retry_after_ms: Some(hint.retry_after_ms),
             retry_at: hint.retry_at,
             limit_key: Some(hint.limit_key),
             scope: Some(hint.scope),
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-09-t34
+=======
+>>>>>>> mcoda/task/bck-05-us-09-t32
         }
     }
 }

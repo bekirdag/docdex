@@ -17,7 +17,7 @@ On failure, the MCP server returns a JSON-RPC error response:
   - `-32602` tool failures and argument validation (`invalid_params` *and* domain failures like `missing_index`)
   - `-32000` internal server error (`internal_error`) when the MCP server fails outside tool handling
 - `error.message` (string): a short, stable category message.
-- `error.data` (object): Docdex error envelope (below).
+- `error.data` (object): Docdex error envelope (below) for most errors. Rate-limited responses return a small retry-hint object instead (see "Rate-limit data shape").
 
 ### `error.data` (Docdex envelope)
 
@@ -36,8 +36,22 @@ Compatibility guidance for clients:
 - Ignore unknown fields; new `details` keys may be added without breaking changes.
 - `error.data.error` is redundant; it exists for convenience where clients expect a nested `error` object.
 
+<<<<<<< HEAD
 Note: `rate_limited` uses a specialized `error.data` shape for retry hints (see
 `docs/contracts/rate_limit_error_contract_v1.md`) and does not include the full nested envelope.
+=======
+### Rate-limit data shape (MCP)
+
+When a tool call is rate-limited, the MCP server uses a custom JSON-RPC error code and a small, stable `error.data` object for retry hints.
+
+- `error.code`: `-32029` (custom server error: rate-limited).
+- `error.data` object:
+  - `code`: string literal `"rate_limited"`.
+  - `retry_after_ms`: integer, milliseconds to wait (>= 0).
+  - `retry_at`: optional RFC3339 timestamp string.
+  - `limit_key`: string identifying the limiter bucket (e.g., `"web_research"`, `"browser_concurrency"`).
+  - `scope`: string identifying scope (e.g., `"global"`, `"repo"`).
+>>>>>>> mcoda/task/bck-05-us-09-t32
 
 ## Code taxonomy (machine-readable)
 
@@ -60,7 +74,11 @@ These codes are the **required** set for repo/index/dependency failures and are 
 - `missing_index`: on-disk index is not present (e.g. `docdexd query` before indexing).
 - `stale_index`: index exists but is known to be stale (reserved for future use).
 - `missing_dependency`: a required optional feature/dependency is disabled (e.g. symbols extraction disabled).
+<<<<<<< HEAD
 - `rate_limited`: request rejected due to rate limiting (see `docs/contracts/rate_limit_error_contract_v1.md`).
+=======
+- `rate_limited`: request rejected due to rate limiting; MCP uses JSON-RPC code `-32029` with retry hints in `error.data`.
+>>>>>>> mcoda/task/bck-05-us-09-t32
 - `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable).
 - `internal_error`: unexpected server failure.
 
@@ -126,7 +144,11 @@ Docdex presents the same underlying failures in three different wrappers:
 | Index missing (query/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
 | Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Not currently emitted by the per-repo CLI |
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |
+<<<<<<< HEAD
 | Rate limited | `rate_limited` | `-32029` | `429` with JSON error envelope + retry hints | N/A (CLI not rate limited) |
+=======
+| Rate limited | `rate_limited` | `-32029` | `429` with JSON `{error:{code,message,retry_after_ms,retry_at?,limit_key,scope}}` | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
+>>>>>>> mcoda/task/bck-05-us-09-t32
 | Optional dependency disabled (e.g. symbols) | `missing_dependency` | `-32602` | N/A (no HTTP endpoint for MCP symbols) | N/A (no CLI symbols command) |
 | Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_params` | `-32602` | N/A | N/A |
 | Invalid path for `docdex_open` | `invalid_path` | `-32602` | N/A | N/A |

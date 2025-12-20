@@ -1044,9 +1044,19 @@ async function runInstaller(options) {
   const platformKey = platformPolicy.platformKey;
   const targetTriple = platformPolicy.targetTriple;
   const version = getVersionFn();
+  const expectedAssetName = platformPolicy.expectedAssetName || artifactNameFn(platformKey);
+  const detectedLibc = platformPolicy.detected?.libc ? `/${platformPolicy.detected.libc}` : "";
+  const detectedPlatformLabel = `${
+    platformPolicy.detected?.platform || detectedPlatform
+  }/${platformPolicy.detected?.arch || detectedArch}${detectedLibc}`;
   const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
   const distDir = pathModule.join(distBaseDir, platformKey);
   const isWin32 = detectedPlatform === "win32";
+
+  logger.log(`[docdex] Detected platform: ${detectedPlatformLabel}`);
+  logger.log(`[docdex] Resolved target triple: ${targetTriple}`);
+  logger.log(`[docdex] Resolved daemon version: v${version}`);
+  logger.log(`[docdex] Resolved asset name: ${expectedAssetName}`);
 
   const local = await determineLocalInstallerOutcome({
     fsModule,

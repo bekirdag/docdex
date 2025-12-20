@@ -7,6 +7,7 @@ Operator-facing platform support + troubleshooting:
 
 Single source of truth:
 - `npm/lib/platform_matrix.js` (runtime detection → `platformKey` → Rust target triple → release asset naming)
+- `docs/contracts/installer_platform_mapping_v1.md` (canonical runtime → `platformKey`/`targetTriple` contract)
 
 ## What “platform detection” means (installer + wrapper)
 
@@ -36,6 +37,7 @@ If a platform is supported but an artifact is missing, install exits non-zero wi
 
 Contracts:
 - `docs/contracts/installer_error_contract_v1.md`
+- `docs/contracts/installer_platform_mapping_v1.md`
 - `docs/contracts/release_manifest_schema_v1.md`
 - Remediation playbook: `docs/ops/installer_error_codes.md`
 

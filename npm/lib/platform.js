@@ -279,10 +279,11 @@ function detectTargetTriple(options) {
 function resolvePlatformPolicy(options) {
   const platform = options?.platform ?? process.platform;
   const arch = options?.arch ?? process.arch;
-  const platformKey = detectPlatformKey(options);
+  const libc = platform === "linux" ? normalizeLibc(options?.libc) ?? detectLibcFromRuntime(options) : null;
+  const platformKey = detectPlatformKey({ ...(options || {}), platform, arch, libc });
   const targetTriple = targetTripleForPlatformKey(platformKey);
   return {
-    detected: { platform, arch },
+    detected: { platform, arch, libc },
     platformKey,
     targetTriple,
     expectedAssetName: artifactName(platformKey),

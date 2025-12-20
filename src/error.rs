@@ -4,11 +4,15 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 <<<<<<< HEAD
+<<<<<<< HEAD
 use serde::Serialize;
 use serde_json::Value;
 =======
 use serde_json::{json, Value};
 >>>>>>> mcoda/task/bck-05-us-09-t28
+=======
+use serde_json::{json, Value};
+>>>>>>> mcoda/task/bck-05-us-09-t24
 use thiserror::Error;
 
 pub const ERR_EMBEDDING_TIMEOUT: &str = "embedding_timeout";
@@ -28,6 +32,7 @@ pub const ERR_RATE_LIMITED: &str = "rate_limited";
 pub const ERR_BACKOFF_REQUIRED: &str = "backoff_required";
 pub const ERR_REPO_STATE_MISMATCH: &str = "repo_state_mismatch";
 pub const ERR_INTERNAL_ERROR: &str = "internal_error";
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -55,6 +60,13 @@ pub const DEFAULT_BACKOFF_RETRY_AFTER_MS: u64 = 1000;
 pub const MAX_RETRY_HINT_KEY_BYTES: usize = 64;
 pub const MAX_RETRY_HINT_SCOPE_BYTES: usize = 64;
 >>>>>>> mcoda/task/bck-05-us-09-t28
+=======
+pub const DEFAULT_BACKOFF_RETRY_AFTER_MS: u64 = 1000;
+
+pub fn backoff_retry_details(retry_after_ms: u64) -> Value {
+    json!({ "retry_after_ms": retry_after_ms })
+}
+>>>>>>> mcoda/task/bck-05-us-09-t24
 
 #[derive(Debug, Clone)]
 pub struct StartupError {

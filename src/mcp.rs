@@ -240,6 +240,7 @@ fn mcp_error_data(
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn rate_limit_fields(err: &RateLimited) -> serde_json::Map<String, serde_json::Value> {
     let mut fields = serde_json::Map::new();
     fields.insert("retry_after_ms".to_string(), json!(err.retry_after_ms));
@@ -337,8 +338,20 @@ fn mcp_backoff_required_data(err: &BackoffRequired) -> serde_json::Value {
         retry_at: Option<String>,
         limit_key: &'a str,
         scope: &'a str,
+=======
+fn rate_limit_details(err: &RateLimited, retry_at: Option<&str>) -> serde_json::Value {
+    let mut details = serde_json::Map::new();
+    details.insert("retry_after_ms".to_string(), json!(err.retry_after_ms));
+    if let Some(retry_at) = retry_at {
+        details.insert("retry_at".to_string(), json!(retry_at));
+>>>>>>> mcoda/task/bck-05-us-09-t24
     }
+    details.insert("limit_key".to_string(), json!(err.limit_key.as_str()));
+    details.insert("scope".to_string(), json!(err.scope.as_str()));
+    serde_json::Value::Object(details)
+}
 
+<<<<<<< HEAD
 <<<<<<< HEAD
     serde_json::to_value(BackoffData {
         code: ERR_BACKOFF_REQUIRED,
@@ -368,6 +381,22 @@ fn tier2_unavailable_details(err: &Tier2Unavailable) -> serde_json::Value {
 fn mcp_backoff_required_data(err: &BackoffRequired) -> serde_json::Value {
     err.retry_hint().to_value()
 >>>>>>> mcoda/task/bck-05-us-09-t07
+=======
+fn mcp_rate_limited_data(err: &RateLimited, tool: Option<&str>, message: String) -> serde_json::Value {
+    let retry_at = err.retry_at.as_ref().map(|at| at.to_rfc3339());
+    let details = rate_limit_details(err, retry_at.as_deref());
+    let mut data = match mcp_error_data(ERR_RATE_LIMITED, message, None, tool, Some(details)) {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    data.insert("retry_after_ms".to_string(), json!(err.retry_after_ms));
+    if let Some(retry_at) = retry_at {
+        data.insert("retry_at".to_string(), json!(retry_at));
+    }
+    data.insert("limit_key".to_string(), json!(err.limit_key.as_str()));
+    data.insert("scope".to_string(), json!(err.scope.as_str()));
+    serde_json::Value::Object(data)
+>>>>>>> mcoda/task/bck-05-us-09-t24
 }
 
 fn truncate_bytes(input: String, max_bytes: usize) -> String {
@@ -430,6 +459,7 @@ fn rpc_error(
 }
 
 fn rpc_rate_limited(err: &RateLimited, tool: Option<&str>) -> RpcError {
+<<<<<<< HEAD
     RpcError {
         code: ERR_RATE_LIMITED_RPC,
 <<<<<<< HEAD
@@ -443,6 +473,13 @@ fn rpc_rate_limited(err: &RateLimited, tool: Option<&str>) -> RpcError {
         message: truncate_bytes(err.message.clone(), MAX_ERROR_MESSAGE_BYTES),
         data: Some(mcp_rate_limited_data(err, tool)),
 >>>>>>> mcoda/task/bck-05-us-09-t39
+=======
+    let message = truncate_bytes(err.message.clone(), MAX_ERROR_MESSAGE_BYTES);
+    RpcError {
+        code: ERR_RATE_LIMITED_RPC,
+        message: message.clone(),
+        data: Some(mcp_rate_limited_data(err, tool, message)),
+>>>>>>> mcoda/task/bck-05-us-09-t24
     }
 }
 
@@ -515,6 +552,7 @@ fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
     }
     if let Some(rate) = err.downcast_ref::<RateLimited>() {
         return rpc_rate_limited(rate, tool);
+<<<<<<< HEAD
     }
     if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
         return rpc_backoff_required(backoff);
@@ -529,6 +567,8 @@ fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
         if let BrowserSessionError::RateLimited(rate) = browser_err {
             return rpc_rate_limited(rate);
         }
+=======
+>>>>>>> mcoda/task/bck-05-us-09-t24
     }
     let (mcp_code, details) = classify_tool_error(err);
     rpc_error(
@@ -575,6 +615,7 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
         return (backoff.code, Some(mcp_backoff_required_data(backoff)));
     }
     if let Some(rate) = err.downcast_ref::<RateLimited>() {
+<<<<<<< HEAD
         return (
             rate.code,
             Some(serde_json::Value::Object(rate_limit_fields(rate))),
@@ -588,6 +629,10 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
             ERR_TIER2_UNAVAILABLE,
             Some(tier2_unavailable_details(unavailable)),
         );
+=======
+        let retry_at = rate.retry_at.as_ref().map(|at| at.to_rfc3339());
+        return (rate.code, Some(rate_limit_details(rate, retry_at.as_deref())));
+>>>>>>> mcoda/task/bck-05-us-09-t24
     }
     if let Some(app) = err.downcast_ref::<AppError>() {
         return (app.code, app.details.clone());
@@ -2598,15 +2643,31 @@ mod tests {
         let obj = data.as_object().expect("rate limited data should be object");
         assert_rate_limit_keys(obj, false);
         assert_eq!(obj.get("code").and_then(|v| v.as_str()), Some(ERR_RATE_LIMITED));
+<<<<<<< HEAD
         assert_eq!(obj.get("message").and_then(|v| v.as_str()), Some("rate limited"));
+=======
+        assert!(obj.get("message").and_then(|v| v.as_str()).is_some());
+>>>>>>> mcoda/task/bck-05-us-09-t24
         assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(0));
         assert_eq!(obj.get("limit_key").and_then(|v| v.as_str()), Some("mcp_tools"));
         assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
         assert!(obj.get("retry_at").is_none(), "retry_at should be omitted when unset");
+<<<<<<< HEAD
+=======
+        let details = obj
+            .get("details")
+            .and_then(|v| v.as_object())
+            .expect("rate limited data should include details");
+        assert_eq!(details.get("retry_after_ms").and_then(|v| v.as_u64()), Some(0));
+        assert_eq!(details.get("limit_key").and_then(|v| v.as_str()), Some("mcp_tools"));
+        assert_eq!(details.get("scope").and_then(|v| v.as_str()), Some("global"));
+        assert!(details.get("retry_at").is_none(), "details.retry_at should be omitted when unset");
+>>>>>>> mcoda/task/bck-05-us-09-t24
         let nested = obj
             .get("error")
             .and_then(|v| v.as_object())
             .expect("rate limited data should include error envelope");
+<<<<<<< HEAD
         assert_eq!(
             nested.get("code").and_then(|v| v.as_str()),
             Some(ERR_RATE_LIMITED)
@@ -2644,6 +2705,9 @@ mod tests {
         assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(500));
         assert_eq!(obj.get("limit_key").and_then(|v| v.as_str()), Some("browser_session"));
         assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
+=======
+        assert_eq!(nested.get("code").and_then(|v| v.as_str()), Some(ERR_RATE_LIMITED));
+>>>>>>> mcoda/task/bck-05-us-09-t24
     }
 
     #[test]
@@ -2663,6 +2727,7 @@ mod tests {
         assert_rate_limit_keys(obj, true);
         assert!(obj.get("retry_at").and_then(|v| v.as_str()).is_some());
         assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(1234));
+<<<<<<< HEAD
 <<<<<<< HEAD
         let message = obj
             .get("message")
@@ -2835,6 +2900,13 @@ mod tests {
             .as_object()
             .expect("backoff required data should be object");
         assert!(obj.get("retry_at").and_then(|v| v.as_str()).is_some());
+=======
+        let details = obj
+            .get("details")
+            .and_then(|v| v.as_object())
+            .expect("rate limited data should include details");
+        assert!(details.get("retry_at").and_then(|v| v.as_str()).is_some());
+>>>>>>> mcoda/task/bck-05-us-09-t24
     }
 
     #[test]
@@ -2877,7 +2949,11 @@ mod tests {
                         obj.get("code").and_then(|v| v.as_str()),
                         Some(ERR_RATE_LIMITED)
                     );
+<<<<<<< HEAD
                     assert!(obj.get("message").and_then(|v| v.as_str()).is_some());
+=======
+                    assert!(obj.get("error").is_some(), "error envelope should be present");
+>>>>>>> mcoda/task/bck-05-us-09-t24
                     assert!(
                         obj.get("retry_after_ms").and_then(|v| v.as_u64()).is_some(),
                         "retry_after_ms must be an integer"
@@ -2887,10 +2963,21 @@ mod tests {
                         Some("mcp_tools")
                     );
                     assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
+<<<<<<< HEAD
                     assert!(
                         obj.get("error").and_then(|v| v.as_object()).is_some(),
                         "rate limited data should include error envelope"
                     );
+=======
+                    let details = obj
+                        .get("details")
+                        .and_then(|v| v.as_object())
+                        .expect("rate limited data should include details");
+                    assert!(details
+                        .get("retry_after_ms")
+                        .and_then(|v| v.as_u64())
+                        .is_some());
+>>>>>>> mcoda/task/bck-05-us-09-t24
 
                     let payload_bytes = serde_json::to_vec(&rpc).expect("rpc error should serialize");
                     assert!(

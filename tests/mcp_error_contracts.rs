@@ -13,6 +13,8 @@ fn docdex_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
+const MAX_MCP_ERROR_PAYLOAD_BYTES: usize = 2048;
+
 struct McpHarness {
     child: std::process::Child,
     stdin: std::process::ChildStdin,
@@ -190,6 +192,12 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     let limited_files = read_line(&mut mcp.reader)?;
     assert_eq!(mcp_error_code(&limited_files), Some(-32029));
     assert_eq!(mcp_error_data_code(&limited_files), Some("rate_limited"));
+    let limited_files_bytes = serde_json::to_vec(&limited_files)?.len();
+    assert!(
+        limited_files_bytes <= MAX_MCP_ERROR_PAYLOAD_BYTES,
+        "rate-limit payload should remain small (got {} bytes)",
+        limited_files_bytes
+    );
 
     let data_files = limited_files
         .get("error")
@@ -251,12 +259,26 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     let limited_search = read_line(&mut mcp.reader)?;
     assert_eq!(mcp_error_code(&limited_search), Some(-32029));
     assert_eq!(mcp_error_data_code(&limited_search), Some("rate_limited"));
+    let limited_search_bytes = serde_json::to_vec(&limited_search)?.len();
+    assert!(
+        limited_search_bytes <= MAX_MCP_ERROR_PAYLOAD_BYTES,
+        "rate-limit payload should remain small (got {} bytes)",
+        limited_search_bytes
+    );
 
     let data_search = limited_search
         .get("error")
         .and_then(|v| v.get("data"))
         .and_then(|v| v.as_object())
         .ok_or("rate-limit error missing error.data object (docdex_search)")?;
+    assert_eq!(
+        data_search.get("limit_key").and_then(|v| v.as_str()),
+        Some("mcp_tools")
+    );
+    assert_eq!(
+        data_search.get("scope").and_then(|v| v.as_str()),
+        Some("global")
+    );
 
     fn shape_signature(data: &serde_json::Map<String, Value>) -> Vec<(String, &'static str)> {
         let mut out: Vec<(String, &'static str)> = data
@@ -284,6 +306,71 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     );
 
     mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_backoff_required_is_structured_and_bounded() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(repo.path(), host, port)?;
+    wait_for_health(host, port)?;
+
+    let mut mcp = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 30,
+            "method": "tools/call",
+            "params": { "name": "docdex_index", "arguments": {} }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("backoff_required"));
+
+    let data = resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.as_object())
+        .ok_or("backoff error missing error.data object")?;
+    assert_eq!(
+        data.get("code").and_then(|v| v.as_str()),
+        Some("backoff_required")
+    );
+    assert_eq!(
+        data.get("tool").and_then(|v| v.as_str()),
+        Some("docdex_index")
+    );
+    assert!(data
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .map(|value| !value.is_empty())
+        .unwrap_or(false));
+    assert_eq!(
+        data.get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("backoff_required")
+    );
+
+    let payload_bytes = serde_json::to_vec(&resp)?.len();
+    assert!(
+        payload_bytes <= MAX_MCP_ERROR_PAYLOAD_BYTES,
+        "backoff payload should remain small (got {} bytes)",
+        payload_bytes
+    );
+
+    mcp.shutdown();
+    server.kill().ok();
+    server.wait().ok();
     Ok(())
 }
 

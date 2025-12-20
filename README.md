@@ -217,6 +217,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
   - Generic JSON config (Cursor, Continue, Windsurf, Cline, Claude Desktop devtools): add the `mcpServers.docdex` block above to your MCP config file (paths vary by client; most accept the `command`/`args` schema shown).
   - Manual/stdio-only clients: start `docdexd mcp --repo /path/to/repo --log warn --max-results 8` yourself and point the client at that command/binary.
 - Tools exposed (CallToolResult content: result.content[0].text contains JSON):
+<<<<<<< HEAD
 - `docdex_search` — args: `{ "query": "<text>", "limit": <int optional>, "project_root": "<path optional>" }`. `limit` is clamped to the MCP server `--max-results` (default 8). Returns `{ "hits": [...], "results": [...], "top_score": <float|null>, "topScore": <float|null>, "repo_root": "...", "state_dir": "...", "limit": <int>, "project_root": "...", "meta": {...} }`.
   - `docdex_index` — args: `{ "paths": ["relative/or/absolute"], "project_root": "<path optional>" }`. Empty `paths` reindexes everything; otherwise ingests the listed files.
   - `docdex_files` — args: `{ "limit": <int optional, default 200, max 1000>, "offset": <int optional, default 0>, "project_root": "<path optional>" }`. Returns `{ "results": [{ "doc_id", "rel_path", "summary", "token_estimate" }], "total", "limit", "offset", "repo_root", "project_root" }`.
@@ -227,6 +228,14 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
   - `docdex_memory_store` (requires `DOCDEX_ENABLE_MEMORY=1`) — args: `{ "text": "<string>", "metadata": <object optional>, "project_root": "<path optional>" }`. Returns `{ "id", "created_at" }`.
   - `docdex_memory_recall` (requires `DOCDEX_ENABLE_MEMORY=1`) — args: `{ "query": "<text>", "top_k": <int optional, max 50>, "project_root": "<path optional>" }`. Returns `{ "top_k", "results": [{ "content", "score", "metadata" }] }`.
 - Tool limits (server-scoped; schema-stable): max items and snippet/content caps are documented in `docs/mcp/errors.md` and do not vary by repo.
+=======
+  - `docdex_search` — args: `{ "query": "<text>", "limit": <int optional>, "project_root": "<path optional>" }`. Returns `{ "hits": [...], "results": [...], "top_score": <float|null>, "topScore": <float|null>, "repo_root": "...", "state_dir": "...", "limit": <int>, "project_root": "...", "meta": {...} }`.
+  - `docdex_index` — args: `{ "paths": ["relative/or/absolute"], "project_root": "<path optional>" }`. Empty `paths` reindexes everything; otherwise ingests the listed files (max 1000 paths).
+  - `docdex_files` — args: `{ "limit": <int optional, default 200, max 1000>, "offset": <int optional, default 0>, "project_root": "<path optional>" }`. Returns `{ "results": [{ "doc_id", "rel_path", "summary", "token_estimate" }], "total", "limit", "offset", "repo_root", "project_root" }`.
+  - `docdex_open` — args: `{ "path": "<relative file>", "start_line": <int optional>, "end_line": <int optional>, "project_root": "<path optional>" }`. Returns `{ "path", "start_line", "end_line", "total_lines", "content", "repo_root", "project_root" }` (rejects paths outside repo and files > 512 KiB).
+  - `docdex_stats` — args: `{ "project_root": "<path optional>" }`. Returns `{ "num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "repo_root", "project_root" }`.
+  - `docdex_symbols` — args: `{ "path": "<relative file>", "project_root": "<path optional>" }`. Returns a `docdex.symbols` payload for that file including `outcome.status` (`ok`/`skipped`/`failed`), capped at 5000 symbols / 512 KiB.
+>>>>>>> mcoda/task/bck-05-us-10-t14
 - Example calls:
   - Initialize: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
   - Initialize with workspace root: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"workspace_root":"/path/to/repo"}}` (must match the server repo; sets default project_root for later calls)

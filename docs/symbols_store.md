@@ -91,6 +91,7 @@ Arguments:
 Return value:
 
 - A `docdex.symbols` payload, as defined in `docs/contracts/code_intelligence_schema_v1.md`.
+- The MCP response is bounded to 5000 symbols or 512 KiB; larger payloads fail with a `max_content_exceeded` error.
 
 Failure semantics (MCP JSON-RPC errors):
 

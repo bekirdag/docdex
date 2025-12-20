@@ -6,6 +6,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
+use tantivy::schema::{Schema, STORED, TEXT};
+use tantivy::{doc, Index};
 
 fn docdex_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
@@ -81,6 +83,18 @@ fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
     let temp = TempDir::new()?;
     write_fixture_repo(temp.path())?;
     Ok(temp)
+}
+
+fn create_incompatible_index(index_dir: &Path, field_name: &str) -> Result<(), Box<dyn Error>> {
+    fs::create_dir_all(index_dir)?;
+    let mut builder = Schema::builder();
+    let title = builder.add_text_field(field_name, TEXT | STORED);
+    let schema = builder.build();
+    let index = Index::create_in_dir(index_dir, schema)?;
+    let mut writer = index.writer(5_000_000)?;
+    writer.add_document(doc!(title => "legacy"))?;
+    writer.commit()?;
+    Ok(())
 }
 
 fn symbols_record_path(repo_root: &Path, rel_path: &str) -> PathBuf {
@@ -391,6 +405,75 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
     assert!(
         total >= files.len() as u64,
         "total should be >= returned rows"
+    );
+
+    harness.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_search_and_open_survive_incompatible_libs_index() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    let output = Command::new(docdex_bin())
+        .args(["index", "--repo", repo_str.as_str()])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "index failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let libs_dir = repo.path().join(".docdex").join("libs_index");
+    create_incompatible_index(&libs_dir, "legacy_lib_title")?;
+
+    let mut harness = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut harness.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 50,
+            "method": "initialize",
+            "params": {}
+        }),
+    )?;
+    let _init_resp = read_line(&mut harness.reader)?;
+
+    send_line(
+        &mut harness.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 51,
+            "method": "tools/call",
+            "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP" } }
+        }),
+    )?;
+    let search_resp = read_line(&mut harness.reader)?;
+    let search_payload = parse_tool_result(&search_resp)?;
+    let hits = search_payload
+        .get("hits")
+        .and_then(|value| value.as_array())
+        .ok_or("hits array missing")?;
+    assert!(!hits.is_empty(), "expected search hits with repo index");
+
+    send_line(
+        &mut harness.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 52,
+            "method": "tools/call",
+            "params": { "name": "docdex_open", "arguments": { "path": "docs/overview.md" } }
+        }),
+    )?;
+    let open_resp = read_line(&mut harness.reader)?;
+    let open_payload = parse_tool_result(&open_resp)?;
+    let content = open_payload
+        .get("content")
+        .and_then(|value| value.as_str())
+        .ok_or("docdex_open should return content")?;
+    assert!(
+        content.contains("MCP_ROADMAP"),
+        "expected docdex_open content to include fixture text"
     );
 
     harness.shutdown();

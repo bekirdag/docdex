@@ -9,7 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
-use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
+use tantivy::schema::{FieldType, Schema, FAST, STORED, STRING, TEXT};
 use tantivy::DocAddress;
 use tantivy::{
     doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, SnippetGenerator, Term,
@@ -18,7 +18,7 @@ use thiserror::Error;
 use tracing::warn;
 use crate::error::{
     repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
-    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
 };
 use crate::symbols;
 use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
@@ -179,6 +179,14 @@ pub struct Indexer {
     token_field: tantivy::schema::Field,
     writer: Option<Arc<Mutex<IndexWriter>>>,
     symbols_store: Option<SymbolsStore>,
+}
+
+struct IndexSchemaFields {
+    doc_id_field: tantivy::schema::Field,
+    path_field: tantivy::schema::Field,
+    body_field: tantivy::schema::Field,
+    summary_field: tantivy::schema::Field,
+    token_field: tantivy::schema::Field,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -375,12 +383,12 @@ impl Indexer {
         }
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
         ensure_state_dir_secure(config.state_dir())?;
-        let (schema, doc_id_field, path_field, body_field, summary_field, token_field) =
-            build_schema();
+        let schema = build_schema();
         let index = Index::open_or_create(
             tantivy::directory::MmapDirectory::open(config.state_dir())?,
-            schema.clone(),
+            schema,
         )?;
+        let fields = schema_fields_from_index(&index.schema())?;
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommit)
@@ -408,11 +416,11 @@ impl Indexer {
             config,
             index,
             reader,
-            doc_id_field,
-            path_field,
-            body_field,
-            summary_field,
-            token_field,
+            doc_id_field: fields.doc_id_field,
+            path_field: fields.path_field,
+            body_field: fields.body_field,
+            summary_field: fields.summary_field,
+            token_field: fields.token_field,
             writer: Some(Arc::new(Mutex::new(writer))),
             symbols_store,
         })
@@ -445,12 +453,7 @@ impl Indexer {
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommit)
             .try_into()?;
-        let schema = index.schema();
-        let doc_id_field = schema.get_field("doc_id").unwrap();
-        let path_field = schema.get_field("rel_path").unwrap();
-        let body_field = schema.get_field("body").unwrap();
-        let summary_field = schema.get_field("summary").unwrap();
-        let token_field = schema.get_field("token_estimate").unwrap();
+        let fields = schema_fields_from_index(&index.schema())?;
         let symbols_store = if config.symbols_enabled() {
             SymbolsStore::new(&repo_root, config.state_dir()).ok()
         } else {
@@ -467,11 +470,11 @@ impl Indexer {
             config,
             index,
             reader,
-            doc_id_field,
-            path_field,
-            body_field,
-            summary_field,
-            token_field,
+            doc_id_field: fields.doc_id_field,
+            path_field: fields.path_field,
+            body_field: fields.body_field,
+            summary_field: fields.summary_field,
+            token_field: fields.token_field,
             writer: None,
             symbols_store,
         })
@@ -1120,28 +1123,58 @@ fn env_flag_enabled(key: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn build_schema() -> (
-    Schema,
-    tantivy::schema::Field,
-    tantivy::schema::Field,
-    tantivy::schema::Field,
-    tantivy::schema::Field,
-    tantivy::schema::Field,
-) {
+fn build_schema() -> Schema {
     let mut builder = Schema::builder();
-    let doc_id_field = builder.add_text_field("doc_id", STRING | STORED);
-    let path_field = builder.add_text_field("rel_path", STRING | STORED);
-    let body_field = builder.add_text_field("body", TEXT | STORED);
-    let summary_field = builder.add_text_field("summary", TEXT | STORED);
-    let token_field = builder.add_u64_field("token_estimate", FAST | STORED);
-    let schema = builder.build();
-    (
-        schema,
-        doc_id_field,
-        path_field,
-        body_field,
-        summary_field,
-        token_field,
+    builder.add_text_field("doc_id", STRING | STORED);
+    builder.add_text_field("rel_path", STRING | STORED);
+    builder.add_text_field("body", TEXT | STORED);
+    builder.add_text_field("summary", TEXT | STORED);
+    builder.add_u64_field("token_estimate", FAST | STORED);
+    builder.build()
+}
+
+fn schema_fields_from_index(schema: &Schema) -> Result<IndexSchemaFields> {
+    Ok(IndexSchemaFields {
+        doc_id_field: require_text_field(schema, "doc_id")?,
+        path_field: require_text_field(schema, "rel_path")?,
+        body_field: require_text_field(schema, "body")?,
+        summary_field: require_text_field(schema, "summary")?,
+        token_field: require_u64_field(schema, "token_estimate")?,
+    })
+}
+
+fn require_text_field(schema: &Schema, name: &str) -> Result<tantivy::schema::Field> {
+    let field = schema
+        .get_field(name)
+        .ok_or_else(|| schema_mismatch_error(format!("missing required field '{name}'")))?;
+    let entry = schema.get_field_entry(field);
+    match entry.field_type() {
+        FieldType::Str(_) => Ok(field),
+        _ => Err(schema_mismatch_error(format!(
+            "field '{name}' has incompatible type"
+        ))
+        .into()),
+    }
+}
+
+fn require_u64_field(schema: &Schema, name: &str) -> Result<tantivy::schema::Field> {
+    let field = schema
+        .get_field(name)
+        .ok_or_else(|| schema_mismatch_error(format!("missing required field '{name}'")))?;
+    let entry = schema.get_field_entry(field);
+    match entry.field_type() {
+        FieldType::U64(_) => Ok(field),
+        _ => Err(schema_mismatch_error(format!(
+            "field '{name}' has incompatible type"
+        ))
+        .into()),
+    }
+}
+
+fn schema_mismatch_error(reason: String) -> AppError {
+    AppError::new(
+        ERR_STALE_INDEX,
+        format!("index schema mismatch; {reason}"),
     )
 }
 

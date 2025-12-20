@@ -631,6 +631,7 @@ impl Indexer {
                 warn!(target: "docdexd", error = ?err, "failed to reset symbols store; continuing without clearing old symbols");
             }
         }
+        let mut entries = Vec::new();
         for entry in WalkDir::new(&self.repo_root)
             .into_iter()
             .filter_map(|e| e.ok())
@@ -647,12 +648,23 @@ impl Indexer {
                 }
                 continue;
             }
+<<<<<<< HEAD
             let ingest = self.add_document(&mut writer, path)?;
             let outcome = self.maybe_update_symbols(&ingest);
             if let Some(tracker) = tracker.as_deref_mut() {
                 tracker.record_indexed(&ingest);
                 tracker.record_symbols(&ingest.rel_path, outcome);
             }
+=======
+            let rel = self.rel_path(path)?;
+            entries.push((rel, path.to_path_buf()));
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut symbols_budget = SymbolsBudget::new(symbols::MAX_SYMBOLS_PER_RUN);
+        for (_rel, path) in entries {
+            let ingest = self.add_document(&mut writer, &path)?;
+            self.maybe_update_symbols(&ingest, Some(&mut symbols_budget));
+>>>>>>> mcoda/task/bck-05-us-10-t05
         }
         writer.commit()?;
         self.reader.reload()?;
@@ -678,6 +690,16 @@ impl Indexer {
     }
 
     pub async fn ingest_file(&self, file: PathBuf) -> Result<FileDecision> {
+        let mut symbols_budget = SymbolsBudget::new(symbols::MAX_SYMBOLS_PER_RUN);
+        self.ingest_file_with_budget(file, Some(&mut symbols_budget))
+            .await
+    }
+
+    pub(crate) async fn ingest_file_with_budget(
+        &self,
+        file: PathBuf,
+        budget: Option<&mut SymbolsBudget>,
+    ) -> Result<FileDecision> {
         let path = file.canonicalize().context("resolve file")?;
         let decision = decide_file(&path, &self.repo_root, &self.config);
         if !decision.should_index() {
@@ -689,7 +711,11 @@ impl Indexer {
         let term = Term::from_field_text(self.doc_id_field, &rel);
         writer.delete_term(term);
         let ingest = self.add_document(&mut writer, &path)?;
+<<<<<<< HEAD
         let _ = self.maybe_update_symbols(&ingest);
+=======
+        self.maybe_update_symbols(&ingest, budget);
+>>>>>>> mcoda/task/bck-05-us-10-t05
         writer.commit()?;
         self.reader.reload()?;
         Ok(decision)
@@ -1174,12 +1200,16 @@ impl Indexer {
         Ok(rel.to_string_lossy().replace('\\', "/"))
     }
 
+<<<<<<< HEAD
     fn sample_path(&self, path: &Path) -> String {
         self.rel_path(path)
             .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"))
     }
 
     fn maybe_update_symbols(&self, ingest: &DocumentIngest) -> Option<SymbolOutcome> {
+=======
+    fn maybe_update_symbols(&self, ingest: &DocumentIngest, mut budget: Option<&mut SymbolsBudget>) {
+>>>>>>> mcoda/task/bck-05-us-10-t05
         let Some(store) = self.symbols_store.as_ref() else {
             return None;
         };
@@ -1215,12 +1245,39 @@ impl Indexer {
                 store.repo_id(),
                 &ingest.rel_path,
                 Vec::new(),
+<<<<<<< HEAD
                 outcome.clone(),
+=======
+                SymbolOutcome {
+                    status: SymbolOutcomeStatus::Failed,
+                    reason: Some(format!("read_failed ({})", language.as_str())),
+                    error_summary: Some(symbols::clamp_error_summary(err)),
+                },
+>>>>>>> mcoda/task/bck-05-us-10-t05
             );
             if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
                 warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");
             }
             return Some(outcome);
+        }
+
+        if let Some(ref mut budget) = budget {
+            if budget.is_exhausted() {
+                let payload = symbols::build_symbols_payload(
+                    store.repo_id(),
+                    &ingest.rel_path,
+                    Vec::new(),
+                    SymbolOutcome {
+                        status: SymbolOutcomeStatus::Skipped,
+                        reason: Some("symbols_budget_exhausted".to_string()),
+                        error_summary: None,
+                    },
+                );
+                if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
+                    warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");
+                }
+                return;
+            }
         }
 
         match symbols::extract_symbols_best_effort(
@@ -1229,12 +1286,22 @@ impl Indexer {
             &ingest.content,
             language,
         ) {
+<<<<<<< HEAD
             Ok(symbols) => {
                 let outcome = SymbolOutcome {
                     status: SymbolOutcomeStatus::Ok,
                     reason: None,
                     error_summary: None,
                 };
+=======
+            Ok(mut symbols) => {
+                if let Some(ref mut budget) = budget {
+                    let allowed = budget.take(symbols.len());
+                    if allowed < symbols.len() {
+                        symbols.truncate(allowed);
+                    }
+                }
+>>>>>>> mcoda/task/bck-05-us-10-t05
                 let payload = symbols::build_symbols_payload(
                     store.repo_id(),
                     &ingest.rel_path,
@@ -1259,7 +1326,15 @@ impl Indexer {
                     store.repo_id(),
                     &ingest.rel_path,
                     Vec::new(),
+<<<<<<< HEAD
                     outcome.clone(),
+=======
+                    SymbolOutcome {
+                        status: SymbolOutcomeStatus::Failed,
+                        reason: Some(format!("extract_failed ({})", language.as_str())),
+                        error_summary: Some(symbols::clamp_error_summary(&err.to_string())),
+                    },
+>>>>>>> mcoda/task/bck-05-us-10-t05
                 );
                 if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
                     warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");
@@ -1357,6 +1432,7 @@ struct DocumentIngest {
     read_error: Option<String>,
 }
 
+<<<<<<< HEAD
 struct IndexRunTracker {
     run_type: IndexRunType,
     started_at_epoch_ms: u128,
@@ -1594,6 +1670,31 @@ fn record_run_summary(state_dir: &Path, summary: IndexRunSummary) -> Result<()> 
     Ok(())
 }
 
+=======
+#[derive(Debug)]
+pub(crate) struct SymbolsBudget {
+    remaining: usize,
+}
+
+impl SymbolsBudget {
+    pub(crate) fn new(max_symbols: usize) -> Self {
+        Self {
+            remaining: max_symbols,
+        }
+    }
+
+    fn is_exhausted(&self) -> bool {
+        self.remaining == 0
+    }
+
+    fn take(&mut self, requested: usize) -> usize {
+        let allowed = self.remaining.min(requested);
+        self.remaining = self.remaining.saturating_sub(allowed);
+        allowed
+    }
+}
+
+>>>>>>> mcoda/task/bck-05-us-10-t05
 fn env_flag_enabled(key: &str) -> bool {
     std::env::var(key)
         .ok()

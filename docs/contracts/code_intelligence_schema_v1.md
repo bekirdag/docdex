@@ -42,6 +42,8 @@ Symbol responses represent extracted symbols within a repo, scoped to a file.
   - `reason` (string, optional): Short stable reason code/message (e.g. `unsupported_language`, `read_failed (markdown)`).
   - `error_summary` (string, optional): Best-effort human-readable error summary (must be bounded; avoid stack traces).
 
+Docdex caps `error_summary` to 200 chars, `signature` to 240 chars, and the `symbols` array to 1000 items per file.
+
 **Symbol item fields (v1)**
 
 - `symbol_id` (string, required): Deterministic identifier stable across runs for the same repo snapshot.

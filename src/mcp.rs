@@ -5,8 +5,12 @@ use crate::error::{
     ERR_MISSING_REPO, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
     ERR_UNKNOWN_REPO,
 };
+<<<<<<< HEAD
 use crate::explainability::ExplainabilityStore;
 use crate::index::{IndexConfig, Indexer};
+=======
+use crate::index::{IndexConfig, Indexer, SymbolsBudget};
+>>>>>>> mcoda/task/bck-05-us-10-t05
 use crate::libs;
 <<<<<<< HEAD
 use crate::limits::{self, MaxSizePolicy};
@@ -1555,6 +1559,7 @@ impl McpServer {
         }
         let mut ingested: Vec<String> = Vec::new();
         let mut decisions = Vec::new();
+        let mut symbols_budget = SymbolsBudget::new(crate::symbols::MAX_SYMBOLS_PER_RUN);
         for path in args.paths {
             let resolved = if path.is_absolute() {
                 path
@@ -1576,7 +1581,14 @@ impl McpServer {
             ingested.push(path_display.clone());
 =======
             let path_display = resolved.display().to_string();
+<<<<<<< HEAD
             let (decision, _summary) = self.indexer.ingest_file_with_summary(resolved.clone()).await?;
+=======
+            let decision = self
+                .indexer
+                .ingest_file_with_budget(resolved.clone(), Some(&mut symbols_budget))
+                .await?;
+>>>>>>> mcoda/task/bck-05-us-10-t05
             ingested.push(resolved);
 >>>>>>> mcoda/task/bck-05-us-10-t06
             decisions.push(json!({

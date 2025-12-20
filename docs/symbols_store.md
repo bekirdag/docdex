@@ -136,6 +136,17 @@ Each stored record is a `docdex.symbols` JSON payload:
 - If `symbol_id` is missing/empty on any symbol, it is recomputed.
 - Symbols are sorted by `symbol_id` for deterministic outputs.
 
+## Output caps (deterministic)
+
+To keep symbol outputs bounded and predictable across tools, Docdex enforces fixed caps:
+
+- Max symbols per file: `1000` (extra symbols are dropped after sorting by `symbol_id`).
+- Max symbols per run: `50000` (full reindex or multi-file ingest budget; once exhausted, remaining supported files record `status=skipped` with `reason=symbols_budget_exhausted`).
+- Max `signature` length: `240` characters.
+- Max `outcome.error_summary` length: `200` characters.
+
+These limits are fixed (not configurable) and do not vary by repo.
+
 ## Stable identifiers
 
 ### `repo_id`
@@ -176,6 +187,7 @@ The `outcome.status` field is one of:
 Docdex currently uses these `outcome.reason` values:
 
 - `unsupported_language` (status: `skipped`)
+- `symbols_budget_exhausted` (status: `skipped`)
 - `read_failed (<language>)` (status: `failed`)
 - `extract_failed (<language>)` (status: `failed`)
 

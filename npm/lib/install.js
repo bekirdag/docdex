@@ -1360,6 +1360,7 @@ function nowIso() {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 function normalizeInstallerOutputFormat(raw) {
   const value = String(raw || "")
     .trim()
@@ -1871,6 +1872,32 @@ function logInstallSummary({
 }
 
 >>>>>>> mcoda/task/ops-01-us-01-t14
+=======
+function formatInstallSummaryLine({ detectedPlatform, detectedArch, targetTriple, version, assetName, binaryPath }) {
+  const versionTag = typeof version === "string" && version.startsWith("v") ? version : `v${version}`;
+  const safeAssetName =
+    typeof assetName === "string" && assetName.trim() ? assetName.trim() : "unknown_asset";
+  return `[docdex] Install summary: os=${detectedPlatform} arch=${detectedArch} triple=${targetTriple} version=${versionTag} asset=${safeAssetName} location=${binaryPath}`;
+}
+
+function logInstallSuccess({
+  logger,
+  detectedPlatform,
+  detectedArch,
+  targetTriple,
+  version,
+  assetName,
+  binaryPath,
+  outcome
+}) {
+  logger.log(
+    formatInstallSummaryLine({ detectedPlatform, detectedArch, targetTriple, version, assetName, binaryPath })
+  );
+  const suffix = outcome ? ` (${outcome})` : "";
+  logger.log(`[docdex] Success: docdexd ready${suffix}`);
+}
+
+>>>>>>> mcoda/task/ops-01-us-01-t43
 async function readJsonFileIfPossible({ fsModule, filePath }) {
   if (!fsModule?.promises?.readFile) {
     return { value: null, error: "readFile_unavailable", errorCode: "READFILE_UNAVAILABLE" };
@@ -4078,6 +4105,7 @@ async function determineLocalInstallerOutcome({
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     integrityResult,
 <<<<<<< HEAD
     binaryVersion,
@@ -4110,6 +4138,9 @@ async function determineLocalInstallerOutcome({
     detectedVersionSource,
     detectedVersionError,
 >>>>>>> mcoda/task/ops-01-us-03-t43
+=======
+    installedMetadata: discoveredInstalledState.metadata,
+>>>>>>> mcoda/task/ops-01-us-01-t43
     integrityResult
 >>>>>>> mcoda/task/ops-01-us-03-t37
 =======
@@ -5587,6 +5618,7 @@ async function runInstaller(options) {
   const isWin32 = detectedPlatform === "win32";
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   const binaryName = isWin32 ? "docdexd.exe" : "docdexd";
   const stagingRoot = stagingRootPath(distBaseDir, pathModule);
 =======
@@ -5640,6 +5672,10 @@ async function runInstaller(options) {
   logger.log(`[docdex] Target triple: ${targetTriple}`);
   logger.log(`[docdex] Resolved asset: ${expectedAssetName} (v${version})`);
 >>>>>>> mcoda/task/ops-01-us-01-t15
+=======
+  const binaryFilename = isWin32 ? "docdexd.exe" : "docdexd";
+  const binaryPath = pathModule.join(distDir, binaryFilename);
+>>>>>>> mcoda/task/ops-01-us-01-t43
 
   const local = await determineLocalInstallerOutcome({
 >>>>>>> mcoda/task/ops-01-us-01-t41
@@ -5650,6 +5686,7 @@ async function runInstaller(options) {
     isWin32
   });
 
+<<<<<<< HEAD
   const needsReleaseIntegrityForLocal =
     discoveredInstalledState.binaryPresent &&
     discoveredInstalledState.metadataStatus === "valid" &&
@@ -5667,6 +5704,24 @@ async function runInstaller(options) {
       targetTriple,
       logger
     });
+=======
+  if (local.outcome === "no-op") {
+    const assetNameForSummary =
+      typeof local.installedMetadata?.archive?.name === "string" && local.installedMetadata.archive.name.trim()
+        ? local.installedMetadata.archive.name.trim()
+        : artifactNameFn(platformKey);
+    logInstallSuccess({
+      logger,
+      detectedPlatform,
+      detectedArch,
+      targetTriple,
+      version,
+      assetName: assetNameForSummary,
+      binaryPath,
+      outcome: local.outcome
+    });
+    return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
+>>>>>>> mcoda/task/ops-01-us-01-t43
   }
 
 >>>>>>> mcoda/task/ops-01-us-06-t03
@@ -7713,6 +7768,7 @@ async function runInstaller(options) {
     await fsModule.promises.rename(stagingDir, distDir);
     swapCompleted = true;
 
+<<<<<<< HEAD
     const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
 >>>>>>> mcoda/task/ops-01-us-05-t08
     await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
@@ -7943,6 +7999,10 @@ async function runInstaller(options) {
       args: smokeTestArgs,
       timeoutMs: smokeTestTimeoutMs,
       details: {
+=======
+    if (!fsModule.existsSync(binaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
+>>>>>>> mcoda/task/ops-01-us-01-t43
         platformKey,
         targetTriple,
         version,
@@ -7952,10 +8012,19 @@ async function runInstaller(options) {
         source,
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+<<<<<<< HEAD
         fallbackAttempted: source === "fallback"
       }
     });
     logger.log(`[docdex] Installed binary to ${binaryPath}`);
+=======
+        fallbackAttempted: source === "fallback",
+        binaryPath
+      });
+    }
+
+    await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
+>>>>>>> mcoda/task/ops-01-us-01-t43
 
 <<<<<<< HEAD
 >>>>>>> mcoda/task/ops-01-us-01-t41
@@ -8024,10 +8093,14 @@ async function runInstaller(options) {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         filename: binaryFilename,
 =======
         filename: binaryName,
 >>>>>>> mcoda/task/ops-01-us-05-t33
+=======
+        filename: binaryFilename,
+>>>>>>> mcoda/task/ops-01-us-01-t43
         sha256: binarySha256
 =======
         filename: isWin32 ? "docdexd.exe" : "docdexd",
@@ -8344,6 +8417,7 @@ async function runInstaller(options) {
       value: metadata
     });
 
+<<<<<<< HEAD
     // Atomic-ish directory swap: keep existing distDir intact until staging is complete.
     const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
     if (!existsSync) throw new Error("fs existsSync unavailable");
@@ -8708,6 +8782,18 @@ async function runInstaller(options) {
     }
 
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
+=======
+    logInstallSuccess({
+      logger,
+      detectedPlatform,
+      detectedArch,
+      targetTriple,
+      version,
+      assetName: archive,
+      binaryPath,
+      outcome: local.outcome
+    });
+>>>>>>> mcoda/task/ops-01-us-01-t43
     return { binaryPath, outcome: local.outcome };
   } catch (err) {
     if (backupActive) {

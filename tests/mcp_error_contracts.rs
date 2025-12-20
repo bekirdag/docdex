@@ -1,6 +1,10 @@
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
+<<<<<<< HEAD
 use std::collections::HashSet;
+=======
+use std::collections::BTreeSet;
+>>>>>>> mcoda/task/bck-05-us-10-t23
 use std::error::Error;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
@@ -19,6 +23,8 @@ struct McpHarness {
     stdin: std::process::ChildStdin,
     reader: BufReader<std::process::ChildStdout>,
 }
+
+const MAX_SNIPPET_CHARS: usize = 420;
 
 impl McpHarness {
     fn spawn(repo: &Path, state_root: &Path) -> Result<Self, Box<dyn Error>> {
@@ -89,6 +95,11 @@ This repository contains the MCP_ROADMAP notes used for testing.
             format!("# Extra {i}\n\nMCP_ROADMAP term appears here.\n"),
         )?;
     }
+    let long_line = std::iter::repeat("LONG_TERM")
+        .take(1000)
+        .collect::<Vec<_>>()
+        .join(" ");
+    std::fs::write(docs_dir.join("long.md"), format!("# Long\n\n{long_line}\n"))?;
     Ok(())
 }
 
@@ -145,6 +156,7 @@ fn parse_tool_result(resp: &serde_json::Value) -> Result<serde_json::Value, Box<
     Ok(serde_json::from_str(first_text)?)
 }
 
+<<<<<<< HEAD
 fn json_keys(value: &Value) -> Result<HashSet<String>, Box<dyn Error>> {
     let obj = value
         .as_object()
@@ -159,11 +171,88 @@ fn assert_keys_subset(value: &Value, allowed: &[&str], context: &str) -> Result<
     for key in obj.keys() {
         if !allowed.contains(&key.as_str()) {
             return Err(format!("{context} has unexpected key {key}").into());
+=======
+fn object_keys(value: &Value) -> Result<BTreeSet<String>, Box<dyn Error>> {
+    let obj = value.as_object().ok_or("expected JSON object")?;
+    Ok(obj.keys().cloned().collect())
+}
+
+fn first_item_keys(value: &Value, field: &str) -> Result<BTreeSet<String>, Box<dyn Error>> {
+    let array = value
+        .get(field)
+        .and_then(|v| v.as_array())
+        .ok_or("expected JSON array field")?;
+    let first = array.first().ok_or("expected non-empty array")?;
+    object_keys(first)
+}
+
+fn assert_search_hit_schema(hit: &Value) -> Result<(), Box<dyn Error>> {
+    let obj = hit.as_object().ok_or("search hit should be an object")?;
+    if !obj.get("doc_id").and_then(|v| v.as_str()).is_some() {
+        return Err("search hit missing doc_id".into());
+    }
+    if !obj.get("rel_path").and_then(|v| v.as_str()).is_some() {
+        return Err("search hit missing rel_path".into());
+    }
+    if !obj.get("path").and_then(|v| v.as_str()).is_some() {
+        return Err("search hit missing path".into());
+    }
+    if !obj.get("score").and_then(|v| v.as_f64()).is_some() {
+        return Err("search hit missing score".into());
+    }
+    if !obj.get("summary").and_then(|v| v.as_str()).is_some() {
+        return Err("search hit missing summary".into());
+    }
+    if !obj.get("snippet").and_then(|v| v.as_str()).is_some() {
+        return Err("search hit missing snippet".into());
+    }
+    if !obj.get("token_estimate").and_then(|v| v.as_u64()).is_some() {
+        return Err("search hit missing token_estimate".into());
+    }
+    if let Some(origin) = obj.get("snippet_origin") {
+        if !origin.as_str().is_some() {
+            return Err("search hit snippet_origin must be a string".into());
+        }
+    }
+    if let Some(truncated) = obj.get("snippet_truncated") {
+        if !truncated.is_boolean() {
+            return Err("search hit snippet_truncated must be a boolean".into());
+        }
+    }
+    if let Some(line_start) = obj.get("line_start") {
+        if !line_start.is_number() {
+            return Err("search hit line_start must be a number".into());
+        }
+    }
+    if let Some(line_end) = obj.get("line_end") {
+        if !line_end.is_number() {
+            return Err("search hit line_end must be a number".into());
+>>>>>>> mcoda/task/bck-05-us-10-t23
         }
     }
     Ok(())
 }
 
+<<<<<<< HEAD
+=======
+fn assert_doc_snapshot_schema(entry: &Value) -> Result<(), Box<dyn Error>> {
+    let obj = entry.as_object().ok_or("doc snapshot should be an object")?;
+    if !obj.get("doc_id").and_then(|v| v.as_str()).is_some() {
+        return Err("doc snapshot missing doc_id".into());
+    }
+    if !obj.get("rel_path").and_then(|v| v.as_str()).is_some() {
+        return Err("doc snapshot missing rel_path".into());
+    }
+    if !obj.get("summary").and_then(|v| v.as_str()).is_some() {
+        return Err("doc snapshot missing summary".into());
+    }
+    if !obj.get("token_estimate").and_then(|v| v.as_u64()).is_some() {
+        return Err("doc snapshot missing token_estimate".into());
+    }
+    Ok(())
+}
+
+>>>>>>> mcoda/task/bck-05-us-10-t23
 fn mcp_error_code(resp: &Value) -> Option<i64> {
     resp.get("error").and_then(|v| v.get("code")).and_then(|v| v.as_i64())
 }
@@ -585,6 +674,12 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
         .map(|v| v.len())
         .unwrap_or(0);
     assert!(hits_len <= 4, "docdex_search hits should not exceed max-results");
+    let hits = search_body
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .ok_or("docdex_search should return hits array")?;
+    let first_hit = hits.first().ok_or("docdex_search missing hit")?;
+    assert_search_hit_schema(first_hit)?;
 
     // Clamp docdex_files to max (1000) even if request is larger.
     send_line(
@@ -606,6 +701,12 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
         Some(1000),
         "docdex_files should report the clamped limit"
     );
+    let files = files_body
+        .get("results")
+        .and_then(|v| v.as_array())
+        .ok_or("docdex_files should return results array")?;
+    let first_file = files.first().ok_or("docdex_files missing result")?;
+    assert_doc_snapshot_schema(first_file)?;
 
     // docdex_open should fail with a structured max-content error.
     let big_path = repo.path().join("docs").join("big.md");
@@ -1003,6 +1104,251 @@ fn mcp_resource_read_enforces_max_content() -> Result<(), Box<dyn Error>> {
     );
 
     mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_schema_is_stable_when_clamped() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    let mut mcp = McpHarness::spawn(repo.path())?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 30,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": { "query": "MCP_ROADMAP", "limit": 2 }
+            }
+        }),
+    )?;
+    let search_ok = read_line(&mut mcp.reader)?;
+    let search_ok_body = parse_tool_result(&search_ok)?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 31,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": { "query": "MCP_ROADMAP", "limit": 999 }
+            }
+        }),
+    )?;
+    let search_clamped = read_line(&mut mcp.reader)?;
+    let search_clamped_body = parse_tool_result(&search_clamped)?;
+
+    assert_eq!(
+        object_keys(&search_ok_body)?,
+        object_keys(&search_clamped_body)?,
+        "docdex_search schema should be stable when clamped"
+    );
+    assert_eq!(
+        first_item_keys(&search_ok_body, "hits")?,
+        first_item_keys(&search_clamped_body, "hits")?,
+        "docdex_search hit schema should be stable when clamped"
+    );
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 32,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_files",
+                "arguments": { "limit": 2, "offset": 0 }
+            }
+        }),
+    )?;
+    let files_ok = read_line(&mut mcp.reader)?;
+    let files_ok_body = parse_tool_result(&files_ok)?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 33,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_files",
+                "arguments": { "limit": 5000, "offset": 0 }
+            }
+        }),
+    )?;
+    let files_clamped = read_line(&mut mcp.reader)?;
+    let files_clamped_body = parse_tool_result(&files_clamped)?;
+
+    assert_eq!(
+        object_keys(&files_ok_body)?,
+        object_keys(&files_clamped_body)?,
+        "docdex_files schema should be stable when clamped"
+    );
+    assert_eq!(
+        first_item_keys(&files_ok_body, "results")?,
+        first_item_keys(&files_clamped_body, "results")?,
+        "docdex_files item schema should be stable when clamped"
+    );
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_search_snippet_size_is_bounded() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    let mut mcp = McpHarness::spawn(repo.path())?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 40,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": { "query": "LONG_TERM", "limit": 1 }
+            }
+        }),
+    )?;
+    let search_resp = read_line(&mut mcp.reader)?;
+    let search_body = parse_tool_result(&search_resp)?;
+    let hits = search_body
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .ok_or("docdex_search should return hits array")?;
+    let first_hit = hits.first().ok_or("docdex_search missing hit")?;
+    let snippet = first_hit
+        .get("snippet")
+        .and_then(|v| v.as_str())
+        .ok_or("docdex_search hit missing snippet")?;
+    let snippet_len = snippet.chars().count();
+    assert!(
+        snippet_len <= MAX_SNIPPET_CHARS,
+        "snippet length should be <= {MAX_SNIPPET_CHARS}, got {snippet_len}"
+    );
+    let truncated = first_hit
+        .get("snippet_truncated")
+        .and_then(|v| v.as_bool())
+        .ok_or("docdex_search hit missing snippet_truncated")?;
+    if snippet_len == MAX_SNIPPET_CHARS {
+        assert!(
+            truncated,
+            "snippet_truncated should be true when at max length"
+        );
+    }
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_max_results_are_repo_invariant_and_no_leakage() -> Result<(), Box<dyn Error>> {
+    fn write_repo_with_prefix(repo_root: &Path, prefix: &str) -> Result<(), Box<dyn Error>> {
+        let docs_dir = repo_root.join("docs");
+        std::fs::create_dir_all(&docs_dir)?;
+        for i in 0..6 {
+            std::fs::write(
+                docs_dir.join(format!("{prefix}_{i}.md")),
+                format!("# {prefix} {i}\n\nshared_term\n"),
+            )?;
+        }
+        Ok(())
+    }
+
+    let repo_a = TempDir::new()?;
+    let repo_b = TempDir::new()?;
+    write_repo_with_prefix(repo_a.path(), "a")?;
+    write_repo_with_prefix(repo_b.path(), "b")?;
+
+    let repo_a_str = repo_a.path().to_string_lossy().to_string();
+    let repo_b_str = repo_b.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_a_str.as_str()])?;
+    run_docdex(["index", "--repo", repo_b_str.as_str()])?;
+
+    let mut mcp_a = McpHarness::spawn(repo_a.path())?;
+    let mut mcp_b = McpHarness::spawn(repo_b.path())?;
+
+    send_line(
+        &mut mcp_a.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 50,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": { "query": "shared_term", "limit": 999 }
+            }
+        }),
+    )?;
+    let resp_a = read_line(&mut mcp_a.reader)?;
+    let body_a = parse_tool_result(&resp_a)?;
+
+    send_line(
+        &mut mcp_b.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 51,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": { "query": "shared_term", "limit": 999 }
+            }
+        }),
+    )?;
+    let resp_b = read_line(&mut mcp_b.reader)?;
+    let body_b = parse_tool_result(&resp_b)?;
+
+    assert_eq!(
+        body_a.get("limit").and_then(|v| v.as_u64()),
+        Some(4),
+        "repo A should clamp limit to max-results"
+    );
+    assert_eq!(
+        body_b.get("limit").and_then(|v| v.as_u64()),
+        Some(4),
+        "repo B should clamp limit to max-results"
+    );
+
+    let hits_a = body_a
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .ok_or("repo A missing hits array")?;
+    let hits_b = body_b
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .ok_or("repo B missing hits array")?;
+    assert!(hits_a.len() <= 4, "repo A should respect max-results");
+    assert!(hits_b.len() <= 4, "repo B should respect max-results");
+    assert!(
+        hits_a.iter().all(|hit| {
+            hit.get("rel_path")
+                .and_then(|v| v.as_str())
+                .map(|path| path.starts_with("docs/a_"))
+                .unwrap_or(false)
+        }),
+        "repo A results should not include repo B paths"
+    );
+    assert!(
+        hits_b.iter().all(|hit| {
+            hit.get("rel_path")
+                .and_then(|v| v.as_str())
+                .map(|path| path.starts_with("docs/b_"))
+                .unwrap_or(false)
+        }),
+        "repo B results should not include repo A paths"
+    );
+
+    mcp_a.shutdown();
+    mcp_b.shutdown();
     Ok(())
 }
 

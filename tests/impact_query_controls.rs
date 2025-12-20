@@ -170,6 +170,40 @@ fn field_error_codes(body: &Value, field: &str) -> Result<Vec<String>, Box<dyn E
     Ok(codes)
 }
 
+fn assert_schema_signal(body: &Value, expected_name: &str) -> Result<(), Box<dyn Error>> {
+    let schema = body
+        .get("schema")
+        .and_then(|v| v.as_object())
+        .ok_or("impact graph response missing schema object")?;
+    let name = schema
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or("impact graph response missing schema.name")?;
+    if name != expected_name {
+        return Err(format!("schema.name mismatch: {name}").into());
+    }
+    let version = schema
+        .get("version")
+        .and_then(|v| v.as_u64())
+        .ok_or("impact graph response missing schema.version")?;
+    let compatible = schema
+        .get("compatible")
+        .and_then(|v| v.as_object())
+        .ok_or("impact graph response missing schema.compatible")?;
+    let min = compatible
+        .get("min")
+        .and_then(|v| v.as_u64())
+        .ok_or("impact graph response missing schema.compatible.min")?;
+    let max = compatible
+        .get("max")
+        .and_then(|v| v.as_u64())
+        .ok_or("impact graph response missing schema.compatible.max")?;
+    if !(min <= version && version <= max) {
+        return Err("schema.version not within compatible range".into());
+    }
+    Ok(())
+}
+
 #[test]
 fn impact_enforces_max_edges_and_sets_truncated() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
@@ -439,6 +473,7 @@ fn impact_reports_applied_limits_and_not_truncated_by_default() -> Result<(), Bo
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/v1/graph/impact");
     let resp: Value = client.get(&url).query(&[("file", "a.ts")]).send()?.json()?;
+    assert_schema_signal(&resp, "docdex.impact_graph")?;
     assert_eq!(
         resp.get("truncated").and_then(|v| v.as_bool()),
         Some(false)

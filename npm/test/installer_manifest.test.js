@@ -63,6 +63,49 @@ test("installer resolves asset + sha256 via first available manifest candidate d
   assert.equal(plan.source, "manifest:docdex-release-manifest.json");
 });
 
+test("installer resolves download URL via release API when using default GitHub base", async () => {
+  const repoSlug = "owner/repo";
+  const version = "0.0.0";
+  const downloadBase = `https://github.com/${repoSlug}/releases/download`;
+  const apiBase = "https://api.github.com";
+  const assetUrl = "https://example.test/assets/docdexd-linux-x64-gnu.tar.gz";
+
+  const manifestText = fixture("manifest/valid-targets.json");
+  const downloadTextFn = async (url) => {
+    if (url === `${downloadBase}/v${version}/docdex-release-manifest.json`) return manifestText;
+    if (url === `${apiBase}/repos/${repoSlug}/releases/tags/v${version}`) {
+      return JSON.stringify({
+        assets: [
+          {
+            name: "docdexd-linux-x64-gnu.tar.gz",
+            id: 987,
+            browser_download_url: assetUrl
+          }
+        ]
+      });
+    }
+    throw httpError(404, `not found: ${url}`);
+  };
+
+  const plan = await resolveInstallerDownloadPlan({
+    repoSlug,
+    version,
+    platformKey: "linux-x64-gnu",
+    targetTriple: "x86_64-unknown-linux-gnu",
+    downloadTextFn,
+    getDownloadBaseFn: () => downloadBase,
+    getReleaseApiBaseFn: () => apiBase,
+    manifestCandidateNamesFn: () => ["docdex-release-manifest.json"],
+    logger: createCapturingLogger().logger
+  });
+
+  assert.equal(plan.archive, "docdexd-linux-x64-gnu.tar.gz");
+  assert.equal(plan.expectedSha256, "a".repeat(64));
+  assert.equal(plan.downloadUrl, assetUrl);
+  assert.equal(plan.source, "manifest:docdex-release-manifest.json");
+  assert.equal(plan.releaseAssetAttempt?.asset?.id, 987);
+});
+
 test("installer resolves from manifest.assets array shape deterministically", async () => {
   const base = "https://example.test/releases/download";
   const version = "0.0.0";

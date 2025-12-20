@@ -454,6 +454,30 @@ fn mcp_symbols_returns_outcome_and_symbols_when_enabled() -> Result<(), Box<dyn 
         Some("docdex.symbols"),
         "symbols payload should include schema name"
     );
+    let schema = payload
+        .get("schema")
+        .and_then(|v| v.as_object())
+        .ok_or("symbols payload missing schema object")?;
+    let version = schema
+        .get("version")
+        .and_then(|v| v.as_u64())
+        .ok_or("symbols payload missing schema.version")?;
+    let compatible = schema
+        .get("compatible")
+        .and_then(|v| v.as_object())
+        .ok_or("symbols payload missing schema.compatible")?;
+    let min = compatible
+        .get("min")
+        .and_then(|v| v.as_u64())
+        .ok_or("symbols payload missing schema.compatible.min")?;
+    let max = compatible
+        .get("max")
+        .and_then(|v| v.as_u64())
+        .ok_or("symbols payload missing schema.compatible.max")?;
+    assert!(
+        min <= version && version <= max,
+        "symbols schema version should be within compatible range"
+    );
     assert_eq!(
         payload.get("file").and_then(|v| v.as_str()),
         Some("docs/symbols.md"),

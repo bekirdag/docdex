@@ -4,6 +4,7 @@ use crate::error::{
 <<<<<<< HEAD
     AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
+<<<<<<< HEAD
     ERR_UNSUPPORTED_VERSION, repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX,
     ERR_MISSING_REPO, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
     ERR_UNKNOWN_REPO,
@@ -27,6 +28,11 @@ use crate::error::{
 >>>>>>> mcoda/task/bck-05-us-09-t32
 =======
 >>>>>>> mcoda/task/bck-05-us-09-t22
+=======
+    repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
+    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
+    ERR_TIER2_UNAVAILABLE, ERR_UNKNOWN_REPO,
+>>>>>>> mcoda/task/bck-05-us-09-t21
 };
 <<<<<<< HEAD
 use crate::explainability::ExplainabilityStore;
@@ -49,10 +55,15 @@ use crate::ollama::OllamaEmbedder;
 use crate::ratelimit::{RateLimitConfig, RateLimiter};
 use crate::search;
 <<<<<<< HEAD
+<<<<<<< HEAD
 use crate::symbols::{SymbolsResponseV1, SymbolsStore};
 =======
 use crate::symbols::{SymbolsStore, MAX_SYMBOLS_PER_FILE};
 >>>>>>> mcoda/task/bck-05-us-10-t03
+=======
+use crate::symbols::SymbolsStore;
+use crate::tier2::Tier2Unavailable;
+>>>>>>> mcoda/task/bck-05-us-09-t21
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -323,6 +334,15 @@ fn mcp_backoff_required_data(err: &BackoffRequired) -> serde_json::Value {
     .expect("backoff data should serialize")
 }
 
+fn tier2_unavailable_details(err: &Tier2Unavailable) -> serde_json::Value {
+    let mut details = serde_json::Map::new();
+    details.insert("reason".to_string(), json!(err.reason.as_str()));
+    if let Some(correlation_id) = err.correlation_id.as_ref() {
+        details.insert("correlation_id".to_string(), json!(correlation_id));
+    }
+    serde_json::Value::Object(details)
+}
+
 fn truncate_bytes(input: String, max_bytes: usize) -> String {
 >>>>>>> mcoda/task/bck-05-us-10-t21
     if input.len() <= max_bytes {
@@ -401,6 +421,7 @@ fn rpc_rate_limited(err: &RateLimited, tool: Option<&str>) -> RpcError {
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn rpc_invalid_params_for_method(method: &'static str, err: impl std::fmt::Display) -> RpcError {
     rpc_error(
         ERR_INVALID_PARAMS,
@@ -438,6 +459,19 @@ fn rpc_backoff_required(err: &BackoffRequired) -> RpcError {
 >>>>>>> mcoda/task/bck-05-us-09-t22
 }
 
+=======
+fn rpc_tier2_unavailable(err: &Tier2Unavailable, tool: Option<&str>) -> RpcError {
+    rpc_error(
+        ERR_INVALID_PARAMS,
+        err.message.clone(),
+        ERR_TIER2_UNAVAILABLE,
+        Some(err.reason.as_str().to_string()),
+        tool,
+        Some(tier2_unavailable_details(err)),
+    )
+}
+
+>>>>>>> mcoda/task/bck-05-us-09-t21
 fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
     if let Some(rate) = err.downcast_ref::<RateLimited>() {
         return rpc_rate_limited(rate, tool);
@@ -447,6 +481,9 @@ fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
     }
     if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
         return rpc_backoff_required(backoff);
+    }
+    if let Some(unavailable) = err.downcast_ref::<Tier2Unavailable>() {
+        return rpc_tier2_unavailable(unavailable, tool);
     }
     let (mcp_code, details) = classify_tool_error(err);
     rpc_error(
@@ -479,6 +516,7 @@ fn default_message_for_code(code: &str) -> &'static str {
         ERR_MISSING_INDEX => "missing index",
         ERR_STALE_INDEX => "stale index",
         ERR_MISSING_DEPENDENCY => "missing dependency",
+        ERR_TIER2_UNAVAILABLE => "tier2 unavailable",
         ERR_RATE_LIMITED => "rate limited",
         ERR_BACKOFF_REQUIRED => "backoff required",
         ERR_REPO_STATE_MISMATCH => "repo state mismatch",
@@ -496,6 +534,12 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
     }
     if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
         return (backoff.code, Some(mcp_backoff_data(backoff)));
+    }
+    if let Some(unavailable) = err.downcast_ref::<Tier2Unavailable>() {
+        return (
+            ERR_TIER2_UNAVAILABLE,
+            Some(tier2_unavailable_details(unavailable)),
+        );
     }
     if let Some(app) = err.downcast_ref::<AppError>() {
         return (app.code, app.details.clone());
@@ -2677,6 +2721,7 @@ mod tests {
     }
 
     #[test]
+<<<<<<< HEAD
     fn backoff_required_rpc_has_stable_data_shape() {
         let err = BackoffRequired::new(
             Duration::from_millis(500),
@@ -2724,5 +2769,43 @@ mod tests {
             "rpc backoff payload should remain small (got {} bytes)",
             payload_bytes.len()
         );
+=======
+    fn tier2_unavailable_rpc_is_distinct_from_rate_limit() {
+        let err = Tier2Unavailable::new(
+            crate::tier2::Tier2UnavailableReason::Overload,
+            "tier 2 browser capacity exhausted",
+        )
+        .with_correlation_id("req-123");
+        let rpc = rpc_tier2_unavailable(&err, Some("docdex_search"));
+        assert_eq!(rpc.code, ERR_INVALID_PARAMS);
+        let data = rpc.data.expect("tier2 unavailable rpc should include data");
+        let obj = data
+            .as_object()
+            .expect("tier2 unavailable data should be object");
+        assert_eq!(
+            obj.get("code").and_then(|v| v.as_str()),
+            Some(ERR_TIER2_UNAVAILABLE)
+        );
+        assert_eq!(
+            obj.get("reason").and_then(|v| v.as_str()),
+            Some("overload")
+        );
+        let details = obj
+            .get("details")
+            .and_then(|v| v.as_object())
+            .expect("tier2 unavailable should include details");
+        assert_eq!(
+            details.get("reason").and_then(|v| v.as_str()),
+            Some("overload")
+        );
+        assert_eq!(
+            details.get("correlation_id").and_then(|v| v.as_str()),
+            Some("req-123")
+        );
+        assert!(obj.get("retry_after_ms").is_none());
+        assert!(obj.get("retry_at").is_none());
+        assert!(obj.get("limit_key").is_none());
+        assert!(obj.get("scope").is_none());
+>>>>>>> mcoda/task/bck-05-us-09-t21
     }
 }

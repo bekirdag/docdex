@@ -8,10 +8,15 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::browser_session::BrowserSessionError;
+<<<<<<< HEAD
 use crate::error::BackoffRequired;
+=======
+use crate::error::ERR_TIER2_UNAVAILABLE;
+>>>>>>> mcoda/task/bck-05-us-09-t21
 use crate::metrics;
 use crate::waterfall_trace::{WaterfallGateInput, WaterfallOutcome, WaterfallTier, WaterfallTrace};
 
+<<<<<<< HEAD
 pub const ERR_TIER2_UNAVAILABLE: &str = "tier2_unavailable";
 const TRACE_DECISION_ATTEMPT: &str = "attempt";
 const TRACE_DECISION_FALLBACK: &str = "fallback";
@@ -28,6 +33,8 @@ const TRACE_REASON_TIER3_FALLBACK: &str = "tier3_fallback";
 const TRACE_REASON_TIER3_ERROR: &str = "tier3_error";
 const TRACE_REASON_TIER3_SKIPPED: &str = "tier3_skipped";
 
+=======
+>>>>>>> mcoda/task/bck-05-us-09-t21
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Tier2UnavailableReason {
@@ -39,6 +46,7 @@ pub enum Tier2UnavailableReason {
 }
 
 impl Tier2UnavailableReason {
+<<<<<<< HEAD
     fn as_trace_detail(&self) -> &'static str {
         match self {
             Tier2UnavailableReason::StartupFailed => "startup_failed",
@@ -46,6 +54,15 @@ impl Tier2UnavailableReason {
             Tier2UnavailableReason::Timeout => "timeout",
             Tier2UnavailableReason::Crashed => "crashed",
             Tier2UnavailableReason::Disabled => "disabled",
+=======
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::StartupFailed => "startup_failed",
+            Self::Overload => "overload",
+            Self::Timeout => "timeout",
+            Self::Crashed => "crashed",
+            Self::Disabled => "disabled",
+>>>>>>> mcoda/task/bck-05-us-09-t21
         }
     }
 }
@@ -80,6 +97,8 @@ impl fmt::Display for Tier2Unavailable {
         write!(f, "{} ({:?})", self.message, self.reason)
     }
 }
+
+impl std::error::Error for Tier2Unavailable {}
 
 #[derive(Clone, Debug, Default)]
 pub struct Tier2Config {

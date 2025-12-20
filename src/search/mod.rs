@@ -15,7 +15,7 @@ use crate::max_size::{
 };
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
-use crate::ratelimit::RateLimiter;
+use crate::ratelimit::{RateLimitConfig, RateLimiter};
 use anyhow::Result;
 use axum::body::HttpBody;
 use axum::{
@@ -104,28 +104,12 @@ impl SecurityConfig {
             ])
             .into());
         }
-        let effective_per_min = if secure_mode && rate_limit_per_min == 0 {
-            60
-        } else {
-            rate_limit_per_min
-        };
-        let effective_burst = if secure_mode && rate_limit_burst == 0 {
-            effective_per_min
-        } else {
-            rate_limit_burst
-        };
-        let rate_limit = if effective_per_min > 0 {
-            Some(RateLimiter::new(
-                effective_per_min,
-                if effective_burst == 0 {
-                    effective_per_min
-                } else {
-                    effective_burst
-                },
-            ))
-        } else {
-            None
-        };
+        let rate_limit = RateLimitConfig::for_http(
+            rate_limit_per_min,
+            rate_limit_burst,
+            secure_mode,
+        )?
+        .limiter();
         Ok(Self {
             auth_token,
             allow_nets,

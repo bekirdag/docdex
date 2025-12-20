@@ -23,7 +23,7 @@ use crate::max_size::{
 >>>>>>> mcoda/task/bck-05-us-10-t25
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
-use crate::ratelimit::RateLimiter;
+use crate::ratelimit::{RateLimitConfig, RateLimiter};
 use crate::search;
 <<<<<<< HEAD
 use crate::symbols::{SymbolsResponseV1, SymbolsStore};
@@ -670,6 +670,7 @@ pub async fn serve(
         None
     };
 <<<<<<< HEAD
+<<<<<<< HEAD
     let explainability = ExplainabilityStore::new(indexer.state_dir());
     let effective_burst = if rate_limit_per_min > 0 && rate_limit_burst == 0 {
         rate_limit_per_min
@@ -684,6 +685,9 @@ pub async fn serve(
     } else {
         None
     };
+=======
+    let tool_rate_limit = RateLimitConfig::for_mcp(rate_limit_per_min, rate_limit_burst)?.limiter();
+>>>>>>> mcoda/task/bck-05-us-09-t38
     let libs_indexer = libs::LibsIndexer::open_read_only(libs::libs_state_dir_from_index_state_dir(
         indexer.repo_root(),
         indexer.state_dir(),

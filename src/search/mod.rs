@@ -4,6 +4,7 @@ use crate::index::{
 };
 use crate::error::{
 <<<<<<< HEAD
+<<<<<<< HEAD
     AppError, RateLimited, RetryHint, StartupError, ERR_EMBEDDING_FAILED,
     ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR,
     ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
@@ -27,6 +28,12 @@ use crate::error::{
 =======
     ERR_MISSING_INDEX, ERR_RATE_LIMITED, ERR_STALE_INDEX,
 >>>>>>> mcoda/task/bck-05-us-08-t11
+=======
+    AppError, RateLimited, StartupError, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
+    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
+    ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_RATE_LIMITED,
+    ERR_STALE_INDEX,
+>>>>>>> mcoda/task/bck-05-us-08-t10
 };
 use crate::libs::LibsIndexer;
 use crate::max_size::{
@@ -510,6 +517,7 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_MEMORY_DISABLED => StatusCode::CONFLICT,
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         ERR_TIER2_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
 =======
         ERR_MISSING_INDEX => StatusCode::CONFLICT,
@@ -519,6 +527,12 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_MISSING_INDEX => StatusCode::CONFLICT,
         ERR_STALE_INDEX => StatusCode::CONFLICT,
 >>>>>>> mcoda/task/bck-05-us-08-t11
+=======
+        ERR_MISSING_INDEX => StatusCode::CONFLICT,
+        ERR_STALE_INDEX => StatusCode::CONFLICT,
+        ERR_BACKOFF_REQUIRED => StatusCode::CONFLICT,
+        ERR_MISSING_DEPENDENCY => StatusCode::CONFLICT,
+>>>>>>> mcoda/task/bck-05-us-08-t10
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -532,6 +546,10 @@ fn json_error(status: StatusCode, code: &'static str, message: impl Into<String>
         }),
     )
         .into_response()
+}
+
+fn json_error_detail(status: StatusCode, detail: ErrorDetail) -> Response {
+    (status, Json(ErrorBody { error: detail })).into_response()
 }
 
 async fn memory_store_handler(
@@ -1207,6 +1225,7 @@ struct ErrorDetail {
     scope: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
 <<<<<<< HEAD
+<<<<<<< HEAD
     details: Option<serde_json::Value>,
 =======
     resource_key: Option<String>,
@@ -1217,6 +1236,9 @@ struct ErrorDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     denied_total: Option<u64>,
 >>>>>>> mcoda/task/bck-05-us-09-t05
+=======
+    details: Option<serde_json::Value>,
+>>>>>>> mcoda/task/bck-05-us-08-t10
 }
 
 impl ErrorDetail {
@@ -1229,6 +1251,7 @@ impl ErrorDetail {
             limit_key: None,
             scope: None,
 <<<<<<< HEAD
+<<<<<<< HEAD
             details: None,
 =======
             resource_key: None,
@@ -1236,6 +1259,9 @@ impl ErrorDetail {
             limit_burst: None,
             denied_total: None,
 >>>>>>> mcoda/task/bck-05-us-09-t05
+=======
+            details: None,
+>>>>>>> mcoda/task/bck-05-us-08-t10
         }
     }
 
@@ -1253,6 +1279,7 @@ impl ErrorDetail {
 <<<<<<< HEAD
             limit_key: Some(err.limit_key.clone()),
             scope: Some(err.scope.clone()),
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 =======
@@ -1298,6 +1325,21 @@ impl ErrorDetail {
             limit_burst: Some(err.limit_burst),
             denied_total: Some(err.denied_total),
 >>>>>>> mcoda/task/bck-05-us-09-t05
+=======
+            details: None,
+        }
+    }
+
+    fn from_app_error(app: &AppError) -> Self {
+        Self {
+            code: app.code,
+            message: app.message.clone(),
+            retry_after_ms: None,
+            retry_at: None,
+            limit_key: None,
+            scope: None,
+            details: app.details.clone(),
+>>>>>>> mcoda/task/bck-05-us-08-t10
         }
     }
 
@@ -2083,10 +2125,25 @@ async fn search_handler(
                     .into_response();
             }
             if let Some(app) = err.downcast_ref::<AppError>() {
+<<<<<<< HEAD
                 return json_error(
                     status_for_app_error(app.code),
                     app.code,
                     app.message.clone(),
+=======
+                state.metrics.inc_error();
+                warn!(
+                    target: "docdexd",
+                    error = ?err,
+                    request_id = %request_id.0,
+                    error_code = %app.code,
+                    limit,
+                    "search handler failed"
+                );
+                return json_error_detail(
+                    status_for_app_error(app.code),
+                    ErrorDetail::from_app_error(app),
+>>>>>>> mcoda/task/bck-05-us-08-t10
                 );
             }
             state.metrics.inc_error();
@@ -2199,6 +2256,20 @@ async fn snippet_handler(
                 );
             }
             state.metrics.inc_error();
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                warn!(
+                    target: "docdexd",
+                    error = ?err,
+                    request_id = %request_id.0,
+                    window,
+                    error_code = %app.code,
+                    "snippet handler failed"
+                );
+                return json_error_detail(
+                    status_for_app_error(app.code),
+                    ErrorDetail::from_app_error(app),
+                );
+            }
             warn!(
                 target: "docdexd",
                 error = ?err,

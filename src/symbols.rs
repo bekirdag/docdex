@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 pub const MAX_SYMBOLS_PER_FILE: usize = 1000;
 pub const MAX_SYMBOLS_PER_RUN: usize = 50000;
 const MAX_SYMBOL_SIGNATURE_CHARS: usize = 240;
@@ -30,6 +31,11 @@ pub const MAX_SYMBOLS_PER_FILE: usize = 2000;
 const MAX_SYMBOL_SIGNATURE_BYTES: usize = 512;
 const MAX_SYMBOL_ERROR_SUMMARY_BYTES: usize = 512;
 >>>>>>> mcoda/task/bck-05-us-10-t03
+=======
+const MAX_SYMBOLS_PER_FILE: usize = 1000;
+const MAX_SYMBOL_SIGNATURE_CHARS: usize = 256;
+const MAX_SYMBOL_ERROR_SUMMARY_CHARS: usize = 512;
+>>>>>>> mcoda/task/bck-05-us-10-t01
 
 fn default_symbols_schema() -> SchemaInfo {
     SchemaInfo {
@@ -112,6 +118,56 @@ pub struct SymbolsResponseV1 {
     pub symbols: Vec<SymbolItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<SymbolOutcome>,
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let char_count = value.chars().count();
+    if char_count <= max_chars {
+        return value.to_string();
+    }
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
+    }
+    let take_chars = max_chars.saturating_sub(3);
+    let mut truncated: String = value.chars().take(take_chars).collect();
+    while truncated
+        .chars()
+        .last()
+        .map(|c| c.is_whitespace())
+        .unwrap_or(false)
+    {
+        truncated.pop();
+    }
+    truncated.push_str("...");
+    truncated
+}
+
+fn apply_symbols_limits(payload: &mut SymbolsResponseV1) {
+    let repo_id = payload.repo_id.clone();
+    let file = payload.file.clone();
+    for symbol in &mut payload.symbols {
+        if symbol.symbol_id.is_empty() {
+            symbol.symbol_id =
+                make_symbol_id(&repo_id, &file, &symbol.range, &symbol.kind, &symbol.name);
+        }
+    }
+    payload.symbols.sort_by(|a, b| a.symbol_id.cmp(&b.symbol_id));
+    if payload.symbols.len() > MAX_SYMBOLS_PER_FILE {
+        payload.symbols.truncate(MAX_SYMBOLS_PER_FILE);
+    }
+    for symbol in &mut payload.symbols {
+        if let Some(signature) = symbol.signature.as_mut() {
+            *signature = truncate_chars(signature, MAX_SYMBOL_SIGNATURE_CHARS);
+        }
+    }
+    if let Some(outcome) = payload.outcome.as_mut() {
+        if let Some(error_summary) = outcome.error_summary.as_mut() {
+            *error_summary = truncate_chars(error_summary, MAX_SYMBOL_ERROR_SUMMARY_CHARS);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,6 +304,7 @@ impl SymbolsStore {
             return Ok(None);
         }
 <<<<<<< HEAD
+<<<<<<< HEAD
         parsed.repo_id = self.repo_id.clone();
         parsed.file = normalized_rel.clone();
         let repo_id = parsed.repo_id.clone();
@@ -282,6 +339,9 @@ impl SymbolsStore {
         }
         self.normalize_payload(rel_path, &mut parsed)?;
 >>>>>>> mcoda/task/bck-05-us-10-t03
+=======
+        apply_symbols_limits(&mut parsed);
+>>>>>>> mcoda/task/bck-05-us-10-t01
         Ok(Some(parsed))
     }
 
@@ -372,7 +432,11 @@ pub fn build_symbols_payload(
         symbols,
         outcome: Some(outcome),
     };
+<<<<<<< HEAD
     normalize_symbols_payload(&mut payload);
+=======
+    apply_symbols_limits(&mut payload);
+>>>>>>> mcoda/task/bck-05-us-10-t01
     payload
 }
 

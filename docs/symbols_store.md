@@ -185,6 +185,14 @@ To keep payload sizes predictable, Docdex clamps symbol outputs deterministicall
 Lengths are Unicode scalar chars; truncation does not add extra fields.
 >>>>>>> mcoda/task/bck-05-us-10-t04
 
+## Deterministic ordering and bounds
+
+Docdex normalizes symbol payloads before returning or storing them:
+
+- `symbols` is sorted by `symbol_id` (ascending) and clamped to at most 1000 items. If more symbols are present, extra items are dropped deterministically; no additional fields are added.
+- `signature` is truncated to 256 characters; `outcome.error_summary` is truncated to 512 characters (if present). Truncation uses an ASCII `...` suffix when space allows.
+- Limits are global to the MCP server process and do not vary by repo.
+
 ## Stable identifiers
 
 ### `repo_id`
@@ -211,6 +219,12 @@ For every indexed file, when symbol extraction is enabled, Docdex attempts to pe
 
 - `symbols`: extracted symbols (may be empty)
 - `outcome`: per-file status and optional metadata
+
+### Eligibility rules
+
+- Extraction is attempted only for supported file extensions (see below).
+- Unsupported files are recorded with `outcome.status = skipped` and an empty `symbols` list.
+- `docdex_symbols` only accepts safe repo-relative paths; invalid paths are rejected.
 
 ### Outcome statuses
 

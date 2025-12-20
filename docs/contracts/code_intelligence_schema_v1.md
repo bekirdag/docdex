@@ -65,6 +65,7 @@ Docdex caps `error_summary` to 200 chars, `signature` to 240 chars, and the `sym
 - `signature` (string, optional): Language-specific display signature if available.
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 ### Symbols limits (v1)
 
 Docdex clamps symbol outputs deterministically to keep schemas stable:
@@ -85,6 +86,13 @@ Lengths are Unicode scalar chars; truncation is deterministic and does not add e
 - Symbols are returned sorted by `symbol_id`.
 - Responses may be truncated to a server-defined maximum (currently 2000 symbols per file) without additional fields.
 >>>>>>> mcoda/task/bck-05-us-10-t03
+=======
+**Ordering and bounds (v1)**
+
+- `symbols` is sorted ascending by `symbol_id` and clamped to at most 1000 items. If more are present, extra items are dropped deterministically; no additional fields are added.
+- `signature` is truncated to 256 characters; `outcome.error_summary` is truncated to 512 characters (if present). Truncation uses an ASCII `...` suffix when space allows.
+- Limits are global to the server process and do not vary by repo.
+>>>>>>> mcoda/task/bck-05-us-10-t01
 
 ## Impact graph response (`docdex.impact_graph`)
 

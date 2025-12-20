@@ -2,9 +2,9 @@ use crate::index::{
     DocSnapshot, Hit, Indexer, SearchError, SearchQueryMeta, SnippetOrigin, SnippetResult,
 };
 use crate::error::{
-    AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
-    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    ERR_RATE_LIMITED,
+    AppError, BackoffRequired, RateLimited, StartupError, ERR_BACKOFF_REQUIRED,
+    ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR,
+    ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_RATE_LIMITED,
 };
 use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
@@ -428,6 +428,7 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_EMBEDDING_TIMEOUT => StatusCode::GATEWAY_TIMEOUT,
         ERR_EMBEDDING_MODEL_NOT_FOUND => StatusCode::BAD_REQUEST,
         ERR_EMBEDDING_FAILED => StatusCode::BAD_GATEWAY,
+        ERR_BACKOFF_REQUIRED => StatusCode::TOO_MANY_REQUESTS,
         ERR_INVALID_ARGUMENT => StatusCode::BAD_REQUEST,
         ERR_MEMORY_DISABLED => StatusCode::CONFLICT,
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
@@ -976,6 +977,17 @@ impl ErrorDetail {
             scope: Some(err.scope.clone()),
         }
     }
+
+    fn backoff_required(err: &BackoffRequired) -> Self {
+        Self {
+            code: ERR_BACKOFF_REQUIRED,
+            message: truncate_bytes(&err.message, MAX_RATE_LIMIT_MESSAGE_BYTES),
+            retry_after_ms: Some(err.retry_after_ms),
+            retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
+            limit_key: Some(err.limit_key.clone()),
+            scope: Some(err.scope.clone()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1367,6 +1379,21 @@ async fn search_handler(
                     StatusCode::BAD_REQUEST,
                     Json(ErrorBody {
                         error: ErrorDetail::new("invalid_query", reason.clone()),
+                    }),
+                )
+                    .into_response();
+            }
+            if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
+                let mut headers = HeaderMap::new();
+                let retry_after_seconds = backoff.retry_after_ms.saturating_add(999) / 1000;
+                if let Ok(value) = HeaderValue::from_str(&retry_after_seconds.to_string()) {
+                    headers.insert(axum::http::header::RETRY_AFTER, value);
+                }
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    headers,
+                    Json(ErrorBody {
+                        error: ErrorDetail::backoff_required(backoff),
                     }),
                 )
                     .into_response();

@@ -1,8 +1,9 @@
 use crate::error::{
-    AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
-    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
-    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
+    AppError, BackoffRequired, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
+    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
+    ERR_MEMORY_DISABLED, repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX,
+    ERR_MISSING_REPO, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH,
+    ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
 };
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
@@ -29,6 +30,7 @@ const ERR_METHOD_NOT_FOUND: i32 = -32601;
 const ERR_INVALID_PARAMS: i32 = -32602;
 const ERR_INTERNAL: i32 = -32000;
 const ERR_RATE_LIMITED_RPC: i32 = -32029;
+const ERR_BACKOFF_REQUIRED_RPC: i32 = -32030;
 const FILES_DEFAULT_LIMIT: usize = 200;
 const FILES_MAX_LIMIT: usize = 1000;
 const FILES_MAX_OFFSET: usize = 50_000;
@@ -133,6 +135,27 @@ fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
     .expect("rate-limit data should serialize")
 }
 
+fn mcp_backoff_required_data(err: &BackoffRequired) -> serde_json::Value {
+    #[derive(Serialize)]
+    struct BackoffData<'a> {
+        code: &'static str,
+        retry_after_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_at: Option<String>,
+        limit_key: &'a str,
+        scope: &'a str,
+    }
+
+    serde_json::to_value(BackoffData {
+        code: ERR_BACKOFF_REQUIRED,
+        retry_after_ms: err.retry_after_ms,
+        retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
+        limit_key: &err.limit_key,
+        scope: &err.scope,
+    })
+    .expect("backoff data should serialize")
+}
+
 fn truncate_bytes(input: String, max_bytes: usize) -> String {
     if input.len() <= max_bytes {
         return input;
@@ -170,9 +193,20 @@ fn rpc_rate_limited(err: &RateLimited) -> RpcError {
     }
 }
 
+fn rpc_backoff_required(err: &BackoffRequired) -> RpcError {
+    RpcError {
+        code: ERR_BACKOFF_REQUIRED_RPC,
+        message: truncate_bytes(err.message.clone(), MAX_ERROR_MESSAGE_BYTES),
+        data: Some(mcp_backoff_required_data(err)),
+    }
+}
+
 fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
     if let Some(rate) = err.downcast_ref::<RateLimited>() {
         return rpc_rate_limited(rate);
+    }
+    if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
+        return rpc_backoff_required(backoff);
     }
     let (mcp_code, details) = classify_tool_error(err);
     rpc_error(
@@ -215,6 +249,9 @@ fn default_message_for_code(code: &str) -> &'static str {
 fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
     if let Some(rate) = err.downcast_ref::<RateLimited>() {
         return (rate.code, Some(mcp_rate_limited_data(rate)));
+    }
+    if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
+        return (backoff.code, Some(mcp_backoff_required_data(backoff)));
     }
     if let Some(app) = err.downcast_ref::<AppError>() {
         return (app.code, app.details.clone());

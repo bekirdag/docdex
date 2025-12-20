@@ -779,6 +779,15 @@ impl IndexStateFile {
 >>>>>>> mcoda/task/bck-05-us-08-t10
 }
 
+const INDEX_META_VERSION: u32 = 1;
+const INDEX_META_FILENAME: &str = "index_meta.json";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct IndexMeta {
+    version: u32,
+    indexed_at_epoch_ms: u64,
+}
+
 impl IndexConfig {
     #[allow(dead_code)]
     pub fn for_repo(repo_root: &Path) -> Result<Self> {
@@ -1245,6 +1254,7 @@ impl Indexer {
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
         let state_dir_preexisting = state_dir_has_entries(config.state_dir());
 >>>>>>> mcoda/task/bck-05-us-08-t11
@@ -1268,6 +1278,9 @@ impl Indexer {
 =======
         ensure_index_state_ready(config.state_dir())?;
 >>>>>>> mcoda/task/bck-05-us-08-t09
+=======
+        ensure_index_ready(&repo_root, &config)?;
+>>>>>>> mcoda/task/bck-05-us-08-t05
         let index = Index::open_in_dir(config.state_dir())?;
         let reader = Arc::new(
             index
@@ -1377,6 +1390,7 @@ impl Indexer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.write_index_state(now_epoch_ms()?)?;
 =======
         update_index_state(self.config.state_dir())?;
@@ -1396,6 +1410,9 @@ impl Indexer {
 =======
         self.record_index_state()?;
 >>>>>>> mcoda/task/bck-05-us-08-t06
+=======
+        write_index_meta(self.config.state_dir())?;
+>>>>>>> mcoda/task/bck-05-us-08-t05
         Ok(())
 =======
     pub async fn reindex_all(&self) -> Result<()> {
@@ -1545,6 +1562,7 @@ impl Indexer {
         self.reader.reload()?;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         let summary = tracker.finish();
         if let Err(err) = record_run_summary(self.config.state_dir(), summary.clone()) {
             warn!(target: "docdexd", error = ?err, "failed to persist run summary");
@@ -1581,6 +1599,9 @@ impl Indexer {
 =======
         self.record_index_state()?;
 >>>>>>> mcoda/task/bck-05-us-08-t06
+=======
+        write_index_meta(self.config.state_dir())?;
+>>>>>>> mcoda/task/bck-05-us-08-t05
         Ok(decision)
 >>>>>>> mcoda/task/bck-05-us-08-t10
     }
@@ -1606,6 +1627,7 @@ impl Indexer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.write_index_state(now_epoch_ms()?)?;
 =======
         update_index_state(self.config.state_dir())?;
@@ -1622,6 +1644,9 @@ impl Indexer {
 =======
         self.record_index_update(false);
 >>>>>>> mcoda/task/bck-05-us-08-t10
+=======
+        write_index_meta(self.config.state_dir())?;
+>>>>>>> mcoda/task/bck-05-us-08-t05
         if let Some(store) = self.symbols_store.as_ref() {
             if let Err(err) = store.delete_symbols(&rel) {
                 warn!(target: "docdexd", error = ?err, rel_path = %rel, "failed to delete symbols record");
@@ -3727,6 +3752,7 @@ mod file_decision_tests {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 #[cfg(test)]
 mod state_path_tests {
     use super::*;
@@ -3757,6 +3783,168 @@ mod state_path_tests {
     }
 }
 
+=======
+#[derive(Debug, Clone)]
+struct IndexStaleReason {
+    reason: String,
+    path: Option<PathBuf>,
+    modified_epoch_ms: Option<u64>,
+}
+
+impl IndexStaleReason {
+    fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            path: None,
+            modified_epoch_ms: None,
+        }
+    }
+}
+
+pub(crate) fn ensure_index_ready(repo_root: &Path, config: &IndexConfig) -> Result<()> {
+    let state_dir = config.state_dir();
+    if !state_dir.exists() {
+        return Err(missing_index_error(repo_root, state_dir).into());
+    }
+    let meta = match read_index_meta(state_dir) {
+        Ok(Some(meta)) => meta,
+        Ok(None) => {
+            return Err(missing_index_error(repo_root, state_dir).into());
+        }
+        Err(err) => {
+            return Err(stale_index_error(
+                repo_root,
+                state_dir,
+                None,
+                IndexStaleReason::new(format!("failed to read index metadata: {err}")),
+            )
+            .into());
+        }
+    };
+    if meta.version != INDEX_META_VERSION {
+        return Err(stale_index_error(
+            repo_root,
+            state_dir,
+            Some(meta.indexed_at_epoch_ms),
+            IndexStaleReason::new(format!(
+                "index metadata version mismatch (got {}, expected {})",
+                meta.version, INDEX_META_VERSION
+            )),
+        )
+        .into());
+    }
+    if meta.indexed_at_epoch_ms == 0 {
+        return Err(stale_index_error(
+            repo_root,
+            state_dir,
+            Some(meta.indexed_at_epoch_ms),
+            IndexStaleReason::new("index metadata missing timestamp"),
+        )
+        .into());
+    }
+    if let Some(reason) = detect_stale_index(repo_root, config, meta.indexed_at_epoch_ms)? {
+        return Err(stale_index_error(
+            repo_root,
+            state_dir,
+            Some(meta.indexed_at_epoch_ms),
+            reason,
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn detect_stale_index(
+    repo_root: &Path,
+    config: &IndexConfig,
+    indexed_at_epoch_ms: u64,
+) -> Result<Option<IndexStaleReason>> {
+    for entry in WalkDir::new(repo_root).into_iter().filter_map(|e| e.ok()) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if !decide_file(path, repo_root, config).should_index() {
+            continue;
+        }
+        let metadata = match entry.metadata() {
+            Ok(meta) => meta,
+            Err(err) => {
+                return Ok(Some(IndexStaleReason {
+                    reason: format!("failed to read file metadata: {err}"),
+                    path: Some(path.to_path_buf()),
+                    modified_epoch_ms: None,
+                }));
+            }
+        };
+        let modified = match metadata.modified() {
+            Ok(value) => value,
+            Err(err) => {
+                return Ok(Some(IndexStaleReason {
+                    reason: format!("failed to read file modification time: {err}"),
+                    path: Some(path.to_path_buf()),
+                    modified_epoch_ms: None,
+                }));
+            }
+        };
+        let modified_ms = match modified.duration_since(std::time::UNIX_EPOCH) {
+            Ok(duration) => duration_to_epoch_ms(duration),
+            Err(err) => {
+                return Ok(Some(IndexStaleReason {
+                    reason: format!("file modification time is invalid: {err}"),
+                    path: Some(path.to_path_buf()),
+                    modified_epoch_ms: None,
+                }));
+            }
+        };
+        if modified_ms > indexed_at_epoch_ms {
+            return Ok(Some(IndexStaleReason {
+                reason: "file modified after last index".to_string(),
+                path: Some(path.to_path_buf()),
+                modified_epoch_ms: Some(modified_ms),
+            }));
+        }
+    }
+    Ok(None)
+}
+
+fn duration_to_epoch_ms(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn now_epoch_ms_u64() -> Result<u64> {
+    let duration = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
+    Ok(duration_to_epoch_ms(duration))
+}
+
+fn index_meta_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(INDEX_META_FILENAME)
+}
+
+fn read_index_meta(state_dir: &Path) -> Result<Option<IndexMeta>> {
+    let path = index_meta_path(state_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&path)
+        .with_context(|| format!("read index metadata {}", path.display()))?;
+    let parsed: IndexMeta =
+        serde_json::from_str(&raw).context("parse index metadata json")?;
+    Ok(Some(parsed))
+}
+
+fn write_index_meta(state_dir: &Path) -> Result<()> {
+    let meta = IndexMeta {
+        version: INDEX_META_VERSION,
+        indexed_at_epoch_ms: now_epoch_ms_u64()?,
+    };
+    let payload = serde_json::to_string_pretty(&meta).context("serialize index metadata")?;
+    fs::write(index_meta_path(state_dir), payload)
+        .with_context(|| format!("write index metadata {}", state_dir.display()))?;
+    Ok(())
+}
+
+>>>>>>> mcoda/task/bck-05-us-08-t05
 pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -4137,6 +4325,7 @@ fn known_canonical_path_from_repo_meta(index_state_dir: &Path) -> Option<String>
         .map(|s| s.to_string())
 }
 
+<<<<<<< HEAD
 fn index_state_details(state_dir: &Path, reason: Option<&str>) -> serde_json::Value {
     let mut details = serde_json::Map::new();
     details.insert(
@@ -4180,6 +4369,76 @@ fn stale_index_error(state_dir: &Path, reason: String) -> AppError {
         ),
     )
     .with_details(index_state_details(state_dir, Some(&reason)))
+=======
+fn missing_index_error(repo_root: &Path, state_dir: &Path) -> AppError {
+    AppError::new(
+        ERR_MISSING_INDEX,
+        "index missing; run `docdexd index --repo <repo>` to build it",
+    )
+    .with_details(serde_json::json!({
+        "index_state": "missing",
+        "repo_root": normalize_for_error(repo_root),
+        "state_dir": normalize_for_error(state_dir),
+        "remediation": ["Run: `docdexd index --repo <repo>` to build the index."]
+    }))
+}
+
+fn stale_index_error(
+    repo_root: &Path,
+    state_dir: &Path,
+    last_indexed_epoch_ms: Option<u64>,
+    reason: IndexStaleReason,
+) -> AppError {
+    let mut details = serde_json::Map::new();
+    details.insert("index_state".to_string(), serde_json::Value::String("stale".to_string()));
+    details.insert(
+        "repo_root".to_string(),
+        serde_json::Value::String(normalize_for_error(repo_root)),
+    );
+    details.insert(
+        "state_dir".to_string(),
+        serde_json::Value::String(normalize_for_error(state_dir)),
+    );
+    details.insert(
+        "reason".to_string(),
+        serde_json::Value::String(reason.reason),
+    );
+    if let Some(last_indexed) = last_indexed_epoch_ms {
+        details.insert(
+            "last_indexed_epoch_ms".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(last_indexed)),
+        );
+    }
+    if let Some(path) = reason.path {
+        details.insert(
+            "stale_path".to_string(),
+            serde_json::Value::String(normalize_for_error(&path)),
+        );
+        if let Ok(rel) = path.strip_prefix(repo_root) {
+            details.insert(
+                "stale_rel_path".to_string(),
+                serde_json::Value::String(normalize_for_error(rel)),
+            );
+        }
+    }
+    if let Some(modified) = reason.modified_epoch_ms {
+        details.insert(
+            "stale_path_modified_epoch_ms".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(modified)),
+        );
+    }
+    details.insert(
+        "remediation".to_string(),
+        serde_json::Value::Array(vec![serde_json::Value::String(
+            "Run: `docdexd index --repo <repo>` to rebuild the index.".to_string(),
+        )]),
+    );
+    AppError::new(
+        ERR_STALE_INDEX,
+        "index is stale; run `docdexd index --repo <repo>` to rebuild",
+    )
+    .with_details(serde_json::Value::Object(details))
+>>>>>>> mcoda/task/bck-05-us-08-t05
 }
 
 fn missing_repo_path_error(repo_root: &Path) -> AppError {

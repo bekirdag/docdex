@@ -2329,6 +2329,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.ensure_schema_version("docdex_search", args.schema_version)?;
 =======
         self.ensure_index_fresh()?;
@@ -2345,6 +2346,9 @@ impl McpServer {
 =======
         self.ensure_index_ready()?;
 >>>>>>> mcoda/task/bck-05-us-08-t02
+=======
+        self.ensure_index_ready()?;
+>>>>>>> mcoda/task/bck-05-us-08-t05
         let query = args.query.trim();
 <<<<<<< HEAD
         let requested_limit = args.limit;
@@ -2541,6 +2545,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
         self.ensure_schema_version("docdex_files", args.schema_version)?;
 >>>>>>> mcoda/task/bck-05-us-10-t21
@@ -2562,6 +2567,9 @@ impl McpServer {
 =======
         self.ensure_index_ready()?;
 >>>>>>> mcoda/task/bck-05-us-08-t02
+=======
+        self.ensure_index_ready()?;
+>>>>>>> mcoda/task/bck-05-us-08-t05
         let limit = args
             .limit
             .unwrap_or(limits::MCP_FILES_DEFAULT_LIMIT)
@@ -2595,6 +2603,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.ensure_schema_version("docdex_stats", args.schema_version)?;
 =======
         self.ensure_index_fresh()?;
@@ -2614,6 +2623,9 @@ impl McpServer {
 =======
         self.ensure_index_ready()?;
 >>>>>>> mcoda/task/bck-05-us-08-t02
+=======
+        self.ensure_index_ready()?;
+>>>>>>> mcoda/task/bck-05-us-08-t05
         let stats = self.indexer.stats()?;
         let run_summaries = self.indexer.run_summaries(args.runs_limit)?;
         Ok(json!({
@@ -3045,6 +3057,7 @@ impl McpServer {
         Ok(())
     }
 
+<<<<<<< HEAD
     fn index_recovery_steps(&self) -> Vec<String> {
         vec![
             "Run `docdex_index` (empty `paths`) to build or refresh the index.".to_string(),
@@ -3179,6 +3192,10 @@ fn apply_symbols_bounds(limits: &MaxSizePolicy, payload: &mut crate::symbols::Sy
             let (bounded, _) = limits::truncate_chars(summary, limits.max_summary_chars);
             *summary = bounded;
         }
+=======
+    fn ensure_index_ready(&self) -> Result<()> {
+        crate::index::ensure_index_ready(&self.repo_root, self.indexer.config())
+>>>>>>> mcoda/task/bck-05-us-08-t05
     }
 }
 

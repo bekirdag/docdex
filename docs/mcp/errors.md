@@ -275,6 +275,7 @@ Docdex presents the same underlying failures in three different wrappers:
 | Repo mismatch (`project_root` does not match server repo) | `unknown_repo` | `-32602` | N/A (daemon is started per-repo) | N/A (CLI always has `--repo`; mismatch is not represented) |
 | Repo state mismatch (unsafe to associate state) | `repo_state_mismatch` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"repo_state_mismatch",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"repo_state_mismatch",...}}` |
 <<<<<<< HEAD
+<<<<<<< HEAD
 | Index missing (query/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
 | Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Not currently emitted by the per-repo CLI |
 <<<<<<< HEAD
@@ -284,6 +285,10 @@ Docdex presents the same underlying failures in three different wrappers:
 | Index missing (query/open without prior `index`) | `missing_index` | `-32602` | `/search` and `/snippet` return `409` JSON `{error:{code:"missing_index",...}}` | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
 | Index stale | `stale_index` | `-32602` | `/search` and `/snippet` return `409` JSON `{error:{code:"stale_index",...}}` | Exit `1`, `stderr` JSON `{error:{code:"stale_index",...}}` |
 >>>>>>> mcoda/task/bck-05-us-08-t10
+=======
+| Index missing (query/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `2`, `stderr` JSON `{error:{code:"missing_index",...}}` |
+| Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Exit `3`, `stderr` JSON `{error:{code:"stale_index",...}}` |
+>>>>>>> mcoda/task/bck-05-us-08-t05
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |
 <<<<<<< HEAD
 | Rate limited | `rate_limited` | `-32029` | `429` with JSON error envelope + retry hints | N/A (CLI not rate limited) |

@@ -21,14 +21,24 @@ struct McpHarness {
 
 impl McpHarness {
     fn spawn(repo: &Path) -> Result<Self, Box<dyn Error>> {
-        Self::spawn_with_env(repo, &[])
+        Self::spawn_with_options(repo, &[], None, 4)
     }
 
     fn spawn_with_env(
         repo: &Path,
         envs: &[(&str, &str)],
     ) -> Result<Self, Box<dyn Error>> {
+        Self::spawn_with_options(repo, envs, None, 4)
+    }
+
+    fn spawn_with_options(
+        repo: &Path,
+        envs: &[(&str, &str)],
+        state_dir: Option<&Path>,
+        max_results: usize,
+    ) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo.to_string_lossy().to_string();
+        let max_results = max_results.max(1).to_string();
         let mut cmd = Command::new(docdex_bin());
         cmd.args([
             "mcp",
@@ -37,8 +47,12 @@ impl McpHarness {
             "--log",
             "warn",
             "--max-results",
-            "4",
+            max_results.as_str(),
         ]);
+        if let Some(state_dir) = state_dir {
+            let state_dir = state_dir.to_string_lossy().to_string();
+            cmd.args(["--state-dir", state_dir.as_str()]);
+        }
         for (key, value) in envs {
             cmd.env(key, value);
         }
@@ -89,6 +103,31 @@ This repository contains the MCP_ROADMAP notes used for testing.
     Ok(())
 }
 
+fn write_repo_with_tokens(
+    repo_root: &Path,
+    unique_token: &str,
+    common_token: &str,
+    extra_common_files: usize,
+) -> Result<(), Box<dyn Error>> {
+    let docs_dir = repo_root.join("docs");
+    std::fs::create_dir_all(&docs_dir)?;
+    std::fs::write(
+        docs_dir.join("unique.md"),
+        format!(
+            "# Unique\n\n{unique_token}\n\n{common_token}\n",
+            unique_token = unique_token,
+            common_token = common_token
+        ),
+    )?;
+    for i in 0..extra_common_files {
+        std::fs::write(
+            docs_dir.join(format!("common_{i}.md")),
+            format!("# Common {i}\n\n{common_token}\n", common_token = common_token),
+        )?;
+    }
+    Ok(())
+}
+
 fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
     let temp = TempDir::new()?;
     write_fixture_repo(temp.path())?;
@@ -101,6 +140,26 @@ where
     S: AsRef<std::ffi::OsStr>,
 {
     Ok(Command::new(docdex_bin()).args(args).output()?)
+}
+
+fn index_repo_with_state(repo: &Path, state_dir: &Path) -> Result<(), Box<dyn Error>> {
+    let repo_str = repo.to_string_lossy().to_string();
+    let state_str = state_dir.to_string_lossy().to_string();
+    let out = run_docdex([
+        "index",
+        "--repo",
+        repo_str.as_str(),
+        "--state-dir",
+        state_str.as_str(),
+    ])?;
+    if !out.status.success() {
+        return Err(format!(
+            "index failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn send_line(
@@ -137,6 +196,16 @@ fn parse_tool_result(resp: &serde_json::Value) -> Result<serde_json::Value, Box<
         .and_then(|v| v.as_str())
         .ok_or("tool result missing text content")?;
     Ok(serde_json::from_str(first_text)?)
+}
+
+fn parse_cli_json(raw: &[u8]) -> Result<serde_json::Value, Box<dyn Error>> {
+    let text = String::from_utf8_lossy(raw);
+    let trimmed = text.trim();
+    Ok(serde_json::from_str(trimmed)?)
+}
+
+fn parse_cli_error(raw: &[u8]) -> Result<serde_json::Value, Box<dyn Error>> {
+    parse_cli_json(raw)
 }
 
 fn mcp_error_code(resp: &Value) -> Option<i64> {
@@ -299,23 +368,39 @@ fn pick_free_port() -> Option<u16> {
 }
 
 fn spawn_server(repo_root: &Path, host: &str, port: u16) -> Result<Child, Box<dyn Error>> {
+    spawn_server_with_options(repo_root, host, port, None, None)
+}
+
+fn spawn_server_with_options(
+    repo_root: &Path,
+    host: &str,
+    port: u16,
+    state_dir: Option<&Path>,
+    max_limit: Option<usize>,
+) -> Result<Child, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
-    Ok(Command::new(docdex_bin())
-        .args([
-            "serve",
-            "--repo",
-            repo_str.as_str(),
-            "--host",
-            host,
-            "--port",
-            &port.to_string(),
-            "--log",
-            "warn",
-            "--secure-mode=false",
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?)
+    let mut cmd = Command::new(docdex_bin());
+    cmd.args([
+        "serve",
+        "--repo",
+        repo_str.as_str(),
+        "--host",
+        host,
+        "--port",
+        &port.to_string(),
+        "--log",
+        "warn",
+        "--secure-mode=false",
+    ]);
+    if let Some(state_dir) = state_dir {
+        let state_dir = state_dir.to_string_lossy().to_string();
+        cmd.args(["--state-dir", state_dir.as_str()]);
+    }
+    if let Some(max_limit) = max_limit {
+        let max_limit = max_limit.max(1).to_string();
+        cmd.args(["--max-limit", max_limit.as_str()]);
+    }
+    Ok(cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn()?)
 }
 
 fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
@@ -628,5 +713,277 @@ fn cli_invalid_query_error_matches_machine_reason() -> Result<(), Box<dyn Error>
         stderr.contains("invalid query"),
         "CLI should report invalid query: {stderr}"
     );
+    Ok(())
+}
+
+#[test]
+fn cli_missing_vs_stale_index_errors_are_distinct_and_actionable() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    write_repo_with_tokens(repo.path(), "repo_token", "COMMON_TERM", 1)?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+
+    let missing_out = run_docdex([
+        "query",
+        "--repo",
+        repo_str.as_str(),
+        "--query",
+        "COMMON_TERM",
+        "--limit",
+        "1",
+    ])?;
+    assert!(
+        !missing_out.status.success(),
+        "missing index should fail"
+    );
+    let missing_payload = parse_cli_error(&missing_out.stderr)?;
+    assert_eq!(
+        missing_payload
+            .get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("missing_index")
+    );
+    let missing_message = missing_payload
+        .get("error")
+        .and_then(|v| v.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    assert!(
+        missing_message.contains("docdexd index") || missing_message.contains("docdex_index"),
+        "missing index should include remediation hint: {missing_message}"
+    );
+
+    let state_dir = repo.path().join(".docdex").join("index");
+    std::fs::create_dir_all(&state_dir)?;
+    let stale_out = run_docdex([
+        "query",
+        "--repo",
+        repo_str.as_str(),
+        "--query",
+        "COMMON_TERM",
+        "--limit",
+        "1",
+    ])?;
+    assert!(
+        !stale_out.status.success(),
+        "stale index should fail"
+    );
+    let stale_payload = parse_cli_error(&stale_out.stderr)?;
+    assert_eq!(
+        stale_payload
+            .get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("stale_index")
+    );
+    let stale_message = stale_payload
+        .get("error")
+        .and_then(|v| v.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    assert!(
+        stale_message.contains("docdexd index") || stale_message.contains("docdex_index"),
+        "stale index should include remediation hint: {stale_message}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn cli_search_is_repo_isolated_and_respects_limit() -> Result<(), Box<dyn Error>> {
+    let workspace = TempDir::new()?;
+    let state_root = TempDir::new()?;
+    let repo_a = workspace.path().join("repo-a");
+    let repo_b = workspace.path().join("repo-b");
+    write_repo_with_tokens(&repo_a, "repo_a_token", "COMMON_TERM", 6)?;
+    write_repo_with_tokens(&repo_b, "repo_b_token", "OTHER_TERM", 0)?;
+
+    index_repo_with_state(&repo_a, state_root.path())?;
+    index_repo_with_state(&repo_b, state_root.path())?;
+
+    let repo_a_str = repo_a.to_string_lossy().to_string();
+    let state_root_str = state_root.path().to_string_lossy().to_string();
+
+    let isolate_out = run_docdex([
+        "query",
+        "--repo",
+        repo_a_str.as_str(),
+        "--state-dir",
+        state_root_str.as_str(),
+        "--query",
+        "repo_b_token",
+        "--limit",
+        "5",
+        "--repo-only",
+    ])?;
+    assert!(isolate_out.status.success(), "repo query should succeed");
+    let isolate_payload = parse_cli_json(&isolate_out.stdout)?;
+    let isolate_hits = isolate_payload
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .ok_or("CLI search missing hits array")?;
+    assert!(
+        isolate_hits.is_empty(),
+        "repo-scoped CLI query must not return cross-repo hits"
+    );
+
+    let limit_out = run_docdex([
+        "query",
+        "--repo",
+        repo_a_str.as_str(),
+        "--state-dir",
+        state_root_str.as_str(),
+        "--query",
+        "COMMON_TERM",
+        "--limit",
+        "3",
+        "--repo-only",
+    ])?;
+    assert!(limit_out.status.success(), "repo query should succeed");
+    let limit_payload = parse_cli_json(&limit_out.stdout)?;
+    let limit_hits_len = limit_payload
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .map(|v| v.len())
+        .unwrap_or(0);
+    assert!(
+        limit_hits_len <= 3,
+        "CLI limit should cap results"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn mcp_search_is_repo_isolated_and_respects_max_results() -> Result<(), Box<dyn Error>> {
+    let workspace = TempDir::new()?;
+    let state_root = TempDir::new()?;
+    let repo_a = workspace.path().join("repo-a");
+    let repo_b = workspace.path().join("repo-b");
+    write_repo_with_tokens(&repo_a, "repo_a_token", "COMMON_TERM", 6)?;
+    write_repo_with_tokens(&repo_b, "repo_b_token", "OTHER_TERM", 0)?;
+
+    index_repo_with_state(&repo_a, state_root.path())?;
+    index_repo_with_state(&repo_b, state_root.path())?;
+
+    let mut mcp =
+        McpHarness::spawn_with_options(&repo_a, &[], Some(state_root.path()), 3)?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 30,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": { "query": "repo_b_token", "limit": 5 }
+            }
+        }),
+    )?;
+    let isolate_resp = read_line(&mut mcp.reader)?;
+    let isolate_body = parse_tool_result(&isolate_resp)?;
+    let isolate_hits = isolate_body
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .ok_or("MCP search missing hits array")?;
+    assert!(
+        isolate_hits.is_empty(),
+        "repo-scoped MCP query must not return cross-repo hits"
+    );
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 31,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": { "query": "COMMON_TERM", "limit": 999 }
+            }
+        }),
+    )?;
+    let limit_resp = read_line(&mut mcp.reader)?;
+    let limit_body = parse_tool_result(&limit_resp)?;
+    assert_eq!(
+        limit_body.get("limit").and_then(|v| v.as_u64()),
+        Some(3),
+        "MCP should report the clamped limit"
+    );
+    let limit_hits_len = limit_body
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .map(|v| v.len())
+        .unwrap_or(0);
+    assert!(
+        limit_hits_len <= 3,
+        "MCP max results should cap returned hits"
+    );
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn http_search_is_repo_isolated_and_respects_max_limit() -> Result<(), Box<dyn Error>> {
+    let workspace = TempDir::new()?;
+    let state_root = TempDir::new()?;
+    let repo_a = workspace.path().join("repo-a");
+    let repo_b = workspace.path().join("repo-b");
+    write_repo_with_tokens(&repo_a, "repo_a_token", "COMMON_TERM", 6)?;
+    write_repo_with_tokens(&repo_b, "repo_b_token", "OTHER_TERM", 0)?;
+
+    index_repo_with_state(&repo_a, state_root.path())?;
+    index_repo_with_state(&repo_b, state_root.path())?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server_with_options(
+        &repo_a,
+        host,
+        port,
+        Some(state_root.path()),
+        Some(3),
+    )?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/search");
+    let isolate_resp: Value = client
+        .get(&url)
+        .query(&[("q", "repo_b_token"), ("limit", "5"), ("snippets", "false")])
+        .send()?
+        .json()?;
+    let isolate_hits = isolate_resp
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .ok_or("HTTP search missing hits array")?;
+    assert!(
+        isolate_hits.is_empty(),
+        "repo-scoped HTTP query must not return cross-repo hits"
+    );
+
+    let limit_resp: Value = client
+        .get(&url)
+        .query(&[("q", "COMMON_TERM"), ("limit", "999"), ("snippets", "false")])
+        .send()?
+        .json()?;
+    let limit_hits_len = limit_resp
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .map(|v| v.len())
+        .unwrap_or(0);
+    assert!(
+        limit_hits_len <= 3,
+        "HTTP max_limit should cap results"
+    );
+
+    server.kill().ok();
+    server.wait().ok();
     Ok(())
 }

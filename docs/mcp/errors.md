@@ -145,6 +145,7 @@ Notes:
 - MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with `details.max_bytes` and `details.actual_bytes`.
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 
 ## Tool result size limits (server-scoped)
 
@@ -183,3 +184,6 @@ Docdex enforces repo-invariant bounds on MCP tool outputs. When a client request
 =======
 - Global tool output limits policy: `docs/mcp/tool_limits.md`.
 >>>>>>> mcoda/task/bck-05-us-10-t18
+=======
+- MCP `rate_limited` and `backoff_required` errors include a stable retry-hint payload in `error.data`: `{ "code": "<string>", "retry_after_ms": <int>, "retry_at"?: "<RFC3339>", "limit_key": "<string>", "scope": "<string>" }`.
+>>>>>>> mcoda/task/bck-05-us-09-t34

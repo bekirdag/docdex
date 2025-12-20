@@ -281,6 +281,30 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function formatInstallSummaryLine({ detectedPlatform, detectedArch, targetTriple, version, assetName, binaryPath }) {
+  const versionTag = typeof version === "string" && version.startsWith("v") ? version : `v${version}`;
+  const safeAssetName =
+    typeof assetName === "string" && assetName.trim() ? assetName.trim() : "unknown_asset";
+  return `[docdex] Install summary: os=${detectedPlatform} arch=${detectedArch} triple=${targetTriple} version=${versionTag} asset=${safeAssetName} location=${binaryPath}`;
+}
+
+function logInstallSuccess({
+  logger,
+  detectedPlatform,
+  detectedArch,
+  targetTriple,
+  version,
+  assetName,
+  binaryPath,
+  outcome
+}) {
+  logger.log(
+    formatInstallSummaryLine({ detectedPlatform, detectedArch, targetTriple, version, assetName, binaryPath })
+  );
+  const suffix = outcome ? ` (${outcome})` : "";
+  logger.log(`[docdex] Success: docdexd ready${suffix}`);
+}
+
 async function readJsonFileIfPossible({ fsModule, filePath }) {
   if (!fsModule?.promises?.readFile) {
     return { value: null, error: "readFile_unavailable", errorCode: "READFILE_UNAVAILABLE" };
@@ -628,6 +652,7 @@ async function determineLocalInstallerOutcome({
     binaryPath: discoveredInstalledState.binaryPath,
     metadataPath: discoveredInstalledState.metadataPath,
     installedVersion,
+    installedMetadata: discoveredInstalledState.metadata,
     integrityResult
   };
 }
@@ -1047,6 +1072,8 @@ async function runInstaller(options) {
   const distBaseDir = opts.distBaseDir || pathModule.join(__dirname, "..", "dist");
   const distDir = pathModule.join(distBaseDir, platformKey);
   const isWin32 = detectedPlatform === "win32";
+  const binaryFilename = isWin32 ? "docdexd.exe" : "docdexd";
+  const binaryPath = pathModule.join(distDir, binaryFilename);
 
   const local = await determineLocalInstallerOutcome({
     fsModule,
@@ -1059,7 +1086,20 @@ async function runInstaller(options) {
   });
 
   if (local.outcome === "no-op") {
-    logger.log("[docdex] Install outcome: no-op");
+    const assetNameForSummary =
+      typeof local.installedMetadata?.archive?.name === "string" && local.installedMetadata.archive.name.trim()
+        ? local.installedMetadata.archive.name.trim()
+        : artifactNameFn(platformKey);
+    logInstallSuccess({
+      logger,
+      detectedPlatform,
+      detectedArch,
+      targetTriple,
+      version,
+      assetName: assetNameForSummary,
+      binaryPath,
+      outcome: local.outcome
+    });
     return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
   }
 
@@ -1142,7 +1182,6 @@ async function runInstaller(options) {
     await fsModule.promises.rm(distDir, { recursive: true, force: true });
     await extractTarballFn(tmpFile, distDir);
 
-    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
     if (!fsModule.existsSync(binaryPath)) {
       throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
         platformKey,
@@ -1160,7 +1199,6 @@ async function runInstaller(options) {
     }
 
     await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
-    logger.log(`[docdex] Installed binary to ${binaryPath}`);
 
     const binarySha256 = await sha256FileFn(binaryPath);
     const metadata = {
@@ -1171,7 +1209,7 @@ async function runInstaller(options) {
       platformKey,
       targetTriple,
       binary: {
-        filename: isWin32 ? "docdexd.exe" : "docdexd",
+        filename: binaryFilename,
         sha256: binarySha256
       },
       archive: {
@@ -1188,7 +1226,16 @@ async function runInstaller(options) {
       value: metadata
     });
 
-    logger.log(`[docdex] Install outcome: ${local.outcome}`);
+    logInstallSuccess({
+      logger,
+      detectedPlatform,
+      detectedArch,
+      targetTriple,
+      version,
+      assetName: archive,
+      binaryPath,
+      outcome: local.outcome
+    });
     return { binaryPath, outcome: local.outcome };
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});

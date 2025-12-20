@@ -51,6 +51,7 @@ const {
   targetTripleForPlatformKey,
   UnsupportedPlatformError
 } = require("./platform");
+const { PLATFORM_ENTRY_BY_KEY, PUBLISHED_PLATFORM_KEYS, PUBLISHED_TARGET_TRIPLES } = require("./platform_matrix");
 const { ManifestResolutionError, resolveCanonicalAssetForTargetTriple } = require("./release_manifest");
 <<<<<<< HEAD
 const {
@@ -490,6 +491,7 @@ class ChecksumResolutionError extends Error {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 class ReplaceBinaryError extends Error {
 =======
 class InstallSwapError extends Error {
@@ -622,6 +624,41 @@ async function verifyBinaryVersion({ readBinaryVersionFn, binaryPath, expectedVe
 
   return { detectedVersion, versionOutput };
 >>>>>>> mcoda/task/ops-01-us-03-t44
+=======
+function assertSupportedPlatformPolicy({ platformKey, targetTriple, detected }, { detectedPlatform, detectedArch }) {
+  const normalizedPlatformKey = typeof platformKey === "string" ? platformKey.trim() : null;
+  if (!normalizedPlatformKey) {
+    throw new InstallerConfigError("Platform policy is missing platformKey", {
+      platformKey: null,
+      targetTriple: typeof targetTriple === "string" ? targetTriple : null
+    });
+  }
+
+  const entry = PLATFORM_ENTRY_BY_KEY[normalizedPlatformKey];
+  if (!entry || !entry.published) {
+    const platform = detected?.platform ?? detectedPlatform;
+    const arch = detected?.arch ?? detectedArch;
+    const libc =
+      typeof detected?.libc === "string" && detected.libc.trim() ? detected.libc.trim() : null;
+    const candidateTargetTriple =
+      entry?.targetTriple ??
+      (typeof targetTriple === "string" && targetTriple.trim() ? targetTriple.trim() : null);
+    const reason = entry && entry.published === false ? "target_not_published" : "unknown_or_unsupported_runtime";
+
+    throw new UnsupportedPlatformError({
+      platform,
+      arch,
+      libc,
+      candidatePlatformKey: normalizedPlatformKey,
+      candidateTargetTriple,
+      reason,
+      supportedPlatformKeys: PUBLISHED_PLATFORM_KEYS,
+      supportedTargetTriples: PUBLISHED_TARGET_TRIPLES
+    });
+  }
+
+  return { entry, platformKey: normalizedPlatformKey };
+>>>>>>> mcoda/task/bck-05-us-07-t36
 }
 
 function parseRepoSlug() {
@@ -5531,6 +5568,7 @@ async function runInstaller(options) {
     opts.resolvePlatformPolicyFn ||
     (opts.detectPlatformKeyFn || opts.targetTripleForPlatformKeyFn
 <<<<<<< HEAD
+<<<<<<< HEAD
       ? () => {
           const platformKey = detectPlatformKeyFn();
           const libc = detectedPlatform === "linux" ? libcForPlatformKey(platformKey) : null;
@@ -5538,13 +5576,24 @@ async function runInstaller(options) {
       ? (options) => {
           const platformKey = detectPlatformKeyFn(options);
 >>>>>>> mcoda/task/bck-05-us-07-t35
+=======
+      ? (policyOptions) => {
+          const platformKey = detectPlatformKeyFn(policyOptions);
+>>>>>>> mcoda/task/bck-05-us-07-t36
           const targetTriple = targetTripleForPlatformKeyFn(platformKey);
           const expectedAssetName = artifactNameFn(platformKey);
           const expectedAssetPattern = assetPatternForPlatformKeyFn(platformKey, {
             exampleAssetName: expectedAssetName
           });
           return {
+<<<<<<< HEAD
             detected: { platform: detectedPlatform, arch: detectedArch, ...(libc ? { libc } : {}) },
+=======
+            detected: {
+              platform: policyOptions?.platform ?? detectedPlatform,
+              arch: policyOptions?.arch ?? detectedArch
+            },
+>>>>>>> mcoda/task/bck-05-us-07-t36
             platformKey,
             targetTriple,
             expectedAssetName,
@@ -5561,6 +5610,7 @@ async function runInstaller(options) {
     execPath: opts.execPath
   });
 
+<<<<<<< HEAD
   const platformKey = platformPolicy.platformKey;
   const targetTriple = platformPolicy.targetTriple;
 <<<<<<< HEAD
@@ -5576,6 +5626,17 @@ async function runInstaller(options) {
       ? platformPolicy.expectedAssetName
       : artifactNameFn(platformKey);
 >>>>>>> mcoda/task/ops-01-us-01-t41
+=======
+  const { entry: platformEntry, platformKey } = assertSupportedPlatformPolicy(
+    {
+      platformKey: platformPolicy.platformKey,
+      targetTriple: platformPolicy.targetTriple,
+      detected: platformPolicy.detected
+    },
+    { detectedPlatform, detectedArch }
+  );
+  const targetTriple = platformEntry.targetTriple;
+>>>>>>> mcoda/task/bck-05-us-07-t36
   const version = getVersionFn();
 <<<<<<< HEAD
 <<<<<<< HEAD

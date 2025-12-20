@@ -5530,9 +5530,14 @@ async function runInstaller(options) {
   const resolvePlatformPolicyFn =
     opts.resolvePlatformPolicyFn ||
     (opts.detectPlatformKeyFn || opts.targetTripleForPlatformKeyFn
+<<<<<<< HEAD
       ? () => {
           const platformKey = detectPlatformKeyFn();
           const libc = detectedPlatform === "linux" ? libcForPlatformKey(platformKey) : null;
+=======
+      ? (options) => {
+          const platformKey = detectPlatformKeyFn(options);
+>>>>>>> mcoda/task/bck-05-us-07-t35
           const targetTriple = targetTripleForPlatformKeyFn(platformKey);
           const expectedAssetName = artifactNameFn(platformKey);
           const expectedAssetPattern = assetPatternForPlatformKeyFn(platformKey, {

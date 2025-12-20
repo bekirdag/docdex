@@ -71,6 +71,7 @@ Use these codes for invalid inputs:
 - `invalid_query`: invalid query text (empty/whitespace-only, or query parser rejects it).
 - `invalid_path`: invalid or unsafe path (absolute path, parent traversal, outside repo, etc).
 - `invalid_range`: invalid line window (`start_line`/`end_line` out of bounds).
+- `unsupported_version`: requested schema version is outside the supported range for the tool response.
 - `max_content_exceeded`: response content would exceed server limits (e.g. `docdex_open` file too large).
 
 ### Feature/domain codes (currently emitted)
@@ -131,3 +132,6 @@ Notes:
 - HTTP `/search` enforces `limit` by clamping to the daemon’s configured max and does not error on over-limit; MCP `docdex_search` similarly clamps `limit` to the MCP server’s `--max-results`.
 - MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`.
 - MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with `details.max_bytes` and `details.actual_bytes`.
+- MCP tool arguments may include `schema_version`; unsupported values return `unsupported_version` with `details.schema` including `name`, `requested`, and `supported` `{min,max}`.
+- MCP `docdex_search` snippet text is capped at 420 characters (truncated when needed).
+- MCP `docdex_memory_recall` clamps `top_k` to `<= 50`.

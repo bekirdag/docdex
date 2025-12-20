@@ -170,6 +170,45 @@ Payload bounds for retryable errors:
 - `limit_key` and `scope` are capped at 64 bytes each.
 - MCP rate-limit/backoff payloads are kept under 2 KiB; HTTP rate-limit payloads under 1 KiB.
 
+## Index-state failures (missing vs stale)
+
+Index-state errors are emitted when a tool requires an on-disk index to operate. They are always reported with the standard Docdex error envelope described above, and the **machine-readable** code is still `error.data.code` (mirrored in `error.data.error.code`).
+
+### Distinguishing the codes
+
+- `missing_index`: the on-disk index is absent (e.g., a repo has not been indexed yet, or the state dir was removed).
+- `stale_index`: the on-disk index exists but is known to be out-of-date; Docdex fails closed to avoid serving stale/cross-repo results. (This code is reserved for future use and may not be emitted in all surfaces yet.)
+
+### Expected envelope fields
+
+When an index-dependent tool fails, the MCP error wrapper and Docdex envelope include:
+
+- `error.code`: `-32602`
+- `error.message`: short category string (e.g., "missing index")
+- `error.data.code`: `missing_index` or `stale_index`
+- `error.data.message`: short summary (often matches `error.message`)
+- `error.data.reason` (optional): underlying detail string (e.g., "index not found at ...; run `docdexd index --repo <repo>` first")
+- `error.data.tool` (optional): tool name (e.g., `docdex_search`, `docdex_files`, `docdex_stats`)
+- `error.data.details` (optional): structured context; may be absent for index-state failures
+- `error.data.error`: redundant nested envelope with the same fields as above
+
+### Remediation (manual, no repo/code mutation)
+
+Docdex does **not** modify your repo contents or install dependencies automatically. To resolve index-state failures, run an indexing action yourself:
+
+- MCP: call `docdex_index` (empty `paths` for full reindex, or specific paths for targeted ingest).
+- CLI: run `docdexd index --repo <repo>` (full reindex).
+
+For `stale_index`, prefer a full reindex to ensure the index matches the current repo contents.
+
+### Normal behavior when index is fresh
+
+When the index is healthy, results are repo-scoped (no cross-repo content) and limits are clamped rather than erroring:
+
+- MCP `docdex_search` clamps `limit` to the server’s `--max-results` (min 1).
+- MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`.
+- MCP `docdex_open` enforces a 512 KiB max response (`max_content_exceeded` if exceeded).
+
 ## Repo moved/renamed (deterministic behavior + recovery)
 
 Docdex intentionally **fails closed** on repo identity changes to prevent cross-repo state mixing (no silent cross-association).

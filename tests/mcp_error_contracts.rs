@@ -9,6 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
+const MAX_MCP_RATE_LIMIT_PAYLOAD_BYTES: usize = 2048;
+
 fn docdex_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
@@ -196,6 +198,12 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         .and_then(|v| v.get("data"))
         .and_then(|v| v.as_object())
         .ok_or("rate-limit error missing error.data object")?;
+    let payload_bytes = serde_json::to_vec(&limited_files)?;
+    assert!(
+        payload_bytes.len() <= MAX_MCP_RATE_LIMIT_PAYLOAD_BYTES,
+        "rate-limit payload should remain small (got {} bytes)",
+        payload_bytes.len()
+    );
     assert_eq!(
         data_files.get("limit_key").and_then(|v| v.as_str()),
         Some("mcp_tools")
@@ -211,6 +219,12 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
             .is_some(),
         "retry_after_ms must be an integer"
     );
+    if let Some(retry_at) = data_files.get("retry_at") {
+        assert!(
+            retry_at.as_str().is_some(),
+            "retry_at must be an RFC3339 string when present"
+        );
+    }
     assert!(
         data_files.keys().all(|k| {
             matches!(
@@ -257,6 +271,12 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         .and_then(|v| v.get("data"))
         .and_then(|v| v.as_object())
         .ok_or("rate-limit error missing error.data object (docdex_search)")?;
+    let payload_bytes = serde_json::to_vec(&limited_search)?;
+    assert!(
+        payload_bytes.len() <= MAX_MCP_RATE_LIMIT_PAYLOAD_BYTES,
+        "rate-limit payload should remain small (got {} bytes)",
+        payload_bytes.len()
+    );
 
     fn shape_signature(data: &serde_json::Map<String, Value>) -> Vec<(String, &'static str)> {
         let mut out: Vec<(String, &'static str)> = data
@@ -284,6 +304,51 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     );
 
     mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_backoff_required_errors_are_machine_coded() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(repo.path(), host, port)?;
+    wait_for_health(host, port)?;
+
+    let mut mcp = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 30,
+            "method": "tools/call",
+            "params": { "name": "docdex_index", "arguments": { "paths": [] } }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("backoff_required"));
+    let data = resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.as_object())
+        .ok_or("backoff error missing error.data object")?;
+    assert_eq!(
+        data.get("code").and_then(|v| v.as_str()),
+        Some("backoff_required")
+    );
+    assert_eq!(
+        data.get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("backoff_required")
+    );
+
+    mcp.shutdown();
+    server.kill().ok();
+    server.wait().ok();
     Ok(())
 }
 
@@ -469,6 +534,77 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
             .unwrap_or_default()
             .contains("docdexd mcp --repo")),
         "expected recoverySteps to mention restarting the MCP server with `docdexd mcp --repo`; got: {details}"
+    );
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_invalid_argument_errors_are_machine_coded() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let mut mcp = McpHarness::spawn_with_env(repo.path(), &[("DOCDEX_ENABLE_MEMORY", "1")])?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 40,
+            "method": "tools/call",
+            "params": { "name": "docdex_memory_store", "arguments": { "text": "" } }
+        }),
+    )?;
+    let store_err = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&store_err), Some(-32602));
+    assert_eq!(mcp_error_data_code(&store_err), Some("invalid_argument"));
+    assert_eq!(
+        store_err
+            .get("error")
+            .and_then(|v| v.get("data"))
+            .and_then(|v| v.get("tool"))
+            .and_then(|v| v.as_str()),
+        Some("docdex_memory_store")
+    );
+    assert!(
+        store_err
+            .get("error")
+            .and_then(|v| v.get("data"))
+            .and_then(|v| v.get("reason"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .contains("text must not be empty"),
+        "memory store invalid_argument should include a reason"
+    );
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 41,
+            "method": "tools/call",
+            "params": { "name": "docdex_memory_recall", "arguments": { "query": "   " } }
+        }),
+    )?;
+    let recall_err = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&recall_err), Some(-32602));
+    assert_eq!(mcp_error_data_code(&recall_err), Some("invalid_argument"));
+    assert_eq!(
+        recall_err
+            .get("error")
+            .and_then(|v| v.get("data"))
+            .and_then(|v| v.get("tool"))
+            .and_then(|v| v.as_str()),
+        Some("docdex_memory_recall")
+    );
+    assert!(
+        recall_err
+            .get("error")
+            .and_then(|v| v.get("data"))
+            .and_then(|v| v.get("reason"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .contains("query must not be empty"),
+        "memory recall invalid_argument should include a reason"
     );
 
     mcp.shutdown();

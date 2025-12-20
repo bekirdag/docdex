@@ -1393,6 +1393,7 @@ impl McpServer {
             "avg_bytes_per_doc": stats.avg_bytes_per_doc,
             "generated_at_epoch_ms": stats.generated_at_epoch_ms,
             "last_updated_epoch_ms": stats.last_updated_epoch_ms,
+            "index_status": stats.index_status,
             "repo_root": self.repo_root.display().to_string(),
             "project_root": self
                 .default_project_root

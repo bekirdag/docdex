@@ -794,7 +794,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 name: "docdex_stats",
                 description: "Report index metadata.",
                 args: &["project_root (string, optional)"],
-                returns: &["num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "repo_root"],
+                returns: &["num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "index_status", "repo_root"],
             },
             AiHelpMcpTool {
                 name: "docdex_memory_store",
@@ -840,6 +840,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             "avg_bytes_per_doc",
             "generated_at_epoch_ms",
             "last_updated_epoch_ms",
+            "index_status",
             "repo_root",
         ],
     };

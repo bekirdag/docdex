@@ -254,6 +254,21 @@ pub struct DocSnapshot {
     pub token_estimate: u64,
 }
 
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexStatus {
+    NotStarted,
+    Fresh,
+    Stale,
+    Missing,
+}
+
+#[derive(Debug, Default)]
+struct RepoIndexSnapshot {
+    indexable_files: u64,
+    latest_mtime_ms: Option<u128>,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct IndexStats {
     pub num_docs: u64,
@@ -265,6 +280,7 @@ pub struct IndexStats {
     pub generated_at_epoch_ms: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_updated_epoch_ms: Option<u128>,
+    pub index_status: IndexStatus,
 }
 
 impl IndexConfig {
@@ -840,6 +856,9 @@ impl Indexer {
                 }
             }
         }
+        let repo_snapshot = Self::scan_repo_indexable(&self.repo_root, &self.config);
+        let index_status =
+            Self::resolve_index_status(&state_dir, num_docs, last_updated_epoch_ms, &repo_snapshot);
         let generated_at_epoch_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -857,7 +876,67 @@ impl Indexer {
             avg_bytes_per_doc,
             generated_at_epoch_ms,
             last_updated_epoch_ms,
+            index_status,
         })
+    }
+
+    fn scan_repo_indexable(repo_root: &Path, config: &IndexConfig) -> RepoIndexSnapshot {
+        let mut snapshot = RepoIndexSnapshot::default();
+        for entry in WalkDir::new(repo_root).into_iter().flatten() {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if !should_index(path, repo_root, config) {
+                continue;
+            }
+            snapshot.indexable_files = snapshot.indexable_files.saturating_add(1);
+            if let Ok(meta) = entry.metadata() {
+                if let Ok(modified) = meta.modified() {
+                    if let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
+                        let millis = dur.as_millis();
+                        if snapshot
+                            .latest_mtime_ms
+                            .map(|current| millis > current)
+                            .unwrap_or(true)
+                        {
+                            snapshot.latest_mtime_ms = Some(millis);
+                        }
+                    }
+                }
+            }
+        }
+        snapshot
+    }
+
+    fn resolve_index_status(
+        state_dir: &Path,
+        num_docs: u64,
+        last_updated_epoch_ms: Option<u128>,
+        repo_snapshot: &RepoIndexSnapshot,
+    ) -> IndexStatus {
+        if !state_dir.exists() {
+            return IndexStatus::Missing;
+        }
+        if repo_snapshot.indexable_files == 0 {
+            return IndexStatus::Fresh;
+        }
+        if num_docs == 0 {
+            return IndexStatus::NotStarted;
+        }
+        if num_docs != repo_snapshot.indexable_files {
+            return IndexStatus::Stale;
+        }
+        if let Some(repo_latest) = repo_snapshot.latest_mtime_ms {
+            if let Some(index_latest) = last_updated_epoch_ms {
+                if repo_latest > index_latest {
+                    return IndexStatus::Stale;
+                }
+            } else {
+                return IndexStatus::Stale;
+            }
+        }
+        IndexStatus::Fresh
     }
 
     pub fn snapshot_with_snippet(

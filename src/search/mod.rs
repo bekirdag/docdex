@@ -4,7 +4,6 @@ use crate::index::{
 use crate::error::{
     AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    ERR_RATE_LIMITED,
 };
 use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
@@ -967,13 +966,14 @@ impl ErrorDetail {
     }
 
     fn rate_limited(err: &RateLimited) -> Self {
+        let hint = err.retry_hint();
         Self {
-            code: ERR_RATE_LIMITED,
+            code: hint.code,
             message: truncate_bytes(&err.message, MAX_RATE_LIMIT_MESSAGE_BYTES),
-            retry_after_ms: Some(err.retry_after_ms),
-            retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
-            limit_key: Some(err.limit_key.clone()),
-            scope: Some(err.scope.clone()),
+            retry_after_ms: Some(hint.retry_after_ms),
+            retry_at: hint.retry_at,
+            limit_key: Some(hint.limit_key),
+            scope: Some(hint.scope),
         }
     }
 }

@@ -1,4 +1,4 @@
-use crate::error::{AppError, ERR_BACKOFF_REQUIRED};
+use crate::error::BackoffRequired;
 use crate::index::{
     DocSnapshot, Hit, QueryRewrite, SearchError, SearchQueryMeta, SearchSnippetOrigin,
     SnippetOrigin, SnippetResult,
@@ -217,9 +217,10 @@ impl LibsIndexer {
 
     fn writer(&self) -> Result<Arc<Mutex<IndexWriter>>> {
         self.writer.clone().ok_or_else(|| {
-            AppError::new(
-                ERR_BACKOFF_REQUIRED,
+            BackoffRequired::new(
                 "libs index writer unavailable (another docdexd may be indexing); retry later",
+                "libs_index_writer",
+                "repo",
             )
             .into()
         })

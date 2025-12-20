@@ -196,6 +196,13 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         .and_then(|v| v.get("data"))
         .and_then(|v| v.as_object())
         .ok_or("rate-limit error missing error.data object")?;
+    assert!(
+        data_files
+            .get("message")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "rate-limit error should include message"
+    );
     assert_eq!(
         data_files.get("limit_key").and_then(|v| v.as_str()),
         Some("mcp_tools")
@@ -211,14 +218,36 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
             .is_some(),
         "retry_after_ms must be an integer"
     );
+    let envelope = data_files
+        .get("error")
+        .and_then(|v| v.as_object())
+        .ok_or("rate-limit error missing error envelope")?;
+    assert_eq!(
+        envelope.get("code").and_then(|v| v.as_str()),
+        Some("rate_limited")
+    );
     assert!(
-        data_files.keys().all(|k| {
-            matches!(
-                k.as_str(),
-                "code" | "retry_after_ms" | "retry_at" | "limit_key" | "scope"
-            )
-        }),
-        "error.data should only include stable keys"
+        envelope.get("message").and_then(|v| v.as_str()).is_some(),
+        "rate-limit error envelope should include message"
+    );
+    let details = envelope
+        .get("details")
+        .and_then(|v| v.as_object())
+        .ok_or("rate-limit error envelope missing details")?;
+    assert!(
+        details
+            .get("retry_after_ms")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "rate-limit error envelope should include retry_after_ms"
+    );
+    assert_eq!(
+        details.get("limit_key").and_then(|v| v.as_str()),
+        Some("mcp_tools")
+    );
+    assert_eq!(
+        details.get("scope").and_then(|v| v.as_str()),
+        Some("global")
     );
 
     // Wait long enough for the limiter to refill 1 token (per_minute=60).

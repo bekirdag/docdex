@@ -269,10 +269,22 @@ pub struct RateLimited {
     pub retry_at: Option<DateTime<Utc>>,
     pub limit_key: String,
     pub scope: String,
+    pub resource_key: String,
+    pub limit_per_min: u32,
+    pub limit_burst: u32,
+    pub denied_total: u64,
 }
 
 impl RateLimited {
-    pub fn new(retry_after: Duration, limit_key: String, scope: String) -> Self {
+    pub fn new(
+        retry_after: Duration,
+        limit_key: String,
+        scope: String,
+        resource_key: String,
+        limit_per_min: u32,
+        limit_burst: u32,
+        denied_total: u64,
+    ) -> Self {
         let retry_after_ms = retry_after.as_millis().min(u128::from(u64::MAX)) as u64;
 <<<<<<< HEAD
         let limit_key = clamp_utf8(limit_key, MAX_RATE_LIMIT_FIELD_BYTES);
@@ -288,6 +300,10 @@ impl RateLimited {
             retry_at: None,
             limit_key,
             scope,
+            resource_key,
+            limit_per_min,
+            limit_burst,
+            denied_total,
         }
     }
 

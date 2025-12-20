@@ -623,6 +623,25 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         data_files.get("scope").and_then(|v| v.as_str()),
         Some("global")
     );
+    assert_eq!(
+        data_files.get("resource_key").and_then(|v| v.as_str()),
+        Some("global")
+    );
+    assert_eq!(
+        data_files.get("limit_per_min").and_then(|v| v.as_u64()),
+        Some(60)
+    );
+    assert_eq!(
+        data_files.get("limit_burst").and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert!(
+        data_files
+            .get("denied_total")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "denied_total must be an integer"
+    );
     assert!(
         data_files
             .get("retry_after_ms")
@@ -648,6 +667,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     }
 >>>>>>> mcoda/task/bck-05-us-09-t29
     assert!(
+<<<<<<< HEAD
         envelope.get("message").and_then(|v| v.as_str()).is_some(),
         "rate-limit error envelope should include message"
     );
@@ -669,6 +689,23 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         details.get("scope").and_then(|v| v.as_str()),
         Some("global")
+=======
+        data_files.keys().all(|k| {
+            matches!(
+                k.as_str(),
+                "code"
+                    | "retry_after_ms"
+                    | "retry_at"
+                    | "limit_key"
+                    | "scope"
+                    | "resource_key"
+                    | "limit_per_min"
+                    | "limit_burst"
+                    | "denied_total"
+            )
+        }),
+        "error.data should only include stable keys"
+>>>>>>> mcoda/task/bck-05-us-09-t05
     );
 
     // Wait long enough for the limiter to refill 1 token (per_minute=60).

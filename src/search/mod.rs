@@ -1197,7 +1197,17 @@ struct ErrorDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     scope: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+<<<<<<< HEAD
     details: Option<serde_json::Value>,
+=======
+    resource_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit_per_min: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit_burst: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    denied_total: Option<u64>,
+>>>>>>> mcoda/task/bck-05-us-09-t05
 }
 
 impl ErrorDetail {
@@ -1209,7 +1219,14 @@ impl ErrorDetail {
             retry_at: None,
             limit_key: None,
             scope: None,
+<<<<<<< HEAD
             details: None,
+=======
+            resource_key: None,
+            limit_per_min: None,
+            limit_burst: None,
+            denied_total: None,
+>>>>>>> mcoda/task/bck-05-us-09-t05
         }
     }
 
@@ -1227,6 +1244,7 @@ impl ErrorDetail {
 <<<<<<< HEAD
             limit_key: Some(err.limit_key.clone()),
             scope: Some(err.scope.clone()),
+<<<<<<< HEAD
 <<<<<<< HEAD
 =======
 =======
@@ -1265,6 +1283,12 @@ impl ErrorDetail {
             limit_key: Some(truncate_label(&err.limit_key)),
             scope: Some(truncate_label(&err.scope)),
 >>>>>>> mcoda/task/bck-05-us-09-t37
+=======
+            resource_key: Some(err.resource_key.clone()),
+            limit_per_min: Some(err.limit_per_min),
+            limit_burst: Some(err.limit_burst),
+            denied_total: Some(err.denied_total),
+>>>>>>> mcoda/task/bck-05-us-09-t05
         }
     }
 
@@ -1338,8 +1362,17 @@ mod rate_limit_contract_tests {
         let long = "x".repeat(MAX_RATE_LIMIT_FIELD_BYTES * 8);
         let err = RateLimited::new(
             Duration::from_millis(1234),
+<<<<<<< HEAD
             long.clone(),
             long,
+=======
+            "http_ip".to_string(),
+            "ip".to_string(),
+            "127.0.0.1".to_string(),
+            60,
+            10,
+            3,
+>>>>>>> mcoda/task/bck-05-us-09-t05
         )
         .with_message("x".repeat(10_000))
         .with_retry_at(Utc::now());
@@ -1389,6 +1422,7 @@ mod rate_limit_contract_tests {
 <<<<<<< HEAD
         assert!(error.get("limit_key").and_then(|v| v.as_str()).is_some());
         assert!(error.get("scope").and_then(|v| v.as_str()).is_some());
+<<<<<<< HEAD
         let limit_key = error
             .get("limit_key")
             .and_then(|v| v.as_str())
@@ -1422,6 +1456,12 @@ mod rate_limit_contract_tests {
             "scope should be bounded"
 >>>>>>> mcoda/task/bck-05-us-09-t30
         );
+=======
+        assert!(error.get("resource_key").and_then(|v| v.as_str()).is_some());
+        assert!(error.get("limit_per_min").and_then(|v| v.as_u64()).is_some());
+        assert!(error.get("limit_burst").and_then(|v| v.as_u64()).is_some());
+        assert!(error.get("denied_total").and_then(|v| v.as_u64()).is_some());
+>>>>>>> mcoda/task/bck-05-us-09-t05
     }
 }
 
@@ -1997,9 +2037,12 @@ async fn security_middleware(
     }
     if path != "/healthz" {
         if let Some(limiter) = state.security.rate_limit.as_ref() {
-            if let Err(err) =
-                limiter.check_or_rate_limited(addr.ip(), "http_ip", "ip")
-            {
+            if let Err(err) = limiter.check_or_rate_limited(
+                addr.ip(),
+                "http_ip",
+                "ip",
+                addr.ip().to_string(),
+            ) {
                 state.metrics.inc_rate_limit();
                 let mut headers = HeaderMap::new();
                 let retry_after_seconds = err.retry_after_ms.saturating_add(999) / 1000;

@@ -1,3 +1,4 @@
+use crate::browser_session::BrowserSessionError;
 use crate::error::{
     AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
@@ -124,7 +125,7 @@ fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
     }
 
     serde_json::to_value(RateLimitData {
-        code: ERR_RATE_LIMITED,
+        code: err.code,
         retry_after_ms: err.retry_after_ms,
         retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
         limit_key: &err.limit_key,
@@ -173,6 +174,11 @@ fn rpc_rate_limited(err: &RateLimited) -> RpcError {
 fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
     if let Some(rate) = err.downcast_ref::<RateLimited>() {
         return rpc_rate_limited(rate);
+    }
+    if let Some(browser_err) = err.downcast_ref::<BrowserSessionError>() {
+        if let BrowserSessionError::RateLimited(rate) = browser_err {
+            return rpc_rate_limited(rate);
+        }
     }
     let (mcp_code, details) = classify_tool_error(err);
     rpc_error(
@@ -1703,6 +1709,22 @@ mod tests {
         assert_eq!(obj.get("limit_key").and_then(|v| v.as_str()), Some("mcp_tools"));
         assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
         assert!(obj.get("retry_at").is_none(), "retry_at should be omitted when unset");
+    }
+
+    #[test]
+    fn backoff_required_rpc_preserves_code_and_retry_hints() {
+        let err = RateLimited::backoff_required(
+            Duration::from_millis(500),
+            "browser_session".to_string(),
+            "global".to_string(),
+        );
+        let rpc = rpc_rate_limited(&err);
+        let data = rpc.data.expect("backoff rpc should include data");
+        let obj = data.as_object().expect("backoff data should be object");
+        assert_eq!(obj.get("code").and_then(|v| v.as_str()), Some(ERR_BACKOFF_REQUIRED));
+        assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(500));
+        assert_eq!(obj.get("limit_key").and_then(|v| v.as_str()), Some("browser_session"));
+        assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
     }
 
     #[test]

@@ -26,6 +26,20 @@ const MAX_MANIFEST_BYTES = 1024 * 1024; // 1 MiB cap for safety
 const INVALID_JSON_ERROR = "invalid JSON";
 const INSTALL_METADATA_SCHEMA_VERSION = 1;
 const INSTALL_METADATA_FILENAME = "docdexd-install.json";
+const DOWNLOAD_RETRY_DEFAULTS = Object.freeze({
+  maxAttempts: 3,
+  initialDelayMs: 500,
+  maxDelayMs: 4000
+});
+const RETRYABLE_HTTP_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const RETRYABLE_ERROR_CODES = new Set([
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EPIPE"
+]);
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -185,6 +199,40 @@ function requestOptions() {
   return { headers };
 }
 
+function normalizeRetryOptions(options) {
+  const maxAttempts =
+    options && Number.isFinite(options.maxAttempts) && options.maxAttempts > 0
+      ? Math.trunc(options.maxAttempts)
+      : DOWNLOAD_RETRY_DEFAULTS.maxAttempts;
+  const initialDelayMs =
+    options && Number.isFinite(options.initialDelayMs) && options.initialDelayMs >= 0
+      ? Math.trunc(options.initialDelayMs)
+      : DOWNLOAD_RETRY_DEFAULTS.initialDelayMs;
+  const maxDelayMs =
+    options && Number.isFinite(options.maxDelayMs) && options.maxDelayMs >= 0
+      ? Math.trunc(options.maxDelayMs)
+      : DOWNLOAD_RETRY_DEFAULTS.maxDelayMs;
+  return { maxAttempts, initialDelayMs, maxDelayMs };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function computeRetryDelayMs(attempt, options) {
+  const base = options.initialDelayMs;
+  const max = options.maxDelayMs;
+  const delay = base * Math.pow(2, Math.max(attempt - 1, 0));
+  return Math.min(delay, max);
+}
+
+function isRetryableDownloadError(err) {
+  if (!err) return false;
+  if (typeof err.statusCode === "number") return RETRYABLE_HTTP_STATUS.has(err.statusCode);
+  if (typeof err.code === "string") return RETRYABLE_ERROR_CODES.has(err.code);
+  return false;
+}
+
 function downloadText(url, redirects = 0) {
   if (redirects > MAX_REDIRECTS) {
     throw new Error(`Too many redirects while fetching ${url}`);
@@ -228,10 +276,12 @@ function downloadText(url, redirects = 0) {
   });
 }
 
-function download(url, dest, redirects = 0) {
+async function download(url, dest, redirects = 0) {
   if (redirects > MAX_REDIRECTS) {
     throw new Error(`Too many redirects while fetching ${url}`);
   }
+
+  await fs.promises.mkdir(path.dirname(dest), { recursive: true });
 
   return new Promise((resolve, reject) => {
     https
@@ -249,11 +299,71 @@ function download(url, dest, redirects = 0) {
           return reject(err);
         }
 
-        const file = fs.createWriteStream(dest);
-        pipeline(res, file).then(resolve).catch(reject);
+        const tmpPath = `${dest}.${process.pid}.${Date.now()}.tmp`;
+        const file = fs.createWriteStream(tmpPath);
+        pipeline(res, file)
+          .then(async () => {
+            try {
+              await fs.promises.rename(tmpPath, dest);
+              resolve();
+            } catch (err) {
+              await fs.promises.rm(tmpPath, { force: true }).catch(() => {});
+              reject(err);
+            }
+          })
+          .catch(async (err) => {
+            await fs.promises.rm(tmpPath, { force: true }).catch(() => {});
+            reject(err);
+          });
       })
       .on("error", reject);
   });
+}
+
+async function downloadWithRetry(url, dest, options = {}) {
+  const downloadFn = options.downloadFn || download;
+  const logger = options.logger || console;
+  const sleepFn = options.sleepFn || sleep;
+  const retryOptions = normalizeRetryOptions(options.retryOptions || {});
+
+  let attempt = 0;
+  let lastError = null;
+
+  while (attempt < retryOptions.maxAttempts) {
+    attempt += 1;
+    try {
+      await downloadFn(url, dest);
+      return;
+    } catch (err) {
+      lastError = err;
+      const retryable = isRetryableDownloadError(err);
+      if (!retryable || attempt >= retryOptions.maxAttempts) {
+        if (err && typeof err === "object") {
+          err.retryAttempts = attempt;
+          err.retryLimit = retryOptions.maxAttempts;
+          err.retryable = retryable;
+        }
+        throw err;
+      }
+
+      await fs.promises.rm(dest, { force: true }).catch(() => {});
+      const delayMs = computeRetryDelayMs(attempt, retryOptions);
+      const reason =
+        typeof err?.statusCode === "number"
+          ? `HTTP ${err.statusCode}`
+          : typeof err?.code === "string"
+            ? err.code
+            : err?.message || "unknown error";
+      if (logger && typeof logger.warn === "function") {
+        logger.warn(
+          `[docdex] Download failed (${reason}); retrying in ${delayMs}ms (${attempt + 1}/${retryOptions.maxAttempts})...`
+        );
+      }
+      await sleepFn(delayMs);
+    }
+  }
+
+  throw lastError;
 }
 
 async function extractTarball(archivePath, targetDir) {
@@ -1048,6 +1158,10 @@ async function runInstaller(options) {
   const distDir = pathModule.join(distBaseDir, platformKey);
   const isWin32 = detectedPlatform === "win32";
 
+  logger.log(`[docdex] Detected platform: ${detectedPlatform}/${detectedArch}`);
+  logger.log(`[docdex] Target triple: ${targetTriple}`);
+  logger.log(`[docdex] Daemon version: v${version}`);
+
   const local = await determineLocalInstallerOutcome({
     fsModule,
     pathModule,
@@ -1077,10 +1191,16 @@ async function runInstaller(options) {
   const tmpDir = opts.tmpDir || osModule.tmpdir();
   const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
 
+  logger.log(`[docdex] Resolved asset: ${archive}`);
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
   try {
     try {
-      await downloadFn(downloadUrl, tmpFile);
+      await downloadWithRetry(downloadUrl, tmpFile, {
+        downloadFn,
+        logger,
+        retryOptions: opts.downloadRetry,
+        sleepFn: opts.sleepFn
+      });
     } catch (err) {
       if (err && typeof err.statusCode === "number" && err.statusCode === 404) {
         const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
@@ -1097,6 +1217,8 @@ async function runInstaller(options) {
           version,
           repoSlug,
           downloadUrl,
+          retryAttempts: typeof err?.retryAttempts === "number" ? err.retryAttempts : null,
+          retryLimit: typeof err?.retryLimit === "number" ? err.retryLimit : null,
           expectedAsset: archive,
           expectedAssetPattern: assetPatternForPlatformKeyFn(platformKey, { exampleAssetName: archive }),
           note: "This usually means the GitHub release assets are missing or the npm version is out of sync with the release."
@@ -1115,7 +1237,9 @@ async function runInstaller(options) {
           manifestName: manifestAttempt?.manifestName ?? null,
           manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
           fallbackAttempted: source === "fallback",
-          statusCode: typeof err?.statusCode === "number" ? err.statusCode : null
+          statusCode: typeof err?.statusCode === "number" ? err.statusCode : null,
+          retryAttempts: typeof err?.retryAttempts === "number" ? err.retryAttempts : null,
+          retryLimit: typeof err?.retryLimit === "number" ? err.retryLimit : null
         },
         err
       );
@@ -1320,6 +1444,8 @@ function describeFatalError(err) {
   }
 
   if (err instanceof DownloadError) {
+    const retryAttempts = typeof err.details?.retryAttempts === "number" ? err.details.retryAttempts : null;
+    const retryLimit = typeof err.details?.retryLimit === "number" ? err.details.retryLimit : null;
     return {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
@@ -1329,6 +1455,7 @@ function describeFatalError(err) {
         `[docdex] error code: ${err.code}`,
         err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
         err.details?.statusCode != null ? `[docdex] HTTP status: ${err.details.statusCode}` : null,
+        retryAttempts && retryLimit ? `[docdex] Retry attempts: ${retryAttempts}/${retryLimit}` : null,
         err.cause?.message ? `[docdex] Cause: ${err.cause.message}` : null
       ].filter(Boolean)
     };

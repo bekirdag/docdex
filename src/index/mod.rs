@@ -18,7 +18,7 @@ use thiserror::Error;
 use tracing::warn;
 use crate::error::{
     repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
-    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
 };
 use crate::symbols;
 use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
@@ -157,6 +157,14 @@ const MAX_SUMMARY_CHARS: usize = 360;
 const MAX_SUMMARY_SEGMENTS: usize = 4;
 const MAX_SNIPPET_CHARS: usize = 420;
 const FALLBACK_PREVIEW_LINES: usize = 60;
+const INDEX_STATE_FILENAME: &str = "index_state.json";
+const INDEX_STATE_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct IndexStateFile {
+    version: u32,
+    last_indexed_epoch_ms: u64,
+}
 
 #[derive(Clone)]
 pub struct IndexConfig {
@@ -501,6 +509,7 @@ impl Indexer {
         }
         writer.commit()?;
         self.reader.reload()?;
+        self.record_index_state()?;
         Ok(())
     }
 
@@ -519,6 +528,7 @@ impl Indexer {
         self.maybe_update_symbols(&ingest);
         writer.commit()?;
         self.reader.reload()?;
+        self.record_index_state()?;
         Ok(decision)
     }
 
@@ -538,6 +548,7 @@ impl Indexer {
                 warn!(target: "docdexd", error = ?err, rel_path = %rel, "failed to delete symbols record");
             }
         }
+        self.record_index_state()?;
         Ok(())
     }
 
@@ -568,6 +579,7 @@ impl Indexer {
             }
             .into());
         }
+        self.ensure_index_state()?;
         let searcher = self.reader.searcher();
         let parser = QueryParser::for_index(
             &self.index,
@@ -789,6 +801,129 @@ impl Indexer {
         self.config.state_dir()
     }
 
+    fn index_state_path(&self) -> PathBuf {
+        self.config.state_dir().join(INDEX_STATE_FILENAME)
+    }
+
+    fn load_index_state(&self) -> Option<IndexStateFile> {
+        let raw = fs::read_to_string(self.index_state_path()).ok()?;
+        serde_json::from_str(&raw).ok()
+    }
+
+    fn record_index_state(&self) -> Result<()> {
+        let payload = IndexStateFile {
+            version: INDEX_STATE_VERSION,
+            last_indexed_epoch_ms: now_epoch_ms_u64()?,
+        };
+        let raw = serde_json::to_string_pretty(&payload)?;
+        fs::write(self.index_state_path(), raw)?;
+        Ok(())
+    }
+
+    fn latest_repo_modified_epoch_ms(&self) -> Result<Option<u64>> {
+        let mut latest: Option<u64> = None;
+        for entry in WalkDir::new(&self.repo_root).into_iter() {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if !decide_file(path, &self.repo_root, &self.config).should_index() {
+                continue;
+            }
+            let meta = match entry.metadata() {
+                Ok(meta) => meta,
+                Err(_) => continue,
+            };
+            let modified = match meta.modified() {
+                Ok(modified) => modified,
+                Err(_) => continue,
+            };
+            let ms = modified
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            let ms_u64 = ms.min(u128::from(u64::MAX)) as u64;
+            latest = Some(latest.map_or(ms_u64, |current| current.max(ms_u64)));
+        }
+        Ok(latest)
+    }
+
+    fn latest_state_dir_modified_epoch_ms(&self) -> Option<u64> {
+        let mut latest: Option<u64> = None;
+        for entry in walkdir::WalkDir::new(self.config.state_dir()).into_iter().flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if let Ok(modified) = meta.modified() {
+                    let ms = modified
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis();
+                    let ms_u64 = ms.min(u128::from(u64::MAX)) as u64;
+                    latest = Some(latest.map_or(ms_u64, |current| current.max(ms_u64)));
+                }
+            }
+        }
+        latest
+    }
+
+    fn index_has_docs(&self) -> bool {
+        let searcher = self.reader.searcher();
+        for segment_reader in searcher.segment_readers() {
+            let live_docs = segment_reader
+                .alive_bitset()
+                .map(|bits| bits.num_alive_docs() as u64)
+                .unwrap_or_else(|| segment_reader.max_doc() as u64);
+            if live_docs > 0 {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn ensure_index_state(&self) -> Result<()> {
+        let state = match self.load_index_state() {
+            Some(state) => state,
+            None => {
+                if !self.index_has_docs() {
+                    return Err(AppError::new(
+                        ERR_MISSING_INDEX,
+                        format!(
+                            "index not ready; run `docdexd index --repo {}` or MCP `docdex_index`",
+                            self.repo_root.display()
+                        ),
+                    )
+                    .into());
+                }
+                let last_indexed_epoch_ms = self
+                    .latest_state_dir_modified_epoch_ms()
+                    .unwrap_or(now_epoch_ms_u64()?);
+                let payload = IndexStateFile {
+                    version: INDEX_STATE_VERSION,
+                    last_indexed_epoch_ms,
+                };
+                let raw = serde_json::to_string_pretty(&payload)?;
+                fs::write(self.index_state_path(), raw)?;
+                payload
+            }
+        };
+        if let Some(repo_latest) = self.latest_repo_modified_epoch_ms()? {
+            if repo_latest > state.last_indexed_epoch_ms {
+                return Err(AppError::new(
+                    ERR_STALE_INDEX,
+                    format!(
+                        "index is stale; run `docdexd index --repo {}` or MCP `docdex_index`",
+                        self.repo_root.display()
+                    ),
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
     fn writer(&self) -> Result<Arc<Mutex<IndexWriter>>> {
         self.writer
             .clone()
@@ -806,6 +941,7 @@ impl Indexer {
     }
 
     pub fn stats(&self) -> Result<IndexStats> {
+        self.ensure_index_state()?;
         let searcher = self.reader.searcher();
         let mut num_docs: u64 = 0;
         let mut segments: usize = 0;
@@ -876,6 +1012,7 @@ impl Indexer {
     }
 
     pub fn list_docs(&self, offset: usize, limit: usize) -> Result<(Vec<DocSnapshot>, u64)> {
+        self.ensure_index_state()?;
         let searcher = self.reader.searcher();
         let mut snapshots = Vec::new();
         let mut skipped = 0usize;
@@ -1286,6 +1423,14 @@ pub(crate) fn decide_file(path: &Path, repo_root: &Path, config: &IndexConfig) -
 
 pub(crate) fn should_index(path: &Path, repo_root: &Path, config: &IndexConfig) -> bool {
     decide_file(path, repo_root, config).should_index()
+}
+
+fn now_epoch_ms_u64() -> Result<u64> {
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    Ok(ms.min(u128::from(u64::MAX)) as u64)
 }
 
 #[cfg(test)]

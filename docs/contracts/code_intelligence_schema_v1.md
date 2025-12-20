@@ -52,6 +52,12 @@ Symbol responses represent extracted symbols within a repo, scoped to a file.
   - `start_line`, `start_col`, `end_line`, `end_col` (integers)
 - `signature` (string, optional): Language-specific display signature if available.
 
+**Ordering and bounds (v1)**
+
+- `symbols` is sorted ascending by `symbol_id` and clamped to at most 1000 items. If more are present, extra items are dropped deterministically; no additional fields are added.
+- `signature` is truncated to 256 characters; `outcome.error_summary` is truncated to 512 characters (if present). Truncation uses an ASCII `...` suffix when space allows.
+- Limits are global to the server process and do not vary by repo.
+
 ## Impact graph response (`docdex.impact_graph`)
 
 Impact graph responses represent **directed** dependency edges between repo files.

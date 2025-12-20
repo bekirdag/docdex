@@ -6,6 +6,10 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const MAX_SYMBOLS_PER_FILE: usize = 1000;
+const MAX_SYMBOL_SIGNATURE_CHARS: usize = 256;
+const MAX_SYMBOL_ERROR_SUMMARY_CHARS: usize = 512;
+
 fn default_symbols_schema() -> SchemaInfo {
     SchemaInfo {
         name: "docdex.symbols".to_string(),
@@ -76,6 +80,56 @@ pub struct SymbolsResponseV1 {
     pub symbols: Vec<SymbolItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<SymbolOutcome>,
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let char_count = value.chars().count();
+    if char_count <= max_chars {
+        return value.to_string();
+    }
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
+    }
+    let take_chars = max_chars.saturating_sub(3);
+    let mut truncated: String = value.chars().take(take_chars).collect();
+    while truncated
+        .chars()
+        .last()
+        .map(|c| c.is_whitespace())
+        .unwrap_or(false)
+    {
+        truncated.pop();
+    }
+    truncated.push_str("...");
+    truncated
+}
+
+fn apply_symbols_limits(payload: &mut SymbolsResponseV1) {
+    let repo_id = payload.repo_id.clone();
+    let file = payload.file.clone();
+    for symbol in &mut payload.symbols {
+        if symbol.symbol_id.is_empty() {
+            symbol.symbol_id =
+                make_symbol_id(&repo_id, &file, &symbol.range, &symbol.kind, &symbol.name);
+        }
+    }
+    payload.symbols.sort_by(|a, b| a.symbol_id.cmp(&b.symbol_id));
+    if payload.symbols.len() > MAX_SYMBOLS_PER_FILE {
+        payload.symbols.truncate(MAX_SYMBOLS_PER_FILE);
+    }
+    for symbol in &mut payload.symbols {
+        if let Some(signature) = symbol.signature.as_mut() {
+            *signature = truncate_chars(signature, MAX_SYMBOL_SIGNATURE_CHARS);
+        }
+    }
+    if let Some(outcome) = payload.outcome.as_mut() {
+        if let Some(error_summary) = outcome.error_summary.as_mut() {
+            *error_summary = truncate_chars(error_summary, MAX_SYMBOL_ERROR_SUMMARY_CHARS);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,15 +243,7 @@ impl SymbolsStore {
         if parsed.file.is_empty() {
             parsed.file = rel_path.to_string();
         }
-        let repo_id = parsed.repo_id.clone();
-        let file = parsed.file.clone();
-        for symbol in &mut parsed.symbols {
-            if symbol.symbol_id.is_empty() {
-                symbol.symbol_id =
-                    make_symbol_id(&repo_id, &file, &symbol.range, &symbol.kind, &symbol.name);
-            }
-        }
-        parsed.symbols.sort_by(|a, b| a.symbol_id.cmp(&b.symbol_id));
+        apply_symbols_limits(&mut parsed);
         Ok(Some(parsed))
     }
 
@@ -224,13 +270,15 @@ pub fn build_symbols_payload(
     symbols: Vec<SymbolItem>,
     outcome: SymbolOutcome,
 ) -> SymbolsResponseV1 {
-    SymbolsResponseV1 {
+    let mut payload = SymbolsResponseV1 {
         schema: default_symbols_schema(),
         repo_id: repo_id.to_string(),
         file: file.to_string(),
         symbols,
         outcome: Some(outcome),
-    }
+    };
+    apply_symbols_limits(&mut payload);
+    payload
 }
 
 pub fn extract_symbols_best_effort(

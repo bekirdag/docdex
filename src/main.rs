@@ -2,6 +2,7 @@ mod audit;
 mod browser_session;
 mod chrome_watchdog;
 mod config;
+mod dag;
 mod daemon;
 mod error;
 mod metrics;
@@ -422,6 +423,11 @@ enum Command {
         )]
         embedding_timeout_ms: u64,
     },
+    /// View reasoning DAG sessions stored in repo-scoped dag.db.
+    Dag {
+        #[command(subcommand)]
+        command: DagCommand,
+    },
     /// Manage explicit repo identity mappings for shared state dirs.
     Repo {
         #[command(subcommand)]
@@ -496,6 +502,17 @@ enum Command {
         /// Add to all known agents that are detected on this system.
         #[arg(long, default_value_t = false)]
         all: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum DagCommand {
+    /// Render a session DAG as JSON from repo-scoped dag.db.
+    View {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(value_parser = config::non_empty_string, value_name = "SESSION_ID")]
+        session_id: String,
     },
 }
 
@@ -835,6 +852,45 @@ async fn run() -> Result<()> {
             let hits = search::run_query(&server, libs_indexer.as_ref(), &query, limit).await?;
             println!("{}", serde_json::to_string_pretty(&hits)?);
         }
+        Command::Dag { command } => match command {
+            DagCommand::View { repo, session_id } => {
+                let repo_root = repo.repo_root();
+                let index_config = index::IndexConfig::with_overrides(
+                    &repo_root,
+                    repo.state_dir_override(),
+                    repo.exclude_dir_overrides(),
+                    repo.exclude_prefix_overrides(),
+                    repo.symbols_enabled(),
+                )?;
+                util::init_logging("warn")?;
+                if let Err(err) = crate::repo_identity::validate_repo_state_dir(
+                    &repo_root,
+                    index_config.state_dir(),
+                ) {
+                    if let Some(identity) =
+                        err.downcast_ref::<crate::repo_identity::RepoIdentityError>()
+                    {
+                        return Err(index::repo_state_mismatch_error(
+                            &repo_root,
+                            Some(index_config.state_dir()),
+                            identity,
+                        )
+                        .into());
+                    }
+                    return Err(err);
+                }
+                let store = dag::DagStore::new(&repo_root, index_config.state_dir())?;
+                let Some(session) = store.load_session(&session_id)? else {
+                    return Err(error::AppError::new(
+                        error::ERR_INVALID_ARGUMENT,
+                        "session not found",
+                    )
+                    .with_details(json!({ "sessionId": session_id }))
+                    .into());
+                };
+                println!("{}", serde_json::to_string_pretty(&session)?);
+            }
+        },
         Command::Repo { command } => match command {
             RepoCommand::Reassociate {
                 repo,
@@ -1217,6 +1273,7 @@ fn print_full_help() -> Result<()> {
         "ingest",
         "query",
         "repo",
+        "dag",
         "memory-store",
         "memory-recall",
     ] {

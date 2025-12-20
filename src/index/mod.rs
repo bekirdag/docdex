@@ -1463,7 +1463,7 @@ fn missing_repo_path_error(repo_root: &Path) -> AppError {
     ))
 }
 
-fn repo_state_mismatch_error(
+pub(crate) fn repo_state_mismatch_error(
     repo_root: &Path,
     index_state_dir: Option<&Path>,
     identity: &crate::repo_identity::RepoIdentityError,

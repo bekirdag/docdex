@@ -7,9 +7,13 @@ use std::path::{Path, PathBuf};
 const HARD_MAX_EDGES: usize = 10_000;
 const HARD_MAX_DEPTH: usize = 100;
 const HARD_MAX_NODES: usize = HARD_MAX_EDGES;
+<<<<<<< HEAD
 const HARD_MAX_NODE_BYTES: usize = 512;
 const HARD_MAX_LABEL_BYTES: usize = 128;
 const TRUNCATION_SUFFIX: &str = "...";
+=======
+const HARD_MAX_LABEL_BYTES: usize = 256;
+>>>>>>> mcoda/task/bck-05-us-10-t19
 
 fn default_impact_schema() -> SchemaInfo {
     SchemaInfo {
@@ -17,6 +21,19 @@ fn default_impact_schema() -> SchemaInfo {
         version: 1,
         compatible: SchemaCompatibleRange { min: 1, max: 1 },
     }
+}
+
+fn truncate_bytes(input: &str, max_bytes: usize) -> (String, bool) {
+    if input.len() <= max_bytes {
+        return (input.to_string(), false);
+    }
+    let mut end = max_bytes;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = input[..end].to_string();
+    out.push_str("…");
+    (out, true)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -434,16 +451,39 @@ pub fn build_impact_response(
     traversal: ImpactTraversalResult,
     applied: &ImpactQueryControls,
 ) -> ImpactGraphResponseV1 {
+<<<<<<< HEAD
     let (bounded_source, source_truncated) = truncate_bytes(source, HARD_MAX_NODE_BYTES);
+=======
+    let mut label_truncated = false;
+    let edges = traversal
+        .edges
+        .into_iter()
+        .map(|mut edge| {
+            if let Some(kind) = edge.kind.as_ref() {
+                let (truncated, was_truncated) = truncate_bytes(kind, HARD_MAX_LABEL_BYTES);
+                if was_truncated {
+                    edge.kind = Some(truncated);
+                    label_truncated = true;
+                }
+            }
+            edge
+        })
+        .collect::<Vec<_>>();
+>>>>>>> mcoda/task/bck-05-us-10-t19
     let mut inbound_set: BTreeSet<String> = BTreeSet::new();
     let mut outbound_set: BTreeSet<String> = BTreeSet::new();
     let mut bounded_edges = Vec::with_capacity(traversal.edges.len());
     let mut truncated = traversal.truncated || source_truncated;
 
+<<<<<<< HEAD
     for edge in traversal.edges {
         let (edge, edge_truncated) = clamp_edge(edge);
         truncated |= edge_truncated;
         if edge.source == bounded_source {
+=======
+    for edge in &edges {
+        if edge.source == source {
+>>>>>>> mcoda/task/bck-05-us-10-t19
             outbound_set.insert(edge.target.clone());
         }
         if edge.target == bounded_source {
@@ -467,21 +507,44 @@ pub fn build_impact_response(
         edge_types,
     };
 
+<<<<<<< HEAD
     let max_nodes = HARD_MAX_NODES.min(applied.max_edges);
     let (inbound, inbound_truncated) =
         clamp_sorted(inbound_set.into_iter().collect(), max_nodes);
     let (outbound, outbound_truncated) =
         clamp_sorted(outbound_set.into_iter().collect(), max_nodes);
     truncated |= inbound_truncated || outbound_truncated;
+=======
+    let inbound_len = inbound_set.len();
+    let outbound_len = outbound_set.len();
+    let inbound = inbound_set
+        .into_iter()
+        .take(HARD_MAX_NODES)
+        .collect::<Vec<_>>();
+    let outbound = outbound_set
+        .into_iter()
+        .take(HARD_MAX_NODES)
+        .collect::<Vec<_>>();
+    let inbound_truncated = inbound_len > HARD_MAX_NODES;
+    let outbound_truncated = outbound_len > HARD_MAX_NODES;
+>>>>>>> mcoda/task/bck-05-us-10-t19
 
     ImpactGraphResponseV1 {
         schema: default_impact_schema(),
         repo_id: repo_id.to_string(),
+<<<<<<< HEAD
         source: bounded_source,
         inbound,
         outbound,
         edges: bounded_edges,
         truncated,
+=======
+        source: source.to_string(),
+        inbound,
+        outbound,
+        edges,
+        truncated: traversal.truncated || label_truncated || inbound_truncated || outbound_truncated,
+>>>>>>> mcoda/task/bck-05-us-10-t19
         applied: applied_controls.clone(),
         applied_limits: applied_controls,
     }
@@ -737,6 +800,32 @@ mod tests {
         .unwrap();
         let res = traverse_impact("a.ts", &edges, &controls);
         assert!(!res.truncated);
+    }
+
+    #[test]
+    fn build_impact_response_truncates_edge_labels() {
+        let long_label = "x".repeat(HARD_MAX_LABEL_BYTES + 10);
+        let traversal = ImpactTraversalResult {
+            edges: vec![ImpactGraphEdge {
+                source: "a.ts".into(),
+                target: "b.ts".into(),
+                kind: Some(long_label),
+            }],
+            truncated: false,
+        };
+        let applied = ImpactQueryControls {
+            max_edges: 10,
+            max_depth: 10,
+            edge_types: None,
+        };
+        let response = build_impact_response("repo", "a.ts", traversal, &applied);
+        let kind = response
+            .edges
+            .first()
+            .and_then(|edge| edge.kind.as_ref())
+            .expect("edge kind");
+        assert!(kind.len() <= HARD_MAX_LABEL_BYTES + "…".len());
+        assert!(response.truncated);
     }
 
     #[test]

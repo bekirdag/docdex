@@ -82,3 +82,15 @@ For a request where `source = F`:
 - `inbound` is the set of `source` paths for edges where `target == F`.
 
 `edges[].kind` is an optional classifier such as `import`, `include`, or `require` (implementation-defined).
+
+### Output bounds (deterministic)
+
+Impact graph responses are bounded to keep payloads predictable and repo-safe:
+
+- `maxEdges` is hard-capped at 10,000. Requests above the cap are clamped to 10,000 and reported via `appliedLimits.maxEdges`.
+- `inbound` and `outbound` arrays are capped to the applied `maxEdges` value (and therefore never exceed 10,000).
+- Node path strings (`source`, `target`, `inbound`, `outbound`) are truncated to 512 bytes when needed.
+- Edge label strings (`edges[].kind`, `edgeTypes`) are truncated to 128 bytes when needed.
+- `truncated` is set to `true` when any clamp or truncation occurs (limits, filtering, or text truncation).
+
+Truncation is UTF-8 safe and deterministic; it truncates at a character boundary and appends `...` when space allows.

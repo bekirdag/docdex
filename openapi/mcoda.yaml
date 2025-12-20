@@ -259,6 +259,12 @@ paths:
 
         The response includes an explicit `schema` compatibility signal; see `docs/contracts/code_intelligence_schema_v1.md`.
 
+        Output bounds (deterministic):
+        - maxEdges is hard-capped at 10,000 (requests above are clamped).
+        - inbound/outbound arrays are capped to the applied maxEdges.
+        - Node path strings are truncated to 512 bytes; edge kind labels and edgeTypes entries are truncated to 128 bytes.
+        - `truncated` is true when any clamp or truncation occurs.
+
         When started with `--expose`, requests require `Authorization: Bearer <token>`.
       operationId: getImpactGraph
       parameters:
@@ -323,15 +329,15 @@ paths:
                     $ref: "#/components/schemas/RepoId"
                   source:
                     type: string
-                    description: The requested file path.
+                    description: The requested file path (truncated to 512 bytes when needed).
                   inbound:
                     type: array
-                    description: Repo-relative file paths which depend on (import/reference) `source`.
+                    description: Repo-relative file paths which depend on (import/reference) `source` (truncated to 512 bytes when needed).
                     items:
                       type: string
                   outbound:
                     type: array
-                    description: Repo-relative file paths which `source` depends on (imports/references).
+                    description: Repo-relative file paths which `source` depends on (imports/references), truncated to 512 bytes when needed.
                     items:
                       type: string
                   edges:
@@ -346,7 +352,7 @@ paths:
                       $ref: "#/components/schemas/ImpactGraphEdge"
                   truncated:
                     type: boolean
-                    description: True if the response was incomplete due to maxEdges/maxDepth limits or edgeTypes filtering.
+                    description: True if the response was incomplete due to maxEdges/maxDepth limits, edgeTypes filtering, or text truncation.
                   applied:
                     deprecated: true
                     type: object
@@ -622,13 +628,13 @@ components:
       properties:
         source:
           type: string
-          description: Repo-relative file path of the depender/importer.
+          description: Repo-relative file path of the depender/importer (truncated to 512 bytes when needed).
         target:
           type: string
-          description: Repo-relative file path of the dependee/imported file.
+          description: Repo-relative file path of the dependee/imported file (truncated to 512 bytes when needed).
         kind:
           type: string
-          description: Optional edge classifier (e.g. `import`, `include`, `require`).
+          description: Optional edge classifier (e.g. `import`, `include`, `require`), truncated to 128 bytes when needed.
     MemoryStoreRequest: *a13
     MemoryStoreResponse: *a14
     MemoryRecallRequest: *a15

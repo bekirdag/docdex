@@ -10,7 +10,7 @@ use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::ratelimit::RateLimiter;
 use crate::search;
-use crate::symbols::SymbolsStore;
+use crate::symbols::{SymbolsResponseV1, SymbolsStore};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -33,6 +33,9 @@ const FILES_DEFAULT_LIMIT: usize = 200;
 const FILES_MAX_LIMIT: usize = 1000;
 const FILES_MAX_OFFSET: usize = 50_000;
 const OPEN_MAX_BYTES: usize = 512 * 1024; // guard rail for returning file content
+const SYMBOLS_MAX_LIMIT: usize = 1000;
+const SYMBOLS_MAX_SIGNATURE_BYTES: usize = 512;
+const SYMBOLS_MAX_OUTCOME_BYTES: usize = 512;
 const MAX_ERROR_MESSAGE_BYTES: usize = 256;
 const MAX_ERROR_REASON_BYTES: usize = 768;
 
@@ -144,6 +147,25 @@ fn truncate_bytes(input: String, max_bytes: usize) -> String {
     let mut out = input[..end].to_string();
     out.push_str("…");
     out
+}
+
+fn clamp_symbols_payload(payload: &mut SymbolsResponseV1, limit: usize) {
+    if payload.symbols.len() > limit {
+        payload.symbols.truncate(limit);
+    }
+    for symbol in &mut payload.symbols {
+        if let Some(signature) = symbol.signature.take() {
+            symbol.signature = Some(truncate_bytes(signature, SYMBOLS_MAX_SIGNATURE_BYTES));
+        }
+    }
+    if let Some(outcome) = payload.outcome.as_mut() {
+        if let Some(reason) = outcome.reason.take() {
+            outcome.reason = Some(truncate_bytes(reason, SYMBOLS_MAX_OUTCOME_BYTES));
+        }
+        if let Some(summary) = outcome.error_summary.take() {
+            outcome.error_summary = Some(truncate_bytes(summary, SYMBOLS_MAX_OUTCOME_BYTES));
+        }
+    }
 }
 
 fn rpc_error(
@@ -389,6 +411,8 @@ struct OpenArgs {
 #[derive(Deserialize)]
 struct SymbolsArgs {
     path: String,
+    #[serde(default)]
+    limit: Option<usize>,
     #[serde(default)]
     project_root: Option<PathBuf>,
 }
@@ -1230,6 +1254,7 @@ impl McpServer {
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "minLength": 1, "description": "Relative path under the repo" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": SYMBOLS_MAX_LIMIT as i64, "default": SYMBOLS_MAX_LIMIT, "description": "Max symbols to return (clamped)" },
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
                     },
                     "required": ["path"]
@@ -1488,11 +1513,16 @@ impl McpServer {
         let rel_str = rel_path.to_string_lossy().replace('\\', "/");
         let store = SymbolsStore::new(self.indexer.repo_root(), self.indexer.config().state_dir())
             .context("open symbols store")?;
-        let payload = store
+        let mut payload = store
             .read_symbols(&rel_str)?
             .ok_or_else(|| MissingSymbolsIndexError {
                 rel_path: rel_str.to_string(),
             })?;
+        let limit = args
+            .limit
+            .unwrap_or(SYMBOLS_MAX_LIMIT)
+            .clamp(1, SYMBOLS_MAX_LIMIT);
+        clamp_symbols_payload(&mut payload, limit);
         Ok(serde_json::to_value(payload).context("serialize symbols payload")?)
     }
 

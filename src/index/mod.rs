@@ -3,16 +3,24 @@ use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use regex::Regex;
 <<<<<<< HEAD
+<<<<<<< HEAD
 use serde::{Deserialize, Serialize};
 =======
 use serde_json::json;
 >>>>>>> mcoda/task/bck-05-us-08-t33
+=======
+use serde::{Deserialize, Serialize};
+>>>>>>> mcoda/task/bck-05-us-08-t31
 use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+<<<<<<< HEAD
 use std::time::Duration;
+=======
+use std::time::{SystemTime, UNIX_EPOCH};
+>>>>>>> mcoda/task/bck-05-us-08-t31
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
@@ -31,6 +39,7 @@ use crate::state_layout::{
     StatePaths,
 =======
 use crate::error::{
+<<<<<<< HEAD
 <<<<<<< HEAD
     repo_resolution_details, AppError, BackoffRequired, ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX,
     ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
@@ -56,6 +65,10 @@ use crate::error::{
 >>>>>>> mcoda/task/bck-05-us-09-t24
 =======
 >>>>>>> mcoda/task/bck-05-us-08-t33
+=======
+    index_state_error, repo_resolution_details, AppError, IndexState, ERR_BACKOFF_REQUIRED,
+    ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+>>>>>>> mcoda/task/bck-05-us-08-t31
 };
 use crate::state_paths::{default_state_base_dir, RepoStatePaths, StatePaths};
 =======
@@ -83,6 +96,8 @@ use crate::symbols::{SymbolOutcomeStatus, SymbolsStore};
 use walkdir::WalkDir;
 
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
+const INDEX_STATE_FILENAME: &str = "index_state.json";
+const INDEX_STATE_VERSION: u32 = 1;
 const DEFAULT_EXTENSIONS: &[&str] = &[".md", ".markdown", ".mdx", ".txt"];
 const DEFAULT_EXCLUDED_DIR_NAMES: &[&str] = &[
     // Core VCS / tooling
@@ -371,6 +386,7 @@ pub struct IndexStats {
     pub last_updated_epoch_ms: Option<u128>,
 }
 
+<<<<<<< HEAD
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IndexRunType {
@@ -447,6 +463,12 @@ struct RunHistory {
     version: u32,
     #[serde(default)]
     runs: Vec<IndexRunSummary>,
+=======
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IndexStateManifest {
+    version: u32,
+    index_last_updated_epoch_ms: u128,
+>>>>>>> mcoda/task/bck-05-us-08-t31
 }
 
 impl IndexConfig {
@@ -972,10 +994,14 @@ impl Indexer {
         writer.commit()?;
         self.reader.reload()?;
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.write_index_state(now_epoch_ms()?)?;
 =======
         update_index_state(self.config.state_dir())?;
 >>>>>>> mcoda/task/bck-05-us-08-t33
+=======
+        self.record_index_state()?;
+>>>>>>> mcoda/task/bck-05-us-08-t31
         Ok(())
     }
 
@@ -1027,10 +1053,14 @@ impl Indexer {
         writer.commit()?;
         self.reader.reload()?;
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.write_index_state(now_epoch_ms()?)?;
 =======
         update_index_state(self.config.state_dir())?;
 >>>>>>> mcoda/task/bck-05-us-08-t33
+=======
+        self.record_index_state()?;
+>>>>>>> mcoda/task/bck-05-us-08-t31
         Ok(decision)
     }
 
@@ -1084,10 +1114,14 @@ impl Indexer {
         writer.commit()?;
         self.reader.reload()?;
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.write_index_state(now_epoch_ms()?)?;
 =======
         update_index_state(self.config.state_dir())?;
 >>>>>>> mcoda/task/bck-05-us-08-t33
+=======
+        self.record_index_state()?;
+>>>>>>> mcoda/task/bck-05-us-08-t31
         if let Some(store) = self.symbols_store.as_ref() {
             if let Err(err) = store.delete_symbols(&rel) {
                 warn!(target: "docdexd", error = ?err, rel_path = %rel, "failed to delete symbols record");
@@ -1400,6 +1434,7 @@ impl Indexer {
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     pub fn symbols_store_ready(&self) -> bool {
         self.symbols_store.is_some()
 =======
@@ -1466,16 +1501,69 @@ impl Indexer {
                     Some(state.last_indexed_epoch_ms),
                     Some(latest),
                     Some("repo_changed_since_index".to_string()),
+=======
+    pub fn ensure_index_fresh(&self) -> Result<()> {
+        let manifest = match read_index_state_manifest(self.config.state_dir()) {
+            Ok(Some(manifest)) => manifest,
+            Ok(None) => {
+                return Err(index_state_error(
+                    IndexState::Missing,
+                    &self.repo_root,
+                    self.config.state_dir(),
+                    None,
+                    None,
+                    None,
+                )
+                .into())
+            }
+            Err(err) => {
+                return Err(index_state_error(
+                    IndexState::Missing,
+                    &self.repo_root,
+                    self.config.state_dir(),
+                    None,
+                    None,
+                    Some(format!(
+                        "index state unreadable; re-run `docdex_index` ({err})"
+                    )),
+                )
+                .into())
+            }
+        };
+
+        let repo_last_modified_epoch_ms = repo_last_modified_epoch_ms(&self.repo_root, &self.config)?;
+        if let Some(repo_last_modified_epoch_ms) = repo_last_modified_epoch_ms {
+            if repo_last_modified_epoch_ms > manifest.index_last_updated_epoch_ms {
+                return Err(index_state_error(
+                    IndexState::Stale,
+                    &self.repo_root,
+                    self.config.state_dir(),
+                    Some(manifest.index_last_updated_epoch_ms),
+                    Some(repo_last_modified_epoch_ms),
+                    None,
+>>>>>>> mcoda/task/bck-05-us-08-t31
                 )
                 .into());
             }
         }
         Ok(())
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-08-t32
 =======
     pub fn preflight_index_state(&self) -> Result<()> {
         preflight_index_state(&self.repo_root, &self.config)
 >>>>>>> mcoda/task/bck-05-us-08-t33
+=======
+    }
+
+    fn record_index_state(&self) -> Result<()> {
+        let manifest = IndexStateManifest {
+            version: INDEX_STATE_VERSION,
+            index_last_updated_epoch_ms: now_epoch_ms()?,
+        };
+        write_index_state_manifest(self.config.state_dir(), &manifest)?;
+        Ok(())
+>>>>>>> mcoda/task/bck-05-us-08-t31
     }
 
     pub fn stats(&self) -> Result<IndexStats> {
@@ -2226,6 +2314,66 @@ fn env_flag_enabled(key: &str) -> bool {
         .ok()
         .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(false)
+}
+
+fn index_state_manifest_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(INDEX_STATE_FILENAME)
+}
+
+fn read_index_state_manifest(state_dir: &Path) -> Result<Option<IndexStateManifest>> {
+    let path = index_state_manifest_path(state_dir);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    let manifest: IndexStateManifest =
+        serde_json::from_str(&raw).context("parse index state manifest")?;
+    Ok(Some(manifest))
+}
+
+fn write_index_state_manifest(state_dir: &Path, manifest: &IndexStateManifest) -> Result<()> {
+    let path = index_state_manifest_path(state_dir);
+    let payload = serde_json::to_vec(manifest).context("serialize index state manifest")?;
+    fs::write(path, payload).context("write index state manifest")?;
+    Ok(())
+}
+
+fn repo_last_modified_epoch_ms(
+    repo_root: &Path,
+    config: &IndexConfig,
+) -> Result<Option<u128>> {
+    let mut latest: Option<u128> = None;
+    for entry in WalkDir::new(repo_root).into_iter().filter_map(|e| e.ok()) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if !decide_file(path, repo_root, config).should_index() {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        let Ok(duration) = modified.duration_since(UNIX_EPOCH) else {
+            continue;
+        };
+        let millis = duration.as_millis();
+        if latest.map(|current| millis > current).unwrap_or(true) {
+            latest = Some(millis);
+        }
+    }
+    Ok(latest)
+}
+
+fn now_epoch_ms() -> Result<u128> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis())
 }
 
 fn build_schema() -> (

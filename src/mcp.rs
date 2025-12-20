@@ -1937,10 +1937,14 @@ impl McpServer {
     async fn handle_search(&self, args: SearchArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.ensure_schema_version("docdex_search", args.schema_version)?;
 =======
         self.ensure_index_fresh()?;
 >>>>>>> mcoda/task/bck-05-us-08-t32
+=======
+        self.indexer.ensure_index_fresh()?;
+>>>>>>> mcoda/task/bck-05-us-08-t31
         let query = args.query.trim();
 <<<<<<< HEAD
         let requested_limit = args.limit;
@@ -2124,6 +2128,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
         self.ensure_schema_version("docdex_files", args.schema_version)?;
 >>>>>>> mcoda/task/bck-05-us-10-t21
@@ -2133,6 +2138,9 @@ impl McpServer {
 =======
         self.indexer.preflight_index_state()?;
 >>>>>>> mcoda/task/bck-05-us-08-t33
+=======
+        self.indexer.ensure_index_fresh()?;
+>>>>>>> mcoda/task/bck-05-us-08-t31
         let limit = args
             .limit
             .unwrap_or(limits::MCP_FILES_DEFAULT_LIMIT)
@@ -2162,6 +2170,7 @@ impl McpServer {
         self.ensure_project_root(args.project_root.as_deref())?;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.ensure_schema_version("docdex_stats", args.schema_version)?;
 =======
         self.ensure_index_fresh()?;
@@ -2169,6 +2178,9 @@ impl McpServer {
 =======
         self.indexer.preflight_index_state()?;
 >>>>>>> mcoda/task/bck-05-us-08-t33
+=======
+        self.indexer.ensure_index_fresh()?;
+>>>>>>> mcoda/task/bck-05-us-08-t31
         let stats = self.indexer.stats()?;
         let run_summaries = self.indexer.run_summaries(args.runs_limit)?;
         Ok(json!({

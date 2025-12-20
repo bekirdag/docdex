@@ -1,6 +1,7 @@
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 use crate::error::BackoffRequired;
 =======
 use crate::error::{
@@ -15,6 +16,9 @@ use crate::error::{
 =======
 use crate::error::{backoff_required_details, AppError, ERR_BACKOFF_REQUIRED};
 >>>>>>> mcoda/task/bck-05-us-09-t37
+=======
+use crate::error::{AppError, ERR_BACKOFF_REQUIRED, ERR_STALE_INDEX};
+>>>>>>> mcoda/task/bck-05-us-07-t12
 use crate::index::{
     DocSnapshot, Hit, QueryRewrite, SearchError, SearchQueryMeta, SearchSnippetOrigin,
     SnippetOrigin, SnippetResult,
@@ -32,8 +36,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
+<<<<<<< HEAD
 use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
 use tantivy::{doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, Searcher, Term};
+=======
+use tantivy::schema::{FieldType, Schema, FAST, STORED, STRING, TEXT};
+use tantivy::{doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
+>>>>>>> mcoda/task/bck-05-us-07-t12
 use tracing::warn;
 
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
@@ -207,20 +216,32 @@ impl LibsIndexer {
                 })?;
         }
         crate::index::ensure_state_dir_secure(&libs_state_dir)?;
+<<<<<<< HEAD
 =======
         crate::state_layout::ensure_state_dir_secure(&libs_state_dir)?;
 >>>>>>> mcoda/task/ops-01-us-03-t02
         let (schema, fields) = build_schema();
+=======
+        let schema = build_schema();
+>>>>>>> mcoda/task/bck-05-us-07-t12
         let index = Index::open_or_create(
             tantivy::directory::MmapDirectory::open(&libs_state_dir)?,
-            schema.clone(),
+            schema,
         )?;
+<<<<<<< HEAD
         let reader = Arc::new(
             index
                 .reader_builder()
                 .reload_policy(ReloadPolicy::Manual)
                 .try_into()?,
         );
+=======
+        let fields = schema_fields_from_index(&index.schema())?;
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::OnCommit)
+            .try_into()?;
+>>>>>>> mcoda/task/bck-05-us-07-t12
         let writer = index.writer(MAX_INDEX_RAM_BYTES)?;
         Ok(Self {
             libs_state_dir,
@@ -255,6 +276,7 @@ impl LibsIndexer {
         }
         let index = Index::open_in_dir(&libs_state_dir)
             .with_context(|| format!("open libs index at {}", libs_state_dir.display()))?;
+<<<<<<< HEAD
         let reader = Arc::new(
             index
                 .reader_builder()
@@ -284,6 +306,26 @@ impl LibsIndexer {
             version_field,
             source_field,
             title_field,
+=======
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::OnCommit)
+            .try_into()?;
+        let fields = schema_fields_from_index(&index.schema())?;
+        Ok(Some(Self {
+            libs_state_dir,
+            index,
+            reader,
+            doc_id_field: fields.doc_id,
+            rel_path_field: fields.rel_path,
+            body_field: fields.body,
+            summary_field: fields.summary,
+            token_field: fields.token,
+            library_field: fields.library,
+            version_field: fields.version,
+            source_field: fields.source,
+            title_field: fields.title,
+>>>>>>> mcoda/task/bck-05-us-07-t12
             writer: None,
         }))
     }
@@ -1088,30 +1130,66 @@ struct SchemaFields {
     source: tantivy::schema::Field,
 }
 
-fn build_schema() -> (Schema, SchemaFields) {
+fn build_schema() -> Schema {
     let mut builder = Schema::builder();
-    let doc_id = builder.add_text_field("doc_id", STRING | STORED);
-    let rel_path = builder.add_text_field("rel_path", STRING | STORED);
-    let title = builder.add_text_field("title", TEXT | STORED);
-    let body = builder.add_text_field("body", TEXT | STORED);
-    let summary = builder.add_text_field("summary", TEXT | STORED);
-    let token = builder.add_u64_field("token_estimate", FAST | STORED);
-    let library = builder.add_text_field("library", STRING | STORED);
-    let version = builder.add_text_field("version", STRING | STORED);
-    let source = builder.add_text_field("source", STRING | STORED);
-    (
-        builder.build(),
-        SchemaFields {
-            doc_id,
-            rel_path,
-            title,
-            body,
-            summary,
-            token,
-            library,
-            version,
-            source,
-        },
+    builder.add_text_field("doc_id", STRING | STORED);
+    builder.add_text_field("rel_path", STRING | STORED);
+    builder.add_text_field("title", TEXT | STORED);
+    builder.add_text_field("body", TEXT | STORED);
+    builder.add_text_field("summary", TEXT | STORED);
+    builder.add_u64_field("token_estimate", FAST | STORED);
+    builder.add_text_field("library", STRING | STORED);
+    builder.add_text_field("version", STRING | STORED);
+    builder.add_text_field("source", STRING | STORED);
+    builder.build()
+}
+
+fn schema_fields_from_index(schema: &Schema) -> Result<SchemaFields> {
+    Ok(SchemaFields {
+        doc_id: require_text_field(schema, "doc_id")?,
+        rel_path: require_text_field(schema, "rel_path")?,
+        title: require_text_field(schema, "title")?,
+        body: require_text_field(schema, "body")?,
+        summary: require_text_field(schema, "summary")?,
+        token: require_u64_field(schema, "token_estimate")?,
+        library: require_text_field(schema, "library")?,
+        version: require_text_field(schema, "version")?,
+        source: require_text_field(schema, "source")?,
+    })
+}
+
+fn require_text_field(schema: &Schema, name: &str) -> Result<tantivy::schema::Field> {
+    let field = schema
+        .get_field(name)
+        .ok_or_else(|| schema_mismatch_error(format!("missing required field '{name}'")))?;
+    let entry = schema.get_field_entry(field);
+    match entry.field_type() {
+        FieldType::Str(_) => Ok(field),
+        _ => Err(schema_mismatch_error(format!(
+            "field '{name}' has incompatible type"
+        ))
+        .into()),
+    }
+}
+
+fn require_u64_field(schema: &Schema, name: &str) -> Result<tantivy::schema::Field> {
+    let field = schema
+        .get_field(name)
+        .ok_or_else(|| schema_mismatch_error(format!("missing required field '{name}'")))?;
+    let entry = schema.get_field_entry(field);
+    match entry.field_type() {
+        FieldType::U64(_) => Ok(field),
+        _ => Err(schema_mismatch_error(format!(
+            "field '{name}' has incompatible type"
+        ))
+        .into()),
+    }
+}
+
+fn schema_mismatch_error(reason: String) -> AppError {
+    AppError::new(
+        ERR_STALE_INDEX,
+        format!("libs index schema mismatch; {reason}"),
     )
 }
 

@@ -52,7 +52,7 @@ use std::sync::{
 use tantivy::collector::TopDocs;
 use tantivy::directory::error::LockError;
 use tantivy::query::QueryParser;
-use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
+use tantivy::schema::{FieldType, Schema, FAST, STORED, STRING, TEXT};
 use tantivy::DocAddress;
 use tantivy::{
 <<<<<<< HEAD
@@ -539,6 +539,14 @@ pub struct Indexer {
     repo_root: PathBuf,
     config: IndexConfig,
     state: Arc<RwLock<IndexState>>,
+}
+
+struct IndexSchemaFields {
+    doc_id_field: tantivy::schema::Field,
+    path_field: tantivy::schema::Field,
+    body_field: tantivy::schema::Field,
+    summary_field: tantivy::schema::Field,
+    token_field: tantivy::schema::Field,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1364,12 +1372,12 @@ impl Indexer {
         let state_dir_preexisting = state_dir_has_entries(config.state_dir());
 >>>>>>> mcoda/task/bck-05-us-08-t11
         ensure_state_dir_secure(config.state_dir())?;
-        let (schema, doc_id_field, path_field, body_field, summary_field, token_field) =
-            build_schema();
+        let schema = build_schema();
         let index = Index::open_or_create(
             tantivy::directory::MmapDirectory::open(config.state_dir())?,
-            schema.clone(),
+            schema,
         )?;
+<<<<<<< HEAD
 <<<<<<< HEAD
         let reader = Arc::new(
             index
@@ -1380,6 +1388,9 @@ impl Indexer {
         let generation = Arc::new(AtomicU64::new(read_index_generation(config.state_dir())));
         let writer = index.writer(MAX_INDEX_RAM_BYTES)?;
 =======
+=======
+        let fields = schema_fields_from_index(&index.schema())?;
+>>>>>>> mcoda/task/bck-05-us-07-t12
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommit)
@@ -1427,6 +1438,7 @@ impl Indexer {
             config,
 <<<<<<< HEAD
             index,
+<<<<<<< HEAD
             reader: Arc::new(RwLock::new(reader)),
             doc_id_field,
             path_field,
@@ -1434,6 +1446,14 @@ impl Indexer {
             summary_field,
             token_field,
             index_state_preexisting: state_dir_preexisting,
+=======
+            reader,
+            doc_id_field: fields.doc_id_field,
+            path_field: fields.path_field,
+            body_field: fields.body_field,
+            summary_field: fields.summary_field,
+            token_field: fields.token_field,
+>>>>>>> mcoda/task/bck-05-us-07-t12
             writer: Some(Arc::new(Mutex::new(writer))),
             symbols_store,
 <<<<<<< HEAD
@@ -1509,6 +1529,7 @@ impl Indexer {
         ensure_index_ready(&repo_root, &config)?;
 >>>>>>> mcoda/task/bck-05-us-08-t05
         let index = Index::open_in_dir(config.state_dir())?;
+<<<<<<< HEAD
         let reader = Arc::new(
             index
                 .reader_builder()
@@ -1521,6 +1542,13 @@ impl Indexer {
         let body_field = schema.get_field("body").unwrap();
         let summary_field = schema.get_field("summary").unwrap();
         let token_field = schema.get_field("token_estimate").unwrap();
+=======
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::OnCommit)
+            .try_into()?;
+        let fields = schema_fields_from_index(&index.schema())?;
+>>>>>>> mcoda/task/bck-05-us-07-t12
         let symbols_store = if config.symbols_enabled() {
             SymbolsStore::new(&repo_root, config.repo_state_dir()).ok()
         } else {
@@ -1543,6 +1571,7 @@ impl Indexer {
             repo_root,
             config,
             index,
+<<<<<<< HEAD
             reader: Arc::new(RwLock::new(reader)),
             doc_id_field,
             path_field,
@@ -1550,6 +1579,14 @@ impl Indexer {
             summary_field,
             token_field,
             index_state_preexisting: state_dir_preexisting,
+=======
+            reader,
+            doc_id_field: fields.doc_id_field,
+            path_field: fields.path_field,
+            body_field: fields.body_field,
+            summary_field: fields.summary_field,
+            token_field: fields.token_field,
+>>>>>>> mcoda/task/bck-05-us-07-t12
             writer: None,
             symbols_store,
 <<<<<<< HEAD
@@ -3906,6 +3943,7 @@ fn env_flag_enabled(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+<<<<<<< HEAD
 fn index_state_manifest_path(state_dir: &Path) -> PathBuf {
     state_dir.join(INDEX_STATE_FILENAME)
 }
@@ -3974,20 +4012,60 @@ fn build_schema() -> (
     tantivy::schema::Field,
     tantivy::schema::Field,
 ) {
+=======
+fn build_schema() -> Schema {
+>>>>>>> mcoda/task/bck-05-us-07-t12
     let mut builder = Schema::builder();
-    let doc_id_field = builder.add_text_field("doc_id", STRING | STORED);
-    let path_field = builder.add_text_field("rel_path", STRING | STORED);
-    let body_field = builder.add_text_field("body", TEXT | STORED);
-    let summary_field = builder.add_text_field("summary", TEXT | STORED);
-    let token_field = builder.add_u64_field("token_estimate", FAST | STORED);
-    let schema = builder.build();
-    (
-        schema,
-        doc_id_field,
-        path_field,
-        body_field,
-        summary_field,
-        token_field,
+    builder.add_text_field("doc_id", STRING | STORED);
+    builder.add_text_field("rel_path", STRING | STORED);
+    builder.add_text_field("body", TEXT | STORED);
+    builder.add_text_field("summary", TEXT | STORED);
+    builder.add_u64_field("token_estimate", FAST | STORED);
+    builder.build()
+}
+
+fn schema_fields_from_index(schema: &Schema) -> Result<IndexSchemaFields> {
+    Ok(IndexSchemaFields {
+        doc_id_field: require_text_field(schema, "doc_id")?,
+        path_field: require_text_field(schema, "rel_path")?,
+        body_field: require_text_field(schema, "body")?,
+        summary_field: require_text_field(schema, "summary")?,
+        token_field: require_u64_field(schema, "token_estimate")?,
+    })
+}
+
+fn require_text_field(schema: &Schema, name: &str) -> Result<tantivy::schema::Field> {
+    let field = schema
+        .get_field(name)
+        .ok_or_else(|| schema_mismatch_error(format!("missing required field '{name}'")))?;
+    let entry = schema.get_field_entry(field);
+    match entry.field_type() {
+        FieldType::Str(_) => Ok(field),
+        _ => Err(schema_mismatch_error(format!(
+            "field '{name}' has incompatible type"
+        ))
+        .into()),
+    }
+}
+
+fn require_u64_field(schema: &Schema, name: &str) -> Result<tantivy::schema::Field> {
+    let field = schema
+        .get_field(name)
+        .ok_or_else(|| schema_mismatch_error(format!("missing required field '{name}'")))?;
+    let entry = schema.get_field_entry(field);
+    match entry.field_type() {
+        FieldType::U64(_) => Ok(field),
+        _ => Err(schema_mismatch_error(format!(
+            "field '{name}' has incompatible type"
+        ))
+        .into()),
+    }
+}
+
+fn schema_mismatch_error(reason: String) -> AppError {
+    AppError::new(
+        ERR_STALE_INDEX,
+        format!("index schema mismatch; {reason}"),
     )
 }
 

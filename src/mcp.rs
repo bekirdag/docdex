@@ -8,7 +8,7 @@ use crate::index::{IndexConfig, Indexer};
 use crate::libs;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
-use crate::ratelimit::RateLimiter;
+use crate::ratelimit::{RateLimitConfig, RateLimiter};
 use crate::search;
 use crate::symbols::SymbolsStore;
 use anyhow::{Context, Result};
@@ -473,16 +473,7 @@ pub async fn serve(
     } else {
         None
     };
-    let effective_burst = if rate_limit_per_min > 0 && rate_limit_burst == 0 {
-        rate_limit_per_min
-    } else {
-        rate_limit_burst
-    };
-    let tool_rate_limit = if rate_limit_per_min > 0 {
-        Some(RateLimiter::<()>::new(rate_limit_per_min, effective_burst))
-    } else {
-        None
-    };
+    let tool_rate_limit = RateLimitConfig::for_mcp(rate_limit_per_min, rate_limit_burst)?.limiter();
     let libs_indexer = libs::LibsIndexer::open_read_only(libs::libs_state_dir_from_index_state_dir(
         indexer.state_dir(),
     ))

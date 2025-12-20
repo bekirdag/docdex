@@ -1,4 +1,4 @@
-use crate::error::RateLimited;
+use crate::error::{RateLimited, StartupError};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -14,6 +14,70 @@ where
     refill_per_sec: f64,
     capacity: f64,
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct RateLimitConfig {
+    per_minute: u32,
+    burst: u32,
+}
+
+impl RateLimitConfig {
+    pub fn for_http(per_minute: u32, burst: u32, secure_mode: bool) -> Result<Self, StartupError> {
+        let effective_per_minute = if secure_mode && per_minute == 0 {
+            DEFAULT_SECURE_PER_MINUTE
+        } else {
+            per_minute
+        };
+        if !secure_mode && per_minute == 0 && burst > 0 {
+            return Err(StartupError::new(
+                "startup_config_invalid",
+                "invalid HTTP rate limit config: burst set without a per-minute limit",
+            )
+            .with_hint(
+                "Set --rate-limit-per-min (or DOCDEX_RATE_LIMIT_PER_MIN) to enable the limiter, or set --rate-limit-burst=0 to disable it.",
+            ));
+        }
+        Ok(Self::new(effective_per_minute, burst))
+    }
+
+    pub fn for_mcp(per_minute: u32, burst: u32) -> Result<Self, StartupError> {
+        if per_minute == 0 && burst > 0 {
+            return Err(StartupError::new(
+                "startup_config_invalid",
+                "invalid MCP rate limit config: burst set without a per-minute limit",
+            )
+            .with_hint(
+                "Set --rate-limit-per-min (or DOCDEX_MCP_RATE_LIMIT_PER_MIN) to enable the limiter, or set --rate-limit-burst=0 to disable it.",
+            ));
+        }
+        Ok(Self::new(per_minute, burst))
+    }
+
+    fn new(per_minute: u32, burst: u32) -> Self {
+        let effective_burst = if per_minute > 0 {
+            if burst == 0 { per_minute } else { burst }
+        } else {
+            0
+        };
+        Self {
+            per_minute,
+            burst: effective_burst,
+        }
+    }
+
+    pub fn limiter<K>(&self) -> Option<RateLimiter<K>>
+    where
+        K: Eq + Hash,
+    {
+        if self.per_minute > 0 {
+            Some(RateLimiter::new(self.per_minute, self.burst))
+        } else {
+            None
+        }
+    }
+}
+
+pub const DEFAULT_SECURE_PER_MINUTE: u32 = 60;
 
 #[derive(Clone, Copy)]
 struct RateBucket {

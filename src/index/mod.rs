@@ -5373,6 +5373,7 @@ fn missing_repo_path_error(repo_root: &Path) -> AppError {
     ))
 }
 
+<<<<<<< HEAD
 fn index_state_recovery_steps() -> Vec<String> {
     vec![
         "Run `docdexd index --repo <repo>` to build or refresh the index (or call `docdex_index` with `paths: []`)."
@@ -5456,6 +5457,9 @@ fn stale_index_error(
 }
 
 fn repo_state_mismatch_error(
+=======
+pub(crate) fn repo_state_mismatch_error(
+>>>>>>> mcoda/task/bck-05-us-07-t22
     repo_root: &Path,
     index_state_dir: Option<&Path>,
     identity: &crate::repo_identity::RepoIdentityError,

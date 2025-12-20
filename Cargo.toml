@@ -35,8 +35,12 @@ uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 hex = "0.4"
 which = "6"
+<<<<<<< HEAD
 reqwest = { version = "0.12" }
 url = "2.5"
+=======
+rusqlite = { version = "0.31", features = ["bundled"] }
+>>>>>>> mcoda/task/bck-05-us-07-t22
 
 [dev-dependencies]
 assert_cmd = "2.0"

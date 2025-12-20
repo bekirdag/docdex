@@ -21,7 +21,7 @@ mod util;
 mod watcher;
 
 use crate::config::RepoArgs;
-use crate::error::StartupError;
+use crate::error::{StartupError, ERR_MISSING_INDEX, ERR_STALE_INDEX};
 use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use serde_json::json;
@@ -1199,11 +1199,19 @@ fn render_error_and_exit(err: anyhow::Error) -> ! {
             Ok(line) => eprintln!("{line}"),
             Err(_) => eprintln!("{}", app.message),
         }
-        std::process::exit(1);
+        std::process::exit(exit_code_for_app_error(app));
     }
 
     eprintln!("{err}");
     std::process::exit(1);
+}
+
+fn exit_code_for_app_error(app: &crate::error::AppError) -> i32 {
+    match app.code {
+        ERR_MISSING_INDEX => 2,
+        ERR_STALE_INDEX => 3,
+        _ => 1,
+    }
 }
 
 fn print_full_help() -> Result<()> {

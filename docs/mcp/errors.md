@@ -115,8 +115,8 @@ Docdex presents the same underlying failures in three different wrappers:
 | Repo path missing on disk | `missing_repo_path` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"missing_repo_path",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"missing_repo_path",...}}` |
 | Repo mismatch (`project_root` does not match server repo) | `unknown_repo` | `-32602` | N/A (daemon is started per-repo) | N/A (CLI always has `--repo`; mismatch is not represented) |
 | Repo state mismatch (unsafe to associate state) | `repo_state_mismatch` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"repo_state_mismatch",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"repo_state_mismatch",...}}` |
-| Index missing (query/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
-| Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Not currently emitted by the per-repo CLI |
+| Index missing (query/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `2`, `stderr` JSON `{error:{code:"missing_index",...}}` |
+| Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Exit `3`, `stderr` JSON `{error:{code:"stale_index",...}}` |
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |
 | Rate limited | `rate_limited` | `-32602` | `429` (security middleware returns status-only; no JSON envelope) | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
 | Optional dependency disabled (e.g. symbols) | `missing_dependency` | `-32602` | N/A (no HTTP endpoint for MCP symbols) | N/A (no CLI symbols command) |

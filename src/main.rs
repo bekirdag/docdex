@@ -27,7 +27,11 @@ mod state_layout;
 mod symbols;
 mod state_paths;
 mod util;
+<<<<<<< HEAD
 mod web_discovery;
+=======
+mod web;
+>>>>>>> mcoda/task/bck-05-us-07-t16
 mod watcher;
 
 use crate::config::RepoArgs;
@@ -346,6 +350,7 @@ enum Command {
         )]
         repo_only: bool,
     },
+<<<<<<< HEAD
     /// Report index stats, symbols enablement, and recent run summaries.
     Stats {
         #[command(flatten)]
@@ -356,6 +361,14 @@ enum Command {
             help = "Max run summaries to return (clamped to 20)"
         )]
         runs_limit: usize,
+=======
+    /// Perform DuckDuckGo HTML discovery (JSON output).
+    WebSearch {
+        #[arg(long, value_parser = config::non_empty_string, help = "Search query string")]
+        query: String,
+        #[arg(long, default_value_t = 8, help = "Max results to return (clamped to config)")]
+        limit: usize,
+>>>>>>> mcoda/task/bck-05-us-07-t16
     },
     /// Ingest library documentation sources into the repo-scoped libs index.
     LibsIngest {
@@ -899,6 +912,7 @@ async fn run() -> Result<()> {
             let hits = search::run_query(&server, libs_indexer.as_ref(), &query, limit).await?;
             println!("{}", serde_json::to_string_pretty(&hits)?);
         }
+<<<<<<< HEAD
         Command::Stats { repo, runs_limit } => {
             let repo_root = repo.repo_root();
             let index_config = index::IndexConfig::with_overrides(
@@ -926,6 +940,14 @@ async fn run() -> Result<()> {
                 "repo_root": repo_root.display().to_string(),
             });
             println!("{}", serde_json::to_string_pretty(&payload)?);
+=======
+        Command::WebSearch { query, limit } => {
+            util::init_logging("warn")?;
+            let config = web::WebConfig::from_env();
+            let discovery = web::ddg::DdgDiscovery::new(config)?;
+            let response = discovery.discover(&query, limit).await?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+>>>>>>> mcoda/task/bck-05-us-07-t16
         }
         Command::Repo { command } => match command {
             RepoCommand::Reassociate {
@@ -1392,7 +1414,11 @@ fn print_full_help() -> Result<()> {
         "index",
         "ingest",
         "query",
+<<<<<<< HEAD
         "stats",
+=======
+        "web-search",
+>>>>>>> mcoda/task/bck-05-us-07-t16
         "repo",
         "memory-store",
         "memory-recall",

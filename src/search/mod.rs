@@ -6,6 +6,7 @@ use crate::index::{
 use crate::error::{
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     AppError, RateLimited, RetryHint, StartupError, ERR_EMBEDDING_FAILED,
     ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR,
     ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
@@ -49,6 +50,11 @@ use crate::error::{
 =======
     ERR_MISSING_INDEX, ERR_RATE_LIMITED, ERR_STALE_INDEX,
 >>>>>>> mcoda/task/bck-05-us-08-t01
+=======
+    AppError, RateLimited, StartupError, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
+    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
+    ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY, ERR_RATE_LIMITED,
+>>>>>>> mcoda/task/bck-05-us-07-t16
 };
 use crate::libs::LibsIndexer;
 use crate::max_size::{
@@ -58,7 +64,12 @@ use crate::max_size::{
 };
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
+<<<<<<< HEAD
 use crate::ratelimit::{RateLimitConfig, RateLimiter};
+=======
+use crate::ratelimit::RateLimiter;
+use crate::web::ddg::DdgDiscovery;
+>>>>>>> mcoda/task/bck-05-us-07-t16
 use anyhow::Result;
 use axum::body::HttpBody;
 use axum::{
@@ -278,6 +289,7 @@ pub struct AppState {
     pub access_log: bool,
     pub audit: Option<crate::audit::AuditLogger>,
     pub metrics: Arc<crate::metrics::Metrics>,
+    pub web_discovery: DdgDiscovery,
     pub memory: Option<MemoryState>,
     pub index_state: Arc<Mutex<IndexStateCache>>,
 }
@@ -300,6 +312,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/stats", get(stats_handler))
         .route("/v1/memory/store", post(memory_store_handler))
         .route("/v1/memory/recall", post(memory_recall_handler))
+        .route("/v1/web/search", get(web_search_handler))
         .route("/ai-help", get(ai_help_handler))
         .route("/metrics", get(metrics_handler))
         .route_layer(middleware::from_fn_with_state(
@@ -558,6 +571,7 @@ fn status_for_app_error(code: &str) -> StatusCode {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         ERR_TIER2_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
 =======
         ERR_MISSING_INDEX => StatusCode::CONFLICT,
@@ -581,6 +595,10 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_MISSING_INDEX => StatusCode::CONFLICT,
         ERR_STALE_INDEX => StatusCode::CONFLICT,
 >>>>>>> mcoda/task/bck-05-us-08-t01
+=======
+        ERR_MISSING_DEPENDENCY => StatusCode::CONFLICT,
+        ERR_BACKOFF_REQUIRED => StatusCode::TOO_MANY_REQUESTS,
+>>>>>>> mcoda/task/bck-05-us-07-t16
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -1345,6 +1363,12 @@ struct SearchParams {
     snippets: Option<bool>,
     max_tokens: Option<u64>,
     include_libs: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct WebSearchParams {
+    query: Option<String>,
+    limit: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -2475,6 +2499,59 @@ async fn search_handler(
                 format!("internal error (request id: {})", request_id.0),
             )
                 .into_response()
+        }
+    }
+}
+
+async fn web_search_handler(
+    State(state): State<AppState>,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    Query(params): Query<WebSearchParams>,
+) -> impl IntoResponse {
+    let raw = match params.query.as_deref() {
+        Some(value) => value,
+        None => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                "query is required",
+            );
+        }
+    };
+    let query = raw.trim();
+    if query.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "query must not be empty",
+        );
+    }
+    let limit = params
+        .limit
+        .unwrap_or_else(|| state.web_discovery.max_results())
+        .max(1);
+
+    match state.web_discovery.discover(query, limit).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => {
+            let (code, status, message) = if let Some(app) = err.downcast_ref::<AppError>() {
+                (app.code, status_for_app_error(app.code), app.message.clone())
+            } else {
+                (
+                    ERR_INTERNAL_ERROR,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "web discovery failed".to_string(),
+                )
+            };
+            state.metrics.inc_error();
+            warn!(
+                target: "docdexd",
+                request_id = %request_id.0,
+                code = %code,
+                error = %err,
+                "web discovery failed"
+            );
+            json_error(status, code, message)
         }
     }
 }

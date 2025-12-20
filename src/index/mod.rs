@@ -174,6 +174,14 @@ pub(crate) const MAX_SNIPPET_CHARS: usize = 420;
 =======
 >>>>>>> mcoda/task/bck-05-us-10-t25
 const FALLBACK_PREVIEW_LINES: usize = 60;
+pub const RUN_SUMMARY_DEFAULT_LIMIT: usize = 5;
+pub const RUN_SUMMARY_MAX_LIMIT: usize = 20;
+const RUN_SUMMARY_MAX_SKIP_SAMPLES: usize = 25;
+const RUN_SUMMARY_MAX_ERROR_SAMPLES: usize = 25;
+const RUN_SUMMARY_MAX_ERROR_CHARS: usize = 240;
+const RUN_HISTORY_FILENAME: &str = "run_summaries.json";
+const RUN_HISTORY_SCHEMA_VERSION: u32 = 1;
+const SYMBOL_ERROR_SUMMARY_MAX_CHARS: usize = RUN_SUMMARY_MAX_ERROR_CHARS;
 
 #[derive(Clone)]
 pub struct IndexConfig {
@@ -289,6 +297,84 @@ pub struct IndexStats {
     pub last_updated_epoch_ms: Option<u128>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexRunType {
+    Reindex,
+    Ingest,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct IndexSkipSample {
+    pub path: String,
+    pub reason: FileDecisionReason,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct IndexErrorSample {
+    pub path: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SymbolsSkipSample {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SymbolsErrorSample {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SymbolsRunSummary {
+    pub enabled: bool,
+    pub store_ready: bool,
+    pub ok: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub skipped_samples: Vec<SymbolsSkipSample>,
+    pub skipped_truncated: bool,
+    pub error_samples: Vec<SymbolsErrorSample>,
+    pub errors_truncated: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct IndexRunSummary {
+    pub run_type: IndexRunType,
+    pub started_at_epoch_ms: u128,
+    pub finished_at_epoch_ms: u128,
+    pub files_seen: usize,
+    pub files_indexed: usize,
+    pub files_skipped: usize,
+    pub read_errors: usize,
+    pub skipped_samples: Vec<IndexSkipSample>,
+    pub skipped_truncated: bool,
+    pub error_samples: Vec<IndexErrorSample>,
+    pub errors_truncated: bool,
+    pub symbols: SymbolsRunSummary,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RunSummaryResponse {
+    pub total: usize,
+    pub limit: usize,
+    pub runs: Vec<IndexRunSummary>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RunHistory {
+    version: u32,
+    #[serde(default)]
+    runs: Vec<IndexRunSummary>,
+}
+
 impl IndexConfig {
     #[allow(dead_code)]
     pub fn for_repo(repo_root: &Path) -> Result<Self> {
@@ -394,6 +480,12 @@ impl IndexConfig {
     pub fn symbols_enabled(&self) -> bool {
         self.symbols_enabled
     }
+}
+
+pub fn clamp_run_summary_limit(limit: Option<usize>) -> usize {
+    limit
+        .unwrap_or(RUN_SUMMARY_DEFAULT_LIMIT)
+        .clamp(1, RUN_SUMMARY_MAX_LIMIT)
 }
 
 impl Indexer {
@@ -530,7 +622,7 @@ impl Indexer {
         })
     }
 
-    pub async fn reindex_all(&self) -> Result<()> {
+    async fn reindex_all_inner(&self, mut tracker: Option<&mut IndexRunTracker>) -> Result<()> {
         let writer_arc = self.writer()?;
         let mut writer = writer_arc.lock();
         writer.delete_all_documents()?;
@@ -545,16 +637,44 @@ impl Indexer {
             .filter(|e| e.file_type().is_file())
         {
             let path = entry.path();
+            if let Some(tracker) = tracker.as_deref_mut() {
+                tracker.record_seen();
+            }
             let decision = decide_file(path, &self.repo_root, &self.config);
             if !decision.should_index() {
+                if let Some(tracker) = tracker.as_deref_mut() {
+                    tracker.record_skip(self.sample_path(path), decision.reason.clone());
+                }
                 continue;
             }
             let ingest = self.add_document(&mut writer, path)?;
-            self.maybe_update_symbols(&ingest);
+            let outcome = self.maybe_update_symbols(&ingest);
+            if let Some(tracker) = tracker.as_deref_mut() {
+                tracker.record_indexed(&ingest);
+                tracker.record_symbols(&ingest.rel_path, outcome);
+            }
         }
         writer.commit()?;
         self.reader.reload()?;
         Ok(())
+    }
+
+    pub async fn reindex_all(&self) -> Result<()> {
+        self.reindex_all_inner(None).await
+    }
+
+    pub async fn reindex_all_with_summary(&self) -> Result<IndexRunSummary> {
+        let mut tracker = IndexRunTracker::new(
+            IndexRunType::Reindex,
+            self.config.symbols_enabled(),
+            self.symbols_store.is_some(),
+        );
+        self.reindex_all_inner(Some(&mut tracker)).await?;
+        let summary = tracker.finish();
+        if let Err(err) = record_run_summary(self.config.state_dir(), summary.clone()) {
+            warn!(target: "docdexd", error = ?err, "failed to persist run summary");
+        }
+        Ok(summary)
     }
 
     pub async fn ingest_file(&self, file: PathBuf) -> Result<FileDecision> {
@@ -569,10 +689,48 @@ impl Indexer {
         let term = Term::from_field_text(self.doc_id_field, &rel);
         writer.delete_term(term);
         let ingest = self.add_document(&mut writer, &path)?;
-        self.maybe_update_symbols(&ingest);
+        let _ = self.maybe_update_symbols(&ingest);
         writer.commit()?;
         self.reader.reload()?;
         Ok(decision)
+    }
+
+    pub async fn ingest_file_with_summary(
+        &self,
+        file: PathBuf,
+    ) -> Result<(FileDecision, IndexRunSummary)> {
+        let mut tracker = IndexRunTracker::new(
+            IndexRunType::Ingest,
+            self.config.symbols_enabled(),
+            self.symbols_store.is_some(),
+        );
+        let path = file.canonicalize().context("resolve file")?;
+        tracker.record_seen();
+        let decision = decide_file(&path, &self.repo_root, &self.config);
+        if !decision.should_index() {
+            tracker.record_skip(self.sample_path(&path), decision.reason.clone());
+            let summary = tracker.finish();
+            if let Err(err) = record_run_summary(self.config.state_dir(), summary.clone()) {
+                warn!(target: "docdexd", error = ?err, "failed to persist run summary");
+            }
+            return Ok((decision, summary));
+        }
+        let writer_arc = self.writer()?;
+        let mut writer = writer_arc.lock();
+        let rel = self.rel_path(&path)?;
+        let term = Term::from_field_text(self.doc_id_field, &rel);
+        writer.delete_term(term);
+        let ingest = self.add_document(&mut writer, &path)?;
+        let outcome = self.maybe_update_symbols(&ingest);
+        tracker.record_indexed(&ingest);
+        tracker.record_symbols(&ingest.rel_path, outcome);
+        writer.commit()?;
+        self.reader.reload()?;
+        let summary = tracker.finish();
+        if let Err(err) = record_run_summary(self.config.state_dir(), summary.clone()) {
+            warn!(target: "docdexd", error = ?err, "failed to persist run summary");
+        }
+        Ok((decision, summary))
     }
 
     pub async fn delete_file(&self, file: PathBuf) -> Result<()> {
@@ -862,6 +1020,10 @@ impl Indexer {
         &self.config
     }
 
+    pub fn symbols_store_ready(&self) -> bool {
+        self.symbols_store.is_some()
+    }
+
     pub fn stats(&self) -> Result<IndexStats> {
         let searcher = self.reader.searcher();
         let mut num_docs: u64 = 0;
@@ -915,6 +1077,14 @@ impl Indexer {
             generated_at_epoch_ms,
             last_updated_epoch_ms,
         })
+    }
+
+    pub fn run_summaries(&self, limit: Option<usize>) -> Result<RunSummaryResponse> {
+        let limit = clamp_run_summary_limit(limit);
+        let history = load_run_history(self.config.state_dir());
+        let total = history.runs.len();
+        let runs = history.runs.into_iter().take(limit).collect();
+        Ok(RunSummaryResponse { total, limit, runs })
     }
 
     pub fn snapshot_with_snippet(
@@ -1004,43 +1174,53 @@ impl Indexer {
         Ok(rel.to_string_lossy().replace('\\', "/"))
     }
 
-    fn maybe_update_symbols(&self, ingest: &DocumentIngest) {
+    fn sample_path(&self, path: &Path) -> String {
+        self.rel_path(path)
+            .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"))
+    }
+
+    fn maybe_update_symbols(&self, ingest: &DocumentIngest) -> Option<SymbolOutcome> {
         let Some(store) = self.symbols_store.as_ref() else {
-            return;
+            return None;
         };
 
         let Some(language) = symbols::language_for_path(&ingest.rel_path) else {
+            let outcome = SymbolOutcome {
+                status: SymbolOutcomeStatus::Skipped,
+                reason: Some("unsupported_language".to_string()),
+                error_summary: None,
+            };
             let payload = symbols::build_symbols_payload(
                 store.repo_id(),
                 &ingest.rel_path,
                 Vec::new(),
-                SymbolOutcome {
-                    status: SymbolOutcomeStatus::Skipped,
-                    reason: Some("unsupported_language".to_string()),
-                    error_summary: None,
-                },
+                outcome.clone(),
             );
             if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
                 warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");
             }
-            return;
+            return Some(outcome);
         };
 
         if let Some(err) = ingest.read_error.as_ref() {
+            let outcome = SymbolOutcome {
+                status: SymbolOutcomeStatus::Failed,
+                reason: Some(format!("read_failed ({})", language.as_str())),
+                error_summary: Some(truncate_error_summary(
+                    err,
+                    SYMBOL_ERROR_SUMMARY_MAX_CHARS,
+                )),
+            };
             let payload = symbols::build_symbols_payload(
                 store.repo_id(),
                 &ingest.rel_path,
                 Vec::new(),
-                SymbolOutcome {
-                    status: SymbolOutcomeStatus::Failed,
-                    reason: Some(format!("read_failed ({})", language.as_str())),
-                    error_summary: Some(err.clone()),
-                },
+                outcome.clone(),
             );
             if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
                 warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");
             }
-            return;
+            return Some(outcome);
         }
 
         match symbols::extract_symbols_best_effort(
@@ -1050,36 +1230,43 @@ impl Indexer {
             language,
         ) {
             Ok(symbols) => {
+                let outcome = SymbolOutcome {
+                    status: SymbolOutcomeStatus::Ok,
+                    reason: None,
+                    error_summary: None,
+                };
                 let payload = symbols::build_symbols_payload(
                     store.repo_id(),
                     &ingest.rel_path,
                     symbols,
-                    SymbolOutcome {
-                        status: SymbolOutcomeStatus::Ok,
-                        reason: None,
-                        error_summary: None,
-                    },
+                    outcome.clone(),
                 );
                 if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
                     warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");
                 }
+                Some(outcome)
             }
             Err(err) => {
+                let outcome = SymbolOutcome {
+                    status: SymbolOutcomeStatus::Failed,
+                    reason: Some(format!("extract_failed ({})", language.as_str())),
+                    error_summary: Some(truncate_error_summary(
+                        &err.to_string(),
+                        SYMBOL_ERROR_SUMMARY_MAX_CHARS,
+                    )),
+                };
                 let payload = symbols::build_symbols_payload(
                     store.repo_id(),
                     &ingest.rel_path,
                     Vec::new(),
-                    SymbolOutcome {
-                        status: SymbolOutcomeStatus::Failed,
-                        reason: Some(format!("extract_failed ({})", language.as_str())),
-                        error_summary: Some(err.to_string()),
-                    },
+                    outcome.clone(),
                 );
                 if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
                     warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");
                 }
+                Some(outcome)
             }
-        };
+        }
     }
 
     fn snapshot_from_document(&self, doc_id: &str, doc: &Document) -> DocSnapshot {
@@ -1170,6 +1357,243 @@ struct DocumentIngest {
     read_error: Option<String>,
 }
 
+struct IndexRunTracker {
+    run_type: IndexRunType,
+    started_at_epoch_ms: u128,
+    files_seen: usize,
+    files_indexed: usize,
+    files_skipped: usize,
+    read_errors: usize,
+    skipped_samples: Vec<IndexSkipSample>,
+    skipped_truncated: bool,
+    error_samples: Vec<IndexErrorSample>,
+    errors_truncated: bool,
+    symbols: SymbolsRunTracker,
+}
+
+impl IndexRunTracker {
+    fn new(run_type: IndexRunType, symbols_enabled: bool, symbols_store_ready: bool) -> Self {
+        Self {
+            run_type,
+            started_at_epoch_ms: now_epoch_ms(),
+            files_seen: 0,
+            files_indexed: 0,
+            files_skipped: 0,
+            read_errors: 0,
+            skipped_samples: Vec::new(),
+            skipped_truncated: false,
+            error_samples: Vec::new(),
+            errors_truncated: false,
+            symbols: SymbolsRunTracker::new(symbols_enabled, symbols_store_ready),
+        }
+    }
+
+    fn record_seen(&mut self) {
+        self.files_seen = self.files_seen.saturating_add(1);
+    }
+
+    fn record_skip(&mut self, path: String, reason: FileDecisionReason) {
+        self.files_skipped = self.files_skipped.saturating_add(1);
+        let sample = IndexSkipSample { path, reason };
+        push_bounded(
+            &mut self.skipped_samples,
+            sample,
+            &mut self.skipped_truncated,
+            RUN_SUMMARY_MAX_SKIP_SAMPLES,
+        );
+    }
+
+    fn record_indexed(&mut self, ingest: &DocumentIngest) {
+        self.files_indexed = self.files_indexed.saturating_add(1);
+        if let Some(err) = ingest.read_error.as_ref() {
+            self.read_errors = self.read_errors.saturating_add(1);
+            let sample = IndexErrorSample {
+                path: ingest.rel_path.clone(),
+                error: truncate_error_summary(err, RUN_SUMMARY_MAX_ERROR_CHARS),
+            };
+            push_bounded(
+                &mut self.error_samples,
+                sample,
+                &mut self.errors_truncated,
+                RUN_SUMMARY_MAX_ERROR_SAMPLES,
+            );
+        }
+    }
+
+    fn record_symbols(&mut self, path: &str, outcome: Option<SymbolOutcome>) {
+        self.symbols.record(path, outcome);
+    }
+
+    fn finish(self) -> IndexRunSummary {
+        IndexRunSummary {
+            run_type: self.run_type,
+            started_at_epoch_ms: self.started_at_epoch_ms,
+            finished_at_epoch_ms: now_epoch_ms(),
+            files_seen: self.files_seen,
+            files_indexed: self.files_indexed,
+            files_skipped: self.files_skipped,
+            read_errors: self.read_errors,
+            skipped_samples: self.skipped_samples,
+            skipped_truncated: self.skipped_truncated,
+            error_samples: self.error_samples,
+            errors_truncated: self.errors_truncated,
+            symbols: self.symbols.finish(),
+        }
+    }
+}
+
+struct SymbolsRunTracker {
+    enabled: bool,
+    store_ready: bool,
+    ok: usize,
+    skipped: usize,
+    failed: usize,
+    skipped_samples: Vec<SymbolsSkipSample>,
+    skipped_truncated: bool,
+    error_samples: Vec<SymbolsErrorSample>,
+    errors_truncated: bool,
+}
+
+impl SymbolsRunTracker {
+    fn new(enabled: bool, store_ready: bool) -> Self {
+        Self {
+            enabled,
+            store_ready,
+            ok: 0,
+            skipped: 0,
+            failed: 0,
+            skipped_samples: Vec::new(),
+            skipped_truncated: false,
+            error_samples: Vec::new(),
+            errors_truncated: false,
+        }
+    }
+
+    fn record(&mut self, path: &str, outcome: Option<SymbolOutcome>) {
+        let Some(outcome) = outcome else {
+            return;
+        };
+        let SymbolOutcome {
+            status,
+            reason,
+            error_summary,
+        } = outcome;
+        match status {
+            SymbolOutcomeStatus::Ok => {
+                self.ok = self.ok.saturating_add(1);
+            }
+            SymbolOutcomeStatus::Skipped => {
+                self.skipped = self.skipped.saturating_add(1);
+                let sample = SymbolsSkipSample {
+                    path: path.to_string(),
+                    reason,
+                };
+                push_bounded(
+                    &mut self.skipped_samples,
+                    sample,
+                    &mut self.skipped_truncated,
+                    RUN_SUMMARY_MAX_SKIP_SAMPLES,
+                );
+            }
+            SymbolOutcomeStatus::Failed => {
+                self.failed = self.failed.saturating_add(1);
+                let sample = SymbolsErrorSample {
+                    path: path.to_string(),
+                    reason,
+                    error_summary: error_summary
+                        .as_deref()
+                        .map(|value| truncate_error_summary(value, RUN_SUMMARY_MAX_ERROR_CHARS)),
+                };
+                push_bounded(
+                    &mut self.error_samples,
+                    sample,
+                    &mut self.errors_truncated,
+                    RUN_SUMMARY_MAX_ERROR_SAMPLES,
+                );
+            }
+        }
+    }
+
+    fn finish(self) -> SymbolsRunSummary {
+        SymbolsRunSummary {
+            enabled: self.enabled,
+            store_ready: self.store_ready,
+            ok: self.ok,
+            skipped: self.skipped,
+            failed: self.failed,
+            skipped_samples: self.skipped_samples,
+            skipped_truncated: self.skipped_truncated,
+            error_samples: self.error_samples,
+            errors_truncated: self.errors_truncated,
+        }
+    }
+}
+
+fn now_epoch_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn push_bounded<T>(vec: &mut Vec<T>, value: T, truncated: &mut bool, max: usize) {
+    if vec.len() < max {
+        vec.push(value);
+    } else {
+        *truncated = true;
+    }
+}
+
+fn truncate_error_summary(input: &str, max_chars: usize) -> String {
+    let (truncated, _) = truncate_to_limit(input, max_chars);
+    truncated
+}
+
+fn run_history_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(RUN_HISTORY_FILENAME)
+}
+
+fn load_run_history(state_dir: &Path) -> RunHistory {
+    let path = run_history_path(state_dir);
+    let data = match fs::read_to_string(&path) {
+        Ok(data) => data,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return RunHistory {
+                version: RUN_HISTORY_SCHEMA_VERSION,
+                runs: Vec::new(),
+            }
+        }
+        Err(_) => {
+            return RunHistory {
+                version: RUN_HISTORY_SCHEMA_VERSION,
+                runs: Vec::new(),
+            }
+        }
+    };
+    let mut history: RunHistory = serde_json::from_str(&data).unwrap_or_else(|_| RunHistory {
+        version: RUN_HISTORY_SCHEMA_VERSION,
+        runs: Vec::new(),
+    });
+    if history.version == 0 {
+        history.version = RUN_HISTORY_SCHEMA_VERSION;
+    }
+    history
+}
+
+fn record_run_summary(state_dir: &Path, summary: IndexRunSummary) -> Result<()> {
+    fs::create_dir_all(state_dir).with_context(|| format!("create {}", state_dir.display()))?;
+    let mut history = load_run_history(state_dir);
+    history.version = RUN_HISTORY_SCHEMA_VERSION;
+    history.runs.insert(0, summary);
+    if history.runs.len() > RUN_SUMMARY_MAX_LIMIT {
+        history.runs.truncate(RUN_SUMMARY_MAX_LIMIT);
+    }
+    let payload = serde_json::to_string_pretty(&history).context("serialize run summary")?;
+    fs::write(run_history_path(state_dir), payload)
+        .with_context(|| format!("write {}", run_history_path(state_dir).display()))?;
+    Ok(())
+}
+
 fn env_flag_enabled(key: &str) -> bool {
     std::env::var(key)
         .ok()
@@ -1209,7 +1633,7 @@ pub enum FileDecisionOutcome {
     Exclude,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case", tag = "code")]
 pub enum FileDecisionReason {
     OutsideRepo,

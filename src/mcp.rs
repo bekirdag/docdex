@@ -467,7 +467,11 @@ struct StatsArgs {
     #[serde(default)]
     project_root: Option<PathBuf>,
     #[serde(default)]
+<<<<<<< HEAD
     schema_version: Option<u32>,
+=======
+    runs_limit: Option<usize>,
+>>>>>>> mcoda/task/bck-05-us-10-t06
 }
 
 #[derive(Deserialize)]
@@ -1337,12 +1341,16 @@ impl McpServer {
             ToolDefinition {
                 name: "docdex_stats",
                 description:
-                    "Inspect index metadata: doc count, state dir, size on disk, and last update time.",
+                    "Inspect index metadata, symbols enablement, and recent run summaries (max 20 runs; sample lists capped at 25; error summaries truncated to 240 chars).",
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
+<<<<<<< HEAD
                         "schema_version": { "type": "integer", "minimum": TOOL_SCHEMA_VERSION_MIN as i64, "maximum": TOOL_SCHEMA_VERSION_MAX as i64, "default": TOOL_SCHEMA_VERSION_MAX as i64, "description": "Optional response schema version to request" }
+=======
+                        "runs_limit": { "type": "integer", "minimum": 1, "maximum": crate::index::RUN_SUMMARY_MAX_LIMIT as i64, "default": crate::index::RUN_SUMMARY_DEFAULT_LIMIT, "description": "Max run summaries to return (clamped)" }
+>>>>>>> mcoda/task/bck-05-us-10-t06
                     }
                 }),
             },
@@ -1524,7 +1532,7 @@ impl McpServer {
         self.ensure_project_root(args.project_root.as_deref())?;
         self.ensure_schema_version("docdex_index", args.schema_version)?;
         if args.paths.is_empty() {
-            self.indexer.reindex_all().await?;
+            let _ = self.indexer.reindex_all_with_summary().await?;
             return Ok(json!({
                 "status": "ok",
                 "action": "reindex_all",
@@ -1553,6 +1561,7 @@ impl McpServer {
             } else {
                 self.repo_root.join(path)
             };
+<<<<<<< HEAD
             let canonical = resolved
                 .canonicalize()
                 .with_context(|| format!("resolve path {}", resolved.display()))?;
@@ -1565,6 +1574,11 @@ impl McpServer {
                 .unwrap_or_else(|_| canonical.display().to_string());
             let decision = self.indexer.ingest_file(canonical.clone()).await?;
             ingested.push(path_display.clone());
+=======
+            let path_display = resolved.display().to_string();
+            let (decision, _summary) = self.indexer.ingest_file_with_summary(resolved.clone()).await?;
+            ingested.push(resolved);
+>>>>>>> mcoda/task/bck-05-us-10-t06
             decisions.push(json!({
                 "path": path_display,
                 "decision": decision.decision,
@@ -1627,6 +1641,7 @@ impl McpServer {
         self.ensure_project_root(args.project_root.as_deref())?;
         self.ensure_schema_version("docdex_stats", args.schema_version)?;
         let stats = self.indexer.stats()?;
+        let run_summaries = self.indexer.run_summaries(args.runs_limit)?;
         Ok(json!({
             "num_docs": stats.num_docs,
             "state_dir": stats.state_dir.display().to_string(),
@@ -1635,6 +1650,9 @@ impl McpServer {
             "avg_bytes_per_doc": stats.avg_bytes_per_doc,
             "generated_at_epoch_ms": stats.generated_at_epoch_ms,
             "last_updated_epoch_ms": stats.last_updated_epoch_ms,
+            "symbols_enabled": self.indexer.config().symbols_enabled(),
+            "symbols_store_ready": self.indexer.symbols_store_ready(),
+            "run_summaries": run_summaries,
             "repo_root": self.repo_root.display().to_string(),
             "project_root": self
                 .default_project_root

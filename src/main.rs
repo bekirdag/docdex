@@ -341,6 +341,17 @@ enum Command {
         )]
         repo_only: bool,
     },
+    /// Report index stats, symbols enablement, and recent run summaries.
+    Stats {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(
+            long,
+            default_value_t = index::RUN_SUMMARY_DEFAULT_LIMIT,
+            help = "Max run summaries to return (clamped to 20)"
+        )]
+        runs_limit: usize,
+    },
     /// Ingest library documentation sources into the repo-scoped libs index.
     LibsIngest {
         #[command(flatten)]
@@ -839,8 +850,8 @@ async fn run() -> Result<()> {
             )?;
             util::init_logging("info")?;
             info!("Rebuilding index for {}", repo_root.display());
-            index::Indexer::with_config(repo_root, index_config)?
-                .reindex_all()
+            let _ = index::Indexer::with_config(repo_root, index_config)?
+                .reindex_all_with_summary()
                 .await?;
         }
         Command::Ingest { repo, file } => {
@@ -854,7 +865,7 @@ async fn run() -> Result<()> {
             )?;
             util::init_logging("warn")?;
             let _ = index::Indexer::with_config(repo_root, index_config)?
-                .ingest_file(file)
+                .ingest_file_with_summary(file)
                 .await?;
         }
         Command::Query {
@@ -882,6 +893,34 @@ async fn run() -> Result<()> {
             };
             let hits = search::run_query(&server, libs_indexer.as_ref(), &query, limit).await?;
             println!("{}", serde_json::to_string_pretty(&hits)?);
+        }
+        Command::Stats { repo, runs_limit } => {
+            let repo_root = repo.repo_root();
+            let index_config = index::IndexConfig::with_overrides(
+                &repo_root,
+                repo.state_dir_override(),
+                repo.exclude_dir_overrides(),
+                repo.exclude_prefix_overrides(),
+                repo.symbols_enabled(),
+            )?;
+            util::init_logging("warn")?;
+            let indexer = index::Indexer::with_config_read_only(repo_root.clone(), index_config)?;
+            let stats = indexer.stats()?;
+            let run_summaries = indexer.run_summaries(Some(runs_limit))?;
+            let payload = serde_json::json!({
+                "num_docs": stats.num_docs,
+                "state_dir": stats.state_dir.display().to_string(),
+                "index_size_bytes": stats.index_size_bytes,
+                "segments": stats.segments,
+                "avg_bytes_per_doc": stats.avg_bytes_per_doc,
+                "generated_at_epoch_ms": stats.generated_at_epoch_ms,
+                "last_updated_epoch_ms": stats.last_updated_epoch_ms,
+                "symbols_enabled": indexer.config().symbols_enabled(),
+                "symbols_store_ready": indexer.symbols_store_ready(),
+                "run_summaries": run_summaries,
+                "repo_root": repo_root.display().to_string(),
+            });
+            println!("{}", serde_json::to_string_pretty(&payload)?);
         }
         Command::Repo { command } => match command {
             RepoCommand::Reassociate {
@@ -1287,6 +1326,7 @@ fn print_full_help() -> Result<()> {
         "index",
         "ingest",
         "query",
+        "stats",
         "repo",
         "memory-store",
         "memory-recall",
@@ -1308,8 +1348,12 @@ fn print_full_help() -> Result<()> {
     println!("  - docdex_search: search repo docs; args: query (required), limit (<= max_results), project_root (optional)");
     println!("  - docdex_index: reindex all or ingest provided paths; args: paths[], project_root (optional)");
     println!("  - docdex_files: list indexed docs with pagination; args: limit (<=1000), offset (<=50000), project_root (optional)");
+<<<<<<< HEAD
     println!("  - docdex_stats: index metadata; args: project_root (optional)");
     println!("  - docdex_explainability_record: persist explainability record; args: record (required), project_root (optional)");
+=======
+    println!("  - docdex_stats: index metadata + symbols state + run summaries; args: project_root (optional), runs_limit (<=20)");
+>>>>>>> mcoda/task/bck-05-us-10-t06
     println!("  Notes: set DOCDEX_MCP_MAX_RESULTS to clamp docdex_search; run `docdexd mcp --help` for full MCP flags.");
     Ok(())
 }

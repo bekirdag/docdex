@@ -223,6 +223,10 @@ paths:
                       - retry_after_ms
                       - limit_key
                       - scope
+                      - resource_key
+                      - limit_per_min
+                      - limit_burst
+                      - denied_total
                     properties:
                       code:
                         const: rate_limited
@@ -239,6 +243,17 @@ paths:
                         type: string
                       scope:
                         type: string
+                      resource_key:
+                        type: string
+                      limit_per_min:
+                        type: integer
+                        minimum: 0
+                      limit_burst:
+                        type: integer
+                        minimum: 0
+                      denied_total:
+                        type: integer
+                        minimum: 0
         "500":
           description: Server error
           content:

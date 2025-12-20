@@ -117,6 +117,10 @@ fn assert_http_rate_limit_payload(body: &Value) -> Result<HashSet<String>, BoxEr
         "retry_at",
         "limit_key",
         "scope",
+        "resource_key",
+        "limit_per_min",
+        "limit_burst",
+        "denied_total",
     ]
     .into_iter()
     .collect();
@@ -158,6 +162,40 @@ fn assert_http_rate_limit_payload(body: &Value) -> Result<HashSet<String>, BoxEr
     if scope != "ip" {
         return Err(format!("rate-limit error.scope mismatch: {scope}").into());
     }
+    let resource_key = error
+        .get("resource_key")
+        .and_then(|v| v.as_str())
+        .ok_or("rate-limit error.resource_key missing or not a string")?;
+    if resource_key.parse::<std::net::IpAddr>().is_err() {
+        return Err(format!(
+            "rate-limit error.resource_key is not an IP address: {resource_key}"
+        )
+        .into());
+    }
+    let limit_per_min = error
+        .get("limit_per_min")
+        .and_then(|v| v.as_u64())
+        .ok_or("rate-limit error.limit_per_min missing or not an integer")?;
+    if limit_per_min != 60 {
+        return Err(format!(
+            "rate-limit error.limit_per_min mismatch: {limit_per_min}"
+        )
+        .into());
+    }
+    let limit_burst = error
+        .get("limit_burst")
+        .and_then(|v| v.as_u64())
+        .ok_or("rate-limit error.limit_burst missing or not an integer")?;
+    if limit_burst != 2 {
+        return Err(format!(
+            "rate-limit error.limit_burst mismatch: {limit_burst}"
+        )
+        .into());
+    }
+    error
+        .get("denied_total")
+        .and_then(|v| v.as_u64())
+        .ok_or("rate-limit error.denied_total missing or not an integer")?;
     if let Some(retry_at) = error.get("retry_at") {
         retry_at
             .as_str()

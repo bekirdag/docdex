@@ -952,6 +952,14 @@ struct ErrorDetail {
     limit_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resource_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit_per_min: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit_burst: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    denied_total: Option<u64>,
 }
 
 impl ErrorDetail {
@@ -963,6 +971,10 @@ impl ErrorDetail {
             retry_at: None,
             limit_key: None,
             scope: None,
+            resource_key: None,
+            limit_per_min: None,
+            limit_burst: None,
+            denied_total: None,
         }
     }
 
@@ -974,6 +986,10 @@ impl ErrorDetail {
             retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
             limit_key: Some(err.limit_key.clone()),
             scope: Some(err.scope.clone()),
+            resource_key: Some(err.resource_key.clone()),
+            limit_per_min: Some(err.limit_per_min),
+            limit_burst: Some(err.limit_burst),
+            denied_total: Some(err.denied_total),
         }
     }
 }
@@ -991,6 +1007,10 @@ mod rate_limit_contract_tests {
             Duration::from_millis(1234),
             "http_ip".to_string(),
             "ip".to_string(),
+            "127.0.0.1".to_string(),
+            60,
+            10,
+            3,
         )
         .with_message("x".repeat(10_000))
         .with_retry_at(Utc::now());
@@ -1027,6 +1047,10 @@ mod rate_limit_contract_tests {
             .is_some());
         assert!(error.get("limit_key").and_then(|v| v.as_str()).is_some());
         assert!(error.get("scope").and_then(|v| v.as_str()).is_some());
+        assert!(error.get("resource_key").and_then(|v| v.as_str()).is_some());
+        assert!(error.get("limit_per_min").and_then(|v| v.as_u64()).is_some());
+        assert!(error.get("limit_burst").and_then(|v| v.as_u64()).is_some());
+        assert!(error.get("denied_total").and_then(|v| v.as_u64()).is_some());
     }
 }
 
@@ -1532,9 +1556,12 @@ async fn security_middleware(
     }
     if path != "/healthz" {
         if let Some(limiter) = state.security.rate_limit.as_ref() {
-            if let Err(err) =
-                limiter.check_or_rate_limited(addr.ip(), "http_ip", "ip")
-            {
+            if let Err(err) = limiter.check_or_rate_limited(
+                addr.ip(),
+                "http_ip",
+                "ip",
+                addr.ip().to_string(),
+            ) {
                 state.metrics.inc_rate_limit();
                 let mut headers = HeaderMap::new();
                 let retry_after_seconds = err.retry_after_ms.saturating_add(999) / 1000;

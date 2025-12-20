@@ -1,3 +1,4 @@
+use crate::dag;
 use crate::index::{
 <<<<<<< HEAD
     DocSnapshot, Hit, Indexer, RunSummaryResponse, SearchError, SearchQueryMeta, SnippetOrigin,
@@ -99,7 +100,7 @@ use anyhow::Result;
 use axum::body::HttpBody;
 use axum::{
     extract::{ConnectInfo, Path, Query, RawQuery, State},
-    http::{header::CONTENT_LENGTH, HeaderMap, HeaderValue, StatusCode},
+    http::{header::CONTENT_LENGTH, header::CONTENT_TYPE, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Json, Response},
     routing::{get, post},
@@ -343,7 +344,11 @@ pub fn router(state: AppState) -> Router {
         .route("/snippet/*doc_id", get(snippet_handler))
         .route("/v1/index/status", get(index_status_handler))
         .route("/v1/graph/impact", get(impact_graph_handler))
+<<<<<<< HEAD
         .route("/v1/stats", get(stats_handler))
+=======
+        .route("/v1/dag/session/:session_id", get(dag_export_handler))
+>>>>>>> mcoda/task/bck-05-us-07-t25
         .route("/v1/memory/store", post(memory_store_handler))
         .route("/v1/memory/recall", post(memory_recall_handler))
         .route("/v1/web/search", get(web_search_handler))
@@ -589,6 +594,110 @@ async fn impact_graph_handler(
 }
 
 #[derive(Deserialize)]
+struct DagExportQuery {
+    format: Option<String>,
+}
+
+async fn dag_export_handler(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    Query(query): Query<DagExportQuery>,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+) -> impl IntoResponse {
+    let session_trimmed = session_id.trim();
+    if session_trimmed.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "session_id must not be empty",
+        );
+    }
+    let session_uuid = match Uuid::parse_str(session_trimmed) {
+        Ok(value) => value,
+        Err(_) => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                "session_id must be a UUID",
+            )
+        }
+    };
+    let format_raw = query.format.as_deref().unwrap_or("text");
+    let format = match dag::DagFormat::parse(format_raw) {
+        Some(format) => format,
+        None => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                "format must be text or dot",
+            )
+        }
+    };
+
+    let state_dir = state.indexer.state_dir().to_path_buf();
+    let read = tokio::task::spawn_blocking(move || {
+        let store = dag::DagStore::new(&state_dir);
+        store.read_session(&session_uuid)
+    })
+    .await;
+
+    match read {
+        Ok(Ok(session)) => {
+            let body = match format {
+                dag::DagFormat::Text => dag::export_text(&session),
+                dag::DagFormat::Dot => dag::export_dot(&session),
+            };
+            let mut headers = HeaderMap::new();
+            let _ = headers.insert(
+                CONTENT_TYPE,
+                HeaderValue::from_static(format.content_type()),
+            );
+            (StatusCode::OK, headers, body).into_response()
+        }
+        Ok(Err(err)) => {
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                if app.code != ERR_INVALID_ARGUMENT {
+                    state.metrics.inc_error();
+                    warn!(
+                        target: "docdexd",
+                        request_id = %request_id.0,
+                        error_code = %app.code,
+                        "dag export failed"
+                    );
+                }
+                return json_error(status_for_app_error(app.code), app.code, app.message.clone());
+            }
+            state.metrics.inc_error();
+            warn!(
+                target: "docdexd",
+                request_id = %request_id.0,
+                error = ?err,
+                "dag export failed"
+            );
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "dag export failed",
+            )
+        }
+        Err(err) => {
+            state.metrics.inc_error();
+            warn!(
+                target: "docdexd",
+                request_id = %request_id.0,
+                error = ?err,
+                "dag export task join failed"
+            );
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "dag export failed",
+            )
+        }
+    }
+}
+
+#[derive(Deserialize)]
 struct MemoryStoreRequest {
     text: String,
     #[serde(default)]
@@ -627,7 +736,11 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_EMBEDDING_FAILED => StatusCode::BAD_GATEWAY,
         ERR_BACKOFF_REQUIRED => StatusCode::TOO_MANY_REQUESTS,
         ERR_INVALID_ARGUMENT => StatusCode::BAD_REQUEST,
+<<<<<<< HEAD
         ERR_INDEX_SCHEMA_MISMATCH => StatusCode::CONFLICT,
+=======
+        ERR_MISSING_DEPENDENCY => StatusCode::FAILED_DEPENDENCY,
+>>>>>>> mcoda/task/bck-05-us-07-t25
         ERR_MEMORY_DISABLED => StatusCode::CONFLICT,
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1214,6 +1327,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             AiHelpEndpoint {
                 method: "GET",
 <<<<<<< HEAD
+<<<<<<< HEAD
                 path: "/v1/stats",
                 description: "Report index metadata, symbols enablement, and recent run summaries (max 20 runs; sample lists capped at 25; error summaries truncated to 240 chars).",
                 params: &["runs_limit=<int optional, max 20, clamped>"],
@@ -1222,6 +1336,11 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 description: "Report index schema compatibility/migration status.",
                 params: &[],
 >>>>>>> mcoda/task/bck-05-us-07-t11
+=======
+                path: "/v1/dag/session/:session_id",
+                description: "Export a session reasoning DAG (text or DOT).",
+                params: &["format=text|dot (optional)"],
+>>>>>>> mcoda/task/bck-05-us-07-t25
             },
             AiHelpEndpoint {
                 method: "POST",
@@ -3041,7 +3160,9 @@ fn sanitize_snippet_html(html: &str) -> String {
 }
 
 fn path_template(path: &str) -> String {
-    if path.starts_with("/snippet/") {
+    if path.starts_with("/v1/dag/session/") {
+        "/v1/dag/session/:session_id".to_string()
+    } else if path.starts_with("/snippet/") {
         "/snippet/:doc_id".to_string()
     } else {
         path.to_string()

@@ -3,10 +3,14 @@ mod browser_session;
 mod chrome_watchdog;
 mod config;
 <<<<<<< HEAD
+<<<<<<< HEAD
 mod dag;
 =======
 mod ddg_discovery;
 >>>>>>> mcoda/task/bck-05-us-07-t15
+=======
+mod dag;
+>>>>>>> mcoda/task/bck-05-us-07-t25
 mod daemon;
 mod error;
 <<<<<<< HEAD

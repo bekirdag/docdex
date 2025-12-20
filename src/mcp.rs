@@ -52,7 +52,13 @@ use crate::max_size::{
 >>>>>>> mcoda/task/bck-05-us-10-t25
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
+<<<<<<< HEAD
 use crate::ratelimit::{RateLimitConfig, RateLimiter};
+=======
+use crate::ratelimit::ResourceLimiter;
+#[cfg(test)]
+use crate::ratelimit::RateLimiter;
+>>>>>>> mcoda/task/bck-05-us-09-t20
 use crate::search;
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -839,6 +845,7 @@ pub async fn serve(
     } else {
         rate_limit_burst
     };
+<<<<<<< HEAD
 =======
     let effective_burst = effective_rate_limit_burst(rate_limit_per_min, rate_limit_burst);
 >>>>>>> mcoda/task/bck-05-us-09-t41
@@ -850,6 +857,11 @@ pub async fn serve(
 =======
     let tool_rate_limit = RateLimitConfig::for_mcp(rate_limit_per_min, rate_limit_burst)?.limiter();
 >>>>>>> mcoda/task/bck-05-us-09-t38
+=======
+    let tool_rate_limits = ResourceLimiter::new();
+    tool_rate_limits.insert_limit("mcp_tools", rate_limit_per_min, effective_burst);
+    tool_rate_limits.insert_limit("web_research", rate_limit_per_min, effective_burst);
+>>>>>>> mcoda/task/bck-05-us-09-t20
     let libs_indexer = libs::LibsIndexer::open_read_only(libs::libs_state_dir_from_index_state_dir(
         indexer.repo_root(),
         indexer.state_dir(),
@@ -867,12 +879,16 @@ pub async fn serve(
 >>>>>>> mcoda/task/bck-05-us-10-t25
         default_project_root: None,
         memory,
+<<<<<<< HEAD
         explainability,
         tool_rate_limit,
         rate_limit_per_min,
         rate_limit_burst,
         effective_rate_limit_burst: effective_burst,
         index_writer_available,
+=======
+        tool_rate_limits,
+>>>>>>> mcoda/task/bck-05-us-09-t20
     };
     server.run().await
 }
@@ -894,6 +910,7 @@ struct McpServer {
 >>>>>>> mcoda/task/bck-05-us-10-t25
     default_project_root: Option<PathBuf>,
     memory: Option<McpMemoryState>,
+<<<<<<< HEAD
     explainability: ExplainabilityStore,
     tool_rate_limit: Option<RateLimiter<()>>,
     rate_limit_per_min: u32,
@@ -986,6 +1003,17 @@ impl McpServer {
             backoff,
         })
         .expect("policy snapshot should serialize")
+=======
+    tool_rate_limits: ResourceLimiter,
+}
+
+impl McpServer {
+    fn constrained_limit_key(tool: &str) -> Option<&'static str> {
+        match tool {
+            "docdex_web_research" | "docdex.web_research" => Some("web_research"),
+            _ => None,
+        }
+>>>>>>> mcoda/task/bck-05-us-09-t20
     }
 
     async fn run(&mut self) -> Result<()> {
@@ -1245,9 +1273,27 @@ impl McpServer {
                     }
                 };
 <<<<<<< HEAD
+<<<<<<< HEAD
                 if let Some(limiter) = self.tool_rate_limit.as_ref() {
                     if let Err(err) =
                         limiter.check_or_rate_limited((), MCP_RATE_LIMIT_KEY, MCP_RATE_LIMIT_SCOPE)
+=======
+                if let Err(err) = self
+                    .tool_rate_limits
+                    .check_or_rate_limited("mcp_tools", "global")
+                {
+                    return Ok(Some(RpcResponse {
+                        jsonrpc: JSONRPC_VERSION,
+                        id: id.clone(),
+                        result: None,
+                        error: Some(rpc_rate_limited(&err)),
+                    }));
+                }
+                if let Some(resource_key) = Self::constrained_limit_key(params.name.as_str()) {
+                    if let Err(err) =
+                        self.tool_rate_limits
+                            .check_or_rate_limited(resource_key, "global")
+>>>>>>> mcoda/task/bck-05-us-09-t20
                     {
                         return Ok(Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,

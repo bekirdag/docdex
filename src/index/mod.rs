@@ -17,8 +17,9 @@ use tantivy::{
 use thiserror::Error;
 use tracing::warn;
 use crate::error::{
-    repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
-    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+    repo_resolution_details, retry_hint_details, AppError, DEFAULT_BACKOFF_RETRY_AFTER_MS,
+    ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH,
+    ERR_REPO_STATE_MISMATCH,
 };
 use crate::symbols;
 use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
@@ -797,6 +798,11 @@ impl Indexer {
                     ERR_BACKOFF_REQUIRED,
                     "index writer unavailable (another docdexd may be indexing); retry later",
                 )
+                .with_details(retry_hint_details(
+                    DEFAULT_BACKOFF_RETRY_AFTER_MS,
+                    "index_writer",
+                    "repo",
+                ))
                 .into()
             })
     }

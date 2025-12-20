@@ -100,7 +100,7 @@ These codes are the **required** set for repo/index/dependency failures and are 
 - `unknown_repo`: provided repo context does not match the server’s configured repo root.
 - `repo_state_mismatch`: per-repo state cannot be safely associated (fingerprint/meta/registry mismatch); Docdex must fast-fail to prevent cross-repo mixing.
 - `missing_index`: on-disk index is not present (e.g. `docdexd query` before indexing).
-- `stale_index`: index exists but is known to be stale (reserved for future use).
+- `stale_index`: index exists but is known to be stale (emitted when repo files are newer than the index; refresh with `docdex_index`).
 - `missing_dependency`: a required optional feature/dependency is disabled (e.g. symbols extraction disabled).
 <<<<<<< HEAD
 <<<<<<< HEAD

@@ -21,6 +21,19 @@ pub const ERR_RATE_LIMITED: &str = "rate_limited";
 pub const ERR_BACKOFF_REQUIRED: &str = "backoff_required";
 pub const ERR_REPO_STATE_MISMATCH: &str = "repo_state_mismatch";
 pub const ERR_INTERNAL_ERROR: &str = "internal_error";
+pub const MAX_RATE_LIMIT_FIELD_BYTES: usize = 128;
+
+fn clamp_utf8(mut input: String, max_bytes: usize) -> String {
+    if input.len() <= max_bytes {
+        return input;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    input.truncate(end);
+    input
+}
 
 #[derive(Debug, Clone)]
 pub struct StartupError {
@@ -119,6 +132,8 @@ pub struct RateLimited {
 impl RateLimited {
     pub fn new(retry_after: Duration, limit_key: String, scope: String) -> Self {
         let retry_after_ms = retry_after.as_millis().min(u128::from(u64::MAX)) as u64;
+        let limit_key = clamp_utf8(limit_key, MAX_RATE_LIMIT_FIELD_BYTES);
+        let scope = clamp_utf8(scope, MAX_RATE_LIMIT_FIELD_BYTES);
         Self {
             code: ERR_RATE_LIMITED,
             message: "rate limited".to_string(),

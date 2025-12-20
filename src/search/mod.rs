@@ -33,6 +33,7 @@ const DEFAULT_SNIPPET_WINDOW: usize = 40;
 const MIN_SNIPPET_WINDOW: usize = 10;
 const MAX_SNIPPET_WINDOW: usize = 400;
 const MAX_RATE_LIMIT_MESSAGE_BYTES: usize = 256;
+const HTTP_RATE_LIMIT_PAYLOAD_MAX_BYTES: usize = 1024;
 
 // Rate limiting is shared with MCP and other surfaces via crate::ratelimit.
 
@@ -982,15 +983,34 @@ impl ErrorDetail {
 mod rate_limit_contract_tests {
     use super::*;
     use chrono::Utc;
+    use crate::error::MAX_RATE_LIMIT_FIELD_BYTES;
     use serde_json::Value;
     use std::time::Duration;
 
+    fn assert_rate_limit_keys(obj: &serde_json::Map<String, Value>, include_retry_at: bool) {
+        let mut keys: Vec<String> = obj.keys().cloned().collect();
+        keys.sort();
+        let mut expected = vec![
+            "code".to_string(),
+            "limit_key".to_string(),
+            "message".to_string(),
+            "retry_after_ms".to_string(),
+            "scope".to_string(),
+        ];
+        if include_retry_at {
+            expected.push("retry_at".to_string());
+        }
+        expected.sort();
+        assert_eq!(keys, expected, "rate-limit error keys must remain stable");
+    }
+
     #[test]
     fn http_rate_limited_error_truncates_message_and_bounds_payload() {
+        let long = "x".repeat(MAX_RATE_LIMIT_FIELD_BYTES * 8);
         let err = RateLimited::new(
             Duration::from_millis(1234),
-            "http_ip".to_string(),
-            "ip".to_string(),
+            long.clone(),
+            long,
         )
         .with_message("x".repeat(10_000))
         .with_retry_at(Utc::now());
@@ -1006,7 +1026,7 @@ mod rate_limit_contract_tests {
 
         let bytes = serde_json::to_vec(&body).expect("rate-limit error body should serialize");
         assert!(
-            bytes.len() <= 1024,
+            bytes.len() <= HTTP_RATE_LIMIT_PAYLOAD_MAX_BYTES,
             "rate-limit payload should remain small (got {} bytes)",
             bytes.len()
         );
@@ -1016,6 +1036,7 @@ mod rate_limit_contract_tests {
             .get("error")
             .and_then(|v| v.as_object())
             .expect("rate-limit response should contain error object");
+        assert_rate_limit_keys(error, true);
 
         assert_eq!(
             error.get("code").and_then(|v| v.as_str()),
@@ -1027,6 +1048,22 @@ mod rate_limit_contract_tests {
             .is_some());
         assert!(error.get("limit_key").and_then(|v| v.as_str()).is_some());
         assert!(error.get("scope").and_then(|v| v.as_str()).is_some());
+        let limit_key = error
+            .get("limit_key")
+            .and_then(|v| v.as_str())
+            .expect("limit_key should be a string");
+        let scope = error
+            .get("scope")
+            .and_then(|v| v.as_str())
+            .expect("scope should be a string");
+        assert!(
+            limit_key.len() <= MAX_RATE_LIMIT_FIELD_BYTES,
+            "limit_key should be truncated"
+        );
+        assert!(
+            scope.len() <= MAX_RATE_LIMIT_FIELD_BYTES,
+            "scope should be truncated"
+        );
     }
 }
 

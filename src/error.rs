@@ -3,6 +3,7 @@ use std::fmt;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
 
@@ -21,6 +22,7 @@ pub const ERR_RATE_LIMITED: &str = "rate_limited";
 pub const ERR_BACKOFF_REQUIRED: &str = "backoff_required";
 pub const ERR_REPO_STATE_MISMATCH: &str = "repo_state_mismatch";
 pub const ERR_INTERNAL_ERROR: &str = "internal_error";
+pub const ERR_RATE_LIMITED_RPC: i32 = -32029;
 
 #[derive(Debug, Clone)]
 pub struct StartupError {
@@ -140,4 +142,24 @@ impl RateLimited {
         self.retry_at = Some(retry_at);
         self
     }
+
+    pub fn retry_hint(&self) -> RateLimitHint {
+        RateLimitHint {
+            code: self.code,
+            retry_after_ms: self.retry_after_ms,
+            retry_at: self.retry_at.as_ref().map(|at| at.to_rfc3339()),
+            limit_key: self.limit_key.clone(),
+            scope: self.scope.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RateLimitHint {
+    pub code: &'static str,
+    pub retry_after_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<String>,
+    pub limit_key: String,
+    pub scope: String,
 }

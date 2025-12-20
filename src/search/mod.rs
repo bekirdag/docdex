@@ -967,13 +967,14 @@ impl ErrorDetail {
     }
 
     fn rate_limited(err: &RateLimited) -> Self {
+        let hint = err.retry_hint();
         Self {
-            code: ERR_RATE_LIMITED,
+            code: hint.code,
             message: truncate_bytes(&err.message, MAX_RATE_LIMIT_MESSAGE_BYTES),
-            retry_after_ms: Some(err.retry_after_ms),
-            retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
-            limit_key: Some(err.limit_key.clone()),
-            scope: Some(err.scope.clone()),
+            retry_after_ms: Some(hint.retry_after_ms),
+            retry_at: hint.retry_at,
+            limit_key: Some(hint.limit_key),
+            scope: Some(hint.scope),
         }
     }
 }

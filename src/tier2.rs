@@ -9,20 +9,29 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::browser_session::BrowserSessionError;
 <<<<<<< HEAD
+<<<<<<< HEAD
 use crate::error::BackoffRequired;
 =======
 use crate::error::ERR_TIER2_UNAVAILABLE;
 >>>>>>> mcoda/task/bck-05-us-09-t21
+=======
+use crate::error::RateLimited;
+>>>>>>> mcoda/task/bck-05-us-09-t19
 use crate::metrics;
 use crate::waterfall_trace::{WaterfallGateInput, WaterfallOutcome, WaterfallTier, WaterfallTrace};
 
 <<<<<<< HEAD
 pub const ERR_TIER2_UNAVAILABLE: &str = "tier2_unavailable";
+<<<<<<< HEAD
 const TRACE_DECISION_ATTEMPT: &str = "attempt";
 const TRACE_DECISION_FALLBACK: &str = "fallback";
 const TRACE_DECISION_EXECUTE: &str = "execute";
 const TRACE_DECISION_SKIP: &str = "skip";
 const TRACE_DECISION_ABORT: &str = "abort";
+=======
+pub const LIMIT_KEY_BROWSER_CONCURRENCY: &str = "browser_concurrency";
+const DEFAULT_BROWSER_CONCURRENCY_RETRY_AFTER: Duration = Duration::from_secs(1);
+>>>>>>> mcoda/task/bck-05-us-09-t19
 
 const TRACE_REASON_TIER2_ENABLED: &str = "tier2_enabled";
 const TRACE_REASON_TIER2_DISABLED: &str = "tier2_disabled";
@@ -140,6 +149,7 @@ impl Tier2Limiter {
         self.semaphore.available_permits()
     }
 
+<<<<<<< HEAD
     fn overload_backoff(&self) -> BackoffRequired {
         BackoffRequired::new(
             self.queue_timeout,
@@ -147,6 +157,49 @@ impl Tier2Limiter {
             "tier2".to_string(),
         )
         .with_message("tier 2 browser capacity exhausted")
+=======
+    pub async fn acquire_browser_permit(&self) -> Result<Tier2Permit, RateLimited> {
+        self.acquire_or_rate_limited(LIMIT_KEY_BROWSER_CONCURRENCY, "global")
+            .await
+    }
+
+    pub async fn acquire_or_rate_limited(
+        &self,
+        limit_key: impl Into<String>,
+        scope: impl Into<String>,
+    ) -> Result<Tier2Permit, RateLimited> {
+        let limit_key = limit_key.into();
+        let scope = scope.into();
+        let retry_after = self.retry_after_hint();
+        let make_err = || {
+            RateLimited::new(retry_after, limit_key.clone(), scope.clone())
+                .with_message("concurrency limit reached")
+        };
+
+        if self.queue_timeout.is_zero() {
+            return self
+                .semaphore
+                .clone()
+                .try_acquire_owned()
+                .map(Tier2Permit::new)
+                .map_err(|_| {
+                    metrics::global().inc_tier2_overload_rejection();
+                    make_err()
+                });
+        }
+
+        tokio::time::timeout(self.queue_timeout, self.semaphore.clone().acquire_owned())
+            .await
+            .map_err(|_| {
+                metrics::global().inc_tier2_overload_rejection();
+                make_err()
+            })?
+            .map(Tier2Permit::new)
+            .map_err(|_| {
+                metrics::global().inc_tier2_overload_rejection();
+                make_err()
+            })
+>>>>>>> mcoda/task/bck-05-us-09-t19
     }
 
     pub async fn acquire(&self) -> Result<Tier2Permit, Tier2Unavailable> {
@@ -182,6 +235,14 @@ impl Tier2Limiter {
                     "tier 2 browser capacity exhausted",
                 )
             })
+    }
+
+    fn retry_after_hint(&self) -> Duration {
+        if self.queue_timeout.is_zero() {
+            DEFAULT_BROWSER_CONCURRENCY_RETRY_AFTER
+        } else {
+            self.queue_timeout
+        }
     }
 }
 
@@ -719,5 +780,43 @@ mod observability_tests {
             }),
             "expected tier3 skipped gating event"
         );
+    }
+}
+
+#[cfg(test)]
+mod rate_limit_tests {
+    use super::*;
+    use crate::error::ERR_RATE_LIMITED;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn overload_maps_to_rate_limited_with_retry_hint() {
+        let limiter = Tier2Limiter::new(1, Duration::from_millis(0));
+        let _hold = limiter.acquire().await.expect("hold permit");
+
+        let err = limiter
+            .acquire_browser_permit()
+            .await
+            .expect_err("expected rate limit");
+
+        assert_eq!(err.code, ERR_RATE_LIMITED);
+        assert_eq!(err.limit_key, LIMIT_KEY_BROWSER_CONCURRENCY);
+        assert_eq!(err.scope, "global");
+        assert!(
+            err.retry_after_ms > 0,
+            "retry_after_ms should provide a backoff hint"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn overload_retry_hint_tracks_queue_timeout() {
+        let limiter = Tier2Limiter::new(1, Duration::from_millis(10));
+        let _hold = limiter.acquire().await.expect("hold permit");
+
+        let err = limiter
+            .acquire_browser_permit()
+            .await
+            .expect_err("expected rate limit");
+
+        assert_eq!(err.retry_after_ms, 10);
     }
 }

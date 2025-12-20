@@ -207,3 +207,122 @@ fn cli_repo_state_mismatch_fast_fails_with_fingerprint_and_guidance() -> Result<
 
     Ok(())
 }
+
+#[test]
+fn cli_missing_index_returns_actionable_hint() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    write_repo(repo.path(), "a.md", "missing_index_token")?;
+
+    let output = Command::new(docdex_bin())
+        .args([
+            "query",
+            "--repo",
+            repo.path().to_string_lossy().as_ref(),
+            "--query",
+            "shared_term",
+            "--limit",
+            "1",
+        ])
+        .output()?;
+
+    assert!(!output.status.success(), "expected non-zero exit");
+    let payload = parse_error(&output.stderr)?;
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("missing_index")
+    );
+    let message = payload
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        message.contains("docdexd index"),
+        "expected missing_index message to include index hint; got: {message}"
+    );
+    let details = payload
+        .get("error")
+        .and_then(|e| e.get("details"))
+        .ok_or("expected error.details")?;
+    let steps = details
+        .get("recoverySteps")
+        .and_then(|v| v.as_array())
+        .ok_or("expected details.recoverySteps array")?;
+    assert!(
+        steps
+            .iter()
+            .any(|v| v.as_str().unwrap_or_default().contains("docdexd index")),
+        "expected recoverySteps to mention docdexd index; got: {details}"
+    );
+    Ok(())
+}
+
+#[test]
+fn cli_stale_index_returns_actionable_hint() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    write_repo(repo.path(), "a.md", "stale_index_token")?;
+
+    let repo_str = repo.path().to_string_lossy().to_string();
+    let index_out = Command::new(docdex_bin())
+        .args(["index", "--repo", repo_str.as_str()])
+        .output()?;
+    assert!(index_out.status.success(), "index failed: {:?}", index_out);
+
+    let state_path = repo
+        .path()
+        .join(".docdex")
+        .join("index")
+        .join("index_state.json");
+    let mut state: Value = serde_json::from_str(&fs::read_to_string(&state_path)?)?;
+    state["status"] = Value::String("stale".to_string());
+    fs::write(&state_path, serde_json::to_string_pretty(&state)?)?;
+
+    let output = Command::new(docdex_bin())
+        .args([
+            "query",
+            "--repo",
+            repo_str.as_str(),
+            "--query",
+            "shared_term",
+            "--limit",
+            "1",
+        ])
+        .output()?;
+
+    assert!(!output.status.success(), "expected non-zero exit");
+    let payload = parse_error(&output.stderr)?;
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("stale_index")
+    );
+    let message = payload
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        message.contains("docdexd index"),
+        "expected stale_index message to include index hint; got: {message}"
+    );
+    let details = payload
+        .get("error")
+        .and_then(|e| e.get("details"))
+        .ok_or("expected error.details")?;
+    let steps = details
+        .get("recoverySteps")
+        .and_then(|v| v.as_array())
+        .ok_or("expected details.recoverySteps array")?;
+    assert!(
+        steps
+            .iter()
+            .any(|v| v.as_str().unwrap_or_default().contains("docdexd index")),
+        "expected recoverySteps to mention docdexd index; got: {details}"
+    );
+    Ok(())
+}

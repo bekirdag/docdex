@@ -4,7 +4,7 @@ use crate::index::{
 use crate::error::{
     AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    ERR_RATE_LIMITED,
+    ERR_MISSING_INDEX, ERR_RATE_LIMITED, ERR_STALE_INDEX,
 };
 use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
@@ -430,6 +430,8 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_EMBEDDING_FAILED => StatusCode::BAD_GATEWAY,
         ERR_INVALID_ARGUMENT => StatusCode::BAD_REQUEST,
         ERR_MEMORY_DISABLED => StatusCode::CONFLICT,
+        ERR_MISSING_INDEX => StatusCode::CONFLICT,
+        ERR_STALE_INDEX => StatusCode::CONFLICT,
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -1371,6 +1373,13 @@ async fn search_handler(
                 )
                     .into_response();
             }
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                return json_error(
+                    status_for_app_error(app.code),
+                    app.code,
+                    app.message.clone(),
+                );
+            }
             state.metrics.inc_error();
             warn!(
                 target: "docdexd",
@@ -1461,6 +1470,13 @@ async fn snippet_handler(
         })
         .into_response(),
         Err(err) => {
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                return json_error(
+                    status_for_app_error(app.code),
+                    app.code,
+                    app.message.clone(),
+                );
+            }
             state.metrics.inc_error();
             warn!(
                 target: "docdexd",

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::browser_session::BrowserSessionError;
+use crate::error::BackoffRequired;
 use crate::metrics;
 
 pub const ERR_TIER2_UNAVAILABLE: &str = "tier2_unavailable";
@@ -91,6 +92,15 @@ impl Tier2Limiter {
 
     pub fn available_permits(&self) -> usize {
         self.semaphore.available_permits()
+    }
+
+    fn overload_backoff(&self) -> BackoffRequired {
+        BackoffRequired::new(
+            self.queue_timeout,
+            "chrome_concurrency".to_string(),
+            "tier2".to_string(),
+        )
+        .with_message("tier 2 browser capacity exhausted")
     }
 
     pub async fn acquire(&self) -> Result<Tier2Permit, Tier2Unavailable> {
@@ -211,12 +221,17 @@ where
             Ok(permit) => Some(permit),
             Err(unavailable) => {
                 let unavailable = unavailable.with_correlation_id(request_id);
+                let backoff = limiter.overload_backoff();
                 tracing::warn!(
                     target: "docdexd_tier2",
                     event = "tier2_overload_fallback",
                     request_id = %request_id,
                     reason = ?unavailable.reason,
                     message = %unavailable.message,
+                    backoff_code = %backoff.code,
+                    retry_after_ms = backoff.retry_after_ms,
+                    limit_key = %backoff.limit_key,
+                    scope = %backoff.scope,
                     max_concurrent_sessions = limiter.max_concurrent_sessions(),
                     available_permits = limiter.available_permits(),
                     queue_timeout_ms = limiter.queue_timeout().as_millis() as u64,
@@ -341,6 +356,12 @@ mod observability_tests {
                     .get("request_id")
                     .is_some_and(|v| v.contains("req-overload-obs"))
                 && fields.get("max_concurrent_sessions").is_some()
+                && fields
+                    .get("backoff_code")
+                    .is_some_and(|v| v.contains("backoff_required"))
+                && fields.get("retry_after_ms").is_some()
+                && fields.get("limit_key").is_some()
+                && fields.get("scope").is_some()
         });
         assert!(found, "expected structured tier2 overload log");
     }

@@ -21,7 +21,7 @@ mod util;
 mod watcher;
 
 use crate::config::RepoArgs;
-use crate::error::StartupError;
+use crate::error::{BackoffRequired, StartupError};
 use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use serde_json::json;
@@ -1180,6 +1180,27 @@ fn render_error_and_exit(err: anyhow::Error) -> ! {
         match serde_json::to_string(&payload) {
             Ok(line) => eprintln!("{line}"),
             Err(_) => eprintln!("{}", startup.message),
+        }
+        std::process::exit(1);
+    }
+    if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
+        let mut body = serde_json::Map::new();
+        body.insert("code".to_string(), json!(backoff.code));
+        body.insert("message".to_string(), json!(backoff.message.as_str()));
+        body.insert("retry_after_ms".to_string(), json!(backoff.retry_after_ms));
+        if let Some(retry_at) = backoff.retry_at.as_ref() {
+            body.insert("retry_at".to_string(), json!(retry_at.to_rfc3339()));
+        }
+        body.insert("limit_key".to_string(), json!(backoff.limit_key.as_str()));
+        body.insert("scope".to_string(), json!(backoff.scope.as_str()));
+        let payload = serde_json::Value::Object({
+            let mut root = serde_json::Map::new();
+            root.insert("error".to_string(), serde_json::Value::Object(body));
+            root
+        });
+        match serde_json::to_string(&payload) {
+            Ok(line) => eprintln!("{line}"),
+            Err(_) => eprintln!("{}", backoff.message),
         }
         std::process::exit(1);
     }

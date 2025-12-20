@@ -254,7 +254,11 @@ pub async fn serve(
     })?;
 
     let indexer = Arc::new(Indexer::with_config(repo, config).map_err(|err| {
-        if err.downcast_ref::<crate::error::AppError>().is_some() {
+        if err.downcast_ref::<crate::error::AppError>().is_some()
+            || err
+                .downcast_ref::<crate::error::BackoffRequired>()
+                .is_some()
+        {
             return err;
         }
         StartupError::new(

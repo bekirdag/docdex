@@ -1,4 +1,4 @@
-use crate::error::{AppError, ERR_BACKOFF_REQUIRED};
+use crate::error::BackoffRequired;
 use crate::index::{
     DocSnapshot, Hit, QueryRewrite, SearchError, SearchQueryMeta, SearchSnippetOrigin,
     SnippetOrigin, SnippetResult,
@@ -12,6 +12,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
@@ -217,8 +218,12 @@ impl LibsIndexer {
 
     fn writer(&self) -> Result<Arc<Mutex<IndexWriter>>> {
         self.writer.clone().ok_or_else(|| {
-            AppError::new(
-                ERR_BACKOFF_REQUIRED,
+            BackoffRequired::new(
+                Duration::from_millis(0),
+                "libs_index_writer".to_string(),
+                "libs_index".to_string(),
+            )
+            .with_message(
                 "libs index writer unavailable (another docdexd may be indexing); retry later",
             )
             .into()

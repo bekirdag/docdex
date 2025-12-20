@@ -82,6 +82,7 @@ const INSTALL_METADATA_FILENAME = "docdexd-install.json";
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 const INSTALL_OUTCOME_SCHEMA_VERSION = 1;
 
 const INSTALL_OUTCOME_CODE_BY_DECISION_OUTCOME = Object.freeze({
@@ -194,6 +195,22 @@ const DEFAULT_VERSION_CHECK_TIMEOUT_MS = 5000;
 =======
 const DEFAULT_SMOKE_TEST_TIMEOUT_MS = 5000;
 >>>>>>> mcoda/task/ops-01-us-01-t41
+=======
+const DOWNLOAD_RETRY_DEFAULTS = Object.freeze({
+  maxAttempts: 3,
+  initialDelayMs: 500,
+  maxDelayMs: 4000
+});
+const RETRYABLE_HTTP_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const RETRYABLE_ERROR_CODES = new Set([
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EPIPE"
+]);
+>>>>>>> mcoda/task/ops-01-us-01-t40
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -622,6 +639,7 @@ function requestOptions() {
   return { headers };
 }
 
+<<<<<<< HEAD
 function requestOptionsWithExtras(extras) {
   const base = requestOptions();
   if (!extras || typeof extras !== "object") return base;
@@ -629,6 +647,43 @@ function requestOptionsWithExtras(extras) {
 }
 
 function downloadText(url, redirects = 0, opts = {}) {
+=======
+function normalizeRetryOptions(options) {
+  const maxAttempts =
+    options && Number.isFinite(options.maxAttempts) && options.maxAttempts > 0
+      ? Math.trunc(options.maxAttempts)
+      : DOWNLOAD_RETRY_DEFAULTS.maxAttempts;
+  const initialDelayMs =
+    options && Number.isFinite(options.initialDelayMs) && options.initialDelayMs >= 0
+      ? Math.trunc(options.initialDelayMs)
+      : DOWNLOAD_RETRY_DEFAULTS.initialDelayMs;
+  const maxDelayMs =
+    options && Number.isFinite(options.maxDelayMs) && options.maxDelayMs >= 0
+      ? Math.trunc(options.maxDelayMs)
+      : DOWNLOAD_RETRY_DEFAULTS.maxDelayMs;
+  return { maxAttempts, initialDelayMs, maxDelayMs };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function computeRetryDelayMs(attempt, options) {
+  const base = options.initialDelayMs;
+  const max = options.maxDelayMs;
+  const delay = base * Math.pow(2, Math.max(attempt - 1, 0));
+  return Math.min(delay, max);
+}
+
+function isRetryableDownloadError(err) {
+  if (!err) return false;
+  if (typeof err.statusCode === "number") return RETRYABLE_HTTP_STATUS.has(err.statusCode);
+  if (typeof err.code === "string") return RETRYABLE_ERROR_CODES.has(err.code);
+  return false;
+}
+
+function downloadText(url, redirects = 0) {
+>>>>>>> mcoda/task/ops-01-us-01-t40
   if (redirects > MAX_REDIRECTS) {
     throw new Error(`Too many redirects while fetching ${url}`);
   }
@@ -671,10 +726,16 @@ function downloadText(url, redirects = 0, opts = {}) {
   });
 }
 
+<<<<<<< HEAD
 function download(url, dest, redirects = 0, opts = {}) {
+=======
+async function download(url, dest, redirects = 0) {
+>>>>>>> mcoda/task/ops-01-us-01-t40
   if (redirects > MAX_REDIRECTS) {
     throw new Error(`Too many redirects while fetching ${url}`);
   }
+
+  await fs.promises.mkdir(path.dirname(dest), { recursive: true });
 
   return new Promise((resolve, reject) => {
     https
@@ -692,11 +753,71 @@ function download(url, dest, redirects = 0, opts = {}) {
           return reject(err);
         }
 
-        const file = fs.createWriteStream(dest);
-        pipeline(res, file).then(resolve).catch(reject);
+        const tmpPath = `${dest}.${process.pid}.${Date.now()}.tmp`;
+        const file = fs.createWriteStream(tmpPath);
+        pipeline(res, file)
+          .then(async () => {
+            try {
+              await fs.promises.rename(tmpPath, dest);
+              resolve();
+            } catch (err) {
+              await fs.promises.rm(tmpPath, { force: true }).catch(() => {});
+              reject(err);
+            }
+          })
+          .catch(async (err) => {
+            await fs.promises.rm(tmpPath, { force: true }).catch(() => {});
+            reject(err);
+          });
       })
       .on("error", reject);
   });
+}
+
+async function downloadWithRetry(url, dest, options = {}) {
+  const downloadFn = options.downloadFn || download;
+  const logger = options.logger || console;
+  const sleepFn = options.sleepFn || sleep;
+  const retryOptions = normalizeRetryOptions(options.retryOptions || {});
+
+  let attempt = 0;
+  let lastError = null;
+
+  while (attempt < retryOptions.maxAttempts) {
+    attempt += 1;
+    try {
+      await downloadFn(url, dest);
+      return;
+    } catch (err) {
+      lastError = err;
+      const retryable = isRetryableDownloadError(err);
+      if (!retryable || attempt >= retryOptions.maxAttempts) {
+        if (err && typeof err === "object") {
+          err.retryAttempts = attempt;
+          err.retryLimit = retryOptions.maxAttempts;
+          err.retryable = retryable;
+        }
+        throw err;
+      }
+
+      await fs.promises.rm(dest, { force: true }).catch(() => {});
+      const delayMs = computeRetryDelayMs(attempt, retryOptions);
+      const reason =
+        typeof err?.statusCode === "number"
+          ? `HTTP ${err.statusCode}`
+          : typeof err?.code === "string"
+            ? err.code
+            : err?.message || "unknown error";
+      if (logger && typeof logger.warn === "function") {
+        logger.warn(
+          `[docdex] Download failed (${reason}); retrying in ${delayMs}ms (${attempt + 1}/${retryOptions.maxAttempts})...`
+        );
+      }
+      await sleepFn(delayMs);
+    }
+  }
+
+  throw lastError;
 }
 
 async function extractTarball(archivePath, targetDir) {
@@ -5171,6 +5292,10 @@ async function runInstaller(options) {
   logger.log(`[docdex] Resolved daemon version: v${version}`);
   logger.log(`[docdex] Resolved release asset: ${expectedAssetName}`);
 
+  logger.log(`[docdex] Detected platform: ${detectedPlatform}/${detectedArch}`);
+  logger.log(`[docdex] Target triple: ${targetTriple}`);
+  logger.log(`[docdex] Daemon version: v${version}`);
+
   const local = await determineLocalInstallerOutcome({
 >>>>>>> mcoda/task/ops-01-us-01-t41
     fsModule,
@@ -6031,6 +6156,7 @@ async function runInstaller(options) {
   const backupDir = pathModule.join(distBaseDir, `${platformKey}.backup.${process.pid}.${Date.now()}`);
 
 <<<<<<< HEAD
+<<<<<<< HEAD
   let backupActive = false;
   let swapCompleted = false;
 >>>>>>> mcoda/task/ops-01-us-05-t08
@@ -6042,6 +6168,9 @@ async function runInstaller(options) {
 =======
   logger.log("[docdex] Progress: download");
 >>>>>>> mcoda/task/ops-01-us-01-t14
+=======
+  logger.log(`[docdex] Resolved asset: ${archive}`);
+>>>>>>> mcoda/task/ops-01-us-01-t40
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
 <<<<<<< HEAD
   let thrownError = null;
@@ -6089,6 +6218,7 @@ async function runInstaller(options) {
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
 >>>>>>> mcoda/task/ops-01-us-05-t27
     try {
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -6190,6 +6320,14 @@ async function runInstaller(options) {
 =======
       await downloadFn(downloadUrl, stagingArchivePath);
 >>>>>>> mcoda/task/ops-01-us-05-t33
+=======
+      await downloadWithRetry(downloadUrl, tmpFile, {
+        downloadFn,
+        logger,
+        retryOptions: opts.downloadRetry,
+        sleepFn: opts.sleepFn
+      });
+>>>>>>> mcoda/task/ops-01-us-01-t40
     } catch (err) {
       if (err && typeof err.statusCode === "number" && err.statusCode === 404) {
         const fallbackReason = manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found";
@@ -6264,7 +6402,12 @@ async function runInstaller(options) {
           downloadBase,
           releaseTag,
           downloadUrl,
+<<<<<<< HEAD
 >>>>>>> mcoda/task/ops-01-us-03-t45
+=======
+          retryAttempts: typeof err?.retryAttempts === "number" ? err.retryAttempts : null,
+          retryLimit: typeof err?.retryLimit === "number" ? err.retryLimit : null,
+>>>>>>> mcoda/task/ops-01-us-01-t40
           expectedAsset: archive,
           expectedAssetPattern: assetPatternForPlatformKeyFn(platformKey, { exampleAssetName: archive }),
           note: "This usually means the GitHub release assets are missing or the npm version is out of sync with the release."
@@ -6284,7 +6427,9 @@ async function runInstaller(options) {
           manifestName: manifestAttempt?.manifestName ?? null,
           manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
           fallbackAttempted: source === "fallback",
-          statusCode: typeof err?.statusCode === "number" ? err.statusCode : null
+          statusCode: typeof err?.statusCode === "number" ? err.statusCode : null,
+          retryAttempts: typeof err?.retryAttempts === "number" ? err.retryAttempts : null,
+          retryLimit: typeof err?.retryLimit === "number" ? err.retryLimit : null
         },
         err
       );
@@ -8585,6 +8730,7 @@ function describeFatalError(err) {
 
   if (err instanceof DownloadError) {
 <<<<<<< HEAD
+<<<<<<< HEAD
     return withInstallAttemptLines({
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
@@ -8621,6 +8767,10 @@ function describeFatalError(err) {
       : null;
     const resolutionSource = typeof err.details?.source === "string" ? err.details.source : null;
 >>>>>>> mcoda/task/ops-01-us-03-t23
+=======
+    const retryAttempts = typeof err.details?.retryAttempts === "number" ? err.details.retryAttempts : null;
+    const retryLimit = typeof err.details?.retryLimit === "number" ? err.details.retryLimit : null;
+>>>>>>> mcoda/task/ops-01-us-01-t40
     return {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
@@ -8650,6 +8800,7 @@ function describeFatalError(err) {
         fallbackAttempted != null ? `[docdex] Fallback attempted: ${fallbackAttempted}` : null,
         err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
         err.details?.statusCode != null ? `[docdex] HTTP status: ${err.details.statusCode}` : null,
+<<<<<<< HEAD
         err.cause?.message ? `[docdex] Cause: ${err.cause.message}` : null,
         "[docdex] Next steps:",
         "[docdex] - Check network/proxy/firewall connectivity and retry.",
@@ -8657,6 +8808,10 @@ function describeFatalError(err) {
         "[docdex] - Verify `DOCDEX_DOWNLOAD_REPO` (and `DOCDEX_DOWNLOAD_BASE` if set) point to the release assets.",
         "[docdex] - If you are offline, re-run when online or build from source (`cargo build --release --locked`)."
 >>>>>>> mcoda/task/ops-01-us-03-t23
+=======
+        retryAttempts && retryLimit ? `[docdex] Retry attempts: ${retryAttempts}/${retryLimit}` : null,
+        err.cause?.message ? `[docdex] Cause: ${err.cause.message}` : null
+>>>>>>> mcoda/task/ops-01-us-01-t40
       ].filter(Boolean)
     };
   }

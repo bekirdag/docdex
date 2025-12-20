@@ -82,6 +82,38 @@ Docdex also uses feature-specific codes in some tools:
 - `embedding_model_not_found`
 - `embedding_failed`
 
+## Repo-scoping fast-fail errors (scope mismatch / invalid root)
+
+All repo-scoped MCP tools (`docdex_search`, `docdex_open`, `docdex_index`, etc.) **fail closed** when the repo context does not match the MCP server’s configured `--repo`. The server does not auto-fix repo selection; the client must correct the repo path or restart the server with the right repo.
+
+### Error envelope fields (repo-scoping)
+
+Repo-scoping failures use the shared MCP error envelope:
+
+- `error.data.code`: **machine-readable** code (`missing_repo_path`, `unknown_repo`, etc.).
+- `error.data.message`: short, stable summary (often mirrors `error.message`).
+- `error.data.reason`: optional, more specific reason string.
+- `error.data.details`: structured context (when available). For repo-scoping failures it may include:
+  - `normalizedPath`
+  - `attemptedFingerprint`
+  - `knownCanonicalPath`
+  - `recoverySteps` (actionable steps for UX)
+- `error.data.error`: redundant nested envelope for clients that expect `{error:{...}}`.
+
+### Codes + remediation (repo-scoping)
+
+| Code (`error.data.code`) | When it happens | Remediation (no server-side auto-fix) |
+| --- | --- | --- |
+| `missing_repo` | Repo context is absent (no `project_root` and no default repo set by MCP `initialize`). | Pass `project_root` (tool args) or re-initialize with `workspace_root`/`project_root`. |
+| `missing_repo_path` | `project_root` path does not exist on disk. | Pass the correct repo path; re-initialize the client if it cached a stale root; restart the MCP server with `docdexd mcp --repo <repo>` if it points at the wrong path. |
+| `unknown_repo` | `project_root` exists but does not match the MCP server’s configured `--repo` (scope mismatch). | Restart the MCP server with the correct `--repo`, or pass the matching `project_root` / omit it to use the server default; re-initialize the client if needed. |
+| `repo_state_mismatch` | Repo path matches but on-disk state cannot be safely associated (fingerprint/meta mismatch). | Reindex into a fresh `--state-dir`, or run `docdexd repo reassociate --repo <new_path> --state-dir <shared_state_dir> --old-path <knownCanonicalPath>` (or `--fingerprint <attemptedFingerprint>`). |
+
+Notes:
+
+- `initialize` scope mismatch returns JSON-RPC `error.code = -32600` (`invalid_request`) but `error.data.code = unknown_repo`; details include `{expected, got}`.
+- Invalid/un-canonicalizable roots in `initialize` return `error.data.code = invalid_request` with the OS error in `error.data.reason`.
+
 ## Repo moved/renamed (deterministic behavior + recovery)
 
 Docdex intentionally **fails closed** on repo identity changes to prevent cross-repo state mixing (no silent cross-association).

@@ -16,9 +16,10 @@ use tantivy::{
 };
 use thiserror::Error;
 use tracing::warn;
+use serde_json::json;
 use crate::error::{
-    repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
-    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+    repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INDEX_SCHEMA_MISMATCH,
+    ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
 };
 use crate::symbols;
 use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
@@ -377,10 +378,7 @@ impl Indexer {
         ensure_state_dir_secure(config.state_dir())?;
         let (schema, doc_id_field, path_field, body_field, summary_field, token_field) =
             build_schema();
-        let index = Index::open_or_create(
-            tantivy::directory::MmapDirectory::open(config.state_dir())?,
-            schema.clone(),
-        )?;
+        let index = open_or_create_index(config.state_dir(), &schema, "repo")?;
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommit)
@@ -430,17 +428,8 @@ impl Indexer {
             .into());
         }
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
-        if !config.state_dir().exists() {
-            return Err(AppError::new(
-                ERR_MISSING_INDEX,
-                format!(
-                    "index not found at {}; run `docdexd index --repo <repo>` first",
-                    config.state_dir().display()
-                ),
-            )
-            .into());
-        }
-        let index = Index::open_in_dir(config.state_dir())?;
+        let (expected_schema, _, _, _, _, _) = build_schema();
+        let index = open_existing_index(config.state_dir(), &expected_schema, "repo")?;
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommit)
@@ -1145,6 +1134,136 @@ fn build_schema() -> (
     )
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+struct SchemaFieldDescriptor {
+    name: String,
+    field_type: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct SchemaFieldMismatch {
+    name: String,
+    expected: String,
+    actual: String,
+}
+
+const INDEX_SCHEMA_FIELDS: &[&str] = &["doc_id", "rel_path", "body", "summary", "token_estimate"];
+
+fn schema_field_descriptor(
+    name: &str,
+    field_type: &tantivy::schema::FieldType,
+) -> SchemaFieldDescriptor {
+    SchemaFieldDescriptor {
+        name: name.to_string(),
+        field_type: format!("{:?}", field_type),
+    }
+}
+
+fn schema_descriptors(schema: &Schema) -> Vec<SchemaFieldDescriptor> {
+    let mut fields: Vec<SchemaFieldDescriptor> = schema
+        .fields()
+        .map(|(_, entry)| schema_field_descriptor(entry.name(), entry.field_type()))
+        .collect();
+    fields.sort_by(|a, b| a.name.cmp(&b.name));
+    fields
+}
+
+fn expected_schema_descriptors(schema: &Schema, fields: &[&str]) -> Vec<SchemaFieldDescriptor> {
+    let mut expected = Vec::with_capacity(fields.len());
+    for field_name in fields {
+        let field = schema
+            .get_field(field_name)
+            .expect("expected schema missing field");
+        let entry = schema.get_field_entry(field);
+        expected.push(schema_field_descriptor(entry.name(), entry.field_type()));
+    }
+    expected
+}
+
+fn schema_signature(fields: &[SchemaFieldDescriptor]) -> String {
+    let mut parts: Vec<String> = fields
+        .iter()
+        .map(|field| format!("{}:{}", field.name, field.field_type))
+        .collect();
+    parts.sort();
+    parts.join("|")
+}
+
+fn ensure_schema_compatible(
+    actual: &Schema,
+    expected: &Schema,
+    index_kind: &str,
+) -> Result<()> {
+    let expected_fields = expected_schema_descriptors(expected, INDEX_SCHEMA_FIELDS);
+    let actual_fields = schema_descriptors(actual);
+    let mut missing_fields: Vec<String> = Vec::new();
+    let mut mismatched_fields: Vec<SchemaFieldMismatch> = Vec::new();
+
+    for expected_field in &expected_fields {
+        match actual.get_field(&expected_field.name) {
+            Ok(field) => {
+                let actual_type =
+                    format!("{:?}", actual.get_field_entry(field).field_type());
+                if actual_type != expected_field.field_type {
+                    mismatched_fields.push(SchemaFieldMismatch {
+                        name: expected_field.name.clone(),
+                        expected: expected_field.field_type.clone(),
+                        actual: actual_type,
+                    });
+                }
+            }
+            Err(_) => missing_fields.push(expected_field.name.clone()),
+        }
+    }
+
+    if !missing_fields.is_empty() || !mismatched_fields.is_empty() {
+        let details = json!({
+            "indexKind": index_kind,
+            "expected": {
+                "fields": expected_fields,
+                "signature": schema_signature(&expected_fields),
+            },
+            "actual": {
+                "fields": actual_fields,
+                "signature": schema_signature(&actual_fields),
+            },
+            "missingFields": missing_fields,
+            "mismatchedFields": mismatched_fields,
+        });
+        return Err(AppError::new(
+            ERR_INDEX_SCHEMA_MISMATCH,
+            "index schema mismatch; reindex required",
+        )
+        .with_details(details)
+        .into());
+    }
+    Ok(())
+}
+
+fn open_existing_index(state_dir: &Path, expected: &Schema, index_kind: &str) -> Result<Index> {
+    if !state_dir.exists() {
+        return Err(missing_index_error(state_dir).into());
+    }
+    let directory = tantivy::directory::MmapDirectory::open(state_dir)?;
+    if !Index::exists(&directory)? {
+        return Err(missing_index_error(state_dir).into());
+    }
+    let index = Index::open(directory)?;
+    ensure_schema_compatible(&index.schema(), expected, index_kind)?;
+    Ok(index)
+}
+
+fn open_or_create_index(state_dir: &Path, expected: &Schema, index_kind: &str) -> Result<Index> {
+    let directory = tantivy::directory::MmapDirectory::open(state_dir)?;
+    if Index::exists(&directory)? {
+        let index = Index::open(directory)?;
+        ensure_schema_compatible(&index.schema(), expected, index_kind)?;
+        Ok(index)
+    } else {
+        Ok(Index::open_or_create(directory, expected.clone())?)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileDecisionOutcome {
@@ -1447,6 +1566,16 @@ fn known_canonical_path_from_repo_meta(index_state_dir: &Path) -> Option<String>
         .get("canonical_path")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
+}
+
+fn missing_index_error(state_dir: &Path) -> AppError {
+    AppError::new(
+        ERR_MISSING_INDEX,
+        format!(
+            "index not found at {}; run `docdexd index --repo <repo>` first",
+            state_dir.display()
+        ),
+    )
 }
 
 fn missing_repo_path_error(repo_root: &Path) -> AppError {

@@ -1,4 +1,4 @@
-use crate::error::{AppError, ERR_BACKOFF_REQUIRED};
+use crate::error::{AppError, ERR_BACKOFF_REQUIRED, ERR_INDEX_SCHEMA_MISMATCH};
 use crate::index::{
     DocSnapshot, Hit, QueryRewrite, SearchError, SearchQueryMeta, SearchSnippetOrigin,
     SnippetOrigin, SnippetResult,
@@ -6,6 +6,7 @@ use crate::index::{
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -152,10 +153,7 @@ impl LibsIndexer {
     pub fn open_or_create(libs_state_dir: PathBuf) -> Result<Self> {
         crate::index::ensure_state_dir_secure(&libs_state_dir)?;
         let (schema, fields) = build_schema();
-        let index = Index::open_or_create(
-            tantivy::directory::MmapDirectory::open(&libs_state_dir)?,
-            schema.clone(),
-        )?;
+        let index = open_or_create_index(&libs_state_dir, &schema)?;
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommit)
@@ -182,8 +180,10 @@ impl LibsIndexer {
         if !libs_state_dir.exists() {
             return Ok(None);
         }
-        let index = Index::open_in_dir(&libs_state_dir)
-            .with_context(|| format!("open libs index at {}", libs_state_dir.display()))?;
+        let (expected_schema, _) = build_schema();
+        let Some(index) = open_existing_index(&libs_state_dir, &expected_schema)? else {
+            return Ok(None);
+        };
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommit)
@@ -991,6 +991,139 @@ fn build_schema() -> (Schema, SchemaFields) {
             source,
         },
     )
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SchemaFieldDescriptor {
+    name: String,
+    field_type: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SchemaFieldMismatch {
+    name: String,
+    expected: String,
+    actual: String,
+}
+
+const LIBS_SCHEMA_FIELDS: &[&str] = &[
+    "doc_id",
+    "rel_path",
+    "title",
+    "body",
+    "summary",
+    "token_estimate",
+    "library",
+    "version",
+    "source",
+];
+
+fn schema_field_descriptor(
+    name: &str,
+    field_type: &tantivy::schema::FieldType,
+) -> SchemaFieldDescriptor {
+    SchemaFieldDescriptor {
+        name: name.to_string(),
+        field_type: format!("{:?}", field_type),
+    }
+}
+
+fn schema_descriptors(schema: &Schema) -> Vec<SchemaFieldDescriptor> {
+    let mut fields: Vec<SchemaFieldDescriptor> = schema
+        .fields()
+        .map(|(_, entry)| schema_field_descriptor(entry.name(), entry.field_type()))
+        .collect();
+    fields.sort_by(|a, b| a.name.cmp(&b.name));
+    fields
+}
+
+fn expected_schema_descriptors(schema: &Schema, fields: &[&str]) -> Vec<SchemaFieldDescriptor> {
+    let mut expected = Vec::with_capacity(fields.len());
+    for field_name in fields {
+        let field = schema
+            .get_field(field_name)
+            .expect("expected libs schema missing field");
+        let entry = schema.get_field_entry(field);
+        expected.push(schema_field_descriptor(entry.name(), entry.field_type()));
+    }
+    expected
+}
+
+fn schema_signature(fields: &[SchemaFieldDescriptor]) -> String {
+    let mut parts: Vec<String> = fields
+        .iter()
+        .map(|field| format!("{}:{}", field.name, field.field_type))
+        .collect();
+    parts.sort();
+    parts.join("|")
+}
+
+fn ensure_schema_compatible(actual: &Schema, expected: &Schema, index_kind: &str) -> Result<()> {
+    let expected_fields = expected_schema_descriptors(expected, LIBS_SCHEMA_FIELDS);
+    let actual_fields = schema_descriptors(actual);
+    let mut missing_fields: Vec<String> = Vec::new();
+    let mut mismatched_fields: Vec<SchemaFieldMismatch> = Vec::new();
+
+    for expected_field in &expected_fields {
+        match actual.get_field(&expected_field.name) {
+            Ok(field) => {
+                let actual_type =
+                    format!("{:?}", actual.get_field_entry(field).field_type());
+                if actual_type != expected_field.field_type {
+                    mismatched_fields.push(SchemaFieldMismatch {
+                        name: expected_field.name.clone(),
+                        expected: expected_field.field_type.clone(),
+                        actual: actual_type,
+                    });
+                }
+            }
+            Err(_) => missing_fields.push(expected_field.name.clone()),
+        }
+    }
+
+    if !missing_fields.is_empty() || !mismatched_fields.is_empty() {
+        let details = json!({
+            "indexKind": index_kind,
+            "expected": {
+                "fields": expected_fields,
+                "signature": schema_signature(&expected_fields),
+            },
+            "actual": {
+                "fields": actual_fields,
+                "signature": schema_signature(&actual_fields),
+            },
+            "missingFields": missing_fields,
+            "mismatchedFields": mismatched_fields,
+        });
+        return Err(AppError::new(
+            ERR_INDEX_SCHEMA_MISMATCH,
+            "index schema mismatch; reindex required",
+        )
+        .with_details(details)
+        .into());
+    }
+    Ok(())
+}
+
+fn open_or_create_index(libs_state_dir: &Path, expected: &Schema) -> Result<Index> {
+    let directory = tantivy::directory::MmapDirectory::open(libs_state_dir)?;
+    if Index::exists(&directory)? {
+        let index = Index::open(directory)?;
+        ensure_schema_compatible(&index.schema(), expected, "libs")?;
+        Ok(index)
+    } else {
+        Ok(Index::open_or_create(directory, expected.clone())?)
+    }
+}
+
+fn open_existing_index(libs_state_dir: &Path, expected: &Schema) -> Result<Option<Index>> {
+    let directory = tantivy::directory::MmapDirectory::open(libs_state_dir)?;
+    if !Index::exists(&directory)? {
+        return Ok(None);
+    }
+    let index = Index::open(directory)?;
+    ensure_schema_compatible(&index.schema(), expected, "libs")?;
+    Ok(Some(index))
 }
 
 fn load_manifest(path: &Path) -> Result<LibsManifest> {

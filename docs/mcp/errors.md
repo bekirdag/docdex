@@ -55,6 +55,7 @@ These codes are the **required** set for repo/index/dependency failures and are 
 - `unknown_repo`: provided repo context does not match the server’s configured repo root.
 - `repo_state_mismatch`: per-repo state cannot be safely associated (fingerprint/meta/registry mismatch); Docdex must fast-fail to prevent cross-repo mixing.
 - `missing_index`: on-disk index is not present (e.g. `docdexd query` before indexing).
+- `index_schema_mismatch`: on-disk index schema is incompatible with the running Docdex version; reindex required.
 - `stale_index`: index exists but is known to be stale (reserved for future use).
 - `missing_dependency`: a required optional feature/dependency is disabled (e.g. symbols extraction disabled).
 - `rate_limited`: request rejected due to rate limiting (reserved for future use in MCP).
@@ -116,6 +117,7 @@ Docdex presents the same underlying failures in three different wrappers:
 | Repo mismatch (`project_root` does not match server repo) | `unknown_repo` | `-32602` | N/A (daemon is started per-repo) | N/A (CLI always has `--repo`; mismatch is not represented) |
 | Repo state mismatch (unsafe to associate state) | `repo_state_mismatch` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"repo_state_mismatch",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"repo_state_mismatch",...}}` |
 | Index missing (query/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
+| Index schema mismatch | `index_schema_mismatch` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"index_schema_mismatch",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"index_schema_mismatch",...}}` |
 | Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Not currently emitted by the per-repo CLI |
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |
 | Rate limited | `rate_limited` | `-32602` | `429` (security middleware returns status-only; no JSON envelope) | Not currently emitted as an `AppError` (usually a plain error string if encountered) |

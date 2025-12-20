@@ -10,7 +10,7 @@ use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::ratelimit::RateLimiter;
 use crate::search;
-use crate::symbols::SymbolsStore;
+use crate::symbols::{SymbolsStore, MAX_SYMBOLS_PER_FILE};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -391,6 +391,8 @@ struct SymbolsArgs {
     path: String,
     #[serde(default)]
     project_root: Option<PathBuf>,
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -1230,7 +1232,8 @@ impl McpServer {
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "minLength": 1, "description": "Relative path under the repo" },
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": MAX_SYMBOLS_PER_FILE as i64, "default": MAX_SYMBOLS_PER_FILE, "description": "Max symbols to return (clamped to server max)" }
                     },
                     "required": ["path"]
                 }),
@@ -1488,11 +1491,18 @@ impl McpServer {
         let rel_str = rel_path.to_string_lossy().replace('\\', "/");
         let store = SymbolsStore::new(self.indexer.repo_root(), self.indexer.config().state_dir())
             .context("open symbols store")?;
-        let payload = store
+        let mut payload = store
             .read_symbols(&rel_str)?
             .ok_or_else(|| MissingSymbolsIndexError {
                 rel_path: rel_str.to_string(),
             })?;
+        let limit = args
+            .limit
+            .unwrap_or(MAX_SYMBOLS_PER_FILE)
+            .clamp(1, MAX_SYMBOLS_PER_FILE);
+        if payload.symbols.len() > limit {
+            payload.symbols.truncate(limit);
+        }
         Ok(serde_json::to_value(payload).context("serialize symbols payload")?)
     }
 

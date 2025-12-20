@@ -68,8 +68,10 @@ Tool name aliases: `docdex_symbols` and `docdex.symbols`.
 Arguments:
 
 ```json
-{ "path": "path/relative/to/repo.ext", "project_root": "/path/to/repo (optional)" }
+{ "path": "path/relative/to/repo.ext", "project_root": "/path/to/repo (optional)", "limit": 2000 }
 ```
+
+- `limit` (optional): max symbols to return (clamped to 2000).
 
 Return value:
 
@@ -80,6 +82,12 @@ Failure semantics (MCP JSON-RPC errors):
 - `missing_dependency`: symbol extraction disabled for the MCP server process.
 - `missing_index`: no symbols record exists for that `path` (common after enabling symbols without reindexing).
 - `invalid_path`: path is not a safe repo-relative path.
+
+Bounded outputs:
+
+- Symbols are sorted by `symbol_id`.
+- Results are capped at 2000 symbols per file (deterministic truncation by `symbol_id` order).
+- `outcome.error_summary` is truncated to 512 bytes.
 
 See `docs/mcp/errors.md` for the common error envelope.
 
@@ -111,6 +119,8 @@ Each stored record is a `docdex.symbols` JSON payload:
 - If `repo_id` or `file` are missing/empty, it fills them from the store context and the read path.
 - If `symbol_id` is missing/empty on any symbol, it is recomputed.
 - Symbols are sorted by `symbol_id` for deterministic outputs.
+- Symbols are capped at 2000 per file; `outcome.error_summary` is truncated to 512 bytes.
+- If the stored `repo_id` does not match the store repo, the record is treated as missing.
 
 ## Stable identifiers
 

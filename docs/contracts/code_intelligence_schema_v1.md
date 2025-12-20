@@ -40,7 +40,7 @@ Symbol responses represent extracted symbols within a repo, scoped to a file.
 - `outcome` (object, optional): Per-file extraction outcome metadata.
   - `status` (string, required): `ok` | `skipped` | `failed`
   - `reason` (string, optional): Short stable reason code/message (e.g. `unsupported_language`, `read_failed (markdown)`).
-  - `error_summary` (string, optional): Best-effort human-readable error summary (must be bounded; avoid stack traces).
+  - `error_summary` (string, optional): Best-effort human-readable error summary (must be bounded; avoid stack traces). Docdex truncates to 512 bytes.
 
 **Symbol item fields (v1)**
 
@@ -51,6 +51,11 @@ Symbol responses represent extracted symbols within a repo, scoped to a file.
 - `range` (object, required): 1-based positions within `file`.
   - `start_line`, `start_col`, `end_line`, `end_col` (integers)
 - `signature` (string, optional): Language-specific display signature if available.
+
+**Deterministic ordering and bounds**
+
+- Symbols are returned sorted by `symbol_id`.
+- Responses may be truncated to a server-defined maximum (currently 2000 symbols per file) without additional fields.
 
 ## Impact graph response (`docdex.impact_graph`)
 

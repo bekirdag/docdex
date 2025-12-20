@@ -251,3 +251,77 @@ impl RetryHint {
         }
     }
 }
+
+#[derive(Debug, Clone, Error)]
+#[error("{message}")]
+pub struct BackoffRequired {
+    pub code: &'static str,
+    pub message: String,
+    pub retry_after_ms: u64,
+    pub retry_at: Option<DateTime<Utc>>,
+    pub limit_key: String,
+    pub scope: String,
+}
+
+impl BackoffRequired {
+    pub fn new(retry_after: Duration, limit_key: String, scope: String) -> Self {
+        let retry_after_ms = retry_after.as_millis().min(u128::from(u64::MAX)) as u64;
+        Self {
+            code: ERR_BACKOFF_REQUIRED,
+            message: "backoff required".to_string(),
+            retry_after_ms,
+            retry_at: None,
+            limit_key,
+            scope,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = message.into();
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn with_retry_at(mut self, retry_at: DateTime<Utc>) -> Self {
+        self.retry_at = Some(retry_at);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Error)]
+#[error("{message}")]
+pub struct BackoffRequired {
+    pub code: &'static str,
+    pub message: String,
+    pub retry_after_ms: u64,
+    pub retry_at: Option<DateTime<Utc>>,
+    pub limit_key: String,
+    pub scope: String,
+}
+
+impl BackoffRequired {
+    pub fn new(retry_after: Duration, limit_key: String, scope: String) -> Self {
+        let retry_after_ms = retry_after.as_millis().min(u128::from(u64::MAX)) as u64;
+        Self {
+            code: ERR_BACKOFF_REQUIRED,
+            message: "backoff required".to_string(),
+            retry_after_ms,
+            retry_at: None,
+            limit_key,
+            scope,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = message.into();
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn with_retry_at(mut self, retry_at: DateTime<Utc>) -> Self {
+        self.retry_at = Some(retry_at);
+        self
+    }
+}

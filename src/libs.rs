@@ -255,9 +255,18 @@ impl LibsIndexer {
     fn writer(&self) -> Result<Arc<Mutex<IndexWriter>>> {
         self.writer.clone().ok_or_else(|| {
             BackoffRequired::new(
+<<<<<<< HEAD
                 Duration::from_secs(1),
                 "libs_writer".to_string(),
                 "repo".to_string(),
+=======
+                Duration::from_millis(0),
+                "libs_index_writer".to_string(),
+                "libs_index".to_string(),
+            )
+            .with_message(
+                "libs index writer unavailable (another docdexd may be indexing); retry later",
+>>>>>>> mcoda/task/bck-05-us-09-t22
             )
             .with_message("libs index writer unavailable (another docdexd may be indexing); retry later")
             .into()

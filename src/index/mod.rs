@@ -26,8 +26,13 @@ use crate::state_layout::{
 use crate::state_paths::{default_state_base_dir, RepoStatePaths, StatePaths};
 =======
 use crate::error::{
+<<<<<<< HEAD
     repo_resolution_details, AppError, BackoffRequired, ERR_INVALID_ARGUMENT,
     ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+=======
+    repo_resolution_details, AppError, BackoffRequired, ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX,
+    ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+>>>>>>> mcoda/task/bck-05-us-09-t22
 };
 use crate::max_size::{
     truncate_utf8_chars, MAX_SNIPPET_CHARS, MAX_SUMMARY_CHARS, MAX_SUMMARY_SEGMENTS,
@@ -1040,9 +1045,18 @@ impl Indexer {
             .clone()
             .ok_or_else(|| {
                 BackoffRequired::new(
+<<<<<<< HEAD
                     Duration::from_secs(1),
                     "index_writer".to_string(),
                     "repo".to_string(),
+=======
+                    Duration::from_millis(0),
+                    "index_writer".to_string(),
+                    "index".to_string(),
+                )
+                .with_message(
+                    "index writer unavailable (another docdexd may be indexing); retry later",
+>>>>>>> mcoda/task/bck-05-us-09-t22
                 )
                 .with_message("index writer unavailable (another docdexd may be indexing); retry later")
                 .into()

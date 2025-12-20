@@ -17,7 +17,8 @@ This repo’s “browser guard” is implemented by:
 - Target `docdexd`:
   - `event=chrome_watchdog_reap_*` (reaper actions + outcomes)
 - Target `docdexd_tier2`:
-  - `event=tier2_overload_fallback` (capacity exhausted → fallback path taken)
+  - `event=tier2_overload_fallback` (capacity exhausted → fallback path taken; includes `backoff_code`, `retry_after_ms`, `limit_key=chrome_concurrency`, `scope=tier2`)
+  - Web throttling (DDG discovery, per-domain fetch pacing) should emit the same backoff fields when those components are enabled.
 
 **Metrics**
 
@@ -48,4 +49,3 @@ If the watchdog is initialized without a Tokio runtime, periodic reaping is disa
 - **Overload** (`event=tier2_overload_fallback`, `docdex_tier2_permits_in_use` pinned): increase Tier 2 concurrency where the limiter is configured, or reduce concurrent Tier 2 callers.
 - **Orphans/Zombies** (rising `docdex_chrome_watchdog_reaped_total`): increase `DOCDEX_CHROME_WATCHDOG_ORPHAN_REAP_AFTER_MS` if legitimate sessions are long-running, or reduce timeouts if cleanup is too slow.
 - **Frequent SIGKILL escalation** (`event=browser_session_kill_escalation`): increase graceful timeouts, or investigate browser subprocesses that ignore SIGTERM.
-

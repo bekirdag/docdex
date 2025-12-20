@@ -73,6 +73,7 @@ const SYMBOLS_MAX_OUTCOME_BYTES: usize = 512;
 const MAX_ERROR_MESSAGE_BYTES: usize = 256;
 const MAX_ERROR_REASON_BYTES: usize = 768;
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 >>>>>>> mcoda/task/bck-05-us-10-t25
 =======
@@ -92,6 +93,9 @@ fn effective_rate_limit_burst(per_minute: u32, burst: u32) -> u32 {
     }
 }
 >>>>>>> mcoda/task/bck-05-us-09-t41
+=======
+const MCP_RATE_LIMIT_PAYLOAD_MAX_BYTES: usize = 2048;
+>>>>>>> mcoda/task/bck-05-us-09-t40
 
 #[derive(Error, Debug)]
 #[error("path must be relative and not contain parent components")]
@@ -2231,10 +2235,30 @@ fn normalize_rel_path(input: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use crate::error::MAX_RATE_LIMIT_FIELD_BYTES;
     use std::collections::HashSet;
     use std::sync::{Arc, Barrier};
     use std::thread;
     use std::time::Duration;
+
+    fn assert_rate_limit_keys(
+        obj: &serde_json::Map<String, serde_json::Value>,
+        include_retry_at: bool,
+    ) {
+        let mut keys: Vec<String> = obj.keys().cloned().collect();
+        keys.sort();
+        let mut expected = vec![
+            "code".to_string(),
+            "limit_key".to_string(),
+            "retry_after_ms".to_string(),
+            "scope".to_string(),
+        ];
+        if include_retry_at {
+            expected.push("retry_at".to_string());
+        }
+        expected.sort();
+        assert_eq!(keys, expected, "rate-limit data keys must remain stable");
+    }
 
     #[test]
     fn rate_limited_rpc_has_stable_data_shape() {
@@ -2243,6 +2267,7 @@ mod tests {
         assert_eq!(rpc.code, ERR_RATE_LIMITED_RPC);
         let data = rpc.data.expect("rate limited rpc should include data");
         let obj = data.as_object().expect("rate limited data should be object");
+        assert_rate_limit_keys(obj, false);
         assert_eq!(obj.get("code").and_then(|v| v.as_str()), Some(ERR_RATE_LIMITED));
         assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(0));
         assert_eq!(obj.get("limit_key").and_then(|v| v.as_str()), Some("mcp_tools"));
@@ -2262,8 +2287,40 @@ mod tests {
         );
         let data = rpc.data.expect("rate limited rpc should include data");
         let obj = data.as_object().expect("rate limited data should be object");
+        assert_rate_limit_keys(obj, true);
         assert!(obj.get("retry_at").and_then(|v| v.as_str()).is_some());
         assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(1234));
+    }
+
+    #[test]
+    fn rate_limited_rpc_truncates_detail_fields_and_bounds_payload() {
+        let long = "x".repeat(MAX_RATE_LIMIT_FIELD_BYTES * 8);
+        let err = RateLimited::new(Duration::from_millis(1), long.clone(), long);
+        let rpc = rpc_rate_limited(&err);
+        let data = rpc.data.expect("rate limited rpc should include data");
+        let obj = data.as_object().expect("rate limited data should be object");
+        let limit_key = obj
+            .get("limit_key")
+            .and_then(|v| v.as_str())
+            .expect("limit_key should be a string");
+        let scope = obj
+            .get("scope")
+            .and_then(|v| v.as_str())
+            .expect("scope should be a string");
+        assert!(
+            limit_key.len() <= MAX_RATE_LIMIT_FIELD_BYTES,
+            "limit_key should be truncated"
+        );
+        assert!(
+            scope.len() <= MAX_RATE_LIMIT_FIELD_BYTES,
+            "scope should be truncated"
+        );
+        let payload_bytes = serde_json::to_vec(&rpc).expect("rpc error should serialize");
+        assert!(
+            payload_bytes.len() <= MCP_RATE_LIMIT_PAYLOAD_MAX_BYTES,
+            "rpc rate-limit payload should remain small (got {} bytes)",
+            payload_bytes.len()
+        );
     }
 
     #[test]
@@ -2297,6 +2354,7 @@ mod tests {
                     );
                     let data = rpc.data.as_ref().expect("rate limited rpc should include data");
                     let obj = data.as_object().expect("rate limited data should be object");
+                    assert_rate_limit_keys(obj, false);
                     let mut keys: Vec<String> = obj.keys().cloned().collect();
                     keys.sort();
                     schema_variants.insert(keys);
@@ -2317,7 +2375,7 @@ mod tests {
 
                     let payload_bytes = serde_json::to_vec(&rpc).expect("rpc error should serialize");
                     assert!(
-                        payload_bytes.len() <= 2048,
+                        payload_bytes.len() <= MCP_RATE_LIMIT_PAYLOAD_MAX_BYTES,
                         "rpc rate-limit payload should remain small (got {} bytes)",
                         payload_bytes.len()
                     );

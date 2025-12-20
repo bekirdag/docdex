@@ -36,6 +36,9 @@ Compatibility guidance for clients:
 - Ignore unknown fields; new `details` keys may be added without breaking changes.
 - `error.data.error` is redundant; it exists for convenience where clients expect a nested `error` object.
 
+Note: `rate_limited` uses a specialized `error.data` shape for retry hints (see
+`docs/contracts/rate_limit_error_contract_v1.md`) and does not include the full nested envelope.
+
 ## Code taxonomy (machine-readable)
 
 ### MCP-only protocol codes
@@ -57,7 +60,7 @@ These codes are the **required** set for repo/index/dependency failures and are 
 - `missing_index`: on-disk index is not present (e.g. `docdexd query` before indexing).
 - `stale_index`: index exists but is known to be stale (reserved for future use).
 - `missing_dependency`: a required optional feature/dependency is disabled (e.g. symbols extraction disabled).
-- `rate_limited`: request rejected due to rate limiting (reserved for future use in MCP).
+- `rate_limited`: request rejected due to rate limiting (see `docs/contracts/rate_limit_error_contract_v1.md`).
 - `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable).
 - `internal_error`: unexpected server failure.
 
@@ -123,7 +126,7 @@ Docdex presents the same underlying failures in three different wrappers:
 | Index missing (query/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
 | Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Not currently emitted by the per-repo CLI |
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |
-| Rate limited | `rate_limited` | `-32602` | `429` (security middleware returns status-only; no JSON envelope) | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
+| Rate limited | `rate_limited` | `-32029` | `429` with JSON error envelope + retry hints | N/A (CLI not rate limited) |
 | Optional dependency disabled (e.g. symbols) | `missing_dependency` | `-32602` | N/A (no HTTP endpoint for MCP symbols) | N/A (no CLI symbols command) |
 | Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_params` | `-32602` | N/A | N/A |
 | Invalid path for `docdex_open` | `invalid_path` | `-32602` | N/A | N/A |

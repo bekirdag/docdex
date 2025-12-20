@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 pub const MAX_SYMBOLS_PER_FILE: usize = 1000;
 pub const MAX_SYMBOLS_PER_RUN: usize = 50000;
 const MAX_SYMBOL_SIGNATURE_CHARS: usize = 240;
@@ -24,6 +25,11 @@ const SYMBOL_PARSER_NAME: &str = "regex";
 const SYMBOL_PARSER_VERSION: &str = "1";
 const SYMBOL_RUNTIME_NAME: &str = "docdexd";
 >>>>>>> mcoda/task/bck-05-us-10-t04
+=======
+pub const MAX_SYMBOLS_PER_FILE: usize = 2000;
+const MAX_SYMBOL_SIGNATURE_BYTES: usize = 512;
+const MAX_SYMBOL_ERROR_SUMMARY_BYTES: usize = 512;
+>>>>>>> mcoda/task/bck-05-us-10-t03
 
 fn default_symbols_schema() -> SchemaInfo {
     SchemaInfo {
@@ -213,7 +219,9 @@ impl SymbolsStore {
             .with_context(|| format!("create {}", self.files_dir().display()))?;
         let dest = self.file_record_path(rel_path);
         let tmp = dest.with_extension(format!("tmp.{}", uuid::Uuid::new_v4()));
-        let bytes = serde_json::to_vec_pretty(payload).context("serialize symbols payload")?;
+        let mut payload = payload.clone();
+        self.normalize_payload(rel_path, &mut payload)?;
+        let bytes = serde_json::to_vec_pretty(&payload).context("serialize symbols payload")?;
         fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
         if dest.exists() {
             let _ = fs::remove_file(&dest);
@@ -235,6 +243,7 @@ impl SymbolsStore {
         if !parsed.repo_id.is_empty() && parsed.repo_id != self.repo_id {
             return Ok(None);
         }
+<<<<<<< HEAD
         if !parsed.file.is_empty() && parsed.file.replace('\\', "/") != normalized_rel {
             return Ok(None);
         }
@@ -267,6 +276,12 @@ impl SymbolsStore {
 =======
         normalize_symbols_payload(&mut parsed);
 >>>>>>> mcoda/task/bck-05-us-10-t04
+=======
+        if parsed.repo_id != self.repo_id {
+            return Ok(None);
+        }
+        self.normalize_payload(rel_path, &mut parsed)?;
+>>>>>>> mcoda/task/bck-05-us-10-t03
         Ok(Some(parsed))
     }
 
@@ -285,6 +300,63 @@ impl SymbolsStore {
     fn file_record_path(&self, rel_path: &str) -> PathBuf {
         self.files_dir().join(format!("{}.json", file_key(rel_path)))
     }
+
+    fn normalize_payload(&self, rel_path: &str, payload: &mut SymbolsResponseV1) -> Result<()> {
+        if payload.repo_id.is_empty() {
+            payload.repo_id = self.repo_id.clone();
+        }
+        if payload.repo_id != self.repo_id {
+            return Err(anyhow::anyhow!(
+                "symbols payload repo_id mismatch (expected {}, got {})",
+                self.repo_id,
+                payload.repo_id
+            ));
+        }
+        if payload.file.is_empty() {
+            payload.file = rel_path.to_string();
+        }
+        let repo_id = payload.repo_id.clone();
+        let file = payload.file.clone();
+        for symbol in &mut payload.symbols {
+            if symbol.symbol_id.is_empty() {
+                symbol.symbol_id =
+                    make_symbol_id(&repo_id, &file, &symbol.range, &symbol.kind, &symbol.name);
+            }
+            if let Some(signature) = symbol.signature.as_mut() {
+                *signature = truncate_bytes(signature.clone(), MAX_SYMBOL_SIGNATURE_BYTES);
+            }
+        }
+        if let Some(outcome) = payload.outcome.as_mut() {
+            if let Some(summary) = outcome.error_summary.as_mut() {
+                *summary = truncate_bytes(summary.clone(), MAX_SYMBOL_ERROR_SUMMARY_BYTES);
+            }
+        }
+        payload.symbols.sort_by(|a, b| a.symbol_id.cmp(&b.symbol_id));
+        if payload.symbols.len() > MAX_SYMBOLS_PER_FILE {
+            payload.symbols.truncate(MAX_SYMBOLS_PER_FILE);
+        }
+        Ok(())
+    }
+}
+
+fn truncate_bytes(input: String, max_bytes: usize) -> String {
+    if input.len() <= max_bytes {
+        return input;
+    }
+    if max_bytes == 0 {
+        return String::new();
+    }
+    let suffix = "...";
+    let max_body = max_bytes.saturating_sub(suffix.len());
+    let mut end = max_body;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = input[..end].to_string();
+    if out.len() + suffix.len() <= max_bytes {
+        out.push_str(suffix);
+    }
+    out
 }
 
 pub fn build_symbols_payload(
@@ -799,4 +871,65 @@ fn extract_go_symbols(repo_id: &str, rel_path: &str, content: &str) -> Result<Ve
         }
     }
     Ok(symbols)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn normalize_payload_clamps_symbols_and_error_summary() {
+        let repo_dir = tempdir().expect("temp repo");
+        let state_dir = repo_dir.path().join(".docdex").join("index");
+        std::fs::create_dir_all(&state_dir).expect("create state dir");
+        let store = SymbolsStore::new(repo_dir.path(), &state_dir).expect("store");
+
+        let mut symbols = Vec::new();
+        for idx in 0..(MAX_SYMBOLS_PER_FILE + 10) {
+            symbols.push(SymbolItem {
+                symbol_id: String::new(),
+                name: format!("sym_{idx}"),
+                kind: "function".to_string(),
+                range: SymbolRange {
+                    start_line: (idx + 1) as u32,
+                    start_col: 1,
+                    end_line: (idx + 1) as u32,
+                    end_col: 2,
+                },
+                signature: Some("x".repeat(MAX_SYMBOL_SIGNATURE_BYTES + 10)),
+            });
+        }
+
+        let mut payload = SymbolsResponseV1 {
+            schema: default_symbols_schema(),
+            repo_id: String::new(),
+            file: "src/lib.rs".to_string(),
+            symbols,
+            outcome: Some(SymbolOutcome {
+                status: SymbolOutcomeStatus::Failed,
+                reason: Some("extract_failed (rust)".to_string()),
+                error_summary: Some("y".repeat(MAX_SYMBOL_ERROR_SUMMARY_BYTES + 10)),
+            }),
+        };
+
+        store
+            .normalize_payload("src/lib.rs", &mut payload)
+            .expect("normalize payload");
+
+        assert_eq!(payload.symbols.len(), MAX_SYMBOLS_PER_FILE);
+        let signature_len = payload.symbols[0]
+            .signature
+            .as_ref()
+            .map(|value| value.len())
+            .unwrap_or(0);
+        assert!(signature_len <= MAX_SYMBOL_SIGNATURE_BYTES);
+        let error_len = payload
+            .outcome
+            .as_ref()
+            .and_then(|outcome| outcome.error_summary.as_ref())
+            .map(|value| value.len())
+            .unwrap_or(0);
+        assert!(error_len <= MAX_SYMBOL_ERROR_SUMMARY_BYTES);
+    }
 }

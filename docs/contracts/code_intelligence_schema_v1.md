@@ -40,6 +40,7 @@ Symbol responses represent extracted symbols within a repo, scoped to a file.
 - `outcome` (object, optional): Per-file extraction outcome metadata.
   - `status` (string, required): `ok` | `skipped` | `failed`
   - `reason` (string, optional): Short stable reason code/message (e.g. `unsupported_language`, `read_failed (markdown)`).
+<<<<<<< HEAD
   - `error_summary` (string, optional): Best-effort human-readable error summary (must be bounded; avoid stack traces).
   - `parser` (object, optional): Parser metadata for the extractor.
     - `name` (string, required)
@@ -49,6 +50,9 @@ Symbol responses represent extracted symbols within a repo, scoped to a file.
     - `version` (string, optional)
 
 Docdex caps `error_summary` to 200 chars, `signature` to 240 chars, and the `symbols` array to 1000 items per file.
+=======
+  - `error_summary` (string, optional): Best-effort human-readable error summary (must be bounded; avoid stack traces). Docdex truncates to 512 bytes.
+>>>>>>> mcoda/task/bck-05-us-10-t03
 
 **Symbol item fields (v1)**
 
@@ -60,6 +64,7 @@ Docdex caps `error_summary` to 200 chars, `signature` to 240 chars, and the `sym
   - `start_line`, `start_col`, `end_line`, `end_col` (integers)
 - `signature` (string, optional): Language-specific display signature if available.
 
+<<<<<<< HEAD
 ### Symbols limits (v1)
 
 Docdex clamps symbol outputs deterministically to keep schemas stable:
@@ -74,6 +79,12 @@ Docdex clamps symbol outputs deterministically to keep schemas stable:
 - Max `outcome.parser.version`/`outcome.runtime.version`: 64 chars
 
 Lengths are Unicode scalar chars; truncation is deterministic and does not add extra fields.
+=======
+**Deterministic ordering and bounds**
+
+- Symbols are returned sorted by `symbol_id`.
+- Responses may be truncated to a server-defined maximum (currently 2000 symbols per file) without additional fields.
+>>>>>>> mcoda/task/bck-05-us-10-t03
 
 ## Impact graph response (`docdex.impact_graph`)
 

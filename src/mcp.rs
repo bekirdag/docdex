@@ -25,7 +25,11 @@ use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::ratelimit::RateLimiter;
 use crate::search;
+<<<<<<< HEAD
 use crate::symbols::{SymbolsResponseV1, SymbolsStore};
+=======
+use crate::symbols::{SymbolsStore, MAX_SYMBOLS_PER_FILE};
+>>>>>>> mcoda/task/bck-05-us-10-t03
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -519,7 +523,11 @@ struct SymbolsArgs {
     #[serde(default)]
     project_root: Option<PathBuf>,
     #[serde(default)]
+<<<<<<< HEAD
     schema_version: Option<u32>,
+=======
+    limit: Option<usize>,
+>>>>>>> mcoda/task/bck-05-us-10-t03
 }
 
 #[derive(Deserialize)]
@@ -1378,12 +1386,17 @@ impl McpServer {
                     "properties": {
                         "path": { "type": "string", "minLength": 1, "description": "Relative path under the repo" },
 <<<<<<< HEAD
+<<<<<<< HEAD
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
                         "schema_version": { "type": "integer", "minimum": TOOL_SCHEMA_VERSION_MIN as i64, "maximum": TOOL_SCHEMA_VERSION_MAX as i64, "default": TOOL_SCHEMA_VERSION_MAX as i64, "description": "Optional response schema version to request" }
 =======
                         "limit": { "type": "integer", "minimum": 1, "maximum": SYMBOLS_MAX_LIMIT as i64, "default": SYMBOLS_MAX_LIMIT, "description": "Max symbols to return (clamped)" },
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
 >>>>>>> mcoda/task/bck-05-us-10-t07
+=======
+                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": MAX_SYMBOLS_PER_FILE as i64, "default": MAX_SYMBOLS_PER_FILE, "description": "Max symbols to return (clamped to server max)" }
+>>>>>>> mcoda/task/bck-05-us-10-t03
                     },
                     "required": ["path"]
                 }),
@@ -1771,6 +1784,7 @@ impl McpServer {
             })?;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         apply_symbols_bounds(&self.limits, &mut payload);
 =======
         let limit = args
@@ -1779,6 +1793,15 @@ impl McpServer {
             .clamp(1, SYMBOLS_MAX_LIMIT);
         clamp_symbols_payload(&mut payload, limit);
 >>>>>>> mcoda/task/bck-05-us-10-t07
+=======
+        let limit = args
+            .limit
+            .unwrap_or(MAX_SYMBOLS_PER_FILE)
+            .clamp(1, MAX_SYMBOLS_PER_FILE);
+        if payload.symbols.len() > limit {
+            payload.symbols.truncate(limit);
+        }
+>>>>>>> mcoda/task/bck-05-us-10-t03
         Ok(serde_json::to_value(payload).context("serialize symbols payload")?)
 =======
         if payload.symbols.len() > SYMBOLS_MAX_ITEMS {

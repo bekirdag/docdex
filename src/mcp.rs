@@ -1361,6 +1361,7 @@ impl McpServer {
 
     async fn handle_files(&self, args: FilesArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.indexer.preflight_index_state()?;
         let limit = args
             .limit
             .unwrap_or(FILES_DEFAULT_LIMIT)
@@ -1384,6 +1385,7 @@ impl McpServer {
 
     async fn handle_stats(&self, args: StatsArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.indexer.preflight_index_state()?;
         let stats = self.indexer.stats()?;
         Ok(json!({
             "num_docs": stats.num_docs,
@@ -1480,6 +1482,7 @@ impl McpServer {
 
     async fn handle_symbols(&self, args: SymbolsArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.indexer.preflight_index_state()?;
         if !self.indexer.config().symbols_enabled() {
             return Err(MissingSymbolsDependencyError.into());
         }

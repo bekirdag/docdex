@@ -1467,10 +1467,16 @@ mod rate_limit_contract_tests {
 
 #[cfg(test)]
 mod latency_perf_tests {
+    use crate::error::{AppError, ERR_MISSING_INDEX, ERR_STALE_INDEX};
     use crate::{index, libs};
+    use serde_json::json;
     use std::fs;
-    use std::time::Instant;
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
     use tempfile::TempDir;
+    use tokio::sync::{mpsc, Barrier};
+    use tokio::task::JoinSet;
 
     fn percentile(sorted: &[u128], p: f64) -> u128 {
         if sorted.is_empty() {
@@ -1487,6 +1493,74 @@ mod latency_perf_tests {
         let p95 = percentile(&samples_us, 0.95);
         let max = *samples_us.last().unwrap_or(&0);
         (p50, p95, max)
+    }
+
+    const STALE_INDEX_MARKER: &str = ".docdex_index_stale";
+
+    fn preflight_index_state(state_dir: &Path) -> anyhow::Result<()> {
+        if !state_dir.exists() {
+            return Err(AppError::new(
+                ERR_MISSING_INDEX,
+                format!(
+                    "index not found at {}; run `docdexd index --repo <repo>` first",
+                    state_dir.display()
+                ),
+            )
+            .with_details(json!({
+                "hint": "Run: docdexd index --repo <repo>"
+            }))
+            .into());
+        }
+        if state_dir.join(STALE_INDEX_MARKER).exists() {
+            return Err(AppError::new(
+                ERR_STALE_INDEX,
+                format!(
+                    "index at {} is stale; rebuild with `docdexd index --repo <repo>`",
+                    state_dir.display()
+                ),
+            )
+            .with_details(json!({
+                "hint": "Rebuild: docdexd index --repo <repo>"
+            }))
+            .into());
+        }
+        Ok(())
+    }
+
+    fn measure_preflight_success(state_dir: &Path, iterations: usize) -> anyhow::Result<Vec<u128>> {
+        let mut samples = Vec::with_capacity(iterations);
+        for _ in 0..iterations {
+            let start = Instant::now();
+            preflight_index_state(state_dir)?;
+            samples.push(start.elapsed().as_micros());
+        }
+        Ok(samples)
+    }
+
+    fn measure_preflight_error(
+        state_dir: &Path,
+        expected_code: &str,
+        iterations: usize,
+    ) -> anyhow::Result<Vec<u128>> {
+        let mut samples = Vec::with_capacity(iterations);
+        for _ in 0..iterations {
+            let start = Instant::now();
+            let err = preflight_index_state(state_dir)
+                .err()
+                .ok_or_else(|| anyhow::Error::msg("expected preflight failure"))?;
+            let elapsed = start.elapsed().as_micros();
+            let app = err
+                .downcast_ref::<AppError>()
+                .ok_or_else(|| anyhow::Error::msg("expected AppError for preflight failure"))?;
+            if app.code != expected_code {
+                return Err(anyhow::Error::msg(format!(
+                    "expected preflight error code {expected_code}, got {}",
+                    app.code
+                )));
+            }
+            samples.push(elapsed);
+        }
+        Ok(samples)
     }
 
     /// NFR check: repo-only search p95 should remain under 50ms even when a libs index exists.
@@ -1591,6 +1665,155 @@ mod latency_perf_tests {
             repo_p95 < 50_000,
             "repo-only search p95 {}us exceeds 50ms (see docs/sds/sds.md)",
             repo_p95
+        );
+
+        Ok(())
+    }
+
+    /// NFR check: concurrent search + incremental updates stay within latency targets,
+    /// including index-state preflight overhead and fast-fail error paths.
+    #[tokio::test]
+    #[ignore]
+    async fn concurrent_search_update_p95_with_index_state_preflight() -> anyhow::Result<()> {
+        let repo = TempDir::new()?;
+        let repo_root = repo.path();
+
+        let docs_dir = repo_root.join("docs");
+        fs::create_dir_all(&docs_dir)?;
+        for i in 0..240usize {
+            let body = if i % 7 == 0 {
+                format!("# Doc {i}\n\nCONCURRENT_NEEDLE_ABC appears here.\n")
+            } else {
+                format!("# Doc {i}\n\nFiller content for indexing.\n")
+            };
+            fs::write(docs_dir.join(format!("doc_{i}.md")), body)?;
+        }
+        let update_path = docs_dir.join("update.md");
+        fs::write(
+            &update_path,
+            "# Update\n\nCONCURRENT_NEEDLE_ABC in update file.\n",
+        )?;
+
+        let index_config =
+            index::IndexConfig::with_overrides(repo_root, None, Vec::new(), Vec::new(), false)?;
+        let indexer = index::Indexer::with_config(repo_root.to_path_buf(), index_config)?;
+        indexer.reindex_all().await?;
+        let indexer = Arc::new(indexer);
+
+        let query = "CONCURRENT_NEEDLE_ABC";
+        let limit = 8usize;
+        for _ in 0..20usize {
+            let _ = indexer.search_with_query_meta(query, limit)?;
+        }
+
+        let preflight_samples = measure_preflight_success(indexer.state_dir(), 80)?;
+        let (preflight_p50, preflight_p95, preflight_max) = summarize(preflight_samples);
+        eprintln!(
+            "index preflight: p50={}us p95={}us max={}us",
+            preflight_p50, preflight_p95, preflight_max
+        );
+
+        let search_tasks = 8usize;
+        let iterations = 60usize;
+        let update_iterations = 70usize;
+        let barrier = Arc::new(Barrier::new(search_tasks + 2));
+
+        let update_indexer = indexer.clone();
+        let update_barrier = barrier.clone();
+        let update_path_clone = update_path.clone();
+        let update_task = tokio::spawn(async move {
+            update_barrier.wait().await;
+            for i in 0..update_iterations {
+                fs::write(
+                    &update_path_clone,
+                    format!("# Update {i}\n\nCONCURRENT_NEEDLE_ABC in update file.\n"),
+                )?;
+                update_indexer.ingest_file(update_path_clone.clone()).await?;
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Ok::<(), anyhow::Error>(())
+        });
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut join_set = JoinSet::new();
+        for _ in 0..search_tasks {
+            let indexer = indexer.clone();
+            let barrier = barrier.clone();
+            let tx = tx.clone();
+            join_set.spawn(async move {
+                barrier.wait().await;
+                for _ in 0..iterations {
+                    let start = Instant::now();
+                    preflight_index_state(indexer.state_dir())?;
+                    let _ = indexer.search_with_query_meta(query, limit)?;
+                    let _ = tx.send(start.elapsed().as_micros());
+                }
+                Ok::<(), anyhow::Error>(())
+            });
+        }
+        drop(tx);
+        barrier.wait().await;
+
+        let mut samples = Vec::with_capacity(search_tasks * iterations);
+        while let Some(sample) = rx.recv().await {
+            samples.push(sample);
+        }
+
+        while let Some(res) = join_set.join_next().await {
+            res??;
+        }
+        update_task.await??;
+
+        let (p50, p95, max) = summarize(samples);
+        eprintln!(
+            "search+preflight under update load: p50={}us p95={}us max={}us",
+            p50, p95, max
+        );
+
+        let missing_dir = repo_root.join("missing-index-dir");
+        let missing_samples = measure_preflight_error(&missing_dir, ERR_MISSING_INDEX, 120)?;
+        let (missing_p50, missing_p95, missing_max) = summarize(missing_samples);
+        eprintln!(
+            "preflight missing_index: p50={}us p95={}us max={}us",
+            missing_p50, missing_p95, missing_max
+        );
+
+        let stale_dir = TempDir::new()?;
+        fs::create_dir_all(stale_dir.path())?;
+        fs::write(stale_dir.path().join(STALE_INDEX_MARKER), "1")?;
+        let stale_samples = measure_preflight_error(stale_dir.path(), ERR_STALE_INDEX, 120)?;
+        let (stale_p50, stale_p95, stale_max) = summarize(stale_samples);
+        eprintln!(
+            "preflight stale_index: p50={}us p95={}us max={}us",
+            stale_p50, stale_p95, stale_max
+        );
+
+        if cfg!(debug_assertions) {
+            eprintln!(
+                "note: perf assertions are enforced in release builds; re-run with `cargo test --release ... -- --ignored --nocapture`"
+            );
+            return Ok(());
+        }
+
+        assert!(
+            p95 < 50_000,
+            "concurrent search p95 {}us exceeds 50ms (see docs/sds/sds.md)",
+            p95
+        );
+        assert!(
+            preflight_p95 < 20_000,
+            "index preflight p95 {}us exceeds 20ms",
+            preflight_p95
+        );
+        assert!(
+            missing_p95 < 20_000,
+            "missing_index preflight p95 {}us exceeds 20ms",
+            missing_p95
+        );
+        assert!(
+            stale_p95 < 20_000,
+            "stale_index preflight p95 {}us exceeds 20ms",
+            stale_p95
         );
 
         Ok(())

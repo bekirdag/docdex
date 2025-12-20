@@ -26,7 +26,9 @@ Output:
 ## Release asset naming expectations for `docdexd`
 
 The npm postinstall installer (`npm/lib/install.js`) expects GitHub Release assets:
-- Binary archive: `docdexd-<platformKey>.tar.gz`
+- Release tag (version): `v<version>`
+- Binary archive filename: `docdexd-<platformKey>.tar.gz`
+- Canonical release asset id (tag + filename): `v<version>/docdexd-<platformKey>.tar.gz`
 - Release checksums (fallback when manifest missing): `SHA256SUMS` (or `SHA256SUMS.txt`)
 - Legacy per-asset checksum (compat): `docdexd-<platformKey>.tar.gz.sha256`
 - Release manifest (preferred): `docdex-release-manifest.json` (+ `docdex-release-manifest.json.sha256`)
@@ -55,7 +57,7 @@ Contracts:
 
 These are the platforms marked `published: true` in `npm/lib/platform_matrix.js` and built by `.github/workflows/release.yml`:
 
-| Detected runtime | `platformKey` | Rust `targetTriple` | Expected asset |
+| Detected runtime | `platformKey` | Rust `targetTriple` | Expected asset filename |
 |---|---|---|---|
 | `darwin/arm64` | `darwin-arm64` | `aarch64-apple-darwin` | `docdexd-darwin-arm64.tar.gz` |
 | `darwin/x64` | `darwin-x64` | `x86_64-apple-darwin` | `docdexd-darwin-x64.tar.gz` |

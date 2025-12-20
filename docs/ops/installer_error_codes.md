@@ -208,6 +208,10 @@ Legend:
 
 Notes:
 - If you see an unknown `DOCDEX_*` code, treat it as a bug/regression; capture the full install log and open an issue with the code + platform details.
+- Deterministic output details for common asset-resolution failures:
+  - `DOCDEX_ASSET_NO_MATCH`: prints the expected `targetTriple` and the asset naming pattern; may include supported targets from the manifest.
+  - `DOCDEX_ASSET_MULTI_MATCH`: prints the matched asset names to make the ambiguity explicit.
+  - `DOCDEX_ASSET_MISSING`: prints detected platform (OS/arch/libc), `platformKey`, `targetTriple`, expected asset name, asset naming pattern, and the tag/repo/URL that were attempted.
 
 ---
 

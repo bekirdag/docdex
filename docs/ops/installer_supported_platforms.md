@@ -69,8 +69,14 @@ Outputs:
 - Offline diagnostics (no download): `docdex doctor` (or `docdex diagnostics`) prints detected OS/arch(/libc), whether the platform is supported, and the expected `targetTriple` + release asset naming pattern.
 
 Release asset naming (expected):
-- Archive: `docdexd-<platformKey>.tar.gz`
+- Release tag (version): `v<version>` (matches the npm package version unless `DOCDEX_VERSION` is set)
+- Archive filename: `docdexd-<platformKey>.tar.gz`
+- Canonical release asset id (tag + filename): `v<version>/docdexd-<platformKey>.tar.gz`
 - Pattern string shown in errors: `docdexd-<platformKey>.tar.gz (e.g. docdexd-linux-x64-gnu.tar.gz)`
+
+Note:
+- The filename itself does not include the version; the version comes from the release tag.
+- The `platformKey` maps 1:1 to the Rust `targetTriple` in the table below.
 
 ---
 
@@ -130,7 +136,7 @@ Tip: `dist/<platformKey>/docdexd-install.json` records the resolved version, rep
 
 These are the entries marked `published: true` in `npm/lib/platform_matrix.js`. The installer treats only these as supported and will attempt to download/install `docdexd`.
 
-| Detected runtime | Linux libc | `platformKey` | Rust `targetTriple` | Expected release asset |
+| Detected runtime | Linux libc | `platformKey` | Rust `targetTriple` | Expected asset filename |
 |---|---|---|---|---|
 | `darwin/arm64` | n/a | `darwin-arm64` | `aarch64-apple-darwin` | `docdexd-darwin-arm64.tar.gz` |
 | `darwin/x64` | n/a | `darwin-x64` | `x86_64-apple-darwin` | `docdexd-darwin-x64.tar.gz` |
@@ -150,12 +156,31 @@ Two common cases:
 
 Recognized-but-unpublished as of `npm/lib/platform_matrix.js`:
 
-| Detected runtime | Linux libc | `platformKey` | Rust `targetTriple` | Expected asset (if/when published) |
+| Detected runtime | Linux libc | `platformKey` | Rust `targetTriple` | Expected asset filename (if/when published) |
 |---|---|---|---|---|
 | `linux/arm64` | `musl` | `linux-arm64-musl` | `aarch64-unknown-linux-musl` | `docdexd-linux-arm64-musl.tar.gz` |
 | `win32/arm64` | n/a | `win32-arm64` | `aarch64-pc-windows-msvc` | `docdexd-win32-arm64.tar.gz` |
 
 If your platform is unsupported, you should see an error code `DOCDEX_UNSUPPORTED_PLATFORM` and a line like: `No download was attempted for this platform.`
+
+---
+
+## Deterministic mapping + failure modes (wrapper + installer)
+
+The wrapper (`npm/bin/docdex.js`) and the installer (`npm/lib/install.js`) share the same platform policy (`npm/lib/platform.js`), so the mapping is deterministic.
+
+1) Detect runtime → `platformKey` + `targetTriple`
+   - Inputs: OS + arch (+ Linux libc `gnu`/`musl`, with `DOCDEX_LIBC` override).
+   - If the runtime is unknown or mapped to a `published: false` entry, install exits with `DOCDEX_UNSUPPORTED_PLATFORM` and **no download is attempted**.
+2) Resolve assets via manifest (if present)
+   - Exactly one asset per `targetTriple` is required.
+   - No entry for the detected triple → `DOCDEX_ASSET_NO_MATCH` (fail closed; no fallback).
+   - Multiple entries for the detected triple → `DOCDEX_ASSET_MULTI_MATCH` (ambiguous; fail closed).
+3) Fallback when no usable manifest exists
+   - Uses the deterministic filename `docdexd-<platformKey>.tar.gz`.
+   - If the asset is missing (404), the installer fails with `DOCDEX_ASSET_MISSING` and reports the detected platform, `platformKey`, `targetTriple`, and the expected asset naming pattern.
+
+See also: `docs/ops/installer_error_codes.md` for exact error output fields.
 
 ---
 

@@ -486,6 +486,7 @@ impl Indexer {
                 warn!(target: "docdexd", error = ?err, "failed to reset symbols store; continuing without clearing old symbols");
             }
         }
+        let mut entries = Vec::new();
         for entry in WalkDir::new(&self.repo_root)
             .into_iter()
             .filter_map(|e| e.ok())
@@ -496,8 +497,14 @@ impl Indexer {
             if !decision.should_index() {
                 continue;
             }
-            let ingest = self.add_document(&mut writer, path)?;
-            self.maybe_update_symbols(&ingest);
+            let rel = self.rel_path(path)?;
+            entries.push((rel, path.to_path_buf()));
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut symbols_budget = SymbolsBudget::new(symbols::MAX_SYMBOLS_PER_RUN);
+        for (_rel, path) in entries {
+            let ingest = self.add_document(&mut writer, &path)?;
+            self.maybe_update_symbols(&ingest, Some(&mut symbols_budget));
         }
         writer.commit()?;
         self.reader.reload()?;
@@ -505,6 +512,16 @@ impl Indexer {
     }
 
     pub async fn ingest_file(&self, file: PathBuf) -> Result<FileDecision> {
+        let mut symbols_budget = SymbolsBudget::new(symbols::MAX_SYMBOLS_PER_RUN);
+        self.ingest_file_with_budget(file, Some(&mut symbols_budget))
+            .await
+    }
+
+    pub(crate) async fn ingest_file_with_budget(
+        &self,
+        file: PathBuf,
+        budget: Option<&mut SymbolsBudget>,
+    ) -> Result<FileDecision> {
         let path = file.canonicalize().context("resolve file")?;
         let decision = decide_file(&path, &self.repo_root, &self.config);
         if !decision.should_index() {
@@ -516,7 +533,7 @@ impl Indexer {
         let term = Term::from_field_text(self.doc_id_field, &rel);
         writer.delete_term(term);
         let ingest = self.add_document(&mut writer, &path)?;
-        self.maybe_update_symbols(&ingest);
+        self.maybe_update_symbols(&ingest, budget);
         writer.commit()?;
         self.reader.reload()?;
         Ok(decision)
@@ -947,7 +964,7 @@ impl Indexer {
         Ok(rel.to_string_lossy().replace('\\', "/"))
     }
 
-    fn maybe_update_symbols(&self, ingest: &DocumentIngest) {
+    fn maybe_update_symbols(&self, ingest: &DocumentIngest, mut budget: Option<&mut SymbolsBudget>) {
         let Some(store) = self.symbols_store.as_ref() else {
             return;
         };
@@ -977,7 +994,7 @@ impl Indexer {
                 SymbolOutcome {
                     status: SymbolOutcomeStatus::Failed,
                     reason: Some(format!("read_failed ({})", language.as_str())),
-                    error_summary: Some(err.clone()),
+                    error_summary: Some(symbols::clamp_error_summary(err)),
                 },
             );
             if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
@@ -986,13 +1003,38 @@ impl Indexer {
             return;
         }
 
+        if let Some(ref mut budget) = budget {
+            if budget.is_exhausted() {
+                let payload = symbols::build_symbols_payload(
+                    store.repo_id(),
+                    &ingest.rel_path,
+                    Vec::new(),
+                    SymbolOutcome {
+                        status: SymbolOutcomeStatus::Skipped,
+                        reason: Some("symbols_budget_exhausted".to_string()),
+                        error_summary: None,
+                    },
+                );
+                if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
+                    warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");
+                }
+                return;
+            }
+        }
+
         match symbols::extract_symbols_best_effort(
             store.repo_id(),
             &ingest.rel_path,
             &ingest.content,
             language,
         ) {
-            Ok(symbols) => {
+            Ok(mut symbols) => {
+                if let Some(ref mut budget) = budget {
+                    let allowed = budget.take(symbols.len());
+                    if allowed < symbols.len() {
+                        symbols.truncate(allowed);
+                    }
+                }
                 let payload = symbols::build_symbols_payload(
                     store.repo_id(),
                     &ingest.rel_path,
@@ -1015,7 +1057,7 @@ impl Indexer {
                     SymbolOutcome {
                         status: SymbolOutcomeStatus::Failed,
                         reason: Some(format!("extract_failed ({})", language.as_str())),
-                        error_summary: Some(err.to_string()),
+                        error_summary: Some(symbols::clamp_error_summary(&err.to_string())),
                     },
                 );
                 if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
@@ -1111,6 +1153,29 @@ struct DocumentIngest {
     rel_path: String,
     content: String,
     read_error: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) struct SymbolsBudget {
+    remaining: usize,
+}
+
+impl SymbolsBudget {
+    pub(crate) fn new(max_symbols: usize) -> Self {
+        Self {
+            remaining: max_symbols,
+        }
+    }
+
+    fn is_exhausted(&self) -> bool {
+        self.remaining == 0
+    }
+
+    fn take(&mut self, requested: usize) -> usize {
+        let allowed = self.remaining.min(requested);
+        self.remaining = self.remaining.saturating_sub(allowed);
+        allowed
+    }
 }
 
 fn env_flag_enabled(key: &str) -> bool {

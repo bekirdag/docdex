@@ -4,7 +4,7 @@ use crate::error::{
     repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
     ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
 };
-use crate::index::{IndexConfig, Indexer};
+use crate::index::{IndexConfig, Indexer, SymbolsBudget};
 use crate::libs;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
@@ -1330,6 +1330,7 @@ impl McpServer {
         }
         let mut ingested = Vec::new();
         let mut decisions = Vec::new();
+        let mut symbols_budget = SymbolsBudget::new(crate::symbols::MAX_SYMBOLS_PER_RUN);
         for path in args.paths {
             let resolved = if path.is_absolute() {
                 path
@@ -1337,7 +1338,10 @@ impl McpServer {
                 self.repo_root.join(path)
             };
             let path_display = resolved.display().to_string();
-            let decision = self.indexer.ingest_file(resolved.clone()).await?;
+            let decision = self
+                .indexer
+                .ingest_file_with_budget(resolved.clone(), Some(&mut symbols_budget))
+                .await?;
             ingested.push(resolved);
             decisions.push(json!({
                 "path": path_display,

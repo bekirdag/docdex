@@ -6,6 +6,11 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub const MAX_SYMBOLS_PER_FILE: usize = 1000;
+pub const MAX_SYMBOLS_PER_RUN: usize = 50000;
+const MAX_SYMBOL_SIGNATURE_CHARS: usize = 240;
+const MAX_SYMBOL_ERROR_SUMMARY_CHARS: usize = 200;
+
 fn default_symbols_schema() -> SchemaInfo {
     SchemaInfo {
         name: "docdex.symbols".to_string(),
@@ -128,6 +133,24 @@ pub fn repo_id_for_root(repo_root: &Path) -> Result<String> {
     crate::repo_identity::repo_fingerprint_sha256(repo_root)
 }
 
+fn clamp_string(value: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    for (idx, ch) in value.chars().enumerate() {
+        if idx >= max_chars {
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+pub fn clamp_error_summary(value: &str) -> String {
+    clamp_string(value, MAX_SYMBOL_ERROR_SUMMARY_CHARS)
+}
+
 fn file_key(rel_path: &str) -> String {
     hex::encode(Sha256::digest(rel_path.as_bytes()))
 }
@@ -196,8 +219,17 @@ impl SymbolsStore {
                 symbol.symbol_id =
                     make_symbol_id(&repo_id, &file, &symbol.range, &symbol.kind, &symbol.name);
             }
+            if let Some(signature) = symbol.signature.as_mut() {
+                *signature = clamp_string(signature, MAX_SYMBOL_SIGNATURE_CHARS);
+            }
         }
         parsed.symbols.sort_by(|a, b| a.symbol_id.cmp(&b.symbol_id));
+        truncate_symbols(&mut parsed.symbols, MAX_SYMBOLS_PER_FILE);
+        if let Some(outcome) = parsed.outcome.as_mut() {
+            if let Some(summary) = outcome.error_summary.as_mut() {
+                *summary = clamp_string(summary, MAX_SYMBOL_ERROR_SUMMARY_CHARS);
+            }
+        }
         Ok(Some(parsed))
     }
 
@@ -249,6 +281,7 @@ pub fn extract_symbols_best_effort(
         SourceLanguage::Go => extract_go_symbols(repo_id, rel_path, content),
     }?;
     symbols.sort_by(|a, b| a.symbol_id.cmp(&b.symbol_id));
+    truncate_symbols(&mut symbols, MAX_SYMBOLS_PER_FILE);
     Ok(symbols)
 }
 
@@ -282,7 +315,13 @@ fn make_symbol(
         name,
         kind: kind.to_string(),
         range,
-        signature,
+        signature: signature.map(|value| clamp_string(&value, MAX_SYMBOL_SIGNATURE_CHARS)),
+    }
+}
+
+fn truncate_symbols(symbols: &mut Vec<SymbolItem>, max_symbols: usize) {
+    if symbols.len() > max_symbols {
+        symbols.truncate(max_symbols);
     }
 }
 

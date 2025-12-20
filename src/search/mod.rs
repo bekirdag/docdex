@@ -1,10 +1,12 @@
 use crate::index::{
-    DocSnapshot, Hit, Indexer, SearchError, SearchQueryMeta, SnippetOrigin, SnippetResult,
+    DocSnapshot, Hit, IndexConfig, Indexer, SearchError, SearchQueryMeta, SnippetOrigin,
+    SnippetResult,
 };
 use crate::error::{
-    AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
-    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    ERR_RATE_LIMITED,
+    AppError, RateLimited, StartupError, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
+    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR,
+    ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_MISSING_INDEX, ERR_RATE_LIMITED,
+    ERR_STALE_INDEX,
 };
 use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
@@ -24,15 +26,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::warn;
 use uuid::Uuid;
+use walkdir::WalkDir;
 
 const DEFAULT_SNIPPET_WINDOW: usize = 40;
 const MIN_SNIPPET_WINDOW: usize = 10;
 const MAX_SNIPPET_WINDOW: usize = 400;
 const MAX_RATE_LIMIT_MESSAGE_BYTES: usize = 256;
+const INDEX_STATE_CACHE_TTL_MS: u128 = 2000;
+const INDEX_STALE_GRACE_MS: u128 = 0;
 
 // Rate limiting is shared with MCP and other surfaces via crate::ratelimit.
 
@@ -153,6 +159,17 @@ impl SecurityConfig {
     }
 }
 
+#[derive(Default)]
+struct IndexStateCache {
+    last_checked_epoch_ms: u128,
+    repo_last_modified_epoch_ms: Option<u128>,
+}
+
+struct IndexStateSnapshot {
+    index_last_updated_epoch_ms: Option<u128>,
+    repo_last_modified_epoch_ms: Option<u128>,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub indexer: Arc<Indexer>,
@@ -162,6 +179,7 @@ pub struct AppState {
     pub audit: Option<crate::audit::AuditLogger>,
     pub metrics: Arc<crate::metrics::Metrics>,
     pub memory: Option<MemoryState>,
+    pub index_state: Arc<Mutex<IndexStateCache>>,
 }
 
 #[derive(Clone)]
@@ -364,6 +382,10 @@ async fn impact_graph_handler(
         }
     };
 
+    if let Err(response) = ensure_index_fresh(&state) {
+        return response;
+    }
+
     let repo_id = crate::symbols::repo_id_for_root(state.indexer.repo_root())
         .unwrap_or_else(|_| String::new());
     let store = crate::impact::ImpactGraphStore::new(state.indexer.state_dir());
@@ -430,19 +452,179 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_EMBEDDING_FAILED => StatusCode::BAD_GATEWAY,
         ERR_INVALID_ARGUMENT => StatusCode::BAD_REQUEST,
         ERR_MEMORY_DISABLED => StatusCode::CONFLICT,
+        ERR_MISSING_INDEX | ERR_STALE_INDEX => StatusCode::CONFLICT,
+        ERR_BACKOFF_REQUIRED => StatusCode::SERVICE_UNAVAILABLE,
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
+fn error_response(status: StatusCode, detail: ErrorDetail) -> Response {
+    (status, Json(ErrorBody { error: detail })).into_response()
+}
+
 fn json_error(status: StatusCode, code: &'static str, message: impl Into<String>) -> Response {
-    (
-        status,
-        Json(ErrorBody {
-            error: ErrorDetail::new(code, message),
-        }),
+    error_response(status, ErrorDetail::new(code, message))
+}
+
+fn app_error_response(state: &AppState, app: &AppError) -> Response {
+    let mut detail = ErrorDetail::new(app.code, app.message.clone());
+    if let Some(details) = app.details.clone() {
+        detail = detail.with_details(details);
+    } else if matches!(app.code, ERR_MISSING_INDEX | ERR_STALE_INDEX) {
+        let index_last = state
+            .indexer
+            .stats()
+            .ok()
+            .and_then(|stats| stats.last_updated_epoch_ms);
+        let repo_last = cached_repo_last_modified_epoch_ms(state);
+        detail = detail.with_details(index_state_details(state, index_last, repo_last));
+    }
+    if matches!(app.code, ERR_MISSING_INDEX | ERR_STALE_INDEX) {
+        detail = detail.with_remediation(index_state_remediation(app.code, state));
+    }
+    error_response(status_for_app_error(app.code), detail)
+}
+
+fn index_state_remediation(code: &'static str, state: &AppState) -> Vec<String> {
+    let repo = state.indexer.repo_root().display().to_string();
+    match code {
+        ERR_MISSING_INDEX => vec![format!(
+            "Run: `docdexd index --repo \"{repo}\"` to build the index."
+        )],
+        ERR_STALE_INDEX => vec![
+            format!("Run: `docdexd index --repo \"{repo}\"` to rebuild the index."),
+            "If you expect the watcher to catch up, wait briefly and retry.".to_string(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+fn index_state_details(
+    state: &AppState,
+    index_last_updated_epoch_ms: Option<u128>,
+    repo_last_modified_epoch_ms: Option<u128>,
+) -> serde_json::Value {
+    json!({
+        "repo_root": state.indexer.repo_root().display().to_string(),
+        "state_dir": state.indexer.state_dir().display().to_string(),
+        "index_last_updated_epoch_ms": index_last_updated_epoch_ms,
+        "repo_last_modified_epoch_ms": repo_last_modified_epoch_ms,
+        "stale_grace_ms": INDEX_STALE_GRACE_MS,
+    })
+}
+
+fn index_state_error_response(
+    state: &AppState,
+    code: &'static str,
+    message: impl Into<String>,
+    index_last_updated_epoch_ms: Option<u128>,
+    repo_last_modified_epoch_ms: Option<u128>,
+) -> Response {
+    error_response(
+        StatusCode::CONFLICT,
+        ErrorDetail::new(code, message)
+            .with_details(index_state_details(
+                state,
+                index_last_updated_epoch_ms,
+                repo_last_modified_epoch_ms,
+            ))
+            .with_remediation(index_state_remediation(code, state)),
     )
-        .into_response()
+}
+
+fn repo_last_modified_epoch_ms(repo_root: &Path, config: &IndexConfig) -> Option<u128> {
+    let mut latest: Option<u128> = None;
+    for entry in WalkDir::new(repo_root).into_iter().filter_map(|entry| entry.ok()) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if !crate::index::should_index(path, repo_root, config) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) else {
+            continue;
+        };
+        let millis = dur.as_millis();
+        if latest.map(|current| millis > current).unwrap_or(true) {
+            latest = Some(millis);
+        }
+    }
+    latest
+}
+
+fn cached_repo_last_modified_epoch_ms(state: &AppState) -> Option<u128> {
+    let now = now_epoch_ms().unwrap_or(0);
+    let mut cache = state.index_state.lock().expect("index state cache poisoned");
+    if now > 0 && now.saturating_sub(cache.last_checked_epoch_ms) < INDEX_STATE_CACHE_TTL_MS {
+        return cache.repo_last_modified_epoch_ms;
+    }
+    let latest = repo_last_modified_epoch_ms(state.indexer.repo_root(), state.indexer.config());
+    cache.last_checked_epoch_ms = now;
+    cache.repo_last_modified_epoch_ms = latest;
+    latest
+}
+
+fn ensure_index_fresh(state: &AppState) -> Result<IndexStateSnapshot, Response> {
+    let state_dir = state.indexer.state_dir();
+    if !state_dir.exists() {
+        state.metrics.inc_error();
+        return Err(index_state_error_response(
+            state,
+            ERR_MISSING_INDEX,
+            "index not found",
+            None,
+            cached_repo_last_modified_epoch_ms(state),
+        ));
+    }
+    let stats = match state.indexer.stats() {
+        Ok(stats) => stats,
+        Err(err) => {
+            state.metrics.inc_error();
+            warn!(target: "docdexd", error = ?err, "index stats failed");
+            return Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorDetail::new(ERR_INTERNAL_ERROR, "index metadata unavailable"),
+            ));
+        }
+    };
+    let index_last_updated_epoch_ms = stats.last_updated_epoch_ms;
+    if index_last_updated_epoch_ms.is_none() {
+        state.metrics.inc_error();
+        return Err(index_state_error_response(
+            state,
+            ERR_MISSING_INDEX,
+            "index not found",
+            index_last_updated_epoch_ms,
+            cached_repo_last_modified_epoch_ms(state),
+        ));
+    }
+    let repo_last_modified_epoch_ms = cached_repo_last_modified_epoch_ms(state);
+    if let (Some(repo_last), Some(index_last)) =
+        (repo_last_modified_epoch_ms, index_last_updated_epoch_ms)
+    {
+        if repo_last > index_last.saturating_add(INDEX_STALE_GRACE_MS) {
+            state.metrics.inc_error();
+            return Err(index_state_error_response(
+                state,
+                ERR_STALE_INDEX,
+                "index is stale",
+                index_last_updated_epoch_ms,
+                repo_last_modified_epoch_ms,
+            ));
+        }
+    }
+    Ok(IndexStateSnapshot {
+        index_last_updated_epoch_ms,
+        repo_last_modified_epoch_ms,
+    })
 }
 
 async fn memory_store_handler(
@@ -952,6 +1134,12 @@ struct ErrorDetail {
     limit_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remediation: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<String>,
 }
 
 impl ErrorDetail {
@@ -963,7 +1151,28 @@ impl ErrorDetail {
             retry_at: None,
             limit_key: None,
             scope: None,
+            details: None,
+            remediation: None,
+            hint: None,
         }
+    }
+
+    fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
+    }
+
+    fn with_remediation(mut self, remediation: Vec<String>) -> Self {
+        if !remediation.is_empty() {
+            self.remediation = Some(remediation);
+        }
+        self
+    }
+
+    #[allow(dead_code)]
+    fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
     }
 
     fn rate_limited(err: &RateLimited) -> Self {
@@ -974,6 +1183,9 @@ impl ErrorDetail {
             retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
             limit_key: Some(err.limit_key.clone()),
             scope: Some(err.scope.clone()),
+            details: None,
+            remediation: None,
+            hint: None,
         }
     }
 }
@@ -1173,7 +1385,7 @@ pub async fn run_query(
         hits,
         top_score,
         top_score_camel: top_score,
-        meta: Some(build_search_meta(indexer, Some(query_meta), None)?),
+        meta: Some(build_search_meta(indexer, Some(query_meta), None, None)?),
     })
 }
 
@@ -1241,9 +1453,11 @@ fn build_search_meta(
     indexer: &Indexer,
     query: Option<SearchQueryMeta>,
     context_assembly: Option<ContextAssemblyMeta>,
+    index_last_updated_epoch_ms: Option<u128>,
 ) -> Result<SearchMeta> {
     let generated_at_epoch_ms = now_epoch_ms()?;
-    let last_updated = indexer.stats().ok().and_then(|s| s.last_updated_epoch_ms);
+    let last_updated = index_last_updated_epoch_ms
+        .or_else(|| indexer.stats().ok().and_then(|s| s.last_updated_epoch_ms));
     Ok(SearchMeta {
         generated_at_epoch_ms,
         index_last_updated_epoch_ms: last_updated,
@@ -1281,6 +1495,11 @@ async fn search_handler(
         )
             .into_response();
     }
+
+    let index_state = match ensure_index_fresh(&state) {
+        Ok(snapshot) => snapshot,
+        Err(response) => return response,
+    };
 
     let include_libs = params.include_libs.unwrap_or(true);
     let libs_indexer = if include_libs {
@@ -1352,7 +1571,13 @@ async fn search_handler(
                 selected_sources,
             };
             let meta =
-                build_search_meta(&state.indexer, Some(query_meta), Some(context_assembly)).ok();
+                build_search_meta(
+                    &state.indexer,
+                    Some(query_meta),
+                    Some(context_assembly),
+                    index_state.index_last_updated_epoch_ms,
+                )
+                .ok();
             Json(SearchResponse {
                 hits,
                 top_score,
@@ -1370,6 +1595,9 @@ async fn search_handler(
                     }),
                 )
                     .into_response();
+            }
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                return app_error_response(&state, app);
             }
             state.metrics.inc_error();
             warn!(
@@ -1421,6 +1649,9 @@ async fn snippet_handler(
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
     Query(params): Query<SnippetParams>,
 ) -> impl IntoResponse {
+    if let Err(response) = ensure_index_fresh(&state) {
+        return response;
+    }
     let window = params
         .window
         .unwrap_or(DEFAULT_SNIPPET_WINDOW)
@@ -1461,6 +1692,9 @@ async fn snippet_handler(
         })
         .into_response(),
         Err(err) => {
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                return app_error_response(&state, app);
+            }
             state.metrics.inc_error();
             warn!(
                 target: "docdexd",

@@ -19,6 +19,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
+const MAX_MCP_RATE_LIMIT_PAYLOAD_BYTES: usize = 2048;
+
 fn docdex_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
@@ -348,12 +350,20 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         .and_then(|v| v.get("data"))
         .and_then(|v| v.as_object())
         .ok_or("rate-limit error missing error.data object")?;
+<<<<<<< HEAD
     assert!(
         data_files
             .get("message")
             .and_then(|v| v.as_str())
             .is_some(),
         "rate-limit error should include message"
+=======
+    let payload_bytes = serde_json::to_vec(&limited_files)?;
+    assert!(
+        payload_bytes.len() <= MAX_MCP_RATE_LIMIT_PAYLOAD_BYTES,
+        "rate-limit payload should remain small (got {} bytes)",
+        payload_bytes.len()
+>>>>>>> mcoda/task/bck-05-us-09-t29
     );
     assert_eq!(
         data_files.get("limit_key").and_then(|v| v.as_str()),
@@ -370,6 +380,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
             .is_some(),
         "retry_after_ms must be an integer"
     );
+<<<<<<< HEAD
     let envelope = data_files
         .get("error")
         .and_then(|v| v.as_object())
@@ -378,6 +389,14 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         envelope.get("code").and_then(|v| v.as_str()),
         Some("rate_limited")
     );
+=======
+    if let Some(retry_at) = data_files.get("retry_at") {
+        assert!(
+            retry_at.as_str().is_some(),
+            "retry_at must be an RFC3339 string when present"
+        );
+    }
+>>>>>>> mcoda/task/bck-05-us-09-t29
     assert!(
         envelope.get("message").and_then(|v| v.as_str()).is_some(),
         "rate-limit error envelope should include message"
@@ -444,6 +463,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         .and_then(|v| v.get("data"))
         .and_then(|v| v.as_object())
         .ok_or("rate-limit error missing error.data object (docdex_search)")?;
+<<<<<<< HEAD
     assert_eq!(
         data_search.get("limit_key").and_then(|v| v.as_str()),
         Some("mcp_tools")
@@ -452,6 +472,33 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         data_search.get("scope").and_then(|v| v.as_str()),
         Some("global")
     );
+=======
+    let payload_bytes = serde_json::to_vec(&limited_search)?;
+    assert!(
+        payload_bytes.len() <= MAX_MCP_RATE_LIMIT_PAYLOAD_BYTES,
+        "rate-limit payload should remain small (got {} bytes)",
+        payload_bytes.len()
+    );
+
+    fn shape_signature(data: &serde_json::Map<String, Value>) -> Vec<(String, &'static str)> {
+        let mut out: Vec<(String, &'static str)> = data
+            .iter()
+            .map(|(k, v)| {
+                let kind = match v {
+                    Value::Null => "null",
+                    Value::Bool(_) => "bool",
+                    Value::Number(_) => "number",
+                    Value::String(_) => "string",
+                    Value::Array(_) => "array",
+                    Value::Object(_) => "object",
+                };
+                (k.clone(), kind)
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+>>>>>>> mcoda/task/bck-05-us-09-t29
 
     assert_eq!(
         rate_limit_data_signature(data_files),
@@ -465,6 +512,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
 
 #[test]
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn mcp_backoff_required_is_structured_and_bounded() -> Result<(), Box<dyn Error>> {
 =======
 fn mcp_rate_limit_schema_is_stable_under_concurrent_tool_bursts() -> Result<(), Box<dyn Error>> {
@@ -474,6 +522,10 @@ fn mcp_rate_limit_schema_is_stable_under_concurrent_tool_bursts() -> Result<(), 
     run_docdex(["index", "--repo", repo_str.as_str()])?;
 
 <<<<<<< HEAD
+=======
+fn mcp_backoff_required_errors_are_machine_coded() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+>>>>>>> mcoda/task/bck-05-us-09-t29
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
@@ -488,13 +540,20 @@ fn mcp_rate_limit_schema_is_stable_under_concurrent_tool_bursts() -> Result<(), 
             "jsonrpc": "2.0",
             "id": 30,
             "method": "tools/call",
+<<<<<<< HEAD
             "params": { "name": "docdex_index", "arguments": {} }
+=======
+            "params": { "name": "docdex_index", "arguments": { "paths": [] } }
+>>>>>>> mcoda/task/bck-05-us-09-t29
         }),
     )?;
     let resp = read_line(&mut mcp.reader)?;
     assert_eq!(mcp_error_code(&resp), Some(-32602));
     assert_eq!(mcp_error_data_code(&resp), Some("backoff_required"));
+<<<<<<< HEAD
 
+=======
+>>>>>>> mcoda/task/bck-05-us-09-t29
     let data = resp
         .get("error")
         .and_then(|v| v.get("data"))
@@ -505,6 +564,7 @@ fn mcp_rate_limit_schema_is_stable_under_concurrent_tool_bursts() -> Result<(), 
         Some("backoff_required")
     );
     assert_eq!(
+<<<<<<< HEAD
         data.get("tool").and_then(|v| v.as_str()),
         Some("docdex_index")
     );
@@ -514,12 +574,15 @@ fn mcp_rate_limit_schema_is_stable_under_concurrent_tool_bursts() -> Result<(), 
         .map(|value| !value.is_empty())
         .unwrap_or(false));
     assert_eq!(
+=======
+>>>>>>> mcoda/task/bck-05-us-09-t29
         data.get("error")
             .and_then(|v| v.get("code"))
             .and_then(|v| v.as_str()),
         Some("backoff_required")
     );
 
+<<<<<<< HEAD
     let payload_bytes = serde_json::to_vec(&resp)?.len();
     assert!(
         payload_bytes <= MAX_MCP_ERROR_PAYLOAD_BYTES,
@@ -657,6 +720,11 @@ fn mcp_rate_limit_schema_is_stable_under_concurrent_tool_bursts() -> Result<(), 
     child.kill().ok();
     child.wait().ok();
 >>>>>>> mcoda/task/bck-05-us-09-t36
+=======
+    mcp.shutdown();
+    server.kill().ok();
+    server.wait().ok();
+>>>>>>> mcoda/task/bck-05-us-09-t29
     Ok(())
 }
 
@@ -857,7 +925,82 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
 }
 
 #[test]
+<<<<<<< HEAD
 fn mcp_schema_version_negotiation_rejects_unsupported_versions() -> Result<(), Box<dyn Error>> {
+=======
+fn mcp_invalid_argument_errors_are_machine_coded() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let mut mcp = McpHarness::spawn_with_env(repo.path(), &[("DOCDEX_ENABLE_MEMORY", "1")])?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 40,
+            "method": "tools/call",
+            "params": { "name": "docdex_memory_store", "arguments": { "text": "" } }
+        }),
+    )?;
+    let store_err = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&store_err), Some(-32602));
+    assert_eq!(mcp_error_data_code(&store_err), Some("invalid_argument"));
+    assert_eq!(
+        store_err
+            .get("error")
+            .and_then(|v| v.get("data"))
+            .and_then(|v| v.get("tool"))
+            .and_then(|v| v.as_str()),
+        Some("docdex_memory_store")
+    );
+    assert!(
+        store_err
+            .get("error")
+            .and_then(|v| v.get("data"))
+            .and_then(|v| v.get("reason"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .contains("text must not be empty"),
+        "memory store invalid_argument should include a reason"
+    );
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 41,
+            "method": "tools/call",
+            "params": { "name": "docdex_memory_recall", "arguments": { "query": "   " } }
+        }),
+    )?;
+    let recall_err = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&recall_err), Some(-32602));
+    assert_eq!(mcp_error_data_code(&recall_err), Some("invalid_argument"));
+    assert_eq!(
+        recall_err
+            .get("error")
+            .and_then(|v| v.get("data"))
+            .and_then(|v| v.get("tool"))
+            .and_then(|v| v.as_str()),
+        Some("docdex_memory_recall")
+    );
+    assert!(
+        recall_err
+            .get("error")
+            .and_then(|v| v.get("data"))
+            .and_then(|v| v.get("reason"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .contains("query must not be empty"),
+        "memory recall invalid_argument should include a reason"
+    );
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_missing_project_root_path_is_missing_repo_path() -> Result<(), Box<dyn Error>> {
+>>>>>>> mcoda/task/bck-05-us-09-t29
     let repo = setup_repo()?;
     let mut mcp = McpHarness::spawn(repo.path())?;
 

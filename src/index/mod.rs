@@ -5615,17 +5615,7 @@ fn missing_index_error(state_dir: &Path) -> AppError {
 }
 
 fn missing_repo_path_error(repo_root: &Path) -> AppError {
-    AppError::new(ERR_MISSING_REPO_PATH, "repo path not found").with_details(repo_resolution_details(
-        normalize_for_error(repo_root),
-        None,
-        None,
-        vec![
-            "Repo may have moved or been renamed.".to_string(),
-            "Re-run with the repo's current path.".to_string(),
-            "If you previously indexed this repo, you may need to reindex after moving it: `docdexd index --repo <repo>`."
-                .to_string(),
-        ],
-    ))
+    crate::policy::missing_repo_path_error(repo_root, crate::policy::RepoSurface::Cli)
 }
 
 <<<<<<< HEAD

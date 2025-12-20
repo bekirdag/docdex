@@ -9,6 +9,7 @@ use crate::error::{
     AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
 <<<<<<< HEAD
+<<<<<<< HEAD
     ERR_UNSUPPORTED_VERSION, repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX,
     ERR_MISSING_REPO, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
     ERR_UNKNOWN_REPO,
@@ -56,6 +57,10 @@ use crate::error::{
 >>>>>>> mcoda/task/bck-05-us-07-t09
 =======
 >>>>>>> mcoda/task/bck-05-us-07-t15
+=======
+    ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_MISSING_REPO_PATH,
+    ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
+>>>>>>> mcoda/task/bck-05-us-07-t30
 };
 <<<<<<< HEAD
 use crate::explainability::ExplainabilityStore;
@@ -96,11 +101,15 @@ use crate::symbols::{SymbolsStore, MAX_SYMBOLS_PER_FILE};
 =======
 use crate::symbols::SymbolsStore;
 <<<<<<< HEAD
+<<<<<<< HEAD
 use crate::tier2::Tier2Unavailable;
 >>>>>>> mcoda/task/bck-05-us-09-t21
 =======
 use crate::web;
 >>>>>>> mcoda/task/bck-05-us-07-t16
+=======
+use crate::{policy, policy::Dependency, policy::RepoSurface};
+>>>>>>> mcoda/task/bck-05-us-07-t30
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -219,10 +228,6 @@ struct PathOutsideRepoError;
 #[derive(Error, Debug)]
 #[error("unsupported uri scheme")]
 struct InvalidUriError;
-
-#[derive(Error, Debug)]
-#[error("symbol extraction is disabled; re-run with --enable-symbol-extraction=true (or set DOCDEX_ENABLE_SYMBOL_EXTRACTION=1) and reindex")]
-struct MissingSymbolsDependencyError;
 
 #[derive(Error, Debug)]
 #[error("no symbols record found for {rel_path}; run docdex_index")]
@@ -995,12 +1000,21 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
     if err.downcast_ref::<InvalidUriError>().is_some() {
         return ("invalid_params", Some(json!({ "kind": "invalid_uri" })));
     }
+<<<<<<< HEAD
     if err.downcast_ref::<MissingSymbolsDependencyError>().is_some() {
         return (
             ERR_MISSING_DEPENDENCY,
             Some(json!({
                 "dependency": "DOCDEX_ENABLE_SYMBOL_EXTRACTION",
                 "flag": "--enable-symbol-extraction=true"
+=======
+    if let Some(max_err) = err.downcast_ref::<MaxContentError>() {
+        return (
+            "max_content_exceeded",
+            Some(json!({
+                "max_bytes": max_err.max_bytes,
+                "actual_bytes": max_err.actual_bytes,
+>>>>>>> mcoda/task/bck-05-us-07-t30
             })),
         );
     }
@@ -1307,8 +1321,12 @@ pub async fn serve(
     ))
     .ok()
     .flatten();
+<<<<<<< HEAD
     let web_config = web::WebConfig::from_env();
     let web_discovery = web::ddg::DdgDiscovery::new(web_config)?;
+=======
+    let web_gate = policy::web_gate_from_env();
+>>>>>>> mcoda/task/bck-05-us-07-t30
     let mut server = McpServer {
         repo_root,
         indexer,
@@ -1321,7 +1339,11 @@ pub async fn serve(
         default_project_root: None,
         memory,
 <<<<<<< HEAD
+<<<<<<< HEAD
         explainability,
+=======
+        web_gate,
+>>>>>>> mcoda/task/bck-05-us-07-t30
         tool_rate_limit,
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1368,7 +1390,11 @@ struct McpServer {
     default_project_root: Option<PathBuf>,
     memory: Option<McpMemoryState>,
 <<<<<<< HEAD
+<<<<<<< HEAD
     explainability: ExplainabilityStore,
+=======
+    web_gate: policy::WebGateDecision,
+>>>>>>> mcoda/task/bck-05-us-07-t30
     tool_rate_limit: Option<RateLimiter<()>>,
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1600,26 +1626,12 @@ impl McpServer {
                     .or(init_params.project_root)
                     .as_ref()
                 {
-                    match client_root.canonicalize() {
+                    match policy::ensure_repo_match(
+                        client_root,
+                        &self.repo_root,
+                        RepoSurface::Mcp,
+                    ) {
                         Ok(canon) => {
-                            if canon != self.repo_root {
-                                return Ok(Some(RpcResponse {
-                                    jsonrpc: JSONRPC_VERSION,
-                                    id: id.clone(),
-                                    result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_REQUEST,
-                                        default_message_for_code(ERR_UNKNOWN_REPO),
-                                        ERR_UNKNOWN_REPO,
-                                        None,
-                                        None,
-                                        Some(json!({
-                                            "expected": self.repo_root.display().to_string(),
-                                            "got": canon.display().to_string()
-                                        })),
-                                    )),
-                                }));
-                            }
                             self.default_project_root = Some(canon);
                         }
                         Err(err) => {
@@ -1627,14 +1639,14 @@ impl McpServer {
                                 jsonrpc: JSONRPC_VERSION,
                                 id: id.clone(),
                                 result: None,
-                            error: Some(rpc_error(
-                                ERR_INVALID_REQUEST,
-                                default_message_for_code("invalid_request"),
-                                "invalid_request",
-                                Some(err.to_string()),
-                                None,
-                                None,
-                            )),
+                                error: Some(rpc_error(
+                                    ERR_INVALID_REQUEST,
+                                    default_message_for_code(err.code),
+                                    err.code,
+                                    None,
+                                    None,
+                                    err.details,
+                                )),
                             }));
                         }
                     }
@@ -2924,6 +2936,7 @@ impl McpServer {
         self.ensure_project_root(args.project_root.as_deref())?;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.ensure_schema_version("docdex_symbols", args.schema_version)?;
 =======
         self.indexer.preflight_index_state()?;
@@ -2943,6 +2956,9 @@ impl McpServer {
 =======
         self.ensure_index_fresh()?;
 >>>>>>> mcoda/task/bck-05-us-08-t04
+=======
+        policy::require_enabled(Dependency::Symbols, self.indexer.config().symbols_enabled())?;
+>>>>>>> mcoda/task/bck-05-us-07-t30
         let rel_path = normalize_rel_path(&args.path)
             .ok_or(InvalidPathError)?;
         let rel_str = rel_path.to_string_lossy().replace('\\', "/");
@@ -3004,6 +3020,7 @@ impl McpServer {
 
     async fn handle_memory_store(&self, args: MemoryStoreArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+<<<<<<< HEAD
         self.ensure_schema_version("docdex_memory_store", args.schema_version)?;
         let Some(memory) = self.memory.clone() else {
             return Err(AppError::new(
@@ -3012,6 +3029,9 @@ impl McpServer {
             )
             .into());
         };
+=======
+        let memory = policy::require_option(Dependency::Memory, self.memory.clone())?;
+>>>>>>> mcoda/task/bck-05-us-07-t30
         let text = args.text.trim();
         if text.is_empty() {
             return Err(AppError::new(ERR_INVALID_ARGUMENT, "text must not be empty").into());
@@ -3041,6 +3061,7 @@ impl McpServer {
 
     async fn handle_memory_recall(&self, args: MemoryRecallArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+<<<<<<< HEAD
         self.ensure_schema_version("docdex_memory_recall", args.schema_version)?;
         let Some(memory) = self.memory.clone() else {
             return Err(AppError::new(
@@ -3049,6 +3070,9 @@ impl McpServer {
             )
             .into());
         };
+=======
+        let memory = policy::require_option(Dependency::Memory, self.memory.clone())?;
+>>>>>>> mcoda/task/bck-05-us-07-t30
         let query = args.query.trim();
         if query.is_empty() {
             return Err(AppError::new(ERR_INVALID_ARGUMENT, "query must not be empty").into());
@@ -3142,6 +3166,7 @@ impl McpServer {
     }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     fn ensure_schema_version(&self, schema_name: &'static str, requested: Option<u32>) -> Result<()> {
         if let Some(version) = requested {
             if version < TOOL_SCHEMA_VERSION_MIN || version > TOOL_SCHEMA_VERSION_MAX {
@@ -3192,16 +3217,22 @@ impl McpServer {
         }
 
         Ok(())
+=======
+    fn ensure_same_repo(&self, candidate: &Path) -> Result<()> {
+        policy::ensure_repo_match(candidate, &self.repo_root, RepoSurface::Mcp)
+            .map(|_| ())
+            .map_err(Into::into)
+>>>>>>> mcoda/task/bck-05-us-07-t30
     }
 
     fn ensure_project_root(&self, candidate: Option<&Path>) -> Result<()> {
-        if let Some(path) = candidate {
-            return self.ensure_same_repo(path);
-        }
-        if let Some(default_root) = self.default_project_root.as_ref() {
-            return self.ensure_same_repo(default_root);
-        }
-        Ok(())
+        policy::ensure_project_root(
+            candidate,
+            self.default_project_root.as_deref(),
+            &self.repo_root,
+            RepoSurface::Mcp,
+        )
+        .map_err(Into::into)
     }
 
 <<<<<<< HEAD

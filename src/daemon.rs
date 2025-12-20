@@ -5,7 +5,11 @@ use crate::libs;
 use crate::memory::MemoryStore;
 use crate::metrics;
 use crate::ollama::OllamaEmbedder;
+<<<<<<< HEAD
 use crate::repo_manager::RepoManagerConfig;
+=======
+use crate::policy;
+>>>>>>> mcoda/task/bck-05-us-07-t30
 use crate::search::{self, AppState, SecurityConfig};
 use crate::web;
 use crate::util;
@@ -318,6 +322,7 @@ pub async fn serve(
         })?;
     let metrics = Arc::new(metrics::Metrics::default());
     metrics::set_global(metrics.clone());
+    let web_gate = policy::web_gate_from_env();
     let state = AppState {
         indexer: indexer.clone(),
         libs_indexer,
@@ -328,10 +333,14 @@ pub async fn serve(
         web_discovery,
         memory,
 <<<<<<< HEAD
+<<<<<<< HEAD
         index_state: Arc::new(Mutex::new(Default::default())),
 =======
         repo_manager_config,
 >>>>>>> mcoda/task/bck-05-us-07-t02
+=======
+        web_gate,
+>>>>>>> mcoda/task/bck-05-us-07-t30
     };
     watcher::spawn(indexer.clone()).map_err(|err| {
         StartupError::new(

@@ -83,11 +83,15 @@ use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 use crate::ratelimit::{RateLimitConfig, RateLimiter};
 =======
 =======
 use crate::repo_manager::RepoManagerConfig;
 >>>>>>> mcoda/task/bck-05-us-07-t02
+=======
+use crate::policy::{self, Dependency};
+>>>>>>> mcoda/task/bck-05-us-07-t30
 use crate::ratelimit::RateLimiter;
 use crate::web::ddg::DdgDiscovery;
 >>>>>>> mcoda/task/bck-05-us-07-t16
@@ -313,10 +317,14 @@ pub struct AppState {
     pub web_discovery: DdgDiscovery,
     pub memory: Option<MemoryState>,
 <<<<<<< HEAD
+<<<<<<< HEAD
     pub index_state: Arc<Mutex<IndexStateCache>>,
 =======
     pub repo_manager_config: RepoManagerConfig,
 >>>>>>> mcoda/task/bck-05-us-07-t02
+=======
+    pub web_gate: policy::WebGateDecision,
+>>>>>>> mcoda/task/bck-05-us-07-t30
 }
 
 #[derive(Clone)]
@@ -874,12 +882,11 @@ async fn memory_store_handler(
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
     Json(req): Json<MemoryStoreRequest>,
 ) -> impl IntoResponse {
-    let Some(memory) = state.memory.clone() else {
-        return json_error(
-            StatusCode::CONFLICT,
-            ERR_MEMORY_DISABLED,
-            "memory is disabled; start the daemon with --enable-memory=true",
-        );
+    let memory = match policy::require_option(Dependency::Memory, state.memory.clone()) {
+        Ok(memory) => memory,
+        Err(err) => {
+            return json_error(status_for_app_error(err.code), err.code, err.message);
+        }
     };
     let text = req.text.trim();
     if text.is_empty() {
@@ -965,12 +972,11 @@ async fn memory_recall_handler(
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
     Json(req): Json<MemoryRecallRequest>,
 ) -> impl IntoResponse {
-    let Some(memory) = state.memory.clone() else {
-        return json_error(
-            StatusCode::CONFLICT,
-            ERR_MEMORY_DISABLED,
-            "memory is disabled; start the daemon with --enable-memory=true",
-        );
+    let memory = match policy::require_option(Dependency::Memory, state.memory.clone()) {
+        Ok(memory) => memory,
+        Err(err) => {
+            return json_error(status_for_app_error(err.code), err.code, err.message);
+        }
     };
     let query = req.query.trim();
     if query.is_empty() {

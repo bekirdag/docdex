@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use crate::error::{repo_resolution_details, AppError, ERR_INVALID_ARGUMENT, ERR_MISSING_REPO_PATH};
+use crate::error::{AppError, ERR_INVALID_ARGUMENT};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -217,17 +217,10 @@ pub fn repo_fingerprint_sha256(repo_root: &Path) -> Result<String> {
 
 pub fn inspect_repo(repo_root: &Path, state_dir_override: Option<&Path>) -> Result<RepoInspectReport> {
     if !repo_root.exists() {
-        return Err(AppError::new(ERR_MISSING_REPO_PATH, "repo path not found")
-            .with_details(repo_resolution_details(
-                repo_root.to_string_lossy().replace('\\', "/"),
-                None,
-                None,
-                vec![
-                    "Repo may have moved or been renamed.".to_string(),
-                    "Re-run with the repo's current path.".to_string(),
-                ],
-            ))
-            .into());
+        return Err(
+            crate::policy::missing_repo_path_error(repo_root, crate::policy::RepoSurface::Cli)
+                .into(),
+        );
     }
     if !repo_root.is_dir() {
         return Err(AppError::new(

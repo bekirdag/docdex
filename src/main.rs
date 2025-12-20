@@ -18,6 +18,7 @@ mod repo_identity;
 mod search;
 mod symbols;
 mod util;
+mod web_discovery;
 mod watcher;
 
 use crate::config::RepoArgs;

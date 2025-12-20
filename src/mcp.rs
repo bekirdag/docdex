@@ -4,6 +4,7 @@ use crate::error::{
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
 <<<<<<< HEAD
@@ -41,6 +42,13 @@ use crate::error::{
 >>>>>>> mcoda/task/bck-05-us-09-t21
 =======
 >>>>>>> mcoda/task/bck-05-us-09-t07
+=======
+    repo_resolution_details, AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
+    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INDEX_SCHEMA_MISMATCH,
+    ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY,
+    ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED,
+    ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
+>>>>>>> mcoda/task/bck-05-us-07-t09
 };
 <<<<<<< HEAD
 use crate::explainability::ExplainabilityStore;
@@ -785,6 +793,7 @@ fn default_message_for_code(code: &str) -> &'static str {
         ERR_MISSING_REPO_PATH => "repo path not found",
         ERR_UNKNOWN_REPO => "unknown repo",
         ERR_MISSING_INDEX => "missing index",
+        ERR_INDEX_SCHEMA_MISMATCH => "index schema mismatch",
         ERR_STALE_INDEX => "stale index",
         ERR_MISSING_DEPENDENCY => "missing dependency",
         ERR_TIER2_UNAVAILABLE => "tier2 unavailable",

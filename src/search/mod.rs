@@ -12,6 +12,7 @@ use crate::error::{
     ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
 =======
     AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
+<<<<<<< HEAD
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -55,6 +56,10 @@ use crate::error::{
     ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
     ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY, ERR_RATE_LIMITED,
 >>>>>>> mcoda/task/bck-05-us-07-t16
+=======
+    ERR_EMBEDDING_TIMEOUT, ERR_INDEX_SCHEMA_MISMATCH, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
+    ERR_MEMORY_DISABLED, ERR_RATE_LIMITED,
+>>>>>>> mcoda/task/bck-05-us-07-t09
 };
 use crate::libs::LibsIndexer;
 use crate::max_size::{
@@ -565,6 +570,7 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_EMBEDDING_MODEL_NOT_FOUND => StatusCode::BAD_REQUEST,
         ERR_EMBEDDING_FAILED => StatusCode::BAD_GATEWAY,
         ERR_INVALID_ARGUMENT => StatusCode::BAD_REQUEST,
+        ERR_INDEX_SCHEMA_MISMATCH => StatusCode::CONFLICT,
         ERR_MEMORY_DISABLED => StatusCode::CONFLICT,
 <<<<<<< HEAD
 <<<<<<< HEAD

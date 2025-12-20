@@ -101,10 +101,15 @@ These codes are the **required** set for repo/index/dependency failures and are 
 - `repo_state_mismatch`: per-repo state cannot be safely associated (fingerprint/meta/registry mismatch); Docdex must fast-fail to prevent cross-repo mixing.
 - `missing_index`: on-disk index is not present (e.g. `docdexd query` before indexing).
 <<<<<<< HEAD
+<<<<<<< HEAD
 - `stale_index`: index exists but is known to be stale (emitted when repo files are newer than the index; refresh with `docdex_index`).
 =======
 - `stale_index`: index exists but is stale (repo contents modified after last index, or legacy index missing index-state metadata).
 >>>>>>> mcoda/task/bck-05-us-08-t01
+=======
+- `index_schema_mismatch`: on-disk index schema is incompatible with the running Docdex version; reindex required.
+- `stale_index`: index exists but is known to be stale (reserved for future use).
+>>>>>>> mcoda/task/bck-05-us-07-t09
 - `missing_dependency`: a required optional feature/dependency is disabled (e.g. symbols extraction disabled).
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -290,6 +295,7 @@ Docdex presents the same underlying failures in three different wrappers:
 <<<<<<< HEAD
 <<<<<<< HEAD
 | Index missing (query/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
+| Index schema mismatch | `index_schema_mismatch` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"index_schema_mismatch",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"index_schema_mismatch",...}}` |
 | Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Not currently emitted by the per-repo CLI |
 <<<<<<< HEAD
 <<<<<<< HEAD

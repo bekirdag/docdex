@@ -2,6 +2,7 @@ mod audit;
 mod browser_session;
 mod chrome_watchdog;
 mod config;
+mod dag;
 mod daemon;
 mod error;
 mod metrics;
@@ -422,6 +423,11 @@ enum Command {
         )]
         embedding_timeout_ms: u64,
     },
+    /// Export a session DAG in text or DOT format.
+    Dag {
+        #[command(subcommand)]
+        command: DagCommand,
+    },
     /// Manage explicit repo identity mappings for shared state dirs.
     Repo {
         #[command(subcommand)]
@@ -496,6 +502,27 @@ enum Command {
         /// Add to all known agents that are detected on this system.
         #[arg(long, default_value_t = false)]
         all: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum DagCommand {
+    /// Export a session DAG as text or DOT.
+    View {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(value_parser = config::non_empty_string, help = "Session identifier")]
+        session_id: String,
+        #[arg(
+            short,
+            long,
+            default_value = "text",
+            value_parser = ["text", "dot"],
+            help = "Output format"
+        )]
+        format: String,
+        #[arg(short, long, value_name = "PATH", help = "Write output to a file instead of stdout")]
+        output: Option<PathBuf>,
     },
 }
 
@@ -1082,6 +1109,51 @@ async fn run() -> Result<()> {
                 }))?
             );
         }
+        Command::Dag { command } => match command {
+            DagCommand::View {
+                repo,
+                session_id,
+                format,
+                output,
+            } => {
+                let repo_root = repo.repo_root();
+                let index_config = index::IndexConfig::with_overrides(
+                    &repo_root,
+                    repo.state_dir_override(),
+                    repo.exclude_dir_overrides(),
+                    repo.exclude_prefix_overrides(),
+                    repo.symbols_enabled(),
+                )?;
+                util::init_logging("warn")?;
+                index::ensure_state_dir_secure(index_config.state_dir())?;
+
+                let store = dag::DagStore::new(index_config.state_dir());
+                let session = store
+                    .load_session(&session_id)
+                    .map_err(dag::map_dag_error)?;
+                let format = dag::DagExportFormat::parse(&format).ok_or_else(|| {
+                    error::AppError::new(
+                        error::ERR_INVALID_ARGUMENT,
+                        "format must be one of: text, dot",
+                    )
+                })?;
+                let rendered = dag::export_session(&session, format);
+                if let Some(path) = output {
+                    if path.as_os_str() == "-" {
+                        print!("{rendered}");
+                    } else {
+                        if let Some(parent) = path.parent() {
+                            if !parent.as_os_str().is_empty() {
+                                fs::create_dir_all(parent)?;
+                            }
+                        }
+                        fs::write(&path, rendered)?;
+                    }
+                } else {
+                    print!("{rendered}");
+                }
+            }
+        },
         Command::Mcp {
             repo,
             log,
@@ -1216,6 +1288,7 @@ fn print_full_help() -> Result<()> {
         "index",
         "ingest",
         "query",
+        "dag",
         "repo",
         "memory-store",
         "memory-recall",

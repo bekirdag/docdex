@@ -112,8 +112,10 @@ test("installer: unsupported OS/arch fails before any plan resolution or downloa
   }
 
   assert.ok(err, "expected an error");
+  assert.equal(err.code, "DOCDEX_UNSUPPORTED_PLATFORM");
   const report = describeFatalError(err);
   assert.equal(report.code, "DOCDEX_UNSUPPORTED_PLATFORM");
+  assert.equal(report.exitCode, 3);
   assert.ok(report.lines.some((l) => l.includes("unsupported platform (freebsd/x64)")));
   assert.ok(report.lines.some((l) => l.includes("No download was attempted")));
 
@@ -225,8 +227,10 @@ test("installer: unpublished linux arm64 musl fails before any plan resolution o
   }
 
   assert.ok(err, "expected an error");
+  assert.equal(err.code, "DOCDEX_UNSUPPORTED_PLATFORM");
   const report = describeFatalError(err);
   assert.equal(report.code, "DOCDEX_UNSUPPORTED_PLATFORM");
+  assert.equal(report.exitCode, 3);
   assert.ok(report.lines.some((l) => l.includes("unsupported platform (linux/arm64)")));
   assert.ok(report.lines.some((l) => l.includes("Detected libc: musl")));
   assert.ok(report.lines.some((l) => l.includes("no published binary")));
@@ -286,8 +290,10 @@ test("installer: unpublished win32 arm64 fails before any plan resolution or dow
   }
 
   assert.ok(err, "expected an error");
+  assert.equal(err.code, "DOCDEX_UNSUPPORTED_PLATFORM");
   const report = describeFatalError(err);
   assert.equal(report.code, "DOCDEX_UNSUPPORTED_PLATFORM");
+  assert.equal(report.exitCode, 3);
   assert.ok(report.lines.some((l) => l.includes("unsupported platform (win32/arm64)")));
   assert.ok(report.lines.some((l) => l.includes("no published binary")));
   assert.ok(report.lines.some((l) => l.includes("No download was attempted")));
@@ -480,8 +486,12 @@ test("installer: supported runtime with missing manifest target triple never dow
   }
 
   assert.ok(err, "expected an error");
+  assert.equal(err.code, "DOCDEX_ASSET_NO_MATCH");
+  assert.equal(err.exitCode, 12);
+  assert.equal(err.details.targetTriple, "x86_64-unknown-linux-gnu");
   const report = describeFatalError(err);
   assert.equal(report.code, "DOCDEX_ASSET_NO_MATCH");
+  assert.equal(report.exitCode, 12);
   assert.ok(report.lines.some((l) => l.includes("missing artifact/version sync issue")));
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -723,6 +733,7 @@ test("installer: supported runtime with missing release asset (404) exits non-ze
   assert.ok(err, "expected an error");
   assert.equal(err.name, "MissingArtifactError");
   assert.equal(err.code, "DOCDEX_ASSET_MISSING");
+  assert.equal(err.exitCode, 21);
   assert.equal(err.details.targetTriple, "x86_64-unknown-linux-gnu");
   assert.ok(String(err.details.expectedAssetPattern || "").includes("docdexd-<platformKey>.tar.gz"));
   const report = describeFatalError(err);

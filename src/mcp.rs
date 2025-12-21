@@ -185,6 +185,7 @@ const ERR_BACKOFF_REQUIRED_RPC: i32 = -32030;
 const FILES_DEFAULT_LIMIT: usize = 200;
 const FILES_MAX_LIMIT: usize = 1000;
 const FILES_MAX_OFFSET: usize = 50_000;
+const MEMORY_RECALL_MAX: usize = 50;
 const OPEN_MAX_BYTES: usize = 512 * 1024; // guard rail for returning file content
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1609,6 +1610,25 @@ struct ResourceTemplate {
     #[serde(rename = "uriTemplate")]
     uri_template: &'static str,
     variables: &'static [&'static str],
+}
+
+#[derive(Serialize)]
+struct LimitInfo {
+    requested: usize,
+    max: usize,
+    effective: usize,
+    clamped: bool,
+}
+
+fn build_limit_info(requested: usize, max: usize) -> LimitInfo {
+    let effective = requested.clamp(1, max);
+    let clamped = requested != effective;
+    LimitInfo {
+        requested,
+        max,
+        effective,
+        clamped,
+    }
 }
 
 pub async fn serve(
@@ -3041,10 +3061,14 @@ impl McpServer {
                         "query": { "type": "string", "minLength": 1, "description": "Query text to embed" },
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
                         "top_k": { "type": "integer", "minimum": 1, "maximum": self.limits.max_memory_items as i64, "default": 5, "description": "Max results to return" },
 =======
                         "top_k": { "type": "integer", "minimum": 1, "maximum": MAX_MEMORY_RECALL as i64, "default": DEFAULT_MEMORY_RECALL, "description": "Max results to return" },
 >>>>>>> mcoda/task/bck-05-us-10-t25
+=======
+                        "top_k": { "type": "integer", "minimum": 1, "maximum": MEMORY_RECALL_MAX as i64, "default": 5, "description": "Max results to return" },
+>>>>>>> mcoda/task/bck-05-us-06-t38
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
 =======
                         "top_k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 5, "description": "Max results to return" },
@@ -3192,6 +3216,7 @@ impl McpServer {
         let query = args.query.trim();
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         let requested_limit = args.limit;
         let limit = args
             .limit
@@ -3216,6 +3241,11 @@ impl McpServer {
         let mut hits =
 =======
         let limit = clamp_limit(args.limit, self.max_results, self.max_results);
+=======
+        let requested_limit = args.limit.unwrap_or(self.max_results);
+        let limit_info = build_limit_info(requested_limit, self.max_results);
+        let limit = limit_info.effective;
+>>>>>>> mcoda/task/bck-05-us-06-t38
         let hits =
 >>>>>>> mcoda/task/bck-05-us-06-t39
             search::run_query(&self.indexer, self.libs_indexer.as_ref(), query, limit).await?;
@@ -3282,6 +3312,7 @@ impl McpServer {
             "repo_root": self.repo_root.display().to_string(),
             "state_dir": self.indexer.config().state_dir().display().to_string(),
             "limit": limit,
+            "limit_info": limit_info,
             "project_root": project_root_path,
             "meta": meta
         }))
@@ -3434,6 +3465,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
         self.ensure_schema_version("docdex_files", args.schema_version)?;
 >>>>>>> mcoda/task/bck-05-us-10-t21
@@ -3471,11 +3503,18 @@ impl McpServer {
         let limit = clamp_limit(args.limit, FILES_DEFAULT_LIMIT, FILES_MAX_LIMIT);
         let offset = clamp_offset(args.offset, FILES_MAX_OFFSET);
 >>>>>>> mcoda/task/bck-05-us-06-t39
+=======
+        let requested_limit = args.limit.unwrap_or(FILES_DEFAULT_LIMIT);
+        let limit_info = build_limit_info(requested_limit, FILES_MAX_LIMIT);
+        let limit = limit_info.effective;
+        let offset = args.offset.unwrap_or(0).min(FILES_MAX_OFFSET);
+>>>>>>> mcoda/task/bck-05-us-06-t38
         let (docs, total) = self.indexer.list_docs(offset, limit)?;
         Ok(json!({
             "results": docs,
             "total": total,
             "limit": limit,
+            "limit_info": limit_info,
             "offset": offset,
             "repo_root": self.repo_root.display().to_string(),
             "project_root": self
@@ -3812,6 +3851,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         let top_k = args.top_k.unwrap_or(5).max(1).min(50);
         let max_items = args.max_items.unwrap_or(top_k).min(50);
         let max_tokens = args.max_tokens;
@@ -3841,6 +3881,11 @@ impl McpServer {
 =======
         let top_k = clamp_limit(args.top_k, 5, MEMORY_MAX_TOP_K);
 >>>>>>> mcoda/task/bck-05-us-06-t39
+=======
+        let requested_top_k = args.top_k.unwrap_or(5);
+        let limit_info = build_limit_info(requested_top_k, MEMORY_RECALL_MAX);
+        let top_k = limit_info.effective;
+>>>>>>> mcoda/task/bck-05-us-06-t38
         let embedding = memory.embedder.embed(query).await?;
 
         let store = memory.store.clone();
@@ -3849,6 +3894,7 @@ impl McpServer {
 >>>>>>> mcoda/task/bck-05-us-10-t26
         Ok(json!({
             "top_k": top_k,
+<<<<<<< HEAD
             "results": items
                 .into_iter()
                 .map(|item| {
@@ -3874,6 +3920,14 @@ impl McpServer {
         Ok(json!({
             "completion_id": stored.completion_id,
             "record_bytes": stored.record_bytes
+=======
+            "limit_info": limit_info,
+            "results": items.into_iter().map(|item| json!({
+                "content": item.content,
+                "score": item.score,
+                "metadata": item.metadata
+            })).collect::<Vec<_>>()
+>>>>>>> mcoda/task/bck-05-us-06-t38
         }))
     }
 

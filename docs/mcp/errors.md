@@ -397,6 +397,7 @@ Notes:
 
 - For `rate_limited` and `backoff_required`, MCP `error.data.details` includes retry hints with stable fields: `retry_after_ms` (integer milliseconds) and optional `retry_at` (RFC3339). Rate limiting also includes `limit_key` and `scope` in the same `details` object.
 - HTTP `/search` enforces `limit` by clamping to the daemon’s configured max and does not error on over-limit; MCP `docdex_search` similarly clamps `limit` to the MCP server’s `--max-results`.
+- MCP list-returning tools (`docdex_search`, `docdex_files`, `docdex_memory_recall`) clamp requested limits to their max and include `limit_info` with `requested`, `max`, `effective`, and `clamped` (true when the requested value is outside `[1, max]`).
 - MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`.
 <<<<<<< HEAD
 <<<<<<< HEAD

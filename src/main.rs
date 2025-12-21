@@ -19,6 +19,7 @@ mod search;
 mod symbols;
 mod util;
 mod watcher;
+mod web_research;
 
 use crate::config::RepoArgs;
 use crate::error::StartupError;
@@ -29,6 +30,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use tracing::info;
+use uuid::Uuid;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -421,6 +423,32 @@ enum Command {
             help = "Embedding request timeout in milliseconds"
         )]
         embedding_timeout_ms: u64,
+    },
+    /// Run web research with graceful local fallback (JSON output).
+    WebResearch {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(short, long)]
+        query: String,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Force web discovery attempt even if confidence is high"
+        )]
+        force_web: bool,
+        #[arg(
+            long,
+            default_value_t = 8,
+            help = "Max local hits to include (clamped to server max)"
+        )]
+        limit: usize,
+        #[arg(
+            long,
+            default_value_t = true,
+            action = ArgAction::Set,
+            help = "Include repo-scoped libs index in local fallback"
+        )]
+        include_libs: bool,
     },
     /// Manage explicit repo identity mappings for shared state dirs.
     Repo {
@@ -1081,6 +1109,45 @@ async fn run() -> Result<()> {
                     }).collect::<Vec<_>>()
                 }))?
             );
+        }
+        Command::WebResearch {
+            repo,
+            query,
+            force_web,
+            limit,
+            include_libs,
+        } => {
+            let repo_root = repo.repo_root();
+            let index_config = index::IndexConfig::with_overrides(
+                &repo_root,
+                repo.state_dir_override(),
+                repo.exclude_dir_overrides(),
+                repo.exclude_prefix_overrides(),
+                repo.symbols_enabled(),
+            )?;
+            util::init_logging("warn")?;
+            let indexer =
+                index::Indexer::with_config_read_only(repo_root.clone(), index_config.clone())?;
+            let libs_indexer = if include_libs {
+                let libs_dir = libs::libs_state_dir_from_index_state_dir(indexer.state_dir());
+                libs::LibsIndexer::open_read_only(libs_dir).ok().flatten()
+            } else {
+                None
+            };
+            let limit = limit.max(1);
+            let gate = web_research::WebGateConfig::from_env();
+            let request_id = Uuid::new_v4().to_string();
+            let response = web_research::run_web_research(
+                &request_id,
+                &indexer,
+                libs_indexer.as_ref(),
+                &query,
+                limit,
+                force_web,
+                &gate,
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Command::Mcp {
             repo,

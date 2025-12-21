@@ -11,6 +11,7 @@ use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::ratelimit::RateLimiter;
 use anyhow::Result;
+use crate::web_research;
 use axum::body::HttpBody;
 use axum::{
     extract::{ConnectInfo, Path, Query, RawQuery, State},
@@ -181,6 +182,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/graph/impact", get(impact_graph_handler))
         .route("/v1/memory/store", post(memory_store_handler))
         .route("/v1/memory/recall", post(memory_recall_handler))
+        .route("/v1/web/research", post(web_research_handler))
         .route("/ai-help", get(ai_help_handler))
         .route("/metrics", get(metrics_handler))
         .route_layer(middleware::from_fn_with_state(
@@ -855,6 +857,14 @@ struct SearchParams {
     include_libs: Option<bool>,
 }
 
+#[derive(Deserialize)]
+struct WebResearchRequest {
+    query: String,
+    limit: Option<usize>,
+    force_web: Option<bool>,
+    include_libs: Option<bool>,
+}
+
 #[derive(Serialize)]
 pub struct SearchResponse {
     pub hits: Vec<Hit>,
@@ -1378,6 +1388,70 @@ async fn search_handler(
                 request_id = %request_id.0,
                 limit,
                 "search handler failed"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("internal error (request id: {})", request_id.0),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn web_research_handler(
+    State(state): State<AppState>,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    Json(payload): Json<WebResearchRequest>,
+) -> impl IntoResponse {
+    let query = payload.query.trim();
+    if query.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: ErrorDetail::new("invalid_query", "query must not be empty"),
+            }),
+        )
+            .into_response();
+    }
+    let limit = payload.limit.unwrap_or(8).min(state.security.max_limit);
+    let include_libs = payload.include_libs.unwrap_or(true);
+    let libs_indexer = if include_libs {
+        state.libs_indexer.as_deref()
+    } else {
+        None
+    };
+    let force_web = payload.force_web.unwrap_or(false);
+    let gate = web_research::WebGateConfig::from_env();
+
+    match web_research::run_web_research(
+        &request_id.0,
+        state.indexer.as_ref(),
+        libs_indexer,
+        query,
+        limit,
+        force_web,
+        &gate,
+    )
+    .await
+    {
+        Ok(response) => Json(response).into_response(),
+        Err(err) => {
+            if let Some(SearchError::InvalidQuery { reason }) = err.downcast_ref::<SearchError>() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorBody {
+                        error: ErrorDetail::new("invalid_query", reason.clone()),
+                    }),
+                )
+                    .into_response();
+            }
+            state.metrics.inc_error();
+            warn!(
+                target: "docdexd",
+                error = ?err,
+                request_id = %request_id.0,
+                limit,
+                "web research handler failed"
             );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,

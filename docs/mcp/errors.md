@@ -15,7 +15,11 @@ On failure, the MCP server returns a JSON-RPC error response:
   - `-32600` invalid request (`invalid_request`)
   - `-32601` unknown method/tool (`method_not_found`)
   - `-32602` tool failures and argument validation (`invalid_params` *and* domain failures like `missing_index`)
+<<<<<<< HEAD
   - `-32029` rate limiting for MCP tool calls (`rate_limited`)
+=======
+  - `-32029` rate limited (`rate_limited`) when MCP tool throttling denies a request
+>>>>>>> mcoda/task/bck-05-us-06-t26
   - `-32000` internal server error (`internal_error`) when the MCP server fails outside tool handling
   - `-32029` rate limiting for MCP tool calls (`rate_limited`)
 - `error.message` (string): a short, stable category message.
@@ -382,6 +386,7 @@ Docdex presents the same underlying failures in three different wrappers:
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 | Rate limited | `rate_limited` | `-32029` | `429` with JSON error envelope + retry hints | N/A (CLI not rate limited) |
 =======
 | Rate limited | `rate_limited` | `-32029` | `429` with JSON `{error:{code,message,retry_after_ms,retry_at?,limit_key,scope}}` | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
@@ -401,6 +406,9 @@ Docdex presents the same underlying failures in three different wrappers:
 =======
 | Rate limited | `rate_limited` | `-32602` | `429` (security middleware returns status-only; no JSON envelope) | MCP tools enforce a rate limiter; errors include retry details in `error.data.details`. |
 >>>>>>> mcoda/task/bck-05-us-06-t47
+=======
+| Rate limited | `rate_limited` | `-32029` | `429` (security middleware returns status-only; no JSON envelope) | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
+>>>>>>> mcoda/task/bck-05-us-06-t26
 | Optional dependency disabled (e.g. symbols) | `missing_dependency` | `-32602` | N/A (no HTTP endpoint for MCP symbols) | N/A (no CLI symbols command) |
 | Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_argument` | `-32602` | N/A | N/A |
 | Invalid path for `docdex_open` | `invalid_path` | `-32602` | N/A | N/A |
@@ -436,6 +444,7 @@ Notes:
 - MCP `docdex_symbols` clamps `limit` to `<= 1000` and truncates `symbols[].signature` plus `outcome.reason`/`outcome.error_summary` to `<= 512` bytes.
 >>>>>>> mcoda/task/bck-05-us-10-t07
 - MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with `details.max_bytes` and `details.actual_bytes`.
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -487,3 +496,6 @@ Docdex enforces repo-invariant bounds on MCP tool outputs. When a client request
 =======
 - MCP `rate_limited` and `backoff_required` errors include retry metadata in `error.data.details` (`retry_after_ms`, optional `retry_at`); `rate_limited` additionally includes `limit_key` and `scope`.
 >>>>>>> mcoda/task/bck-05-us-06-t29
+=======
+- MCP rate-limit errors use the canonical envelope and include retry hints under `error.data.details` (`retry_after_ms`, `retry_at`, `limit_key`, `scope`).
+>>>>>>> mcoda/task/bck-05-us-06-t26

@@ -932,11 +932,35 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
 =======
 >>>>>>> mcoda/task/bck-05-us-06-t29
     assert_eq!(
+<<<<<<< HEAD
+=======
+        data_files.get("message").and_then(|v| v.as_str()),
+        Some("rate limited")
+    );
+    assert_eq!(
+        data_files.get("tool").and_then(|v| v.as_str()),
+        Some("docdex_files")
+    );
+    let nested_files = data_files
+        .get("error")
+        .and_then(|v| v.as_object())
+        .ok_or("rate-limit error missing error.data.error object")?;
+    assert_eq!(
+        nested_files.get("code").and_then(|v| v.as_str()),
+        Some("rate_limited")
+    );
+    let details_files = data_files
+        .get("details")
+        .and_then(|v| v.as_object())
+        .ok_or("rate-limit error missing error.data.details object")?;
+    assert_eq!(
+>>>>>>> mcoda/task/bck-05-us-06-t26
         details_files.get("limit_key").and_then(|v| v.as_str()),
         Some("mcp_tools")
     );
     assert_eq!(
         details_files.get("scope").and_then(|v| v.as_str()),
+<<<<<<< HEAD
 <<<<<<< HEAD
 =======
     let details = data_files
@@ -952,6 +976,8 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
 >>>>>>> mcoda/task/bck-05-us-06-t35
 =======
 >>>>>>> mcoda/task/bck-05-us-06-t29
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t26
         Some("global")
     );
     assert_eq!(
@@ -969,6 +995,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     assert!(
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         data_files
             .get("denied_total")
             .and_then(|v| v.as_u64())
@@ -983,11 +1010,15 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
 =======
         details_files
 >>>>>>> mcoda/task/bck-05-us-06-t29
+=======
+        details_files
+>>>>>>> mcoda/task/bck-05-us-06-t26
             .get("retry_after_ms")
             .and_then(|v| v.as_u64())
             .is_some(),
         "retry_after_ms must be an integer"
     );
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
     let envelope = data_files
@@ -1113,6 +1144,9 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         "error.data.details should only include stable retry keys"
 >>>>>>> mcoda/task/bck-05-us-06-t29
     );
+=======
+    assert!(details_files.get("retry_at").is_none());
+>>>>>>> mcoda/task/bck-05-us-06-t26
 
     // Wait long enough for the limiter to refill 1 token (per_minute=60).
     thread::sleep(Duration::from_millis(1100));
@@ -1158,6 +1192,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         .ok_or("rate-limit error missing error.data object (docdex_search)")?;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     assert_eq!(
         data_search.get("limit_key").and_then(|v| v.as_str()),
         Some("mcp_tools")
@@ -1174,11 +1209,20 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         payload_bytes.len()
     );
 =======
+=======
+    assert_eq!(
+        data_search.get("tool").and_then(|v| v.as_str()),
+        Some("docdex_search")
+    );
+>>>>>>> mcoda/task/bck-05-us-06-t26
     let details_search = data_search
         .get("details")
         .and_then(|v| v.as_object())
         .ok_or("rate-limit error missing error.data.details object (docdex_search)")?;
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-06-t37
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t26
 
     fn shape_signature(details: &serde_json::Map<String, Value>) -> Vec<(String, &'static str)> {
         let mut out: Vec<(String, &'static str)> = details
@@ -1202,8 +1246,13 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
 
     assert_eq!(
 <<<<<<< HEAD
+<<<<<<< HEAD
         rate_limit_data_signature(data_files),
         rate_limit_data_signature(data_search),
+=======
+        shape_signature(details_files),
+        shape_signature(details_search),
+>>>>>>> mcoda/task/bck-05-us-06-t26
         "rate-limit error schema should be identical across tools sharing the limiter"
 =======
         shape_signature(details_files),

@@ -99,6 +99,8 @@ Diagnostics:
 
 - For these errors, `error.data.details` may include `normalizedPath`, `attemptedFingerprint`, `knownCanonicalPath`, and a `recoverySteps` array intended to be directly actionable in UX.
 
+For a full upgrade/migration and recovery guide, see `docs/ops/state_upgrade_migration.md`.
+
 ## Parity mapping (HTTP / CLI / MCP)
 
 Docdex presents the same underlying failures in three different wrappers:

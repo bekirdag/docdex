@@ -102,6 +102,7 @@ use crate::symbols::{SymbolsStore, MAX_SYMBOLS_PER_FILE};
 use crate::symbols::SymbolsStore;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 use crate::tier2::Tier2Unavailable;
 >>>>>>> mcoda/task/bck-05-us-09-t21
 =======
@@ -110,6 +111,9 @@ use crate::web;
 =======
 use crate::{policy, policy::Dependency, policy::RepoSurface};
 >>>>>>> mcoda/task/bck-05-us-07-t30
+=======
+use crate::web_research;
+>>>>>>> mcoda/task/bck-05-us-07-t18
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -120,7 +124,11 @@ use tantivy::directory::error::LockError;
 use tantivy::TantivyError;
 use thiserror::Error;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+<<<<<<< HEAD
 use walkdir::WalkDir;
+=======
+use uuid::Uuid;
+>>>>>>> mcoda/task/bck-05-us-07-t18
 
 const JSONRPC_VERSION: &str = "2.0";
 const ERR_PARSE: i32 = -32700;
@@ -1118,6 +1126,17 @@ struct WebSearchArgs {
 }
 
 #[derive(Deserialize)]
+struct WebResearchArgs {
+    query: String,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    force_web: Option<bool>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
 struct IndexArgs {
     #[serde(default)]
     paths: Vec<PathBuf>,
@@ -1835,8 +1854,46 @@ impl McpServer {
                             }
                         }
                     }
+<<<<<<< HEAD
                     "docdex_web_search" | "docdex.web_search" => {
                         let args_res: Result<WebSearchArgs, _> =
+=======
+                    "docdex_web_research" | "docdex.web_research" => {
+                        let args_res: Result<WebResearchArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_web_research"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_web_research" })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_web_research(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_web_research"))),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_index" | "docdex.index" => {
+                        let args_res: Result<IndexArgs, _> =
+>>>>>>> mcoda/task/bck-05-us-07-t18
                             serde_json::from_value(params.arguments.clone());
                         let args = match args_res {
                             Ok(args) => args,
@@ -2131,10 +2188,17 @@ impl McpServer {
                                 None,
                                 Some(json!({
                                     "known_tools": [
+<<<<<<< HEAD
                                     "docdex_search",
                                     "docdex_web_search",
                                     "docdex_index",
                                     "docdex_files",
+=======
+                                        "docdex_search",
+                                        "docdex_web_research",
+                                        "docdex_index",
+                                        "docdex_files",
+>>>>>>> mcoda/task/bck-05-us-07-t18
                                     "docdex_open",
                                         "docdex_stats",
                                         "docdex_repo_inspect",
@@ -2220,6 +2284,21 @@ impl McpServer {
                     "properties": {
                         "query": { "type": "string", "minLength": 1, "description": "Search query string" },
                         "limit": { "type": "integer", "minimum": 1, "maximum": self.web_discovery.max_results() as i64, "default": self.web_discovery.max_results() as i64, "description": "Max results to return (clamped)" }
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_web_research",
+                description:
+                    "Attempt web discovery with graceful local fallback and structured status reporting.",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "minLength": 1, "description": "Query string (required)" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": self.max_results as i64, "default": self.max_results, "description": "Max local hits to include (clamped to server max)" },
+                        "force_web": { "type": "boolean", "default": false, "description": "Force web discovery attempt even if confidence is high" },
+                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
                     },
                     "required": ["query"]
                 }),
@@ -2591,6 +2670,7 @@ impl McpServer {
         }))
     }
 
+<<<<<<< HEAD
     async fn handle_web_search(&self, args: WebSearchArgs) -> Result<serde_json::Value> {
         let query = args.query.trim();
         if query.is_empty() {
@@ -2602,6 +2682,29 @@ impl McpServer {
             .clamp(1, self.web_discovery.max_results());
         let response = self.web_discovery.discover(query, limit).await?;
         Ok(serde_json::to_value(&response).context("serialize docdex_web_search")?)
+=======
+    async fn handle_web_research(&self, args: WebResearchArgs) -> Result<serde_json::Value> {
+        self.ensure_project_root(args.project_root.as_deref())?;
+        let query = args.query.trim();
+        let limit = args
+            .limit
+            .unwrap_or(self.max_results)
+            .clamp(1, self.max_results);
+        let force_web = args.force_web.unwrap_or(false);
+        let gate = web_research::WebGateConfig::from_env();
+        let request_id = Uuid::new_v4().to_string();
+        let response = web_research::run_web_research(
+            &request_id,
+            &self.indexer,
+            self.libs_indexer.as_ref(),
+            query,
+            limit,
+            force_web,
+            &gate,
+        )
+        .await?;
+        Ok(serde_json::to_value(&response)?)
+>>>>>>> mcoda/task/bck-05-us-07-t18
     }
 
     async fn handle_index(&mut self, args: IndexArgs) -> Result<serde_json::Value> {

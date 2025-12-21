@@ -41,7 +41,11 @@ mod ollama;
 mod ratelimit;
 mod repo_manager;
 mod repo_identity;
+<<<<<<< HEAD
 mod repo_resolution;
+=======
+mod repo_manager;
+>>>>>>> mcoda/task/bck-05-us-07-t06
 mod search;
 mod state_layout;
 mod symbols;

@@ -31,6 +31,16 @@ The installer does not treat “upgrade” and “downgrade” differently. It a
 
 This makes repeated installs idempotent: running the installer multiple times converges to the same installed binary and the same metadata for a given version/platform.
 
+## Repair/reinstall triggers (unknown / corrupt / stale)
+
+These terms map to deterministic outcomes and observable runtime states:
+
+- Unknown state → `reinstall_unknown`: install metadata is missing/unreadable/invalid, or the metadata `platformKey` does not match the detected platform.
+- Corrupt state → `repair`: metadata exists for the expected version, but the local binary hash does not match `binary.sha256`.
+- Stale runtime → the daemon process is still running an older binary that was started before the upgrade/downgrade; restart the process to load the new `docdexd`.
+
+These triggers are based on local metadata + hash checks only. Repo-scoped daemon dependencies (indexes, symbols) are not modified by the installer.
+
 ## Integrity verification and repair behavior
 
 There are two relevant integrity checks:
@@ -108,10 +118,20 @@ This is usually a repo state issue, not an installer issue:
 - Rebuild the index: `docdexd index --repo <path>`
 - If you intentionally want a clean state, delete only the repo’s index directory: `<repo>/.docdex/index` (this forces a full reindex next run).
 
+### 5) If MCP/CLI report dependency state errors
+
+These signals come from repo-scoped state (index/symbols), not the installer. Common codes:
+
+- `missing_index`: no index exists yet (or no symbols record for a path); run `docdexd index --repo <path>`. For symbols, enable `DOCDEX_ENABLE_SYMBOL_EXTRACTION=1` and reindex.
+- `missing_dependency`: optional dependency disabled (currently symbol extraction); enable the dependency or avoid the tool that requires it.
+- `stale_index`: reserved (not currently emitted); treat it as a reindex signal.
+
+Assumption: there is no explicit corrupt-state code today; if you repeatedly see `internal_error` after reindexing, remove only the affected state dir (e.g. `<repo>/.docdex/index` or `<state_dir>/symbols.db`) and rebuild.
+See `docs/mcp/errors.md` for the canonical MCP/CLI codes and details.
+
 ## See also
 
 - Installer supported platforms + safe cleanup: `docs/ops/installer_supported_platforms.md`
 - Installer error codes + remediation: `docs/ops/installer_error_codes.md`
 - Release manifest contract: `docs/contracts/release_manifest_schema_v1.md`
 - Installer error contract: `docs/contracts/installer_error_contract_v1.md`
-

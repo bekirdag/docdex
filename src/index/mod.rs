@@ -12,7 +12,7 @@ use tantivy::query::QueryParser;
 use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
 use tantivy::DocAddress;
 use tantivy::{
-    doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, SnippetGenerator, Term,
+    doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, Searcher, SnippetGenerator, Term,
 };
 use thiserror::Error;
 use tracing::warn;
@@ -265,6 +265,22 @@ pub struct IndexStats {
     pub generated_at_epoch_ms: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_updated_epoch_ms: Option<u128>,
+}
+
+#[derive(Clone)]
+pub struct IndexSnapshot {
+    searcher: Searcher,
+    generation_id: u64,
+}
+
+impl IndexSnapshot {
+    pub fn searcher(&self) -> &Searcher {
+        &self.searcher
+    }
+
+    pub fn generation_id(&self) -> u64 {
+        self.generation_id
+    }
 }
 
 impl IndexConfig {
@@ -552,6 +568,16 @@ impl Indexer {
         query: &str,
         limit: usize,
     ) -> Result<(Vec<Hit>, SearchQueryMeta)> {
+        let snapshot = self.snapshot();
+        self.search_with_query_meta_snapshot(&snapshot, query, limit)
+    }
+
+    pub fn search_with_query_meta_snapshot(
+        &self,
+        snapshot: &IndexSnapshot,
+        query: &str,
+        limit: usize,
+    ) -> Result<(Vec<Hit>, SearchQueryMeta)> {
         let raw = query.trim();
         if raw.is_empty() {
             return Err(SearchError::InvalidQuery {
@@ -568,7 +594,7 @@ impl Indexer {
             }
             .into());
         }
-        let searcher = self.reader.searcher();
+        let searcher = snapshot.searcher();
         let parser = QueryParser::for_index(
             &self.index,
             vec![self.body_field, self.summary_field, self.path_field],
@@ -611,7 +637,7 @@ impl Indexer {
             }
         };
         let mut snippet_generator =
-            SnippetGenerator::create(&searcher, tantivy_query.as_ref(), self.body_field).ok();
+            SnippetGenerator::create(searcher, tantivy_query.as_ref(), self.body_field).ok();
         if let Some(generator) = snippet_generator.as_mut() {
             generator.set_max_num_chars(MAX_SNIPPET_CHARS);
         }
@@ -663,22 +689,17 @@ impl Indexer {
                     }
                 })
                 .or_else(|| {
-                    match self.preview_snippet(&rel_path, FALLBACK_PREVIEW_LINES) {
-                        Ok(Some((text, truncated, start_line, end_line))) => {
-                            Some((
+                    preview_snippet_from_body(&body_text, FALLBACK_PREVIEW_LINES).map(
+                        |(text, truncated, start_line, end_line)| {
+                            (
                                 text,
                                 SearchSnippetOrigin::Preview,
                                 truncated,
                                 Some(start_line),
                                 Some(end_line),
-                            ))
-                        }
-                        Ok(None) => None,
-                        Err(err) => {
-                            warn!(target: "docdexd", error = ?err, %rel_path, "failed to build fallback snippet");
-                            None
-                        }
-                    }
+                            )
+                        },
+                    )
                 })
                 .unwrap_or_else(|| {
                     (
@@ -707,8 +728,7 @@ impl Indexer {
         Ok((results, query_meta))
     }
 
-    fn fetch_document(&self, doc_id: &str) -> Result<Option<Document>> {
-        let searcher = self.reader.searcher();
+    fn fetch_document(&self, searcher: &Searcher, doc_id: &str) -> Result<Option<Document>> {
         let term = Term::from_field_text(self.doc_id_field, doc_id);
         let term_query =
             tantivy::query::TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
@@ -805,8 +825,25 @@ impl Indexer {
         &self.config
     }
 
+    pub fn snapshot(&self) -> IndexSnapshot {
+        let searcher = self.reader.searcher();
+        let generation_id = searcher.generation().generation_id();
+        IndexSnapshot {
+            searcher,
+            generation_id,
+        }
+    }
+
     pub fn stats(&self) -> Result<IndexStats> {
         let searcher = self.reader.searcher();
+        self.stats_from_searcher(&searcher)
+    }
+
+    pub fn stats_with_searcher(&self, searcher: &Searcher) -> Result<IndexStats> {
+        self.stats_from_searcher(searcher)
+    }
+
+    fn stats_from_searcher(&self, searcher: &Searcher) -> Result<IndexStats> {
         let mut num_docs: u64 = 0;
         let mut segments: usize = 0;
         for segment_reader in searcher.segment_readers() {
@@ -866,12 +903,14 @@ impl Indexer {
         query: Option<&str>,
         fallback_lines: usize,
     ) -> Result<Option<(DocSnapshot, Option<SnippetResult>)>> {
-        let Some(doc) = self.fetch_document(doc_id)? else {
+        let snapshot = self.snapshot();
+        let searcher = snapshot.searcher();
+        let Some(doc) = self.fetch_document(searcher, doc_id)? else {
             return Ok(None);
         };
         let snapshot = self.snapshot_from_document(doc_id, &doc);
         let snippet =
-            self.snippet_from_document(&doc, Some(&snapshot.rel_path), query, fallback_lines)?;
+            self.snippet_from_document(searcher, &doc, query, fallback_lines)?;
         Ok(Some((snapshot, snippet)))
     }
 
@@ -1048,12 +1087,11 @@ impl Indexer {
 
     fn snippet_from_document(
         &self,
+        searcher: &Searcher,
         doc: &Document,
-        rel_path_hint: Option<&str>,
         query: Option<&str>,
         fallback_lines: usize,
     ) -> Result<Option<SnippetResult>> {
-        let searcher = self.reader.searcher();
         if let Some(query) = query.and_then(|q| {
             let trimmed = q.trim();
             if trimmed.is_empty() {
@@ -1065,7 +1103,7 @@ impl Indexer {
             let parser = QueryParser::for_index(&self.index, vec![self.body_field]);
             if let Ok(parsed) = parser.parse_query(query) {
                 if let Ok(mut generator) =
-                    SnippetGenerator::create(&searcher, parsed.as_ref(), self.body_field)
+                    SnippetGenerator::create(searcher, parsed.as_ref(), self.body_field)
                 {
                     generator.set_max_num_chars(MAX_SNIPPET_CHARS);
                     let snippet = generator.snippet_from_doc(doc);
@@ -1084,27 +1122,69 @@ impl Indexer {
             }
         }
 
-        let rel_path = rel_path_hint.map(|p| p.to_string()).or_else(|| {
-            doc.get_first(self.path_field)
-                .and_then(|v| v.as_text().map(|s| s.to_string()))
-                .map(|text| text.to_string())
-        });
-        if let Some(rel_path) = rel_path {
-            if let Some((text, truncated, line_start, line_end)) =
-                self.preview_snippet(&rel_path, fallback_lines)?
-            {
-                return Ok(Some(SnippetResult {
-                    text,
-                    html: None,
-                    truncated,
-                    origin: SnippetOrigin::Preview,
-                    line_start: Some(line_start),
-                    line_end: Some(line_end),
-                }));
-            }
+        let body = doc
+            .get_first(self.body_field)
+            .and_then(|v| v.as_text())
+            .unwrap_or_default();
+        if let Some((text, truncated, line_start, line_end)) =
+            preview_snippet_from_body(body, fallback_lines)
+        {
+            return Ok(Some(SnippetResult {
+                text,
+                html: None,
+                truncated,
+                origin: SnippetOrigin::Preview,
+                line_start: Some(line_start),
+                line_end: Some(line_end),
+            }));
         }
         Ok(None)
     }
+}
+
+fn preview_snippet_from_body(
+    body: &str,
+    max_lines: usize,
+) -> Option<(String, bool, usize, usize)> {
+    if max_lines == 0 {
+        return None;
+    }
+    let mut preview_lines: Vec<(usize, String)> = Vec::new();
+    let mut truncated = false;
+    for (idx, line) in body.lines().enumerate() {
+        if idx >= max_lines {
+            truncated = true;
+            break;
+        }
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            preview_lines.push((idx + 1, trimmed.to_string()));
+        }
+    }
+    if preview_lines.is_empty() {
+        return None;
+    }
+    let (snippet, snippet_truncated) = condense_snippet(
+        &preview_lines
+            .iter()
+            .map(|(_, text)| text.clone())
+            .collect::<Vec<_>>(),
+        MAX_SNIPPET_CHARS,
+    );
+    if snippet.is_empty() {
+        return None;
+    }
+    let start_line = preview_lines.first().map(|(line, _)| *line).unwrap_or(1);
+    let end_line = preview_lines
+        .last()
+        .map(|(line, _)| *line)
+        .unwrap_or(start_line);
+    Some((
+        snippet,
+        truncated || snippet_truncated,
+        start_line,
+        end_line,
+    ))
 }
 
 struct DocumentIngest {

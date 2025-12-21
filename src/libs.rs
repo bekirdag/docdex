@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
-use tantivy::{doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
+use tantivy::{doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, Searcher, Term};
 use tracing::warn;
 
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
@@ -372,17 +372,17 @@ impl LibsIndexer {
         query: Option<&str>,
         fallback_lines: usize,
     ) -> Result<Option<(DocSnapshot, Option<SnippetResult>)>> {
-        let Some(doc) = self.fetch_document(doc_id)? else {
+        let searcher = self.reader.searcher();
+        let Some(doc) = self.fetch_document(&searcher, doc_id)? else {
             return Ok(None);
         };
         let snapshot = self.snapshot_from_document(doc_id, &doc);
         let snippet =
-            self.snippet_from_document(&doc, query, fallback_lines)?;
+            self.snippet_from_document(&searcher, &doc, query, fallback_lines)?;
         Ok(Some((snapshot, snippet)))
     }
 
-    fn fetch_document(&self, doc_id: &str) -> Result<Option<Document>> {
-        let searcher = self.reader.searcher();
+    fn fetch_document(&self, searcher: &Searcher, doc_id: &str) -> Result<Option<Document>> {
         let term = Term::from_field_text(self.doc_id_field, doc_id);
         let term_query =
             tantivy::query::TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
@@ -417,11 +417,11 @@ impl LibsIndexer {
 
     fn snippet_from_document(
         &self,
+        searcher: &Searcher,
         doc: &Document,
         query: Option<&str>,
         fallback_lines: usize,
     ) -> Result<Option<SnippetResult>> {
-        let searcher = self.reader.searcher();
         if let Some(query) = query.and_then(|q| {
             let trimmed = q.trim();
             if trimmed.is_empty() { None } else { Some(trimmed) }
@@ -429,7 +429,7 @@ impl LibsIndexer {
             let parser = QueryParser::for_index(&self.index, vec![self.body_field]);
             if let Ok(parsed) = parser.parse_query(query) {
                 if let Ok(mut generator) =
-                    tantivy::SnippetGenerator::create(&searcher, parsed.as_ref(), self.body_field)
+                    tantivy::SnippetGenerator::create(searcher, parsed.as_ref(), self.body_field)
                 {
                     generator.set_max_num_chars(420);
                     let snippet = generator.snippet_from_doc(doc);

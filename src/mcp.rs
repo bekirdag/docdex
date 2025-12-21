@@ -28,7 +28,6 @@ const ERR_INVALID_REQUEST: i32 = -32600;
 const ERR_METHOD_NOT_FOUND: i32 = -32601;
 const ERR_INVALID_PARAMS: i32 = -32602;
 const ERR_INTERNAL: i32 = -32000;
-const ERR_RATE_LIMITED_RPC: i32 = -32029;
 const FILES_DEFAULT_LIMIT: usize = 200;
 const FILES_MAX_LIMIT: usize = 1000;
 const FILES_MAX_OFFSET: usize = 50_000;
@@ -112,10 +111,9 @@ fn mcp_error_data(
     serde_json::Value::Object(data)
 }
 
-fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
+fn mcp_rate_limited_details(err: &RateLimited) -> serde_json::Value {
     #[derive(Serialize)]
-    struct RateLimitData<'a> {
-        code: &'static str,
+    struct RateLimitDetails<'a> {
         retry_after_ms: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         retry_at: Option<String>,
@@ -123,8 +121,7 @@ fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
         scope: &'a str,
     }
 
-    serde_json::to_value(RateLimitData {
-        code: ERR_RATE_LIMITED,
+    serde_json::to_value(RateLimitDetails {
         retry_after_ms: err.retry_after_ms,
         retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
         limit_key: &err.limit_key,
@@ -163,11 +160,14 @@ fn rpc_error(
 }
 
 fn rpc_rate_limited(err: &RateLimited) -> RpcError {
-    RpcError {
-        code: ERR_RATE_LIMITED_RPC,
-        message: truncate_bytes(err.message.clone(), MAX_ERROR_MESSAGE_BYTES),
-        data: Some(mcp_rate_limited_data(err)),
-    }
+    rpc_error(
+        ERR_INVALID_PARAMS,
+        err.message.clone(),
+        ERR_RATE_LIMITED,
+        None,
+        None,
+        Some(mcp_rate_limited_details(err)),
+    )
 }
 
 fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
@@ -214,7 +214,7 @@ fn default_message_for_code(code: &str) -> &'static str {
 
 fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
     if let Some(rate) = err.downcast_ref::<RateLimited>() {
-        return (rate.code, Some(mcp_rate_limited_data(rate)));
+        return (rate.code, Some(mcp_rate_limited_details(rate)));
     }
     if let Some(app) = err.downcast_ref::<AppError>() {
         return (app.code, app.details.clone());
@@ -628,41 +628,24 @@ impl McpServer {
                     .or(init_params.project_root)
                     .as_ref()
                 {
-                    match client_root.canonicalize() {
+                    match self.ensure_same_repo(client_root) {
                         Ok(canon) => {
-                            if canon != self.repo_root {
-                                return Ok(Some(RpcResponse {
-                                    jsonrpc: JSONRPC_VERSION,
-                                    id: id.clone(),
-                                    result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_REQUEST,
-                                        default_message_for_code(ERR_UNKNOWN_REPO),
-                                        ERR_UNKNOWN_REPO,
-                                        None,
-                                        None,
-                                        Some(json!({
-                                            "expected": self.repo_root.display().to_string(),
-                                            "got": canon.display().to_string()
-                                        })),
-                                    )),
-                                }));
-                            }
                             self.default_project_root = Some(canon);
                         }
                         Err(err) => {
+                            let (mcp_code, details) = classify_tool_error(&err);
                             return Ok(Some(RpcResponse {
                                 jsonrpc: JSONRPC_VERSION,
                                 id: id.clone(),
                                 result: None,
-                            error: Some(rpc_error(
-                                ERR_INVALID_REQUEST,
-                                default_message_for_code("invalid_request"),
-                                "invalid_request",
-                                Some(err.to_string()),
-                                None,
-                                None,
-                            )),
+                                error: Some(rpc_error(
+                                    ERR_INVALID_PARAMS,
+                                    default_message_for_code(mcp_code),
+                                    mcp_code,
+                                    Some(err.to_string()),
+                                    None,
+                                    details,
+                                )),
                             }));
                         }
                     }
@@ -1583,7 +1566,7 @@ impl McpServer {
         self.handle_open(open_args).await
     }
 
-    fn ensure_same_repo(&self, candidate: &Path) -> Result<()> {
+    fn ensure_same_repo(&self, candidate: &Path) -> Result<PathBuf> {
         if !candidate.exists() {
             let normalized_path = candidate.to_string_lossy().replace('\\', "/");
             let details = repo_resolution_details(
@@ -1627,15 +1610,17 @@ impl McpServer {
             );
         }
 
-        Ok(())
+        Ok(normalized)
     }
 
     fn ensure_project_root(&self, candidate: Option<&Path>) -> Result<()> {
         if let Some(path) = candidate {
-            return self.ensure_same_repo(path);
+            self.ensure_same_repo(path)?;
+            return Ok(());
         }
         if let Some(default_root) = self.default_project_root.as_ref() {
-            return self.ensure_same_repo(default_root);
+            self.ensure_same_repo(default_root)?;
+            return Ok(());
         }
         Ok(())
     }
@@ -1695,14 +1680,39 @@ mod tests {
     fn rate_limited_rpc_has_stable_data_shape() {
         let err = RateLimited::new(Duration::from_millis(0), "mcp_tools".to_string(), "global".to_string());
         let rpc = rpc_rate_limited(&err);
-        assert_eq!(rpc.code, ERR_RATE_LIMITED_RPC);
+        assert_eq!(rpc.code, ERR_INVALID_PARAMS);
         let data = rpc.data.expect("rate limited rpc should include data");
         let obj = data.as_object().expect("rate limited data should be object");
         assert_eq!(obj.get("code").and_then(|v| v.as_str()), Some(ERR_RATE_LIMITED));
-        assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(0));
-        assert_eq!(obj.get("limit_key").and_then(|v| v.as_str()), Some("mcp_tools"));
-        assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
-        assert!(obj.get("retry_at").is_none(), "retry_at should be omitted when unset");
+        assert_eq!(obj.get("message").and_then(|v| v.as_str()), Some("rate limited"));
+        let details = obj
+            .get("details")
+            .and_then(|v| v.as_object())
+            .expect("rate limit details should be object");
+        assert_eq!(
+            details.get("retry_after_ms").and_then(|v| v.as_u64()),
+            Some(0)
+        );
+        assert_eq!(
+            details.get("limit_key").and_then(|v| v.as_str()),
+            Some("mcp_tools")
+        );
+        assert_eq!(
+            details.get("scope").and_then(|v| v.as_str()),
+            Some("global")
+        );
+        assert!(
+            details.get("retry_at").is_none(),
+            "retry_at should be omitted when unset"
+        );
+        let error_obj = obj
+            .get("error")
+            .and_then(|v| v.as_object())
+            .expect("rate limit error should be nested");
+        assert_eq!(
+            error_obj.get("code").and_then(|v| v.as_str()),
+            Some(ERR_RATE_LIMITED)
+        );
     }
 
     #[test]
@@ -1717,8 +1727,15 @@ mod tests {
         );
         let data = rpc.data.expect("rate limited rpc should include data");
         let obj = data.as_object().expect("rate limited data should be object");
-        assert!(obj.get("retry_at").and_then(|v| v.as_str()).is_some());
-        assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(1234));
+        let details = obj
+            .get("details")
+            .and_then(|v| v.as_object())
+            .expect("rate limit details should be object");
+        assert!(details.get("retry_at").and_then(|v| v.as_str()).is_some());
+        assert_eq!(
+            details.get("retry_after_ms").and_then(|v| v.as_u64()),
+            Some(1234)
+        );
     }
 
     #[test]
@@ -1745,7 +1762,7 @@ mod tests {
                 Err(err) => {
                     rate_limited_count += 1;
                     let rpc = rpc_rate_limited(&err);
-                    assert_eq!(rpc.code, ERR_RATE_LIMITED_RPC);
+                    assert_eq!(rpc.code, ERR_INVALID_PARAMS);
                     assert!(
                         rpc.message.len() <= MAX_ERROR_MESSAGE_BYTES + "…".len(),
                         "rpc error message should remain bounded"
@@ -1760,15 +1777,22 @@ mod tests {
                         obj.get("code").and_then(|v| v.as_str()),
                         Some(ERR_RATE_LIMITED)
                     );
+                    let details = obj
+                        .get("details")
+                        .and_then(|v| v.as_object())
+                        .expect("rate limit details should be object");
                     assert!(
-                        obj.get("retry_after_ms").and_then(|v| v.as_u64()).is_some(),
+                        details.get("retry_after_ms").and_then(|v| v.as_u64()).is_some(),
                         "retry_after_ms must be an integer"
                     );
                     assert_eq!(
-                        obj.get("limit_key").and_then(|v| v.as_str()),
+                        details.get("limit_key").and_then(|v| v.as_str()),
                         Some("mcp_tools")
                     );
-                    assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
+                    assert_eq!(
+                        details.get("scope").and_then(|v| v.as_str()),
+                        Some("global")
+                    );
 
                     let payload_bytes = serde_json::to_vec(&rpc).expect("rpc error should serialize");
                     assert!(
@@ -1788,6 +1812,13 @@ mod tests {
             schema_variants.len(),
             1,
             "rate-limit data schema should not vary under concurrency"
+        );
+        let expected_keys: Vec<String> =
+            ["code", "details", "error", "message"].iter().map(|v| v.to_string()).collect();
+        assert_eq!(
+            schema_variants.into_iter().next().unwrap_or_default(),
+            expected_keys,
+            "rate-limit data schema should remain stable"
         );
     }
 }

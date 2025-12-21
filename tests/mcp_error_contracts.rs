@@ -702,7 +702,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         }),
     )?;
     let limited_files = read_line(&mut mcp.reader)?;
-    assert_eq!(mcp_error_code(&limited_files), Some(-32029));
+    assert_eq!(mcp_error_code(&limited_files), Some(-32602));
     assert_eq!(mcp_error_data_code(&limited_files), Some("rate_limited"));
     let limited_files_bytes = serde_json::to_vec(&limited_files)?.len();
     assert!(
@@ -716,6 +716,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         .and_then(|v| v.get("data"))
         .and_then(|v| v.as_object())
         .ok_or("rate-limit error missing error.data object")?;
+<<<<<<< HEAD
 <<<<<<< HEAD
     assert!(
         data_files
@@ -731,12 +732,18 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         payload_bytes.len()
 >>>>>>> mcoda/task/bck-05-us-09-t29
     );
+=======
+    let details_files = data_files
+        .get("details")
+        .and_then(|v| v.as_object())
+        .ok_or("rate-limit error missing error.data.details object")?;
+>>>>>>> mcoda/task/bck-05-us-06-t37
     assert_eq!(
-        data_files.get("limit_key").and_then(|v| v.as_str()),
+        details_files.get("limit_key").and_then(|v| v.as_str()),
         Some("mcp_tools")
     );
     assert_eq!(
-        data_files.get("scope").and_then(|v| v.as_str()),
+        details_files.get("scope").and_then(|v| v.as_str()),
         Some("global")
     );
     assert_eq!(
@@ -759,7 +766,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         "denied_total must be an integer"
     );
     assert!(
-        data_files
+        details_files
             .get("retry_after_ms")
             .and_then(|v| v.as_u64())
             .is_some(),
@@ -809,6 +816,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         data_files.keys().all(|k| {
             matches!(
                 k.as_str(),
+<<<<<<< HEAD
                 "code"
                     | "retry_after_ms"
                     | "retry_at"
@@ -818,6 +826,9 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
                     | "limit_per_min"
                     | "limit_burst"
                     | "denied_total"
+=======
+                "code" | "message" | "error" | "details"
+>>>>>>> mcoda/task/bck-05-us-06-t37
             )
         }),
         "error.data should only include stable keys"
@@ -852,7 +863,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         }),
     )?;
     let limited_search = read_line(&mut mcp.reader)?;
-    assert_eq!(mcp_error_code(&limited_search), Some(-32029));
+    assert_eq!(mcp_error_code(&limited_search), Some(-32602));
     assert_eq!(mcp_error_data_code(&limited_search), Some("rate_limited"));
     let limited_search_bytes = serde_json::to_vec(&limited_search)?.len();
     assert!(
@@ -866,6 +877,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         .and_then(|v| v.get("data"))
         .and_then(|v| v.as_object())
         .ok_or("rate-limit error missing error.data object (docdex_search)")?;
+<<<<<<< HEAD
 <<<<<<< HEAD
     assert_eq!(
         data_search.get("limit_key").and_then(|v| v.as_str()),
@@ -882,9 +894,15 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         "rate-limit payload should remain small (got {} bytes)",
         payload_bytes.len()
     );
+=======
+    let details_search = data_search
+        .get("details")
+        .and_then(|v| v.as_object())
+        .ok_or("rate-limit error missing error.data.details object (docdex_search)")?;
+>>>>>>> mcoda/task/bck-05-us-06-t37
 
-    fn shape_signature(data: &serde_json::Map<String, Value>) -> Vec<(String, &'static str)> {
-        let mut out: Vec<(String, &'static str)> = data
+    fn shape_signature(details: &serde_json::Map<String, Value>) -> Vec<(String, &'static str)> {
+        let mut out: Vec<(String, &'static str)> = details
             .iter()
             .map(|(k, v)| {
                 let kind = match v {
@@ -904,9 +922,15 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
 >>>>>>> mcoda/task/bck-05-us-09-t29
 
     assert_eq!(
+<<<<<<< HEAD
         rate_limit_data_signature(data_files),
         rate_limit_data_signature(data_search),
         "rate-limit error schema should be identical across tools sharing the limiter"
+=======
+        shape_signature(details_files),
+        shape_signature(details_search),
+        "rate-limit error details schema should be identical across tools sharing the limiter"
+>>>>>>> mcoda/task/bck-05-us-06-t37
     );
 
     mcp.shutdown();

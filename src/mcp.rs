@@ -163,6 +163,7 @@ const ERR_INTERNAL: i32 = -32000;
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 const ERR_RATE_LIMITED_RPC: i32 = -32029;
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -179,6 +180,8 @@ const ERR_BACKOFF_REQUIRED_RPC: i32 = -32030;
 >>>>>>> mcoda/task/bck-05-us-06-t47
 =======
 >>>>>>> mcoda/task/bck-05-us-06-t46
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t37
 const FILES_DEFAULT_LIMIT: usize = 200;
 const FILES_MAX_LIMIT: usize = 1000;
 const FILES_MAX_OFFSET: usize = 50_000;
@@ -340,11 +343,12 @@ fn scan_repo_indexable_files(repo_root: &Path, config: &IndexConfig) -> RepoInde
 
 fn mcp_error_data(
     code: &'static str,
-    message: String,
+    data_message: String,
     reason: Option<String>,
     tool: Option<&str>,
     details: Option<serde_json::Value>,
 ) -> serde_json::Value {
+<<<<<<< HEAD
 <<<<<<< HEAD
     let message = truncate_error_bytes(message, MAX_ERROR_MESSAGE_BYTES);
 =======
@@ -363,6 +367,14 @@ fn mcp_error_data(
         .map(|value| truncate_utf8_bytes(&value, MAX_ERROR_REASON_BYTES))
 >>>>>>> mcoda/task/bck-05-us-10-t25
     {
+=======
+    let data_message = truncate_bytes(data_message, MAX_ERROR_MESSAGE_BYTES);
+    let message_for_data = data_message.clone();
+    let mut envelope_error = serde_json::Map::new();
+    envelope_error.insert("code".to_string(), json!(code));
+    envelope_error.insert("message".to_string(), json!(data_message));
+    if let Some(reason) = reason.clone().map(|value| truncate_bytes(value, MAX_ERROR_REASON_BYTES)) {
+>>>>>>> mcoda/task/bck-05-us-06-t37
         envelope_error.insert("reason".to_string(), json!(reason.clone()));
     }
     if let Some(tool) = tool {
@@ -393,6 +405,7 @@ fn mcp_error_data(
     serde_json::Value::Object(data)
 }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -661,10 +674,14 @@ fn mcp_backoff_required_data(err: &BackoffRequired) -> serde_json::Value {
         scope: &'a str,
 =======
 fn rate_limit_details(err: &RateLimited) -> serde_json::Value {
+=======
+fn rate_limited_details(err: &RateLimited) -> serde_json::Value {
+>>>>>>> mcoda/task/bck-05-us-06-t37
     let mut details = serde_json::Map::new();
     details.insert("retry_after_ms".to_string(), json!(err.retry_after_ms));
     if let Some(retry_at) = err.retry_at.as_ref() {
         details.insert("retry_at".to_string(), json!(retry_at.to_rfc3339()));
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-06-t47
     }
     details.insert("limit_key".to_string(), json!(err.limit_key.clone()));
@@ -694,6 +711,12 @@ fn dependency_details(dependency: &'static str, enable_flag: Option<&'static str
     }
     serde_json::Value::Object(details)
 >>>>>>> mcoda/task/bck-05-us-06-t47
+=======
+    }
+    details.insert("limit_key".to_string(), json!(err.limit_key));
+    details.insert("scope".to_string(), json!(err.scope));
+    serde_json::Value::Object(details)
+>>>>>>> mcoda/task/bck-05-us-06-t37
 }
 
 fn truncate_bytes(input: String, max_bytes: usize) -> String {
@@ -710,6 +733,7 @@ fn truncate_bytes(input: String, max_bytes: usize) -> String {
     out
 }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 =======
 >>>>>>> mcoda/task/bck-05-us-10-t25
@@ -734,6 +758,31 @@ fn clamp_symbols_payload(payload: &mut SymbolsResponseV1, limit: usize) {
 }
 
 >>>>>>> mcoda/task/bck-05-us-10-t07
+=======
+fn rpc_error_with_data_message(
+    rpc_code: i32,
+    rpc_message: impl Into<String>,
+    data_message: impl Into<String>,
+    mcp_code: &'static str,
+    reason: Option<String>,
+    tool: Option<&str>,
+    details: Option<serde_json::Value>,
+) -> RpcError {
+    let rpc_message = truncate_bytes(rpc_message.into(), MAX_ERROR_MESSAGE_BYTES);
+    RpcError {
+        code: rpc_code,
+        message: rpc_message,
+        data: Some(mcp_error_data(
+            mcp_code,
+            data_message.into(),
+            reason,
+            tool,
+            details,
+        )),
+    }
+}
+
+>>>>>>> mcoda/task/bck-05-us-06-t37
 fn rpc_error(
     rpc_code: i32,
     message: impl Into<String>,
@@ -742,6 +791,7 @@ fn rpc_error(
     tool: Option<&str>,
     details: Option<serde_json::Value>,
 ) -> RpcError {
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
     let message = truncate_error_bytes(message.into(), MAX_ERROR_MESSAGE_BYTES);
@@ -806,6 +856,30 @@ fn rpc_rate_limited(err: &RateLimited, tool: Option<&str>) -> RpcError {
     )
 <<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-06-t47
+=======
+    let message = message.into();
+    rpc_error_with_data_message(
+        rpc_code,
+        message.clone(),
+        message,
+        mcp_code,
+        reason,
+        tool,
+        details,
+    )
+}
+
+fn rpc_rate_limited(err: &RateLimited) -> RpcError {
+    rpc_error_with_data_message(
+        ERR_INVALID_PARAMS,
+        default_message_for_code(ERR_RATE_LIMITED),
+        err.message.clone(),
+        ERR_RATE_LIMITED,
+        None,
+        None,
+        Some(rate_limited_details(err)),
+    )
+>>>>>>> mcoda/task/bck-05-us-06-t37
 }
 
 <<<<<<< HEAD
@@ -920,6 +994,7 @@ fn parse_params<T: DeserializeOwned>(
 
 >>>>>>> mcoda/task/bck-05-us-06-t39
 fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
+<<<<<<< HEAD
     if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
         return rpc_backoff_required(backoff);
     }
@@ -958,8 +1033,17 @@ fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
         default_message_for_code(mcp_code),
         mcp_code,
         Some(err.to_string()),
+=======
+    let spec = classify_tool_error(err);
+    rpc_error_with_data_message(
+        ERR_INVALID_PARAMS,
+        default_message_for_code(spec.code),
+        spec.message,
+        spec.code,
+        spec.reason,
+>>>>>>> mcoda/task/bck-05-us-06-t37
         tool,
-        details,
+        spec.details,
     )
 }
 
@@ -1007,6 +1091,7 @@ fn default_message_for_code(code: &str) -> &'static str {
     }
 }
 
+<<<<<<< HEAD
 fn index_recovery_steps(repo_root: &Path) -> Vec<String> {
     vec![
         "Run the MCP tool `docdex_index` with paths: [] to build a fresh index.".to_string(),
@@ -1130,12 +1215,39 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
 =======
         return (rate.code, Some(rate_limit_details(rate)));
 >>>>>>> mcoda/task/bck-05-us-06-t46
+=======
+struct ToolErrorSpec {
+    code: &'static str,
+    message: String,
+    reason: Option<String>,
+    details: Option<serde_json::Value>,
+}
+
+fn find_in_chain<T: std::error::Error + 'static>(err: &anyhow::Error) -> Option<&T> {
+    err.chain().find_map(|cause| cause.downcast_ref::<T>())
+}
+
+fn classify_tool_error(err: &anyhow::Error) -> ToolErrorSpec {
+    if let Some(rate) = find_in_chain::<RateLimited>(err) {
+        return ToolErrorSpec {
+            code: rate.code,
+            message: rate.message.clone(),
+            reason: None,
+            details: Some(rate_limited_details(rate)),
+        };
+>>>>>>> mcoda/task/bck-05-us-06-t37
     }
-    if let Some(app) = err.downcast_ref::<AppError>() {
-        return (app.code, app.details.clone());
+    if let Some(app) = find_in_chain::<AppError>(err) {
+        return ToolErrorSpec {
+            code: app.code,
+            message: app.message.clone(),
+            reason: None,
+            details: app.details.clone(),
+        };
     }
-    if let Some(search_err) = err.downcast_ref::<crate::index::SearchError>() {
+    if let Some(search_err) = find_in_chain::<crate::index::SearchError>(err) {
         match search_err {
+<<<<<<< HEAD
             crate::index::SearchError::InvalidQuery { .. } => return (ERR_INVALID_QUERY, None),
         }
     }
@@ -1146,12 +1258,39 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
         return (
             ERR_INVALID_RANGE,
             Some(json!({
+=======
+            crate::index::SearchError::InvalidQuery { reason } => {
+                return ToolErrorSpec {
+                    code: "invalid_query",
+                    message: reason.clone(),
+                    reason: None,
+                    details: None,
+                };
+            }
+        }
+    }
+    if find_in_chain::<InvalidPathError>(err).is_some() {
+        return ToolErrorSpec {
+            code: "invalid_path",
+            message: default_message_for_code("invalid_path").to_string(),
+            reason: Some(err.to_string()),
+            details: None,
+        };
+    }
+    if let Some(range) = find_in_chain::<InvalidRangeError>(err) {
+        return ToolErrorSpec {
+            code: "invalid_range",
+            message: default_message_for_code("invalid_range").to_string(),
+            reason: Some(err.to_string()),
+            details: Some(json!({
+>>>>>>> mcoda/task/bck-05-us-06-t37
                 "start_line": range.start_line,
                 "end_line": range.end_line,
                 "total_lines": range.total_lines,
             })),
-        );
+        };
     }
+<<<<<<< HEAD
     if err.downcast_ref::<PathOutsideRepoError>().is_some() {
         return (ERR_INVALID_PATH, Some(json!({ "kind": "outside_repo" })));
     }
@@ -1165,17 +1304,50 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
         return (
             ERR_MAX_CONTENT_EXCEEDED,
             Some(json!({
+=======
+    if find_in_chain::<PathOutsideRepoError>(err).is_some() {
+        return ToolErrorSpec {
+            code: "invalid_path",
+            message: default_message_for_code("invalid_path").to_string(),
+            reason: Some(err.to_string()),
+            details: Some(json!({ "kind": "outside_repo" })),
+        };
+    }
+    if find_in_chain::<InvalidUriError>(err).is_some() {
+        return ToolErrorSpec {
+            code: "invalid_params",
+            message: default_message_for_code("invalid_params").to_string(),
+            reason: Some(err.to_string()),
+            details: Some(json!({ "kind": "invalid_uri" })),
+        };
+    }
+    if let Some(max_err) = find_in_chain::<MaxContentError>(err) {
+        return ToolErrorSpec {
+            code: "max_content_exceeded",
+            message: default_message_for_code("max_content_exceeded").to_string(),
+            reason: Some(err.to_string()),
+            details: Some(json!({
+>>>>>>> mcoda/task/bck-05-us-06-t37
                 "max_bytes": max_err.max_bytes,
                 "actual_bytes": max_err.actual_bytes,
             })),
-        );
+        };
     }
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-07-t33
     if err.downcast_ref::<MissingSymbolsDependencyError>().is_some() {
         return (
             ERR_MISSING_DEPENDENCY,
 <<<<<<< HEAD
             Some(json!({
+=======
+    if find_in_chain::<MissingSymbolsDependencyError>(err).is_some() {
+        return ToolErrorSpec {
+            code: ERR_MISSING_DEPENDENCY,
+            message: default_message_for_code(ERR_MISSING_DEPENDENCY).to_string(),
+            reason: Some(err.to_string()),
+            details: Some(json!({
+>>>>>>> mcoda/task/bck-05-us-06-t37
                 "dependency": "DOCDEX_ENABLE_SYMBOL_EXTRACTION",
                 "flag": "--enable-symbol-extraction=true"
 =======
@@ -1187,6 +1359,7 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
                 "actual_bytes": max_err.actual_bytes,
 >>>>>>> mcoda/task/bck-05-us-07-t30
             })),
+<<<<<<< HEAD
 =======
             Some(dependency_details(
                 "DOCDEX_ENABLE_SYMBOL_EXTRACTION",
@@ -1206,8 +1379,24 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
                 ]
             })),
         );
+=======
+        };
     }
-    (ERR_INTERNAL_ERROR, None)
+    if let Some(missing) = find_in_chain::<MissingSymbolsIndexError>(err) {
+        return ToolErrorSpec {
+            code: ERR_MISSING_INDEX,
+            message: default_message_for_code(ERR_MISSING_INDEX).to_string(),
+            reason: Some(err.to_string()),
+            details: Some(json!({ "resource": "symbols", "path": missing.rel_path })),
+        };
+    }
+    ToolErrorSpec {
+        code: ERR_INTERNAL_ERROR,
+        message: default_message_for_code(ERR_INTERNAL_ERROR).to_string(),
+        reason: Some(err.to_string()),
+        details: None,
+>>>>>>> mcoda/task/bck-05-us-06-t37
+    }
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -4174,6 +4363,7 @@ mod tests {
             1,
         );
         let rpc = rpc_rate_limited(&err);
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-09-t05
         assert_eq!(rpc.code, ERR_RATE_LIMITED_RPC);
 =======
@@ -4182,10 +4372,14 @@ mod tests {
 =======
         assert_eq!(rpc.code, ERR_INVALID_PARAMS);
 >>>>>>> mcoda/task/bck-05-us-06-t46
+=======
+        assert_eq!(rpc.code, ERR_INVALID_PARAMS);
+>>>>>>> mcoda/task/bck-05-us-06-t37
         let data = rpc.data.expect("rate limited rpc should include data");
         let obj = data.as_object().expect("rate limited data should be object");
         assert_rate_limit_keys(obj, false);
         assert_eq!(obj.get("code").and_then(|v| v.as_str()), Some(ERR_RATE_LIMITED));
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -4285,20 +4479,34 @@ mod tests {
         assert_eq!(obj.get("reason").and_then(|v| v.as_str()), Some("rate limited"));
         let details = obj.get("details").and_then(|v| v.as_object()).expect("details should be object");
 =======
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t37
         assert_eq!(obj.get("message").and_then(|v| v.as_str()), Some("rate limited"));
         let details = obj
             .get("details")
             .and_then(|v| v.as_object())
+<<<<<<< HEAD
             .expect("rate limited details should be present");
 >>>>>>> mcoda/task/bck-05-us-06-t46
+=======
+            .expect("rate limited data should include details object");
+>>>>>>> mcoda/task/bck-05-us-06-t37
         assert_eq!(details.get("retry_after_ms").and_then(|v| v.as_u64()), Some(0));
         assert_eq!(details.get("limit_key").and_then(|v| v.as_str()), Some("mcp_tools"));
         assert_eq!(details.get("scope").and_then(|v| v.as_str()), Some("global"));
         assert!(details.get("retry_at").is_none(), "retry_at should be omitted when unset");
 <<<<<<< HEAD
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-06-t47
 =======
 >>>>>>> mcoda/task/bck-05-us-06-t46
+=======
+        let nested = obj
+            .get("error")
+            .and_then(|v| v.as_object())
+            .expect("rate limited data should include nested error object");
+        assert_eq!(nested.get("code").and_then(|v| v.as_str()), Some(ERR_RATE_LIMITED));
+>>>>>>> mcoda/task/bck-05-us-06-t37
     }
 
     #[test]
@@ -4330,6 +4538,7 @@ mod tests {
         let data = rpc.data.expect("rate limited rpc should include data");
         let obj = data.as_object().expect("rate limited data should be object");
 <<<<<<< HEAD
+<<<<<<< HEAD
         assert_rate_limit_keys(obj, true);
 =======
         let data_message = obj
@@ -4345,12 +4554,15 @@ mod tests {
         assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(1234));
 <<<<<<< HEAD
 <<<<<<< HEAD
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t37
         let message = obj
             .get("message")
             .and_then(|v| v.as_str())
             .expect("rate limited data should include message");
         assert!(
             message.len() <= MAX_ERROR_MESSAGE_BYTES + "…".len(),
+<<<<<<< HEAD
             "rate limited data message should be bounded"
         );
     }
@@ -4553,6 +4765,16 @@ mod tests {
         assert!(details.get("retry_at").and_then(|v| v.as_str()).is_some());
         assert_eq!(details.get("retry_after_ms").and_then(|v| v.as_u64()), Some(1234));
 >>>>>>> mcoda/task/bck-05-us-06-t46
+=======
+            "rate limit message should be bounded"
+        );
+        let details = obj
+            .get("details")
+            .and_then(|v| v.as_object())
+            .expect("rate limited data should include details object");
+        assert!(details.get("retry_at").and_then(|v| v.as_str()).is_some());
+        assert_eq!(details.get("retry_after_ms").and_then(|v| v.as_u64()), Some(1234));
+>>>>>>> mcoda/task/bck-05-us-06-t37
     }
 
     #[test]
@@ -4578,6 +4800,7 @@ mod tests {
                 Ok(()) => {}
                 Err(err) => {
                     rate_limited_count += 1;
+<<<<<<< HEAD
                     let rpc = rpc_rate_limited(&err, None);
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -4588,6 +4811,10 @@ mod tests {
 =======
                     assert_eq!(rpc.code, ERR_INVALID_PARAMS);
 >>>>>>> mcoda/task/bck-05-us-06-t46
+=======
+                    let rpc = rpc_rate_limited(&err);
+                    assert_eq!(rpc.code, ERR_INVALID_PARAMS);
+>>>>>>> mcoda/task/bck-05-us-06-t37
                     assert!(
                         rpc.message.len() <= MAX_ERROR_MESSAGE_BYTES + "…".len(),
                         "rpc error message should remain bounded"
@@ -4606,6 +4833,7 @@ mod tests {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
                     assert!(obj.get("message").and_then(|v| v.as_str()).is_some());
 =======
                     assert!(obj.get("error").is_some(), "error envelope should be present");
@@ -4619,6 +4847,12 @@ mod tests {
                         .and_then(|v| v.as_object())
                         .expect("rate limited details should be present");
 >>>>>>> mcoda/task/bck-05-us-06-t46
+=======
+                    let details = obj
+                        .get("details")
+                        .and_then(|v| v.as_object())
+                        .expect("rate limited data should include details object");
+>>>>>>> mcoda/task/bck-05-us-06-t37
                     assert!(
                         details.get("retry_after_ms").and_then(|v| v.as_u64()).is_some(),
                         "retry_after_ms must be an integer"
@@ -4627,6 +4861,7 @@ mod tests {
                         details.get("limit_key").and_then(|v| v.as_str()),
                         Some("mcp_tools")
                     );
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
                     assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
@@ -4661,6 +4896,9 @@ mod tests {
 =======
                     assert_eq!(details.get("scope").and_then(|v| v.as_str()), Some("global"));
 >>>>>>> mcoda/task/bck-05-us-06-t46
+=======
+                    assert_eq!(details.get("scope").and_then(|v| v.as_str()), Some("global"));
+>>>>>>> mcoda/task/bck-05-us-06-t37
 
                     let payload_bytes = serde_json::to_vec(&rpc).expect("rpc error should serialize");
                     assert!(

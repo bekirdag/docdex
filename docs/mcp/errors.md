@@ -287,6 +287,7 @@ Diagnostics:
 
 - For these errors, `error.data.details` may include `normalizedPath`, `attemptedFingerprint`, `knownCanonicalPath`, and a `recoverySteps` array intended to be directly actionable in UX.
 
+<<<<<<< HEAD
 ## Index-state errors (missing/stale)
 
 Docdex fast-fails on missing or stale index state to avoid serving out-of-date results. These errors include actionable hints and recovery steps (no auto-fixing).
@@ -294,6 +295,9 @@ Docdex fast-fails on missing or stale index state to avoid serving out-of-date r
 - `missing_index`: `details` includes `stateDir`, `repoRoot`, `hint`, and `recoverySteps`.
 - `stale_index`: `details` includes `stateDir`, `repoRoot`, `staleReason`, optional `indexLastUpdatedEpochMs`, optional `repoLastModifiedEpochMs`, plus `hint` and `recoverySteps`.
   - `staleReason` values: `index_state_missing` (legacy index without state metadata) or `repo_modified_since_index`.
+=======
+For a full upgrade/migration and recovery guide, see `docs/ops/state_upgrade_migration.md`.
+>>>>>>> mcoda/task/bck-05-us-07-t13
 
 ## Parity mapping (HTTP / CLI / MCP)
 

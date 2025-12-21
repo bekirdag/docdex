@@ -272,7 +272,12 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 ## Troubleshooting
 - Stale index: re-run `docdexd index --repo <path>`.
 - Port conflicts: change `--host/--port`.
+<<<<<<< HEAD
 - Installer failures (`npm i -g docdex`): use the printed `DOCDEX_*` error code; see `docs/ops/installer_error_codes.md` and `docs/ops/installer_rollback_guarantees.md`.
+=======
+- Installer failures (`npm i -g docdex`): use the printed `DOCDEX_*` error code; see `docs/ops/installer_error_codes.md`.
+- Upgrade/migration or repo state issues: see `docs/ops/state_upgrade_migration.md`.
+>>>>>>> mcoda/task/bck-05-us-07-t13
 
 ### Repo moved/renamed
 

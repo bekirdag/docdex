@@ -2,6 +2,7 @@ mod audit;
 mod browser_session;
 mod chrome_watchdog;
 mod config;
+mod dag;
 mod daemon;
 mod error;
 mod metrics;

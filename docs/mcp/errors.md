@@ -65,13 +65,22 @@ These codes are the **required** set for repo/index/dependency failures and are 
 
 Use these codes for invalid inputs:
 
-- `invalid_params`: request/arguments fail schema/JSON parsing (serde validation).
+- `invalid_params`: reserved for JSON-RPC layer failures (malformed `params`); MCP tool validation prefers `invalid_argument` with field issues.
 - `invalid_argument`: arguments are well-formed but semantically invalid (e.g. empty strings, negative values after coercion).
-- `missing_query`: HTTP `/search` only — required query string is missing.
+- `missing_query`: required query string is missing (`/search` and MCP `docdex_search`).
 - `invalid_query`: invalid query text (empty/whitespace-only, or query parser rejects it).
 - `invalid_path`: invalid or unsafe path (absolute path, parent traversal, outside repo, etc).
 - `invalid_range`: invalid line window (`start_line`/`end_line` out of bounds).
 - `max_content_exceeded`: response content would exceed server limits (e.g. `docdex_open` file too large).
+
+### Validation details (field-level issues)
+
+For `invalid_argument`, `missing_query`, `invalid_query`, `invalid_path`, `invalid_range`, and `max_content_exceeded`, MCP errors include `error.data.details` with structured issues:
+
+- `issues`: array of `{ field, code, message }`.
+- `fieldErrors`: object keyed by field name with `{ code, message }` entries (grouped view).
+
+This mirrors the HTTP invalid-argument contract used by `/v1/graph/impact`.
 
 ### Feature/domain codes (currently emitted)
 
@@ -120,7 +129,7 @@ Docdex presents the same underlying failures in three different wrappers:
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |
 | Rate limited | `rate_limited` | `-32602` | `429` (security middleware returns status-only; no JSON envelope) | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
 | Optional dependency disabled (e.g. symbols) | `missing_dependency` | `-32602` | N/A (no HTTP endpoint for MCP symbols) | N/A (no CLI symbols command) |
-| Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_params` | `-32602` | N/A | N/A |
+| Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_argument` | `-32602` | N/A | N/A |
 | Invalid path for `docdex_open` | `invalid_path` | `-32602` | N/A | N/A |
 | Invalid line window for `docdex_open` | `invalid_range` | `-32602` | N/A | N/A |
 | File too large for `docdex_open` | `max_content_exceeded` | `-32602` | N/A | N/A |
@@ -130,4 +139,4 @@ Notes:
 
 - HTTP `/search` enforces `limit` by clamping to the daemon’s configured max and does not error on over-limit; MCP `docdex_search` similarly clamps `limit` to the MCP server’s `--max-results`.
 - MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`.
-- MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with `details.max_bytes` and `details.actual_bytes`.
+- MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with validation issues plus `details.max_bytes` and `details.actual_bytes`.

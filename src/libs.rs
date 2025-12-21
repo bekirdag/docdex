@@ -48,10 +48,13 @@ use tantivy::query::QueryParser;
 <<<<<<< HEAD
 use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
 use tantivy::{doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, Searcher, Term};
+<<<<<<< HEAD
 =======
 use tantivy::schema::{FieldType, Schema, FAST, STORED, STRING, TEXT};
 use tantivy::{doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
 >>>>>>> mcoda/task/bck-05-us-07-t12
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t11
 use tracing::warn;
 
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
@@ -567,12 +570,22 @@ impl LibsIndexer {
         query: Option<&str>,
         fallback_lines: usize,
     ) -> Result<Option<(DocSnapshot, Option<SnippetResult>)>> {
+<<<<<<< HEAD
         let snapshot = self.snapshot();
         let Some(doc) = self.fetch_document(&snapshot.searcher, doc_id)? else {
             return Ok(None);
         };
         let snapshot = self.snapshot_from_document(doc_id, &doc);
         let snippet = self.snippet_from_document(&snapshot.searcher, &doc, query, fallback_lines)?;
+=======
+        let searcher = self.reader.searcher();
+        let Some(doc) = self.fetch_document(&searcher, doc_id)? else {
+            return Ok(None);
+        };
+        let snapshot = self.snapshot_from_document(doc_id, &doc);
+        let snippet =
+            self.snippet_from_document(&searcher, &doc, query, fallback_lines)?;
+>>>>>>> mcoda/task/bck-05-us-06-t11
         Ok(Some((snapshot, snippet)))
     }
 

@@ -1,7 +1,11 @@
 use crate::dag;
 use crate::index::{
 <<<<<<< HEAD
+<<<<<<< HEAD
     DocSnapshot, Hit, Indexer, RunSummaryResponse, SearchError, SearchQueryMeta, SnippetOrigin,
+=======
+    DocSnapshot, Hit, IndexSnapshot, Indexer, SearchError, SearchQueryMeta, SnippetOrigin,
+>>>>>>> mcoda/task/bck-05-us-06-t11
     SnippetResult,
 };
 use crate::error::{
@@ -2444,7 +2448,8 @@ mod latency_perf_tests {
         let limit = 8usize;
         for _ in 0..20usize {
             let _ = indexer.search_with_query_meta(query, limit)?;
-            let _ = super::search_with_optional_libs(&indexer, Some(&libs_indexer), query, limit)?;
+            let _ =
+                super::search_with_optional_libs(&indexer, None, Some(&libs_indexer), query, limit)?;
         }
 
         let iterations = 250usize;
@@ -2458,7 +2463,8 @@ mod latency_perf_tests {
         let mut combined_us = Vec::with_capacity(iterations);
         for _ in 0..iterations {
             let start = Instant::now();
-            let _ = super::search_with_optional_libs(&indexer, Some(&libs_indexer), query, limit)?;
+            let _ =
+                super::search_with_optional_libs(&indexer, None, Some(&libs_indexer), query, limit)?;
             combined_us.push(start.elapsed().as_micros());
         }
 
@@ -2646,8 +2652,14 @@ pub async fn run_query(
     query: &str,
     limit: usize,
 ) -> Result<SearchResponse> {
+<<<<<<< HEAD
     indexer.preflight_index_state()?;
     let (hits, query_meta) = search_with_optional_libs(indexer, libs_indexer, query, limit)?;
+=======
+    let snapshot = indexer.snapshot();
+    let (hits, query_meta) =
+        search_with_optional_libs(indexer, Some(&snapshot), libs_indexer, query, limit)?;
+>>>>>>> mcoda/task/bck-05-us-06-t11
     let top_score = hits.first().map(|hit| hit.score);
     let token_estimate_sum_kept: u64 = hits.iter().map(|hit| hit.token_estimate).sum();
     let selected_sources = hits
@@ -2679,6 +2691,7 @@ pub async fn run_query(
         top_score,
         top_score_camel: top_score,
 <<<<<<< HEAD
+<<<<<<< HEAD
         meta: Some(build_search_meta(
             indexer,
             Some(query_meta),
@@ -2687,16 +2700,28 @@ pub async fn run_query(
 =======
         meta: Some(build_search_meta(indexer, Some(query_meta), None, None)?),
 >>>>>>> mcoda/task/bck-05-us-08-t03
+=======
+        meta: Some(build_search_meta(
+            indexer,
+            Some(&snapshot),
+            Some(query_meta),
+            None,
+        )?),
+>>>>>>> mcoda/task/bck-05-us-06-t11
     })
 }
 
 fn search_with_optional_libs(
     indexer: &Indexer,
+    snapshot: Option<&IndexSnapshot>,
     libs_indexer: Option<&LibsIndexer>,
     query: &str,
     limit: usize,
 ) -> Result<(Vec<Hit>, SearchQueryMeta)> {
-    let (repo_hits, query_meta) = indexer.search_with_query_meta(query, limit)?;
+    let (repo_hits, query_meta) = match snapshot {
+        Some(snapshot) => indexer.search_with_query_meta_snapshot(snapshot, query, limit)?,
+        None => indexer.search_with_query_meta(query, limit)?,
+    };
     let Some(libs) = libs_indexer else {
         return Ok((repo_hits, query_meta));
     };
@@ -2752,13 +2777,24 @@ fn now_epoch_ms() -> Result<u128> {
 
 fn build_search_meta(
     indexer: &Indexer,
+    snapshot: Option<&IndexSnapshot>,
     query: Option<SearchQueryMeta>,
     context_assembly: Option<ContextAssemblyMeta>,
     index_last_updated_epoch_ms: Option<u128>,
 ) -> Result<SearchMeta> {
     let generated_at_epoch_ms = now_epoch_ms()?;
+<<<<<<< HEAD
     let last_updated = index_last_updated_epoch_ms
         .or_else(|| indexer.stats().ok().and_then(|s| s.last_updated_epoch_ms));
+=======
+    let last_updated = match snapshot {
+        Some(snapshot) => indexer
+            .stats_with_searcher(snapshot.searcher())
+            .ok()
+            .and_then(|s| s.last_updated_epoch_ms),
+        None => indexer.stats().ok().and_then(|s| s.last_updated_epoch_ms),
+    };
+>>>>>>> mcoda/task/bck-05-us-06-t11
     Ok(SearchMeta {
         generated_at_epoch_ms,
         index_last_updated_epoch_ms: last_updated,
@@ -2819,7 +2855,14 @@ async fn search_handler(
         None
     };
 
-    match search_with_optional_libs(state.indexer.as_ref(), libs_indexer, query, limit) {
+    let snapshot = state.indexer.snapshot();
+    match search_with_optional_libs(
+        state.indexer.as_ref(),
+        Some(&snapshot),
+        libs_indexer,
+        query,
+        limit,
+    ) {
         Ok((mut hits, query_meta)) => {
             let max_tokens = params.max_tokens;
             let snippet_policy = if state.security.disable_snippet_text {
@@ -2885,6 +2928,7 @@ async fn search_handler(
                 pruned,
                 selected_sources,
             };
+<<<<<<< HEAD
             let meta =
                 build_search_meta(
                     &state.indexer,
@@ -2893,6 +2937,15 @@ async fn search_handler(
                     index_state.index_last_updated_epoch_ms,
                 )
                 .ok();
+=======
+            let meta = build_search_meta(
+                &state.indexer,
+                Some(&snapshot),
+                Some(query_meta),
+                Some(context_assembly),
+            )
+            .ok();
+>>>>>>> mcoda/task/bck-05-us-06-t11
             Json(SearchResponse {
                 hits,
                 top_score,

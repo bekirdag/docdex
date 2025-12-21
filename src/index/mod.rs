@@ -60,11 +60,15 @@ use tantivy::schema::{FieldType, Schema, FAST, STORED, STRING, TEXT};
 use tantivy::DocAddress;
 use tantivy::{
 <<<<<<< HEAD
+<<<<<<< HEAD
     doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, Searcher, SnippetGenerator,
 =======
     doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, SnippetGenerator, TantivyError,
 >>>>>>> mcoda/task/bck-05-us-09-t13
     Term,
+=======
+    doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, Searcher, SnippetGenerator, Term,
+>>>>>>> mcoda/task/bck-05-us-06-t11
 };
 <<<<<<< HEAD
 use thiserror::Error;
@@ -1143,6 +1147,22 @@ pub fn index_compatibility_report(repo_root: &Path, state_dir: &Path) -> Result<
         message: None,
         recovery_steps: Vec::new(),
     })
+}
+
+#[derive(Clone)]
+pub struct IndexSnapshot {
+    searcher: Searcher,
+    generation_id: u64,
+}
+
+impl IndexSnapshot {
+    pub fn searcher(&self) -> &Searcher {
+        &self.searcher
+    }
+
+    pub fn generation_id(&self) -> u64 {
+        self.generation_id
+    }
 }
 
 impl IndexConfig {
@@ -2402,7 +2422,20 @@ impl Indexer {
         query: &str,
         limit: usize,
     ) -> Result<(Vec<Hit>, SearchQueryMeta)> {
+<<<<<<< HEAD
         self.ensure_index_fresh()?;
+=======
+        let snapshot = self.snapshot();
+        self.search_with_query_meta_snapshot(&snapshot, query, limit)
+    }
+
+    pub fn search_with_query_meta_snapshot(
+        &self,
+        snapshot: &IndexSnapshot,
+        query: &str,
+        limit: usize,
+    ) -> Result<(Vec<Hit>, SearchQueryMeta)> {
+>>>>>>> mcoda/task/bck-05-us-06-t11
         let raw = query.trim();
         if raw.is_empty() {
             return Err(SearchError::InvalidQuery {
@@ -2421,6 +2454,7 @@ impl Indexer {
         }
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.ensure_index_ready()?;
 <<<<<<< HEAD
         let snapshot = self.snapshot();
@@ -2435,6 +2469,9 @@ impl Indexer {
         let state = self.state.read();
         let searcher = state.reader.searcher();
 >>>>>>> mcoda/task/bck-05-us-07-t10
+=======
+        let searcher = snapshot.searcher();
+>>>>>>> mcoda/task/bck-05-us-06-t11
         let parser = QueryParser::for_index(
             &state.index,
             vec![state.body_field, state.summary_field, state.path_field],
@@ -2478,10 +2515,14 @@ impl Indexer {
         };
         let mut snippet_generator =
 <<<<<<< HEAD
+<<<<<<< HEAD
             SnippetGenerator::create(searcher, tantivy_query.as_ref(), self.body_field).ok();
 =======
             SnippetGenerator::create(&searcher, tantivy_query.as_ref(), state.body_field).ok();
 >>>>>>> mcoda/task/bck-05-us-07-t10
+=======
+            SnippetGenerator::create(searcher, tantivy_query.as_ref(), self.body_field).ok();
+>>>>>>> mcoda/task/bck-05-us-06-t11
         if let Some(generator) = snippet_generator.as_mut() {
             generator.set_max_num_chars(MAX_SNIPPET_CHARS);
         }
@@ -2533,22 +2574,17 @@ impl Indexer {
                     }
                 })
                 .or_else(|| {
-                    match self.preview_snippet(&rel_path, FALLBACK_PREVIEW_LINES) {
-                        Ok(Some((text, truncated, start_line, end_line))) => {
-                            Some((
+                    preview_snippet_from_body(&body_text, FALLBACK_PREVIEW_LINES).map(
+                        |(text, truncated, start_line, end_line)| {
+                            (
                                 text,
                                 SearchSnippetOrigin::Preview,
                                 truncated,
                                 Some(start_line),
                                 Some(end_line),
-                            ))
-                        }
-                        Ok(None) => None,
-                        Err(err) => {
-                            warn!(target: "docdexd", error = ?err, %rel_path, "failed to build fallback snippet");
-                            None
-                        }
-                    }
+                            )
+                        },
+                    )
                 })
                 .unwrap_or_else(|| {
                     (
@@ -2578,6 +2614,9 @@ impl Indexer {
     }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t11
     fn fetch_document(&self, searcher: &Searcher, doc_id: &str) -> Result<Option<Document>> {
         let term = Term::from_field_text(self.doc_id_field, doc_id);
 =======
@@ -2953,6 +2992,7 @@ impl Indexer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     pub fn symbols_store_ready(&self) -> bool {
         self.symbols_store.is_some()
 =======
@@ -3191,6 +3231,15 @@ impl Indexer {
         self.ensure_index_fresh()?;
         self.stats()
 >>>>>>> mcoda/task/bck-05-us-08-t01
+=======
+    pub fn snapshot(&self) -> IndexSnapshot {
+        let searcher = self.reader.searcher();
+        let generation_id = searcher.generation().generation_id();
+        IndexSnapshot {
+            searcher,
+            generation_id,
+        }
+>>>>>>> mcoda/task/bck-05-us-06-t11
     }
 
     pub fn stats(&self) -> Result<IndexStats> {
@@ -3292,11 +3341,22 @@ impl Indexer {
         self.ensure_index_state()?;
 >>>>>>> mcoda/task/bck-05-us-08-t06
         let searcher = self.reader.searcher();
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-08-t11
 =======
         let state = self.state.read();
         let searcher = state.reader.searcher();
 >>>>>>> mcoda/task/bck-05-us-07-t10
+=======
+        self.stats_from_searcher(&searcher)
+    }
+
+    pub fn stats_with_searcher(&self, searcher: &Searcher) -> Result<IndexStats> {
+        self.stats_from_searcher(searcher)
+    }
+
+    fn stats_from_searcher(&self, searcher: &Searcher) -> Result<IndexStats> {
+>>>>>>> mcoda/task/bck-05-us-06-t11
         let mut num_docs: u64 = 0;
         let mut segments: usize = 0;
         for segment_reader in searcher.segment_readers() {
@@ -3555,6 +3615,7 @@ impl Indexer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.ensure_index_ready()?;
         let snapshot = self.snapshot();
         let Some(doc) = self.fetch_document(&snapshot.searcher, doc_id)? else {
@@ -3568,6 +3629,11 @@ impl Indexer {
 >>>>>>> mcoda/task/bck-05-us-08-t01
         let Some(doc) = self.fetch_document(doc_id)? else {
 >>>>>>> mcoda/task/bck-05-us-08-t11
+=======
+        let snapshot = self.snapshot();
+        let searcher = snapshot.searcher();
+        let Some(doc) = self.fetch_document(searcher, doc_id)? else {
+>>>>>>> mcoda/task/bck-05-us-06-t11
             return Ok(None);
         };
         let snapshot = self.snapshot_from_document(doc_id, &doc);
@@ -3585,8 +3651,12 @@ impl Indexer {
         };
         let snapshot = self.snapshot_from_document(&state, doc_id, &doc);
         let snippet =
+<<<<<<< HEAD
             self.snippet_from_document(&state, &doc, Some(&snapshot.rel_path), query, fallback_lines)?;
 >>>>>>> mcoda/task/bck-05-us-07-t10
+=======
+            self.snippet_from_document(searcher, &doc, query, fallback_lines)?;
+>>>>>>> mcoda/task/bck-05-us-06-t11
         Ok(Some((snapshot, snippet)))
     }
 
@@ -3901,19 +3971,25 @@ impl Indexer {
     fn snippet_from_document(
         &self,
 <<<<<<< HEAD
+<<<<<<< HEAD
         searcher: &Searcher,
 =======
         state: &IndexState,
 >>>>>>> mcoda/task/bck-05-us-07-t10
+=======
+        searcher: &Searcher,
+>>>>>>> mcoda/task/bck-05-us-06-t11
         doc: &Document,
-        rel_path_hint: Option<&str>,
         query: Option<&str>,
         fallback_lines: usize,
     ) -> Result<Option<SnippetResult>> {
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
         let searcher = state.reader.searcher();
 >>>>>>> mcoda/task/bck-05-us-07-t10
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t11
         if let Some(query) = query.and_then(|q| {
             let trimmed = q.trim();
             if trimmed.is_empty() {
@@ -3926,10 +4002,14 @@ impl Indexer {
             if let Ok(parsed) = parser.parse_query(query) {
                 if let Ok(mut generator) =
 <<<<<<< HEAD
+<<<<<<< HEAD
                     SnippetGenerator::create(searcher, parsed.as_ref(), self.body_field)
 =======
                     SnippetGenerator::create(&searcher, parsed.as_ref(), state.body_field)
 >>>>>>> mcoda/task/bck-05-us-07-t10
+=======
+                    SnippetGenerator::create(searcher, parsed.as_ref(), self.body_field)
+>>>>>>> mcoda/task/bck-05-us-06-t11
                 {
                     generator.set_max_num_chars(MAX_SNIPPET_CHARS);
                     let snippet = generator.snippet_from_doc(doc);
@@ -3948,6 +4028,7 @@ impl Indexer {
             }
         }
 
+<<<<<<< HEAD
         let rel_path = rel_path_hint.map(|p| p.to_string()).or_else(|| {
             doc.get_first(state.path_field)
                 .and_then(|v| v.as_text().map(|s| s.to_string()))
@@ -3966,9 +4047,71 @@ impl Indexer {
                     line_end: Some(line_end),
                 }));
             }
+=======
+        let body = doc
+            .get_first(self.body_field)
+            .and_then(|v| v.as_text())
+            .unwrap_or_default();
+        if let Some((text, truncated, line_start, line_end)) =
+            preview_snippet_from_body(body, fallback_lines)
+        {
+            return Ok(Some(SnippetResult {
+                text,
+                html: None,
+                truncated,
+                origin: SnippetOrigin::Preview,
+                line_start: Some(line_start),
+                line_end: Some(line_end),
+            }));
+>>>>>>> mcoda/task/bck-05-us-06-t11
         }
         Ok(None)
     }
+}
+
+fn preview_snippet_from_body(
+    body: &str,
+    max_lines: usize,
+) -> Option<(String, bool, usize, usize)> {
+    if max_lines == 0 {
+        return None;
+    }
+    let mut preview_lines: Vec<(usize, String)> = Vec::new();
+    let mut truncated = false;
+    for (idx, line) in body.lines().enumerate() {
+        if idx >= max_lines {
+            truncated = true;
+            break;
+        }
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            preview_lines.push((idx + 1, trimmed.to_string()));
+        }
+    }
+    if preview_lines.is_empty() {
+        return None;
+    }
+    let (snippet, snippet_truncated) = condense_snippet(
+        &preview_lines
+            .iter()
+            .map(|(_, text)| text.clone())
+            .collect::<Vec<_>>(),
+        MAX_SNIPPET_CHARS,
+    );
+    if snippet.is_empty() {
+        return None;
+    }
+    let start_line = preview_lines.first().map(|(line, _)| *line).unwrap_or(1);
+    let end_line = preview_lines
+        .last()
+        .map(|(line, _)| *line)
+        .unwrap_or(start_line);
+    Some((
+        snippet,
+        truncated || snippet_truncated,
+        start_line,
+        end_line,
+    ))
 }
 
 struct DocumentIngest {

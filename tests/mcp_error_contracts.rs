@@ -488,6 +488,7 @@ fn mcp_error_data_code(resp: &Value) -> Option<&str> {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn rate_limit_data_signature(data: &serde_json::Map<String, Value>) -> Vec<(String, &'static str)> {
     let mut out: Vec<(String, &'static str)> = data
         .iter()
@@ -549,6 +550,89 @@ fn parse_cli_error(stderr: &[u8]) -> Result<Value, Box<dyn Error>> {
     let raw = String::from_utf8_lossy(stderr);
     let trimmed = raw.trim();
     Ok(serde_json::from_str(trimmed)?)
+=======
+fn error_data_map(resp: &Value) -> Result<&serde_json::Map<String, Value>, Box<dyn Error>> {
+    resp.get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| "error response missing error.data object".into())
+}
+
+fn assert_enveloped_error(
+    resp: &Value,
+    expected_code: &str,
+    expected_tool: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
+    let data = error_data_map(resp)?;
+    assert_eq!(
+        data.get("code").and_then(|v| v.as_str()),
+        Some(expected_code),
+        "error.data.code should match expected code"
+    );
+    let message = data
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        !message.trim().is_empty(),
+        "error.data.message should be non-empty"
+    );
+    let nested = data
+        .get("error")
+        .and_then(|v| v.as_object())
+        .ok_or("error.data.error should be an object")?;
+    assert_eq!(
+        nested.get("code").and_then(|v| v.as_str()),
+        Some(expected_code),
+        "error.data.error.code should mirror error.data.code"
+    );
+    assert_eq!(
+        nested.get("message").and_then(|v| v.as_str()),
+        Some(message),
+        "error.data.error.message should mirror error.data.message"
+    );
+    if let Some(tool) = expected_tool {
+        assert_eq!(
+            data.get("tool").and_then(|v| v.as_str()),
+            Some(tool),
+            "error.data.tool should match the tool name"
+        );
+        assert_eq!(
+            nested.get("tool").and_then(|v| v.as_str()),
+            Some(tool),
+            "error.data.error.tool should match the tool name"
+        );
+    }
+    Ok(())
+}
+
+fn assert_invalid_params(resp: &Value, expected_tool: &str) -> Result<(), Box<dyn Error>> {
+    assert_eq!(mcp_error_code(resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(resp), Some("invalid_params"));
+    assert_enveloped_error(resp, "invalid_params", Some(expected_tool))?;
+    let data = error_data_map(resp)?;
+    let details = data
+        .get("details")
+        .and_then(|v| v.as_object())
+        .ok_or("invalid params error missing details")?;
+    assert_eq!(
+        details.get("validation").and_then(|v| v.as_str()),
+        Some("serde")
+    );
+    assert_eq!(
+        details.get("tool").and_then(|v| v.as_str()),
+        Some(expected_tool)
+    );
+    let reason = data
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        !reason.trim().is_empty(),
+        "invalid params error should include a reason string"
+    );
+    Ok(())
+>>>>>>> mcoda/task/bck-05-us-06-t32
 }
 
 fn sorted_keys(map: &serde_json::Map<String, Value>) -> Vec<String> {
@@ -557,6 +641,7 @@ fn sorted_keys(map: &serde_json::Map<String, Value>) -> Vec<String> {
     keys
 }
 
+<<<<<<< HEAD
 fn assert_canonical_mcp_envelope(
     resp: &Value,
     expected_rpc_code: i64,
@@ -672,6 +757,12 @@ fn mcp_field_error_codes(resp: &Value, field: &str) -> Result<Vec<String>, Box<d
     codes.dedup();
     Ok(codes)
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+fn parse_cli_error(stderr: &[u8]) -> Result<Value, Box<dyn Error>> {
+    let raw = String::from_utf8_lossy(stderr);
+    let trimmed = raw.trim();
+    Ok(serde_json::from_str(trimmed)?)
+>>>>>>> mcoda/task/bck-05-us-06-t32
 }
 
 #[test]
@@ -1434,6 +1525,7 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
         }),
     )?;
     let resp = read_line(&mut mcp.reader)?;
+<<<<<<< HEAD
     assert_eq!(mcp_error_code(&resp), Some(-32602));
     assert_eq!(mcp_error_data_code(&resp), Some("invalid_argument"));
     assert_eq!(
@@ -1444,6 +1536,9 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
         Some("docdex_files"),
         "validation errors should include tool name"
     );
+=======
+    assert_invalid_params(&resp, "docdex_files")?;
+>>>>>>> mcoda/task/bck-05-us-06-t32
     assert!(
         resp.get("error")
             .and_then(|v| v.get("data"))
@@ -1479,6 +1574,7 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
         Some("unknown_repo"),
         "repo mismatches should be machine-coded as unknown_repo"
     );
+    assert_enveloped_error(&mismatch, "unknown_repo", Some("docdex_search"))?;
     let details = mismatch
         .get("error")
         .and_then(|v| v.get("data"))
@@ -1515,6 +1611,7 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
 #[test]
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn mcp_schema_version_negotiation_rejects_unsupported_versions() -> Result<(), Box<dyn Error>> {
 =======
 fn mcp_invalid_argument_errors_are_machine_coded() -> Result<(), Box<dyn Error>> {
@@ -1522,6 +1619,200 @@ fn mcp_invalid_argument_errors_are_machine_coded() -> Result<(), Box<dyn Error>>
     let mut mcp = McpHarness::spawn_with_env(repo.path(), &[("DOCDEX_ENABLE_MEMORY", "1")])?;
 =======
 fn mcp_invalid_params_envelope_is_stable_across_tools() -> Result<(), Box<dyn Error>> {
+=======
+fn mcp_validation_errors_share_envelope_across_tools() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let mut mcp = McpHarness::spawn(repo.path())?;
+
+    let cases = vec![
+        (101, "docdex_search", json!({ "query": 123 })),
+        (102, "docdex_index", json!({ "paths": "nope" })),
+        (103, "docdex_files", json!({ "limit": "nope" })),
+        (104, "docdex_open", json!({ "path": 5 })),
+        (105, "docdex_stats", json!({ "project_root": 5 })),
+        (106, "docdex_repo_inspect", json!({ "project_root": 5 })),
+        (107, "docdex_symbols", json!({ "path": 5 })),
+        (108, "docdex_memory_store", json!({ "text": 5 })),
+        (109, "docdex_memory_recall", json!({ "query": 5 })),
+    ];
+
+    let mut data_keys: Option<Vec<String>> = None;
+    let mut error_keys: Option<Vec<String>> = None;
+
+    for (id, tool, args) in cases {
+        send_line(
+            &mut mcp.stdin,
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": { "name": tool, "arguments": args }
+            }),
+        )?;
+        let resp = read_line(&mut mcp.reader)?;
+        assert_invalid_params(&resp, tool)?;
+
+        let data = error_data_map(&resp)?;
+        let keys = sorted_keys(data);
+        if let Some(ref baseline) = data_keys {
+            assert_eq!(
+                &keys, baseline,
+                "error.data keys should be consistent across tools"
+            );
+        } else {
+            data_keys = Some(keys);
+        }
+        let nested = data
+            .get("error")
+            .and_then(|v| v.as_object())
+            .ok_or("invalid params error missing nested error")?;
+        let nested_keys = sorted_keys(nested);
+        if let Some(ref baseline) = error_keys {
+            assert_eq!(
+                &nested_keys, baseline,
+                "error.data.error keys should be consistent across tools"
+            );
+        } else {
+            error_keys = Some(nested_keys);
+        }
+    }
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_symbols_errors_cover_missing_dependency_and_index() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_root = repo.path();
+    std::fs::write(repo_root.join("docs").join("symbols.md"), "# Title\n")?;
+
+    let mut mcp = McpHarness::spawn(repo_root)?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 120,
+            "method": "tools/call",
+            "params": { "name": "docdex_symbols", "arguments": { "path": "docs/symbols.md" } }
+        }),
+    )?;
+    let dep_resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&dep_resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&dep_resp), Some("missing_dependency"));
+    assert_enveloped_error(&dep_resp, "missing_dependency", Some("docdex_symbols"))?;
+    let dep_details = error_data_map(&dep_resp)?
+        .get("details")
+        .and_then(|v| v.as_object())
+        .ok_or("missing dependency error missing details")?;
+    assert_eq!(
+        dep_details.get("dependency").and_then(|v| v.as_str()),
+        Some("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+    );
+    assert_eq!(
+        dep_details.get("flag").and_then(|v| v.as_str()),
+        Some("--enable-symbol-extraction=true")
+    );
+    mcp.shutdown();
+
+    let mut mcp_symbols = McpHarness::spawn_with_env(
+        repo_root,
+        &[("DOCDEX_ENABLE_SYMBOL_EXTRACTION", "1")],
+    )?;
+    send_line(
+        &mut mcp_symbols.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 121,
+            "method": "tools/call",
+            "params": { "name": "docdex_symbols", "arguments": { "path": "docs/symbols.md" } }
+        }),
+    )?;
+    let index_resp = read_line(&mut mcp_symbols.reader)?;
+    assert_eq!(mcp_error_code(&index_resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&index_resp), Some("missing_index"));
+    assert_enveloped_error(&index_resp, "missing_index", Some("docdex_symbols"))?;
+    let index_details = error_data_map(&index_resp)?
+        .get("details")
+        .and_then(|v| v.as_object())
+        .ok_or("missing index error missing details")?;
+    assert_eq!(
+        index_details.get("resource").and_then(|v| v.as_str()),
+        Some("symbols")
+    );
+    assert_eq!(
+        index_details.get("path").and_then(|v| v.as_str()),
+        Some("docs/symbols.md")
+    );
+    mcp_symbols.shutdown();
+
+    Ok(())
+}
+
+#[test]
+fn mcp_internal_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let mut mcp = McpHarness::spawn(repo.path())?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 130,
+            "method": "tools/call",
+            "params": { "name": "docdex_open", "arguments": { "path": "docs/missing.md" } }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("internal_error"));
+    assert_enveloped_error(&resp, "internal_error", Some("docdex_open"))?;
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_backoff_required_when_index_writer_busy() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let mut primary = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut primary.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 140,
+            "method": "initialize",
+            "params": {}
+        }),
+    )?;
+    let _ = read_line(&mut primary.reader)?;
+
+    let mut secondary = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut secondary.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 141,
+            "method": "tools/call",
+            "params": { "name": "docdex_index", "arguments": { "paths": [] } }
+        }),
+    )?;
+    let resp = read_line(&mut secondary.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("backoff_required"));
+    assert_enveloped_error(&resp, "backoff_required", Some("docdex_index"))?;
+
+    primary.shutdown();
+    secondary.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_missing_project_root_path_is_missing_repo_path() -> Result<(), Box<dyn Error>> {
+>>>>>>> mcoda/task/bck-05-us-06-t32
     let repo = setup_repo()?;
     let mut mcp = McpHarness::spawn(repo.path())?;
 >>>>>>> mcoda/task/bck-05-us-06-t40
@@ -1767,6 +2058,7 @@ fn mcp_missing_project_root_path_is_missing_repo_path() -> Result<(), Box<dyn Er
     let resp = read_line(&mut mcp.reader)?;
     assert_eq!(mcp_error_code(&resp), Some(-32602));
     assert_eq!(mcp_error_data_code(&resp), Some("missing_repo_path"));
+    assert_enveloped_error(&resp, "missing_repo_path", Some("docdex_search"))?;
     let details = resp
         .get("error")
         .and_then(|v| v.get("data"))
@@ -1784,9 +2076,66 @@ fn mcp_missing_project_root_path_is_missing_repo_path() -> Result<(), Box<dyn Er
 
 #[test]
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn mcp_missing_and_stale_index_errors_are_distinct() -> Result<(), Box<dyn Error>> {
 =======
 fn mcp_symbols_errors_use_canonical_codes_and_envelopes() -> Result<(), Box<dyn Error>> {
+=======
+fn mcp_missing_repo_path_matches_cli_error_code() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let mut mcp = McpHarness::spawn(repo.path())?;
+
+    let missing = repo.path().join("does-not-exist");
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 13,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": {
+                    "query": "MCP_ROADMAP",
+                    "project_root": missing.to_string_lossy()
+                }
+            }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    let mcp_code = mcp_error_data_code(&resp);
+    assert_eq!(mcp_code, Some("missing_repo_path"));
+
+    let cli_out = run_docdex([
+        "query",
+        "--repo",
+        missing.to_string_lossy().as_ref(),
+        "--query",
+        "MCP_ROADMAP",
+        "--limit",
+        "1",
+    ])?;
+    assert!(
+        !cli_out.status.success(),
+        "CLI query should fail for missing repo path"
+    );
+    let cli_payload = parse_cli_error(&cli_out.stderr)?;
+    let cli_code = cli_payload
+        .get("error")
+        .and_then(|v| v.get("code"))
+        .and_then(|v| v.as_str());
+    assert_eq!(
+        cli_code,
+        Some("missing_repo_path"),
+        "CLI and MCP should share the missing_repo_path code"
+    );
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn Error>> {
+>>>>>>> mcoda/task/bck-05-us-06-t32
     let repo = setup_repo()?;
 
     let mut mcp = McpHarness::spawn(repo.path())?;
@@ -2056,12 +2405,40 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
         Some(1000),
         "docdex_files should report the clamped limit"
     );
+<<<<<<< HEAD
     let files = files_body
         .get("results")
         .and_then(|v| v.as_array())
         .ok_or("docdex_files should return results array")?;
     let first_file = files.first().ok_or("docdex_files missing result")?;
     assert_doc_snapshot_schema(first_file)?;
+=======
+    assert_eq!(
+        files_body.get("offset").and_then(|v| v.as_u64()),
+        Some(0),
+        "docdex_files should report the requested offset"
+    );
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 211,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_files",
+                "arguments": { "limit": 1, "offset": 999_999 }
+            }
+        }),
+    )?;
+    let files_offset_resp = read_line(&mut mcp.reader)?;
+    let files_offset_body = parse_tool_result(&files_offset_resp)?;
+    assert_eq!(
+        files_offset_body.get("offset").and_then(|v| v.as_u64()),
+        Some(50_000),
+        "docdex_files should clamp offset to the max"
+    );
+>>>>>>> mcoda/task/bck-05-us-06-t32
 
     // docdex_open should fail with a structured max-content error.
     let big_path = repo.path().join("docs").join("big.md");
@@ -2448,6 +2825,7 @@ fn mcp_resource_read_enforces_max_content() -> Result<(), Box<dyn Error>> {
     let open_err = read_line(&mut mcp.reader)?;
     assert_eq!(mcp_error_code(&open_err), Some(-32602));
     assert_eq!(mcp_error_data_code(&open_err), Some("max_content_exceeded"));
+    assert_enveloped_error(&open_err, "max_content_exceeded", Some("docdex_open"))?;
     assert_eq!(
         open_err.get("error")
             .and_then(|v| v.get("data"))

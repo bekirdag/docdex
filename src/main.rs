@@ -6,6 +6,7 @@ mod config;
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 mod dag;
 =======
 mod ddg_discovery;
@@ -19,6 +20,9 @@ mod dag;
 =======
 mod dag;
 >>>>>>> mcoda/task/bck-05-us-07-t23
+=======
+mod dag;
+>>>>>>> mcoda/task/bck-05-us-07-t26
 mod daemon;
 mod error;
 <<<<<<< HEAD
@@ -522,6 +526,7 @@ enum Command {
         embedding_timeout_ms: u64,
     },
 <<<<<<< HEAD
+<<<<<<< HEAD
     /// View reasoning DAG sessions stored in repo-scoped dag.db.
     Dag {
         #[command(subcommand)]
@@ -553,6 +558,12 @@ enum Command {
         )]
         include_libs: bool,
 >>>>>>> mcoda/task/bck-05-us-07-t18
+=======
+    /// Export a session DAG in text or DOT format.
+    Dag {
+        #[command(subcommand)]
+        command: DagCommand,
+>>>>>>> mcoda/task/bck-05-us-07-t26
     },
     /// Manage explicit repo identity mappings for shared state dirs.
     Repo {
@@ -641,12 +652,31 @@ enum Command {
 
 #[derive(Subcommand, Debug)]
 enum DagCommand {
+<<<<<<< HEAD
     /// Render a session DAG as JSON from repo-scoped dag.db.
     View {
         #[command(flatten)]
         repo: RepoArgs,
         #[arg(value_parser = config::non_empty_string, value_name = "SESSION_ID")]
         session_id: String,
+=======
+    /// Export a session DAG as text or DOT.
+    View {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(value_parser = config::non_empty_string, help = "Session identifier")]
+        session_id: String,
+        #[arg(
+            short,
+            long,
+            default_value = "text",
+            value_parser = ["text", "dot"],
+            help = "Output format"
+        )]
+        format: String,
+        #[arg(short, long, value_name = "PATH", help = "Write output to a file instead of stdout")]
+        output: Option<PathBuf>,
+>>>>>>> mcoda/task/bck-05-us-07-t26
     },
 }
 
@@ -1371,6 +1401,7 @@ async fn run() -> Result<()> {
                 }))?
             );
         }
+<<<<<<< HEAD
         Command::WebResearch {
             repo,
             query,
@@ -1410,6 +1441,53 @@ async fn run() -> Result<()> {
             .await?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
+=======
+        Command::Dag { command } => match command {
+            DagCommand::View {
+                repo,
+                session_id,
+                format,
+                output,
+            } => {
+                let repo_root = repo.repo_root();
+                let index_config = index::IndexConfig::with_overrides(
+                    &repo_root,
+                    repo.state_dir_override(),
+                    repo.exclude_dir_overrides(),
+                    repo.exclude_prefix_overrides(),
+                    repo.symbols_enabled(),
+                )?;
+                util::init_logging("warn")?;
+                index::ensure_state_dir_secure(index_config.state_dir())?;
+
+                let store = dag::DagStore::new(index_config.state_dir());
+                let session = store
+                    .load_session(&session_id)
+                    .map_err(dag::map_dag_error)?;
+                let format = dag::DagExportFormat::parse(&format).ok_or_else(|| {
+                    error::AppError::new(
+                        error::ERR_INVALID_ARGUMENT,
+                        "format must be one of: text, dot",
+                    )
+                })?;
+                let rendered = dag::export_session(&session, format);
+                if let Some(path) = output {
+                    if path.as_os_str() == "-" {
+                        print!("{rendered}");
+                    } else {
+                        if let Some(parent) = path.parent() {
+                            if !parent.as_os_str().is_empty() {
+                                fs::create_dir_all(parent)?;
+                            }
+                        }
+                        fs::write(&path, rendered)?;
+                    }
+                } else {
+                    print!("{rendered}");
+                }
+            }
+        },
+>>>>>>> mcoda/task/bck-05-us-07-t26
         Command::Mcp {
             repo,
             log,
@@ -1631,10 +1709,14 @@ fn print_full_help() -> Result<()> {
         "ingest",
         "query",
 <<<<<<< HEAD
+<<<<<<< HEAD
         "stats",
 =======
         "web-search",
 >>>>>>> mcoda/task/bck-05-us-07-t16
+=======
+        "dag",
+>>>>>>> mcoda/task/bck-05-us-07-t26
         "repo",
         "dag",
         "memory-store",

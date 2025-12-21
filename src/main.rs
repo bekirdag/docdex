@@ -15,6 +15,7 @@ mod mcp;
 mod ollama;
 mod ratelimit;
 mod repo_identity;
+mod repo_manager;
 mod search;
 mod symbols;
 mod util;

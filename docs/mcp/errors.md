@@ -59,6 +59,7 @@ These codes are the **required** set for repo/index/dependency failures and are 
 - `missing_dependency`: a required optional feature/dependency is disabled (e.g. symbols extraction disabled).
 - `rate_limited`: request rejected due to rate limiting (reserved for future use in MCP).
 - `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable).
+- `repo_capacity_exceeded`: max-open-repos cap reached and no idle repo is available to evict (details include `maxOpenRepos`, `openRepos`, `busyRepos`, and recovery guidance).
 - `internal_error`: unexpected server failure.
 
 ### Parameter/argument validation codes
@@ -82,6 +83,17 @@ Docdex also uses feature-specific codes in some tools:
 - `embedding_model_not_found`
 - `embedding_failed`
 
+### Warning codes (non-fatal)
+
+Warnings may be attached to successful responses (typically under `meta.warnings`) as a list of
+objects `{ code, message, details }`. Clients should treat warnings as advisory and never as
+hard failures.
+
+- `repo_evicted`: a repo was evicted to enforce `max-open-repos` (details include `evictedRepo`,
+  `maxOpenRepos`, `openRepos`, and `reason`).
+- `repo_thrashing`: repeated evictions detected within a short window (details include
+  `maxOpenRepos`, `evictionsInWindow`, and `windowMs`).
+
 ## Repo moved/renamed (deterministic behavior + recovery)
 
 Docdex intentionally **fails closed** on repo identity changes to prevent cross-repo state mixing (no silent cross-association).
@@ -103,7 +115,7 @@ Diagnostics:
 
 Docdex presents the same underlying failures in three different wrappers:
 
-- **HTTP daemon**: JSON error body (where implemented) is `{ "error": { "code": "<docdex_code>", "message": "<string>" } }`.
+- **HTTP daemon**: JSON error body (where implemented) is `{ "error": { "code": "<docdex_code>", "message": "<string>", "details": { ... } } }` (details optional).
 - **CLI**: non-zero exit (currently always `1`) and a JSON error line to `stderr` when the error is a `StartupError`/`AppError` (same `{error:{code,message}}` shape as HTTP).
 - **MCP**: JSON-RPC error with Docdex code in `error.data.code`.
 
@@ -115,6 +127,7 @@ Docdex presents the same underlying failures in three different wrappers:
 | Repo path missing on disk | `missing_repo_path` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"missing_repo_path",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"missing_repo_path",...}}` |
 | Repo mismatch (`project_root` does not match server repo) | `unknown_repo` | `-32602` | N/A (daemon is started per-repo) | N/A (CLI always has `--repo`; mismatch is not represented) |
 | Repo state mismatch (unsafe to associate state) | `repo_state_mismatch` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"repo_state_mismatch",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"repo_state_mismatch",...}}` |
+| Repo capacity exceeded (no idle repo available) | `repo_capacity_exceeded` | `-32602` | `429` JSON `{error:{code:"repo_capacity_exceeded",...}}` | Exit `1`, `stderr` JSON `{error:{code:"repo_capacity_exceeded",...}}` |
 | Index missing (query/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
 | Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Not currently emitted by the per-repo CLI |
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |

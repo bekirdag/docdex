@@ -20,6 +20,13 @@ pub struct Metrics {
     chrome_watchdog_reap_attempts: AtomicU64,
     chrome_watchdog_reaped: AtomicU64,
     chrome_watchdog_reap_failures: AtomicU64,
+
+    ddg_discovery_spacing_events: AtomicU64,
+    ddg_discovery_spacing_ms_total: AtomicU64,
+    ddg_discovery_backoff_events: AtomicU64,
+    ddg_discovery_backoff_ms_total: AtomicU64,
+    ddg_discovery_retry_events: AtomicU64,
+    ddg_discovery_stop_events: AtomicU64,
 }
 
 impl Metrics {
@@ -81,6 +88,30 @@ impl Metrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn inc_ddg_discovery_spacing(&self, spacing_ms: u64) {
+        self.ddg_discovery_spacing_events
+            .fetch_add(1, Ordering::Relaxed);
+        self.ddg_discovery_spacing_ms_total
+            .fetch_add(spacing_ms, Ordering::Relaxed);
+    }
+
+    pub fn inc_ddg_discovery_backoff(&self, backoff_ms: u64) {
+        self.ddg_discovery_backoff_events
+            .fetch_add(1, Ordering::Relaxed);
+        self.ddg_discovery_backoff_ms_total
+            .fetch_add(backoff_ms, Ordering::Relaxed);
+    }
+
+    pub fn inc_ddg_discovery_retry(&self) {
+        self.ddg_discovery_retry_events
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_ddg_discovery_stop(&self) {
+        self.ddg_discovery_stop_events
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn render_prometheus(&self) -> String {
         format!(
             concat!(
@@ -120,6 +151,24 @@ impl Metrics {
                 "# HELP docdex_chrome_watchdog_reap_failures_total Chrome watchdog reap failures\n",
                 "# TYPE docdex_chrome_watchdog_reap_failures_total counter\n",
                 "docdex_chrome_watchdog_reap_failures_total {}\n",
+                "# HELP docdex_ddg_discovery_spacing_total DDG discovery spacing events\n",
+                "# TYPE docdex_ddg_discovery_spacing_total counter\n",
+                "docdex_ddg_discovery_spacing_total {}\n",
+                "# HELP docdex_ddg_discovery_spacing_ms_total DDG discovery spacing time in milliseconds\n",
+                "# TYPE docdex_ddg_discovery_spacing_ms_total counter\n",
+                "docdex_ddg_discovery_spacing_ms_total {}\n",
+                "# HELP docdex_ddg_discovery_backoff_total DDG discovery backoff events\n",
+                "# TYPE docdex_ddg_discovery_backoff_total counter\n",
+                "docdex_ddg_discovery_backoff_total {}\n",
+                "# HELP docdex_ddg_discovery_backoff_ms_total DDG discovery backoff time in milliseconds\n",
+                "# TYPE docdex_ddg_discovery_backoff_ms_total counter\n",
+                "docdex_ddg_discovery_backoff_ms_total {}\n",
+                "# HELP docdex_ddg_discovery_retries_total DDG discovery retry attempts\n",
+                "# TYPE docdex_ddg_discovery_retries_total counter\n",
+                "docdex_ddg_discovery_retries_total {}\n",
+                "# HELP docdex_ddg_discovery_stop_outcomes_total DDG discovery stop outcomes\n",
+                "# TYPE docdex_ddg_discovery_stop_outcomes_total counter\n",
+                "docdex_ddg_discovery_stop_outcomes_total {}\n",
             ),
             self.rate_limit_denies.load(Ordering::Relaxed),
             self.auth_denies.load(Ordering::Relaxed),
@@ -133,6 +182,12 @@ impl Metrics {
             self.chrome_watchdog_reap_attempts.load(Ordering::Relaxed),
             self.chrome_watchdog_reaped.load(Ordering::Relaxed),
             self.chrome_watchdog_reap_failures.load(Ordering::Relaxed),
+            self.ddg_discovery_spacing_events.load(Ordering::Relaxed),
+            self.ddg_discovery_spacing_ms_total.load(Ordering::Relaxed),
+            self.ddg_discovery_backoff_events.load(Ordering::Relaxed),
+            self.ddg_discovery_backoff_ms_total.load(Ordering::Relaxed),
+            self.ddg_discovery_retry_events.load(Ordering::Relaxed),
+            self.ddg_discovery_stop_events.load(Ordering::Relaxed),
         )
     }
 }
@@ -165,4 +220,3 @@ pub fn global() -> Arc<Metrics> {
 pub fn set_global(metrics: Arc<Metrics>) {
     *GLOBAL_METRICS.write() = metrics;
 }
-

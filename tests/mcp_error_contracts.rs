@@ -510,6 +510,7 @@ fn mcp_error_data_code(resp: &Value) -> Option<&str> {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn rate_limit_data_signature(data: &serde_json::Map<String, Value>) -> Vec<(String, &'static str)> {
     let mut out: Vec<(String, &'static str)> = data
         .iter()
@@ -625,11 +626,78 @@ fn assert_enveloped_error(
             nested.get("tool").and_then(|v| v.as_str()),
             Some(tool),
             "error.data.error.tool should match the tool name"
+=======
+fn assert_canonical_envelope(
+    resp: &Value,
+    expected_code: &str,
+    expected_tool: &str,
+) -> Result<(), Box<dyn Error>> {
+    let error = resp
+        .get("error")
+        .and_then(|v| v.as_object())
+        .ok_or("error missing or not an object")?;
+    let data = error
+        .get("data")
+        .and_then(|v| v.as_object())
+        .ok_or("error.data missing or not an object")?;
+    let data_code = data
+        .get("code")
+        .and_then(|v| v.as_str())
+        .ok_or("error.data.code missing or not a string")?;
+    assert_eq!(data_code, expected_code);
+    let data_message = data
+        .get("message")
+        .and_then(|v| v.as_str())
+        .ok_or("error.data.message missing or not a string")?;
+    let error_message = error
+        .get("message")
+        .and_then(|v| v.as_str())
+        .ok_or("error.message missing or not a string")?;
+    assert_eq!(
+        data_message, error_message,
+        "error.message should mirror error.data.message"
+    );
+    let data_error = data
+        .get("error")
+        .and_then(|v| v.as_object())
+        .ok_or("error.data.error missing or not an object")?;
+    assert_eq!(
+        data_error.get("code").and_then(|v| v.as_str()),
+        Some(expected_code)
+    );
+    assert_eq!(
+        data_error.get("message").and_then(|v| v.as_str()),
+        Some(data_message)
+    );
+    if !expected_tool.is_empty() {
+        assert_eq!(
+            data.get("tool").and_then(|v| v.as_str()),
+            Some(expected_tool)
+        );
+        assert_eq!(
+            data_error.get("tool").and_then(|v| v.as_str()),
+            Some(expected_tool)
+        );
+    }
+    if let Some(reason) = data.get("reason") {
+        assert_eq!(
+            data_error.get("reason"),
+            Some(reason),
+            "error.data.reason should mirror error.data.error.reason"
+        );
+    }
+    if let Some(details) = data.get("details") {
+        assert_eq!(
+            data_error.get("details"),
+            Some(details),
+            "error.data.details should mirror error.data.error.details"
+>>>>>>> mcoda/task/bck-05-us-06-t07
         );
     }
     Ok(())
 }
 
+<<<<<<< HEAD
 fn assert_invalid_params(resp: &Value, expected_tool: &str) -> Result<(), Box<dyn Error>> {
     assert_eq!(mcp_error_code(resp), Some(-32602));
     assert_eq!(mcp_error_data_code(resp), Some("invalid_params"));
@@ -791,6 +859,8 @@ fn parse_cli_error(stderr: &[u8]) -> Result<Value, Box<dyn Error>> {
 >>>>>>> mcoda/task/bck-05-us-06-t23
 }
 
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t07
 #[test]
 fn mcp_missing_index_returns_actionable_hint() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
@@ -3036,6 +3106,7 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
 }
 
 #[test]
+<<<<<<< HEAD
 fn mcp_search_clamps_after_parser_sanitization() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let repo_str = repo.path().to_string_lossy().to_string();
@@ -3103,6 +3174,14 @@ fn mcp_search_snippet_and_summary_bounds_are_enforced() -> Result<(), Box<dyn Er
         String::from_utf8_lossy(&index_out.stderr)
     );
 
+=======
+fn mcp_symbols_disabled_returns_missing_dependency_envelope() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    std::fs::write(
+        repo.path().join("docs").join("symbols.md"),
+        "# Symbols\n\nBody.\n",
+    )?;
+>>>>>>> mcoda/task/bck-05-us-06-t07
     let mut mcp = McpHarness::spawn(repo.path())?;
 
     send_line(
@@ -3111,6 +3190,7 @@ fn mcp_search_snippet_and_summary_bounds_are_enforced() -> Result<(), Box<dyn Er
             "jsonrpc": "2.0",
             "id": 30,
             "method": "tools/call",
+<<<<<<< HEAD
             "params": {
                 "name": "docdex_search",
                 "arguments": { "query": "LONGTERM", "limit": 1 }
@@ -3119,6 +3199,45 @@ fn mcp_search_snippet_and_summary_bounds_are_enforced() -> Result<(), Box<dyn Er
     )?;
     let baseline_resp = read_line(&mut mcp.reader)?;
     let baseline_body = parse_tool_result(&baseline_resp)?;
+=======
+            "params": { "name": "docdex_symbols", "arguments": { "path": "docs/symbols.md" } }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("missing_dependency"));
+    assert_canonical_envelope(&resp, "missing_dependency", "docdex_symbols")?;
+
+    let details = resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("details"))
+        .ok_or("missing_dependency should include details")?;
+    assert_eq!(
+        details.get("dependency").and_then(|v| v.as_str()),
+        Some("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+    );
+    assert_eq!(
+        details.get("flag").and_then(|v| v.as_str()),
+        Some("--enable-symbol-extraction=true")
+    );
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_symbols_missing_index_returns_missing_index_envelope() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    std::fs::write(
+        repo.path().join("docs").join("symbols.md"),
+        "# Symbols\n\nBody.\n",
+    )?;
+    let mut mcp = McpHarness::spawn_with_env(
+        repo.path(),
+        &[("DOCDEX_ENABLE_SYMBOL_EXTRACTION", "1")],
+    )?;
+>>>>>>> mcoda/task/bck-05-us-06-t07
 
     send_line(
         &mut mcp.stdin,
@@ -3126,6 +3245,7 @@ fn mcp_search_snippet_and_summary_bounds_are_enforced() -> Result<(), Box<dyn Er
             "jsonrpc": "2.0",
             "id": 31,
             "method": "tools/call",
+<<<<<<< HEAD
             "params": {
                 "name": "docdex_search",
                 "arguments": { "query": "LONGTERM", "limit": 999 }
@@ -3185,12 +3305,101 @@ fn mcp_search_snippet_and_summary_bounds_are_enforced() -> Result<(), Box<dyn Er
         );
     }
 
+=======
+            "params": { "name": "docdex_symbols", "arguments": { "path": "docs/symbols.md" } }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("missing_index"));
+    assert_canonical_envelope(&resp, "missing_index", "docdex_symbols")?;
+
+    let details = resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("details"))
+        .ok_or("missing_index should include details")?;
+    assert_eq!(
+        details.get("resource").and_then(|v| v.as_str()),
+        Some("symbols")
+    );
+    assert_eq!(
+        details.get("path").and_then(|v| v.as_str()),
+        Some("docs/symbols.md")
+    );
+
+>>>>>>> mcoda/task/bck-05-us-06-t07
     mcp.shutdown();
     Ok(())
 }
 
 #[test]
+<<<<<<< HEAD
 fn mcp_files_clamp_and_schema_are_stable() -> Result<(), Box<dyn Error>> {
+=======
+fn mcp_backoff_required_when_indexer_is_read_only() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let mut primary = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut primary.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 40,
+            "method": "tools/call",
+            "params": { "name": "docdex_stats", "arguments": {} }
+        }),
+    )?;
+    let _ = read_line(&mut primary.reader)?;
+
+    let mut secondary = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut secondary.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 41,
+            "method": "tools/call",
+            "params": { "name": "docdex_index", "arguments": { "paths": [] } }
+        }),
+    )?;
+    let resp = read_line(&mut secondary.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("backoff_required"));
+    assert_canonical_envelope(&resp, "backoff_required", "docdex_index")?;
+
+    primary.shutdown();
+    secondary.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_internal_error_envelope_when_open_path_missing() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let mut mcp = McpHarness::spawn(repo.path())?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 50,
+            "method": "tools/call",
+            "params": { "name": "docdex_open", "arguments": { "path": "docs/missing.md" } }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("internal_error"));
+    assert_canonical_envelope(&resp, "internal_error", "docdex_open")?;
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn cli_invalid_query_error_matches_machine_reason() -> Result<(), Box<dyn Error>> {
+>>>>>>> mcoda/task/bck-05-us-06-t07
     let repo = setup_repo()?;
     let repo_str = repo.path().to_string_lossy().to_string();
     let index_out = run_docdex(["index", "--repo", repo_str.as_str()])?;

@@ -71,7 +71,7 @@ Use these codes for invalid inputs:
 - `invalid_query`: invalid query text (empty/whitespace-only, or query parser rejects it).
 - `invalid_path`: invalid or unsafe path (absolute path, parent traversal, outside repo, etc).
 - `invalid_range`: invalid line window (`start_line`/`end_line` out of bounds).
-- `max_content_exceeded`: response content would exceed server limits (e.g. `docdex_open` file too large).
+- `max_content_exceeded`: response content would exceed server limits (reserved for surfaces that choose errors over truncation).
 
 ### Feature/domain codes (currently emitted)
 
@@ -123,11 +123,11 @@ Docdex presents the same underlying failures in three different wrappers:
 | Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_params` | `-32602` | N/A | N/A |
 | Invalid path for `docdex_open` | `invalid_path` | `-32602` | N/A | N/A |
 | Invalid line window for `docdex_open` | `invalid_range` | `-32602` | N/A | N/A |
-| File too large for `docdex_open` | `max_content_exceeded` | `-32602` | N/A | N/A |
 | Internal MCP server failure | `internal_error` | `-32000` | `500` (varies by endpoint) | Exit `1` (varies; may be JSON for `StartupError`/`AppError`) |
 
 Notes:
 
 - HTTP `/search` enforces `limit` by clamping to the daemon’s configured max and does not error on over-limit; MCP `docdex_search` similarly clamps `limit` to the MCP server’s `--max-results`.
+- MCP tools that enforce max sizes return a `limits` object describing requested/applied/max values and a `truncated` flag.
 - MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`.
-- MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with `details.max_bytes` and `details.actual_bytes`.
+- MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; when exceeded, it truncates and reports `limits.bytes.max`, `limits.bytes.actual`, and `limits.bytes.returned`.

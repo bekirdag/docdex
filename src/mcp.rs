@@ -146,6 +146,17 @@ fn truncate_bytes(input: String, max_bytes: usize) -> String {
     out
 }
 
+fn truncate_utf8(input: &str, max_bytes: usize) -> (String, bool) {
+    if input.len() <= max_bytes {
+        return (input.to_string(), false);
+    }
+    let mut end = max_bytes;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    (input[..end].to_string(), true)
+}
+
 fn rpc_error(
     rpc_code: i32,
     message: impl Into<String>,
@@ -1277,10 +1288,9 @@ impl McpServer {
     async fn handle_search(&self, args: SearchArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
         let query = args.query.trim();
-        let limit = args
-            .limit
-            .unwrap_or(self.max_results)
-            .clamp(1, self.max_results);
+        let requested_limit = args.limit.unwrap_or(self.max_results);
+        let limit = requested_limit.clamp(1, self.max_results);
+        let limit_truncated = requested_limit > limit;
         let hits =
             search::run_query(&self.indexer, self.libs_indexer.as_ref(), query, limit).await?;
         let hits_value = serde_json::to_value(&hits.hits)?;
@@ -1298,6 +1308,14 @@ impl McpServer {
             context_assembly: None,
         });
         meta.repo_root = project_root_path.clone();
+        let limits = json!({
+            "limit": {
+                "requested": requested_limit,
+                "applied": limit,
+                "max": self.max_results,
+                "truncated": limit_truncated
+            }
+        });
         Ok(json!({
             "hits": hits_value.clone(),
             "results": hits_value,
@@ -1306,6 +1324,7 @@ impl McpServer {
             "repo_root": self.repo_root.display().to_string(),
             "state_dir": self.indexer.config().state_dir().display().to_string(),
             "limit": limit,
+            "limits": limits,
             "project_root": project_root_path,
             "meta": meta
         }))
@@ -1361,17 +1380,33 @@ impl McpServer {
 
     async fn handle_files(&self, args: FilesArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
-        let limit = args
-            .limit
-            .unwrap_or(FILES_DEFAULT_LIMIT)
-            .clamp(1, FILES_MAX_LIMIT);
-        let offset = args.offset.unwrap_or(0).min(FILES_MAX_OFFSET);
+        let requested_limit = args.limit.unwrap_or(FILES_DEFAULT_LIMIT);
+        let limit = requested_limit.clamp(1, FILES_MAX_LIMIT);
+        let limit_truncated = requested_limit > limit;
+        let requested_offset = args.offset.unwrap_or(0);
+        let offset = requested_offset.min(FILES_MAX_OFFSET);
+        let offset_truncated = requested_offset > offset;
         let (docs, total) = self.indexer.list_docs(offset, limit)?;
+        let limits = json!({
+            "limit": {
+                "requested": requested_limit,
+                "applied": limit,
+                "max": FILES_MAX_LIMIT,
+                "truncated": limit_truncated
+            },
+            "offset": {
+                "requested": requested_offset,
+                "applied": offset,
+                "max": FILES_MAX_OFFSET,
+                "truncated": offset_truncated
+            }
+        });
         Ok(json!({
             "results": docs,
             "total": total,
             "limit": limit,
             "offset": offset,
+            "limits": limits,
             "repo_root": self.repo_root.display().to_string(),
             "project_root": self
                 .default_project_root
@@ -1424,22 +1459,24 @@ impl McpServer {
         }
         let content = fs::read_to_string(&canonical)
             .with_context(|| format!("read {}", rel_path.display()))?;
-        if content.len() > OPEN_MAX_BYTES {
-            return Err(MaxContentError {
-                actual_bytes: content.len(),
-                max_bytes: OPEN_MAX_BYTES,
-            }
-            .into());
-        }
         let lines: Vec<&str> = content.lines().collect();
         let total_lines = lines.len();
         if total_lines == 0 {
+            let limits = json!({
+                "bytes": {
+                    "max": OPEN_MAX_BYTES,
+                    "actual": 0,
+                    "returned": 0,
+                    "truncated": false
+                }
+            });
             return Ok(json!({
                 "path": rel_path.display().to_string(),
                 "start_line": 0,
                 "end_line": 0,
                 "total_lines": 0,
                 "content": "",
+                "limits": limits,
                 "repo_root": self.repo_root.display().to_string(),
                 "project_root": self
                     .default_project_root
@@ -1462,12 +1499,34 @@ impl McpServer {
         let start_idx = start.saturating_sub(1);
         let end_idx = end_raw.saturating_sub(1);
         let slice = lines[start_idx..=end_idx].join("\n");
+        let actual_bytes = slice.len();
+        let (content, truncated) = truncate_utf8(&slice, OPEN_MAX_BYTES);
+        let returned_bytes = content.len();
+        let returned_lines = if content.is_empty() {
+            0
+        } else {
+            content.lines().count()
+        };
+        let returned_end_line = if returned_lines == 0 {
+            0
+        } else {
+            start + returned_lines.saturating_sub(1)
+        };
+        let limits = json!({
+            "bytes": {
+                "max": OPEN_MAX_BYTES,
+                "actual": actual_bytes,
+                "returned": returned_bytes,
+                "truncated": truncated
+            }
+        });
         Ok(json!({
             "path": rel_path.display().to_string(),
             "start_line": start,
-            "end_line": end_raw,
+            "end_line": returned_end_line,
             "total_lines": total_lines,
-            "content": slice,
+            "content": content,
+            "limits": limits,
             "repo_root": self.repo_root.display().to_string(),
             "project_root": self
                 .default_project_root
@@ -1546,13 +1605,24 @@ impl McpServer {
             return Err(AppError::new(ERR_INVALID_ARGUMENT, "query must not be empty").into());
         }
 
-        let top_k = args.top_k.unwrap_or(5).max(1).min(50);
+        let requested_top_k = args.top_k.unwrap_or(5);
+        let top_k = requested_top_k.max(1).min(50);
+        let top_k_truncated = requested_top_k > top_k;
         let embedding = memory.embedder.embed(query).await?;
 
         let store = memory.store.clone();
         let items = tokio::task::spawn_blocking(move || store.recall(&embedding, top_k)).await??;
+        let limits = json!({
+            "top_k": {
+                "requested": requested_top_k,
+                "applied": top_k,
+                "max": 50,
+                "truncated": top_k_truncated
+            }
+        });
         Ok(json!({
             "top_k": top_k,
+            "limits": limits,
             "results": items.into_iter().map(|item| json!({
                 "content": item.content,
                 "score": item.score,

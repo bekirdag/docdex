@@ -542,6 +542,23 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
         Some(4),
         "docdex_search should report the clamped limit"
     );
+    let search_limits = search_body
+        .get("limits")
+        .and_then(|v| v.get("limit"))
+        .ok_or("docdex_search should include limits.limit")?;
+    assert_eq!(
+        search_limits.get("requested").and_then(|v| v.as_u64()),
+        Some(999)
+    );
+    assert_eq!(
+        search_limits.get("applied").and_then(|v| v.as_u64()),
+        Some(4)
+    );
+    assert_eq!(search_limits.get("max").and_then(|v| v.as_u64()), Some(4));
+    assert_eq!(
+        search_limits.get("truncated").and_then(|v| v.as_bool()),
+        Some(true)
+    );
     let hits_len = search_body
         .get("hits")
         .and_then(|v| v.as_array())
@@ -569,8 +586,28 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
         Some(1000),
         "docdex_files should report the clamped limit"
     );
+    let file_limits = files_body
+        .get("limits")
+        .and_then(|v| v.get("limit"))
+        .ok_or("docdex_files should include limits.limit")?;
+    assert_eq!(
+        file_limits.get("requested").and_then(|v| v.as_u64()),
+        Some(5000)
+    );
+    assert_eq!(
+        file_limits.get("applied").and_then(|v| v.as_u64()),
+        Some(1000)
+    );
+    assert_eq!(
+        file_limits.get("max").and_then(|v| v.as_u64()),
+        Some(1000)
+    );
+    assert_eq!(
+        file_limits.get("truncated").and_then(|v| v.as_bool()),
+        Some(true)
+    );
 
-    // docdex_open should fail with a structured max-content error.
+    // docdex_open should truncate and report the max bytes.
     let big_path = repo.path().join("docs").join("big.md");
     std::fs::write(&big_path, "x".repeat(600_000))?;
     send_line(
@@ -582,18 +619,36 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
             "params": { "name": "docdex_open", "arguments": { "path": "docs/big.md" } }
         }),
     )?;
-    let open_err = read_line(&mut mcp.reader)?;
-    assert_eq!(mcp_error_code(&open_err), Some(-32602));
-    assert_eq!(mcp_error_data_code(&open_err), Some("max_content_exceeded"));
+    let open_resp = read_line(&mut mcp.reader)?;
+    let open_body = parse_tool_result(&open_resp)?;
+    let limits = open_body
+        .get("limits")
+        .and_then(|v| v.get("bytes"))
+        .ok_or("docdex_open should include limits.bytes")?;
+    assert_eq!(limits.get("max").and_then(|v| v.as_u64()), Some(512 * 1024));
     assert_eq!(
-        open_err.get("error")
-            .and_then(|v| v.get("data"))
-            .and_then(|v| v.get("details"))
-            .and_then(|v| v.get("max_bytes"))
-            .and_then(|v| v.as_u64()),
-        Some(512 * 1024),
-        "max_bytes should be reported"
+        limits.get("truncated").and_then(|v| v.as_bool()),
+        Some(true)
     );
+    let actual_bytes = limits.get("actual").and_then(|v| v.as_u64()).unwrap_or(0);
+    let returned_bytes = limits
+        .get("returned")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    assert!(
+        actual_bytes > 512 * 1024,
+        "actual bytes should exceed max"
+    );
+    assert!(
+        returned_bytes <= 512 * 1024,
+        "returned bytes should be clamped"
+    );
+    let content_len = open_body
+        .get("content")
+        .and_then(|v| v.as_str())
+        .map(|v| v.len())
+        .unwrap_or(0) as u64;
+    assert_eq!(content_len, returned_bytes, "content length should match returned bytes");
 
     mcp.shutdown();
     Ok(())

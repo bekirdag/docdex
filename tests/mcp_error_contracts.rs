@@ -600,6 +600,144 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn mcp_symbols_disabled_returns_missing_dependency() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let mut mcp = McpHarness::spawn(repo.path())?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 30,
+            "method": "tools/call",
+            "params": { "name": "docdex_symbols", "arguments": { "path": "docs/overview.md" } }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("missing_dependency"));
+    let details = resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("details"))
+        .ok_or("missing dependency error should include details")?;
+    assert_eq!(
+        details.get("dependency").and_then(|v| v.as_str()),
+        Some("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+    );
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_index_backoff_required_when_writer_busy() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let mut lock_holder = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut lock_holder.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 31,
+            "method": "tools/call",
+            "params": { "name": "docdex_files", "arguments": {} }
+        }),
+    )?;
+    let _ = read_line(&mut lock_holder.reader)?;
+    thread::sleep(Duration::from_millis(200));
+
+    let mut mcp = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 32,
+            "method": "tools/call",
+            "params": { "name": "docdex_index", "arguments": {} }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("backoff_required"));
+
+    mcp.shutdown();
+    lock_holder.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_symbols_disabled_returns_missing_dependency() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let mut mcp = McpHarness::spawn(repo.path())?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 30,
+            "method": "tools/call",
+            "params": { "name": "docdex_symbols", "arguments": { "path": "docs/overview.md" } }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("missing_dependency"));
+    let details = resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("details"))
+        .ok_or("missing dependency error should include details")?;
+    assert_eq!(
+        details.get("dependency").and_then(|v| v.as_str()),
+        Some("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+    );
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_index_backoff_required_when_writer_busy() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let mut lock_holder = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut lock_holder.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 31,
+            "method": "tools/call",
+            "params": { "name": "docdex_files", "arguments": {} }
+        }),
+    )?;
+    let _ = read_line(&mut lock_holder.reader)?;
+    thread::sleep(Duration::from_millis(200));
+
+    let mut mcp = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 32,
+            "method": "tools/call",
+            "params": { "name": "docdex_index", "arguments": {} }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("backoff_required"));
+
+    mcp.shutdown();
+    lock_holder.shutdown();
+    Ok(())
+}
+
+#[test]
 fn cli_invalid_query_error_matches_machine_reason() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let repo_str = repo.path().to_string_lossy().to_string();

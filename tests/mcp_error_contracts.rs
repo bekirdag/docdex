@@ -515,6 +515,160 @@ fn mcp_missing_project_root_path_is_missing_repo_path() -> Result<(), Box<dyn Er
 }
 
 #[test]
+fn mcp_missing_dependency_errors_include_details() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let mut mcp = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 18,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_memory_store",
+                "arguments": { "text": "missing dependency test" }
+            }
+        }),
+    )?;
+    let memory_resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&memory_resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&memory_resp), Some("missing_dependency"));
+    let memory_details = memory_resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("details"))
+        .and_then(|v| v.as_object())
+        .ok_or("missing dependency error should include details")?;
+    assert_eq!(
+        memory_details.get("dependency").and_then(|v| v.as_str()),
+        Some("DOCDEX_ENABLE_MEMORY")
+    );
+    assert_eq!(
+        memory_details.get("env").and_then(|v| v.as_str()),
+        Some("DOCDEX_ENABLE_MEMORY")
+    );
+    mcp.shutdown();
+
+    let mut mcp = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 19,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_symbols",
+                "arguments": { "path": "docs/overview.md" }
+            }
+        }),
+    )?;
+    let symbols_resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&symbols_resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&symbols_resp), Some("missing_dependency"));
+    let symbols_details = symbols_resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("details"))
+        .and_then(|v| v.as_object())
+        .ok_or("missing dependency error should include details")?;
+    assert_eq!(
+        symbols_details.get("dependency").and_then(|v| v.as_str()),
+        Some("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+    );
+    assert_eq!(
+        symbols_details.get("env").and_then(|v| v.as_str()),
+        Some("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+    );
+    assert_eq!(
+        symbols_details.get("flag").and_then(|v| v.as_str()),
+        Some("--enable-symbol-extraction=true")
+    );
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_missing_dependency_errors_include_details() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let mut mcp = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 18,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_memory_store",
+                "arguments": { "text": "missing dependency test" }
+            }
+        }),
+    )?;
+    let memory_resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&memory_resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&memory_resp), Some("missing_dependency"));
+    let memory_details = memory_resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("details"))
+        .and_then(|v| v.as_object())
+        .ok_or("missing dependency error should include details")?;
+    assert_eq!(
+        memory_details.get("dependency").and_then(|v| v.as_str()),
+        Some("DOCDEX_ENABLE_MEMORY")
+    );
+    assert_eq!(
+        memory_details.get("env").and_then(|v| v.as_str()),
+        Some("DOCDEX_ENABLE_MEMORY")
+    );
+    mcp.shutdown();
+
+    let mut mcp = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 19,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_symbols",
+                "arguments": { "path": "docs/overview.md" }
+            }
+        }),
+    )?;
+    let symbols_resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&symbols_resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&symbols_resp), Some("missing_dependency"));
+    let symbols_details = symbols_resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("details"))
+        .and_then(|v| v.as_object())
+        .ok_or("missing dependency error should include details")?;
+    assert_eq!(
+        symbols_details.get("dependency").and_then(|v| v.as_str()),
+        Some("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+    );
+    assert_eq!(
+        symbols_details.get("env").and_then(|v| v.as_str()),
+        Some("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+    );
+    assert_eq!(
+        symbols_details.get("flag").and_then(|v| v.as_str()),
+        Some("--enable-symbol-extraction=true")
+    );
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
 fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let repo_str = repo.path().to_string_lossy().to_string();

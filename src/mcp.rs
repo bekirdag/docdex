@@ -1,8 +1,9 @@
 use crate::error::{
-    AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
-    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
+    missing_dependency_error, AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
+    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
     repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
-    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
+    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
+    ERR_UNKNOWN_REPO,
 };
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
@@ -62,10 +63,6 @@ struct PathOutsideRepoError;
 #[derive(Error, Debug)]
 #[error("unsupported uri scheme")]
 struct InvalidUriError;
-
-#[derive(Error, Debug)]
-#[error("symbol extraction is disabled; re-run with --enable-symbol-extraction=true (or set DOCDEX_ENABLE_SYMBOL_EXTRACTION=1) and reindex")]
-struct MissingSymbolsDependencyError;
 
 #[derive(Error, Debug)]
 #[error("no symbols record found for {rel_path}; run docdex_index")]
@@ -249,15 +246,6 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
             Some(json!({
                 "max_bytes": max_err.max_bytes,
                 "actual_bytes": max_err.actual_bytes,
-            })),
-        );
-    }
-    if err.downcast_ref::<MissingSymbolsDependencyError>().is_some() {
-        return (
-            ERR_MISSING_DEPENDENCY,
-            Some(json!({
-                "dependency": "DOCDEX_ENABLE_SYMBOL_EXTRACTION",
-                "flag": "--enable-symbol-extraction=true"
             })),
         );
     }
@@ -1481,7 +1469,13 @@ impl McpServer {
     async fn handle_symbols(&self, args: SymbolsArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
         if !self.indexer.config().symbols_enabled() {
-            return Err(MissingSymbolsDependencyError.into());
+            return Err(missing_dependency_error(
+                "DOCDEX_ENABLE_SYMBOL_EXTRACTION",
+                "symbol extraction is disabled; re-run with --enable-symbol-extraction=true (or set DOCDEX_ENABLE_SYMBOL_EXTRACTION=1) and reindex",
+                Some("DOCDEX_ENABLE_SYMBOL_EXTRACTION"),
+                Some("--enable-symbol-extraction=true"),
+            )
+            .into());
         }
         let rel_path = normalize_rel_path(&args.path)
             .ok_or(InvalidPathError)?;
@@ -1499,9 +1493,11 @@ impl McpServer {
     async fn handle_memory_store(&self, args: MemoryStoreArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
         let Some(memory) = self.memory.clone() else {
-            return Err(AppError::new(
-                ERR_MEMORY_DISABLED,
+            return Err(missing_dependency_error(
+                "DOCDEX_ENABLE_MEMORY",
                 "memory is disabled; set DOCDEX_ENABLE_MEMORY=1",
+                Some("DOCDEX_ENABLE_MEMORY"),
+                None,
             )
             .into());
         };
@@ -1535,9 +1531,11 @@ impl McpServer {
     async fn handle_memory_recall(&self, args: MemoryRecallArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
         let Some(memory) = self.memory.clone() else {
-            return Err(AppError::new(
-                ERR_MEMORY_DISABLED,
+            return Err(missing_dependency_error(
+                "DOCDEX_ENABLE_MEMORY",
                 "memory is disabled; set DOCDEX_ENABLE_MEMORY=1",
+                Some("DOCDEX_ENABLE_MEMORY"),
+                None,
             )
             .into());
         };

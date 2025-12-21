@@ -3,7 +3,7 @@ use crate::index::{
 };
 use crate::error::{
     AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
-    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
+    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY,
     ERR_RATE_LIMITED,
 };
 use crate::libs::LibsIndexer;
@@ -429,7 +429,7 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_EMBEDDING_MODEL_NOT_FOUND => StatusCode::BAD_REQUEST,
         ERR_EMBEDDING_FAILED => StatusCode::BAD_GATEWAY,
         ERR_INVALID_ARGUMENT => StatusCode::BAD_REQUEST,
-        ERR_MEMORY_DISABLED => StatusCode::CONFLICT,
+        ERR_MISSING_DEPENDENCY => StatusCode::CONFLICT,
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -453,7 +453,7 @@ async fn memory_store_handler(
     let Some(memory) = state.memory.clone() else {
         return json_error(
             StatusCode::CONFLICT,
-            ERR_MEMORY_DISABLED,
+            ERR_MISSING_DEPENDENCY,
             "memory is disabled; start the daemon with --enable-memory=true",
         );
     };
@@ -544,7 +544,7 @@ async fn memory_recall_handler(
     let Some(memory) = state.memory.clone() else {
         return json_error(
             StatusCode::CONFLICT,
-            ERR_MEMORY_DISABLED,
+            ERR_MISSING_DEPENDENCY,
             "memory is disabled; start the daemon with --enable-memory=true",
         );
     };

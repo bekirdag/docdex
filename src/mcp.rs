@@ -32,6 +32,7 @@ const ERR_RATE_LIMITED_RPC: i32 = -32029;
 const FILES_DEFAULT_LIMIT: usize = 200;
 const FILES_MAX_LIMIT: usize = 1000;
 const FILES_MAX_OFFSET: usize = 50_000;
+const MEMORY_RECALL_MAX: usize = 50;
 const OPEN_MAX_BYTES: usize = 512 * 1024; // guard rail for returning file content
 const MAX_ERROR_MESSAGE_BYTES: usize = 256;
 const MAX_ERROR_REASON_BYTES: usize = 768;
@@ -423,6 +424,25 @@ struct ResourceTemplate {
     #[serde(rename = "uriTemplate")]
     uri_template: &'static str,
     variables: &'static [&'static str],
+}
+
+#[derive(Serialize)]
+struct LimitInfo {
+    requested: usize,
+    max: usize,
+    effective: usize,
+    clamped: bool,
+}
+
+fn build_limit_info(requested: usize, max: usize) -> LimitInfo {
+    let effective = requested.clamp(1, max);
+    let clamped = requested != effective;
+    LimitInfo {
+        requested,
+        max,
+        effective,
+        clamped,
+    }
 }
 
 pub async fn serve(
@@ -1255,7 +1275,7 @@ impl McpServer {
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "minLength": 1, "description": "Query text to embed" },
-                        "top_k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 5, "description": "Max results to return" },
+                        "top_k": { "type": "integer", "minimum": 1, "maximum": MEMORY_RECALL_MAX as i64, "default": 5, "description": "Max results to return" },
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
                     },
                     "required": ["query"]
@@ -1277,10 +1297,9 @@ impl McpServer {
     async fn handle_search(&self, args: SearchArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
         let query = args.query.trim();
-        let limit = args
-            .limit
-            .unwrap_or(self.max_results)
-            .clamp(1, self.max_results);
+        let requested_limit = args.limit.unwrap_or(self.max_results);
+        let limit_info = build_limit_info(requested_limit, self.max_results);
+        let limit = limit_info.effective;
         let hits =
             search::run_query(&self.indexer, self.libs_indexer.as_ref(), query, limit).await?;
         let hits_value = serde_json::to_value(&hits.hits)?;
@@ -1306,6 +1325,7 @@ impl McpServer {
             "repo_root": self.repo_root.display().to_string(),
             "state_dir": self.indexer.config().state_dir().display().to_string(),
             "limit": limit,
+            "limit_info": limit_info,
             "project_root": project_root_path,
             "meta": meta
         }))
@@ -1361,16 +1381,16 @@ impl McpServer {
 
     async fn handle_files(&self, args: FilesArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
-        let limit = args
-            .limit
-            .unwrap_or(FILES_DEFAULT_LIMIT)
-            .clamp(1, FILES_MAX_LIMIT);
+        let requested_limit = args.limit.unwrap_or(FILES_DEFAULT_LIMIT);
+        let limit_info = build_limit_info(requested_limit, FILES_MAX_LIMIT);
+        let limit = limit_info.effective;
         let offset = args.offset.unwrap_or(0).min(FILES_MAX_OFFSET);
         let (docs, total) = self.indexer.list_docs(offset, limit)?;
         Ok(json!({
             "results": docs,
             "total": total,
             "limit": limit,
+            "limit_info": limit_info,
             "offset": offset,
             "repo_root": self.repo_root.display().to_string(),
             "project_root": self
@@ -1546,13 +1566,16 @@ impl McpServer {
             return Err(AppError::new(ERR_INVALID_ARGUMENT, "query must not be empty").into());
         }
 
-        let top_k = args.top_k.unwrap_or(5).max(1).min(50);
+        let requested_top_k = args.top_k.unwrap_or(5);
+        let limit_info = build_limit_info(requested_top_k, MEMORY_RECALL_MAX);
+        let top_k = limit_info.effective;
         let embedding = memory.embedder.embed(query).await?;
 
         let store = memory.store.clone();
         let items = tokio::task::spawn_blocking(move || store.recall(&embedding, top_k)).await??;
         Ok(json!({
             "top_k": top_k,
+            "limit_info": limit_info,
             "results": items.into_iter().map(|item| json!({
                 "content": item.content,
                 "score": item.score,

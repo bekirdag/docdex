@@ -143,7 +143,12 @@ use crate::{policy, policy::Dependency, policy::RepoSurface};
 use crate::web_research;
 >>>>>>> mcoda/task/bck-05-us-07-t18
 use anyhow::{Context, Result};
+<<<<<<< HEAD
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+=======
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+>>>>>>> mcoda/task/bck-05-us-06-t35
 use serde_json::json;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -592,14 +597,22 @@ fn mcp_error_data(
 ) -> serde_json::Value {
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     let message = truncate_error_bytes(message, MAX_ERROR_MESSAGE_BYTES);
 =======
     let message = truncate_utf8_bytes(&message, MAX_ERROR_MESSAGE_BYTES);
 >>>>>>> mcoda/task/bck-05-us-10-t25
+=======
+    let message = sanitize_message(message);
+>>>>>>> mcoda/task/bck-05-us-06-t35
     let message_for_data = message.clone();
+    let reason = reason
+        .map(sanitize_reason)
+        .filter(|value| !value.is_empty());
     let mut envelope_error = serde_json::Map::new();
     envelope_error.insert("code".to_string(), json!(code));
     envelope_error.insert("message".to_string(), json!(message));
+<<<<<<< HEAD
 <<<<<<< HEAD
     if let Some(reason) =
         reason.clone().map(|value| truncate_error_bytes(value, MAX_ERROR_REASON_BYTES))
@@ -618,6 +631,10 @@ fn mcp_error_data(
     if let Some(reason) = reason.clone().map(|value| truncate_bytes(value, MAX_ERROR_REASON_BYTES)) {
 >>>>>>> mcoda/task/bck-05-us-06-t37
         envelope_error.insert("reason".to_string(), json!(reason.clone()));
+=======
+    if let Some(reason) = reason.clone() {
+        envelope_error.insert("reason".to_string(), json!(reason));
+>>>>>>> mcoda/task/bck-05-us-06-t35
     }
     if let Some(tool) = tool {
         envelope_error.insert("tool".to_string(), json!(tool));
@@ -632,10 +649,14 @@ fn mcp_error_data(
     data.insert("message".to_string(), json!(message_for_data));
     data.insert("error".to_string(), envelope_error_value);
 <<<<<<< HEAD
+<<<<<<< HEAD
     if let Some(reason) = reason.map(|value| truncate_error_bytes(value, MAX_ERROR_REASON_BYTES)) {
 =======
     if let Some(reason) = reason.map(|value| truncate_utf8_bytes(&value, MAX_ERROR_REASON_BYTES)) {
 >>>>>>> mcoda/task/bck-05-us-10-t25
+=======
+    if let Some(reason) = reason {
+>>>>>>> mcoda/task/bck-05-us-06-t35
         data.insert("reason".to_string(), json!(reason));
     }
     if let Some(tool) = tool {
@@ -647,6 +668,7 @@ fn mcp_error_data(
     serde_json::Value::Object(data)
 }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -909,6 +931,11 @@ fn mcp_backoff_required_data(err: &BackoffRequired) -> serde_json::Value {
     #[derive(Serialize)]
     struct BackoffData<'a> {
         code: &'static str,
+=======
+fn rate_limit_details(err: &RateLimited) -> serde_json::Value {
+    #[derive(Serialize)]
+    struct RateLimitDetails<'a> {
+>>>>>>> mcoda/task/bck-05-us-06-t35
         retry_after_ms: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         retry_at: Option<String>,
@@ -932,16 +959,21 @@ fn rate_limited_details(err: &RateLimited) -> serde_json::Value {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     serde_json::to_value(BackoffData {
         code: ERR_BACKOFF_REQUIRED,
 =======
     serde_json::to_value(RateLimitDetails {
 >>>>>>> mcoda/task/bck-05-us-06-t46
+=======
+    serde_json::to_value(RateLimitDetails {
+>>>>>>> mcoda/task/bck-05-us-06-t35
         retry_after_ms: err.retry_after_ms,
         retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
         limit_key: &err.limit_key,
         scope: &err.scope,
     })
+<<<<<<< HEAD
     .expect("backoff data should serialize")
 =======
 fn dependency_details(dependency: &'static str, enable_flag: Option<&'static str>) -> serde_json::Value {
@@ -959,6 +991,9 @@ fn dependency_details(dependency: &'static str, enable_flag: Option<&'static str
     details.insert("scope".to_string(), json!(err.scope));
     serde_json::Value::Object(details)
 >>>>>>> mcoda/task/bck-05-us-06-t37
+=======
+    .expect("rate-limit details should serialize")
+>>>>>>> mcoda/task/bck-05-us-06-t35
 }
 
 fn truncate_bytes(input: String, max_bytes: usize) -> String {
@@ -975,6 +1010,7 @@ fn truncate_bytes(input: String, max_bytes: usize) -> String {
     out
 }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 =======
@@ -1025,6 +1061,44 @@ fn rpc_error_with_data_message(
 }
 
 >>>>>>> mcoda/task/bck-05-us-06-t37
+=======
+fn normalize_error_text(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut prev_space = false;
+    for ch in input.chars() {
+        if ch.is_control() {
+            continue;
+        }
+        if ch.is_whitespace() {
+            if !prev_space {
+                out.push(' ');
+                prev_space = true;
+            }
+            continue;
+        }
+        prev_space = false;
+        out.push(ch);
+    }
+    out.trim().to_string()
+}
+
+fn sanitize_message(input: impl Into<String>) -> String {
+    let normalized = normalize_error_text(&input.into());
+    if normalized.is_empty() {
+        return "error".to_string();
+    }
+    truncate_bytes(normalized, MAX_ERROR_MESSAGE_BYTES)
+}
+
+fn sanitize_reason(input: impl Into<String>) -> String {
+    let normalized = normalize_error_text(&input.into());
+    if normalized.is_empty() {
+        return String::new();
+    }
+    truncate_bytes(normalized, MAX_ERROR_REASON_BYTES)
+}
+
+>>>>>>> mcoda/task/bck-05-us-06-t35
 fn rpc_error(
     rpc_code: i32,
     message: impl Into<String>,
@@ -1033,6 +1107,7 @@ fn rpc_error(
     tool: Option<&str>,
     details: Option<serde_json::Value>,
 ) -> RpcError {
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1053,6 +1128,9 @@ fn rpc_error(
         }
     }
 >>>>>>> mcoda/task/bck-05-us-09-t37
+=======
+    let message = sanitize_message(message);
+>>>>>>> mcoda/task/bck-05-us-06-t35
     RpcError {
         code: rpc_code,
         message: message.clone(),
@@ -1060,6 +1138,7 @@ fn rpc_error(
     }
 }
 
+<<<<<<< HEAD
 fn rpc_rate_limited(err: &RateLimited, tool: Option<&str>) -> RpcError {
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1104,6 +1183,28 @@ fn rpc_rate_limited(err: &RateLimited, tool: Option<&str>) -> RpcError {
         rpc_code,
         message.clone(),
         message,
+=======
+fn rpc_rate_limited(err: &RateLimited) -> RpcError {
+    rpc_error(
+        ERR_RATE_LIMITED_RPC,
+        err.message.clone(),
+        ERR_RATE_LIMITED,
+        None,
+        None,
+        Some(rate_limit_details(err)),
+    )
+}
+
+fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
+    if let Some(rate) = err.downcast_ref::<RateLimited>() {
+        return rpc_rate_limited(rate);
+    }
+    let (mcp_code, details) = classify_tool_error(err);
+    let rpc_code = rpc_code_for_mcp_code(mcp_code);
+    rpc_error(
+        rpc_code,
+        default_message_for_code(mcp_code),
+>>>>>>> mcoda/task/bck-05-us-06-t35
         mcp_code,
         reason,
         tool,
@@ -1111,6 +1212,7 @@ fn rpc_rate_limited(err: &RateLimited, tool: Option<&str>) -> RpcError {
     )
 }
 
+<<<<<<< HEAD
 fn rpc_rate_limited(err: &RateLimited) -> RpcError {
     rpc_error_with_data_message(
         ERR_INVALID_PARAMS,
@@ -1151,11 +1253,27 @@ fn rpc_invalid_params(err: impl std::fmt::Display, context: ValidationContext) -
         }
     };
 >>>>>>> mcoda/task/bck-05-us-06-t39
+=======
+fn rpc_validation_error(
+    err: &serde_json::Error,
+    tool: Option<&str>,
+    method: Option<&str>,
+) -> RpcError {
+    let mut details = serde_json::Map::new();
+    details.insert("validation".to_string(), json!("serde"));
+    if let Some(tool) = tool {
+        details.insert("tool".to_string(), json!(tool));
+    }
+    if let Some(method) = method {
+        details.insert("method".to_string(), json!(method));
+    }
+>>>>>>> mcoda/task/bck-05-us-06-t35
     rpc_error(
         ERR_INVALID_PARAMS,
         default_message_for_code("invalid_params"),
         "invalid_params",
         Some(err.to_string()),
+<<<<<<< HEAD
 <<<<<<< HEAD
         None,
         Some(json!({ "validation": "serde", "method": method })),
@@ -1222,11 +1340,14 @@ fn rpc_backoff_required(err: &BackoffRequired) -> RpcError {
 =======
 >>>>>>> mcoda/task/bck-05-us-07-t15
 =======
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t35
         tool,
         Some(serde_json::Value::Object(details)),
     )
 }
 
+<<<<<<< HEAD
 fn parse_params<T: DeserializeOwned>(
     value: serde_json::Value,
     context: ValidationContext,
@@ -1301,8 +1422,34 @@ fn clamp_offset(offset: Option<usize>, max: usize) -> usize {
 }
 
 >>>>>>> mcoda/task/bck-05-us-06-t39
+=======
+fn parse_method_params<T: DeserializeOwned>(
+    params: Option<serde_json::Value>,
+    method: &'static str,
+) -> Result<T, RpcError> {
+    let value = params.unwrap_or_default();
+    serde_json::from_value(value).map_err(|err| rpc_validation_error(&err, None, Some(method)))
+}
+
+fn parse_tool_args<T: DeserializeOwned>(
+    args: serde_json::Value,
+    tool: &'static str,
+) -> Result<T, RpcError> {
+    serde_json::from_value(args).map_err(|err| rpc_validation_error(&err, Some(tool), None))
+}
+
+fn clamp_limit(requested: Option<usize>, default: usize, max: usize) -> usize {
+    requested.unwrap_or(default).clamp(1, max)
+}
+
+fn clamp_offset(requested: Option<usize>, max: usize) -> usize {
+    requested.unwrap_or(0).min(max)
+}
+
+>>>>>>> mcoda/task/bck-05-us-06-t35
 fn default_message_for_code(code: &str) -> &'static str {
     match code {
+        "parse_error" => "parse error",
         "invalid_request" => "invalid request",
         "invalid_params" => "invalid parameters",
         "invalid_argument" => "invalid argument",
@@ -1311,7 +1458,11 @@ fn default_message_for_code(code: &str) -> &'static str {
         "invalid_path" => "invalid path",
         "invalid_range" => "invalid range",
         "max_content_exceeded" => "content too large",
+<<<<<<< HEAD
         ERR_UNSUPPORTED_VERSION => "unsupported version",
+=======
+        "method_not_found" => "method not found",
+>>>>>>> mcoda/task/bck-05-us-06-t35
         ERR_EMBEDDING_TIMEOUT => "embedding timeout",
         ERR_EMBEDDING_MODEL_NOT_FOUND => "embedding model not found",
         ERR_EMBEDDING_FAILED => "embedding failed",
@@ -1333,6 +1484,7 @@ fn default_message_for_code(code: &str) -> &'static str {
     }
 }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 fn index_recovery_steps(repo_root: &Path) -> Vec<String> {
     vec![
@@ -1438,6 +1590,19 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
     }
     if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
         return (backoff.code, Some(mcp_backoff_data(backoff)));
+=======
+fn rpc_code_for_mcp_code(code: &str) -> i32 {
+    if code == ERR_INTERNAL_ERROR {
+        ERR_INTERNAL
+    } else {
+        ERR_INVALID_PARAMS
+    }
+}
+
+fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
+    if let Some(app) = err.downcast_ref::<AppError>() {
+        return (app.code, app.details.clone());
+>>>>>>> mcoda/task/bck-05-us-06-t35
     }
     if let Some(unavailable) = err.downcast_ref::<Tier2Unavailable>() {
         return (
@@ -2502,8 +2667,13 @@ impl McpServer {
                                 result: None,
                                 error: Some(rpc_error(
                                     ERR_PARSE,
+<<<<<<< HEAD
                                     format!("invalid JSON: {err}"),
                                     ERR_PARSE_ERROR,
+=======
+                                    default_message_for_code("parse_error"),
+                                    "parse_error",
+>>>>>>> mcoda/task/bck-05-us-06-t35
                                     Some(err.to_string()),
                                     None,
                                     None,
@@ -2526,8 +2696,13 @@ impl McpServer {
                             result: None,
                             error: Some(rpc_error(
                                 ERR_INTERNAL,
+<<<<<<< HEAD
                                 "internal error",
                                 ERR_INTERNAL_ERROR,
+=======
+                                default_message_for_code(ERR_INTERNAL_ERROR),
+                                "internal_error",
+>>>>>>> mcoda/task/bck-05-us-06-t35
                                 Some(err.to_string()),
                                 None,
                                 None,
@@ -2569,26 +2744,37 @@ impl McpServer {
                     id: id.clone(),
                     result: None,
                     error: Some(rpc_error(
+<<<<<<< HEAD
                         RPC_ERR_INVALID_REQUEST,
                         format!("unsupported jsonrpc version: {version}"),
                         ERR_INVALID_REQUEST,
+=======
+                        ERR_INVALID_REQUEST,
+                        default_message_for_code("invalid_request"),
+                        "invalid_request",
+                        Some(format!("unsupported jsonrpc version: {version}")),
+>>>>>>> mcoda/task/bck-05-us-06-t35
                         None,
-                        None,
-                        Some(json!({ "expected": JSONRPC_VERSION })),
+                        Some(json!({
+                            "expected": JSONRPC_VERSION,
+                            "got": version
+                        })),
                     )),
                 }));
             }
         }
         match req.method.as_str() {
             "initialize" => {
-                let init_params: InitializeParams =
-                    serde_json::from_value(req.params.clone().unwrap_or_default())
-                        .unwrap_or_default();
+                let init_params: InitializeParams = serde_json::from_value(
+                    req.params.clone().unwrap_or_default(),
+                )
+                .unwrap_or_default();
                 if let Some(client_root) = init_params
                     .workspace_root
                     .or(init_params.project_root)
                     .as_ref()
                 {
+<<<<<<< HEAD
 <<<<<<< HEAD
                     match policy::ensure_repo_match(
                         client_root,
@@ -2675,10 +2861,14 @@ impl McpServer {
                     };
                     let client_resolution = repo_resolution::resolve_repo_root(&canon);
                     if client_resolution.normalized_path != self.repo_normalized_path {
+=======
+                    if let Err(err) = self.ensure_same_repo(client_root) {
+>>>>>>> mcoda/task/bck-05-us-06-t35
                         return Ok(Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,
                             id: id.clone(),
                             result: None,
+<<<<<<< HEAD
                             error: Some(rpc_error(
                                 ERR_INVALID_REQUEST,
                                 default_message_for_code(ERR_UNKNOWN_REPO),
@@ -2693,6 +2883,15 @@ impl McpServer {
                         }));
                     }
                     self.default_project_root = Some(client_resolution.repo_root);
+=======
+                            error: Some(rpc_tool_error(&err, None)),
+                        }));
+                    }
+                    let canon = client_root
+                        .canonicalize()
+                        .unwrap_or_else(|_| client_root.to_path_buf());
+                    self.default_project_root = Some(canon);
+>>>>>>> mcoda/task/bck-05-us-06-t35
                 }
                 let protocol_version = init_params
                     .protocol_version
@@ -2758,6 +2957,7 @@ impl McpServer {
             })),
             "resources/read" => {
 <<<<<<< HEAD
+<<<<<<< HEAD
                 let params = match parse_params::<ResourceReadParams>(
                     req.params.clone().unwrap_or_default(),
                     ValidationContext::Method("resources/read"),
@@ -2766,11 +2966,19 @@ impl McpServer {
                 let params = match parse_resource_read_params(req.params.clone()) {
 >>>>>>> mcoda/task/bck-05-us-06-t36
                     Ok(p) => p,
+=======
+                let params = match parse_method_params::<ResourceReadParams>(
+                    req.params.clone(),
+                    "resources/read",
+                ) {
+                    Ok(params) => params,
+>>>>>>> mcoda/task/bck-05-us-06-t35
                     Err(err) => {
                         return Ok(Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,
                             id: id.clone(),
                             result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -2791,6 +2999,9 @@ impl McpServer {
 =======
                             error: Some(rpc_tool_error(&err, None)),
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                            error: Some(err),
+>>>>>>> mcoda/task/bck-05-us-06-t35
                         }))
                     }
                 };
@@ -2819,6 +3030,7 @@ impl McpServer {
             }
             "tools/call" => {
 <<<<<<< HEAD
+<<<<<<< HEAD
                 let params = match parse_params::<ToolCallParams>(
                     req.params.clone().unwrap_or_default(),
                     ValidationContext::Method("tools/call"),
@@ -2828,11 +3040,19 @@ impl McpServer {
                 let (tool_name, tool_args) = match parse_tool_call_params(req.params.clone()) {
                     Ok(params) => params,
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                let params = match parse_method_params::<ToolCallParams>(
+                    req.params.clone(),
+                    "tools/call",
+                ) {
+                    Ok(params) => params,
+>>>>>>> mcoda/task/bck-05-us-06-t35
                     Err(err) => {
                         return Ok(Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,
                             id: id.clone(),
                             result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -2853,6 +3073,9 @@ impl McpServer {
 =======
                             error: Some(rpc_tool_error(&err, None)),
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                            error: Some(err),
+>>>>>>> mcoda/task/bck-05-us-06-t35
                         }))
                     }
                 };
@@ -2907,6 +3130,7 @@ impl McpServer {
                 let result = match tool_name.as_str() {
                     "docdex_search" | "docdex.search" => {
 <<<<<<< HEAD
+<<<<<<< HEAD
                         let args = match parse_params::<SearchArgs>(
                             params.arguments.clone(),
                             ValidationContext::Tool("docdex_search"),
@@ -2914,12 +3138,19 @@ impl McpServer {
 =======
                         let args = match parse_search_args(tool_args.clone()) {
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                        let args = match parse_tool_args::<SearchArgs>(
+                            params.arguments.clone(),
+                            "docdex_search",
+                        ) {
+>>>>>>> mcoda/task/bck-05-us-06-t35
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -2940,6 +3171,9 @@ impl McpServer {
 =======
                                     error: Some(rpc_tool_error(&err, Some("docdex_search"))),
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                                    error: Some(err),
+>>>>>>> mcoda/task/bck-05-us-06-t35
                                 }))
                             }
                         };
@@ -2956,6 +3190,7 @@ impl McpServer {
                         }
                     }
 <<<<<<< HEAD
+<<<<<<< HEAD
                     "docdex_web_search" | "docdex.web_search" => {
                         let args_res: Result<WebSearchArgs, _> =
 =======
@@ -2963,12 +3198,20 @@ impl McpServer {
                         let args_res: Result<WebResearchArgs, _> =
                             serde_json::from_value(params.arguments.clone());
                         let args = match args_res {
+=======
+                    "docdex_index" | "docdex.index" => {
+                        let args = match parse_tool_args::<IndexArgs>(
+                            params.arguments.clone(),
+                            "docdex_index",
+                        ) {
+>>>>>>> mcoda/task/bck-05-us-06-t35
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_error(
                                         RPC_ERR_INVALID_PARAMS,
                                         default_message_for_code(ERR_INVALID_PARAMS),
@@ -3050,6 +3293,9 @@ impl McpServer {
 =======
                                     error: Some(rpc_tool_error(&err, Some("docdex_index"))),
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                                    error: Some(err),
+>>>>>>> mcoda/task/bck-05-us-06-t35
                                 }))
                             }
                         };
@@ -3067,6 +3313,7 @@ impl McpServer {
                     }
                     "docdex_files" | "docdex.files" => {
 <<<<<<< HEAD
+<<<<<<< HEAD
                         let args = match parse_params::<FilesArgs>(
                             params.arguments.clone(),
                             ValidationContext::Tool("docdex_files"),
@@ -3074,12 +3321,19 @@ impl McpServer {
 =======
                         let args = match parse_files_args(tool_args.clone()) {
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                        let args = match parse_tool_args::<FilesArgs>(
+                            params.arguments.clone(),
+                            "docdex_files",
+                        ) {
+>>>>>>> mcoda/task/bck-05-us-06-t35
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -3100,6 +3354,9 @@ impl McpServer {
 =======
                                     error: Some(rpc_tool_error(&err, Some("docdex_files"))),
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                                    error: Some(err),
+>>>>>>> mcoda/task/bck-05-us-06-t35
                                 }))
                             }
                         };
@@ -3117,6 +3374,7 @@ impl McpServer {
                     }
                     "docdex_open" | "docdex.open" => {
 <<<<<<< HEAD
+<<<<<<< HEAD
                         let args = match parse_params::<OpenArgs>(
                             params.arguments.clone(),
                             ValidationContext::Tool("docdex_open"),
@@ -3124,12 +3382,19 @@ impl McpServer {
 =======
                         let args = match parse_open_args(tool_args.clone()) {
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                        let args = match parse_tool_args::<OpenArgs>(
+                            params.arguments.clone(),
+                            "docdex_open",
+                        ) {
+>>>>>>> mcoda/task/bck-05-us-06-t35
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -3150,6 +3415,9 @@ impl McpServer {
 =======
                                     error: Some(rpc_tool_error(&err, Some("docdex_open"))),
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                                    error: Some(err),
+>>>>>>> mcoda/task/bck-05-us-06-t35
                                 }))
                             }
                         };
@@ -3167,6 +3435,7 @@ impl McpServer {
                     }
                     "docdex_stats" | "docdex.stats" => {
 <<<<<<< HEAD
+<<<<<<< HEAD
                         let args = match parse_params::<StatsArgs>(
                             params.arguments.clone(),
                             ValidationContext::Tool("docdex_stats"),
@@ -3174,12 +3443,19 @@ impl McpServer {
 =======
                         let args = match parse_stats_args(tool_args.clone()) {
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                        let args = match parse_tool_args::<StatsArgs>(
+                            params.arguments.clone(),
+                            "docdex_stats",
+                        ) {
+>>>>>>> mcoda/task/bck-05-us-06-t35
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -3200,6 +3476,9 @@ impl McpServer {
 =======
                                     error: Some(rpc_tool_error(&err, Some("docdex_stats"))),
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                                    error: Some(err),
+>>>>>>> mcoda/task/bck-05-us-06-t35
                                 }))
                             }
                         };
@@ -3217,6 +3496,7 @@ impl McpServer {
                     }
                     "docdex_repo_inspect" | "docdex.repo_inspect" => {
 <<<<<<< HEAD
+<<<<<<< HEAD
                         let args = match parse_params::<RepoInspectArgs>(
                             params.arguments.clone(),
                             ValidationContext::Tool("docdex_repo_inspect"),
@@ -3224,12 +3504,19 @@ impl McpServer {
 =======
                         let args = match parse_repo_inspect_args(tool_args.clone()) {
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                        let args = match parse_tool_args::<RepoInspectArgs>(
+                            params.arguments.clone(),
+                            "docdex_repo_inspect",
+                        ) {
+>>>>>>> mcoda/task/bck-05-us-06-t35
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -3252,6 +3539,9 @@ impl McpServer {
 =======
                                     error: Some(rpc_tool_error(&err, Some("docdex_repo_inspect"))),
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                                    error: Some(err),
+>>>>>>> mcoda/task/bck-05-us-06-t35
                                 }))
                             }
                         };
@@ -3269,6 +3559,7 @@ impl McpServer {
                     }
                     "docdex_symbols" | "docdex.symbols" => {
 <<<<<<< HEAD
+<<<<<<< HEAD
                         let args = match parse_params::<SymbolsArgs>(
                             params.arguments.clone(),
                             ValidationContext::Tool("docdex_symbols"),
@@ -3276,12 +3567,19 @@ impl McpServer {
 =======
                         let args = match parse_symbols_args(tool_args.clone()) {
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                        let args = match parse_tool_args::<SymbolsArgs>(
+                            params.arguments.clone(),
+                            "docdex_symbols",
+                        ) {
+>>>>>>> mcoda/task/bck-05-us-06-t35
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -3302,6 +3600,9 @@ impl McpServer {
 =======
                                     error: Some(rpc_tool_error(&err, Some("docdex_symbols"))),
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                                    error: Some(err),
+>>>>>>> mcoda/task/bck-05-us-06-t35
                                 }))
                             }
                         };
@@ -3319,6 +3620,7 @@ impl McpServer {
                     }
                     "docdex_memory_store" | "docdex.memory_store" => {
 <<<<<<< HEAD
+<<<<<<< HEAD
                         let args = match parse_params::<MemoryStoreArgs>(
                             params.arguments.clone(),
                             ValidationContext::Tool("docdex_memory_store"),
@@ -3326,12 +3628,19 @@ impl McpServer {
 =======
                         let args = match parse_memory_store_args(tool_args.clone()) {
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                        let args = match parse_tool_args::<MemoryStoreArgs>(
+                            params.arguments.clone(),
+                            "docdex_memory_store",
+                        ) {
+>>>>>>> mcoda/task/bck-05-us-06-t35
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -3354,6 +3663,9 @@ impl McpServer {
 =======
                                     error: Some(rpc_tool_error(&err, Some("docdex_memory_store"))),
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                                    error: Some(err),
+>>>>>>> mcoda/task/bck-05-us-06-t35
                                 }))
                             }
                         };
@@ -3371,6 +3683,7 @@ impl McpServer {
                     }
                     "docdex_memory_recall" | "docdex.memory_recall" => {
 <<<<<<< HEAD
+<<<<<<< HEAD
                         let args = match parse_params::<MemoryRecallArgs>(
                             params.arguments.clone(),
                             ValidationContext::Tool("docdex_memory_recall"),
@@ -3378,12 +3691,19 @@ impl McpServer {
 =======
                         let args = match parse_memory_recall_args(tool_args.clone()) {
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                        let args = match parse_tool_args::<MemoryRecallArgs>(
+                            params.arguments.clone(),
+                            "docdex_memory_recall",
+                        ) {
+>>>>>>> mcoda/task/bck-05-us-06-t35
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -3406,6 +3726,9 @@ impl McpServer {
 =======
                                     error: Some(rpc_tool_error(&err, Some("docdex_memory_recall"))),
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+                                    error: Some(err),
+>>>>>>> mcoda/task/bck-05-us-06-t35
                                 }))
                             }
                         };
@@ -3460,10 +3783,17 @@ impl McpServer {
                             id: id.clone(),
                             result: None,
                             error: Some(rpc_error(
+<<<<<<< HEAD
                                 RPC_ERR_METHOD_NOT_FOUND,
                                 format!("unknown tool: {other}"),
                                 ERR_METHOD_NOT_FOUND,
                                 None,
+=======
+                                ERR_METHOD_NOT_FOUND,
+                                default_message_for_code("method_not_found"),
+                                "method_not_found",
+                                Some(format!("unknown tool: {other}")),
+>>>>>>> mcoda/task/bck-05-us-06-t35
                                 None,
                                 Some(json!({
                                     "known_tools": [
@@ -3510,10 +3840,17 @@ impl McpServer {
                 id: id.clone(),
                 result: None,
                 error: Some(rpc_error(
+<<<<<<< HEAD
                     RPC_ERR_METHOD_NOT_FOUND,
                     format!("unknown method: {other}"),
                     ERR_METHOD_NOT_FOUND,
                     None,
+=======
+                    ERR_METHOD_NOT_FOUND,
+                    default_message_for_code("method_not_found"),
+                    "method_not_found",
+                    Some(format!("unknown method: {other}")),
+>>>>>>> mcoda/task/bck-05-us-06-t35
                     None,
                     None,
                 )),
@@ -3865,6 +4202,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         let requested_limit = args.limit;
         let limit = args
             .limit
@@ -3894,6 +4232,9 @@ impl McpServer {
         let limit_info = build_limit_info(requested_limit, self.max_results);
         let limit = limit_info.effective;
 >>>>>>> mcoda/task/bck-05-us-06-t38
+=======
+        let limit = clamp_limit(args.limit, self.max_results, self.max_results);
+>>>>>>> mcoda/task/bck-05-us-06-t35
         let hits =
 >>>>>>> mcoda/task/bck-05-us-06-t39
             search::run_query(&self.indexer, self.libs_indexer.as_ref(), query, limit).await?;
@@ -4114,6 +4455,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
         self.ensure_schema_version("docdex_files", args.schema_version)?;
 >>>>>>> mcoda/task/bck-05-us-10-t21
@@ -4157,6 +4499,10 @@ impl McpServer {
         let limit = limit_info.effective;
         let offset = args.offset.unwrap_or(0).min(FILES_MAX_OFFSET);
 >>>>>>> mcoda/task/bck-05-us-06-t38
+=======
+        let limit = clamp_limit(args.limit, FILES_DEFAULT_LIMIT, FILES_MAX_LIMIT);
+        let offset = clamp_offset(args.offset, FILES_MAX_OFFSET);
+>>>>>>> mcoda/task/bck-05-us-06-t35
         let (docs, total) = self.indexer.list_docs(offset, limit)?;
         Ok(json!({
             "results": docs,
@@ -4510,6 +4856,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         let top_k = args.top_k.unwrap_or(5).max(1).min(50);
         let max_items = args.max_items.unwrap_or(top_k).min(50);
         let max_tokens = args.max_tokens;
@@ -4544,6 +4891,9 @@ impl McpServer {
         let limit_info = build_limit_info(requested_top_k, MEMORY_RECALL_MAX);
         let top_k = limit_info.effective;
 >>>>>>> mcoda/task/bck-05-us-06-t38
+=======
+        let top_k = clamp_limit(args.top_k, 5, 50);
+>>>>>>> mcoda/task/bck-05-us-06-t35
         let embedding = memory.embedder.embed(query).await?;
 
         let store = memory.store.clone();
@@ -5096,6 +5446,7 @@ mod tests {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         assert_eq!(obj.get("message").and_then(|v| v.as_str()), Some("rate limited"));
 =======
         assert!(obj.get("message").and_then(|v| v.as_str()).is_some());
@@ -5133,10 +5484,13 @@ mod tests {
         assert!(obj.get("retry_at").is_none(), "retry_at should be omitted when unset");
 <<<<<<< HEAD
 =======
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t35
         let details = obj
             .get("details")
             .and_then(|v| v.as_object())
             .expect("rate limited data should include details");
+<<<<<<< HEAD
         assert_eq!(details.get("retry_after_ms").and_then(|v| v.as_u64()), Some(0));
         assert_eq!(details.get("limit_key").and_then(|v| v.as_str()), Some("mcp_tools"));
         assert_eq!(details.get("scope").and_then(|v| v.as_str()), Some("global"));
@@ -5159,6 +5513,8 @@ mod tests {
             .get("details")
             .and_then(|v| v.as_object())
             .expect("rate limited error should include details");
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t35
         assert_eq!(
             details.get("retry_after_ms").and_then(|v| v.as_u64()),
             Some(0)
@@ -5167,6 +5523,7 @@ mod tests {
             details.get("limit_key").and_then(|v| v.as_str()),
             Some("mcp_tools")
         );
+<<<<<<< HEAD
         assert_eq!(details.get("scope").and_then(|v| v.as_str()), Some("global"));
     }
 
@@ -5219,6 +5576,16 @@ mod tests {
             .expect("rate limited data should include nested error object");
         assert_eq!(nested.get("code").and_then(|v| v.as_str()), Some(ERR_RATE_LIMITED));
 >>>>>>> mcoda/task/bck-05-us-06-t37
+=======
+        assert_eq!(
+            details.get("scope").and_then(|v| v.as_str()),
+            Some("global")
+        );
+        assert!(
+            details.get("retry_at").is_none(),
+            "retry_at should be omitted when unset"
+        );
+>>>>>>> mcoda/task/bck-05-us-06-t35
     }
 
     #[test]
@@ -5249,6 +5616,7 @@ mod tests {
         );
         let data = rpc.data.expect("rate limited rpc should include data");
         let obj = data.as_object().expect("rate limited data should be object");
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
         assert_rate_limit_keys(obj, true);
@@ -5441,11 +5809,14 @@ mod tests {
             .expect("backoff required data should be object");
         assert!(obj.get("retry_at").and_then(|v| v.as_str()).is_some());
 =======
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t35
         let details = obj
             .get("details")
             .and_then(|v| v.as_object())
             .expect("rate limited data should include details");
         assert!(details.get("retry_at").and_then(|v| v.as_str()).is_some());
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-09-t24
 =======
         assert_eq!(rpc.message, "rate limited");
@@ -5487,6 +5858,12 @@ mod tests {
         assert!(details.get("retry_at").and_then(|v| v.as_str()).is_some());
         assert_eq!(details.get("retry_after_ms").and_then(|v| v.as_u64()), Some(1234));
 >>>>>>> mcoda/task/bck-05-us-06-t37
+=======
+        assert_eq!(
+            details.get("retry_after_ms").and_then(|v| v.as_u64()),
+            Some(1234)
+        );
+>>>>>>> mcoda/task/bck-05-us-06-t35
     }
 
     #[test]
@@ -5546,6 +5923,7 @@ mod tests {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
                     assert!(obj.get("message").and_then(|v| v.as_str()).is_some());
 =======
                     assert!(obj.get("error").is_some(), "error envelope should be present");
@@ -5565,6 +5943,12 @@ mod tests {
                         .and_then(|v| v.as_object())
                         .expect("rate limited data should include details object");
 >>>>>>> mcoda/task/bck-05-us-06-t37
+=======
+                    let details = obj
+                        .get("details")
+                        .and_then(|v| v.as_object())
+                        .expect("rate limited data should include details");
+>>>>>>> mcoda/task/bck-05-us-06-t35
                     assert!(
                         details.get("retry_after_ms").and_then(|v| v.as_u64()).is_some(),
                         "retry_after_ms must be an integer"
@@ -5573,6 +5957,7 @@ mod tests {
                         details.get("limit_key").and_then(|v| v.as_str()),
                         Some("mcp_tools")
                     );
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5611,6 +5996,12 @@ mod tests {
 =======
                     assert_eq!(details.get("scope").and_then(|v| v.as_str()), Some("global"));
 >>>>>>> mcoda/task/bck-05-us-06-t37
+=======
+                    assert_eq!(
+                        details.get("scope").and_then(|v| v.as_str()),
+                        Some("global")
+                    );
+>>>>>>> mcoda/task/bck-05-us-06-t35
 
                     let payload_bytes = serde_json::to_vec(&rpc).expect("rpc error should serialize");
                     assert!(

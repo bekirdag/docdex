@@ -813,6 +813,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         .ok_or("rate-limit error missing error.data object")?;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     assert!(
         data_files
             .get("message")
@@ -839,6 +840,18 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(
         details_files.get("scope").and_then(|v| v.as_str()),
+=======
+    let details = data_files
+        .get("details")
+        .and_then(|v| v.as_object())
+        .ok_or("rate-limit error missing error.data.details object")?;
+    assert_eq!(
+        details.get("limit_key").and_then(|v| v.as_str()),
+        Some("mcp_tools")
+    );
+    assert_eq!(
+        details.get("scope").and_then(|v| v.as_str()),
+>>>>>>> mcoda/task/bck-05-us-06-t35
         Some("global")
     );
     assert_eq!(
@@ -854,6 +867,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         Some(1)
     );
     assert!(
+<<<<<<< HEAD
         data_files
             .get("denied_total")
             .and_then(|v| v.as_u64())
@@ -862,6 +876,9 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     );
     assert!(
         details_files
+=======
+        details
+>>>>>>> mcoda/task/bck-05-us-06-t35
             .get("retry_after_ms")
             .and_then(|v| v.as_u64())
             .is_some(),
@@ -885,6 +902,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     }
 >>>>>>> mcoda/task/bck-05-us-09-t29
     assert!(
+<<<<<<< HEAD
 <<<<<<< HEAD
         envelope.get("message").and_then(|v| v.as_str()).is_some(),
         "rate-limit error envelope should include message"
@@ -928,6 +946,15 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         }),
         "error.data should only include stable keys"
 >>>>>>> mcoda/task/bck-05-us-09-t05
+=======
+        details.keys().all(|k| {
+            matches!(
+                k.as_str(),
+                "retry_after_ms" | "retry_at" | "limit_key" | "scope"
+            )
+        }),
+        "error.data.details should only include stable keys"
+>>>>>>> mcoda/task/bck-05-us-06-t35
     );
 
     // Wait long enough for the limiter to refill 1 token (per_minute=60).

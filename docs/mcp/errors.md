@@ -36,6 +36,15 @@ Compatibility guidance for clients:
 - Ignore unknown fields; new `details` keys may be added without breaking changes.
 - `error.data.error` is redundant; it exists for convenience where clients expect a nested `error` object.
 
+## Repo context rules (MCP)
+
+- `docdexd mcp` is started with a single `--repo` root; tools are repo-scoped and must not cross that boundary.
+- Each tool accepts optional `project_root`. If provided, it must exist and canonicalize to the server `--repo` root.
+  - Mismatch returns `unknown_repo` (JSON-RPC `-32602` for tool calls).
+  - Missing path returns `missing_repo_path` (JSON-RPC `-32602` for tool calls).
+- If `project_root` is omitted, the server uses `initialize.workspace_root`/`initialize.project_root` when provided and validated; otherwise it falls back to the server `--repo`.
+- During `initialize`, a mismatched `workspace_root`/`project_root` returns `unknown_repo` under JSON-RPC `-32600` (`invalid_request`) with `details.expected`/`details.got`.
+
 ## Code taxonomy (machine-readable)
 
 ### MCP-only protocol codes
@@ -73,6 +82,12 @@ Use these codes for invalid inputs:
 - `invalid_range`: invalid line window (`start_line`/`end_line` out of bounds).
 - `max_content_exceeded`: response content would exceed server limits (e.g. `docdex_open` file too large).
 
+Across MCP tools, validation failures map to JSON-RPC `-32602` with this envelope; the distinction is:
+
+- `invalid_params`: malformed JSON or schema/type mismatch.
+- `invalid_argument`: well-formed but semantically invalid values.
+- Tool-specific errors (`invalid_query`, `invalid_path`, `invalid_range`, `max_content_exceeded`) for domain checks.
+
 ### Feature/domain codes (currently emitted)
 
 Docdex also uses feature-specific codes in some tools:
@@ -99,6 +114,15 @@ Diagnostics:
 
 - For these errors, `error.data.details` may include `normalizedPath`, `attemptedFingerprint`, `knownCanonicalPath`, and a `recoverySteps` array intended to be directly actionable in UX.
 
+## Traceability/correlation metadata (client-visible)
+
+Docdex exposes a small, repo-scoped metadata surface for debugging and correlation without leaking cross-repo identifiers:
+
+- Success responses echo `repo_root` (server root) and `project_root` (resolved request root). `docdex_search` also returns `state_dir` and the effective `limit`.
+- `docdex_search.meta` includes `generated_at_epoch_ms`, optional `index_last_updated_epoch_ms`, and `query` (`raw`, `effective`, `rewrite`). MCP sets `meta.repo_root` to the resolved `project_root`.
+- HTTP responses include `x-request-id` headers for correlation; MCP does not emit request IDs today.
+- Repo-resolution error `details` include only the requested path and the configured repo root (`normalizedPath`, `knownCanonicalPath`, optional `attemptedFingerprint`, `recoverySteps`); no other repo identifiers are disclosed.
+
 ## Parity mapping (HTTP / CLI / MCP)
 
 Docdex presents the same underlying failures in three different wrappers:
@@ -113,12 +137,13 @@ Docdex presents the same underlying failures in three different wrappers:
 | --- | --- | --- | --- | --- |
 | Missing repo context | `missing_repo` | `-32602` | N/A for per-repo daemon (repo is configured at startup) | N/A for per-repo CLI (repo is required via `--repo`) |
 | Repo path missing on disk | `missing_repo_path` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"missing_repo_path",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"missing_repo_path",...}}` |
-| Repo mismatch (`project_root` does not match server repo) | `unknown_repo` | `-32602` | N/A (daemon is started per-repo) | N/A (CLI always has `--repo`; mismatch is not represented) |
+| Repo mismatch (`project_root` does not match server repo) | `unknown_repo` | `-32602` (tools) | N/A (daemon is started per-repo) | N/A (CLI always has `--repo`; mismatch is not represented) |
+| Initialize repo mismatch (`initialize.workspace_root`/`project_root`) | `unknown_repo` | `-32600` | N/A | N/A |
 | Repo state mismatch (unsafe to associate state) | `repo_state_mismatch` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"repo_state_mismatch",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"repo_state_mismatch",...}}` |
 | Index missing (query/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
 | Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Not currently emitted by the per-repo CLI |
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |
-| Rate limited | `rate_limited` | `-32602` | `429` (security middleware returns status-only; no JSON envelope) | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
+| Rate limited | `rate_limited` | `-32029` | `429` with JSON `{error:{code:"rate_limited",...}}` and `Retry-After` header | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
 | Optional dependency disabled (e.g. symbols) | `missing_dependency` | `-32602` | N/A (no HTTP endpoint for MCP symbols) | N/A (no CLI symbols command) |
 | Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_params` | `-32602` | N/A | N/A |
 | Invalid path for `docdex_open` | `invalid_path` | `-32602` | N/A | N/A |
@@ -128,6 +153,6 @@ Docdex presents the same underlying failures in three different wrappers:
 
 Notes:
 
-- HTTP `/search` enforces `limit` by clamping to the daemon’s configured max and does not error on over-limit; MCP `docdex_search` similarly clamps `limit` to the MCP server’s `--max-results`.
-- MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`.
+- HTTP `/search` clamps `limit` to the daemon’s configured max and does not error on over-limit; MCP `docdex_search` similarly clamps `limit` to the server’s `--max-results` and returns the effective `limit`.
+- MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`, returning the effective values.
 - MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with `details.max_bytes` and `details.actual_bytes`.

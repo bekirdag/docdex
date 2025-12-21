@@ -21,6 +21,7 @@ pub const ERR_RATE_LIMITED: &str = "rate_limited";
 pub const ERR_BACKOFF_REQUIRED: &str = "backoff_required";
 pub const ERR_REPO_STATE_MISMATCH: &str = "repo_state_mismatch";
 pub const ERR_INTERNAL_ERROR: &str = "internal_error";
+pub const DEFAULT_BACKOFF_RETRY_AFTER_MS: u64 = 1000;
 
 #[derive(Debug, Clone)]
 pub struct StartupError {
@@ -140,4 +141,11 @@ impl RateLimited {
         self.retry_at = Some(retry_at);
         self
     }
+}
+
+pub fn backoff_details(retry_after: Duration) -> Value {
+    let retry_after_ms = retry_after.as_millis().min(u128::from(u64::MAX)) as u64;
+    let mut details = serde_json::Map::new();
+    details.insert("retry_after_ms".to_string(), Value::from(retry_after_ms));
+    Value::Object(details)
 }

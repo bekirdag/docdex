@@ -7,6 +7,7 @@ use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
@@ -17,8 +18,9 @@ use tantivy::{
 use thiserror::Error;
 use tracing::warn;
 use crate::error::{
-    repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
-    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+    backoff_details, repo_resolution_details, AppError, DEFAULT_BACKOFF_RETRY_AFTER_MS,
+    ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH,
+    ERR_REPO_STATE_MISMATCH,
 };
 use crate::symbols;
 use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
@@ -797,6 +799,9 @@ impl Indexer {
                     ERR_BACKOFF_REQUIRED,
                     "index writer unavailable (another docdexd may be indexing); retry later",
                 )
+                .with_details(backoff_details(Duration::from_millis(
+                    DEFAULT_BACKOFF_RETRY_AFTER_MS,
+                )))
                 .into()
             })
     }

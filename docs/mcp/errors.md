@@ -57,7 +57,7 @@ These codes are the **required** set for repo/index/dependency failures and are 
 - `missing_index`: on-disk index is not present (e.g. `docdexd query` before indexing).
 - `stale_index`: index exists but is known to be stale (reserved for future use).
 - `missing_dependency`: a required optional feature/dependency is disabled (e.g. symbols extraction disabled).
-- `rate_limited`: request rejected due to rate limiting (reserved for future use in MCP).
+- `rate_limited`: request rejected due to rate limiting.
 - `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable).
 - `internal_error`: unexpected server failure.
 
@@ -131,3 +131,4 @@ Notes:
 - HTTP `/search` enforces `limit` by clamping to the daemon’s configured max and does not error on over-limit; MCP `docdex_search` similarly clamps `limit` to the MCP server’s `--max-results`.
 - MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`.
 - MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with `details.max_bytes` and `details.actual_bytes`.
+- MCP `rate_limited` and `backoff_required` errors include retry metadata in `error.data.details` (`retry_after_ms`, optional `retry_at`); `rate_limited` additionally includes `limit_key` and `scope`.

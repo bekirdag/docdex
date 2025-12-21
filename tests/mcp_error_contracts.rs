@@ -188,7 +188,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         }),
     )?;
     let limited_files = read_line(&mut mcp.reader)?;
-    assert_eq!(mcp_error_code(&limited_files), Some(-32029));
+    assert_eq!(mcp_error_code(&limited_files), Some(-32602));
     assert_eq!(mcp_error_data_code(&limited_files), Some("rate_limited"));
 
     let data_files = limited_files
@@ -196,29 +196,42 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         .and_then(|v| v.get("data"))
         .and_then(|v| v.as_object())
         .ok_or("rate-limit error missing error.data object")?;
+    let details_files = data_files
+        .get("details")
+        .and_then(|v| v.as_object())
+        .ok_or("rate-limit error missing error.data.details object")?;
     assert_eq!(
-        data_files.get("limit_key").and_then(|v| v.as_str()),
+        details_files.get("limit_key").and_then(|v| v.as_str()),
         Some("mcp_tools")
     );
     assert_eq!(
-        data_files.get("scope").and_then(|v| v.as_str()),
+        details_files.get("scope").and_then(|v| v.as_str()),
         Some("global")
     );
     assert!(
-        data_files
+        details_files
             .get("retry_after_ms")
             .and_then(|v| v.as_u64())
             .is_some(),
         "retry_after_ms must be an integer"
     );
+    let nested_files = data_files
+        .get("error")
+        .and_then(|v| v.as_object())
+        .ok_or("rate-limit error missing error.data.error object")?;
+    assert_eq!(
+        nested_files.get("code").and_then(|v| v.as_str()),
+        Some("rate_limited")
+    );
     assert!(
-        data_files.keys().all(|k| {
-            matches!(
-                k.as_str(),
-                "code" | "retry_after_ms" | "retry_at" | "limit_key" | "scope"
-            )
-        }),
-        "error.data should only include stable keys"
+        data_files.keys().all(|k| matches!(k.as_str(), "code" | "message" | "details" | "error" | "tool")),
+        "error.data should only include stable envelope keys"
+    );
+    assert!(
+        details_files
+            .keys()
+            .all(|k| matches!(k.as_str(), "retry_after_ms" | "retry_at" | "limit_key" | "scope")),
+        "error.data.details should only include stable retry keys"
     );
 
     // Wait long enough for the limiter to refill 1 token (per_minute=60).
@@ -249,7 +262,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         }),
     )?;
     let limited_search = read_line(&mut mcp.reader)?;
-    assert_eq!(mcp_error_code(&limited_search), Some(-32029));
+    assert_eq!(mcp_error_code(&limited_search), Some(-32602));
     assert_eq!(mcp_error_data_code(&limited_search), Some("rate_limited"));
 
     let data_search = limited_search

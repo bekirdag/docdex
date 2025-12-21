@@ -28,7 +28,6 @@ const ERR_INVALID_REQUEST: i32 = -32600;
 const ERR_METHOD_NOT_FOUND: i32 = -32601;
 const ERR_INVALID_PARAMS: i32 = -32602;
 const ERR_INTERNAL: i32 = -32000;
-const ERR_RATE_LIMITED_RPC: i32 = -32029;
 const FILES_DEFAULT_LIMIT: usize = 200;
 const FILES_MAX_LIMIT: usize = 1000;
 const FILES_MAX_OFFSET: usize = 50_000;
@@ -75,16 +74,16 @@ struct MissingSymbolsIndexError {
 
 fn mcp_error_data(
     code: &'static str,
-    message: String,
+    data_message: String,
     reason: Option<String>,
     tool: Option<&str>,
     details: Option<serde_json::Value>,
 ) -> serde_json::Value {
-    let message = truncate_bytes(message, MAX_ERROR_MESSAGE_BYTES);
-    let message_for_data = message.clone();
+    let data_message = truncate_bytes(data_message, MAX_ERROR_MESSAGE_BYTES);
+    let message_for_data = data_message.clone();
     let mut envelope_error = serde_json::Map::new();
     envelope_error.insert("code".to_string(), json!(code));
-    envelope_error.insert("message".to_string(), json!(message));
+    envelope_error.insert("message".to_string(), json!(data_message));
     if let Some(reason) = reason.clone().map(|value| truncate_bytes(value, MAX_ERROR_REASON_BYTES)) {
         envelope_error.insert("reason".to_string(), json!(reason.clone()));
     }
@@ -112,25 +111,15 @@ fn mcp_error_data(
     serde_json::Value::Object(data)
 }
 
-fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
-    #[derive(Serialize)]
-    struct RateLimitData<'a> {
-        code: &'static str,
-        retry_after_ms: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        retry_at: Option<String>,
-        limit_key: &'a str,
-        scope: &'a str,
+fn rate_limited_details(err: &RateLimited) -> serde_json::Value {
+    let mut details = serde_json::Map::new();
+    details.insert("retry_after_ms".to_string(), json!(err.retry_after_ms));
+    if let Some(retry_at) = err.retry_at.as_ref() {
+        details.insert("retry_at".to_string(), json!(retry_at.to_rfc3339()));
     }
-
-    serde_json::to_value(RateLimitData {
-        code: ERR_RATE_LIMITED,
-        retry_after_ms: err.retry_after_ms,
-        retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
-        limit_key: &err.limit_key,
-        scope: &err.scope,
-    })
-    .expect("rate-limit data should serialize")
+    details.insert("limit_key".to_string(), json!(err.limit_key));
+    details.insert("scope".to_string(), json!(err.scope));
+    serde_json::Value::Object(details)
 }
 
 fn truncate_bytes(input: String, max_bytes: usize) -> String {
@@ -146,6 +135,29 @@ fn truncate_bytes(input: String, max_bytes: usize) -> String {
     out
 }
 
+fn rpc_error_with_data_message(
+    rpc_code: i32,
+    rpc_message: impl Into<String>,
+    data_message: impl Into<String>,
+    mcp_code: &'static str,
+    reason: Option<String>,
+    tool: Option<&str>,
+    details: Option<serde_json::Value>,
+) -> RpcError {
+    let rpc_message = truncate_bytes(rpc_message.into(), MAX_ERROR_MESSAGE_BYTES);
+    RpcError {
+        code: rpc_code,
+        message: rpc_message,
+        data: Some(mcp_error_data(
+            mcp_code,
+            data_message.into(),
+            reason,
+            tool,
+            details,
+        )),
+    }
+}
+
 fn rpc_error(
     rpc_code: i32,
     message: impl Into<String>,
@@ -154,34 +166,40 @@ fn rpc_error(
     tool: Option<&str>,
     details: Option<serde_json::Value>,
 ) -> RpcError {
-    let message = truncate_bytes(message.into(), MAX_ERROR_MESSAGE_BYTES);
-    RpcError {
-        code: rpc_code,
-        message: message.clone(),
-        data: Some(mcp_error_data(mcp_code, message, reason, tool, details)),
-    }
+    let message = message.into();
+    rpc_error_with_data_message(
+        rpc_code,
+        message.clone(),
+        message,
+        mcp_code,
+        reason,
+        tool,
+        details,
+    )
 }
 
 fn rpc_rate_limited(err: &RateLimited) -> RpcError {
-    RpcError {
-        code: ERR_RATE_LIMITED_RPC,
-        message: truncate_bytes(err.message.clone(), MAX_ERROR_MESSAGE_BYTES),
-        data: Some(mcp_rate_limited_data(err)),
-    }
+    rpc_error_with_data_message(
+        ERR_INVALID_PARAMS,
+        default_message_for_code(ERR_RATE_LIMITED),
+        err.message.clone(),
+        ERR_RATE_LIMITED,
+        None,
+        None,
+        Some(rate_limited_details(err)),
+    )
 }
 
 fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
-    if let Some(rate) = err.downcast_ref::<RateLimited>() {
-        return rpc_rate_limited(rate);
-    }
-    let (mcp_code, details) = classify_tool_error(err);
-    rpc_error(
+    let spec = classify_tool_error(err);
+    rpc_error_with_data_message(
         ERR_INVALID_PARAMS,
-        default_message_for_code(mcp_code),
-        mcp_code,
-        Some(err.to_string()),
+        default_message_for_code(spec.code),
+        spec.message,
+        spec.code,
+        spec.reason,
         tool,
-        details,
+        spec.details,
     )
 }
 
@@ -212,62 +230,118 @@ fn default_message_for_code(code: &str) -> &'static str {
     }
 }
 
-fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
-    if let Some(rate) = err.downcast_ref::<RateLimited>() {
-        return (rate.code, Some(mcp_rate_limited_data(rate)));
+struct ToolErrorSpec {
+    code: &'static str,
+    message: String,
+    reason: Option<String>,
+    details: Option<serde_json::Value>,
+}
+
+fn find_in_chain<T: std::error::Error + 'static>(err: &anyhow::Error) -> Option<&T> {
+    err.chain().find_map(|cause| cause.downcast_ref::<T>())
+}
+
+fn classify_tool_error(err: &anyhow::Error) -> ToolErrorSpec {
+    if let Some(rate) = find_in_chain::<RateLimited>(err) {
+        return ToolErrorSpec {
+            code: rate.code,
+            message: rate.message.clone(),
+            reason: None,
+            details: Some(rate_limited_details(rate)),
+        };
     }
-    if let Some(app) = err.downcast_ref::<AppError>() {
-        return (app.code, app.details.clone());
+    if let Some(app) = find_in_chain::<AppError>(err) {
+        return ToolErrorSpec {
+            code: app.code,
+            message: app.message.clone(),
+            reason: None,
+            details: app.details.clone(),
+        };
     }
-    if let Some(search_err) = err.downcast_ref::<crate::index::SearchError>() {
+    if let Some(search_err) = find_in_chain::<crate::index::SearchError>(err) {
         match search_err {
-            crate::index::SearchError::InvalidQuery { .. } => return ("invalid_query", None),
+            crate::index::SearchError::InvalidQuery { reason } => {
+                return ToolErrorSpec {
+                    code: "invalid_query",
+                    message: reason.clone(),
+                    reason: None,
+                    details: None,
+                };
+            }
         }
     }
-    if err.downcast_ref::<InvalidPathError>().is_some() {
-        return ("invalid_path", None);
+    if find_in_chain::<InvalidPathError>(err).is_some() {
+        return ToolErrorSpec {
+            code: "invalid_path",
+            message: default_message_for_code("invalid_path").to_string(),
+            reason: Some(err.to_string()),
+            details: None,
+        };
     }
-    if let Some(range) = err.downcast_ref::<InvalidRangeError>() {
-        return (
-            "invalid_range",
-            Some(json!({
+    if let Some(range) = find_in_chain::<InvalidRangeError>(err) {
+        return ToolErrorSpec {
+            code: "invalid_range",
+            message: default_message_for_code("invalid_range").to_string(),
+            reason: Some(err.to_string()),
+            details: Some(json!({
                 "start_line": range.start_line,
                 "end_line": range.end_line,
                 "total_lines": range.total_lines,
             })),
-        );
+        };
     }
-    if err.downcast_ref::<PathOutsideRepoError>().is_some() {
-        return ("invalid_path", Some(json!({ "kind": "outside_repo" })));
+    if find_in_chain::<PathOutsideRepoError>(err).is_some() {
+        return ToolErrorSpec {
+            code: "invalid_path",
+            message: default_message_for_code("invalid_path").to_string(),
+            reason: Some(err.to_string()),
+            details: Some(json!({ "kind": "outside_repo" })),
+        };
     }
-    if err.downcast_ref::<InvalidUriError>().is_some() {
-        return ("invalid_params", Some(json!({ "kind": "invalid_uri" })));
+    if find_in_chain::<InvalidUriError>(err).is_some() {
+        return ToolErrorSpec {
+            code: "invalid_params",
+            message: default_message_for_code("invalid_params").to_string(),
+            reason: Some(err.to_string()),
+            details: Some(json!({ "kind": "invalid_uri" })),
+        };
     }
-    if let Some(max_err) = err.downcast_ref::<MaxContentError>() {
-        return (
-            "max_content_exceeded",
-            Some(json!({
+    if let Some(max_err) = find_in_chain::<MaxContentError>(err) {
+        return ToolErrorSpec {
+            code: "max_content_exceeded",
+            message: default_message_for_code("max_content_exceeded").to_string(),
+            reason: Some(err.to_string()),
+            details: Some(json!({
                 "max_bytes": max_err.max_bytes,
                 "actual_bytes": max_err.actual_bytes,
             })),
-        );
+        };
     }
-    if err.downcast_ref::<MissingSymbolsDependencyError>().is_some() {
-        return (
-            ERR_MISSING_DEPENDENCY,
-            Some(json!({
+    if find_in_chain::<MissingSymbolsDependencyError>(err).is_some() {
+        return ToolErrorSpec {
+            code: ERR_MISSING_DEPENDENCY,
+            message: default_message_for_code(ERR_MISSING_DEPENDENCY).to_string(),
+            reason: Some(err.to_string()),
+            details: Some(json!({
                 "dependency": "DOCDEX_ENABLE_SYMBOL_EXTRACTION",
                 "flag": "--enable-symbol-extraction=true"
             })),
-        );
+        };
     }
-    if let Some(missing) = err.downcast_ref::<MissingSymbolsIndexError>() {
-        return (
-            ERR_MISSING_INDEX,
-            Some(json!({ "resource": "symbols", "path": missing.rel_path })),
-        );
+    if let Some(missing) = find_in_chain::<MissingSymbolsIndexError>(err) {
+        return ToolErrorSpec {
+            code: ERR_MISSING_INDEX,
+            message: default_message_for_code(ERR_MISSING_INDEX).to_string(),
+            reason: Some(err.to_string()),
+            details: Some(json!({ "resource": "symbols", "path": missing.rel_path })),
+        };
     }
-    (ERR_INTERNAL_ERROR, None)
+    ToolErrorSpec {
+        code: ERR_INTERNAL_ERROR,
+        message: default_message_for_code(ERR_INTERNAL_ERROR).to_string(),
+        reason: Some(err.to_string()),
+        details: None,
+    }
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -1695,14 +1769,24 @@ mod tests {
     fn rate_limited_rpc_has_stable_data_shape() {
         let err = RateLimited::new(Duration::from_millis(0), "mcp_tools".to_string(), "global".to_string());
         let rpc = rpc_rate_limited(&err);
-        assert_eq!(rpc.code, ERR_RATE_LIMITED_RPC);
+        assert_eq!(rpc.code, ERR_INVALID_PARAMS);
         let data = rpc.data.expect("rate limited rpc should include data");
         let obj = data.as_object().expect("rate limited data should be object");
         assert_eq!(obj.get("code").and_then(|v| v.as_str()), Some(ERR_RATE_LIMITED));
-        assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(0));
-        assert_eq!(obj.get("limit_key").and_then(|v| v.as_str()), Some("mcp_tools"));
-        assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
-        assert!(obj.get("retry_at").is_none(), "retry_at should be omitted when unset");
+        assert_eq!(obj.get("message").and_then(|v| v.as_str()), Some("rate limited"));
+        let details = obj
+            .get("details")
+            .and_then(|v| v.as_object())
+            .expect("rate limited data should include details object");
+        assert_eq!(details.get("retry_after_ms").and_then(|v| v.as_u64()), Some(0));
+        assert_eq!(details.get("limit_key").and_then(|v| v.as_str()), Some("mcp_tools"));
+        assert_eq!(details.get("scope").and_then(|v| v.as_str()), Some("global"));
+        assert!(details.get("retry_at").is_none(), "retry_at should be omitted when unset");
+        let nested = obj
+            .get("error")
+            .and_then(|v| v.as_object())
+            .expect("rate limited data should include nested error object");
+        assert_eq!(nested.get("code").and_then(|v| v.as_str()), Some(ERR_RATE_LIMITED));
     }
 
     #[test]
@@ -1717,8 +1801,20 @@ mod tests {
         );
         let data = rpc.data.expect("rate limited rpc should include data");
         let obj = data.as_object().expect("rate limited data should be object");
-        assert!(obj.get("retry_at").and_then(|v| v.as_str()).is_some());
-        assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(1234));
+        let message = obj
+            .get("message")
+            .and_then(|v| v.as_str())
+            .expect("rate limited data should include message");
+        assert!(
+            message.len() <= MAX_ERROR_MESSAGE_BYTES + "…".len(),
+            "rate limit message should be bounded"
+        );
+        let details = obj
+            .get("details")
+            .and_then(|v| v.as_object())
+            .expect("rate limited data should include details object");
+        assert!(details.get("retry_at").and_then(|v| v.as_str()).is_some());
+        assert_eq!(details.get("retry_after_ms").and_then(|v| v.as_u64()), Some(1234));
     }
 
     #[test]
@@ -1745,7 +1841,7 @@ mod tests {
                 Err(err) => {
                     rate_limited_count += 1;
                     let rpc = rpc_rate_limited(&err);
-                    assert_eq!(rpc.code, ERR_RATE_LIMITED_RPC);
+                    assert_eq!(rpc.code, ERR_INVALID_PARAMS);
                     assert!(
                         rpc.message.len() <= MAX_ERROR_MESSAGE_BYTES + "…".len(),
                         "rpc error message should remain bounded"
@@ -1760,15 +1856,19 @@ mod tests {
                         obj.get("code").and_then(|v| v.as_str()),
                         Some(ERR_RATE_LIMITED)
                     );
+                    let details = obj
+                        .get("details")
+                        .and_then(|v| v.as_object())
+                        .expect("rate limited data should include details object");
                     assert!(
-                        obj.get("retry_after_ms").and_then(|v| v.as_u64()).is_some(),
+                        details.get("retry_after_ms").and_then(|v| v.as_u64()).is_some(),
                         "retry_after_ms must be an integer"
                     );
                     assert_eq!(
-                        obj.get("limit_key").and_then(|v| v.as_str()),
+                        details.get("limit_key").and_then(|v| v.as_str()),
                         Some("mcp_tools")
                     );
-                    assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
+                    assert_eq!(details.get("scope").and_then(|v| v.as_str()), Some("global"));
 
                     let payload_bytes = serde_json::to_vec(&rpc).expect("rpc error should serialize");
                     assert!(

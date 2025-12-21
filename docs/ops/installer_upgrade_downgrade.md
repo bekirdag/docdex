@@ -68,6 +68,7 @@ Decision outcomes (stable strings; used by the installer decision engine):
 | `repair` | Reinstall the expected version due to a local integrity mismatch. | Metadata exists for the expected version, but the current binary’s SHA-256 does not match the recorded `binary.sha256`. |
 | `reinstall_unknown` | Reinstall because current state can’t be verified deterministically. | Binary exists but install metadata is missing/unreadable/invalid, the metadata `platformKey` mismatches the detected platform, or the binary hash cannot be computed/read. |
 
+<<<<<<< HEAD
 User-facing outcome codes (stable; suitable for automation):
 
 | Outcome code | Maps from decision outcome | Meaning |
@@ -131,6 +132,31 @@ For supportability, structured events include `details.outcomeCode` with stable 
 - For `no-op`, the installer does **not** fetch the release manifest, does **not** download any archive, and does **not** touch `dist/<platformKey>/` other than reading the binary/metadata to verify integrity.
 - For `update` / `repair` / `reinstall_unknown`, the installer resolves an archive from the expected GitHub Release, downloads it to an OS temp file, verifies integrity, then replaces `dist/<platformKey>/` and writes fresh install metadata.
 - The installer does **not** keep a persistent “binary download cache” of archives across runs. The only persistent optimization is the on-disk installed binary + `docdexd-install.json` metadata, which enables `no-op`.
+=======
+The installer logs the outcome as a single line:
+- `[docdex] Install outcome: <status> (outcome=<outcome>, reason=<reason>)`
+
+Where:
+- `status` is one of `skipped`, `updated`, `repaired`, `reinstalled`.
+- `outcome` is the stable internal outcome string (`no-op`, `update`, `repair`, `reinstall_unknown`).
+- `reason` is a stable reason code for why the outcome was chosen (see below).
+
+### Outcome reason codes
+
+Reason codes (stable strings, derived from local state):
+
+- `binary_missing`: no installed binary was found.
+- `metadata_missing`: install metadata file is missing.
+- `metadata_unreadable`: install metadata exists but could not be read.
+- `metadata_invalid`: install metadata is present but invalid.
+- `existsSync_unavailable`: filesystem checks were unavailable in the current runtime.
+- `platform_mismatch`: metadata platform does not match the detected platform.
+- `version_mismatch`: installed version differs from expected.
+- `expected_integrity_missing`: no expected sha256 available to verify.
+- `binary_integrity_mismatch`: local binary hash does not match expected.
+- `verified`: local binary hash verified for the expected version.
+- `integrity_unverifiable`: integrity check could not be completed.
+>>>>>>> mcoda/task/bck-05-us-06-t47
 
 ## Upgrade vs downgrade
 

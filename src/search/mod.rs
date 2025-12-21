@@ -1113,11 +1113,20 @@ async fn memory_store_handler(
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
     Json(req): Json<MemoryStoreRequest>,
 ) -> impl IntoResponse {
+<<<<<<< HEAD
     let memory = match policy::require_option(Dependency::Memory, state.memory.clone()) {
         Ok(memory) => memory,
         Err(err) => {
             return json_error(status_for_app_error(err.code), err.code, err.message);
         }
+=======
+    let Some(memory) = state.memory.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            "memory is disabled; enable with --enable-memory=true or DOCDEX_ENABLE_MEMORY=1",
+        );
+>>>>>>> mcoda/task/bck-05-us-06-t47
     };
     let text = req.text.trim();
     if text.is_empty() {
@@ -1214,11 +1223,20 @@ async fn memory_recall_handler(
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
     Json(req): Json<MemoryRecallRequest>,
 ) -> impl IntoResponse {
+<<<<<<< HEAD
     let memory = match policy::require_option(Dependency::Memory, state.memory.clone()) {
         Ok(memory) => memory,
         Err(err) => {
             return json_error(status_for_app_error(err.code), err.code, err.message);
         }
+=======
+    let Some(memory) = state.memory.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            "memory is disabled; enable with --enable-memory=true or DOCDEX_ENABLE_MEMORY=1",
+        );
+>>>>>>> mcoda/task/bck-05-us-06-t47
     };
     let query = req.query.trim();
     if query.is_empty() {

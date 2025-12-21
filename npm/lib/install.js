@@ -87,6 +87,7 @@ const INSTALL_METADATA_FILENAME = "docdexd-install.json";
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 const INSTALL_OUTCOME_SCHEMA_VERSION = 1;
 
 const INSTALL_OUTCOME_CODE_BY_DECISION_OUTCOME = Object.freeze({
@@ -218,6 +219,14 @@ const RETRYABLE_ERROR_CODES = new Set([
 =======
 const PERMISSION_ERROR_CODES = new Set(["EACCES", "EPERM", "EROFS"]);
 >>>>>>> mcoda/task/ops-01-us-01-t35
+=======
+const INSTALL_OUTCOME_STATUS = Object.freeze({
+  "no-op": "skipped",
+  update: "updated",
+  repair: "repaired",
+  reinstall_unknown: "reinstalled"
+});
+>>>>>>> mcoda/task/bck-05-us-06-t47
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -270,6 +279,7 @@ function withBaseDetails(details) {
   };
 }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -364,6 +374,17 @@ function permissionPathFromError(err, fallbackPath) {
 }
 
 >>>>>>> mcoda/task/ops-01-us-01-t35
+=======
+function formatInstallOutcome(outcome, reason) {
+  const status = INSTALL_OUTCOME_STATUS[outcome] || outcome;
+  const parts = [];
+  if (outcome) parts.push(`outcome=${outcome}`);
+  if (reason) parts.push(`reason=${reason}`);
+  const details = parts.length ? ` (${parts.join(", ")})` : "";
+  return `[docdex] Install outcome: ${status}${details}`;
+}
+
+>>>>>>> mcoda/task/bck-05-us-06-t47
 class InstallerConfigError extends Error {
   /**
    * @param {string} message
@@ -5785,6 +5806,7 @@ async function runInstaller(options) {
     });
 =======
   if (local.outcome === "no-op") {
+<<<<<<< HEAD
     const assetNameForSummary =
       typeof local.installedMetadata?.archive?.name === "string" && local.installedMetadata.archive.name.trim()
         ? local.installedMetadata.archive.name.trim()
@@ -5801,6 +5823,15 @@ async function runInstaller(options) {
     });
     return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
 >>>>>>> mcoda/task/ops-01-us-01-t43
+=======
+    logger.log(formatInstallOutcome(local.outcome, local.reason));
+    return {
+      binaryPath: local.binaryPath,
+      outcome: local.outcome,
+      reason: local.reason,
+      integrityResult: local.integrityResult
+    };
+>>>>>>> mcoda/task/bck-05-us-06-t47
   }
 
 >>>>>>> mcoda/task/ops-01-us-06-t03
@@ -8497,6 +8528,7 @@ async function runInstaller(options) {
     });
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     // Atomic-ish directory swap: keep existing distDir intact until staging is complete.
     const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
     if (!existsSync) throw new Error("fs existsSync unavailable");
@@ -8546,6 +8578,10 @@ async function runInstaller(options) {
     logger.log(`[docdex] Installed binary to ${finalBinaryPath}`);
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
     return { binaryPath: finalBinaryPath, outcome: local.outcome };
+=======
+    logger.log(formatInstallOutcome(local.outcome, local.reason));
+    return { binaryPath, outcome: local.outcome, reason: local.reason };
+>>>>>>> mcoda/task/bck-05-us-06-t47
   } finally {
     for (const [signal, handler] of signalHandlers) {
       process.removeListener(signal, handler);

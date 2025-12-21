@@ -261,6 +261,7 @@ test("installer outcome: no-op skips plan/download when local install is verifie
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   assert.equal(result.outcomeCode, "skipped_noop");
   assert.equal(typeof result.outcomeMessage, "string");
 =======
@@ -272,6 +273,9 @@ test("installer outcome: no-op skips plan/download when local install is verifie
   assert.equal(result.decision.outcome, "no-op");
   assert.equal(result.decision.action, "no-op");
 >>>>>>> mcoda/task/ops-01-us-06-t02
+=======
+  assert.equal(result.reason, "verified");
+>>>>>>> mcoda/task/bck-05-us-06-t47
   assert.equal(parseRepoSlugCalls, 0);
   assert.equal(planCalls, 0);
 =======
@@ -1307,9 +1311,13 @@ test("installer outcome: update installs when installed version is newer", async
 
   assert.equal(result.outcome, "update");
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
   assert.equal(smokeCalls, 1);
   assert.equal(smokeBinaryPath, path.join(distDir, "docdexd"));
+=======
+  assert.equal(result.reason, "version_mismatch");
+>>>>>>> mcoda/task/bck-05-us-06-t47
 
 >>>>>>> mcoda/task/ops-01-us-01-t41
   const metadataPath = path.join(distDir, "docdexd-install.json");
@@ -1546,7 +1554,12 @@ test("installer outcome: repair converges to no-op without network calls", async
     }
   });
 
+<<<<<<< HEAD
   assert.equal(first.outcome, "repair");
+=======
+  assert.equal(result.outcome, "repair");
+  assert.equal(result.reason, "binary_integrity_mismatch");
+>>>>>>> mcoda/task/bck-05-us-06-t47
   const metadataPath = path.join(distDir, "docdexd-install.json");
   const metadataAfterRepair = await fs.promises.readFile(metadataPath, "utf8");
   const binaryAfterRepair = await fs.promises.readFile(path.join(distDir, "docdexd"), "utf8");
@@ -1589,6 +1602,7 @@ test("installer outcome: repair converges to no-op without network calls", async
     getDownloadBaseFn: () => base
   });
 
+<<<<<<< HEAD
   assert.equal(second.outcome, "no-op");
   assert.equal(second.binaryPath, first.binaryPath);
   assert.equal(repoSlugCalls, 0);
@@ -1601,6 +1615,15 @@ test("installer outcome: repair converges to no-op without network calls", async
   const binaryAfterSecond = await fs.promises.readFile(path.join(distDir, "docdexd"), "utf8");
   assert.equal(metadataAfterSecond, metadataAfterRepair);
   assert.equal(binaryAfterSecond, binaryAfterRepair);
+=======
+  assert.equal(result.outcome, "reinstall_unknown");
+  assert.equal(result.reason, "metadata_missing");
+  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
+  assert.equal(meta.version, version);
+  assert.equal(meta.platformKey, platformKey);
+  assert.equal(meta.targetTriple, targetTriple);
+>>>>>>> mcoda/task/bck-05-us-06-t47
 });
 
 test("installer outcome: reinstall_unknown reinstalls when metadata is missing", async (t) => {
@@ -2144,6 +2167,7 @@ test("installer recovery: restores backup before no-op decision", async (t) => {
 >>>>>>> mcoda/task/ops-01-us-03-t44
   });
 
+<<<<<<< HEAD
   assert.equal(result.outcome, "no-op");
   assert.equal(parseRepoSlugCalls, 0);
   assert.equal(planCalls, 0);
@@ -2151,4 +2175,17 @@ test("installer recovery: restores backup before no-op decision", async (t) => {
   assert.equal(extractCalls, 0);
   assert.ok(fs.existsSync(path.join(distDir, "docdexd")));
   assert.ok(!fs.existsSync(backupDir));
+=======
+  assert.equal(result.outcome, "reinstall_unknown");
+  assert.equal(result.reason, "integrity_unverifiable");
+  assert.equal(downloadCalls, 1);
+  assert.equal(extractCalls, 1);
+  assert.ok(shaCalls >= 2, "expected sha256 to be attempted for local check and after install");
+
+  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
+  assert.equal(meta.version, version);
+  assert.equal(meta.platformKey, platformKey);
+  assert.equal(meta.targetTriple, targetTriple);
+>>>>>>> mcoda/task/bck-05-us-06-t47
 });

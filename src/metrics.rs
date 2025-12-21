@@ -1,5 +1,6 @@
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -8,6 +9,7 @@ pub struct Metrics {
     rate_limit_denies: AtomicU64,
     auth_denies: AtomicU64,
     error_count: AtomicU64,
+    mcp_error_counts: RwLock<BTreeMap<String, u64>>,
 
     browser_sessions_active: AtomicI64,
     browser_session_launch_failures: AtomicU64,
@@ -33,6 +35,12 @@ impl Metrics {
 
     pub fn inc_error(&self) {
         self.error_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_mcp_error(&self, code: &str) {
+        let mut counts = self.mcp_error_counts.write();
+        let entry = counts.entry(code.to_string()).or_insert(0);
+        *entry = entry.saturating_add(1);
     }
 
     pub fn inc_browser_session_active(&self) {
@@ -82,7 +90,7 @@ impl Metrics {
     }
 
     pub fn render_prometheus(&self) -> String {
-        format!(
+        let mut out = format!(
             concat!(
                 "# HELP docdex_rate_limit_denies_total Rate limit denials\n",
                 "# TYPE docdex_rate_limit_denies_total counter\n",
@@ -133,8 +141,23 @@ impl Metrics {
             self.chrome_watchdog_reap_attempts.load(Ordering::Relaxed),
             self.chrome_watchdog_reaped.load(Ordering::Relaxed),
             self.chrome_watchdog_reap_failures.load(Ordering::Relaxed),
-        )
+        );
+        out.push_str("# HELP docdex_mcp_errors_total MCP errors by code\n");
+        out.push_str("# TYPE docdex_mcp_errors_total counter\n");
+        let counts = self.mcp_error_counts.read();
+        for (code, count) in counts.iter() {
+            out.push_str(&format!(
+                "docdex_mcp_errors_total{{code=\"{}\"}} {}\n",
+                escape_label_value(code),
+                count
+            ));
+        }
+        out
     }
+}
+
+fn escape_label_value(value: &str) -> String {
+    value.replace('\\', r"\\").replace('"', r#"\""#)
 }
 
 fn dec_saturating(gauge: &AtomicI64) {
@@ -165,4 +188,3 @@ pub fn global() -> Arc<Metrics> {
 pub fn set_global(metrics: Arc<Metrics>) {
     *GLOBAL_METRICS.write() = metrics;
 }
-

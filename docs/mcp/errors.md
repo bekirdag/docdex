@@ -57,7 +57,7 @@ These codes are the **required** set for repo/index/dependency failures and are 
 - `missing_index`: on-disk index is not present (e.g. `docdexd query` before indexing).
 - `stale_index`: index exists but is known to be stale (reserved for future use).
 - `missing_dependency`: a required optional feature/dependency is disabled (e.g. symbols extraction disabled).
-- `rate_limited`: request rejected due to rate limiting (reserved for future use in MCP).
+- `rate_limited`: request rejected due to rate limiting. `error.data.details` includes `retry_after_ms`, optional `retry_at`, `limit_key`, and `scope`.
 - `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable).
 - `internal_error`: unexpected server failure.
 
@@ -118,7 +118,7 @@ Docdex presents the same underlying failures in three different wrappers:
 | Index missing (query/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
 | Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Not currently emitted by the per-repo CLI |
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |
-| Rate limited | `rate_limited` | `-32602` | `429` (security middleware returns status-only; no JSON envelope) | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
+| Rate limited | `rate_limited` | `-32602` | `429` (security middleware returns status-only; no JSON envelope) | MCP tools enforce a rate limiter; errors include retry details in `error.data.details`. |
 | Optional dependency disabled (e.g. symbols) | `missing_dependency` | `-32602` | N/A (no HTTP endpoint for MCP symbols) | N/A (no CLI symbols command) |
 | Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_params` | `-32602` | N/A | N/A |
 | Invalid path for `docdex_open` | `invalid_path` | `-32602` | N/A | N/A |

@@ -21,7 +21,28 @@ Outcomes (stable strings):
 | `reinstall_unknown` | Reinstall because current state can’t be verified deterministically. | Binary exists but install metadata is missing/unreadable/invalid, or metadata does not match the detected `platformKey`. |
 
 The installer logs the outcome as a single line:
-- `[docdex] Install outcome: <outcome>`
+- `[docdex] Install outcome: <status> (outcome=<outcome>, reason=<reason>)`
+
+Where:
+- `status` is one of `skipped`, `updated`, `repaired`, `reinstalled`.
+- `outcome` is the stable internal outcome string (`no-op`, `update`, `repair`, `reinstall_unknown`).
+- `reason` is a stable reason code for why the outcome was chosen (see below).
+
+### Outcome reason codes
+
+Reason codes (stable strings, derived from local state):
+
+- `binary_missing`: no installed binary was found.
+- `metadata_missing`: install metadata file is missing.
+- `metadata_unreadable`: install metadata exists but could not be read.
+- `metadata_invalid`: install metadata is present but invalid.
+- `existsSync_unavailable`: filesystem checks were unavailable in the current runtime.
+- `platform_mismatch`: metadata platform does not match the detected platform.
+- `version_mismatch`: installed version differs from expected.
+- `expected_integrity_missing`: no expected sha256 available to verify.
+- `binary_integrity_mismatch`: local binary hash does not match expected.
+- `verified`: local binary hash verified for the expected version.
+- `integrity_unverifiable`: integrity check could not be completed.
 
 ## Upgrade vs downgrade
 
@@ -114,4 +135,3 @@ This is usually a repo state issue, not an installer issue:
 - Installer error codes + remediation: `docs/ops/installer_error_codes.md`
 - Release manifest contract: `docs/contracts/release_manifest_schema_v1.md`
 - Installer error contract: `docs/contracts/installer_error_contract_v1.md`
-

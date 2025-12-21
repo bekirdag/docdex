@@ -26,6 +26,12 @@ const MAX_MANIFEST_BYTES = 1024 * 1024; // 1 MiB cap for safety
 const INVALID_JSON_ERROR = "invalid JSON";
 const INSTALL_METADATA_SCHEMA_VERSION = 1;
 const INSTALL_METADATA_FILENAME = "docdexd-install.json";
+const INSTALL_OUTCOME_STATUS = Object.freeze({
+  "no-op": "skipped",
+  update: "updated",
+  repair: "repaired",
+  reinstall_unknown: "reinstalled"
+});
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -49,6 +55,15 @@ function withBaseDetails(details) {
     assetName: null,
     ...(details || {})
   };
+}
+
+function formatInstallOutcome(outcome, reason) {
+  const status = INSTALL_OUTCOME_STATUS[outcome] || outcome;
+  const parts = [];
+  if (outcome) parts.push(`outcome=${outcome}`);
+  if (reason) parts.push(`reason=${reason}`);
+  const details = parts.length ? ` (${parts.join(", ")})` : "";
+  return `[docdex] Install outcome: ${status}${details}`;
 }
 
 class InstallerConfigError extends Error {
@@ -1059,8 +1074,13 @@ async function runInstaller(options) {
   });
 
   if (local.outcome === "no-op") {
-    logger.log("[docdex] Install outcome: no-op");
-    return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
+    logger.log(formatInstallOutcome(local.outcome, local.reason));
+    return {
+      binaryPath: local.binaryPath,
+      outcome: local.outcome,
+      reason: local.reason,
+      integrityResult: local.integrityResult
+    };
   }
 
   const repoSlug = parseRepoSlugFn();
@@ -1188,8 +1208,8 @@ async function runInstaller(options) {
       value: metadata
     });
 
-    logger.log(`[docdex] Install outcome: ${local.outcome}`);
-    return { binaryPath, outcome: local.outcome };
+    logger.log(formatInstallOutcome(local.outcome, local.reason));
+    return { binaryPath, outcome: local.outcome, reason: local.reason };
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
   }

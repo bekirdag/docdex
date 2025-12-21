@@ -454,7 +454,7 @@ async fn memory_store_handler(
         return json_error(
             StatusCode::CONFLICT,
             ERR_MEMORY_DISABLED,
-            "memory is disabled; start the daemon with --enable-memory=true",
+            "memory is disabled; enable with --enable-memory=true or DOCDEX_ENABLE_MEMORY=1",
         );
     };
     let text = req.text.trim();
@@ -545,7 +545,7 @@ async fn memory_recall_handler(
         return json_error(
             StatusCode::CONFLICT,
             ERR_MEMORY_DISABLED,
-            "memory is disabled; start the daemon with --enable-memory=true",
+            "memory is disabled; enable with --enable-memory=true or DOCDEX_ENABLE_MEMORY=1",
         );
     };
     let query = req.query.trim();

@@ -21,7 +21,7 @@ Symbol extraction is **disabled by default**.
 When symbol extraction is disabled:
 
 - Indexing and search work normally (no dependency on the symbols store).
-- The MCP tool `docdex_symbols` returns an MCP error with Docdex code `missing_dependency` and details `{ "dependency": "DOCDEX_ENABLE_SYMBOL_EXTRACTION" }`.
+- The MCP tool `docdex_symbols` returns an MCP error with Docdex code `missing_dependency` and details `{ "dependency": "DOCDEX_ENABLE_SYMBOL_EXTRACTION", "enable_env": "DOCDEX_ENABLE_SYMBOL_EXTRACTION=1", "enable_flag": "--enable-symbol-extraction=true" }`.
 
 ## Store location and lifecycle
 

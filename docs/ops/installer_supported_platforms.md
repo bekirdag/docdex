@@ -63,6 +63,10 @@ Inputs (Node runtime):
 - Linux libc (only when `process.platform === "linux"`):
   - Override: `DOCDEX_LIBC=gnu|musl|glibc` (glibc is normalized to `gnu`)
   - Otherwise: detected by Node report + Alpine hints + ELF interpreter inspection (see `npm/lib/platform.js`)
+    - `process.report.getReport().header.glibcVersionRuntime` → `gnu`
+    - `process.report.getReport().header.musl` or `/etc/alpine-release` → `musl`
+    - ELF interpreter in `process.execPath` (`ld-musl` → `musl`, `ld-linux` → `gnu`)
+    - Fallback: `musl` (deterministic default; override if needed)
 
 Outputs:
 - `platformKey` — the installer’s platform identifier (used in artifact names), e.g. `linux-x64-gnu`
@@ -195,6 +199,7 @@ This bypasses the npm downloader and runs `docdexd` directly.
 3) Run the binary:
    - macOS/Linux: `./target/release/docdexd --help`
    - Windows (PowerShell): `.\target\release\docdexd.exe --help`
+4) Use `docdexd` directly for CLI/HTTP/MCP (command list in `npm/README.md`).
 
 Operational note:
 - Building from source is the safest workaround when your platform is unsupported because it does not depend on release assets or artifact naming conventions.

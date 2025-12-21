@@ -111,6 +111,7 @@ use crate::max_size::{
 };
 >>>>>>> mcoda/task/bck-05-us-10-t25
 use crate::memory::{inject_embedding_metadata, MemoryStore};
+use crate::metrics;
 use crate::ollama::OllamaEmbedder;
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -247,6 +248,7 @@ const MAX_ERROR_REASON_BYTES: usize = 768;
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 >>>>>>> mcoda/task/bck-05-us-10-t25
 =======
@@ -299,6 +301,34 @@ const ISSUE_MUST_BE_NON_NEGATIVE: &str = "must_be_non_negative";
 const ISSUE_MUST_BE_OBJECT: &str = "must_be_object";
 const ISSUE_MUST_BE_ARRAY: &str = "must_be_array";
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+const MCP_CANONICAL_CODES: &[&str] = &[
+    "parse_error",
+    "invalid_request",
+    "method_not_found",
+    "invalid_params",
+    "invalid_argument",
+    "missing_query",
+    "invalid_query",
+    "invalid_path",
+    "invalid_range",
+    "max_content_exceeded",
+    ERR_EMBEDDING_TIMEOUT,
+    ERR_EMBEDDING_MODEL_NOT_FOUND,
+    ERR_EMBEDDING_FAILED,
+    ERR_MEMORY_DISABLED,
+    ERR_MISSING_REPO,
+    ERR_MISSING_REPO_PATH,
+    ERR_UNKNOWN_REPO,
+    ERR_REPO_STATE_MISMATCH,
+    ERR_MISSING_INDEX,
+    ERR_STALE_INDEX,
+    ERR_MISSING_DEPENDENCY,
+    ERR_RATE_LIMITED,
+    ERR_BACKOFF_REQUIRED,
+    ERR_INTERNAL_ERROR,
+];
+>>>>>>> mcoda/task/bck-05-us-06-t15
 
 #[derive(Error, Debug)]
 #[error("path must be relative and not contain parent components")]
@@ -784,6 +814,7 @@ fn schema_version_details(schema_name: &'static str, requested: u32) -> serde_js
 =======
 fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 fn mcp_rate_limited_data(err: &RateLimited, trace: Option<&McpTraceContext>) -> serde_json::Value {
 >>>>>>> mcoda/task/bck-05-us-06-t30
@@ -1104,6 +1135,31 @@ fn rate_limit_details(err: &RateLimited) -> serde_json::Value {
     details.insert("scope".to_string(), json!(err.scope.clone()));
     serde_json::Value::Object(details)
 >>>>>>> mcoda/task/bck-05-us-06-t17
+=======
+    let mut details = serde_json::Map::new();
+    details.insert(
+        "retry_after_ms".to_string(),
+        serde_json::Value::from(err.retry_after_ms),
+    );
+    if let Some(retry_at) = err.retry_at.as_ref().map(|at| at.to_rfc3339()) {
+        details.insert("retry_at".to_string(), serde_json::Value::String(retry_at));
+    }
+    details.insert(
+        "limit_key".to_string(),
+        serde_json::Value::String(err.limit_key.clone()),
+    );
+    details.insert(
+        "scope".to_string(),
+        serde_json::Value::String(err.scope.clone()),
+    );
+    mcp_error_data(
+        ERR_RATE_LIMITED,
+        err.message.clone(),
+        None,
+        None,
+        Some(serde_json::Value::Object(details)),
+    )
+>>>>>>> mcoda/task/bck-05-us-06-t15
 }
 
 fn truncate_bytes(input: String, max_bytes: usize) -> String {
@@ -1229,6 +1285,7 @@ fn rpc_error(
 >>>>>>> mcoda/task/bck-05-us-10-t25
 =======
     let message = truncate_bytes(message.into(), MAX_ERROR_MESSAGE_BYTES);
+<<<<<<< HEAD
     let details_for_retry = details.clone();
     let mut data = mcp_error_data(mcp_code, message.clone(), reason, tool, details);
     if mcp_code == ERR_BACKOFF_REQUIRED {
@@ -1242,6 +1299,9 @@ fn rpc_error(
 =======
     let message = sanitize_message(message);
 >>>>>>> mcoda/task/bck-05-us-06-t35
+=======
+    record_mcp_error(mcp_code, rpc_code, tool);
+>>>>>>> mcoda/task/bck-05-us-06-t15
     RpcError {
         code: rpc_code,
         message: message.clone(),
@@ -1250,6 +1310,7 @@ fn rpc_error(
     }
 }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1287,6 +1348,10 @@ fn rpc_rate_limited(err: &RateLimited, tool: Option<&str>) -> RpcError {
 }
 
 fn rpc_rate_limited(err: &RateLimited, trace: Option<&McpTraceContext>) -> RpcError {
+=======
+fn rpc_rate_limited(err: &RateLimited) -> RpcError {
+    record_mcp_error(ERR_RATE_LIMITED, ERR_RATE_LIMITED_RPC, None);
+>>>>>>> mcoda/task/bck-05-us-06-t15
     RpcError {
         code: ERR_RATE_LIMITED_RPC,
         message: truncate_bytes(err.message.clone(), MAX_ERROR_MESSAGE_BYTES),
@@ -1308,6 +1373,28 @@ fn rpc_rate_limited(err: &RateLimited) -> RpcError {
         None,
         Some(mcp_rate_limited_details(err)),
     )
+}
+
+fn record_mcp_error(mcp_code: &'static str, rpc_code: i32, tool: Option<&str>) {
+    metrics::global().inc_mcp_error(mcp_code);
+    let known = is_known_mcp_code(mcp_code);
+    let tool_name = tool.unwrap_or("none");
+    if known {
+        eprintln!(
+            "docdex mcp: error code={} rpc_code={} tool={}",
+            mcp_code, rpc_code, tool_name
+        );
+    } else {
+        eprintln!(
+            "docdex mcp: error code={} rpc_code={} tool={} (unknown code)",
+            mcp_code, rpc_code, tool_name
+        );
+    }
+    debug_assert!(known, "unknown MCP error code: {mcp_code}");
+}
+
+fn is_known_mcp_code(code: &str) -> bool {
+    MCP_CANONICAL_CODES.contains(&code)
 }
 
 fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
@@ -6096,6 +6183,7 @@ mod tests {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         assert_eq!(obj.get("message").and_then(|v| v.as_str()), Some("rate limited"));
 =======
         assert!(obj.get("message").and_then(|v| v.as_str()).is_some());
@@ -6236,10 +6324,22 @@ mod tests {
         assert_eq!(obj.get("message").and_then(|v| v.as_str()), Some("rate limited"));
         let details = obj.get("details").and_then(|v| v.as_object()).expect("rate limit details should be object");
 >>>>>>> mcoda/task/bck-05-us-06-t17
+=======
+        let nested = obj
+            .get("error")
+            .and_then(|v| v.as_object())
+            .expect("rate limited data should include envelope error");
+        assert_eq!(nested.get("code").and_then(|v| v.as_str()), Some(ERR_RATE_LIMITED));
+        let details = obj
+            .get("details")
+            .and_then(|v| v.as_object())
+            .expect("rate limited data should include details");
+>>>>>>> mcoda/task/bck-05-us-06-t15
         assert_eq!(details.get("retry_after_ms").and_then(|v| v.as_u64()), Some(0));
         assert_eq!(details.get("limit_key").and_then(|v| v.as_str()), Some("mcp_tools"));
         assert_eq!(details.get("scope").and_then(|v| v.as_str()), Some("global"));
         assert!(details.get("retry_at").is_none(), "retry_at should be omitted when unset");
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -6310,6 +6410,8 @@ mod tests {
             Some(ERR_RATE_LIMITED)
         );
 >>>>>>> mcoda/task/bck-05-us-06-t16
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t15
     }
 
     #[test]
@@ -6351,6 +6453,7 @@ mod tests {
         );
         let data = rpc.data.expect("rate limited rpc should include data");
         let obj = data.as_object().expect("rate limited data should be object");
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -6568,11 +6671,14 @@ mod tests {
             "rpc error reason should be bounded"
         );
 >>>>>>> mcoda/task/bck-05-us-06-t26
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t15
         let details = obj
             .get("details")
             .and_then(|v| v.as_object())
             .expect("rate limited data should include details");
         assert!(details.get("retry_at").and_then(|v| v.as_str()).is_some());
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -6652,6 +6758,9 @@ mod tests {
 >>>>>>> mcoda/task/bck-05-us-06-t17
 =======
 >>>>>>> mcoda/task/bck-05-us-06-t16
+=======
+        assert_eq!(details.get("retry_after_ms").and_then(|v| v.as_u64()), Some(1234));
+>>>>>>> mcoda/task/bck-05-us-06-t15
     }
 
     #[test]
@@ -6748,6 +6857,7 @@ mod tests {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
                     assert!(obj.get("message").and_then(|v| v.as_str()).is_some());
 =======
                     assert!(obj.get("error").is_some(), "error envelope should be present");
@@ -6770,10 +6880,13 @@ mod tests {
 =======
 =======
 >>>>>>> mcoda/task/bck-05-us-06-t29
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t15
                     let details = obj
                         .get("details")
                         .and_then(|v| v.as_object())
                         .expect("rate limited data should include details");
+<<<<<<< HEAD
 <<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-06-t35
 =======
@@ -6787,6 +6900,8 @@ mod tests {
                         .and_then(|v| v.as_object())
                         .expect("rate limit details should be object");
 >>>>>>> mcoda/task/bck-05-us-06-t16
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t15
                     assert!(
                         details.get("retry_after_ms").and_then(|v| v.as_u64()).is_some(),
                         "retry_after_ms must be an integer"
@@ -6800,6 +6915,7 @@ mod tests {
                         details.get("limit_key").and_then(|v| v.as_str()),
                         Some("mcp_tools")
                     );
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -6867,6 +6983,9 @@ mod tests {
 >>>>>>> mcoda/task/bck-05-us-06-t17
 =======
 >>>>>>> mcoda/task/bck-05-us-06-t16
+=======
+                    assert_eq!(details.get("scope").and_then(|v| v.as_str()), Some("global"));
+>>>>>>> mcoda/task/bck-05-us-06-t15
 
                     let payload_bytes = serde_json::to_vec(&rpc).expect("rpc error should serialize");
                     assert!(
@@ -7019,5 +7138,72 @@ mod tests {
             payload_bytes.len()
         );
 >>>>>>> mcoda/task/bck-05-us-09-t37
+    }
+
+    #[test]
+    fn classify_tool_error_preserves_app_error_codes() {
+        let codes = [
+            ERR_MISSING_REPO,
+            ERR_MISSING_REPO_PATH,
+            ERR_UNKNOWN_REPO,
+            ERR_REPO_STATE_MISMATCH,
+            ERR_MISSING_INDEX,
+            ERR_STALE_INDEX,
+            ERR_MISSING_DEPENDENCY,
+            ERR_BACKOFF_REQUIRED,
+            ERR_MEMORY_DISABLED,
+            ERR_INVALID_ARGUMENT,
+            ERR_EMBEDDING_TIMEOUT,
+            ERR_EMBEDDING_MODEL_NOT_FOUND,
+            ERR_EMBEDDING_FAILED,
+            ERR_INTERNAL_ERROR,
+        ];
+        for code in codes {
+            let err: anyhow::Error = AppError::new(code, "boom").into();
+            let (mapped, _) = classify_tool_error(&err);
+            assert_eq!(mapped, code);
+            assert!(is_known_mcp_code(mapped), "expected known MCP code");
+        }
+    }
+
+    #[test]
+    fn classify_tool_error_maps_mcp_specific_errors() {
+        let err: anyhow::Error = InvalidPathError.into();
+        let (code, _) = classify_tool_error(&err);
+        assert_eq!(code, "invalid_path");
+        assert!(is_known_mcp_code(code));
+
+        let err: anyhow::Error = PathOutsideRepoError.into();
+        let (code, _) = classify_tool_error(&err);
+        assert_eq!(code, "invalid_path");
+        assert!(is_known_mcp_code(code));
+
+        let err: anyhow::Error = InvalidUriError.into();
+        let (code, _) = classify_tool_error(&err);
+        assert_eq!(code, "invalid_params");
+        assert!(is_known_mcp_code(code));
+
+        let err: anyhow::Error = MaxContentError {
+            actual_bytes: 10,
+            max_bytes: 1,
+        }
+        .into();
+        let (code, details) = classify_tool_error(&err);
+        assert_eq!(code, "max_content_exceeded");
+        assert!(details.is_some(), "max_content_exceeded should include details");
+        assert!(is_known_mcp_code(code));
+
+        let err: anyhow::Error = MissingSymbolsDependencyError.into();
+        let (code, _) = classify_tool_error(&err);
+        assert_eq!(code, ERR_MISSING_DEPENDENCY);
+        assert!(is_known_mcp_code(code));
+
+        let err: anyhow::Error = MissingSymbolsIndexError {
+            rel_path: "src/lib.rs".to_string(),
+        }
+        .into();
+        let (code, _) = classify_tool_error(&err);
+        assert_eq!(code, ERR_MISSING_INDEX);
+        assert!(is_known_mcp_code(code));
     }
 }

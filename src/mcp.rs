@@ -83,7 +83,11 @@ use crate::error::{
 >>>>>>> mcoda/task/bck-05-us-07-t33
 };
 <<<<<<< HEAD
+<<<<<<< HEAD
 use crate::explainability::ExplainabilityStore;
+=======
+use crate::impact::{InvalidArgumentDetails, InvalidFieldIssue};
+>>>>>>> mcoda/task/bck-05-us-06-t36
 use crate::index::{IndexConfig, Indexer};
 =======
 use crate::index::{IndexConfig, Indexer, SymbolsBudget};
@@ -211,6 +215,7 @@ const MAX_ERROR_REASON_BYTES: usize = 768;
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 >>>>>>> mcoda/task/bck-05-us-10-t25
 =======
@@ -254,6 +259,15 @@ fn mcp_rate_limit_note(rate_limit_per_min: u32, rate_limit_burst: u32, effective
 =======
 const INDEX_STATE_CACHE_TTL_MS: u64 = 2000;
 >>>>>>> mcoda/task/bck-05-us-08-t04
+=======
+const ISSUE_MUST_BE_STRING: &str = "must_be_string";
+const ISSUE_MUST_BE_NON_EMPTY: &str = "must_be_non_empty";
+const ISSUE_MUST_BE_NON_EMPTY_STRING: &str = "must_be_non_empty_string";
+const ISSUE_MUST_BE_INTEGER: &str = "must_be_integer";
+const ISSUE_MUST_BE_NON_NEGATIVE: &str = "must_be_non_negative";
+const ISSUE_MUST_BE_OBJECT: &str = "must_be_object";
+const ISSUE_MUST_BE_ARRAY: &str = "must_be_array";
+>>>>>>> mcoda/task/bck-05-us-06-t36
 
 #[derive(Error, Debug)]
 #[error("path must be relative and not contain parent components")]
@@ -281,6 +295,7 @@ struct MissingSymbolsIndexError {
     rel_path: String,
 }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum IndexState {
@@ -334,12 +349,238 @@ fn scan_repo_indexable_files(repo_root: &Path, config: &IndexConfig) -> RepoInde
                     {
                         scan.latest_mtime_epoch_ms = Some(millis);
                     }
+=======
+struct McpArgValidator {
+    issues: Vec<InvalidFieldIssue>,
+}
+
+impl McpArgValidator {
+    fn new() -> Self {
+        Self { issues: Vec::new() }
+    }
+
+    fn issue(&mut self, field: &'static str, code: &'static str, message: impl Into<String>) {
+        self.issues.push(InvalidFieldIssue {
+            field,
+            code,
+            message: message.into(),
+        });
+    }
+
+    fn required_string(&mut self, obj: &serde_json::Map<String, serde_json::Value>, field: &'static str) -> Option<String> {
+        match obj.get(field) {
+            None | Some(serde_json::Value::Null) => {
+                self.issue(field, ISSUE_MUST_BE_NON_EMPTY, format!("{field} must not be empty"));
+                None
+            }
+            Some(serde_json::Value::String(value)) => {
+                if value.trim().is_empty() {
+                    self.issue(field, ISSUE_MUST_BE_NON_EMPTY, format!("{field} must not be empty"));
+                    None
+                } else {
+                    Some(value.clone())
+                }
+            }
+            Some(_) => {
+                self.issue(field, ISSUE_MUST_BE_STRING, format!("{field} must be a string"));
+                None
+            }
+        }
+    }
+
+    fn required_trimmed_string(
+        &mut self,
+        obj: &serde_json::Map<String, serde_json::Value>,
+        field: &'static str,
+    ) -> Option<String> {
+        match obj.get(field) {
+            None | Some(serde_json::Value::Null) => {
+                self.issue(field, ISSUE_MUST_BE_NON_EMPTY, format!("{field} must not be empty"));
+                None
+            }
+            Some(serde_json::Value::String(value)) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    self.issue(field, ISSUE_MUST_BE_NON_EMPTY, format!("{field} must not be empty"));
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }
+            Some(_) => {
+                self.issue(field, ISSUE_MUST_BE_STRING, format!("{field} must be a string"));
+                None
+            }
+        }
+    }
+
+    fn optional_trimmed_string(
+        &mut self,
+        obj: &serde_json::Map<String, serde_json::Value>,
+        field: &'static str,
+    ) -> Option<String> {
+        match obj.get(field) {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(value)) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    self.issue(field, ISSUE_MUST_BE_NON_EMPTY, format!("{field} must not be empty"));
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }
+            Some(_) => {
+                self.issue(field, ISSUE_MUST_BE_STRING, format!("{field} must be a string"));
+                None
+            }
+        }
+    }
+
+    fn optional_path_buf(
+        &mut self,
+        obj: &serde_json::Map<String, serde_json::Value>,
+        field: &'static str,
+    ) -> Option<PathBuf> {
+        self.optional_trimmed_string(obj, field)
+            .map(PathBuf::from)
+    }
+
+    fn optional_usize(
+        &mut self,
+        obj: &serde_json::Map<String, serde_json::Value>,
+        field: &'static str,
+    ) -> Option<usize> {
+        match obj.get(field) {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::Number(value)) => {
+                if let Some(num) = value.as_u64() {
+                    Some(num as usize)
+                } else if let Some(num) = value.as_i64() {
+                    if num < 0 {
+                        self.issue(
+                            field,
+                            ISSUE_MUST_BE_NON_NEGATIVE,
+                            format!("{field} must be >= 0"),
+                        );
+                        None
+                    } else {
+                        Some(num as usize)
+                    }
+                } else {
+                    self.issue(field, ISSUE_MUST_BE_INTEGER, format!("{field} must be an integer"));
+                    None
+                }
+            }
+            Some(_) => {
+                self.issue(field, ISSUE_MUST_BE_INTEGER, format!("{field} must be an integer"));
+                None
+            }
+        }
+    }
+
+    fn optional_string_array(
+        &mut self,
+        obj: &serde_json::Map<String, serde_json::Value>,
+        field: &'static str,
+    ) -> Option<Vec<String>> {
+        match obj.get(field) {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::Array(items)) => {
+                let mut out = Vec::new();
+                for item in items {
+                    match item {
+                        serde_json::Value::String(value) => {
+                            let trimmed = value.trim();
+                            if trimmed.is_empty() {
+                                self.issue(
+                                    field,
+                                    ISSUE_MUST_BE_NON_EMPTY_STRING,
+                                    format!("{field} entries must be non-empty strings"),
+                                );
+                            } else {
+                                out.push(trimmed.to_string());
+                            }
+                        }
+                        _ => {
+                            self.issue(
+                                field,
+                                ISSUE_MUST_BE_STRING,
+                                format!("{field} entries must be strings"),
+                            );
+                        }
+                    }
+                }
+                Some(out)
+            }
+            Some(_) => {
+                self.issue(field, ISSUE_MUST_BE_ARRAY, format!("{field} must be an array"));
+                None
+            }
+        }
+    }
+
+    fn optional_object_value(
+        &mut self,
+        obj: &serde_json::Map<String, serde_json::Value>,
+        field: &'static str,
+    ) -> Option<serde_json::Value> {
+        match obj.get(field) {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::Object(value)) => {
+                Some(serde_json::Value::Object(value.clone()))
+            }
+            Some(_) => {
+                self.issue(field, ISSUE_MUST_BE_OBJECT, format!("{field} must be an object"));
+                None
+            }
+        }
+    }
+
+    fn take_issues(self) -> Vec<InvalidFieldIssue> {
+        self.issues
+    }
+}
+
+fn validation_details(
+    issues: Vec<InvalidFieldIssue>,
+    extra: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let mut value =
+        serde_json::to_value(InvalidArgumentDetails::new(issues)).unwrap_or_else(|_| json!({}));
+    if let Some(extra) = extra {
+        if let Some(obj) = value.as_object_mut() {
+            match extra {
+                serde_json::Value::Object(map) => {
+                    for (key, val) in map {
+                        obj.insert(key, val);
+                    }
+                }
+                other => {
+                    obj.insert("context".to_string(), other);
+>>>>>>> mcoda/task/bck-05-us-06-t36
                 }
             }
         }
     }
+<<<<<<< HEAD
     scan
 >>>>>>> mcoda/task/bck-05-us-08-t02
+=======
+    value
+}
+
+fn validation_error(
+    code: &'static str,
+    issues: Vec<InvalidFieldIssue>,
+    extra: Option<serde_json::Value>,
+) -> AppError {
+    let reason = issues
+        .first()
+        .map(|issue| issue.message.clone())
+        .unwrap_or_else(|| default_message_for_code(code).to_string());
+    AppError::new(code, reason).with_details(validation_details(issues, extra))
+>>>>>>> mcoda/task/bck-05-us-06-t36
 }
 
 fn mcp_error_data(
@@ -1249,14 +1490,47 @@ fn classify_tool_error(err: &anyhow::Error) -> ToolErrorSpec {
     if let Some(search_err) = find_in_chain::<crate::index::SearchError>(err) {
         match search_err {
 <<<<<<< HEAD
+<<<<<<< HEAD
             crate::index::SearchError::InvalidQuery { .. } => return (ERR_INVALID_QUERY, None),
         }
     }
     if err.downcast_ref::<InvalidPathError>().is_some() {
         return (ERR_INVALID_PATH, None);
+=======
+            crate::index::SearchError::InvalidQuery { reason } => {
+                let issues = vec![InvalidFieldIssue {
+                    field: "query",
+                    code: "invalid_query",
+                    message: reason.clone(),
+                }];
+                return ("invalid_query", Some(validation_details(issues, None)));
+            }
+        }
+    }
+    if err.downcast_ref::<InvalidPathError>().is_some() {
+        let issues = vec![InvalidFieldIssue {
+            field: "path",
+            code: "invalid_path",
+            message: "path must be relative and not contain parent components".to_string(),
+        }];
+        return ("invalid_path", Some(validation_details(issues, None)));
+>>>>>>> mcoda/task/bck-05-us-06-t36
     }
     if let Some(range) = err.downcast_ref::<InvalidRangeError>() {
+        let issues = vec![
+            InvalidFieldIssue {
+                field: "start_line",
+                code: "invalid_range",
+                message: "line range is invalid".to_string(),
+            },
+            InvalidFieldIssue {
+                field: "end_line",
+                code: "invalid_range",
+                message: "line range is invalid".to_string(),
+            },
+        ];
         return (
+<<<<<<< HEAD
             ERR_INVALID_RANGE,
             Some(json!({
 =======
@@ -1290,13 +1564,48 @@ fn classify_tool_error(err: &anyhow::Error) -> ToolErrorSpec {
                 "total_lines": range.total_lines,
             })),
         };
+=======
+            "invalid_range",
+            Some(validation_details(
+                issues,
+                Some(json!({
+                    "start_line": range.start_line,
+                    "end_line": range.end_line,
+                    "total_lines": range.total_lines,
+                })),
+            )),
+        );
+>>>>>>> mcoda/task/bck-05-us-06-t36
     }
 <<<<<<< HEAD
     if err.downcast_ref::<PathOutsideRepoError>().is_some() {
+<<<<<<< HEAD
         return (ERR_INVALID_PATH, Some(json!({ "kind": "outside_repo" })));
     }
     if err.downcast_ref::<InvalidUriError>().is_some() {
         return (ERR_INVALID_PARAMS, Some(json!({ "kind": "invalid_uri" })));
+=======
+        let issues = vec![InvalidFieldIssue {
+            field: "path",
+            code: "invalid_path",
+            message: "path must be under repo root".to_string(),
+        }];
+        return (
+            "invalid_path",
+            Some(validation_details(issues, Some(json!({ "kind": "outside_repo" })))),
+        );
+    }
+    if err.downcast_ref::<InvalidUriError>().is_some() {
+        let issues = vec![InvalidFieldIssue {
+            field: "uri",
+            code: "invalid_uri",
+            message: "uri must use the docdex:// scheme".to_string(),
+        }];
+        return (
+            ERR_INVALID_ARGUMENT,
+            Some(validation_details(issues, Some(json!({ "kind": "invalid_uri" })))),
+        );
+>>>>>>> mcoda/task/bck-05-us-06-t36
     }
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1353,8 +1662,14 @@ fn classify_tool_error(err: &anyhow::Error) -> ToolErrorSpec {
                 "flag": "--enable-symbol-extraction=true"
 =======
     if let Some(max_err) = err.downcast_ref::<MaxContentError>() {
+        let issues = vec![InvalidFieldIssue {
+            field: "path",
+            code: "max_content_exceeded",
+            message: "file content exceeds size limit".to_string(),
+        }];
         return (
             "max_content_exceeded",
+<<<<<<< HEAD
             Some(json!({
                 "max_bytes": max_err.max_bytes,
                 "actual_bytes": max_err.actual_bytes,
@@ -1367,6 +1682,24 @@ fn classify_tool_error(err: &anyhow::Error) -> ToolErrorSpec {
                 Some("--enable-symbol-extraction=true"),
             )),
 >>>>>>> mcoda/task/bck-05-us-06-t47
+=======
+            Some(validation_details(
+                issues,
+                Some(json!({
+                    "max_bytes": max_err.max_bytes,
+                    "actual_bytes": max_err.actual_bytes,
+                })),
+            )),
+        );
+    }
+    if err.downcast_ref::<MissingSymbolsDependencyError>().is_some() {
+        return (
+            ERR_MISSING_DEPENDENCY,
+            Some(json!({
+                "dependency": "DOCDEX_ENABLE_SYMBOL_EXTRACTION",
+                "flag": "--enable-symbol-extraction=true"
+            })),
+>>>>>>> mcoda/task/bck-05-us-06-t36
         );
     }
     if let Some(missing) = err.downcast_ref::<MissingSymbolsIndexError>() {
@@ -1457,13 +1790,6 @@ struct ToolDefinition {
     description: &'static str,
     #[serde(rename = "inputSchema")]
     input_schema: serde_json::Value,
-}
-
-#[derive(Deserialize)]
-struct ToolCallParams {
-    name: String,
-    #[serde(default)]
-    arguments: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -1612,6 +1938,7 @@ struct ResourceTemplate {
     variables: &'static [&'static str],
 }
 
+<<<<<<< HEAD
 #[derive(Serialize)]
 struct LimitInfo {
     requested: usize,
@@ -1631,6 +1958,244 @@ fn build_limit_info(requested: usize, max: usize) -> LimitInfo {
     }
 }
 
+=======
+fn parse_object_field(
+    validator: &mut McpArgValidator,
+    value: serde_json::Value,
+    field: &'static str,
+) -> serde_json::Map<String, serde_json::Value> {
+    match value {
+        serde_json::Value::Object(map) => map,
+        serde_json::Value::Null => serde_json::Map::new(),
+        _ => {
+            validator.issue(field, ISSUE_MUST_BE_OBJECT, format!("{field} must be an object"));
+            serde_json::Map::new()
+        }
+    }
+}
+
+fn parse_tool_call_params(
+    params: Option<serde_json::Value>,
+) -> Result<(String, serde_json::Value), anyhow::Error> {
+    let mut validator = McpArgValidator::new();
+    let params_value = params.unwrap_or_default();
+    let params_obj = match params_value {
+        serde_json::Value::Object(map) => map,
+        serde_json::Value::Null => serde_json::Map::new(),
+        _ => {
+            validator.issue("params", ISSUE_MUST_BE_OBJECT, "params must be an object");
+            let issues = validator.take_issues();
+            return Err(validation_error(ERR_INVALID_ARGUMENT, issues, None).into());
+        }
+    };
+
+    let name = validator.required_trimmed_string(&params_obj, "name");
+    let arguments_value = params_obj
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+    let arguments = match arguments_value {
+        serde_json::Value::Object(map) => serde_json::Value::Object(map),
+        serde_json::Value::Null => serde_json::Value::Object(serde_json::Map::new()),
+        _ => {
+            validator.issue("arguments", ISSUE_MUST_BE_OBJECT, "arguments must be an object");
+            serde_json::Value::Object(serde_json::Map::new())
+        }
+    };
+
+    let issues = validator.take_issues();
+    if !issues.is_empty() {
+        return Err(validation_error(ERR_INVALID_ARGUMENT, issues, None).into());
+    }
+
+    Ok((name.unwrap_or_default(), arguments))
+}
+
+fn parse_search_args(args: serde_json::Value) -> Result<SearchArgs, anyhow::Error> {
+    let mut validator = McpArgValidator::new();
+    let obj = parse_object_field(&mut validator, args, "arguments");
+
+    let mut query = String::new();
+    let mut query_missing = false;
+    let mut query_invalid = false;
+    match obj.get("query") {
+        None | Some(serde_json::Value::Null) => {
+            validator.issue("query", ISSUE_MUST_BE_NON_EMPTY, "query must not be empty");
+            query_missing = true;
+        }
+        Some(serde_json::Value::String(value)) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                validator.issue("query", ISSUE_MUST_BE_NON_EMPTY, "query must not be empty");
+                query_invalid = true;
+            } else {
+                query = trimmed.to_string();
+            }
+        }
+        Some(_) => {
+            validator.issue("query", ISSUE_MUST_BE_STRING, "query must be a string");
+        }
+    };
+
+    let limit = validator.optional_usize(&obj, "limit");
+    let project_root = validator.optional_path_buf(&obj, "project_root");
+
+    let issues = validator.take_issues();
+    if !issues.is_empty() {
+        let only_query_issues = issues.iter().all(|issue| issue.field == "query");
+        let code = if only_query_issues && query_missing {
+            "missing_query"
+        } else if only_query_issues && query_invalid {
+            "invalid_query"
+        } else {
+            ERR_INVALID_ARGUMENT
+        };
+        return Err(validation_error(code, issues, None).into());
+    }
+
+    Ok(SearchArgs {
+        query,
+        limit,
+        project_root,
+    })
+}
+
+fn parse_index_args(args: serde_json::Value) -> Result<IndexArgs, anyhow::Error> {
+    let mut validator = McpArgValidator::new();
+    let obj = parse_object_field(&mut validator, args, "arguments");
+    let paths = validator
+        .optional_string_array(&obj, "paths")
+        .unwrap_or_default()
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
+    let project_root = validator.optional_path_buf(&obj, "project_root");
+
+    let issues = validator.take_issues();
+    if !issues.is_empty() {
+        return Err(validation_error(ERR_INVALID_ARGUMENT, issues, None).into());
+    }
+
+    Ok(IndexArgs { paths, project_root })
+}
+
+fn parse_stats_args(args: serde_json::Value) -> Result<StatsArgs, anyhow::Error> {
+    let mut validator = McpArgValidator::new();
+    let obj = parse_object_field(&mut validator, args, "arguments");
+    let project_root = validator.optional_path_buf(&obj, "project_root");
+    let issues = validator.take_issues();
+    if !issues.is_empty() {
+        return Err(validation_error(ERR_INVALID_ARGUMENT, issues, None).into());
+    }
+    Ok(StatsArgs { project_root })
+}
+
+fn parse_repo_inspect_args(args: serde_json::Value) -> Result<RepoInspectArgs, anyhow::Error> {
+    let mut validator = McpArgValidator::new();
+    let obj = parse_object_field(&mut validator, args, "arguments");
+    let project_root = validator.optional_path_buf(&obj, "project_root");
+    let issues = validator.take_issues();
+    if !issues.is_empty() {
+        return Err(validation_error(ERR_INVALID_ARGUMENT, issues, None).into());
+    }
+    Ok(RepoInspectArgs { project_root })
+}
+
+fn parse_files_args(args: serde_json::Value) -> Result<FilesArgs, anyhow::Error> {
+    let mut validator = McpArgValidator::new();
+    let obj = parse_object_field(&mut validator, args, "arguments");
+    let project_root = validator.optional_path_buf(&obj, "project_root");
+    let limit = validator.optional_usize(&obj, "limit");
+    let offset = validator.optional_usize(&obj, "offset");
+    let issues = validator.take_issues();
+    if !issues.is_empty() {
+        return Err(validation_error(ERR_INVALID_ARGUMENT, issues, None).into());
+    }
+    Ok(FilesArgs {
+        project_root,
+        limit,
+        offset,
+    })
+}
+
+fn parse_open_args(args: serde_json::Value) -> Result<OpenArgs, anyhow::Error> {
+    let mut validator = McpArgValidator::new();
+    let obj = parse_object_field(&mut validator, args, "arguments");
+    let path = validator.required_string(&obj, "path").unwrap_or_default();
+    let project_root = validator.optional_path_buf(&obj, "project_root");
+    let start_line = validator.optional_usize(&obj, "start_line");
+    let end_line = validator.optional_usize(&obj, "end_line");
+    let issues = validator.take_issues();
+    if !issues.is_empty() {
+        return Err(validation_error(ERR_INVALID_ARGUMENT, issues, None).into());
+    }
+    Ok(OpenArgs {
+        path,
+        project_root,
+        start_line,
+        end_line,
+    })
+}
+
+fn parse_symbols_args(args: serde_json::Value) -> Result<SymbolsArgs, anyhow::Error> {
+    let mut validator = McpArgValidator::new();
+    let obj = parse_object_field(&mut validator, args, "arguments");
+    let path = validator.required_string(&obj, "path").unwrap_or_default();
+    let project_root = validator.optional_path_buf(&obj, "project_root");
+    let issues = validator.take_issues();
+    if !issues.is_empty() {
+        return Err(validation_error(ERR_INVALID_ARGUMENT, issues, None).into());
+    }
+    Ok(SymbolsArgs { path, project_root })
+}
+
+fn parse_memory_store_args(args: serde_json::Value) -> Result<MemoryStoreArgs, anyhow::Error> {
+    let mut validator = McpArgValidator::new();
+    let obj = parse_object_field(&mut validator, args, "arguments");
+    let text = validator.required_trimmed_string(&obj, "text").unwrap_or_default();
+    let metadata = validator.optional_object_value(&obj, "metadata");
+    let project_root = validator.optional_path_buf(&obj, "project_root");
+    let issues = validator.take_issues();
+    if !issues.is_empty() {
+        return Err(validation_error(ERR_INVALID_ARGUMENT, issues, None).into());
+    }
+    Ok(MemoryStoreArgs {
+        text,
+        metadata,
+        project_root,
+    })
+}
+
+fn parse_memory_recall_args(args: serde_json::Value) -> Result<MemoryRecallArgs, anyhow::Error> {
+    let mut validator = McpArgValidator::new();
+    let obj = parse_object_field(&mut validator, args, "arguments");
+    let query = validator.required_trimmed_string(&obj, "query").unwrap_or_default();
+    let top_k = validator.optional_usize(&obj, "top_k");
+    let project_root = validator.optional_path_buf(&obj, "project_root");
+    let issues = validator.take_issues();
+    if !issues.is_empty() {
+        return Err(validation_error(ERR_INVALID_ARGUMENT, issues, None).into());
+    }
+    Ok(MemoryRecallArgs {
+        query,
+        top_k,
+        project_root,
+    })
+}
+
+fn parse_resource_read_params(params: Option<serde_json::Value>) -> Result<ResourceReadParams, anyhow::Error> {
+    let mut validator = McpArgValidator::new();
+    let params_value = params.unwrap_or_default();
+    let obj = parse_object_field(&mut validator, params_value, "params");
+    let uri = validator.required_trimmed_string(&obj, "uri").unwrap_or_default();
+    let issues = validator.take_issues();
+    if !issues.is_empty() {
+        return Err(validation_error(ERR_INVALID_ARGUMENT, issues, None).into());
+    }
+    Ok(ResourceReadParams { uri })
+}
+
+>>>>>>> mcoda/task/bck-05-us-06-t36
 pub async fn serve(
     repo_root: PathBuf,
     index_config: IndexConfig,
@@ -2192,16 +2757,21 @@ impl McpServer {
                 error: None,
             })),
             "resources/read" => {
+<<<<<<< HEAD
                 let params = match parse_params::<ResourceReadParams>(
                     req.params.clone().unwrap_or_default(),
                     ValidationContext::Method("resources/read"),
                 ) {
+=======
+                let params = match parse_resource_read_params(req.params.clone()) {
+>>>>>>> mcoda/task/bck-05-us-06-t36
                     Ok(p) => p,
                     Err(err) => {
                         return Ok(Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,
                             id: id.clone(),
                             result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
                             error: Some(rpc_invalid_params_for_method("resources/read", err)),
@@ -2218,6 +2788,9 @@ impl McpServer {
 =======
                             error: Some(err),
 >>>>>>> mcoda/task/bck-05-us-06-t39
+=======
+                            error: Some(rpc_tool_error(&err, None)),
+>>>>>>> mcoda/task/bck-05-us-06-t36
                         }))
                     }
                 };
@@ -2245,16 +2818,22 @@ impl McpServer {
                 }
             }
             "tools/call" => {
+<<<<<<< HEAD
                 let params = match parse_params::<ToolCallParams>(
                     req.params.clone().unwrap_or_default(),
                     ValidationContext::Method("tools/call"),
                 ) {
                     Ok(p) => p,
+=======
+                let (tool_name, tool_args) = match parse_tool_call_params(req.params.clone()) {
+                    Ok(params) => params,
+>>>>>>> mcoda/task/bck-05-us-06-t36
                     Err(err) => {
                         return Ok(Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,
                             id: id.clone(),
                             result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
                             error: Some(rpc_invalid_params_for_method("tools/call", err)),
@@ -2271,6 +2850,9 @@ impl McpServer {
 =======
                             error: Some(err),
 >>>>>>> mcoda/task/bck-05-us-06-t39
+=======
+                            error: Some(rpc_tool_error(&err, None)),
+>>>>>>> mcoda/task/bck-05-us-06-t36
                         }))
                     }
                 };
@@ -2322,18 +2904,23 @@ impl McpServer {
                     }));
 >>>>>>> mcoda/task/bck-05-us-09-t33
                 }
-                let result = match params.name.as_str() {
+                let result = match tool_name.as_str() {
                     "docdex_search" | "docdex.search" => {
+<<<<<<< HEAD
                         let args = match parse_params::<SearchArgs>(
                             params.arguments.clone(),
                             ValidationContext::Tool("docdex_search"),
                         ) {
+=======
+                        let args = match parse_search_args(tool_args.clone()) {
+>>>>>>> mcoda/task/bck-05-us-06-t36
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
                                     error: Some(rpc_invalid_params_for_tool("docdex_search", err)),
@@ -2350,6 +2937,9 @@ impl McpServer {
 =======
                                     error: Some(err),
 >>>>>>> mcoda/task/bck-05-us-06-t39
+=======
+                                    error: Some(rpc_tool_error(&err, Some("docdex_search"))),
+>>>>>>> mcoda/task/bck-05-us-06-t36
                                 }))
                             }
                         };
@@ -2448,16 +3038,18 @@ impl McpServer {
                         }
                     }
                     "docdex_index" | "docdex.index" => {
-                        let args_res: Result<IndexArgs, _> =
-                            serde_json::from_value(params.arguments.clone());
-                        let args = match args_res {
+                        let args = match parse_index_args(tool_args.clone()) {
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_invalid_params_for_tool("docdex_index", err)),
+=======
+                                    error: Some(rpc_tool_error(&err, Some("docdex_index"))),
+>>>>>>> mcoda/task/bck-05-us-06-t36
                                 }))
                             }
                         };
@@ -2474,16 +3066,21 @@ impl McpServer {
                         }
                     }
                     "docdex_files" | "docdex.files" => {
+<<<<<<< HEAD
                         let args = match parse_params::<FilesArgs>(
                             params.arguments.clone(),
                             ValidationContext::Tool("docdex_files"),
                         ) {
+=======
+                        let args = match parse_files_args(tool_args.clone()) {
+>>>>>>> mcoda/task/bck-05-us-06-t36
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
                                     error: Some(rpc_invalid_params_for_tool("docdex_files", err)),
@@ -2500,6 +3097,9 @@ impl McpServer {
 =======
                                     error: Some(err),
 >>>>>>> mcoda/task/bck-05-us-06-t39
+=======
+                                    error: Some(rpc_tool_error(&err, Some("docdex_files"))),
+>>>>>>> mcoda/task/bck-05-us-06-t36
                                 }))
                             }
                         };
@@ -2516,16 +3116,21 @@ impl McpServer {
                         }
                     }
                     "docdex_open" | "docdex.open" => {
+<<<<<<< HEAD
                         let args = match parse_params::<OpenArgs>(
                             params.arguments.clone(),
                             ValidationContext::Tool("docdex_open"),
                         ) {
+=======
+                        let args = match parse_open_args(tool_args.clone()) {
+>>>>>>> mcoda/task/bck-05-us-06-t36
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
                                     error: Some(rpc_invalid_params_for_tool("docdex_open", err)),
@@ -2542,6 +3147,9 @@ impl McpServer {
 =======
                                     error: Some(err),
 >>>>>>> mcoda/task/bck-05-us-06-t39
+=======
+                                    error: Some(rpc_tool_error(&err, Some("docdex_open"))),
+>>>>>>> mcoda/task/bck-05-us-06-t36
                                 }))
                             }
                         };
@@ -2558,16 +3166,21 @@ impl McpServer {
                         }
                     }
                     "docdex_stats" | "docdex.stats" => {
+<<<<<<< HEAD
                         let args = match parse_params::<StatsArgs>(
                             params.arguments.clone(),
                             ValidationContext::Tool("docdex_stats"),
                         ) {
+=======
+                        let args = match parse_stats_args(tool_args.clone()) {
+>>>>>>> mcoda/task/bck-05-us-06-t36
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
                                     error: Some(rpc_invalid_params_for_tool("docdex_stats", err)),
@@ -2584,6 +3197,9 @@ impl McpServer {
 =======
                                     error: Some(err),
 >>>>>>> mcoda/task/bck-05-us-06-t39
+=======
+                                    error: Some(rpc_tool_error(&err, Some("docdex_stats"))),
+>>>>>>> mcoda/task/bck-05-us-06-t36
                                 }))
                             }
                         };
@@ -2600,16 +3216,21 @@ impl McpServer {
                         }
                     }
                     "docdex_repo_inspect" | "docdex.repo_inspect" => {
+<<<<<<< HEAD
                         let args = match parse_params::<RepoInspectArgs>(
                             params.arguments.clone(),
                             ValidationContext::Tool("docdex_repo_inspect"),
                         ) {
+=======
+                        let args = match parse_repo_inspect_args(tool_args.clone()) {
+>>>>>>> mcoda/task/bck-05-us-06-t36
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
                                     error: Some(rpc_invalid_params_for_tool(
@@ -2628,6 +3249,9 @@ impl McpServer {
 =======
                                     error: Some(err),
 >>>>>>> mcoda/task/bck-05-us-06-t39
+=======
+                                    error: Some(rpc_tool_error(&err, Some("docdex_repo_inspect"))),
+>>>>>>> mcoda/task/bck-05-us-06-t36
                                 }))
                             }
                         };
@@ -2644,16 +3268,21 @@ impl McpServer {
                         }
                     }
                     "docdex_symbols" | "docdex.symbols" => {
+<<<<<<< HEAD
                         let args = match parse_params::<SymbolsArgs>(
                             params.arguments.clone(),
                             ValidationContext::Tool("docdex_symbols"),
                         ) {
+=======
+                        let args = match parse_symbols_args(tool_args.clone()) {
+>>>>>>> mcoda/task/bck-05-us-06-t36
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
                                     error: Some(rpc_invalid_params_for_tool("docdex_symbols", err)),
@@ -2670,6 +3299,9 @@ impl McpServer {
 =======
                                     error: Some(err),
 >>>>>>> mcoda/task/bck-05-us-06-t39
+=======
+                                    error: Some(rpc_tool_error(&err, Some("docdex_symbols"))),
+>>>>>>> mcoda/task/bck-05-us-06-t36
                                 }))
                             }
                         };
@@ -2686,16 +3318,21 @@ impl McpServer {
                         }
                     }
                     "docdex_memory_store" | "docdex.memory_store" => {
+<<<<<<< HEAD
                         let args = match parse_params::<MemoryStoreArgs>(
                             params.arguments.clone(),
                             ValidationContext::Tool("docdex_memory_store"),
                         ) {
+=======
+                        let args = match parse_memory_store_args(tool_args.clone()) {
+>>>>>>> mcoda/task/bck-05-us-06-t36
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
                                     error: Some(rpc_invalid_params_for_tool(
@@ -2714,6 +3351,9 @@ impl McpServer {
 =======
                                     error: Some(err),
 >>>>>>> mcoda/task/bck-05-us-06-t39
+=======
+                                    error: Some(rpc_tool_error(&err, Some("docdex_memory_store"))),
+>>>>>>> mcoda/task/bck-05-us-06-t36
                                 }))
                             }
                         };
@@ -2730,16 +3370,21 @@ impl McpServer {
                         }
                     }
                     "docdex_memory_recall" | "docdex.memory_recall" => {
+<<<<<<< HEAD
                         let args = match parse_params::<MemoryRecallArgs>(
                             params.arguments.clone(),
                             ValidationContext::Tool("docdex_memory_recall"),
                         ) {
+=======
+                        let args = match parse_memory_recall_args(tool_args.clone()) {
+>>>>>>> mcoda/task/bck-05-us-06-t36
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
                                     error: Some(rpc_invalid_params_for_tool(
@@ -2758,6 +3403,9 @@ impl McpServer {
 =======
                                     error: Some(err),
 >>>>>>> mcoda/task/bck-05-us-06-t39
+=======
+                                    error: Some(rpc_tool_error(&err, Some("docdex_memory_recall"))),
+>>>>>>> mcoda/task/bck-05-us-06-t36
                                 }))
                             }
                         };
@@ -3803,7 +4451,12 @@ impl McpServer {
 >>>>>>> mcoda/task/bck-05-us-07-t30
         let text = args.text.trim();
         if text.is_empty() {
-            return Err(AppError::new(ERR_INVALID_ARGUMENT, "text must not be empty").into());
+            let issues = vec![InvalidFieldIssue {
+                field: "text",
+                code: ISSUE_MUST_BE_NON_EMPTY,
+                message: "text must not be empty".to_string(),
+            }];
+            return Err(validation_error(ERR_INVALID_ARGUMENT, issues, None).into());
         }
 
         let embedding = memory.embedder.embed(text).await?;
@@ -3845,7 +4498,12 @@ impl McpServer {
 >>>>>>> mcoda/task/bck-05-us-07-t30
         let query = args.query.trim();
         if query.is_empty() {
-            return Err(AppError::new(ERR_INVALID_ARGUMENT, "query must not be empty").into());
+            let issues = vec![InvalidFieldIssue {
+                field: "query",
+                code: ISSUE_MUST_BE_NON_EMPTY,
+                message: "query must not be empty".to_string(),
+            }];
+            return Err(validation_error(ERR_INVALID_ARGUMENT, issues, None).into());
         }
 
 <<<<<<< HEAD

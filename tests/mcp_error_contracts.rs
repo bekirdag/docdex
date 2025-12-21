@@ -487,6 +487,7 @@ fn mcp_error_data_code(resp: &Value) -> Option<&str> {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn rate_limit_data_signature(data: &serde_json::Map<String, Value>) -> Vec<(String, &'static str)> {
     let mut out: Vec<(String, &'static str)> = data
         .iter()
@@ -633,6 +634,44 @@ fn assert_canonical_mcp_envelope(
     }
     Ok(data)
 >>>>>>> mcoda/task/bck-05-us-06-t40
+=======
+fn mcp_error_details(resp: &Value) -> Result<&Value, Box<dyn Error>> {
+    resp.get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("details"))
+        .ok_or("missing error.data.details")
+}
+
+fn mcp_issue_fields(resp: &Value) -> Result<Vec<String>, Box<dyn Error>> {
+    let details = mcp_error_details(resp)?;
+    let issues = details
+        .get("issues")
+        .and_then(|v| v.as_array())
+        .ok_or("missing error.data.details.issues")?;
+    let mut fields = issues
+        .iter()
+        .filter_map(|issue| issue.get("field").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect::<Vec<_>>();
+    fields.sort();
+    fields.dedup();
+    Ok(fields)
+}
+
+fn mcp_field_error_codes(resp: &Value, field: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let details = mcp_error_details(resp)?;
+    let errors = details
+        .get("fieldErrors")
+        .and_then(|v| v.get(field))
+        .and_then(|v| v.as_array())
+        .ok_or("missing error.data.details.fieldErrors.<field> array")?;
+    let mut codes = errors
+        .iter()
+        .filter_map(|err| err.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect::<Vec<_>>();
+    codes.sort();
+    codes.dedup();
+    Ok(codes)
+>>>>>>> mcoda/task/bck-05-us-06-t36
 }
 
 #[test]
@@ -1369,7 +1408,7 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
     )?;
     let resp = read_line(&mut mcp.reader)?;
     assert_eq!(mcp_error_code(&resp), Some(-32602));
-    assert_eq!(mcp_error_data_code(&resp), Some("invalid_params"));
+    assert_eq!(mcp_error_data_code(&resp), Some("invalid_argument"));
     assert_eq!(
         resp.get("error")
             .and_then(|v| v.get("data"))
@@ -1384,9 +1423,11 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
             .and_then(|v| v.get("reason"))
             .and_then(|v| v.as_str())
             .unwrap_or_default()
-            .contains("invalid type"),
+            .contains("limit must be an integer"),
         "validation errors should include a reason string"
     );
+    assert_eq!(mcp_issue_fields(&resp)?, vec!["limit"]);
+    assert_eq!(mcp_field_error_codes(&resp, "limit")?, vec!["must_be_integer"]);
 
     let other_repo = TempDir::new()?;
     send_line(

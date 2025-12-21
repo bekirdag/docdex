@@ -1331,11 +1331,7 @@ impl McpServer {
         let mut ingested = Vec::new();
         let mut decisions = Vec::new();
         for path in args.paths {
-            let resolved = if path.is_absolute() {
-                path
-            } else {
-                self.repo_root.join(path)
-            };
+            let resolved = self.resolve_repo_scoped_path(&path)?;
             let path_display = resolved.display().to_string();
             let decision = self.indexer.ingest_file(resolved.clone()).await?;
             ingested.push(resolved);
@@ -1604,6 +1600,13 @@ impl McpServer {
                     .into(),
             );
         }
+        if !candidate.is_dir() {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                format!("repo root is not a directory: {}", candidate.display()),
+            )
+            .into());
+        }
 
         let normalized = candidate.canonicalize().unwrap_or_else(|_| candidate.to_path_buf());
         if normalized != self.repo_root {
@@ -1637,7 +1640,23 @@ impl McpServer {
         if let Some(default_root) = self.default_project_root.as_ref() {
             return self.ensure_same_repo(default_root);
         }
-        Ok(())
+        self.ensure_same_repo(&self.repo_root)
+    }
+
+    fn resolve_repo_scoped_path(&self, raw: &Path) -> Result<PathBuf> {
+        let resolved = if raw.is_absolute() {
+            raw.to_path_buf()
+        } else {
+            let rel = normalize_rel_path_buf(raw).ok_or(InvalidPathError)?;
+            self.repo_root.join(rel)
+        };
+        let canonical = resolved
+            .canonicalize()
+            .with_context(|| format!("resolve path {}", resolved.display()))?;
+        if !canonical.starts_with(&self.repo_root) {
+            return Err(PathOutsideRepoError.into());
+        }
+        Ok(resolved)
     }
 }
 
@@ -1673,6 +1692,25 @@ fn normalize_rel_path(input: &str) -> Option<PathBuf> {
             Component::CurDir => continue,
             Component::Normal(part) => clean.push(part),
             _ => return None, // rejects ParentDir/Prefix/RootDir
+        }
+    }
+    if clean.as_os_str().is_empty() {
+        None
+    } else {
+        Some(clean)
+    }
+}
+
+fn normalize_rel_path_buf(path: &Path) -> Option<PathBuf> {
+    if path.is_absolute() {
+        return None;
+    }
+    let mut clean = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => continue,
+            Component::Normal(part) => clean.push(part),
+            _ => return None,
         }
     }
     if clean.as_os_str().is_empty() {

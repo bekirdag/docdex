@@ -133,6 +133,10 @@ test("docdex CLI wrapper: supported platform with missing local binary exits non
 
   assert.equal(result.exitCode, 1);
   assert.ok(result.stderr.includes("[docdex] Missing binary for darwin-arm64."));
+  assert.ok(result.stderr.includes("[docdex] Expected target triple: aarch64-apple-darwin"));
+  assert.ok(
+    result.stderr.includes("[docdex] Asset naming pattern: docdexd-<platformKey>.tar.gz (e.g. docdexd-darwin-arm64.tar.gz)")
+  );
   assert.ok(!result.stderr.includes("unsupported platform"));
   assert.equal(spawnCalls, 0);
 });

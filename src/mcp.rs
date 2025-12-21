@@ -35,6 +35,7 @@ const FILES_MAX_OFFSET: usize = 50_000;
 const OPEN_MAX_BYTES: usize = 512 * 1024; // guard rail for returning file content
 const MAX_ERROR_MESSAGE_BYTES: usize = 256;
 const MAX_ERROR_REASON_BYTES: usize = 768;
+const INDEX_META_FILENAME: &str = "meta.json";
 
 #[derive(Error, Debug)]
 #[error("path must be relative and not contain parent components")]
@@ -1660,7 +1661,11 @@ impl McpServer {
     }
 
     fn ensure_index_ready(&self) -> Result<()> {
-        match self.index_readiness {
+        let readiness = match self.index_readiness {
+            IndexReadiness::Missing | IndexReadiness::Stale => self.index_readiness,
+            IndexReadiness::Ready => detect_index_readiness(self.indexer.config().state_dir()),
+        };
+        match readiness {
             IndexReadiness::Ready => Ok(()),
             IndexReadiness::Missing => Err(self.index_readiness_error(IndexReadiness::Missing).into()),
             IndexReadiness::Stale => Err(self.index_readiness_error(IndexReadiness::Stale).into()),
@@ -1690,6 +1695,9 @@ impl McpServer {
 
 fn detect_index_readiness(state_dir: &Path) -> IndexReadiness {
     if !state_dir.exists() {
+        return IndexReadiness::Missing;
+    }
+    if !state_dir.join(INDEX_META_FILENAME).exists() {
         return IndexReadiness::Missing;
     }
     IndexReadiness::Ready

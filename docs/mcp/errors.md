@@ -15,6 +15,7 @@ On failure, the MCP server returns a JSON-RPC error response:
   - `-32600` invalid request (`invalid_request`)
   - `-32601` unknown method/tool (`method_not_found`)
   - `-32602` tool failures and argument validation (`invalid_params` *and* domain failures like `missing_index`)
+  - `-32029` rate limited (`rate_limited`) when MCP tool throttling denies a request
   - `-32000` internal server error (`internal_error`) when the MCP server fails outside tool handling
 - `error.message` (string): a short, stable category message.
 - `error.data` (object): Docdex error envelope (below).
@@ -118,7 +119,7 @@ Docdex presents the same underlying failures in three different wrappers:
 | Index missing (query/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
 | Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Not currently emitted by the per-repo CLI |
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |
-| Rate limited | `rate_limited` | `-32602` | `429` (security middleware returns status-only; no JSON envelope) | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
+| Rate limited | `rate_limited` | `-32029` | `429` (security middleware returns status-only; no JSON envelope) | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
 | Optional dependency disabled (e.g. symbols) | `missing_dependency` | `-32602` | N/A (no HTTP endpoint for MCP symbols) | N/A (no CLI symbols command) |
 | Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_params` | `-32602` | N/A | N/A |
 | Invalid path for `docdex_open` | `invalid_path` | `-32602` | N/A | N/A |
@@ -131,3 +132,4 @@ Notes:
 - HTTP `/search` enforces `limit` by clamping to the daemon’s configured max and does not error on over-limit; MCP `docdex_search` similarly clamps `limit` to the MCP server’s `--max-results`.
 - MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`.
 - MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with `details.max_bytes` and `details.actual_bytes`.
+- MCP rate-limit errors use the canonical envelope and include retry hints under `error.data.details` (`retry_after_ms`, `retry_at`, `limit_key`, `scope`).

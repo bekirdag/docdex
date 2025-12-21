@@ -902,7 +902,7 @@ Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper
 - **Open Questions & Risks**  
     
   - How is `run-tests` test command configured/discovered per repo? (config key vs repo file)  
-  - Exact output schema for `run-tests` and `dag view` DOT/text not specified.  
+  - Exact output schema for `run-tests` is not specified; DAG export formats are defined in `docs/contracts/dag_export_schema_v1.md`.  
   - Error codes/UX for missing indexes or models could be underspecified.  
   - TUI dependency footprint and startup guards not described.
 

@@ -14,7 +14,7 @@ use anyhow::Result;
 use axum::body::HttpBody;
 use axum::{
     extract::{ConnectInfo, Path, Query, RawQuery, State},
-    http::{header::CONTENT_LENGTH, HeaderMap, HeaderValue, StatusCode},
+    http::{header::{CONTENT_LENGTH, CONTENT_TYPE}, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Json, Response},
     routing::{get, post},
@@ -179,6 +179,7 @@ pub fn router(state: AppState) -> Router {
         .route("/search", get(search_handler))
         .route("/snippet/*doc_id", get(snippet_handler))
         .route("/v1/graph/impact", get(impact_graph_handler))
+        .route("/v1/dag/export", get(dag_export_handler))
         .route("/v1/memory/store", post(memory_store_handler))
         .route("/v1/memory/recall", post(memory_recall_handler))
         .route("/ai-help", get(ai_help_handler))
@@ -389,6 +390,83 @@ async fn impact_graph_handler(
     let traversal = crate::impact::traverse_impact(&source, &all_edges, &controls);
     let response = crate::impact::build_impact_response(&repo_id, &source, traversal, &controls);
     Json(response).into_response()
+}
+
+#[derive(Deserialize)]
+struct DagExportQuery {
+    #[serde(rename = "session_id", alias = "sessionId")]
+    session_id: Option<String>,
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(rename = "max_nodes", alias = "maxNodes")]
+    max_nodes: Option<usize>,
+}
+
+fn text_response(body: String, content_type: &'static str) -> Response {
+    (
+        StatusCode::OK,
+        [(CONTENT_TYPE, content_type)],
+        body,
+    )
+        .into_response()
+}
+
+async fn dag_export_handler(
+    State(state): State<AppState>,
+    Query(params): Query<DagExportQuery>,
+) -> impl IntoResponse {
+    let session_id = match params.session_id {
+        Some(value) if !value.trim().is_empty() => value.trim().to_string(),
+        _ => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                "session_id must not be empty",
+            );
+        }
+    };
+    let format = match params.format {
+        None => crate::dag::DagExportFormat::Json,
+        Some(raw) => match crate::dag::DagExportFormat::parse(&raw) {
+            Some(value) => value,
+            None => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    ERR_INVALID_ARGUMENT,
+                    "format must be one of json, text, dot",
+                );
+            }
+        },
+    };
+
+    let options = crate::dag::DagExportOptions::from_optional(params.max_nodes);
+    let store = crate::dag::DagStore::new(state.indexer.state_dir());
+    let export = match store.export_session(&session_id, options) {
+        Ok(value) => value,
+        Err(err) => {
+            state.metrics.inc_error();
+            warn!(target: "docdexd", error = ?err, "dag export failed");
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "dag export unavailable",
+            );
+        }
+    };
+
+    let repo_id = crate::symbols::repo_id_for_root(state.indexer.repo_root())
+        .unwrap_or_else(|_| String::new());
+    let response = crate::dag::build_export_response(&repo_id, &session_id, export);
+
+    match format {
+        crate::dag::DagExportFormat::Json => Json(response).into_response(),
+        crate::dag::DagExportFormat::Text => {
+            text_response(crate::dag::render_text(&response), "text/plain; charset=utf-8")
+        }
+        crate::dag::DagExportFormat::Dot => {
+            text_response(crate::dag::render_dot(&response), "text/vnd.graphviz; charset=utf-8")
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -720,6 +798,16 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 ],
             },
             AiHelpEndpoint {
+                method: "GET",
+                path: "/v1/dag/export",
+                description: "Export a session DAG in json/text/dot format.",
+                params: &[
+                    "session_id=<session identifier>",
+                    "format=json|text|dot (optional; default json)",
+                    "max_nodes=<int optional>",
+                ],
+            },
+            AiHelpEndpoint {
                 method: "POST",
                 path: "/v1/memory/store",
                 description: "Store a memory item (requires --enable-memory=true).",
@@ -753,6 +841,11 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 command: "docdexd query --repo <path> --query \"text\" [--limit 8]",
                 description: "Ad-hoc search via CLI (JSON to stdout).",
                 example: "docdexd query --repo /workspace --query \"payment flow\" --limit 5",
+            },
+            AiHelpCli {
+                command: "docdexd dag view --repo <path> <session_id> [--format json|text|dot]",
+                description: "Export a session DAG (JSON/text/DOT).",
+                example: "docdexd dag view --repo /workspace sess-123 --format json",
             },
             AiHelpCli {
                 command: "docdexd ingest --repo <path> --file <file>",

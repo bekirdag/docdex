@@ -2,6 +2,7 @@ mod audit;
 mod browser_session;
 mod chrome_watchdog;
 mod config;
+mod dag;
 mod daemon;
 mod error;
 mod metrics;
@@ -23,7 +24,7 @@ mod watcher;
 use crate::config::RepoArgs;
 use crate::error::StartupError;
 use anyhow::{anyhow, Context, Result};
-use clap::{ArgAction, CommandFactory, Parser, Subcommand};
+use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
 use serde_json::json;
 use std::fs;
 use std::path::Path;
@@ -422,6 +423,11 @@ enum Command {
         )]
         embedding_timeout_ms: u64,
     },
+    /// Export a session DAG from the local store.
+    Dag {
+        #[command(subcommand)]
+        command: DagCommand,
+    },
     /// Manage explicit repo identity mappings for shared state dirs.
     Repo {
         #[command(subcommand)]
@@ -524,6 +530,38 @@ enum RepoCommand {
     Inspect {
         #[command(flatten)]
         repo: RepoArgs,
+    },
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+enum DagFormatArg {
+    Json,
+    Text,
+    Dot,
+}
+
+impl DagFormatArg {
+    fn to_export_format(self) -> dag::DagExportFormat {
+        match self {
+            DagFormatArg::Json => dag::DagExportFormat::Json,
+            DagFormatArg::Text => dag::DagExportFormat::Text,
+            DagFormatArg::Dot => dag::DagExportFormat::Dot,
+        }
+    }
+}
+
+#[derive(Subcommand, Debug)]
+enum DagCommand {
+    /// Export a session DAG in JSON, text, or DOT format.
+    View {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(value_name = "SESSION_ID", value_parser = config::non_empty_string)]
+        session_id: String,
+        #[arg(long, value_enum, default_value = "json")]
+        format: DagFormatArg,
+        #[arg(long, default_value_t = dag::DEFAULT_MAX_NODES)]
+        max_nodes: usize,
     },
 }
 
@@ -1082,6 +1120,44 @@ async fn run() -> Result<()> {
                 }))?
             );
         }
+        Command::Dag { command } => match command {
+            DagCommand::View {
+                repo,
+                session_id,
+                format,
+                max_nodes,
+            } => {
+                let repo_root = repo.repo_root();
+                let index_config = index::IndexConfig::with_overrides(
+                    &repo_root,
+                    repo.state_dir_override(),
+                    repo.exclude_dir_overrides(),
+                    repo.exclude_prefix_overrides(),
+                    repo.symbols_enabled(),
+                )?;
+                util::init_logging("warn")?;
+                index::ensure_state_dir_secure(index_config.state_dir())?;
+
+                let store = dag::DagStore::new(index_config.state_dir());
+                let options = dag::DagExportOptions::from_optional(Some(max_nodes));
+                let export = store.export_session(&session_id, options)?;
+                let repo_id =
+                    symbols::repo_id_for_root(&repo_root).unwrap_or_else(|_| String::new());
+                let response = dag::build_export_response(&repo_id, &session_id, export);
+
+                match format.to_export_format() {
+                    dag::DagExportFormat::Json => {
+                        println!("{}", serde_json::to_string_pretty(&response)?);
+                    }
+                    dag::DagExportFormat::Text => {
+                        print!("{}", dag::render_text(&response));
+                    }
+                    dag::DagExportFormat::Dot => {
+                        print!("{}", dag::render_dot(&response));
+                    }
+                }
+            }
+        },
         Command::Mcp {
             repo,
             log,

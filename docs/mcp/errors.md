@@ -201,7 +201,6 @@ This mirrors the HTTP invalid-argument contract used by `/v1/graph/impact`.
 
 Docdex also uses feature-specific codes in some tools:
 
-- `memory_disabled`
 - `embedding_timeout`
 - `embedding_model_not_found`
 - `embedding_failed`
@@ -387,6 +386,7 @@ Docdex presents the same underlying failures in three different wrappers:
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 | Rate limited | `rate_limited` | `-32029` | `429` with JSON error envelope + retry hints | N/A (CLI not rate limited) |
 =======
 | Rate limited | `rate_limited` | `-32029` | `429` with JSON `{error:{code,message,retry_after_ms,retry_at?,limit_key,scope}}` | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
@@ -411,6 +411,11 @@ Docdex presents the same underlying failures in three different wrappers:
 >>>>>>> mcoda/task/bck-05-us-06-t26
 | Optional dependency disabled (e.g. symbols) | `missing_dependency` | `-32602` | N/A (no HTTP endpoint for MCP symbols) | N/A (no CLI symbols command) |
 | Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_argument` | `-32602` | N/A | N/A |
+=======
+| Rate limited | `rate_limited` | `-32602` | `429` (security middleware returns status-only; no JSON envelope) | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
+| Optional dependency disabled (e.g. symbols, memory) | `missing_dependency` | `-32602` | N/A (no HTTP endpoint for MCP symbols) | N/A (no CLI symbols command) |
+| Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_params` | `-32602` | N/A | N/A |
+>>>>>>> mcoda/task/bck-05-us-06-t20
 | Invalid path for `docdex_open` | `invalid_path` | `-32602` | N/A | N/A |
 | Invalid line window for `docdex_open` | `invalid_range` | `-32602` | N/A | N/A |
 | Internal MCP server failure | `internal_error` | `-32000` | `500` (varies by endpoint) | Exit `1` (varies; may be JSON for `StartupError`/`AppError`) |

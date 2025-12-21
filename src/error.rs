@@ -39,7 +39,6 @@ pub const ERR_MAX_CONTENT_EXCEEDED: &str = "max_content_exceeded";
 pub const ERR_EMBEDDING_TIMEOUT: &str = "embedding_timeout";
 pub const ERR_EMBEDDING_MODEL_NOT_FOUND: &str = "embedding_model_not_found";
 pub const ERR_EMBEDDING_FAILED: &str = "embedding_failed";
-pub const ERR_MEMORY_DISABLED: &str = "memory_disabled";
 pub const ERR_INVALID_ARGUMENT: &str = "invalid_argument";
 pub const ERR_UNSUPPORTED_VERSION: &str = "unsupported_version";
 pub const ERR_MISSING_REPO: &str = "missing_repo";
@@ -189,6 +188,7 @@ impl AppError {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 #[derive(Debug, Clone, Serialize)]
 <<<<<<< HEAD
 #[serde(rename_all = "snake_case")]
@@ -308,6 +308,33 @@ pub fn default_message_for_code(code: &str) -> &'static str {
         _ => "error",
     }
 >>>>>>> mcoda/task/bck-05-us-07-t33
+=======
+pub fn missing_dependency_details(
+    dependency: &'static str,
+    env: Option<&'static str>,
+    flag: Option<&'static str>,
+) -> Value {
+    let mut details = serde_json::Map::new();
+    details.insert("dependency".to_string(), Value::String(dependency.to_string()));
+    if let Some(env) = env {
+        details.insert("env".to_string(), Value::String(env.to_string()));
+    }
+    if let Some(flag) = flag {
+        details.insert("flag".to_string(), Value::String(flag.to_string()));
+    }
+    Value::Object(details)
+}
+
+pub fn missing_dependency_error(
+    dependency: &'static str,
+    message: impl Into<String>,
+    env: Option<&'static str>,
+    flag: Option<&'static str>,
+) -> AppError {
+    AppError::new(ERR_MISSING_DEPENDENCY, message).with_details(missing_dependency_details(
+        dependency, env, flag,
+    ))
+>>>>>>> mcoda/task/bck-05-us-06-t20
 }
 
 pub fn repo_resolution_details(

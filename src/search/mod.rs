@@ -17,6 +17,7 @@ use crate::error::{
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -86,6 +87,10 @@ use crate::error::{
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_INVALID_QUERY,
     ERR_MEMORY_DISABLED, ERR_MISSING_QUERY, ERR_RATE_LIMITED,
 >>>>>>> mcoda/task/bck-05-us-07-t33
+=======
+    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY,
+    ERR_RATE_LIMITED,
+>>>>>>> mcoda/task/bck-05-us-06-t20
 };
 use crate::libs::LibsIndexer;
 use crate::max_size::{
@@ -836,6 +841,7 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_BACKOFF_REQUIRED => StatusCode::TOO_MANY_REQUESTS,
         ERR_INVALID_ARGUMENT => StatusCode::BAD_REQUEST,
 <<<<<<< HEAD
+<<<<<<< HEAD
         ERR_INDEX_SCHEMA_MISMATCH => StatusCode::CONFLICT,
 =======
         ERR_MISSING_DEPENDENCY => StatusCode::FAILED_DEPENDENCY,
@@ -890,6 +896,9 @@ fn status_for_app_error(code: &str) -> StatusCode {
 =======
         ERR_REPO_CAPACITY_EXCEEDED => StatusCode::TOO_MANY_REQUESTS,
 >>>>>>> mcoda/task/bck-05-us-07-t05
+=======
+        ERR_MISSING_DEPENDENCY => StatusCode::CONFLICT,
+>>>>>>> mcoda/task/bck-05-us-06-t20
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -1123,8 +1132,13 @@ async fn memory_store_handler(
     let Some(memory) = state.memory.clone() else {
         return json_error(
             StatusCode::CONFLICT,
+<<<<<<< HEAD
             ERR_MEMORY_DISABLED,
             "memory is disabled; enable with --enable-memory=true or DOCDEX_ENABLE_MEMORY=1",
+=======
+            ERR_MISSING_DEPENDENCY,
+            "memory is disabled; start the daemon with --enable-memory=true",
+>>>>>>> mcoda/task/bck-05-us-06-t20
         );
 >>>>>>> mcoda/task/bck-05-us-06-t47
     };
@@ -1233,8 +1247,13 @@ async fn memory_recall_handler(
     let Some(memory) = state.memory.clone() else {
         return json_error(
             StatusCode::CONFLICT,
+<<<<<<< HEAD
             ERR_MEMORY_DISABLED,
             "memory is disabled; enable with --enable-memory=true or DOCDEX_ENABLE_MEMORY=1",
+=======
+            ERR_MISSING_DEPENDENCY,
+            "memory is disabled; start the daemon with --enable-memory=true",
+>>>>>>> mcoda/task/bck-05-us-06-t20
         );
 >>>>>>> mcoda/task/bck-05-us-06-t47
     };

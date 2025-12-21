@@ -7,6 +7,7 @@ use crate::error::{
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
 <<<<<<< HEAD
@@ -81,6 +82,13 @@ use crate::error::{
     ERR_MISSING_REPO_PATH, ERR_PARSE_ERROR, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH,
     ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
 >>>>>>> mcoda/task/bck-05-us-07-t33
+=======
+    missing_dependency_error, AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
+    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
+    repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
+    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
+    ERR_UNKNOWN_REPO,
+>>>>>>> mcoda/task/bck-05-us-06-t20
 };
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1992,6 +2000,7 @@ fn classify_tool_error(err: &anyhow::Error) -> ToolErrorSpec {
             )),
         );
     }
+<<<<<<< HEAD
     if err.downcast_ref::<MissingSymbolsDependencyError>().is_some() {
         return (
             ERR_MISSING_DEPENDENCY,
@@ -2002,6 +2011,8 @@ fn classify_tool_error(err: &anyhow::Error) -> ToolErrorSpec {
 >>>>>>> mcoda/task/bck-05-us-06-t36
         );
     }
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t20
     if let Some(missing) = err.downcast_ref::<MissingSymbolsIndexError>() {
         return (
             ERR_MISSING_INDEX,
@@ -5110,7 +5121,13 @@ impl McpServer {
         self.ensure_index_ready()?;
 >>>>>>> mcoda/task/bck-05-us-08-t02
         if !self.indexer.config().symbols_enabled() {
-            return Err(MissingSymbolsDependencyError.into());
+            return Err(missing_dependency_error(
+                "DOCDEX_ENABLE_SYMBOL_EXTRACTION",
+                "symbol extraction is disabled; re-run with --enable-symbol-extraction=true (or set DOCDEX_ENABLE_SYMBOL_EXTRACTION=1) and reindex",
+                Some("DOCDEX_ENABLE_SYMBOL_EXTRACTION"),
+                Some("--enable-symbol-extraction=true"),
+            )
+            .into());
         }
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5188,9 +5205,17 @@ impl McpServer {
 <<<<<<< HEAD
         self.ensure_schema_version("docdex_memory_store", args.schema_version)?;
         let Some(memory) = self.memory.clone() else {
+<<<<<<< HEAD
             return Err(AppError::new(
                 ERR_MEMORY_DISABLED,
                 "memory is disabled; enable with --enable-memory=true or DOCDEX_ENABLE_MEMORY=1",
+=======
+            return Err(missing_dependency_error(
+                "DOCDEX_ENABLE_MEMORY",
+                "memory is disabled; set DOCDEX_ENABLE_MEMORY=1",
+                Some("DOCDEX_ENABLE_MEMORY"),
+                None,
+>>>>>>> mcoda/task/bck-05-us-06-t20
             )
             .with_details(dependency_details("DOCDEX_ENABLE_MEMORY", Some("--enable-memory=true")))
             .into());
@@ -5235,9 +5260,17 @@ impl McpServer {
 <<<<<<< HEAD
         self.ensure_schema_version("docdex_memory_recall", args.schema_version)?;
         let Some(memory) = self.memory.clone() else {
+<<<<<<< HEAD
             return Err(AppError::new(
                 ERR_MEMORY_DISABLED,
                 "memory is disabled; enable with --enable-memory=true or DOCDEX_ENABLE_MEMORY=1",
+=======
+            return Err(missing_dependency_error(
+                "DOCDEX_ENABLE_MEMORY",
+                "memory is disabled; set DOCDEX_ENABLE_MEMORY=1",
+                Some("DOCDEX_ENABLE_MEMORY"),
+                None,
+>>>>>>> mcoda/task/bck-05-us-06-t20
             )
             .with_details(dependency_details("DOCDEX_ENABLE_MEMORY", Some("--enable-memory=true")))
             .into());

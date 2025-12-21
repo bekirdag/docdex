@@ -37,6 +37,19 @@ The npm postinstall installer (`npm/lib/install.js`) expects GitHub Release asse
 If a platform is unsupported, install exits non-zero and does not download.
 If a platform is supported but an artifact is missing, install exits non-zero with a “missing artifact/version sync issue” message (not “unsupported platform”) and includes the expected triple and asset pattern.
 
+### Manifest + checksum resolution order (current)
+
+- Manifest candidates (override via `DOCDEX_MANIFEST_NAMES` / `DOCDEX_MANIFEST_NAME`):
+  - `docdex-release-manifest.json`
+  - `docdexd-manifest.json`
+  - `docdex-manifest.json`
+  - `manifest.json`
+- Checksums candidates (override via `DOCDEX_CHECKSUMS_NAMES` / `DOCDEX_CHECKSUMS_NAME`):
+  - `SHA256SUMS`
+  - `SHA256SUMS.txt`
+- Deterministic fallback archive name: `docdexd-<platformKey>.tar.gz`
+- Pattern string shown in errors: `docdexd-<platformKey>.tar.gz (e.g. docdexd-linux-x64-gnu.tar.gz)`
+
 Contracts:
 - `docs/contracts/installer_asset_metadata_contract_v1.md`
 - `docs/contracts/installer_error_contract_v1.md`
@@ -79,3 +92,22 @@ These mappings exist (to keep the intent explicit) but are marked `published: fa
 
 Implication:
 - These targets should either be added to `.github/workflows/release.yml` (and `scripts/generate_release_manifest.cjs` will pick them up automatically), or remain unsupported with actionable guidance.
+
+## Current failure modes (installer behavior)
+
+Platform detection / mapping:
+- `DOCDEX_UNSUPPORTED_PLATFORM` when the runtime is unknown or maps to a `published: false` entry (e.g. `linux/arm64` + musl, `win32/arm64`). Includes the candidate platform key + target triple and notes when a target is recognized but not published.
+- `DOCDEX_INSTALL_FAILED` (generic) if `DOCDEX_LIBC` is set to an invalid value (throws before the installer can map to a `platformKey`).
+
+Manifest resolution:
+- `DOCDEX_ASSET_NO_MATCH` when a manifest is present but has no entry for the detected `targetTriple` (fails closed; no fallback).
+- `DOCDEX_ASSET_MULTI_MATCH` when a manifest has multiple entries for the same `targetTriple` (fails closed; no fallback).
+- Manifest present but missing asset name or integrity is treated as unusable; the installer records `DOCDEX_MANIFEST_UNUSABLE` and continues to the next candidate/fallback.
+- Oversized or invalid manifests are skipped with `DOCDEX_MANIFEST_TOO_LARGE` / `DOCDEX_MANIFEST_JSON_INVALID` events and fallback continues.
+
+Checksum / archive resolution:
+- `DOCDEX_CHECKSUM_UNUSABLE` when no usable manifest exists and no checksum candidate (or per-asset `.sha256`) provides integrity metadata.
+- `DOCDEX_ASSET_MISSING` when the resolved asset name returns 404 (manifest or fallback).
+- `DOCDEX_DOWNLOAD_FAILED` for non-404 download failures (network/proxy/token issues).
+- `DOCDEX_INTEGRITY_MISMATCH` when SHA-256 verification fails.
+- `DOCDEX_ARCHIVE_INVALID` when the archive extracts without the expected `docdexd` binary.

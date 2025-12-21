@@ -160,6 +160,7 @@ use crate::error::{
     ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
 >>>>>>> mcoda/task/bck-05-us-07-t09
 };
+use crate::repo_resolution;
 use crate::symbols;
 use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
 >>>>>>> mcoda/task/bck-05-us-08-t06
@@ -1153,6 +1154,7 @@ impl IndexConfig {
         extra_excluded_prefixes: Vec<String>,
         symbols_enabled: bool,
     ) -> Result<Self> {
+<<<<<<< HEAD
         let state_paths = resolve_state_paths(repo_root, state_dir)?;
 <<<<<<< HEAD
         state_paths.log_if_unexpected();
@@ -1161,6 +1163,11 @@ impl IndexConfig {
 =======
         state_paths.ensure_dirs()?;
 >>>>>>> mcoda/task/ops-01-us-03-t02
+=======
+        let resolved = repo_resolution::resolve_repo_root(repo_root);
+        let repo_root = resolved.repo_root;
+        let state_dir = resolve_state_dir(&repo_root, state_dir)?;
+>>>>>>> mcoda/task/bck-05-us-07-t31
         let mut excluded_dir_names: Vec<String> = DEFAULT_EXCLUDED_DIR_NAMES
             .iter()
             .map(|value| value.to_string())
@@ -1187,6 +1194,7 @@ impl IndexConfig {
                 excluded_relative_prefixes.push(normalized);
             }
         }
+<<<<<<< HEAD
         if let Ok(rel_state) = state_paths.index_dir().strip_prefix(repo_root) {
             let normalized = normalize_prefix(rel_state.to_string_lossy().as_ref());
             if !normalized.is_empty() && !excluded_relative_prefixes.contains(&normalized) {
@@ -1194,6 +1202,9 @@ impl IndexConfig {
             }
         }
         if let Ok(rel_state) = state_paths.repo_root().strip_prefix(repo_root) {
+=======
+        if let Ok(rel_state) = state_dir.strip_prefix(&repo_root) {
+>>>>>>> mcoda/task/bck-05-us-07-t31
             let normalized = normalize_prefix(rel_state.to_string_lossy().as_ref());
             if !normalized.is_empty() && !excluded_relative_prefixes.contains(&normalized) {
                 excluded_relative_prefixes.push(normalized);

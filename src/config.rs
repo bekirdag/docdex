@@ -45,9 +45,7 @@ pub struct RepoArgs {
 
 impl RepoArgs {
     pub fn repo_root(&self) -> PathBuf {
-        self.repo
-            .canonicalize()
-            .unwrap_or_else(|_| self.repo.clone())
+        crate::repo_resolution::resolve_repo_root(&self.repo).repo_root
     }
 
     pub fn state_dir_override(&self) -> Option<PathBuf> {

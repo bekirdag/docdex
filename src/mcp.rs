@@ -90,7 +90,11 @@ use crate::ratelimit::ResourceLimiter;
 use crate::repo_manager::RepoManagerConfig;
 >>>>>>> mcoda/task/bck-05-us-07-t02
 use crate::ratelimit::RateLimiter;
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-09-t20
+=======
+use crate::repo_resolution;
+>>>>>>> mcoda/task/bck-05-us-07-t31
 use crate::search;
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1261,9 +1265,8 @@ pub async fn serve(
     rate_limit_burst: u32,
     repo_manager_config: RepoManagerConfig,
 ) -> Result<()> {
-    let repo_root = repo_root
-        .canonicalize()
-        .context("resolve repo root for MCP server")?;
+    let repo_resolution = repo_resolution::resolve_repo_root(&repo_root);
+    let repo_root = repo_resolution.repo_root;
     // Try to open with a writer; if the index is already locked (another docdexd
     // instance is indexing), fall back to read-only so search/open still work.
     let (indexer, index_writer_available) = match Indexer::with_config(repo_root.clone(), index_config.clone()) {
@@ -1348,6 +1351,7 @@ pub async fn serve(
 >>>>>>> mcoda/task/bck-05-us-07-t30
     let mut server = McpServer {
         repo_root,
+        repo_normalized_path: repo_resolution.normalized_path,
         indexer,
         libs_indexer,
 <<<<<<< HEAD
@@ -1399,6 +1403,7 @@ struct McpMemoryState {
 
 struct McpServer {
     repo_root: PathBuf,
+    repo_normalized_path: String,
     indexer: Indexer,
     libs_indexer: Option<libs::LibsIndexer>,
 <<<<<<< HEAD
@@ -1645,6 +1650,7 @@ impl McpServer {
                     .or(init_params.project_root)
                     .as_ref()
                 {
+<<<<<<< HEAD
                     match policy::ensure_repo_match(
                         client_root,
                         &self.repo_root,
@@ -1653,6 +1659,10 @@ impl McpServer {
                         Ok(canon) => {
                             self.default_project_root = Some(canon);
                         }
+=======
+                    let canon = match client_root.canonicalize() {
+                        Ok(canon) => canon,
+>>>>>>> mcoda/task/bck-05-us-07-t31
                         Err(err) => {
                             return Ok(Some(RpcResponse {
                                 jsonrpc: JSONRPC_VERSION,
@@ -1660,15 +1670,43 @@ impl McpServer {
                                 result: None,
                                 error: Some(rpc_error(
                                     ERR_INVALID_REQUEST,
+<<<<<<< HEAD
                                     default_message_for_code(err.code),
                                     err.code,
                                     None,
                                     None,
                                     err.details,
+=======
+                                    default_message_for_code("invalid_request"),
+                                    "invalid_request",
+                                    Some(err.to_string()),
+                                    None,
+                                    None,
+>>>>>>> mcoda/task/bck-05-us-07-t31
                                 )),
                             }));
                         }
+                    };
+                    let client_resolution = repo_resolution::resolve_repo_root(&canon);
+                    if client_resolution.normalized_path != self.repo_normalized_path {
+                        return Ok(Some(RpcResponse {
+                            jsonrpc: JSONRPC_VERSION,
+                            id: id.clone(),
+                            result: None,
+                            error: Some(rpc_error(
+                                ERR_INVALID_REQUEST,
+                                default_message_for_code(ERR_UNKNOWN_REPO),
+                                ERR_UNKNOWN_REPO,
+                                None,
+                                None,
+                                Some(json!({
+                                    "expected": self.repo_root.display().to_string(),
+                                    "got": client_resolution.repo_root.display().to_string()
+                                })),
+                            )),
+                        }));
                     }
+                    self.default_project_root = Some(client_resolution.repo_root);
                 }
                 let protocol_version = init_params
                     .protocol_version
@@ -3270,6 +3308,7 @@ impl McpServer {
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     fn ensure_schema_version(&self, schema_name: &'static str, requested: Option<u32>) -> Result<()> {
         if let Some(version) = requested {
             if version < TOOL_SCHEMA_VERSION_MIN || version > TOOL_SCHEMA_VERSION_MAX {
@@ -3279,6 +3318,28 @@ impl McpServer {
                         .into(),
                 );
             }
+=======
+    fn ensure_same_repo(&self, candidate: &Path) -> Result<()> {
+        if !candidate.exists() {
+            let normalized_path = candidate.to_string_lossy().replace('\\', "/");
+            let details = repo_resolution_details(
+                normalized_path,
+                None,
+                Some(self.repo_normalized_path.clone()),
+                vec![
+                    "Repo may have moved or been renamed.".to_string(),
+                    "Pass the current repo path (or omit `project_root` to use the MCP server default)."
+                        .to_string(),
+                    "If the MCP server is pointed at the wrong path, restart it with `docdexd mcp --repo <repo>`."
+                        .to_string(),
+                ],
+            );
+            return Err(
+                AppError::new(ERR_MISSING_REPO_PATH, "repo path not found")
+                    .with_details(details)
+                    .into(),
+            );
+>>>>>>> mcoda/task/bck-05-us-07-t31
         }
         Ok(())
 =======
@@ -3287,6 +3348,7 @@ impl McpServer {
 >>>>>>> mcoda/task/bck-05-us-08-t32
     }
 
+<<<<<<< HEAD
     fn ensure_same_repo(&self, candidate: &Path) -> Result<()> {
         let resolution = crate::repo_identity::resolve_repo_root(
             candidate,
@@ -3304,6 +3366,14 @@ impl McpServer {
                 resolution.normalized_path,
                 attempted_fingerprint,
                 Some(self.repo_root.to_string_lossy().replace('\\', "/")),
+=======
+        let resolution = repo_resolution::resolve_repo_root(candidate);
+        if resolution.normalized_path != self.repo_normalized_path {
+            let details = repo_resolution_details(
+                resolution.normalized_path,
+                resolution.fingerprint,
+                Some(self.repo_normalized_path.clone()),
+>>>>>>> mcoda/task/bck-05-us-07-t31
                 vec![
                     "Repo may have moved or been renamed.".to_string(),
                     "Restart the MCP server with `docdexd mcp --repo <repo>` matching the repo you want to use."

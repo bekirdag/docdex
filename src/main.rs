@@ -33,6 +33,7 @@ mod ollama;
 mod ratelimit;
 mod repo_manager;
 mod repo_identity;
+mod repo_resolution;
 mod search;
 mod state_layout;
 mod symbols;

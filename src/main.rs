@@ -1163,20 +1163,7 @@ async fn run() -> Result<()> {
 
 fn render_error_and_exit(err: anyhow::Error) -> ! {
     if let Some(startup) = err.downcast_ref::<StartupError>() {
-        let mut body = serde_json::Map::new();
-        body.insert("code".to_string(), json!(startup.code));
-        body.insert("message".to_string(), json!(startup.message.as_str()));
-        if let Some(hint) = startup.hint.as_ref() {
-            body.insert("hint".to_string(), json!(hint));
-        }
-        if let Some(steps) = startup.remediation.as_ref() {
-            body.insert("remediation".to_string(), json!(steps));
-        }
-        let payload = serde_json::Value::Object({
-            let mut root = serde_json::Map::new();
-            root.insert("error".to_string(), serde_json::Value::Object(body));
-            root
-        });
+        let payload = crate::error::startup_error_payload(startup);
         match serde_json::to_string(&payload) {
             Ok(line) => eprintln!("{line}"),
             Err(_) => eprintln!("{}", startup.message),
@@ -1184,17 +1171,7 @@ fn render_error_and_exit(err: anyhow::Error) -> ! {
         std::process::exit(1);
     }
     if let Some(app) = err.downcast_ref::<crate::error::AppError>() {
-        let mut body = serde_json::Map::new();
-        body.insert("code".to_string(), json!(app.code));
-        body.insert("message".to_string(), json!(app.message.as_str()));
-        if let Some(details) = app.details.as_ref() {
-            body.insert("details".to_string(), details.clone());
-        }
-        let payload = serde_json::Value::Object({
-            let mut root = serde_json::Map::new();
-            root.insert("error".to_string(), serde_json::Value::Object(body));
-            root
-        });
+        let payload = crate::error::app_error_payload(app);
         match serde_json::to_string(&payload) {
             Ok(line) => eprintln!("{line}"),
             Err(_) => eprintln!("{}", app.message),

@@ -8,9 +8,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::browser_session::BrowserSessionError;
+pub use crate::error::ERR_TIER2_UNAVAILABLE;
 use crate::metrics;
-
-pub const ERR_TIER2_UNAVAILABLE: &str = "tier2_unavailable";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

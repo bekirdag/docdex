@@ -3,8 +3,8 @@ use crate::index::{
 };
 use crate::error::{
     AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
-    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    ERR_RATE_LIMITED,
+    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_INVALID_QUERY,
+    ERR_MEMORY_DISABLED, ERR_MISSING_QUERY, ERR_RATE_LIMITED,
 };
 use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
@@ -1265,7 +1265,7 @@ async fn search_handler(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorBody {
-                    error: ErrorDetail::new("missing_query", "q is required"),
+                    error: ErrorDetail::new(ERR_MISSING_QUERY, "q is required"),
                 }),
             )
                 .into_response();
@@ -1276,7 +1276,7 @@ async fn search_handler(
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorBody {
-                error: ErrorDetail::new("invalid_query", "q must not be empty"),
+                error: ErrorDetail::new(ERR_INVALID_QUERY, "q must not be empty"),
             }),
         )
             .into_response();
@@ -1366,7 +1366,7 @@ async fn search_handler(
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorBody {
-                        error: ErrorDetail::new("invalid_query", reason.clone()),
+                        error: ErrorDetail::new(ERR_INVALID_QUERY, reason.clone()),
                     }),
                 )
                     .into_response();

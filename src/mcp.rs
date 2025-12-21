@@ -1,8 +1,11 @@
 use crate::error::{
-    AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
-    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
-    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
+    default_message_for_code, repo_resolution_details, AppError, RateLimited, ERR_BACKOFF_REQUIRED,
+    ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR,
+    ERR_INVALID_ARGUMENT, ERR_INVALID_PARAMS, ERR_INVALID_PATH, ERR_INVALID_QUERY, ERR_INVALID_RANGE,
+    ERR_INVALID_REQUEST, ERR_MAX_CONTENT_EXCEEDED, ERR_MEMORY_DISABLED, ERR_METHOD_NOT_FOUND,
+    ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
+    ERR_MISSING_REPO_PATH, ERR_PARSE_ERROR, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH,
+    ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
 };
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
@@ -24,9 +27,9 @@ use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 
 const JSONRPC_VERSION: &str = "2.0";
 const ERR_PARSE: i32 = -32700;
-const ERR_INVALID_REQUEST: i32 = -32600;
-const ERR_METHOD_NOT_FOUND: i32 = -32601;
-const ERR_INVALID_PARAMS: i32 = -32602;
+const RPC_ERR_INVALID_REQUEST: i32 = -32600;
+const RPC_ERR_METHOD_NOT_FOUND: i32 = -32601;
+const RPC_ERR_INVALID_PARAMS: i32 = -32602;
 const ERR_INTERNAL: i32 = -32000;
 const ERR_RATE_LIMITED_RPC: i32 = -32029;
 const FILES_DEFAULT_LIMIT: usize = 200;
@@ -176,40 +179,13 @@ fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
     }
     let (mcp_code, details) = classify_tool_error(err);
     rpc_error(
-        ERR_INVALID_PARAMS,
+        RPC_ERR_INVALID_PARAMS,
         default_message_for_code(mcp_code),
         mcp_code,
         Some(err.to_string()),
         tool,
         details,
     )
-}
-
-fn default_message_for_code(code: &str) -> &'static str {
-    match code {
-        "invalid_request" => "invalid request",
-        "invalid_params" => "invalid parameters",
-        "invalid_argument" => "invalid argument",
-        "missing_query" => "missing query",
-        "invalid_query" => "invalid query",
-        "invalid_path" => "invalid path",
-        "invalid_range" => "invalid range",
-        "max_content_exceeded" => "content too large",
-        ERR_EMBEDDING_TIMEOUT => "embedding timeout",
-        ERR_EMBEDDING_MODEL_NOT_FOUND => "embedding model not found",
-        ERR_EMBEDDING_FAILED => "embedding failed",
-        ERR_MISSING_REPO => "missing repo",
-        ERR_MISSING_REPO_PATH => "repo path not found",
-        ERR_UNKNOWN_REPO => "unknown repo",
-        ERR_MISSING_INDEX => "missing index",
-        ERR_STALE_INDEX => "stale index",
-        ERR_MISSING_DEPENDENCY => "missing dependency",
-        ERR_RATE_LIMITED => "rate limited",
-        ERR_BACKOFF_REQUIRED => "backoff required",
-        ERR_REPO_STATE_MISMATCH => "repo state mismatch",
-        ERR_INTERNAL_ERROR => "internal error",
-        _ => "error",
-    }
 }
 
 fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
@@ -221,15 +197,15 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
     }
     if let Some(search_err) = err.downcast_ref::<crate::index::SearchError>() {
         match search_err {
-            crate::index::SearchError::InvalidQuery { .. } => return ("invalid_query", None),
+            crate::index::SearchError::InvalidQuery { .. } => return (ERR_INVALID_QUERY, None),
         }
     }
     if err.downcast_ref::<InvalidPathError>().is_some() {
-        return ("invalid_path", None);
+        return (ERR_INVALID_PATH, None);
     }
     if let Some(range) = err.downcast_ref::<InvalidRangeError>() {
         return (
-            "invalid_range",
+            ERR_INVALID_RANGE,
             Some(json!({
                 "start_line": range.start_line,
                 "end_line": range.end_line,
@@ -238,14 +214,14 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
         );
     }
     if err.downcast_ref::<PathOutsideRepoError>().is_some() {
-        return ("invalid_path", Some(json!({ "kind": "outside_repo" })));
+        return (ERR_INVALID_PATH, Some(json!({ "kind": "outside_repo" })));
     }
     if err.downcast_ref::<InvalidUriError>().is_some() {
-        return ("invalid_params", Some(json!({ "kind": "invalid_uri" })));
+        return (ERR_INVALID_PARAMS, Some(json!({ "kind": "invalid_uri" })));
     }
     if let Some(max_err) = err.downcast_ref::<MaxContentError>() {
         return (
-            "max_content_exceeded",
+            ERR_MAX_CONTENT_EXCEEDED,
             Some(json!({
                 "max_bytes": max_err.max_bytes,
                 "actual_bytes": max_err.actual_bytes,
@@ -542,7 +518,7 @@ impl McpServer {
                                 error: Some(rpc_error(
                                     ERR_PARSE,
                                     format!("invalid JSON: {err}"),
-                                    "parse_error",
+                                    ERR_PARSE_ERROR,
                                     Some(err.to_string()),
                                     None,
                                     None,
@@ -566,7 +542,7 @@ impl McpServer {
                             error: Some(rpc_error(
                                 ERR_INTERNAL,
                                 "internal error",
-                                "internal_error",
+                                ERR_INTERNAL_ERROR,
                                 Some(err.to_string()),
                                 None,
                                 None,
@@ -608,9 +584,9 @@ impl McpServer {
                     id: id.clone(),
                     result: None,
                     error: Some(rpc_error(
-                        ERR_INVALID_REQUEST,
+                        RPC_ERR_INVALID_REQUEST,
                         format!("unsupported jsonrpc version: {version}"),
-                        "invalid_request",
+                        ERR_INVALID_REQUEST,
                         None,
                         None,
                         Some(json!({ "expected": JSONRPC_VERSION })),
@@ -636,7 +612,7 @@ impl McpServer {
                                     id: id.clone(),
                                     result: None,
                                     error: Some(rpc_error(
-                                        ERR_INVALID_REQUEST,
+                                        RPC_ERR_INVALID_REQUEST,
                                         default_message_for_code(ERR_UNKNOWN_REPO),
                                         ERR_UNKNOWN_REPO,
                                         None,
@@ -656,9 +632,9 @@ impl McpServer {
                                 id: id.clone(),
                                 result: None,
                             error: Some(rpc_error(
+                                RPC_ERR_INVALID_REQUEST,
+                                default_message_for_code(ERR_INVALID_REQUEST),
                                 ERR_INVALID_REQUEST,
-                                default_message_for_code("invalid_request"),
-                                "invalid_request",
                                 Some(err.to_string()),
                                 None,
                                 None,
@@ -729,9 +705,9 @@ impl McpServer {
                             id: id.clone(),
                             result: None,
                             error: Some(rpc_error(
+                                RPC_ERR_INVALID_PARAMS,
+                                default_message_for_code(ERR_INVALID_PARAMS),
                                 ERR_INVALID_PARAMS,
-                                default_message_for_code("invalid_params"),
-                                "invalid_params",
                                 Some(err.to_string()),
                                 None,
                                 Some(json!({ "validation": "serde", "method": "resources/read" })),
@@ -765,9 +741,9 @@ impl McpServer {
                             id: id.clone(),
                             result: None,
                             error: Some(rpc_error(
+                                RPC_ERR_INVALID_PARAMS,
+                                default_message_for_code(ERR_INVALID_PARAMS),
                                 ERR_INVALID_PARAMS,
-                                default_message_for_code("invalid_params"),
-                                "invalid_params",
                                 Some(err.to_string()),
                                 None,
                                 Some(json!({ "validation": "serde", "method": "tools/call" })),
@@ -797,9 +773,9 @@ impl McpServer {
                                     id: id.clone(),
                                     result: None,
                                     error: Some(rpc_error(
+                                        RPC_ERR_INVALID_PARAMS,
+                                        default_message_for_code(ERR_INVALID_PARAMS),
                                         ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_search"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_search" })),
@@ -830,9 +806,9 @@ impl McpServer {
                                     id: id.clone(),
                                     result: None,
                                     error: Some(rpc_error(
+                                        RPC_ERR_INVALID_PARAMS,
+                                        default_message_for_code(ERR_INVALID_PARAMS),
                                         ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_index"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_index" })),
@@ -863,9 +839,9 @@ impl McpServer {
                                     id: id.clone(),
                                     result: None,
                                     error: Some(rpc_error(
+                                        RPC_ERR_INVALID_PARAMS,
+                                        default_message_for_code(ERR_INVALID_PARAMS),
                                         ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_files"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_files" })),
@@ -896,9 +872,9 @@ impl McpServer {
                                     id: id.clone(),
                                     result: None,
                                     error: Some(rpc_error(
+                                        RPC_ERR_INVALID_PARAMS,
+                                        default_message_for_code(ERR_INVALID_PARAMS),
                                         ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_open"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_open" })),
@@ -929,9 +905,9 @@ impl McpServer {
                                     id: id.clone(),
                                     result: None,
                                     error: Some(rpc_error(
+                                        RPC_ERR_INVALID_PARAMS,
+                                        default_message_for_code(ERR_INVALID_PARAMS),
                                         ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_stats"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_stats" })),
@@ -962,9 +938,9 @@ impl McpServer {
                                     id: id.clone(),
                                     result: None,
                                     error: Some(rpc_error(
+                                        RPC_ERR_INVALID_PARAMS,
+                                        default_message_for_code(ERR_INVALID_PARAMS),
                                         ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_repo_inspect"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_repo_inspect" })),
@@ -995,9 +971,9 @@ impl McpServer {
                                     id: id.clone(),
                                     result: None,
                                     error: Some(rpc_error(
+                                        RPC_ERR_INVALID_PARAMS,
+                                        default_message_for_code(ERR_INVALID_PARAMS),
                                         ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_symbols"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_symbols" })),
@@ -1028,9 +1004,9 @@ impl McpServer {
                                     id: id.clone(),
                                     result: None,
                                     error: Some(rpc_error(
+                                        RPC_ERR_INVALID_PARAMS,
+                                        default_message_for_code(ERR_INVALID_PARAMS),
                                         ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_memory_store"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_memory_store" })),
@@ -1061,9 +1037,9 @@ impl McpServer {
                                     id: id.clone(),
                                     result: None,
                                     error: Some(rpc_error(
+                                        RPC_ERR_INVALID_PARAMS,
+                                        default_message_for_code(ERR_INVALID_PARAMS),
                                         ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_memory_recall"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_memory_recall" })),
@@ -1089,9 +1065,9 @@ impl McpServer {
                             id: id.clone(),
                             result: None,
                             error: Some(rpc_error(
-                                ERR_METHOD_NOT_FOUND,
+                                RPC_ERR_METHOD_NOT_FOUND,
                                 format!("unknown tool: {other}"),
-                                "method_not_found",
+                                ERR_METHOD_NOT_FOUND,
                                 None,
                                 None,
                                 Some(json!({
@@ -1130,9 +1106,9 @@ impl McpServer {
                 id: id.clone(),
                 result: None,
                 error: Some(rpc_error(
-                    ERR_METHOD_NOT_FOUND,
+                    RPC_ERR_METHOD_NOT_FOUND,
                     format!("unknown method: {other}"),
-                    "method_not_found",
+                    ERR_METHOD_NOT_FOUND,
                     None,
                     None,
                     None,

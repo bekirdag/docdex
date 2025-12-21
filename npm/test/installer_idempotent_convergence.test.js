@@ -128,7 +128,11 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
 
   const metadataAfterSecond = await fs.promises.readFile(metadataPath, "utf8");
   const binaryAfterSecond = await fs.promises.readFile(binaryPath, "utf8");
-  assert.equal(metadataAfterSecond, metadataAfterFirst);
+  const parsedFirst = JSON.parse(metadataAfterFirst);
+  const parsedSecond = JSON.parse(metadataAfterSecond);
+  const { lastVerifiedAt: _firstVerifiedAt, ...firstRest } = parsedFirst;
+  const { lastVerifiedAt: _secondVerifiedAt, ...secondRest } = parsedSecond;
+  assert.deepEqual(secondRest, firstRest);
+  assert.equal(typeof parsedSecond.lastVerifiedAt, "string");
   assert.equal(binaryAfterSecond, binaryAfterFirst);
 });
-

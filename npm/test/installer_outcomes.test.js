@@ -37,9 +37,11 @@ async function writeInstallMetadata({
   repoSlug = "owner/repo"
 }) {
   const metadataPath = path.join(distDir, "docdexd-install.json");
+  const installedAt = new Date().toISOString();
   const payload = {
     schemaVersion: 1,
-    installedAt: new Date().toISOString(),
+    installedAt,
+    lastVerifiedAt: installedAt,
     version,
     repoSlug,
     platformKey,
@@ -52,7 +54,16 @@ async function writeInstallMetadata({
       name: null,
       sha256: null,
       source: null,
-      downloadUrl: null
+      downloadUrl: null,
+      manifestName: null,
+      manifestVersion: null
+    },
+    provenance: {
+      source: null,
+      repoSlug,
+      downloadUrl: null,
+      manifestName: null,
+      manifestVersion: null
     }
   };
   await fs.promises.writeFile(metadataPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
@@ -197,6 +208,8 @@ test("installer outcome: update installs when version differs and writes fresh m
   assert.equal(meta.platformKey, platformKey);
   assert.equal(typeof meta.binary?.sha256, "string");
   assert.equal(meta.binary.sha256.length, 64);
+  assert.equal(typeof meta.lastVerifiedAt, "string");
+  assert.equal(meta.provenance?.source, "fallback");
 });
 
 test("installer outcome: repair reinstalls when binary hash mismatches metadata", async (t) => {

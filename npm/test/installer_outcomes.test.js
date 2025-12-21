@@ -1489,7 +1489,122 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
   assert.equal(result.binaryPath, path.join(distDir, "docdexd"));
 });
 
+<<<<<<< HEAD
 test("installer lifecycle: reinstall_unknown does not restart when binary is unchanged", async (t) => {
+=======
+test("installer outcome: repair converges to no-op without network calls", async (t) => {
+  const base = "https://example.test/releases/download";
+  const version = "0.0.0";
+  const platformKey = "linux-x64-gnu";
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const isWin32 = false;
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-installer-outcome-repair-noop-"));
+  t.after(async () => {
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  const distBaseDir = path.join(tmpRoot, "dist");
+  const distDir = path.join(distBaseDir, platformKey);
+  const tmpDir = path.join(tmpRoot, "tmp");
+  await ensureDir(tmpDir);
+
+  const binaryPath = await writeInstalledBinary({ distDir, isWin32, bytes: "original\n" });
+  const originalSha = await sha256File(binaryPath);
+  await writeInstallMetadata({ distDir, platformKey, version, targetTriple, binarySha256: originalSha });
+
+  await fs.promises.writeFile(binaryPath, "corrupted\n");
+
+  const archive = "docdexd-linux-x64-gnu.tar.gz";
+
+  const first = await runInstaller({
+    logger: createNoopLogger(),
+    platform: "linux",
+    arch: "x64",
+    tmpDir,
+    distBaseDir,
+    detectPlatformKeyFn: () => platformKey,
+    targetTripleForPlatformKeyFn: () => targetTriple,
+    getVersionFn: () => version,
+    parseRepoSlugFn: () => "owner/repo",
+    getDownloadBaseFn: () => base,
+    resolveInstallerDownloadPlanFn: async () => ({
+      archive,
+      expectedSha256: null,
+      source: "fallback",
+      manifestAttempt: { errors: [], resolved: null, manifestName: null }
+    }),
+    downloadFn: async (_url, dest) => {
+      await ensureDir(path.dirname(dest));
+      await fs.promises.writeFile(dest, "fake-archive-bytes");
+    },
+    verifyDownloadedFileIntegrityFn: async () => null,
+    extractTarballFn: async (_archivePath, targetDir) => {
+      await ensureDir(targetDir);
+      const repaired = path.join(targetDir, "docdexd");
+      await fs.promises.writeFile(repaired, "repaired\n");
+    }
+  });
+
+  assert.equal(first.outcome, "repair");
+  const metadataPath = path.join(distDir, "docdexd-install.json");
+  const metadataAfterRepair = await fs.promises.readFile(metadataPath, "utf8");
+  const binaryAfterRepair = await fs.promises.readFile(path.join(distDir, "docdexd"), "utf8");
+
+  let planCalls = 0;
+  let downloadCalls = 0;
+  let extractCalls = 0;
+  let verifyCalls = 0;
+  let repoSlugCalls = 0;
+
+  const second = await runInstaller({
+    logger: createNoopLogger(),
+    platform: "linux",
+    arch: "x64",
+    tmpDir,
+    distBaseDir,
+    detectPlatformKeyFn: () => platformKey,
+    targetTripleForPlatformKeyFn: () => targetTriple,
+    getVersionFn: () => version,
+    parseRepoSlugFn: () => {
+      repoSlugCalls += 1;
+      throw new Error("unexpected repo slug resolution");
+    },
+    resolveInstallerDownloadPlanFn: async () => {
+      planCalls += 1;
+      throw new Error("unexpected plan resolution");
+    },
+    downloadFn: async () => {
+      downloadCalls += 1;
+      throw new Error("unexpected download");
+    },
+    verifyDownloadedFileIntegrityFn: async () => {
+      verifyCalls += 1;
+      throw new Error("unexpected verify");
+    },
+    extractTarballFn: async () => {
+      extractCalls += 1;
+      throw new Error("unexpected extract");
+    },
+    getDownloadBaseFn: () => base
+  });
+
+  assert.equal(second.outcome, "no-op");
+  assert.equal(second.binaryPath, first.binaryPath);
+  assert.equal(repoSlugCalls, 0);
+  assert.equal(planCalls, 0);
+  assert.equal(downloadCalls, 0);
+  assert.equal(verifyCalls, 0);
+  assert.equal(extractCalls, 0);
+
+  const metadataAfterSecond = await fs.promises.readFile(metadataPath, "utf8");
+  const binaryAfterSecond = await fs.promises.readFile(path.join(distDir, "docdexd"), "utf8");
+  assert.equal(metadataAfterSecond, metadataAfterRepair);
+  assert.equal(binaryAfterSecond, binaryAfterRepair);
+});
+
+test("installer outcome: reinstall_unknown reinstalls when metadata is missing", async (t) => {
+>>>>>>> mcoda/task/bck-05-us-06-t48
   const base = "https://example.test/releases/download";
   const version = "0.0.0";
   const platformKey = "linux-x64-gnu";

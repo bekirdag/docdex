@@ -73,6 +73,13 @@ struct MissingSymbolsIndexError {
     rel_path: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IndexReadiness {
+    Ready,
+    Missing,
+    Stale,
+}
+
 fn mcp_error_data(
     code: &'static str,
     message: String,
@@ -435,6 +442,7 @@ pub async fn serve(
     let repo_root = repo_root
         .canonicalize()
         .context("resolve repo root for MCP server")?;
+    let index_readiness = detect_index_readiness(index_config.state_dir());
     // Try to open with a writer; if the index is already locked (another docdexd
     // instance is indexing), fall back to read-only so search/open still work.
     let indexer = match Indexer::with_config(repo_root.clone(), index_config.clone()) {
@@ -496,6 +504,7 @@ pub async fn serve(
         default_project_root: None,
         memory,
         tool_rate_limit,
+        index_readiness,
     };
     server.run().await
 }
@@ -514,6 +523,7 @@ struct McpServer {
     default_project_root: Option<PathBuf>,
     memory: Option<McpMemoryState>,
     tool_rate_limit: Option<RateLimiter<()>>,
+    index_readiness: IndexReadiness,
 }
 
 impl McpServer {
@@ -1276,6 +1286,7 @@ impl McpServer {
 
     async fn handle_search(&self, args: SearchArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_index_ready()?;
         let query = args.query.trim();
         let limit = args
             .limit
@@ -1315,6 +1326,7 @@ impl McpServer {
         self.ensure_project_root(args.project_root.as_deref())?;
         if args.paths.is_empty() {
             self.indexer.reindex_all().await?;
+            self.index_readiness = IndexReadiness::Ready;
             return Ok(json!({
                 "status": "ok",
                 "action": "reindex_all",
@@ -1345,6 +1357,7 @@ impl McpServer {
                 "reason": decision.reason,
             }));
         }
+        self.index_readiness = IndexReadiness::Ready;
         Ok(json!({
             "status": "ok",
             "action": "ingest",
@@ -1361,6 +1374,7 @@ impl McpServer {
 
     async fn handle_files(&self, args: FilesArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_index_ready()?;
         let limit = args
             .limit
             .unwrap_or(FILES_DEFAULT_LIMIT)
@@ -1384,6 +1398,7 @@ impl McpServer {
 
     async fn handle_stats(&self, args: StatsArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_index_ready()?;
         let stats = self.indexer.stats()?;
         Ok(json!({
             "num_docs": stats.num_docs,
@@ -1414,6 +1429,7 @@ impl McpServer {
 
     async fn handle_open(&self, args: OpenArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_index_ready()?;
         let rel_path = normalize_rel_path(&args.path).ok_or(InvalidPathError)?;
         let abs_path = self.repo_root.join(&rel_path);
         let canonical = abs_path
@@ -1480,6 +1496,7 @@ impl McpServer {
 
     async fn handle_symbols(&self, args: SymbolsArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_index_ready()?;
         if !self.indexer.config().symbols_enabled() {
             return Err(MissingSymbolsDependencyError.into());
         }
@@ -1498,6 +1515,7 @@ impl McpServer {
 
     async fn handle_memory_store(&self, args: MemoryStoreArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_index_ready()?;
         let Some(memory) = self.memory.clone() else {
             return Err(AppError::new(
                 ERR_MEMORY_DISABLED,
@@ -1534,6 +1552,7 @@ impl McpServer {
 
     async fn handle_memory_recall(&self, args: MemoryRecallArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+        self.ensure_index_ready()?;
         let Some(memory) = self.memory.clone() else {
             return Err(AppError::new(
                 ERR_MEMORY_DISABLED,
@@ -1639,6 +1658,41 @@ impl McpServer {
         }
         Ok(())
     }
+
+    fn ensure_index_ready(&self) -> Result<()> {
+        match self.index_readiness {
+            IndexReadiness::Ready => Ok(()),
+            IndexReadiness::Missing => Err(self.index_readiness_error(IndexReadiness::Missing).into()),
+            IndexReadiness::Stale => Err(self.index_readiness_error(IndexReadiness::Stale).into()),
+        }
+    }
+
+    fn index_readiness_error(&self, readiness: IndexReadiness) -> AppError {
+        let state_dir = self.indexer.config().state_dir().display().to_string();
+        match readiness {
+            IndexReadiness::Missing => AppError::new(
+                ERR_MISSING_INDEX,
+                format!(
+                    "index not found at {}; run `docdexd index --repo <repo>` first",
+                    state_dir
+                ),
+            )
+            .with_details(json!({ "state_dir": state_dir })),
+            IndexReadiness::Stale => AppError::new(
+                ERR_STALE_INDEX,
+                "index is stale; run `docdex_index` to refresh",
+            )
+            .with_details(json!({ "state_dir": state_dir })),
+            IndexReadiness::Ready => AppError::new(ERR_INTERNAL_ERROR, "index readiness is ready"),
+        }
+    }
+}
+
+fn detect_index_readiness(state_dir: &Path) -> IndexReadiness {
+    if !state_dir.exists() {
+        return IndexReadiness::Missing;
+    }
+    IndexReadiness::Ready
 }
 
 fn is_lock_busy(err: &anyhow::Error) -> bool {

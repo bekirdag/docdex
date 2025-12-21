@@ -29,8 +29,18 @@ On failure, the MCP server returns a JSON-RPC error response:
 - `message` (string, required): short summary message (often mirrors `error.message`).
 - `reason` (string, optional): a more specific reason (typically an underlying error string).
 - `tool` (string, optional): tool name (for `tools/call` failures), e.g. `docdex_search`.
+<<<<<<< HEAD
 - `details` (object, optional): structured context (limits, fields, expected/got, etc). For repo move/rename/mismatch errors, `details` may include `normalizedPath`, `attemptedFingerprint`, `knownCanonicalPath`, and `recoverySteps` (often including `docdexd repo inspect` for diagnostics and `docdexd repo reassociate` for moved repos under shared state dirs). For index-state errors, `details` may include `stateDir`, `repoRoot`, `staleReason`, `indexLastUpdatedEpochMs`, `repoLastModifiedEpochMs`, `hint`, and `recoverySteps`.
 - `error` (object, required): the canonical envelope, containing the same fields as above (`code/message/reason/tool/details`).
+=======
+- `details` (object, optional): structured context (limits, fields, expected/got, etc). For repo move/rename/mismatch errors, `details` may include `normalizedPath`, `attemptedFingerprint`, `knownCanonicalPath`, and `recoverySteps` (often including `docdexd repo inspect` for diagnostics and `docdexd repo reassociate` for moved repos under shared state dirs).
+- `request_id` (string, required): per-request correlation id (random UUID).
+- `session_id` (string, required): MCP server session id (random UUID, stable for the MCP process lifetime).
+- `tracing` (object, required): tracing indicator for correlation; currently `{ "enabled": <bool> }`.
+- `error` (object, required): the canonical envelope, containing the same fields as above (`code/message/reason/tool/details/request_id/session_id/tracing`).
+
+Privacy note: correlation ids are randomly generated and do not encode user, repo, or host data.
+>>>>>>> mcoda/task/bck-05-us-06-t30
 
 Compatibility guidance for clients:
 
@@ -38,6 +48,7 @@ Compatibility guidance for clients:
 - Ignore unknown fields; new `details` keys may be added without breaking changes.
 - `error.data.error` is redundant; it exists for convenience where clients expect a nested `error` object.
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -80,6 +91,12 @@ Rate limiting/backoff responses include stable retry hint fields:
 - **MCP/CLI `backoff_required`**: retry hints appear under `error.data.details` (MCP) or `error.details` (CLI) using the same field names (`retry_after_ms`, `retry_at`, `limit_key`, `scope`).
 - **HTTP 429**: JSON error body uses `{ "error": { "code": "rate_limited", "message": "...", "retry_after_ms": <int>, "retry_at"?: <RFC3339>, "limit_key": <string>, "scope": <string> } }` and includes a `Retry-After` header.
 >>>>>>> mcoda/task/bck-05-us-09-t13
+=======
+Correlation metadata:
+
+- MCP tool results include `request_id`, `session_id`, and `tracing` at the top level of the JSON payload returned inside `result.content[0].text`.
+- `tracing.enabled` reflects whether the MCP server has tracing enabled at WARN level; when false, request/session ids are still generated but may not appear in logs.
+>>>>>>> mcoda/task/bck-05-us-06-t30
 
 ## Code taxonomy (machine-readable)
 

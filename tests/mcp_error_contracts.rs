@@ -995,6 +995,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     assert!(
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         envelope.get("message").and_then(|v| v.as_str()).is_some(),
         "rate-limit error envelope should include message"
     );
@@ -1021,11 +1022,38 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
             matches!(
                 k.as_str(),
 <<<<<<< HEAD
+=======
+        data_files
+            .get("request_id")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "request_id should be included for correlation"
+    );
+    assert!(
+        data_files
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "session_id should be included for correlation"
+    );
+    assert_eq!(
+        data_files
+            .get("tracing")
+            .and_then(|v| v.get("enabled"))
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert!(
+        data_files.keys().all(|k| {
+            matches!(
+                k.as_str(),
+>>>>>>> mcoda/task/bck-05-us-06-t30
                 "code"
                     | "retry_after_ms"
                     | "retry_at"
                     | "limit_key"
                     | "scope"
+<<<<<<< HEAD
                     | "resource_key"
                     | "limit_per_min"
                     | "limit_burst"
@@ -1033,6 +1061,11 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
 =======
                 "code" | "message" | "error" | "details"
 >>>>>>> mcoda/task/bck-05-us-06-t37
+=======
+                    | "request_id"
+                    | "session_id"
+                    | "tracing"
+>>>>>>> mcoda/task/bck-05-us-06-t30
             )
         }),
         "error.data should only include stable keys"

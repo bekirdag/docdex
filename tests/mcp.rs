@@ -320,6 +320,27 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
         Some("ok"),
         "docdex_index should return status ok"
     );
+    assert!(
+        index_body
+            .get("request_id")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "tool result should include request_id"
+    );
+    assert!(
+        index_body
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "tool result should include session_id"
+    );
+    assert_eq!(
+        index_body
+            .get("tracing")
+            .and_then(|v| v.get("enabled"))
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
 
     // search for the test term
     send_line(

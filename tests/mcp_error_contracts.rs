@@ -212,10 +212,38 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         "retry_after_ms must be an integer"
     );
     assert!(
+        data_files
+            .get("request_id")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "request_id should be included for correlation"
+    );
+    assert!(
+        data_files
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "session_id should be included for correlation"
+    );
+    assert_eq!(
+        data_files
+            .get("tracing")
+            .and_then(|v| v.get("enabled"))
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert!(
         data_files.keys().all(|k| {
             matches!(
                 k.as_str(),
-                "code" | "retry_after_ms" | "retry_at" | "limit_key" | "scope"
+                "code"
+                    | "retry_after_ms"
+                    | "retry_at"
+                    | "limit_key"
+                    | "scope"
+                    | "request_id"
+                    | "session_id"
+                    | "tracing"
             )
         }),
         "error.data should only include stable keys"

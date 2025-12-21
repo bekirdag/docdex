@@ -21,6 +21,8 @@ use tantivy::directory::error::LockError;
 use tantivy::TantivyError;
 use thiserror::Error;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tracing::{info, warn};
+use uuid::Uuid;
 
 const JSONRPC_VERSION: &str = "2.0";
 const ERR_PARSE: i32 = -32700;
@@ -73,12 +75,32 @@ struct MissingSymbolsIndexError {
     rel_path: String,
 }
 
+#[derive(Clone, Debug)]
+struct McpTraceContext {
+    request_id: String,
+    session_id: String,
+    tracing_enabled: bool,
+}
+
+fn insert_trace_fields(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    trace: &McpTraceContext,
+) {
+    map.entry("request_id".to_string())
+        .or_insert_with(|| json!(trace.request_id.as_str()));
+    map.entry("session_id".to_string())
+        .or_insert_with(|| json!(trace.session_id.as_str()));
+    map.entry("tracing".to_string())
+        .or_insert_with(|| json!({ "enabled": trace.tracing_enabled }));
+}
+
 fn mcp_error_data(
     code: &'static str,
     message: String,
     reason: Option<String>,
     tool: Option<&str>,
     details: Option<serde_json::Value>,
+    trace: Option<&McpTraceContext>,
 ) -> serde_json::Value {
     let message = truncate_bytes(message, MAX_ERROR_MESSAGE_BYTES);
     let message_for_data = message.clone();
@@ -93,6 +115,9 @@ fn mcp_error_data(
     }
     if let Some(details) = details.clone() {
         envelope_error.insert("details".to_string(), details);
+    }
+    if let Some(trace) = trace {
+        insert_trace_fields(&mut envelope_error, trace);
     }
     let envelope_error_value = serde_json::Value::Object(envelope_error);
 
@@ -109,10 +134,13 @@ fn mcp_error_data(
     if let Some(details) = details {
         data.insert("details".to_string(), details);
     }
+    if let Some(trace) = trace {
+        insert_trace_fields(&mut data, trace);
+    }
     serde_json::Value::Object(data)
 }
 
-fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
+fn mcp_rate_limited_data(err: &RateLimited, trace: Option<&McpTraceContext>) -> serde_json::Value {
     #[derive(Serialize)]
     struct RateLimitData<'a> {
         code: &'static str,
@@ -123,14 +151,18 @@ fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
         scope: &'a str,
     }
 
-    serde_json::to_value(RateLimitData {
+    let mut data = serde_json::to_value(RateLimitData {
         code: ERR_RATE_LIMITED,
         retry_after_ms: err.retry_after_ms,
         retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
         limit_key: &err.limit_key,
         scope: &err.scope,
     })
-    .expect("rate-limit data should serialize")
+    .expect("rate-limit data should serialize");
+    if let (Some(trace), Some(obj)) = (trace, data.as_object_mut()) {
+        insert_trace_fields(obj, trace);
+    }
+    data
 }
 
 fn truncate_bytes(input: String, max_bytes: usize) -> String {
@@ -153,26 +185,29 @@ fn rpc_error(
     reason: Option<String>,
     tool: Option<&str>,
     details: Option<serde_json::Value>,
+    trace: Option<&McpTraceContext>,
 ) -> RpcError {
     let message = truncate_bytes(message.into(), MAX_ERROR_MESSAGE_BYTES);
     RpcError {
         code: rpc_code,
         message: message.clone(),
-        data: Some(mcp_error_data(mcp_code, message, reason, tool, details)),
+        data: Some(mcp_error_data(
+            mcp_code, message, reason, tool, details, trace,
+        )),
     }
 }
 
-fn rpc_rate_limited(err: &RateLimited) -> RpcError {
+fn rpc_rate_limited(err: &RateLimited, trace: Option<&McpTraceContext>) -> RpcError {
     RpcError {
         code: ERR_RATE_LIMITED_RPC,
         message: truncate_bytes(err.message.clone(), MAX_ERROR_MESSAGE_BYTES),
-        data: Some(mcp_rate_limited_data(err)),
+        data: Some(mcp_rate_limited_data(err, trace)),
     }
 }
 
-fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
+fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>, trace: Option<&McpTraceContext>) -> RpcError {
     if let Some(rate) = err.downcast_ref::<RateLimited>() {
-        return rpc_rate_limited(rate);
+        return rpc_rate_limited(rate, trace);
     }
     let (mcp_code, details) = classify_tool_error(err);
     rpc_error(
@@ -182,6 +217,7 @@ fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
         Some(err.to_string()),
         tool,
         details,
+        trace,
     )
 }
 
@@ -496,6 +532,7 @@ pub async fn serve(
         default_project_root: None,
         memory,
         tool_rate_limit,
+        session_id: Uuid::new_v4().to_string(),
     };
     server.run().await
 }
@@ -514,9 +551,18 @@ struct McpServer {
     default_project_root: Option<PathBuf>,
     memory: Option<McpMemoryState>,
     tool_rate_limit: Option<RateLimiter<()>>,
+    session_id: String,
 }
 
 impl McpServer {
+    fn new_trace(&self) -> McpTraceContext {
+        McpTraceContext {
+            request_id: Uuid::new_v4().to_string(),
+            session_id: self.session_id.clone(),
+            tracing_enabled: tracing::enabled!(tracing::Level::WARN),
+        }
+    }
+
     async fn run(&mut self) -> Result<()> {
         let stdin = io::stdin();
         let stdout = io::stdout();
@@ -532,9 +578,18 @@ impl McpServer {
                     if trimmed.is_empty() {
                         continue;
                     }
+                    let trace = self.new_trace();
                     let req = match serde_json::from_str::<RpcRequest>(trimmed) {
                         Ok(req) => req,
                         Err(err) => {
+                            warn!(
+                                target: "docdexd_mcp",
+                                event = "parse_error",
+                                request_id = %trace.request_id,
+                                session_id = %trace.session_id,
+                                error = %err,
+                                "invalid JSON"
+                            );
                             let resp = RpcResponse {
                                 jsonrpc: JSONRPC_VERSION,
                                 id: serde_json::Value::Null,
@@ -546,6 +601,7 @@ impl McpServer {
                                     Some(err.to_string()),
                                     None,
                                     None,
+                                    Some(&trace),
                                 )),
                             };
                             write_response(&mut writer, &resp).await?;
@@ -553,11 +609,26 @@ impl McpServer {
                         }
                     };
                     if let Some(id) = req.id.as_ref() {
-                        eprintln!("docdex mcp: recv method={} id={}", req.method, id);
+                        info!(
+                            target: "docdexd_mcp",
+                            event = "recv",
+                            request_id = %trace.request_id,
+                            session_id = %trace.session_id,
+                            method = %req.method,
+                            jsonrpc_id = %id,
+                            "mcp request received"
+                        );
                     } else {
-                        eprintln!("docdex mcp: recv method={}", req.method);
+                        info!(
+                            target: "docdexd_mcp",
+                            event = "recv",
+                            request_id = %trace.request_id,
+                            session_id = %trace.session_id,
+                            method = %req.method,
+                            "mcp request received"
+                        );
                     }
-                    let resp_opt = match self.handle(req).await {
+                    let resp_opt = match self.handle(req, &trace).await {
                         Ok(resp) => resp,
                         Err(err) => Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,
@@ -570,10 +641,22 @@ impl McpServer {
                                 Some(err.to_string()),
                                 None,
                                 None,
+                                Some(&trace),
                             )),
                         }),
                     };
                     if let Some(resp) = resp_opt {
+                        if let Some(error) = resp.error.as_ref() {
+                            warn!(
+                                target: "docdexd_mcp",
+                                event = "error_response",
+                                request_id = %trace.request_id,
+                                session_id = %trace.session_id,
+                                rpc_code = error.code,
+                                message = %error.message,
+                                "mcp error response"
+                            );
+                        }
                         write_response(&mut writer, &resp).await?;
                     }
                 }
@@ -591,11 +674,20 @@ impl McpServer {
         Ok(())
     }
 
-    async fn handle(&mut self, req: RpcRequest) -> Result<Option<RpcResponse>> {
+    async fn handle(
+        &mut self,
+        req: RpcRequest,
+        trace: &McpTraceContext,
+    ) -> Result<Option<RpcResponse>> {
         // Notifications (no id) do not expect a response.
         if req.id.is_none() {
             if req.method == "notifications/initialized" {
-                eprintln!("docdex mcp: client initialized");
+                info!(
+                    target: "docdexd_mcp",
+                    event = "client_initialized",
+                    session_id = %trace.session_id,
+                    "mcp client initialized"
+                );
             }
             return Ok(None);
         }
@@ -614,6 +706,7 @@ impl McpServer {
                         None,
                         None,
                         Some(json!({ "expected": JSONRPC_VERSION })),
+                        Some(trace),
                     )),
                 }));
             }
@@ -645,6 +738,7 @@ impl McpServer {
                                             "expected": self.repo_root.display().to_string(),
                                             "got": canon.display().to_string()
                                         })),
+                                        Some(trace),
                                     )),
                                 }));
                             }
@@ -662,6 +756,7 @@ impl McpServer {
                                 Some(err.to_string()),
                                 None,
                                 None,
+                                Some(trace),
                             )),
                             }));
                         }
@@ -735,6 +830,7 @@ impl McpServer {
                                 Some(err.to_string()),
                                 None,
                                 Some(json!({ "validation": "serde", "method": "resources/read" })),
+                                Some(trace),
                             )),
                         }))
                     }
@@ -750,7 +846,7 @@ impl McpServer {
                         jsonrpc: JSONRPC_VERSION,
                         id: id.clone(),
                         result: None,
-                        error: Some(rpc_tool_error(&err, None)),
+                        error: Some(rpc_tool_error(&err, None, Some(trace))),
                     })),
                 }
             }
@@ -771,6 +867,7 @@ impl McpServer {
                                 Some(err.to_string()),
                                 None,
                                 Some(json!({ "validation": "serde", "method": "tools/call" })),
+                                Some(trace),
                             )),
                         }))
                     }
@@ -781,7 +878,7 @@ impl McpServer {
                             jsonrpc: JSONRPC_VERSION,
                             id: id.clone(),
                             result: None,
-                            error: Some(rpc_rate_limited(&err)),
+                            error: Some(rpc_rate_limited(&err, Some(trace))),
                         }));
                     }
                 }
@@ -803,6 +900,7 @@ impl McpServer {
                                         Some(err.to_string()),
                                         Some("docdex_search"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_search" })),
+                                        Some(trace),
                                     )),
                                 }))
                             }
@@ -814,7 +912,7 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_tool_error(&err, Some("docdex_search"))),
+                                    error: Some(rpc_tool_error(&err, Some("docdex_search"), Some(trace))),
                                 }))
                             }
                         }
@@ -836,6 +934,7 @@ impl McpServer {
                                         Some(err.to_string()),
                                         Some("docdex_index"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_index" })),
+                                        Some(trace),
                                     )),
                                 }))
                             }
@@ -847,7 +946,7 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_tool_error(&err, Some("docdex_index"))),
+                                    error: Some(rpc_tool_error(&err, Some("docdex_index"), Some(trace))),
                                 }))
                             }
                         }
@@ -869,6 +968,7 @@ impl McpServer {
                                         Some(err.to_string()),
                                         Some("docdex_files"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_files" })),
+                                        Some(trace),
                                     )),
                                 }))
                             }
@@ -880,7 +980,7 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_tool_error(&err, Some("docdex_files"))),
+                                    error: Some(rpc_tool_error(&err, Some("docdex_files"), Some(trace))),
                                 }))
                             }
                         }
@@ -902,6 +1002,7 @@ impl McpServer {
                                         Some(err.to_string()),
                                         Some("docdex_open"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_open" })),
+                                        Some(trace),
                                     )),
                                 }))
                             }
@@ -913,7 +1014,7 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_tool_error(&err, Some("docdex_open"))),
+                                    error: Some(rpc_tool_error(&err, Some("docdex_open"), Some(trace))),
                                 }))
                             }
                         }
@@ -935,6 +1036,7 @@ impl McpServer {
                                         Some(err.to_string()),
                                         Some("docdex_stats"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_stats" })),
+                                        Some(trace),
                                     )),
                                 }))
                             }
@@ -946,7 +1048,7 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_tool_error(&err, Some("docdex_stats"))),
+                                    error: Some(rpc_tool_error(&err, Some("docdex_stats"), Some(trace))),
                                 }))
                             }
                         }
@@ -968,6 +1070,7 @@ impl McpServer {
                                         Some(err.to_string()),
                                         Some("docdex_repo_inspect"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_repo_inspect" })),
+                                        Some(trace),
                                     )),
                                 }))
                             }
@@ -979,7 +1082,7 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_tool_error(&err, Some("docdex_repo_inspect"))),
+                                    error: Some(rpc_tool_error(&err, Some("docdex_repo_inspect"), Some(trace))),
                                 }))
                             }
                         }
@@ -1001,6 +1104,7 @@ impl McpServer {
                                         Some(err.to_string()),
                                         Some("docdex_symbols"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_symbols" })),
+                                        Some(trace),
                                     )),
                                 }))
                             }
@@ -1012,7 +1116,7 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_tool_error(&err, Some("docdex_symbols"))),
+                                    error: Some(rpc_tool_error(&err, Some("docdex_symbols"), Some(trace))),
                                 }))
                             }
                         }
@@ -1034,6 +1138,7 @@ impl McpServer {
                                         Some(err.to_string()),
                                         Some("docdex_memory_store"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_memory_store" })),
+                                        Some(trace),
                                     )),
                                 }))
                             }
@@ -1045,7 +1150,7 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_tool_error(&err, Some("docdex_memory_store"))),
+                                    error: Some(rpc_tool_error(&err, Some("docdex_memory_store"), Some(trace))),
                                 }))
                             }
                         }
@@ -1067,6 +1172,7 @@ impl McpServer {
                                         Some(err.to_string()),
                                         Some("docdex_memory_recall"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_memory_recall" })),
+                                        Some(trace),
                                     )),
                                 }))
                             }
@@ -1078,7 +1184,7 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_tool_error(&err, Some("docdex_memory_recall"))),
+                                    error: Some(rpc_tool_error(&err, Some("docdex_memory_recall"), Some(trace))),
                                 }))
                             }
                         }
@@ -1107,12 +1213,14 @@ impl McpServer {
                                     "docdex_memory_recall"
                                     ]
                                 })),
+                                Some(trace),
                             )),
                         }));
                     }
                 };
-                let content =
-                    serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
+                let result_with_trace = attach_trace_to_value(result, trace);
+                let content = serde_json::to_string_pretty(&result_with_trace)
+                    .unwrap_or_else(|_| result_with_trace.to_string());
                 Ok(Some(RpcResponse {
                     jsonrpc: JSONRPC_VERSION,
                     id: id.clone(),
@@ -1136,6 +1244,7 @@ impl McpServer {
                     None,
                     None,
                     None,
+                    Some(trace),
                 )),
             })),
         }
@@ -1682,6 +1791,21 @@ fn normalize_rel_path(input: &str) -> Option<PathBuf> {
     }
 }
 
+fn attach_trace_to_value(value: serde_json::Value, trace: &McpTraceContext) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(mut map) => {
+            insert_trace_fields(&mut map, trace);
+            serde_json::Value::Object(map)
+        }
+        other => {
+            let mut map = serde_json::Map::new();
+            map.insert("value".to_string(), other);
+            insert_trace_fields(&mut map, trace);
+            serde_json::Value::Object(map)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1691,10 +1815,19 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    fn test_trace() -> McpTraceContext {
+        McpTraceContext {
+            request_id: "test-request".to_string(),
+            session_id: "test-session".to_string(),
+            tracing_enabled: true,
+        }
+    }
+
     #[test]
     fn rate_limited_rpc_has_stable_data_shape() {
         let err = RateLimited::new(Duration::from_millis(0), "mcp_tools".to_string(), "global".to_string());
-        let rpc = rpc_rate_limited(&err);
+        let trace = test_trace();
+        let rpc = rpc_rate_limited(&err, Some(&trace));
         assert_eq!(rpc.code, ERR_RATE_LIMITED_RPC);
         let data = rpc.data.expect("rate limited rpc should include data");
         let obj = data.as_object().expect("rate limited data should be object");
@@ -1703,6 +1836,20 @@ mod tests {
         assert_eq!(obj.get("limit_key").and_then(|v| v.as_str()), Some("mcp_tools"));
         assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
         assert!(obj.get("retry_at").is_none(), "retry_at should be omitted when unset");
+        assert_eq!(
+            obj.get("request_id").and_then(|v| v.as_str()),
+            Some("test-request")
+        );
+        assert_eq!(
+            obj.get("session_id").and_then(|v| v.as_str()),
+            Some("test-session")
+        );
+        assert_eq!(
+            obj.get("tracing")
+                .and_then(|v| v.get("enabled"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
     }
 
     #[test]
@@ -1710,7 +1857,8 @@ mod tests {
         let err = RateLimited::new(Duration::from_millis(1234), "bucket".to_string(), "global".to_string())
             .with_message("x".repeat(10_000))
             .with_retry_at(Utc::now());
-        let rpc = rpc_rate_limited(&err);
+        let trace = test_trace();
+        let rpc = rpc_rate_limited(&err, Some(&trace));
         assert!(
             rpc.message.len() <= MAX_ERROR_MESSAGE_BYTES + "…".len(),
             "rpc error message should be bounded"
@@ -1744,7 +1892,8 @@ mod tests {
                 Ok(()) => {}
                 Err(err) => {
                     rate_limited_count += 1;
-                    let rpc = rpc_rate_limited(&err);
+                    let trace = test_trace();
+                    let rpc = rpc_rate_limited(&err, Some(&trace));
                     assert_eq!(rpc.code, ERR_RATE_LIMITED_RPC);
                     assert!(
                         rpc.message.len() <= MAX_ERROR_MESSAGE_BYTES + "…".len(),

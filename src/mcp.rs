@@ -6,6 +6,7 @@ use crate::error::{
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
 <<<<<<< HEAD
@@ -71,6 +72,15 @@ use crate::error::{
     ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_CAPACITY_EXCEEDED, ERR_REPO_STATE_MISMATCH,
     ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
 >>>>>>> mcoda/task/bck-05-us-07-t05
+=======
+    default_message_for_code, repo_resolution_details, AppError, RateLimited, ERR_BACKOFF_REQUIRED,
+    ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR,
+    ERR_INVALID_ARGUMENT, ERR_INVALID_PARAMS, ERR_INVALID_PATH, ERR_INVALID_QUERY, ERR_INVALID_RANGE,
+    ERR_INVALID_REQUEST, ERR_MAX_CONTENT_EXCEEDED, ERR_MEMORY_DISABLED, ERR_METHOD_NOT_FOUND,
+    ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
+    ERR_MISSING_REPO_PATH, ERR_PARSE_ERROR, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH,
+    ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
+>>>>>>> mcoda/task/bck-05-us-07-t33
 };
 <<<<<<< HEAD
 use crate::explainability::ExplainabilityStore;
@@ -146,9 +156,9 @@ use uuid::Uuid;
 
 const JSONRPC_VERSION: &str = "2.0";
 const ERR_PARSE: i32 = -32700;
-const ERR_INVALID_REQUEST: i32 = -32600;
-const ERR_METHOD_NOT_FOUND: i32 = -32601;
-const ERR_INVALID_PARAMS: i32 = -32602;
+const RPC_ERR_INVALID_REQUEST: i32 = -32600;
+const RPC_ERR_METHOD_NOT_FOUND: i32 = -32601;
+const RPC_ERR_INVALID_PARAMS: i32 = -32602;
 const ERR_INTERNAL: i32 = -32000;
 <<<<<<< HEAD
 const ERR_RATE_LIMITED_RPC: i32 = -32029;
@@ -842,7 +852,7 @@ fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
     }
     let (mcp_code, details) = classify_tool_error(err);
     rpc_error(
-        ERR_INVALID_PARAMS,
+        RPC_ERR_INVALID_PARAMS,
         default_message_for_code(mcp_code),
         mcp_code,
         Some(err.to_string()),
@@ -851,6 +861,7 @@ fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
     )
 }
 
+<<<<<<< HEAD
 fn default_message_for_code(code: &str) -> &'static str {
     match code {
         "invalid_request" => "invalid request",
@@ -970,6 +981,8 @@ fn stale_index_error(
     ))
 }
 
+=======
+>>>>>>> mcoda/task/bck-05-us-07-t33
 fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
     if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
         return (backoff.code, Some(mcp_backoff_required_data(backoff)));
@@ -1002,15 +1015,15 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
     }
     if let Some(search_err) = err.downcast_ref::<crate::index::SearchError>() {
         match search_err {
-            crate::index::SearchError::InvalidQuery { .. } => return ("invalid_query", None),
+            crate::index::SearchError::InvalidQuery { .. } => return (ERR_INVALID_QUERY, None),
         }
     }
     if err.downcast_ref::<InvalidPathError>().is_some() {
-        return ("invalid_path", None);
+        return (ERR_INVALID_PATH, None);
     }
     if let Some(range) = err.downcast_ref::<InvalidRangeError>() {
         return (
-            "invalid_range",
+            ERR_INVALID_RANGE,
             Some(json!({
                 "start_line": range.start_line,
                 "end_line": range.end_line,
@@ -1019,12 +1032,24 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
         );
     }
     if err.downcast_ref::<PathOutsideRepoError>().is_some() {
-        return ("invalid_path", Some(json!({ "kind": "outside_repo" })));
+        return (ERR_INVALID_PATH, Some(json!({ "kind": "outside_repo" })));
     }
     if err.downcast_ref::<InvalidUriError>().is_some() {
-        return ("invalid_params", Some(json!({ "kind": "invalid_uri" })));
+        return (ERR_INVALID_PARAMS, Some(json!({ "kind": "invalid_uri" })));
     }
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+    if let Some(max_err) = err.downcast_ref::<MaxContentError>() {
+        return (
+            ERR_MAX_CONTENT_EXCEEDED,
+            Some(json!({
+                "max_bytes": max_err.max_bytes,
+                "actual_bytes": max_err.actual_bytes,
+            })),
+        );
+    }
+>>>>>>> mcoda/task/bck-05-us-07-t33
     if err.downcast_ref::<MissingSymbolsDependencyError>().is_some() {
         return (
             ERR_MISSING_DEPENDENCY,
@@ -1576,7 +1601,7 @@ impl McpServer {
                                 error: Some(rpc_error(
                                     ERR_PARSE,
                                     format!("invalid JSON: {err}"),
-                                    "parse_error",
+                                    ERR_PARSE_ERROR,
                                     Some(err.to_string()),
                                     None,
                                     None,
@@ -1600,7 +1625,7 @@ impl McpServer {
                             error: Some(rpc_error(
                                 ERR_INTERNAL,
                                 "internal error",
-                                "internal_error",
+                                ERR_INTERNAL_ERROR,
                                 Some(err.to_string()),
                                 None,
                                 None,
@@ -1642,9 +1667,9 @@ impl McpServer {
                     id: id.clone(),
                     result: None,
                     error: Some(rpc_error(
-                        ERR_INVALID_REQUEST,
+                        RPC_ERR_INVALID_REQUEST,
                         format!("unsupported jsonrpc version: {version}"),
-                        "invalid_request",
+                        ERR_INVALID_REQUEST,
                         None,
                         None,
                         Some(json!({ "expected": JSONRPC_VERSION })),
@@ -1669,6 +1694,27 @@ impl McpServer {
                         RepoSurface::Mcp,
                     ) {
                         Ok(canon) => {
+<<<<<<< HEAD
+=======
+                            if canon != self.repo_root {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        RPC_ERR_INVALID_REQUEST,
+                                        default_message_for_code(ERR_UNKNOWN_REPO),
+                                        ERR_UNKNOWN_REPO,
+                                        None,
+                                        None,
+                                        Some(json!({
+                                            "expected": self.repo_root.display().to_string(),
+                                            "got": canon.display().to_string()
+                                        })),
+                                    )),
+                                }));
+                            }
+>>>>>>> mcoda/task/bck-05-us-07-t33
                             self.default_project_root = Some(canon);
                         }
 =======
@@ -1680,6 +1726,7 @@ impl McpServer {
                                 jsonrpc: JSONRPC_VERSION,
                                 id: id.clone(),
                                 result: None,
+<<<<<<< HEAD
                                 error: Some(rpc_error(
                                     ERR_INVALID_REQUEST,
 <<<<<<< HEAD
@@ -1696,6 +1743,16 @@ impl McpServer {
                                     None,
 >>>>>>> mcoda/task/bck-05-us-07-t31
                                 )),
+=======
+                            error: Some(rpc_error(
+                                RPC_ERR_INVALID_REQUEST,
+                                default_message_for_code(ERR_INVALID_REQUEST),
+                                ERR_INVALID_REQUEST,
+                                Some(err.to_string()),
+                                None,
+                                None,
+                            )),
+>>>>>>> mcoda/task/bck-05-us-07-t33
                             }));
                         }
                     };
@@ -1792,7 +1849,18 @@ impl McpServer {
                             jsonrpc: JSONRPC_VERSION,
                             id: id.clone(),
                             result: None,
+<<<<<<< HEAD
                             error: Some(rpc_invalid_params_for_method("resources/read", err)),
+=======
+                            error: Some(rpc_error(
+                                RPC_ERR_INVALID_PARAMS,
+                                default_message_for_code(ERR_INVALID_PARAMS),
+                                ERR_INVALID_PARAMS,
+                                Some(err.to_string()),
+                                None,
+                                Some(json!({ "validation": "serde", "method": "resources/read" })),
+                            )),
+>>>>>>> mcoda/task/bck-05-us-07-t33
                         }))
                     }
                 };
@@ -1829,7 +1897,18 @@ impl McpServer {
                             jsonrpc: JSONRPC_VERSION,
                             id: id.clone(),
                             result: None,
+<<<<<<< HEAD
                             error: Some(rpc_invalid_params_for_method("tools/call", err)),
+=======
+                            error: Some(rpc_error(
+                                RPC_ERR_INVALID_PARAMS,
+                                default_message_for_code(ERR_INVALID_PARAMS),
+                                ERR_INVALID_PARAMS,
+                                Some(err.to_string()),
+                                None,
+                                Some(json!({ "validation": "serde", "method": "tools/call" })),
+                            )),
+>>>>>>> mcoda/task/bck-05-us-07-t33
                         }))
                     }
                 };
@@ -1888,7 +1967,18 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_invalid_params_for_tool("docdex_search", err)),
+=======
+                                    error: Some(rpc_error(
+                                        RPC_ERR_INVALID_PARAMS,
+                                        default_message_for_code(ERR_INVALID_PARAMS),
+                                        ERR_INVALID_PARAMS,
+                                        Some(err.to_string()),
+                                        Some("docdex_search"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_search" })),
+                                    )),
+>>>>>>> mcoda/task/bck-05-us-07-t33
                                 }))
                             }
                         };
@@ -1919,9 +2009,9 @@ impl McpServer {
                                     id: id.clone(),
                                     result: None,
                                     error: Some(rpc_error(
+                                        RPC_ERR_INVALID_PARAMS,
+                                        default_message_for_code(ERR_INVALID_PARAMS),
                                         ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_web_research"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_web_research" })),
@@ -2011,7 +2101,18 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_invalid_params_for_tool("docdex_files", err)),
+=======
+                                    error: Some(rpc_error(
+                                        RPC_ERR_INVALID_PARAMS,
+                                        default_message_for_code(ERR_INVALID_PARAMS),
+                                        ERR_INVALID_PARAMS,
+                                        Some(err.to_string()),
+                                        Some("docdex_files"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_files" })),
+                                    )),
+>>>>>>> mcoda/task/bck-05-us-07-t33
                                 }))
                             }
                         };
@@ -2037,7 +2138,18 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_invalid_params_for_tool("docdex_open", err)),
+=======
+                                    error: Some(rpc_error(
+                                        RPC_ERR_INVALID_PARAMS,
+                                        default_message_for_code(ERR_INVALID_PARAMS),
+                                        ERR_INVALID_PARAMS,
+                                        Some(err.to_string()),
+                                        Some("docdex_open"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_open" })),
+                                    )),
+>>>>>>> mcoda/task/bck-05-us-07-t33
                                 }))
                             }
                         };
@@ -2063,7 +2175,18 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_invalid_params_for_tool("docdex_stats", err)),
+=======
+                                    error: Some(rpc_error(
+                                        RPC_ERR_INVALID_PARAMS,
+                                        default_message_for_code(ERR_INVALID_PARAMS),
+                                        ERR_INVALID_PARAMS,
+                                        Some(err.to_string()),
+                                        Some("docdex_stats"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_stats" })),
+                                    )),
+>>>>>>> mcoda/task/bck-05-us-07-t33
                                 }))
                             }
                         };
@@ -2089,9 +2212,19 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_invalid_params_for_tool(
                                         "docdex_repo_inspect",
                                         err,
+=======
+                                    error: Some(rpc_error(
+                                        RPC_ERR_INVALID_PARAMS,
+                                        default_message_for_code(ERR_INVALID_PARAMS),
+                                        ERR_INVALID_PARAMS,
+                                        Some(err.to_string()),
+                                        Some("docdex_repo_inspect"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_repo_inspect" })),
+>>>>>>> mcoda/task/bck-05-us-07-t33
                                     )),
                                 }))
                             }
@@ -2118,7 +2251,18 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_invalid_params_for_tool("docdex_symbols", err)),
+=======
+                                    error: Some(rpc_error(
+                                        RPC_ERR_INVALID_PARAMS,
+                                        default_message_for_code(ERR_INVALID_PARAMS),
+                                        ERR_INVALID_PARAMS,
+                                        Some(err.to_string()),
+                                        Some("docdex_symbols"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_symbols" })),
+                                    )),
+>>>>>>> mcoda/task/bck-05-us-07-t33
                                 }))
                             }
                         };
@@ -2144,9 +2288,19 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_invalid_params_for_tool(
                                         "docdex_memory_store",
                                         err,
+=======
+                                    error: Some(rpc_error(
+                                        RPC_ERR_INVALID_PARAMS,
+                                        default_message_for_code(ERR_INVALID_PARAMS),
+                                        ERR_INVALID_PARAMS,
+                                        Some(err.to_string()),
+                                        Some("docdex_memory_store"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_memory_store" })),
+>>>>>>> mcoda/task/bck-05-us-07-t33
                                     )),
                                 }))
                             }
@@ -2173,9 +2327,19 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_invalid_params_for_tool(
                                         "docdex_memory_recall",
                                         err,
+=======
+                                    error: Some(rpc_error(
+                                        RPC_ERR_INVALID_PARAMS,
+                                        default_message_for_code(ERR_INVALID_PARAMS),
+                                        ERR_INVALID_PARAMS,
+                                        Some(err.to_string()),
+                                        Some("docdex_memory_recall"),
+                                        Some(json!({ "validation": "serde", "tool": "docdex_memory_recall" })),
+>>>>>>> mcoda/task/bck-05-us-07-t33
                                     )),
                                 }))
                             }
@@ -2231,9 +2395,9 @@ impl McpServer {
                             id: id.clone(),
                             result: None,
                             error: Some(rpc_error(
-                                ERR_METHOD_NOT_FOUND,
+                                RPC_ERR_METHOD_NOT_FOUND,
                                 format!("unknown tool: {other}"),
-                                "method_not_found",
+                                ERR_METHOD_NOT_FOUND,
                                 None,
                                 None,
                                 Some(json!({
@@ -2281,9 +2445,9 @@ impl McpServer {
                 id: id.clone(),
                 result: None,
                 error: Some(rpc_error(
-                    ERR_METHOD_NOT_FOUND,
+                    RPC_ERR_METHOD_NOT_FOUND,
                     format!("unknown method: {other}"),
-                    "method_not_found",
+                    ERR_METHOD_NOT_FOUND,
                     None,
                     None,
                     None,

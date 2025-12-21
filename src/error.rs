@@ -26,6 +26,16 @@ use serde_json::{json, Value};
 >>>>>>> mcoda/task/bck-05-us-09-t37
 use thiserror::Error;
 
+// Canonical error codes shared across MCP, HTTP, and CLI envelopes.
+pub const ERR_PARSE_ERROR: &str = "parse_error";
+pub const ERR_INVALID_REQUEST: &str = "invalid_request";
+pub const ERR_METHOD_NOT_FOUND: &str = "method_not_found";
+pub const ERR_INVALID_PARAMS: &str = "invalid_params";
+pub const ERR_MISSING_QUERY: &str = "missing_query";
+pub const ERR_INVALID_QUERY: &str = "invalid_query";
+pub const ERR_INVALID_PATH: &str = "invalid_path";
+pub const ERR_INVALID_RANGE: &str = "invalid_range";
+pub const ERR_MAX_CONTENT_EXCEEDED: &str = "max_content_exceeded";
 pub const ERR_EMBEDDING_TIMEOUT: &str = "embedding_timeout";
 pub const ERR_EMBEDDING_MODEL_NOT_FOUND: &str = "embedding_model_not_found";
 pub const ERR_EMBEDDING_FAILED: &str = "embedding_failed";
@@ -49,8 +59,12 @@ pub const ERR_RATE_LIMITED: &str = "rate_limited";
 pub const ERR_BACKOFF_REQUIRED: &str = "backoff_required";
 pub const ERR_REPO_STATE_MISMATCH: &str = "repo_state_mismatch";
 <<<<<<< HEAD
+<<<<<<< HEAD
 pub const ERR_INDEX_MIGRATION_REQUIRED: &str = "index_migration_required";
 pub const ERR_INDEX_SCHEMA_UNSUPPORTED: &str = "index_schema_unsupported";
+=======
+pub const ERR_TIER2_UNAVAILABLE: &str = "tier2_unavailable";
+>>>>>>> mcoda/task/bck-05-us-07-t33
 pub const ERR_INTERNAL_ERROR: &str = "internal_error";
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -170,6 +184,7 @@ impl AppError {
     }
 }
 
+<<<<<<< HEAD
 #[derive(Debug, Clone, Serialize)]
 <<<<<<< HEAD
 #[serde(rename_all = "snake_case")]
@@ -259,6 +274,36 @@ impl UserWarning {
         self
     }
 >>>>>>> mcoda/task/bck-05-us-07-t05
+=======
+pub fn default_message_for_code(code: &str) -> &'static str {
+    match code {
+        ERR_PARSE_ERROR => "parse error",
+        ERR_INVALID_REQUEST => "invalid request",
+        ERR_METHOD_NOT_FOUND => "method not found",
+        ERR_INVALID_PARAMS => "invalid parameters",
+        ERR_MISSING_QUERY => "missing query",
+        ERR_INVALID_QUERY => "invalid query",
+        ERR_INVALID_PATH => "invalid path",
+        ERR_INVALID_RANGE => "invalid range",
+        ERR_MAX_CONTENT_EXCEEDED => "content too large",
+        ERR_EMBEDDING_TIMEOUT => "embedding timeout",
+        ERR_EMBEDDING_MODEL_NOT_FOUND => "embedding model not found",
+        ERR_EMBEDDING_FAILED => "embedding failed",
+        ERR_MISSING_REPO => "missing repo",
+        ERR_MISSING_REPO_PATH => "repo path not found",
+        ERR_UNKNOWN_REPO => "unknown repo",
+        ERR_MISSING_INDEX => "missing index",
+        ERR_STALE_INDEX => "stale index",
+        ERR_MISSING_DEPENDENCY => "missing dependency",
+        ERR_RATE_LIMITED => "rate limited",
+        ERR_BACKOFF_REQUIRED => "backoff required",
+        ERR_REPO_STATE_MISMATCH => "repo state mismatch",
+        ERR_TIER2_UNAVAILABLE => "tier 2 unavailable",
+        ERR_INTERNAL_ERROR => "internal error",
+        ERR_INVALID_ARGUMENT => "invalid argument",
+        _ => "error",
+    }
+>>>>>>> mcoda/task/bck-05-us-07-t33
 }
 
 pub fn repo_resolution_details(
@@ -282,6 +327,7 @@ pub fn repo_resolution_details(
     Value::Object(details)
 }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 fn truncate_bytes_ascii(input: &str, max_bytes: usize) -> String {
     if input.len() <= max_bytes {
@@ -390,6 +436,36 @@ pub fn repo_thrashing_warning(
     )
     .with_details(Value::Object(details))
 >>>>>>> mcoda/task/bck-05-us-07-t05
+=======
+pub fn startup_error_payload(startup: &StartupError) -> Value {
+    let mut body = serde_json::Map::new();
+    body.insert("code".to_string(), Value::String(startup.code.to_string()));
+    body.insert("message".to_string(), Value::String(startup.message.clone()));
+    if let Some(hint) = startup.hint.as_ref() {
+        body.insert("hint".to_string(), Value::String(hint.clone()));
+    }
+    if let Some(steps) = startup.remediation.as_ref() {
+        body.insert(
+            "remediation".to_string(),
+            Value::Array(steps.iter().cloned().map(Value::String).collect()),
+        );
+    }
+    let mut root = serde_json::Map::new();
+    root.insert("error".to_string(), Value::Object(body));
+    Value::Object(root)
+}
+
+pub fn app_error_payload(app: &AppError) -> Value {
+    let mut body = serde_json::Map::new();
+    body.insert("code".to_string(), Value::String(app.code.to_string()));
+    body.insert("message".to_string(), Value::String(app.message.clone()));
+    if let Some(details) = app.details.as_ref() {
+        body.insert("details".to_string(), details.clone());
+    }
+    let mut root = serde_json::Map::new();
+    root.insert("error".to_string(), Value::Object(body));
+    Value::Object(root)
+>>>>>>> mcoda/task/bck-05-us-07-t33
 }
 
 #[derive(Debug, Clone, Error)]

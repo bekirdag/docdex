@@ -10,6 +10,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::browser_session::BrowserSessionError;
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 use crate::error::BackoffRequired;
 =======
 use crate::error::ERR_TIER2_UNAVAILABLE;
@@ -17,9 +18,13 @@ use crate::error::ERR_TIER2_UNAVAILABLE;
 =======
 use crate::error::RateLimited;
 >>>>>>> mcoda/task/bck-05-us-09-t19
+=======
+pub use crate::error::ERR_TIER2_UNAVAILABLE;
+>>>>>>> mcoda/task/bck-05-us-07-t33
 use crate::metrics;
 use crate::waterfall_trace::{WaterfallGateInput, WaterfallOutcome, WaterfallTier, WaterfallTrace};
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 pub const ERR_TIER2_UNAVAILABLE: &str = "tier2_unavailable";
 <<<<<<< HEAD
@@ -44,6 +49,8 @@ const TRACE_REASON_TIER3_SKIPPED: &str = "tier3_skipped";
 
 =======
 >>>>>>> mcoda/task/bck-05-us-09-t21
+=======
+>>>>>>> mcoda/task/bck-05-us-07-t33
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Tier2UnavailableReason {

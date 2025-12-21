@@ -9,13 +9,16 @@ use crate::libs;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::ratelimit::RateLimiter;
+use crate::repo_identity::RepoInspectStatus;
 use crate::search;
 use crate::symbols::SymbolsStore;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tantivy::directory::error::LockError;
 use tantivy::TantivyError;
@@ -35,6 +38,7 @@ const FILES_MAX_OFFSET: usize = 50_000;
 const OPEN_MAX_BYTES: usize = 512 * 1024; // guard rail for returning file content
 const MAX_ERROR_MESSAGE_BYTES: usize = 256;
 const MAX_ERROR_REASON_BYTES: usize = 768;
+const DEFAULT_MAX_OPEN_REPOS: usize = 12;
 
 #[derive(Error, Debug)]
 #[error("path must be relative and not contain parent components")]

@@ -2,7 +2,8 @@ use crate::error::{
     AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
     repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
-    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
+    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_CAPACITY, ERR_REPO_STATE_MISMATCH,
+    ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
 };
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
@@ -201,6 +202,7 @@ fn default_message_for_code(code: &str) -> &'static str {
         ERR_MISSING_REPO => "missing repo",
         ERR_MISSING_REPO_PATH => "repo path not found",
         ERR_UNKNOWN_REPO => "unknown repo",
+        ERR_REPO_CAPACITY => "repo capacity exceeded",
         ERR_MISSING_INDEX => "missing index",
         ERR_STALE_INDEX => "stale index",
         ERR_MISSING_DEPENDENCY => "missing dependency",

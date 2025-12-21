@@ -46,11 +46,15 @@ impl McpHarness {
 =======
     fn spawn(repo: &Path) -> Result<Self, Box<dyn Error>> {
 <<<<<<< HEAD
+<<<<<<< HEAD
         Self::spawn_with_options(repo, &[], None, 4)
 >>>>>>> mcoda/task/bck-05-us-08-t34
 =======
         Self::spawn_with_env_and_args(repo, &[], &[])
 >>>>>>> mcoda/task/bck-05-us-08-t06
+=======
+        Self::spawn_with_options(repo, 4, &[])
+>>>>>>> mcoda/task/bck-05-us-06-t23
     }
 
     fn spawn_with_env(
@@ -59,11 +63,20 @@ impl McpHarness {
         envs: &[(&str, &str)],
     ) -> Result<Self, Box<dyn Error>> {
 <<<<<<< HEAD
+<<<<<<< HEAD
         Self::spawn_with_options(repo, envs, None, 4)
+=======
+        Self::spawn_with_options(repo, 4, envs)
+    }
+
+    fn spawn_with_max_results(repo: &Path, max_results: usize) -> Result<Self, Box<dyn Error>> {
+        Self::spawn_with_options(repo, max_results, &[])
+>>>>>>> mcoda/task/bck-05-us-06-t23
     }
 
     fn spawn_with_options(
         repo: &Path,
+<<<<<<< HEAD
         envs: &[(&str, &str)],
         state_dir: Option<&Path>,
         max_results: usize,
@@ -79,6 +92,13 @@ impl McpHarness {
     ) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo.to_string_lossy().to_string();
         let max_results = max_results.max(1).to_string();
+=======
+        max_results: usize,
+        envs: &[(&str, &str)],
+    ) -> Result<Self, Box<dyn Error>> {
+        let repo_str = repo.to_string_lossy().to_string();
+        let max_results = max_results.to_string();
+>>>>>>> mcoda/task/bck-05-us-06-t23
         let mut cmd = Command::new(docdex_bin());
         cmd.args([
             "mcp",
@@ -489,6 +509,7 @@ fn mcp_error_data_code(resp: &Value) -> Option<&str> {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn rate_limit_data_signature(data: &serde_json::Map<String, Value>) -> Vec<(String, &'static str)> {
     let mut out: Vec<(String, &'static str)> = data
         .iter()
@@ -546,10 +567,13 @@ fn assert_index_state_error(
 ) -> Result<(), Box<dyn Error>> {
     assert_eq!(mcp_error_code(resp), Some(-32602));
 =======
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t23
 fn parse_cli_error(stderr: &[u8]) -> Result<Value, Box<dyn Error>> {
     let raw = String::from_utf8_lossy(stderr);
     let trimmed = raw.trim();
     Ok(serde_json::from_str(trimmed)?)
+<<<<<<< HEAD
 =======
 fn error_data_map(resp: &Value) -> Result<&serde_json::Map<String, Value>, Box<dyn Error>> {
     resp.get("error")
@@ -763,6 +787,8 @@ fn parse_cli_error(stderr: &[u8]) -> Result<Value, Box<dyn Error>> {
     let trimmed = raw.trim();
     Ok(serde_json::from_str(trimmed)?)
 >>>>>>> mcoda/task/bck-05-us-06-t32
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t23
 }
 
 #[test]
@@ -1268,14 +1294,19 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
 #[test]
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn mcp_backoff_required_is_structured_and_bounded() -> Result<(), Box<dyn Error>> {
 =======
 fn mcp_rate_limit_schema_is_stable_under_concurrent_tool_bursts() -> Result<(), Box<dyn Error>> {
 >>>>>>> mcoda/task/bck-05-us-09-t36
+=======
+fn mcp_http_rate_limit_codes_match() -> Result<(), Box<dyn Error>> {
+>>>>>>> mcoda/task/bck-05-us-06-t23
     let repo = setup_repo()?;
     let repo_str = repo.path().to_string_lossy().to_string();
     run_docdex(["index", "--repo", repo_str.as_str()])?;
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 =======
 fn mcp_backoff_required_errors_are_machine_coded() -> Result<(), Box<dyn Error>> {
@@ -1289,10 +1320,21 @@ fn mcp_backoff_required_errors_are_machine_coded() -> Result<(), Box<dyn Error>>
     wait_for_health(host, port)?;
 
     let mut mcp = McpHarness::spawn(repo.path())?;
+=======
+    let mut mcp = McpHarness::spawn_with_env(
+        repo.path(),
+        &[
+            ("DOCDEX_MCP_RATE_LIMIT_PER_MIN", "60"),
+            ("DOCDEX_MCP_RATE_LIMIT_BURST", "1"),
+        ],
+    )?;
+
+>>>>>>> mcoda/task/bck-05-us-06-t23
     send_line(
         &mut mcp.stdin,
         json!({
             "jsonrpc": "2.0",
+<<<<<<< HEAD
             "id": 30,
             "method": "tools/call",
 <<<<<<< HEAD
@@ -1480,6 +1522,80 @@ fn mcp_backoff_required_errors_are_machine_coded() -> Result<(), Box<dyn Error>>
     server.kill().ok();
     server.wait().ok();
 >>>>>>> mcoda/task/bck-05-us-09-t29
+=======
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1 } }
+        }),
+    )?;
+    let ok = read_line(&mut mcp.reader)?;
+    assert!(ok.get("result").is_some(), "first MCP call should succeed");
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1 } }
+        }),
+    )?;
+    let limited = read_line(&mut mcp.reader)?;
+    let mcp_code = mcp_error_data_code(&limited).ok_or("missing MCP rate-limit code")?;
+    assert_eq!(mcp_code, "rate_limited");
+
+    let Some(port) = pick_free_port() else {
+        mcp.shutdown();
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(
+        repo.path(),
+        host,
+        port,
+        &[
+            "--secure-mode=false",
+            "--rate-limit-per-min",
+            "60",
+            "--rate-limit-burst",
+            "1",
+        ],
+    )?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/search");
+    let ok_resp = client
+        .get(&url)
+        .query(&[("q", "MCP_ROADMAP"), ("limit", "1")])
+        .send()?;
+    assert!(ok_resp.status().is_success());
+
+    let limited_resp = client
+        .get(&url)
+        .query(&[("q", "MCP_ROADMAP"), ("limit", "1")])
+        .send()?;
+    assert_eq!(limited_resp.status().as_u16(), 429);
+    let http_body: Value = limited_resp.json()?;
+    let http_code = http_body
+        .get("error")
+        .and_then(|v| v.get("code"))
+        .and_then(|v| v.as_str())
+        .ok_or("HTTP rate-limit response missing error.code")?;
+    assert_eq!(http_code, "rate_limited");
+    assert!(
+        http_body
+            .get("error")
+            .and_then(|v| v.get("retry_after_ms"))
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "HTTP rate-limit response should include retry_after_ms"
+    );
+
+    mcp.shutdown();
+    server.kill().ok();
+    server.wait().ok();
+>>>>>>> mcoda/task/bck-05-us-06-t23
     Ok(())
 }
 
@@ -1494,6 +1610,7 @@ fn pick_free_port() -> Option<u16> {
     }
 }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 fn spawn_server(
     state_root: &Path,
@@ -1532,6 +1649,15 @@ fn spawn_server_with_options(
     max_limit: Option<usize>,
 ) -> Result<Child, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
+=======
+fn spawn_server(
+    repo_root: &Path,
+    host: &str,
+    port: u16,
+    extra_args: &[&str],
+) -> Result<Child, Box<dyn Error>> {
+    let repo_str = repo_root.to_string_lossy().to_string();
+>>>>>>> mcoda/task/bck-05-us-06-t23
     let mut cmd = Command::new(docdex_bin());
     cmd.args([
         "serve",
@@ -1543,6 +1669,7 @@ fn spawn_server_with_options(
         &port.to_string(),
         "--log",
         "warn",
+<<<<<<< HEAD
         "--secure-mode=false",
     ]);
     if let Some(state_dir) = state_dir {
@@ -1555,6 +1682,11 @@ fn spawn_server_with_options(
     }
     Ok(cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn()?)
 >>>>>>> mcoda/task/bck-05-us-08-t34
+=======
+    ]);
+    cmd.args(extra_args);
+    Ok(cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn()?)
+>>>>>>> mcoda/task/bck-05-us-06-t23
 }
 
 fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
@@ -1581,7 +1713,11 @@ fn mcp_error_codes_match_http_invalid_query() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
     let host = "127.0.0.1";
+<<<<<<< HEAD
     let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
+=======
+    let mut server = spawn_server(repo.path(), host, port, &["--secure-mode=false"])?;
+>>>>>>> mcoda/task/bck-05-us-06-t23
     wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
@@ -2182,6 +2318,40 @@ fn mcp_missing_project_root_path_is_missing_repo_path() -> Result<(), Box<dyn Er
     let expected = missing.to_string_lossy().replace('\\', "/");
     assert_eq!(
         details.get("normalizedPath").and_then(|v| v.as_str()),
+        Some(expected.as_str())
+    );
+
+    let cli_out = run_docdex([
+        "query",
+        "--repo",
+        missing.to_string_lossy().as_ref(),
+        "--query",
+        "MCP_ROADMAP",
+        "--limit",
+        "1",
+    ])?;
+    assert!(
+        !cli_out.status.success(),
+        "CLI query with missing repo path should fail"
+    );
+    let cli_payload = parse_cli_error(&cli_out.stderr)?;
+    let cli_code = cli_payload
+        .get("error")
+        .and_then(|v| v.get("code"))
+        .and_then(|v| v.as_str())
+        .ok_or("CLI missing repo error missing error.code")?;
+    assert_eq!(cli_code, "missing_repo_path");
+    assert_eq!(
+        Some(cli_code),
+        mcp_error_data_code(&resp),
+        "CLI and MCP missing repo path codes should match"
+    );
+    let cli_details = cli_payload
+        .get("error")
+        .and_then(|v| v.get("details"))
+        .ok_or("CLI missing repo error missing details")?;
+    assert_eq!(
+        cli_details.get("normalizedPath").and_then(|v| v.as_str()),
         Some(expected.as_str())
     );
 
@@ -2957,9 +3127,108 @@ fn mcp_resource_read_enforces_max_content() -> Result<(), Box<dyn Error>> {
 
 #[test]
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn mcp_schema_is_stable_when_clamped() -> Result<(), Box<dyn Error>> {
 =======
 fn mcp_symbols_disabled_returns_missing_dependency() -> Result<(), Box<dyn Error>> {
+=======
+fn mcp_http_search_limit_clamping_is_consistent() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let max_limit = 3usize;
+    let mut mcp = McpHarness::spawn_with_max_results(repo.path(), max_limit)?;
+
+    let Some(port) = pick_free_port() else {
+        mcp.shutdown();
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(
+        repo.path(),
+        host,
+        port,
+        &[
+            "--secure-mode=false",
+            "--max-limit",
+            &max_limit.to_string(),
+        ],
+    )?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/search");
+    let http_body: Value = client
+        .get(&url)
+        .query(&[("q", "MCP_ROADMAP"), ("limit", "999")])
+        .send()?
+        .json()?;
+    let http_hits = http_body
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .map(|v| v.len())
+        .unwrap_or(0);
+    assert!(
+        http_hits <= max_limit,
+        "HTTP hits should not exceed configured max limit"
+    );
+    let effective_limit = http_body
+        .get("meta")
+        .and_then(|v| v.get("context_assembly"))
+        .and_then(|v| v.get("effective_limit"))
+        .and_then(|v| v.as_u64());
+    assert_eq!(
+        effective_limit,
+        Some(max_limit as u64),
+        "HTTP effective_limit should report the clamped limit"
+    );
+    let requested_limit = http_body
+        .get("meta")
+        .and_then(|v| v.get("context_assembly"))
+        .and_then(|v| v.get("requested_limit"))
+        .and_then(|v| v.as_u64());
+    assert_eq!(
+        requested_limit,
+        Some(999),
+        "HTTP requested_limit should reflect the original request"
+    );
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 30,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": { "query": "MCP_ROADMAP", "limit": 999 }
+            }
+        }),
+    )?;
+    let search_resp = read_line(&mut mcp.reader)?;
+    let search_body = parse_tool_result(&search_resp)?;
+    assert_eq!(
+        search_body.get("limit").and_then(|v| v.as_u64()),
+        Some(max_limit as u64),
+        "MCP limit should report the clamped max-results"
+    );
+    let hits_len = search_body
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .map(|v| v.len())
+        .unwrap_or(0);
+    assert!(hits_len <= max_limit, "MCP hits should not exceed max-results");
+
+    mcp.shutdown();
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn mcp_symbols_missing_dependency_is_machine_coded() -> Result<(), Box<dyn Error>> {
+>>>>>>> mcoda/task/bck-05-us-06-t23
     let repo = setup_repo()?;
     let mut mcp = McpHarness::spawn(repo.path())?;
 
@@ -2967,7 +3236,11 @@ fn mcp_symbols_disabled_returns_missing_dependency() -> Result<(), Box<dyn Error
         &mut mcp.stdin,
         json!({
             "jsonrpc": "2.0",
+<<<<<<< HEAD
             "id": 30,
+=======
+            "id": 40,
+>>>>>>> mcoda/task/bck-05-us-06-t23
             "method": "tools/call",
             "params": { "name": "docdex_symbols", "arguments": { "path": "docs/overview.md" } }
         }),
@@ -2979,10 +3252,62 @@ fn mcp_symbols_disabled_returns_missing_dependency() -> Result<(), Box<dyn Error
         .get("error")
         .and_then(|v| v.get("data"))
         .and_then(|v| v.get("details"))
+<<<<<<< HEAD
         .ok_or("missing dependency error should include details")?;
+=======
+        .ok_or("missing_dependency should include details")?;
+>>>>>>> mcoda/task/bck-05-us-06-t23
     assert_eq!(
         details.get("dependency").and_then(|v| v.as_str()),
         Some("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+    );
+<<<<<<< HEAD
+=======
+    assert_eq!(
+        details.get("flag").and_then(|v| v.as_str()),
+        Some("--enable-symbol-extraction=true")
+    );
+>>>>>>> mcoda/task/bck-05-us-06-t23
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+<<<<<<< HEAD
+fn mcp_index_backoff_required_when_writer_busy() -> Result<(), Box<dyn Error>> {
+=======
+fn mcp_symbols_missing_index_is_machine_coded() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let mut mcp = McpHarness::spawn_with_env(
+        repo.path(),
+        &[("DOCDEX_ENABLE_SYMBOL_EXTRACTION", "1")],
+    )?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 41,
+            "method": "tools/call",
+            "params": { "name": "docdex_symbols", "arguments": { "path": "docs/overview.md" } }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("missing_index"));
+    let details = resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("details"))
+        .ok_or("missing_index should include details")?;
+    assert_eq!(
+        details.get("resource").and_then(|v| v.as_str()),
+        Some("symbols")
+    );
+    assert_eq!(
+        details.get("path").and_then(|v| v.as_str()),
+        Some("docs/overview.md")
     );
 
     mcp.shutdown();
@@ -2990,7 +3315,46 @@ fn mcp_symbols_disabled_returns_missing_dependency() -> Result<(), Box<dyn Error
 }
 
 #[test]
-fn mcp_index_backoff_required_when_writer_busy() -> Result<(), Box<dyn Error>> {
+fn mcp_index_backoff_required_when_writer_locked() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_str.as_str()])?;
+
+    let mut writer_lock = McpHarness::spawn(repo.path())?;
+    send_line(
+        &mut writer_lock.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 49,
+            "method": "tools/call",
+            "params": { "name": "docdex_stats", "arguments": {} }
+        }),
+    )?;
+    let ok = read_line(&mut writer_lock.reader)?;
+    assert!(ok.get("result").is_some(), "writer MCP server should be ready");
+    let mut read_only = McpHarness::spawn(repo.path())?;
+
+    send_line(
+        &mut read_only.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 50,
+            "method": "tools/call",
+            "params": { "name": "docdex_index", "arguments": {} }
+        }),
+    )?;
+    let resp = read_line(&mut read_only.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("backoff_required"));
+
+    read_only.shutdown();
+    writer_lock.shutdown();
+    Ok(())
+}
+
+#[test]
+fn cli_invalid_query_error_matches_machine_reason() -> Result<(), Box<dyn Error>> {
+>>>>>>> mcoda/task/bck-05-us-06-t23
     let repo = setup_repo()?;
     let repo_str = repo.path().to_string_lossy().to_string();
     run_docdex(["index", "--repo", repo_str.as_str()])?;

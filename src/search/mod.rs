@@ -23,6 +23,7 @@ use crate::error::{
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     ERR_RATE_LIMITED, ERR_TIER2_UNAVAILABLE,
 >>>>>>> mcoda/task/bck-05-us-09-t21
 =======
@@ -77,6 +78,9 @@ use crate::error::{
 =======
     ERR_RATE_LIMITED, ERR_REPO_CAPACITY,
 >>>>>>> mcoda/task/bck-05-us-07-t04
+=======
+    ERR_RATE_LIMITED, ERR_REPO_CAPACITY_EXCEEDED, UserWarning,
+>>>>>>> mcoda/task/bck-05-us-07-t05
 };
 use crate::libs::LibsIndexer;
 use crate::max_size::{
@@ -759,6 +763,7 @@ fn status_for_app_error(code: &str) -> StatusCode {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         ERR_TIER2_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
 =======
         ERR_MISSING_INDEX => StatusCode::CONFLICT,
@@ -796,6 +801,9 @@ fn status_for_app_error(code: &str) -> StatusCode {
 =======
         ERR_REPO_CAPACITY => StatusCode::TOO_MANY_REQUESTS,
 >>>>>>> mcoda/task/bck-05-us-07-t04
+=======
+        ERR_REPO_CAPACITY_EXCEEDED => StatusCode::TOO_MANY_REQUESTS,
+>>>>>>> mcoda/task/bck-05-us-07-t05
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -806,6 +814,7 @@ fn error_response(status: StatusCode, detail: ErrorDetail) -> Response {
 }
 
 fn json_error(status: StatusCode, code: &'static str, message: impl Into<String>) -> Response {
+<<<<<<< HEAD
     error_response(status, ErrorDetail::new(code, message))
 }
 
@@ -971,6 +980,9 @@ fn ensure_index_fresh(state: &AppState) -> Result<IndexStateSnapshot, Response> 
 
 fn json_error_detail(status: StatusCode, detail: ErrorDetail) -> Response {
     (status, Json(ErrorBody { error: detail })).into_response()
+=======
+    json_error_with_details(status, code, message, None)
+>>>>>>> mcoda/task/bck-05-us-07-t05
 }
 
 fn json_error_with_details(
@@ -979,6 +991,7 @@ fn json_error_with_details(
     message: impl Into<String>,
     details: Option<serde_json::Value>,
 ) -> Response {
+<<<<<<< HEAD
     (
         status,
         Json(ErrorBody {
@@ -999,6 +1012,12 @@ fn json_error_with_details(
         Json(ErrorBody {
             error: ErrorDetail::new(code, message).with_details(details),
         }),
+=======
+    let error = ErrorDetail::new(code, message).with_details(details);
+    (
+        status,
+        Json(ErrorBody { error }),
+>>>>>>> mcoda/task/bck-05-us-07-t05
     )
         .into_response()
 }
@@ -1026,10 +1045,21 @@ async fn memory_store_handler(
     {
         Ok(value) => value,
         Err(err) => {
-            let (code, status, message) = if let Some(app) = err.downcast_ref::<AppError>() {
-                (app.code, status_for_app_error(app.code), app.message.clone())
+            let (code, status, message, details) = if let Some(app) = err.downcast_ref::<AppError>()
+            {
+                (
+                    app.code,
+                    status_for_app_error(app.code),
+                    app.message.clone(),
+                    app.details.clone(),
+                )
             } else {
-                (ERR_INTERNAL_ERROR, StatusCode::INTERNAL_SERVER_ERROR, "embedding failed".to_string())
+                (
+                    ERR_INTERNAL_ERROR,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "embedding failed".to_string(),
+                    None,
+                )
             };
             state.metrics.inc_error();
             warn!(
@@ -1038,7 +1068,7 @@ async fn memory_store_handler(
                 error_code = %code,
                 "memory_store embedding failed"
             );
-            return json_error(status, code, message);
+            return json_error_with_details(status, code, message, details);
         }
     };
 
@@ -1121,10 +1151,21 @@ async fn memory_recall_handler(
     {
         Ok(value) => value,
         Err(err) => {
-            let (code, status, message) = if let Some(app) = err.downcast_ref::<AppError>() {
-                (app.code, status_for_app_error(app.code), app.message.clone())
+            let (code, status, message, details) = if let Some(app) = err.downcast_ref::<AppError>()
+            {
+                (
+                    app.code,
+                    status_for_app_error(app.code),
+                    app.message.clone(),
+                    app.details.clone(),
+                )
             } else {
-                (ERR_INTERNAL_ERROR, StatusCode::INTERNAL_SERVER_ERROR, "embedding failed".to_string())
+                (
+                    ERR_INTERNAL_ERROR,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "embedding failed".to_string(),
+                    None,
+                )
             };
             state.metrics.inc_error();
             warn!(
@@ -1133,7 +1174,7 @@ async fn memory_recall_handler(
                 error_code = %code,
                 "memory_recall embedding failed"
             );
-            return json_error(status, code, message);
+            return json_error_with_details(status, code, message, details);
         }
     };
 
@@ -1628,6 +1669,8 @@ pub struct SearchMeta {
     pub query: Option<SearchQueryMeta>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_assembly: Option<ContextAssemblyMeta>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<UserWarning>,
 }
 
 #[derive(Serialize)]
@@ -1719,6 +1762,7 @@ struct ErrorDetail {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     details: Option<serde_json::Value>,
 =======
     resource_key: Option<String>,
@@ -1745,6 +1789,9 @@ struct ErrorDetail {
 =======
     details: Option<serde_json::Value>,
 >>>>>>> mcoda/task/bck-05-us-07-t11
+=======
+    details: Option<serde_json::Value>,
+>>>>>>> mcoda/task/bck-05-us-07-t05
 }
 
 impl ErrorDetail {
@@ -1756,6 +1803,7 @@ impl ErrorDetail {
             retry_at: None,
             limit_key: None,
             scope: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1811,6 +1859,16 @@ impl ErrorDetail {
     fn with_details(mut self, details: Option<serde_json::Value>) -> Self {
         self.details = details;
 >>>>>>> mcoda/task/bck-05-us-07-t11
+=======
+            details: None,
+        }
+    }
+
+    fn with_details(mut self, details: Option<serde_json::Value>) -> Self {
+        if details.is_some() {
+            self.details = details;
+        }
+>>>>>>> mcoda/task/bck-05-us-07-t05
         self
     }
 
@@ -2569,6 +2627,7 @@ fn build_search_meta(
         repo_id: crate::symbols::repo_id_for_root(indexer.repo_root()).ok(),
         query,
         context_assembly,
+        warnings: Vec::new(),
     })
 }
 

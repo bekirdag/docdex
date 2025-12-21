@@ -44,6 +44,7 @@ use crate::error::{
 =======
     repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
 <<<<<<< HEAD
+<<<<<<< HEAD
     ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
     ERR_TIER2_UNAVAILABLE, ERR_UNKNOWN_REPO,
 >>>>>>> mcoda/task/bck-05-us-09-t21
@@ -66,6 +67,10 @@ use crate::error::{
     ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_CAPACITY, ERR_REPO_STATE_MISMATCH,
     ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
 >>>>>>> mcoda/task/bck-05-us-07-t04
+=======
+    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_CAPACITY_EXCEEDED, ERR_REPO_STATE_MISMATCH,
+    ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
+>>>>>>> mcoda/task/bck-05-us-07-t05
 };
 <<<<<<< HEAD
 use crate::explainability::ExplainabilityStore;
@@ -872,6 +877,7 @@ fn default_message_for_code(code: &str) -> &'static str {
         ERR_RATE_LIMITED => "rate limited",
         ERR_BACKOFF_REQUIRED => "backoff required",
         ERR_REPO_STATE_MISMATCH => "repo state mismatch",
+        ERR_REPO_CAPACITY_EXCEEDED => "repo capacity exceeded",
         ERR_INTERNAL_ERROR => "internal error",
         _ => "error",
     }
@@ -2668,6 +2674,7 @@ impl McpServer {
             repo_id: crate::symbols::repo_id_for_root(&self.repo_root).ok(),
             query: None,
             context_assembly: None,
+            warnings: Vec::new(),
         });
         meta.repo_root = project_root_path.clone();
 <<<<<<< HEAD

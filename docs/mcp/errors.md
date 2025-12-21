@@ -128,6 +128,7 @@ These codes are the **required** set for repo/index/dependency failures and are 
 - `rate_limited`: request rejected due to rate limiting.
 >>>>>>> mcoda/task/bck-05-us-09-t22
 - `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable).
+<<<<<<< HEAD
 =======
 - `rate_limited`: request rejected due to rate limiting; includes stable retry hints.
 - `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable); includes retry hints.
@@ -136,6 +137,9 @@ These codes are the **required** set for repo/index/dependency failures and are 
 - `rate_limited`: request rejected due to rate limiting; MCP emits a retry-hint object in `error.data`.
 - `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable); retry hints live in `details`.
 >>>>>>> mcoda/task/bck-05-us-09-t13
+=======
+- `repo_capacity_exceeded`: max-open-repos cap reached and no idle repo is available to evict (details include `maxOpenRepos`, `openRepos`, `busyRepos`, and recovery guidance).
+>>>>>>> mcoda/task/bck-05-us-07-t05
 - `internal_error`: unexpected server failure.
 
 ### Parameter/argument validation codes
@@ -255,6 +259,17 @@ Notes:
 - `initialize` scope mismatch returns JSON-RPC `error.code = -32600` (`invalid_request`) but `error.data.code = unknown_repo`; details include `{expected, got}`.
 - Invalid/un-canonicalizable roots in `initialize` return `error.data.code = invalid_request` with the OS error in `error.data.reason`.
 
+### Warning codes (non-fatal)
+
+Warnings may be attached to successful responses (typically under `meta.warnings`) as a list of
+objects `{ code, message, details }`. Clients should treat warnings as advisory and never as
+hard failures.
+
+- `repo_evicted`: a repo was evicted to enforce `max-open-repos` (details include `evictedRepo`,
+  `maxOpenRepos`, `openRepos`, and `reason`).
+- `repo_thrashing`: repeated evictions detected within a short window (details include
+  `maxOpenRepos`, `evictionsInWindow`, and `windowMs`).
+
 ## Repo moved/renamed (deterministic behavior + recovery)
 
 Docdex intentionally **fails closed** on repo identity changes to prevent cross-repo state mixing (no silent cross-association).
@@ -284,8 +299,13 @@ Docdex fast-fails on missing or stale index state to avoid serving out-of-date r
 
 Docdex presents the same underlying failures in three different wrappers:
 
+<<<<<<< HEAD
 - **HTTP daemon**: JSON error body (where implemented) is `{ "error": { "code": "<docdex_code>", "message": "<string>", "details"?: { ... } } }`.
 - **CLI**: non-zero exit (currently always `1`) and a JSON error line to `stderr` when the error is a `StartupError`/`AppError` (same `{error:{code,message,details?}}` shape as HTTP).
+=======
+- **HTTP daemon**: JSON error body (where implemented) is `{ "error": { "code": "<docdex_code>", "message": "<string>", "details": { ... } } }` (details optional).
+- **CLI**: non-zero exit (currently always `1`) and a JSON error line to `stderr` when the error is a `StartupError`/`AppError` (same `{error:{code,message}}` shape as HTTP).
+>>>>>>> mcoda/task/bck-05-us-07-t05
 - **MCP**: JSON-RPC error with Docdex code in `error.data.code`.
 
 ### Mapping table (common failures)
@@ -299,6 +319,10 @@ Docdex presents the same underlying failures in three different wrappers:
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+| Repo capacity exceeded (no idle repo available) | `repo_capacity_exceeded` | `-32602` | `429` JSON `{error:{code:"repo_capacity_exceeded",...}}` | Exit `1`, `stderr` JSON `{error:{code:"repo_capacity_exceeded",...}}` |
+>>>>>>> mcoda/task/bck-05-us-07-t05
 | Index missing (query/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
 | Index schema mismatch | `index_schema_mismatch` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"index_schema_mismatch",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"index_schema_mismatch",...}}` |
 | Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Not currently emitted by the per-repo CLI |

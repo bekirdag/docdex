@@ -8,8 +8,11 @@ use chrono::{DateTime, Utc};
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 >>>>>>> mcoda/task/bck-05-us-08-t31
+=======
+>>>>>>> mcoda/task/bck-05-us-07-t05
 use serde::Serialize;
 use serde_json::Value;
 =======
@@ -41,6 +44,7 @@ pub const ERR_TIER2_UNAVAILABLE: &str = "tier2_unavailable";
 pub const ERR_RATE_LIMITED: &str = "rate_limited";
 pub const ERR_BACKOFF_REQUIRED: &str = "backoff_required";
 pub const ERR_REPO_STATE_MISMATCH: &str = "repo_state_mismatch";
+<<<<<<< HEAD
 pub const ERR_INDEX_MIGRATION_REQUIRED: &str = "index_migration_required";
 pub const ERR_INDEX_SCHEMA_UNSUPPORTED: &str = "index_schema_unsupported";
 pub const ERR_INTERNAL_ERROR: &str = "internal_error";
@@ -91,6 +95,14 @@ pub fn backoff_required_details(limit_key: impl Into<String>, scope: impl Into<S
     })
 }
 >>>>>>> mcoda/task/bck-05-us-09-t37
+=======
+pub const ERR_REPO_CAPACITY_EXCEEDED: &str = "repo_capacity_exceeded";
+pub const ERR_INTERNAL_ERROR: &str = "internal_error";
+#[allow(dead_code)]
+pub const WARN_REPO_EVICTED: &str = "repo_evicted";
+#[allow(dead_code)]
+pub const WARN_REPO_THRASHING: &str = "repo_thrashing";
+>>>>>>> mcoda/task/bck-05-us-07-t05
 
 #[derive(Debug, Clone)]
 pub struct StartupError {
@@ -155,6 +167,7 @@ impl AppError {
 }
 
 #[derive(Debug, Clone, Serialize)]
+<<<<<<< HEAD
 #[serde(rename_all = "snake_case")]
 pub enum IndexState {
     Missing,
@@ -220,6 +233,28 @@ pub fn index_state_error(
         serde_json::to_value(details).expect("index state details should serialize");
     AppError::new(code, message.unwrap_or_else(|| default_message.to_string()))
         .with_details(details_value)
+=======
+pub struct UserWarning {
+    pub code: &'static str,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
+}
+
+impl UserWarning {
+    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    pub fn with_details(mut self, details: Value) -> Self {
+        self.details = Some(details);
+        self
+    }
+>>>>>>> mcoda/task/bck-05-us-07-t05
 }
 
 pub fn repo_resolution_details(
@@ -243,6 +278,7 @@ pub fn repo_resolution_details(
     Value::Object(details)
 }
 
+<<<<<<< HEAD
 fn truncate_bytes_ascii(input: &str, max_bytes: usize) -> String {
     if input.len() <= max_bytes {
         return input.to_string();
@@ -262,6 +298,94 @@ pub fn retry_hint_details(retry_after_ms: u64, limit_key: &str, scope: &str) -> 
         "limit_key": limit_key,
         "scope": scope,
     })
+=======
+#[allow(dead_code)]
+pub fn repo_capacity_details(
+    max_open_repos: usize,
+    open_repos: usize,
+    busy_repos: usize,
+    requested_repo: Option<String>,
+) -> Value {
+    let mut details = serde_json::Map::new();
+    details.insert("maxOpenRepos".to_string(), Value::Number(max_open_repos.into()));
+    details.insert("openRepos".to_string(), Value::Number(open_repos.into()));
+    details.insert("busyRepos".to_string(), Value::Number(busy_repos.into()));
+    if let Some(repo) = requested_repo {
+        details.insert("requestedRepo".to_string(), Value::String(repo));
+    }
+    details.insert(
+        "recoverySteps".to_string(),
+        Value::Array(
+            vec![
+                "Increase max-open-repos to allow more concurrent repos.".to_string(),
+                "Reduce concurrent repo operations or wait for in-flight work to finish."
+                    .to_string(),
+            ]
+            .into_iter()
+            .map(Value::String)
+            .collect(),
+        ),
+    );
+    Value::Object(details)
+}
+
+#[allow(dead_code)]
+pub fn repo_capacity_exceeded_error(
+    max_open_repos: usize,
+    open_repos: usize,
+    busy_repos: usize,
+    requested_repo: Option<String>,
+) -> AppError {
+    AppError::new(
+        ERR_REPO_CAPACITY_EXCEEDED,
+        "repo capacity exceeded; no idle repo available for eviction",
+    )
+    .with_details(repo_capacity_details(
+        max_open_repos,
+        open_repos,
+        busy_repos,
+        requested_repo,
+    ))
+}
+
+#[allow(dead_code)]
+pub fn repo_evicted_warning(
+    evicted_repo: String,
+    max_open_repos: usize,
+    open_repos: usize,
+    reason: String,
+) -> UserWarning {
+    let mut details = serde_json::Map::new();
+    details.insert("evictedRepo".to_string(), Value::String(evicted_repo));
+    details.insert("maxOpenRepos".to_string(), Value::Number(max_open_repos.into()));
+    details.insert("openRepos".to_string(), Value::Number(open_repos.into()));
+    details.insert("reason".to_string(), Value::String(reason));
+    UserWarning::new(
+        WARN_REPO_EVICTED,
+        "repo evicted to enforce max-open-repos",
+    )
+    .with_details(Value::Object(details))
+}
+
+#[allow(dead_code)]
+pub fn repo_thrashing_warning(
+    max_open_repos: usize,
+    evictions_in_window: usize,
+    window_ms: u64,
+) -> UserWarning {
+    let mut details = serde_json::Map::new();
+    details.insert("maxOpenRepos".to_string(), Value::Number(max_open_repos.into()));
+    details.insert(
+        "evictionsInWindow".to_string(),
+        Value::Number(evictions_in_window.into()),
+    );
+    details.insert("windowMs".to_string(), Value::Number(window_ms.into()));
+    UserWarning::new(
+        WARN_REPO_THRASHING,
+        "frequent repo evictions detected; consider increasing max-open-repos or reducing concurrency",
+    )
+    .with_details(Value::Object(details))
+>>>>>>> mcoda/task/bck-05-us-07-t05
 }
 
 #[derive(Debug, Clone, Error)]

@@ -204,9 +204,15 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
 
   const metadataAfterSecond = await fs.promises.readFile(metadataPath, "utf8");
   const binaryAfterSecond = await fs.promises.readFile(binaryPath, "utf8");
-  assert.equal(metadataAfterSecond, metadataAfterFirst);
+  const parsedFirst = JSON.parse(metadataAfterFirst);
+  const parsedSecond = JSON.parse(metadataAfterSecond);
+  const { lastVerifiedAt: _firstVerifiedAt, ...firstRest } = parsedFirst;
+  const { lastVerifiedAt: _secondVerifiedAt, ...secondRest } = parsedSecond;
+  assert.deepEqual(secondRest, firstRest);
+  assert.equal(typeof parsedSecond.lastVerifiedAt, "string");
   assert.equal(binaryAfterSecond, binaryAfterFirst);
 });
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -919,3 +925,5 @@ test("installer: repair then converges to no-op without re-download", async (t) 
 >>>>>>> mcoda/task/ops-01-us-03-t06
 =======
 >>>>>>> mcoda/task/ops-01-us-01-t41
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t43

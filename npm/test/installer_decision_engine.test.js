@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 
-const { determineLocalInstallerOutcome } = require("../lib/install");
+const { determineLocalInstallerOutcome, discoverInstalledDaemon } = require("../lib/install");
 
 function createMockFs({ existingPaths = [], filesByPath = {}, readFileErrorByPath = {} } = {}) {
   const existing = new Set(existingPaths);
@@ -42,6 +42,7 @@ function validInstallMetadata({ platformKey, version, binarySha256 }) {
 =======
     schemaVersion: 1,
     installedAt: "2025-01-01T00:00:00.000Z",
+    lastVerifiedAt: "2025-01-01T00:00:00.000Z",
     version,
     expectedVersion: version,
     installedVersion: version,
@@ -71,6 +72,7 @@ function validInstallMetadata({ platformKey, version, binarySha256 }) {
     },
     archive: {
 <<<<<<< HEAD
+<<<<<<< HEAD
       name: archiveName,
       sha256: archiveSha256,
       source: "manifest:docdex-release-manifest.json",
@@ -82,6 +84,21 @@ function validInstallMetadata({ platformKey, version, binarySha256 }) {
       source: "fallback",
       downloadUrl: `https://example.test/v${version}/docdexd-linux-x64-gnu.tar.gz`
 >>>>>>> mcoda/task/ops-01-us-03-t43
+=======
+      name: null,
+      sha256: null,
+      source: null,
+      downloadUrl: null,
+      manifestName: null,
+      manifestVersion: null
+    },
+    provenance: {
+      source: null,
+      repoSlug: "owner/repo",
+      downloadUrl: null,
+      manifestName: null,
+      manifestVersion: null
+>>>>>>> mcoda/task/bck-05-us-06-t43
     }
 >>>>>>> mcoda/task/ops-01-us-06-t03
   };
@@ -636,4 +653,81 @@ test("decision engine: integrity check throws => reinstall_unknown (integrity_un
   assert.equal(outcome.integrityResult.status, "unverifiable");
   assert.equal(outcome.integrityResult.reason, "unreadable");
   assert.equal(shaCalls, 1);
+});
+
+test("daemon discovery: missing binary => not_installed with missing integrity", async () => {
+  const platformKey = "linux-x64-gnu";
+  const distDir = path.posix.join("/dist", platformKey);
+
+  const fsModule = createMockFs();
+  const result = await discoverInstalledDaemon({
+    fsModule,
+    pathModule: path.posix,
+    distDir,
+    platformKey,
+    isWin32: false,
+    sha256FileFn: async () => {
+      throw new Error("unexpected sha256");
+    }
+  });
+
+  assert.equal(result.state, "not_installed");
+  assert.equal(result.version, null);
+  assert.equal(result.integrity.status, "missing");
+  assert.equal(result.dependencyStatus, "missing");
+});
+
+test("daemon discovery: missing metadata => unknown state", async () => {
+  const platformKey = "linux-x64-gnu";
+  const distDir = path.posix.join("/dist", platformKey);
+  const binaryPath = path.posix.join(distDir, "docdexd");
+
+  const fsModule = createMockFs({ existingPaths: [binaryPath] });
+  const result = await discoverInstalledDaemon({
+    fsModule,
+    pathModule: path.posix,
+    distDir,
+    platformKey,
+    isWin32: false,
+    sha256FileFn: async () => "a".repeat(64)
+  });
+
+  assert.equal(result.state, "unknown");
+  assert.equal(result.integrity.status, "unknown");
+  assert.equal(result.integrity.integrityResult.status, "unverifiable");
+  assert.equal(result.integrity.integrityResult.reason, "metadata_missing");
+  assert.equal(result.dependencyStatus, "unknown");
+});
+
+test("daemon discovery: verified metadata => installed with verified integrity", async () => {
+  const platformKey = "linux-x64-gnu";
+  const distDir = path.posix.join("/dist", platformKey);
+  const binaryPath = path.posix.join(distDir, "docdexd");
+  const metadataPath = path.posix.join(distDir, "docdexd-install.json");
+
+  const fsModule = createMockFs({
+    existingPaths: [binaryPath],
+    filesByPath: {
+      [metadataPath]: JSON.stringify(
+        validInstallMetadata({ platformKey, version: "0.1.0", binarySha256: "a".repeat(64) }),
+        null,
+        2
+      )
+    }
+  });
+
+  const result = await discoverInstalledDaemon({
+    fsModule,
+    pathModule: path.posix,
+    distDir,
+    platformKey,
+    isWin32: false,
+    sha256FileFn: async () => "a".repeat(64)
+  });
+
+  assert.equal(result.state, "installed");
+  assert.equal(result.version, "0.1.0");
+  assert.equal(result.integrity.status, "verified");
+  assert.equal(result.integrity.integrityResult.status, "verified_ok");
+  assert.equal(result.dependencyStatus, "ok");
 });

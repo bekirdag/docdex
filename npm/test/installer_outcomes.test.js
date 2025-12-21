@@ -114,9 +114,13 @@ async function writeInstallMetadata({
   archiveDownloadUrl = null
 }) {
   const metadataPath = path.join(distDir, "docdexd-install.json");
+<<<<<<< HEAD
   const resolvedArchiveName =
     typeof archiveName === "string" && archiveName.trim() ? archiveName.trim() : `docdexd-${platformKey}.tar.gz`;
 >>>>>>> mcoda/task/ops-01-us-06-t03
+=======
+  const installedAt = new Date().toISOString();
+>>>>>>> mcoda/task/bck-05-us-06-t43
   const payload = {
 <<<<<<< HEAD
     schemaVersion: 2,
@@ -124,7 +128,8 @@ async function writeInstallMetadata({
     expectedVersion,
 =======
     schemaVersion: 1,
-    installedAt: new Date().toISOString(),
+    installedAt,
+    lastVerifiedAt: installedAt,
     version,
     expectedVersion: version,
     installedVersion: version,
@@ -159,8 +164,21 @@ async function writeInstallMetadata({
       tag: `v${version}`,
       sha256: null,
       source: null,
+<<<<<<< HEAD
       downloadUrl: null
 >>>>>>> mcoda/task/ops-01-us-03-t43
+=======
+      downloadUrl: null,
+      manifestName: null,
+      manifestVersion: null
+    },
+    provenance: {
+      source: null,
+      repoSlug,
+      downloadUrl: null,
+      manifestName: null,
+      manifestVersion: null
+>>>>>>> mcoda/task/bck-05-us-06-t43
     }
 >>>>>>> mcoda/task/ops-01-us-06-t03
   };
@@ -1403,10 +1421,15 @@ test("installer outcome: version mismatch after install fails and preserves exis
   assert.equal(meta.platformKey, platformKey);
   assert.equal(typeof meta.binary?.sha256, "string");
   assert.equal(meta.binary.sha256.length, 64);
+<<<<<<< HEAD
 
   const installedBinary = await fs.promises.readFile(path.join(distDir, "docdexd"), "utf8");
   assert.equal(installedBinary, "new-binary\n");
 >>>>>>> mcoda/task/ops-01-us-03-t15
+=======
+  assert.equal(typeof meta.lastVerifiedAt, "string");
+  assert.equal(meta.provenance?.source, "fallback");
+>>>>>>> mcoda/task/bck-05-us-06-t43
 });
 
 test("installer outcome: repair reinstalls when binary hash mismatches metadata", async (t) => {

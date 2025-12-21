@@ -2573,6 +2573,80 @@ fn mcp_missing_dependency_errors_include_details() -> Result<(), Box<dyn Error>>
 }
 
 #[test]
+fn mcp_missing_index_is_consistent_across_tools() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let mut mcp = McpHarness::spawn(repo.path())?;
+
+    let cases = vec![
+        ("docdex_search", json!({ "query": "MCP_ROADMAP" })),
+        ("docdex_files", json!({})),
+        ("docdex_stats", json!({})),
+        ("docdex_open", json!({ "path": "docs/overview.md" })),
+        ("docdex_memory_store", json!({ "text": "hello" })),
+        ("docdex_memory_recall", json!({ "query": "hello" })),
+    ];
+
+    for (idx, (tool, args)) in cases.into_iter().enumerate() {
+        send_line(
+            &mut mcp.stdin,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 100 + idx as i64,
+                "method": "tools/call",
+                "params": { "name": tool, "arguments": args }
+            }),
+        )?;
+        let resp = read_line(&mut mcp.reader)?;
+        assert_eq!(mcp_error_code(&resp), Some(-32602));
+        assert_eq!(
+            mcp_error_data_code(&resp),
+            Some("missing_index"),
+            "{tool} should map missing index to the canonical code"
+        );
+    }
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_missing_index_is_consistent_across_tools() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let mut mcp = McpHarness::spawn(repo.path())?;
+
+    let cases = vec![
+        ("docdex_search", json!({ "query": "MCP_ROADMAP" })),
+        ("docdex_files", json!({})),
+        ("docdex_stats", json!({})),
+        ("docdex_open", json!({ "path": "docs/overview.md" })),
+        ("docdex_memory_store", json!({ "text": "hello" })),
+        ("docdex_memory_recall", json!({ "query": "hello" })),
+    ];
+
+    for (idx, (tool, args)) in cases.into_iter().enumerate() {
+        send_line(
+            &mut mcp.stdin,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 100 + idx as i64,
+                "method": "tools/call",
+                "params": { "name": tool, "arguments": args }
+            }),
+        )?;
+        let resp = read_line(&mut mcp.reader)?;
+        assert_eq!(mcp_error_code(&resp), Some(-32602));
+        assert_eq!(
+            mcp_error_data_code(&resp),
+            Some("missing_index"),
+            "{tool} should map missing index to the canonical code"
+        );
+    }
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
 fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn Error>> {
 >>>>>>> mcoda/task/bck-05-us-06-t32
     let repo = setup_repo()?;

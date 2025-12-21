@@ -249,6 +249,7 @@ const MAX_ERROR_REASON_BYTES: usize = 768;
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 >>>>>>> mcoda/task/bck-05-us-10-t25
 =======
@@ -329,6 +330,9 @@ const MCP_CANONICAL_CODES: &[&str] = &[
     ERR_INTERNAL_ERROR,
 ];
 >>>>>>> mcoda/task/bck-05-us-06-t15
+=======
+const INDEX_META_FILENAME: &str = "meta.json";
+>>>>>>> mcoda/task/bck-05-us-06-t18
 
 #[derive(Error, Debug)]
 #[error("path must be relative and not contain parent components")]
@@ -359,13 +363,20 @@ struct MissingSymbolsIndexError {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum IndexState {
     Fresh,
+=======
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IndexReadiness {
+    Ready,
+>>>>>>> mcoda/task/bck-05-us-06-t18
     Missing,
     Stale,
 }
 
+<<<<<<< HEAD
 #[derive(Clone)]
 struct IndexStateSnapshot {
     state: IndexState,
@@ -664,6 +675,8 @@ fn insert_trace_fields(
 >>>>>>> mcoda/task/bck-05-us-06-t30
 }
 
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t18
 fn mcp_error_data(
     code: &'static str,
     data_message: String,
@@ -2703,8 +2716,15 @@ pub async fn serve(
     rate_limit_burst: u32,
     repo_manager_config: RepoManagerConfig,
 ) -> Result<()> {
+<<<<<<< HEAD
     let repo_resolution = repo_resolution::resolve_repo_root(&repo_root);
     let repo_root = repo_resolution.repo_root;
+=======
+    let repo_root = repo_root
+        .canonicalize()
+        .context("resolve repo root for MCP server")?;
+    let index_readiness = detect_index_readiness(index_config.state_dir());
+>>>>>>> mcoda/task/bck-05-us-06-t18
     // Try to open with a writer; if the index is already locked (another docdexd
     // instance is indexing), fall back to read-only so search/open still work.
     let (indexer, index_writer_available) = match Indexer::with_config(repo_root.clone(), index_config.clone()) {
@@ -2811,6 +2831,7 @@ pub async fn serve(
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         rate_limit_per_min,
         rate_limit_burst,
         effective_rate_limit_burst: effective_burst,
@@ -2833,6 +2854,9 @@ pub async fn serve(
 =======
         session_id: Uuid::new_v4().to_string(),
 >>>>>>> mcoda/task/bck-05-us-06-t30
+=======
+        index_readiness,
+>>>>>>> mcoda/task/bck-05-us-06-t18
     };
     server.run().await
 }
@@ -2867,6 +2891,7 @@ struct McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     rate_limit_per_min: u32,
     rate_limit_burst: u32,
     effective_rate_limit_burst: u32,
@@ -2883,6 +2908,9 @@ struct McpServer {
 =======
     repo_manager_config: RepoManagerConfig,
 >>>>>>> mcoda/task/bck-05-us-07-t02
+=======
+    index_readiness: IndexReadiness,
+>>>>>>> mcoda/task/bck-05-us-06-t18
 }
 
 impl McpServer {
@@ -4765,6 +4793,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.ensure_schema_version("docdex_search", args.schema_version)?;
 =======
         self.ensure_index_fresh()?;
@@ -4784,6 +4813,9 @@ impl McpServer {
 =======
         self.ensure_index_ready()?;
 >>>>>>> mcoda/task/bck-05-us-08-t05
+=======
+        self.ensure_index_ready()?;
+>>>>>>> mcoda/task/bck-05-us-06-t18
         let query = args.query.trim();
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -4938,8 +4970,12 @@ impl McpServer {
             let _ = self.indexer.reindex_all_with_summary().await?;
 =======
             self.indexer.reindex_all().await?;
+<<<<<<< HEAD
             self.index_state_cache = None;
 >>>>>>> mcoda/task/bck-05-us-08-t04
+=======
+            self.index_readiness = IndexReadiness::Ready;
+>>>>>>> mcoda/task/bck-05-us-06-t18
             return Ok(json!({
                 "status": "ok",
                 "action": "reindex_all",
@@ -5009,6 +5045,7 @@ impl McpServer {
             }));
         }
 <<<<<<< HEAD
+<<<<<<< HEAD
         if ingested.len() > self.limits.max_index_items {
             ingested.truncate(self.limits.max_index_items);
         }
@@ -5018,6 +5055,9 @@ impl McpServer {
 =======
         self.index_state_cache = None;
 >>>>>>> mcoda/task/bck-05-us-08-t04
+=======
+        self.index_readiness = IndexReadiness::Ready;
+>>>>>>> mcoda/task/bck-05-us-06-t18
         Ok(json!({
             "status": "ok",
             "action": "ingest",
@@ -5034,6 +5074,7 @@ impl McpServer {
 
     async fn handle_files(&mut self, args: FilesArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5070,6 +5111,9 @@ impl McpServer {
 =======
         self.ensure_index_ready()?;
 >>>>>>> mcoda/task/bck-05-us-08-t05
+=======
+        self.ensure_index_ready()?;
+>>>>>>> mcoda/task/bck-05-us-06-t18
         let limit = args
             .limit
             .unwrap_or(limits::MCP_FILES_DEFAULT_LIMIT)
@@ -5120,6 +5164,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.ensure_schema_version("docdex_stats", args.schema_version)?;
 =======
         self.ensure_index_fresh()?;
@@ -5142,6 +5187,9 @@ impl McpServer {
 =======
         self.ensure_index_ready()?;
 >>>>>>> mcoda/task/bck-05-us-08-t05
+=======
+        self.ensure_index_ready()?;
+>>>>>>> mcoda/task/bck-05-us-06-t18
         let stats = self.indexer.stats()?;
         let run_summaries = self.indexer.run_summaries(args.runs_limit)?;
 =======
@@ -5222,10 +5270,14 @@ impl McpServer {
     async fn handle_open(&self, args: OpenArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.ensure_schema_version("docdex_open", args.schema_version)?;
 =======
         self.ensure_index_ready()?;
 >>>>>>> mcoda/task/bck-05-us-08-t02
+=======
+        self.ensure_index_ready()?;
+>>>>>>> mcoda/task/bck-05-us-06-t18
         let rel_path = normalize_rel_path(&args.path).ok_or(InvalidPathError)?;
         let abs_path = self.repo_root.join(&rel_path);
         let canonical = abs_path
@@ -5289,6 +5341,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.ensure_schema_version("docdex_symbols", args.schema_version)?;
 =======
         self.indexer.preflight_index_state()?;
@@ -5296,6 +5349,9 @@ impl McpServer {
 =======
         self.ensure_index_ready()?;
 >>>>>>> mcoda/task/bck-05-us-08-t02
+=======
+        self.ensure_index_ready()?;
+>>>>>>> mcoda/task/bck-05-us-06-t18
         if !self.indexer.config().symbols_enabled() {
             return Err(missing_dependency_error(
                 "DOCDEX_ENABLE_SYMBOL_EXTRACTION",
@@ -5379,7 +5435,11 @@ impl McpServer {
     async fn handle_memory_store(&self, args: MemoryStoreArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.ensure_schema_version("docdex_memory_store", args.schema_version)?;
+=======
+        self.ensure_index_ready()?;
+>>>>>>> mcoda/task/bck-05-us-06-t18
         let Some(memory) = self.memory.clone() else {
 <<<<<<< HEAD
             return Err(AppError::new(
@@ -5434,7 +5494,11 @@ impl McpServer {
     async fn handle_memory_recall(&self, args: MemoryRecallArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.ensure_schema_version("docdex_memory_recall", args.schema_version)?;
+=======
+        self.ensure_index_ready()?;
+>>>>>>> mcoda/task/bck-05-us-06-t18
         let Some(memory) = self.memory.clone() else {
 <<<<<<< HEAD
             return Err(AppError::new(
@@ -5884,6 +5948,48 @@ fn apply_symbols_bounds(limits: &MaxSizePolicy, payload: &mut crate::symbols::Sy
         .into())
 >>>>>>> mcoda/task/bck-05-us-06-t17
     }
+
+    fn ensure_index_ready(&self) -> Result<()> {
+        let readiness = match self.index_readiness {
+            IndexReadiness::Missing | IndexReadiness::Stale => self.index_readiness,
+            IndexReadiness::Ready => detect_index_readiness(self.indexer.config().state_dir()),
+        };
+        match readiness {
+            IndexReadiness::Ready => Ok(()),
+            IndexReadiness::Missing => Err(self.index_readiness_error(IndexReadiness::Missing).into()),
+            IndexReadiness::Stale => Err(self.index_readiness_error(IndexReadiness::Stale).into()),
+        }
+    }
+
+    fn index_readiness_error(&self, readiness: IndexReadiness) -> AppError {
+        let state_dir = self.indexer.config().state_dir().display().to_string();
+        match readiness {
+            IndexReadiness::Missing => AppError::new(
+                ERR_MISSING_INDEX,
+                format!(
+                    "index not found at {}; run `docdexd index --repo <repo>` first",
+                    state_dir
+                ),
+            )
+            .with_details(json!({ "state_dir": state_dir })),
+            IndexReadiness::Stale => AppError::new(
+                ERR_STALE_INDEX,
+                "index is stale; run `docdex_index` to refresh",
+            )
+            .with_details(json!({ "state_dir": state_dir })),
+            IndexReadiness::Ready => AppError::new(ERR_INTERNAL_ERROR, "index readiness is ready"),
+        }
+    }
+}
+
+fn detect_index_readiness(state_dir: &Path) -> IndexReadiness {
+    if !state_dir.exists() {
+        return IndexReadiness::Missing;
+    }
+    if !state_dir.join(INDEX_META_FILENAME).exists() {
+        return IndexReadiness::Missing;
+    }
+    IndexReadiness::Ready
 }
 
 fn is_lock_busy(err: &anyhow::Error) -> bool {

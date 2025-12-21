@@ -3222,6 +3222,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
                     match policy::ensure_repo_match(
                         client_root,
                         &self.repo_root,
@@ -3328,10 +3329,14 @@ impl McpServer {
 =======
                     if let Err(err) = self.ensure_same_repo(client_root) {
 >>>>>>> mcoda/task/bck-05-us-06-t35
+=======
+                    if let Err(err) = self.ensure_same_repo(client_root) {
+>>>>>>> mcoda/task/bck-05-us-06-t05
                         return Ok(Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,
                             id: id.clone(),
                             result: None,
+<<<<<<< HEAD
 <<<<<<< HEAD
                             error: Some(rpc_error(
                                 ERR_INVALID_REQUEST,
@@ -3351,11 +3356,19 @@ impl McpServer {
                             error: Some(rpc_tool_error(&err, None)),
                         }));
                     }
+=======
+                            error: Some(rpc_tool_error(&err, None)),
+                        }));
+                    }
+>>>>>>> mcoda/task/bck-05-us-06-t05
                     let canon = client_root
                         .canonicalize()
                         .unwrap_or_else(|_| client_root.to_path_buf());
                     self.default_project_root = Some(canon);
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-06-t35
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t05
                 }
                 let protocol_version = init_params
                     .protocol_version

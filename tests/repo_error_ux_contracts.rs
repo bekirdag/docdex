@@ -450,6 +450,7 @@ fn cli_repo_state_mismatch_fast_fails_with_fingerprint_and_guidance() -> Result<
 
 #[test]
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn cli_repo_state_meta_drift_fails_closed() -> Result<(), Box<dyn Error>> {
     let workspace = TempDir::new()?;
     let state_root = TempDir::new()?;
@@ -528,12 +529,33 @@ fn cli_missing_index_returns_actionable_hint() -> Result<(), Box<dyn Error>> {
 
     assert!(!output.status.success(), "expected non-zero exit");
 >>>>>>> mcoda/task/bck-05-us-08-t09
+=======
+fn cli_rejects_state_dir_traversal() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    write_repo(repo.path(), "doc.md", "token")?;
+
+    let output = Command::new(docdex_bin())
+        .args([
+            "index",
+            "--repo",
+            repo.path().to_string_lossy().as_ref(),
+            "--state-dir",
+            "../outside",
+        ])
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "expected invalid_argument when state_dir escapes repo root"
+    );
+>>>>>>> mcoda/task/bck-05-us-06-t05
     let payload = parse_error(&output.stderr)?;
     assert_eq!(
         payload
             .get("error")
             .and_then(|e| e.get("code"))
             .and_then(|v| v.as_str()),
+<<<<<<< HEAD
 <<<<<<< HEAD
         Some("repo_state_mismatch")
 =======
@@ -746,5 +768,9 @@ fn cli_stale_index_returns_actionable_hint() -> Result<(), Box<dyn Error>> {
         "expected recoverySteps to mention docdexd index; got: {details}"
     );
 >>>>>>> mcoda/task/bck-05-us-08-t09
+=======
+        Some("invalid_argument")
+    );
+>>>>>>> mcoda/task/bck-05-us-06-t05
     Ok(())
 }

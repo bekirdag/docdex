@@ -56,6 +56,7 @@ Compatibility guidance for clients:
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 Note: `rate_limited` uses a specialized `error.data` shape for retry hints (see
 `docs/contracts/rate_limit_error_contract_v1.md`) and does not include the full nested envelope.
 =======
@@ -101,6 +102,16 @@ Correlation metadata:
 - MCP tool results include `request_id`, `session_id`, and `tracing` at the top level of the JSON payload returned inside `result.content[0].text`.
 - `tracing.enabled` reflects whether the MCP server has tracing enabled at WARN level; when false, request/session ids are still generated but may not appear in logs.
 >>>>>>> mcoda/task/bck-05-us-06-t30
+=======
+## Repo context rules (MCP)
+
+- `docdexd mcp` is started with a single `--repo` root; tools are repo-scoped and must not cross that boundary.
+- Each tool accepts optional `project_root`. If provided, it must exist and canonicalize to the server `--repo` root.
+  - Mismatch returns `unknown_repo` (JSON-RPC `-32602` for tool calls).
+  - Missing path returns `missing_repo_path` (JSON-RPC `-32602` for tool calls).
+- If `project_root` is omitted, the server uses `initialize.workspace_root`/`initialize.project_root` when provided and validated; otherwise it falls back to the server `--repo`.
+- During `initialize`, a mismatched `workspace_root`/`project_root` returns `unknown_repo` under JSON-RPC `-32600` (`invalid_request`) with `details.expected`/`details.got`.
+>>>>>>> mcoda/task/bck-05-us-06-t08
 
 ## Code taxonomy (machine-readable)
 
@@ -200,6 +211,12 @@ This mirrors the HTTP invalid-argument contract used by `/v1/graph/impact`.
 =======
 - `max_content_exceeded`: response content would exceed server limits (reserved for surfaces that choose errors over truncation).
 >>>>>>> mcoda/task/bck-05-us-06-t13
+
+Across MCP tools, validation failures map to JSON-RPC `-32602` with this envelope; the distinction is:
+
+- `invalid_params`: malformed JSON or schema/type mismatch.
+- `invalid_argument`: well-formed but semantically invalid values.
+- Tool-specific errors (`invalid_query`, `invalid_path`, `invalid_range`, `max_content_exceeded`) for domain checks.
 
 ### Feature/domain codes (currently emitted)
 
@@ -329,6 +346,7 @@ Diagnostics:
 - For these errors, `error.data.details` may include `normalizedPath`, `attemptedFingerprint`, `knownCanonicalPath`, and a `recoverySteps` array intended to be directly actionable in UX.
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 ## Index-state errors (missing/stale)
 
 Docdex fast-fails on missing or stale index state to avoid serving out-of-date results. These errors include actionable hints and recovery steps (no auto-fixing).
@@ -339,6 +357,16 @@ Docdex fast-fails on missing or stale index state to avoid serving out-of-date r
 =======
 For a full upgrade/migration and recovery guide, see `docs/ops/state_upgrade_migration.md`.
 >>>>>>> mcoda/task/bck-05-us-07-t13
+=======
+## Traceability/correlation metadata (client-visible)
+
+Docdex exposes a small, repo-scoped metadata surface for debugging and correlation without leaking cross-repo identifiers:
+
+- Success responses echo `repo_root` (server root) and `project_root` (resolved request root). `docdex_search` also returns `state_dir` and the effective `limit`.
+- `docdex_search.meta` includes `generated_at_epoch_ms`, optional `index_last_updated_epoch_ms`, and `query` (`raw`, `effective`, `rewrite`). MCP sets `meta.repo_root` to the resolved `project_root`.
+- HTTP responses include `x-request-id` headers for correlation; MCP does not emit request IDs today.
+- Repo-resolution error `details` include only the requested path and the configured repo root (`normalizedPath`, `knownCanonicalPath`, optional `attemptedFingerprint`, `recoverySteps`); no other repo identifiers are disclosed.
+>>>>>>> mcoda/task/bck-05-us-06-t08
 
 ## Parity mapping (HTTP / CLI / MCP)
 
@@ -359,7 +387,8 @@ Docdex presents the same underlying failures in three different wrappers:
 | --- | --- | --- | --- | --- |
 | Missing repo context | `missing_repo` | `-32602` | N/A for per-repo daemon (repo is configured at startup) | N/A for per-repo CLI (repo is required via `--repo`) |
 | Repo path missing on disk | `missing_repo_path` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"missing_repo_path",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"missing_repo_path",...}}` |
-| Repo mismatch (`project_root` does not match server repo) | `unknown_repo` | `-32602` | N/A (daemon is started per-repo) | N/A (CLI always has `--repo`; mismatch is not represented) |
+| Repo mismatch (`project_root` does not match server repo) | `unknown_repo` | `-32602` (tools) | N/A (daemon is started per-repo) | N/A (CLI always has `--repo`; mismatch is not represented) |
+| Initialize repo mismatch (`initialize.workspace_root`/`project_root`) | `unknown_repo` | `-32600` | N/A | N/A |
 | Repo state mismatch (unsafe to associate state) | `repo_state_mismatch` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"repo_state_mismatch",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"repo_state_mismatch",...}}` |
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -391,6 +420,7 @@ Docdex presents the same underlying failures in three different wrappers:
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 | Rate limited | `rate_limited` | `-32029` | `429` with JSON error envelope + retry hints | N/A (CLI not rate limited) |
 =======
 | Rate limited | `rate_limited` | `-32029` | `429` with JSON `{error:{code,message,retry_after_ms,retry_at?,limit_key,scope}}` | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
@@ -413,6 +443,9 @@ Docdex presents the same underlying failures in three different wrappers:
 =======
 | Rate limited | `rate_limited` | `-32029` | `429` (security middleware returns status-only; no JSON envelope) | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
 >>>>>>> mcoda/task/bck-05-us-06-t26
+=======
+| Rate limited | `rate_limited` | `-32029` | `429` with JSON `{error:{code:"rate_limited",...}}` and `Retry-After` header | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
+>>>>>>> mcoda/task/bck-05-us-06-t08
 | Optional dependency disabled (e.g. symbols) | `missing_dependency` | `-32602` | N/A (no HTTP endpoint for MCP symbols) | N/A (no CLI symbols command) |
 | Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_argument` | `-32602` | N/A | N/A |
 =======
@@ -442,6 +475,7 @@ Assumption: there is no dedicated corrupt-state code today; repeated `internal_e
 
 Notes:
 
+<<<<<<< HEAD
 - For `rate_limited` and `backoff_required`, MCP `error.data.details` includes retry hints with stable fields: `retry_after_ms` (integer milliseconds) and optional `retry_at` (RFC3339). Rate limiting also includes `limit_key` and `scope` in the same `details` object.
 - HTTP `/search` enforces `limit` by clamping to the daemon’s configured max and does not error on over-limit; MCP `docdex_search` similarly clamps `limit` to the MCP server’s `--max-results`.
 <<<<<<< HEAD
@@ -453,6 +487,10 @@ Notes:
 =======
 - MCP `docdex_symbols` clamps `limit` to `<= 1000` and truncates `symbols[].signature` plus `outcome.reason`/`outcome.error_summary` to `<= 512` bytes.
 >>>>>>> mcoda/task/bck-05-us-10-t07
+=======
+- HTTP `/search` clamps `limit` to the daemon’s configured max and does not error on over-limit; MCP `docdex_search` similarly clamps `limit` to the server’s `--max-results` and returns the effective `limit`.
+- MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`, returning the effective values.
+>>>>>>> mcoda/task/bck-05-us-06-t08
 - MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with `details.max_bytes` and `details.actual_bytes`.
 <<<<<<< HEAD
 <<<<<<< HEAD

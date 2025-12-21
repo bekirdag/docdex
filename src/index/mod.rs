@@ -20,6 +20,7 @@ use crate::error::{
     repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
     ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
 };
+use crate::repo_resolution;
 use crate::symbols;
 use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
 use walkdir::WalkDir;
@@ -286,7 +287,9 @@ impl IndexConfig {
         extra_excluded_prefixes: Vec<String>,
         symbols_enabled: bool,
     ) -> Result<Self> {
-        let state_dir = resolve_state_dir(repo_root, state_dir)?;
+        let resolved = repo_resolution::resolve_repo_root(repo_root);
+        let repo_root = resolved.repo_root;
+        let state_dir = resolve_state_dir(&repo_root, state_dir)?;
         let mut excluded_dir_names: Vec<String> = DEFAULT_EXCLUDED_DIR_NAMES
             .iter()
             .map(|value| value.to_string())
@@ -313,7 +316,7 @@ impl IndexConfig {
                 excluded_relative_prefixes.push(normalized);
             }
         }
-        if let Ok(rel_state) = state_dir.strip_prefix(repo_root) {
+        if let Ok(rel_state) = state_dir.strip_prefix(&repo_root) {
             let normalized = normalize_prefix(rel_state.to_string_lossy().as_ref());
             if !normalized.is_empty() && !excluded_relative_prefixes.contains(&normalized) {
                 excluded_relative_prefixes.push(normalized);

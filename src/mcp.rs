@@ -9,6 +9,7 @@ use crate::libs;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::ratelimit::RateLimiter;
+use crate::repo_resolution;
 use crate::search;
 use crate::symbols::SymbolsStore;
 use anyhow::{Context, Result};
@@ -432,9 +433,8 @@ pub async fn serve(
     rate_limit_per_min: u32,
     rate_limit_burst: u32,
 ) -> Result<()> {
-    let repo_root = repo_root
-        .canonicalize()
-        .context("resolve repo root for MCP server")?;
+    let repo_resolution = repo_resolution::resolve_repo_root(&repo_root);
+    let repo_root = repo_resolution.repo_root;
     // Try to open with a writer; if the index is already locked (another docdexd
     // instance is indexing), fall back to read-only so search/open still work.
     let indexer = match Indexer::with_config(repo_root.clone(), index_config.clone()) {
@@ -490,6 +490,7 @@ pub async fn serve(
     .flatten();
     let mut server = McpServer {
         repo_root,
+        repo_normalized_path: repo_resolution.normalized_path,
         indexer,
         libs_indexer,
         max_results: max_results.max(1),
@@ -508,6 +509,7 @@ struct McpMemoryState {
 
 struct McpServer {
     repo_root: PathBuf,
+    repo_normalized_path: String,
     indexer: Indexer,
     libs_indexer: Option<libs::LibsIndexer>,
     max_results: usize,
@@ -628,44 +630,44 @@ impl McpServer {
                     .or(init_params.project_root)
                     .as_ref()
                 {
-                    match client_root.canonicalize() {
-                        Ok(canon) => {
-                            if canon != self.repo_root {
-                                return Ok(Some(RpcResponse {
-                                    jsonrpc: JSONRPC_VERSION,
-                                    id: id.clone(),
-                                    result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_REQUEST,
-                                        default_message_for_code(ERR_UNKNOWN_REPO),
-                                        ERR_UNKNOWN_REPO,
-                                        None,
-                                        None,
-                                        Some(json!({
-                                            "expected": self.repo_root.display().to_string(),
-                                            "got": canon.display().to_string()
-                                        })),
-                                    )),
-                                }));
-                            }
-                            self.default_project_root = Some(canon);
-                        }
+                    let canon = match client_root.canonicalize() {
+                        Ok(canon) => canon,
                         Err(err) => {
                             return Ok(Some(RpcResponse {
                                 jsonrpc: JSONRPC_VERSION,
                                 id: id.clone(),
                                 result: None,
-                            error: Some(rpc_error(
-                                ERR_INVALID_REQUEST,
-                                default_message_for_code("invalid_request"),
-                                "invalid_request",
-                                Some(err.to_string()),
-                                None,
-                                None,
-                            )),
+                                error: Some(rpc_error(
+                                    ERR_INVALID_REQUEST,
+                                    default_message_for_code("invalid_request"),
+                                    "invalid_request",
+                                    Some(err.to_string()),
+                                    None,
+                                    None,
+                                )),
                             }));
                         }
+                    };
+                    let client_resolution = repo_resolution::resolve_repo_root(&canon);
+                    if client_resolution.normalized_path != self.repo_normalized_path {
+                        return Ok(Some(RpcResponse {
+                            jsonrpc: JSONRPC_VERSION,
+                            id: id.clone(),
+                            result: None,
+                            error: Some(rpc_error(
+                                ERR_INVALID_REQUEST,
+                                default_message_for_code(ERR_UNKNOWN_REPO),
+                                ERR_UNKNOWN_REPO,
+                                None,
+                                None,
+                                Some(json!({
+                                    "expected": self.repo_root.display().to_string(),
+                                    "got": client_resolution.repo_root.display().to_string()
+                                })),
+                            )),
+                        }));
                     }
+                    self.default_project_root = Some(client_resolution.repo_root);
                 }
                 let protocol_version = init_params
                     .protocol_version
@@ -1589,7 +1591,7 @@ impl McpServer {
             let details = repo_resolution_details(
                 normalized_path,
                 None,
-                Some(self.repo_root.to_string_lossy().replace('\\', "/")),
+                Some(self.repo_normalized_path.clone()),
                 vec![
                     "Repo may have moved or been renamed.".to_string(),
                     "Pass the current repo path (or omit `project_root` to use the MCP server default)."
@@ -1605,13 +1607,12 @@ impl McpServer {
             );
         }
 
-        let normalized = candidate.canonicalize().unwrap_or_else(|_| candidate.to_path_buf());
-        if normalized != self.repo_root {
-            let attempted_fingerprint = crate::repo_identity::repo_fingerprint_sha256(&normalized).ok();
+        let resolution = repo_resolution::resolve_repo_root(candidate);
+        if resolution.normalized_path != self.repo_normalized_path {
             let details = repo_resolution_details(
-                normalized.to_string_lossy().replace('\\', "/"),
-                attempted_fingerprint,
-                Some(self.repo_root.to_string_lossy().replace('\\', "/")),
+                resolution.normalized_path,
+                resolution.fingerprint,
+                Some(self.repo_normalized_path.clone()),
                 vec![
                     "Repo may have moved or been renamed.".to_string(),
                     "Restart the MCP server with `docdexd mcp --repo <repo>` matching the repo you want to use."

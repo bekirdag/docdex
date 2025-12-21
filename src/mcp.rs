@@ -4379,6 +4379,7 @@ impl McpServer {
         let mut symbols_budget = SymbolsBudget::new(crate::symbols::MAX_SYMBOLS_PER_RUN);
         for path in args.paths {
 <<<<<<< HEAD
+<<<<<<< HEAD
             let resolved = if path.is_absolute() {
                 path
             } else {
@@ -4401,6 +4402,9 @@ impl McpServer {
 =======
             let resolved = self.resolve_ingest_path(path)?;
 >>>>>>> mcoda/task/bck-05-us-06-t46
+=======
+            let resolved = self.resolve_repo_scoped_path(&path)?;
+>>>>>>> mcoda/task/bck-05-us-06-t31
             let path_display = resolved.display().to_string();
 <<<<<<< HEAD
             let (decision, _summary) = self.indexer.ingest_file_with_summary(resolved.clone()).await?;
@@ -4997,12 +5001,22 @@ impl McpServer {
             );
 >>>>>>> mcoda/task/bck-05-us-07-t31
         }
+<<<<<<< HEAD
         Ok(())
 =======
     fn ensure_index_fresh(&self) -> Result<()> {
         self.indexer.ensure_index_fresh()
 >>>>>>> mcoda/task/bck-05-us-08-t32
     }
+=======
+        if !candidate.is_dir() {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                format!("repo root is not a directory: {}", candidate.display()),
+            )
+            .into());
+        }
+>>>>>>> mcoda/task/bck-05-us-06-t31
 
 <<<<<<< HEAD
     fn ensure_same_repo(&self, candidate: &Path) -> Result<()> {
@@ -5166,7 +5180,23 @@ impl McpServer {
                 );
             }
         }
-        Ok(())
+        self.ensure_same_repo(&self.repo_root)
+    }
+
+    fn resolve_repo_scoped_path(&self, raw: &Path) -> Result<PathBuf> {
+        let resolved = if raw.is_absolute() {
+            raw.to_path_buf()
+        } else {
+            let rel = normalize_rel_path_buf(raw).ok_or(InvalidPathError)?;
+            self.repo_root.join(rel)
+        };
+        let canonical = resolved
+            .canonicalize()
+            .with_context(|| format!("resolve path {}", resolved.display()))?;
+        if !canonical.starts_with(&self.repo_root) {
+            return Err(PathOutsideRepoError.into());
+        }
+        Ok(resolved)
     }
 
     fn resolve_ingest_path(&self, raw: PathBuf) -> Result<PathBuf> {
@@ -5266,6 +5296,7 @@ fn normalize_rel_path(input: &str) -> Option<PathBuf> {
     }
 }
 
+<<<<<<< HEAD
 fn normalize_rel_for_prefix(path: &Path) -> Option<String> {
     let mut cleaned = path
         .to_string_lossy()
@@ -5376,6 +5407,25 @@ fn scan_repo_for_index_state(
         latest_epoch_ms,
         newer_than_index,
     })
+=======
+fn normalize_rel_path_buf(path: &Path) -> Option<PathBuf> {
+    if path.is_absolute() {
+        return None;
+    }
+    let mut clean = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => continue,
+            Component::Normal(part) => clean.push(part),
+            _ => return None,
+        }
+    }
+    if clean.as_os_str().is_empty() {
+        None
+    } else {
+        Some(clean)
+    }
+>>>>>>> mcoda/task/bck-05-us-06-t31
 }
 
 #[cfg(test)]

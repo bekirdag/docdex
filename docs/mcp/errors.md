@@ -369,6 +369,22 @@ Docdex presents the same underlying failures in three different wrappers:
 | Invalid line window for `docdex_open` | `invalid_range` | `-32602` | N/A | N/A |
 | Internal MCP server failure | `internal_error` | `-32000` | `500` (varies by endpoint) | Exit `1` (varies; may be JSON for `StartupError`/`AppError`) |
 
+## Dependency state signals (index / symbols)
+
+Docdex uses the same reason codes across MCP and CLI:
+
+- MCP: `error.data.code`
+- CLI: `error.code` in the JSON stderr line (this is the CLI reason code)
+
+Common dependency states:
+
+- `missing_dependency`: optional dependency disabled (currently `docdex_symbols` when symbol extraction is off). MCP details include `dependency` and `flag` when available.
+- `missing_index`: required state missing (no repo index, or no symbols record for a path). For `docdex_symbols`, MCP details include `{ "resource": "symbols", "path": "<rel_path>" }`.
+- `stale_index`: reserved for future use; not currently emitted. Treat as a reindex signal.
+- `backoff_required`: index writer unavailable (another `docdexd` is indexing); retry later.
+
+Assumption: there is no dedicated corrupt-state code today; repeated `internal_error` after rebuilding is a practical signal to reset the affected state directory and rebuild it.
+
 Notes:
 
 - For `rate_limited` and `backoff_required`, MCP `error.data.details` includes retry hints with stable fields: `retry_after_ms` (integer milliseconds) and optional `retry_at` (RFC3339). Rate limiting also includes `limit_key` and `scope` in the same `details` object.

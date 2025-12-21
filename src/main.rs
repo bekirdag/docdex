@@ -7,6 +7,7 @@ mod config;
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 mod dag;
 =======
 mod ddg_discovery;
@@ -23,6 +24,9 @@ mod dag;
 =======
 mod dag;
 >>>>>>> mcoda/task/bck-05-us-07-t26
+=======
+mod dag;
+>>>>>>> mcoda/task/bck-05-us-07-t27
 mod daemon;
 mod error;
 <<<<<<< HEAD
@@ -74,7 +78,7 @@ use crate::error::{StartupError, ERR_MISSING_INDEX, ERR_STALE_INDEX};
 use crate::error::{BackoffRequired, StartupError};
 >>>>>>> mcoda/task/bck-05-us-07-t15
 use anyhow::{anyhow, Context, Result};
-use clap::{ArgAction, CommandFactory, Parser, Subcommand};
+use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
 use serde_json::json;
 use std::fs;
 use std::path::Path;
@@ -527,6 +531,7 @@ enum Command {
     },
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     /// View reasoning DAG sessions stored in repo-scoped dag.db.
     Dag {
         #[command(subcommand)]
@@ -564,6 +569,12 @@ enum Command {
         #[command(subcommand)]
         command: DagCommand,
 >>>>>>> mcoda/task/bck-05-us-07-t26
+=======
+    /// Export a session DAG from the local store.
+    Dag {
+        #[command(subcommand)]
+        command: DagCommand,
+>>>>>>> mcoda/task/bck-05-us-07-t27
     },
     /// Manage explicit repo identity mappings for shared state dirs.
     Repo {
@@ -705,6 +716,38 @@ enum RepoCommand {
     Inspect {
         #[command(flatten)]
         repo: RepoArgs,
+    },
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+enum DagFormatArg {
+    Json,
+    Text,
+    Dot,
+}
+
+impl DagFormatArg {
+    fn to_export_format(self) -> dag::DagExportFormat {
+        match self {
+            DagFormatArg::Json => dag::DagExportFormat::Json,
+            DagFormatArg::Text => dag::DagExportFormat::Text,
+            DagFormatArg::Dot => dag::DagExportFormat::Dot,
+        }
+    }
+}
+
+#[derive(Subcommand, Debug)]
+enum DagCommand {
+    /// Export a session DAG in JSON, text, or DOT format.
+    View {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(value_name = "SESSION_ID", value_parser = config::non_empty_string)]
+        session_id: String,
+        #[arg(long, value_enum, default_value = "json")]
+        format: DagFormatArg,
+        #[arg(long, default_value_t = dag::DEFAULT_MAX_NODES)]
+        max_nodes: usize,
     },
 }
 
@@ -1402,6 +1445,7 @@ async fn run() -> Result<()> {
             );
         }
 <<<<<<< HEAD
+<<<<<<< HEAD
         Command::WebResearch {
             repo,
             query,
@@ -1442,12 +1486,18 @@ async fn run() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
 =======
+=======
+>>>>>>> mcoda/task/bck-05-us-07-t27
         Command::Dag { command } => match command {
             DagCommand::View {
                 repo,
                 session_id,
                 format,
+<<<<<<< HEAD
                 output,
+=======
+                max_nodes,
+>>>>>>> mcoda/task/bck-05-us-07-t27
             } => {
                 let repo_root = repo.repo_root();
                 let index_config = index::IndexConfig::with_overrides(
@@ -1461,6 +1511,7 @@ async fn run() -> Result<()> {
                 index::ensure_state_dir_secure(index_config.state_dir())?;
 
                 let store = dag::DagStore::new(index_config.state_dir());
+<<<<<<< HEAD
                 let session = store
                     .load_session(&session_id)
                     .map_err(dag::map_dag_error)?;
@@ -1488,6 +1539,27 @@ async fn run() -> Result<()> {
             }
         },
 >>>>>>> mcoda/task/bck-05-us-07-t26
+=======
+                let options = dag::DagExportOptions::from_optional(Some(max_nodes));
+                let export = store.export_session(&session_id, options)?;
+                let repo_id =
+                    symbols::repo_id_for_root(&repo_root).unwrap_or_else(|_| String::new());
+                let response = dag::build_export_response(&repo_id, &session_id, export);
+
+                match format.to_export_format() {
+                    dag::DagExportFormat::Json => {
+                        println!("{}", serde_json::to_string_pretty(&response)?);
+                    }
+                    dag::DagExportFormat::Text => {
+                        print!("{}", dag::render_text(&response));
+                    }
+                    dag::DagExportFormat::Dot => {
+                        print!("{}", dag::render_dot(&response));
+                    }
+                }
+            }
+        },
+>>>>>>> mcoda/task/bck-05-us-07-t27
         Command::Mcp {
             repo,
             log,

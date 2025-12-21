@@ -628,44 +628,18 @@ impl McpServer {
                     .or(init_params.project_root)
                     .as_ref()
                 {
-                    match client_root.canonicalize() {
-                        Ok(canon) => {
-                            if canon != self.repo_root {
-                                return Ok(Some(RpcResponse {
-                                    jsonrpc: JSONRPC_VERSION,
-                                    id: id.clone(),
-                                    result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_REQUEST,
-                                        default_message_for_code(ERR_UNKNOWN_REPO),
-                                        ERR_UNKNOWN_REPO,
-                                        None,
-                                        None,
-                                        Some(json!({
-                                            "expected": self.repo_root.display().to_string(),
-                                            "got": canon.display().to_string()
-                                        })),
-                                    )),
-                                }));
-                            }
-                            self.default_project_root = Some(canon);
-                        }
-                        Err(err) => {
-                            return Ok(Some(RpcResponse {
-                                jsonrpc: JSONRPC_VERSION,
-                                id: id.clone(),
-                                result: None,
-                            error: Some(rpc_error(
-                                ERR_INVALID_REQUEST,
-                                default_message_for_code("invalid_request"),
-                                "invalid_request",
-                                Some(err.to_string()),
-                                None,
-                                None,
-                            )),
-                            }));
-                        }
+                    if let Err(err) = self.ensure_same_repo(client_root) {
+                        return Ok(Some(RpcResponse {
+                            jsonrpc: JSONRPC_VERSION,
+                            id: id.clone(),
+                            result: None,
+                            error: Some(rpc_tool_error(&err, None)),
+                        }));
                     }
+                    let canon = client_root
+                        .canonicalize()
+                        .unwrap_or_else(|_| client_root.to_path_buf());
+                    self.default_project_root = Some(canon);
                 }
                 let protocol_version = init_params
                     .protocol_version

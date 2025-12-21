@@ -286,7 +286,10 @@ impl IndexConfig {
         extra_excluded_prefixes: Vec<String>,
         symbols_enabled: bool,
     ) -> Result<Self> {
-        let state_dir = resolve_state_dir(repo_root, state_dir)?;
+        let repo_root = repo_root
+            .canonicalize()
+            .unwrap_or_else(|_| repo_root.to_path_buf());
+        let state_dir = resolve_state_dir(&repo_root, state_dir)?;
         let mut excluded_dir_names: Vec<String> = DEFAULT_EXCLUDED_DIR_NAMES
             .iter()
             .map(|value| value.to_string())
@@ -313,7 +316,7 @@ impl IndexConfig {
                 excluded_relative_prefixes.push(normalized);
             }
         }
-        if let Ok(rel_state) = state_dir.strip_prefix(repo_root) {
+        if let Ok(rel_state) = state_dir.strip_prefix(&repo_root) {
             let normalized = normalize_prefix(rel_state.to_string_lossy().as_ref());
             if !normalized.is_empty() && !excluded_relative_prefixes.contains(&normalized) {
                 excluded_relative_prefixes.push(normalized);
@@ -1429,6 +1432,64 @@ fn normalize_for_error(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+fn invalid_state_dir_error(
+    state_dir: &Path,
+    repo_root: &Path,
+    reason: &str,
+    resolved: Option<&Path>,
+) -> AppError {
+    let mut details = serde_json::Map::new();
+    details.insert(
+        "stateDir".to_string(),
+        serde_json::Value::String(normalize_for_error(state_dir)),
+    );
+    details.insert(
+        "repoRoot".to_string(),
+        serde_json::Value::String(normalize_for_error(repo_root)),
+    );
+    details.insert(
+        "reason".to_string(),
+        serde_json::Value::String(reason.to_string()),
+    );
+    if let Some(path) = resolved {
+        details.insert(
+            "resolvedPath".to_string(),
+            serde_json::Value::String(normalize_for_error(path)),
+        );
+    }
+    AppError::new(ERR_INVALID_ARGUMENT, "invalid state dir")
+        .with_details(serde_json::Value::Object(details))
+}
+
+fn normalize_repo_relative_state_dir(state_dir: &Path, repo_root: &Path) -> Result<PathBuf> {
+    let mut cleaned = PathBuf::new();
+    for component in state_dir.components() {
+        match component {
+            Component::CurDir => continue,
+            Component::Normal(part) => cleaned.push(part),
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(
+                    invalid_state_dir_error(
+                        state_dir,
+                        repo_root,
+                        "state_dir must be a repo-relative path without parent components",
+                        None,
+                    )
+                    .into(),
+                );
+            }
+        }
+    }
+    if cleaned.as_os_str().is_empty() {
+        cleaned.push(".");
+    }
+    Ok(cleaned)
+}
+
+fn has_parent_components(path: &Path) -> bool {
+    path.components().any(|component| matches!(component, Component::ParentDir))
+}
+
 fn known_canonical_path_from_repo_meta(index_state_dir: &Path) -> Option<String> {
     if index_state_dir.file_name().and_then(|s| s.to_str())? != "index" {
         return None;
@@ -1511,6 +1572,9 @@ fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<Pat
         )
         .into());
     }
+    let repo_root = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
 
     match state_dir {
         Some(custom) if custom.is_absolute() => {
@@ -1518,10 +1582,31 @@ fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<Pat
             // treat it as a shared *base* directory and scope all state under a repo id.
             // This prevents accidental cross-repo mixing when the same `--state-dir` is
             // used across multiple repos.
-            let repo_root = repo_root
-                .canonicalize()
-                .unwrap_or_else(|_| repo_root.to_path_buf());
+            if has_parent_components(&custom) {
+                return Err(
+                    invalid_state_dir_error(
+                        &custom,
+                        &repo_root,
+                        "state_dir must not contain parent components",
+                        None,
+                    )
+                    .into(),
+                );
+            }
             if custom.starts_with(&repo_root) {
+                if let Ok(canonical) = custom.canonicalize() {
+                    if !canonical.starts_with(&repo_root) {
+                        return Err(
+                            invalid_state_dir_error(
+                                &custom,
+                                &repo_root,
+                                "state_dir resolves outside repo root",
+                                Some(&canonical),
+                            )
+                            .into(),
+                        );
+                    }
+                }
                 return Ok(custom);
             }
             match crate::repo_identity::resolve_shared_index_state_dir(&repo_root, &custom) {
@@ -1546,7 +1631,24 @@ fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<Pat
                 }
             }
         }
-        Some(custom) => Ok(repo_root.join(custom)),
+        Some(custom) => {
+            let cleaned = normalize_repo_relative_state_dir(&custom, &repo_root)?;
+            let candidate = repo_root.join(cleaned);
+            if let Ok(canonical) = candidate.canonicalize() {
+                if !canonical.starts_with(&repo_root) {
+                    return Err(
+                        invalid_state_dir_error(
+                            &custom,
+                            &repo_root,
+                            "state_dir resolves outside repo root",
+                            Some(&canonical),
+                        )
+                        .into(),
+                    );
+                }
+            }
+            Ok(candidate)
+        }
         None => {
             let default_dir = repo_root.join(".docdex").join("index");
             let legacy_dir = repo_root.join(".gpt-creator").join("docdex").join("index");

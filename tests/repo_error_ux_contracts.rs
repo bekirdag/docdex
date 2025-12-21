@@ -207,3 +207,33 @@ fn cli_repo_state_mismatch_fast_fails_with_fingerprint_and_guidance() -> Result<
 
     Ok(())
 }
+
+#[test]
+fn cli_rejects_state_dir_traversal() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    write_repo(repo.path(), "doc.md", "token")?;
+
+    let output = Command::new(docdex_bin())
+        .args([
+            "index",
+            "--repo",
+            repo.path().to_string_lossy().as_ref(),
+            "--state-dir",
+            "../outside",
+        ])
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "expected invalid_argument when state_dir escapes repo root"
+    );
+    let payload = parse_error(&output.stderr)?;
+    assert_eq!(
+        payload
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("invalid_argument")
+    );
+    Ok(())
+}

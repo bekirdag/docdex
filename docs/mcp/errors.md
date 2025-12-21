@@ -182,6 +182,7 @@ Use these codes for invalid inputs:
 - `invalid_path`: invalid or unsafe path (absolute path, parent traversal, outside repo, etc).
 - `invalid_range`: invalid line window (`start_line`/`end_line` out of bounds).
 <<<<<<< HEAD
+<<<<<<< HEAD
 - `max_content_exceeded`: reserved for cases where content cannot be safely truncated (not currently emitted; MCP tools clamp/truncate content to MaxSizePolicy).
 =======
 - `unsupported_version`: requested schema version is outside the supported range for the tool response.
@@ -196,6 +197,9 @@ For `invalid_argument`, `missing_query`, `invalid_query`, `invalid_path`, `inval
 - `fieldErrors`: object keyed by field name with `{ code, message }` entries (grouped view).
 
 This mirrors the HTTP invalid-argument contract used by `/v1/graph/impact`.
+=======
+- `max_content_exceeded`: response content would exceed server limits (reserved for surfaces that choose errors over truncation).
+>>>>>>> mcoda/task/bck-05-us-06-t13
 
 ### Feature/domain codes (currently emitted)
 
@@ -440,6 +444,7 @@ Notes:
 
 - For `rate_limited` and `backoff_required`, MCP `error.data.details` includes retry hints with stable fields: `retry_after_ms` (integer milliseconds) and optional `retry_at` (RFC3339). Rate limiting also includes `limit_key` and `scope` in the same `details` object.
 - HTTP `/search` enforces `limit` by clamping to the daemon’s configured max and does not error on over-limit; MCP `docdex_search` similarly clamps `limit` to the MCP server’s `--max-results`.
+<<<<<<< HEAD
 - MCP list-returning tools (`docdex_search`, `docdex_files`, `docdex_memory_recall`) clamp requested limits to their max and include `limit_info` with `requested`, `max`, `effective`, and `clamped` (true when the requested value is outside `[1, max]`).
 - MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`.
 <<<<<<< HEAD
@@ -504,3 +509,8 @@ Docdex enforces repo-invariant bounds on MCP tool outputs. When a client request
 =======
 - MCP rate-limit errors use the canonical envelope and include retry hints under `error.data.details` (`retry_after_ms`, `retry_at`, `limit_key`, `scope`).
 >>>>>>> mcoda/task/bck-05-us-06-t26
+=======
+- MCP tools that enforce max sizes return a `limits` object describing requested/applied/max values and a `truncated` flag.
+- MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`.
+- MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; when exceeded, it truncates and reports `limits.bytes.max`, `limits.bytes.actual`, and `limits.bytes.returned`.
+>>>>>>> mcoda/task/bck-05-us-06-t13

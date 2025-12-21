@@ -1600,7 +1600,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 name: "docdex_search",
                 description: "Search docs; returns rel_path, summary, snippet, doc_id, token_estimate.",
                 args: &["query (string, required)", "limit (int, optional, clamped)", "project_root (string, optional)"],
-                returns: &["results[]", "repo_root", "state_dir", "limit"],
+                returns: &["results[]", "repo_root", "state_dir", "limit", "limits"],
             },
             AiHelpMcpTool {
                 name: "docdex_index",
@@ -1612,13 +1612,13 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 name: "docdex_files",
                 description: "List indexed docs (rel_path/doc_id/summary/token_estimate) with pagination.",
                 args: &["limit (int, optional, default 200, max 1000)", "offset (int, optional, default 0)", "project_root (string, optional)"],
-                returns: &["results[]", "total", "limit", "offset", "repo_root"],
+                returns: &["results[]", "total", "limit", "offset", "repo_root", "limits"],
             },
             AiHelpMcpTool {
                 name: "docdex_open",
                 description: "Read a file from the repo; optional line range; rejects paths outside the repo; max 512 KiB.",
                 args: &["path (string, required, relative)", "start_line (int, optional)", "end_line (int, optional)", "project_root (string, optional)"],
-                returns: &["path", "start_line", "end_line", "total_lines", "content", "repo_root"],
+                returns: &["path", "start_line", "end_line", "total_lines", "content", "repo_root", "limits"],
             },
             AiHelpMcpTool {
                 name: "docdex_symbols",
@@ -1662,6 +1662,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             AiHelpMcpTool {
                 name: "docdex_memory_recall",
                 description: "Recall memory items by semantic similarity (requires DOCDEX_ENABLE_MEMORY=1).",
+<<<<<<< HEAD
                 args: &[
                     "query (string, required)",
                     "top_k (int, optional)",
@@ -1670,6 +1671,10 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                     "project_root (string, optional)",
                 ],
                 returns: &["results[]"],
+=======
+                args: &["query (string, required)", "top_k (int, optional)", "project_root (string, optional)"],
+                returns: &["results[]", "top_k", "limits"],
+>>>>>>> mcoda/task/bck-05-us-06-t13
             },
         ],
         best_practices: vec![

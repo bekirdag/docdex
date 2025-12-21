@@ -1192,6 +1192,7 @@ fn truncate_bytes(input: String, max_bytes: usize) -> String {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 >>>>>>> mcoda/task/bck-05-us-10-t25
 =======
@@ -1278,6 +1279,19 @@ fn sanitize_reason(input: impl Into<String>) -> String {
 }
 
 >>>>>>> mcoda/task/bck-05-us-06-t35
+=======
+fn truncate_utf8(input: &str, max_bytes: usize) -> (String, bool) {
+    if input.len() <= max_bytes {
+        return (input.to_string(), false);
+    }
+    let mut end = max_bytes;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    (input[..end].to_string(), true)
+}
+
+>>>>>>> mcoda/task/bck-05-us-06-t13
 fn rpc_error(
     rpc_code: i32,
     message: impl Into<String>,
@@ -4821,6 +4835,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         let requested_limit = args.limit;
         let limit = args
             .limit
@@ -4853,6 +4868,11 @@ impl McpServer {
 =======
         let limit = clamp_limit(args.limit, self.max_results, self.max_results);
 >>>>>>> mcoda/task/bck-05-us-06-t35
+=======
+        let requested_limit = args.limit.unwrap_or(self.max_results);
+        let limit = requested_limit.clamp(1, self.max_results);
+        let limit_truncated = requested_limit > limit;
+>>>>>>> mcoda/task/bck-05-us-06-t13
         let hits =
 >>>>>>> mcoda/task/bck-05-us-06-t39
             search::run_query(&self.indexer, self.libs_indexer.as_ref(), query, limit).await?;
@@ -4880,6 +4900,7 @@ impl McpServer {
             warnings: Vec::new(),
         });
         meta.repo_root = project_root_path.clone();
+<<<<<<< HEAD
 <<<<<<< HEAD
         meta.repo_id = meta
             .repo_id
@@ -4911,6 +4932,16 @@ impl McpServer {
                 .collect(),
         });
 >>>>>>> mcoda/task/bck-05-us-10-t12
+=======
+        let limits = json!({
+            "limit": {
+                "requested": requested_limit,
+                "applied": limit,
+                "max": self.max_results,
+                "truncated": limit_truncated
+            }
+        });
+>>>>>>> mcoda/task/bck-05-us-06-t13
         Ok(json!({
             "hits": hits_value.clone(),
             "results": hits_value,
@@ -4919,7 +4950,11 @@ impl McpServer {
             "repo_root": self.repo_root.display().to_string(),
             "state_dir": self.indexer.config().state_dir().display().to_string(),
             "limit": limit,
+<<<<<<< HEAD
             "limit_info": limit_info,
+=======
+            "limits": limits,
+>>>>>>> mcoda/task/bck-05-us-06-t13
             "project_root": project_root_path,
             "meta": meta
         }))
@@ -5087,6 +5122,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
         self.ensure_schema_version("docdex_files", args.schema_version)?;
 >>>>>>> mcoda/task/bck-05-us-10-t21
@@ -5137,13 +5173,36 @@ impl McpServer {
         let limit = clamp_limit(args.limit, FILES_DEFAULT_LIMIT, FILES_MAX_LIMIT);
         let offset = clamp_offset(args.offset, FILES_MAX_OFFSET);
 >>>>>>> mcoda/task/bck-05-us-06-t35
+=======
+        let requested_limit = args.limit.unwrap_or(FILES_DEFAULT_LIMIT);
+        let limit = requested_limit.clamp(1, FILES_MAX_LIMIT);
+        let limit_truncated = requested_limit > limit;
+        let requested_offset = args.offset.unwrap_or(0);
+        let offset = requested_offset.min(FILES_MAX_OFFSET);
+        let offset_truncated = requested_offset > offset;
+>>>>>>> mcoda/task/bck-05-us-06-t13
         let (docs, total) = self.indexer.list_docs(offset, limit)?;
+        let limits = json!({
+            "limit": {
+                "requested": requested_limit,
+                "applied": limit,
+                "max": FILES_MAX_LIMIT,
+                "truncated": limit_truncated
+            },
+            "offset": {
+                "requested": requested_offset,
+                "applied": offset,
+                "max": FILES_MAX_OFFSET,
+                "truncated": offset_truncated
+            }
+        });
         Ok(json!({
             "results": docs,
             "total": total,
             "limit": limit,
             "limit_info": limit_info,
             "offset": offset,
+            "limits": limits,
             "repo_root": self.repo_root.display().to_string(),
             "project_root": self
                 .default_project_root
@@ -5291,12 +5350,21 @@ impl McpServer {
         let lines: Vec<&str> = content.lines().collect();
         let total_lines = lines.len();
         if total_lines == 0 {
+            let limits = json!({
+                "bytes": {
+                    "max": OPEN_MAX_BYTES,
+                    "actual": 0,
+                    "returned": 0,
+                    "truncated": false
+                }
+            });
             return Ok(json!({
                 "path": rel_path.display().to_string(),
                 "start_line": 0,
                 "end_line": 0,
                 "total_lines": 0,
                 "content": "",
+                "limits": limits,
                 "repo_root": self.repo_root.display().to_string(),
                 "project_root": self
                     .default_project_root
@@ -5319,13 +5387,42 @@ impl McpServer {
         let start_idx = start.saturating_sub(1);
         let end_idx = end_raw.saturating_sub(1);
         let slice = lines[start_idx..=end_idx].join("\n");
+<<<<<<< HEAD
         let (bounded, _) = limits::truncate_bytes(&slice, self.limits.max_content_bytes);
+=======
+        let actual_bytes = slice.len();
+        let (content, truncated) = truncate_utf8(&slice, OPEN_MAX_BYTES);
+        let returned_bytes = content.len();
+        let returned_lines = if content.is_empty() {
+            0
+        } else {
+            content.lines().count()
+        };
+        let returned_end_line = if returned_lines == 0 {
+            0
+        } else {
+            start + returned_lines.saturating_sub(1)
+        };
+        let limits = json!({
+            "bytes": {
+                "max": OPEN_MAX_BYTES,
+                "actual": actual_bytes,
+                "returned": returned_bytes,
+                "truncated": truncated
+            }
+        });
+>>>>>>> mcoda/task/bck-05-us-06-t13
         Ok(json!({
             "path": rel_path.display().to_string(),
             "start_line": start,
-            "end_line": end_raw,
+            "end_line": returned_end_line,
             "total_lines": total_lines,
+<<<<<<< HEAD
             "content": bounded,
+=======
+            "content": content,
+            "limits": limits,
+>>>>>>> mcoda/task/bck-05-us-06-t13
             "repo_root": self.repo_root.display().to_string(),
             "project_root": self
                 .default_project_root
@@ -5533,6 +5630,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         let top_k = args.top_k.unwrap_or(5).max(1).min(50);
         let max_items = args.max_items.unwrap_or(top_k).min(50);
         let max_tokens = args.max_tokens;
@@ -5570,10 +5668,16 @@ impl McpServer {
 =======
         let top_k = clamp_limit(args.top_k, 5, 50);
 >>>>>>> mcoda/task/bck-05-us-06-t35
+=======
+        let requested_top_k = args.top_k.unwrap_or(5);
+        let top_k = requested_top_k.max(1).min(50);
+        let top_k_truncated = requested_top_k > top_k;
+>>>>>>> mcoda/task/bck-05-us-06-t13
         let embedding = memory.embedder.embed(query).await?;
 
         let store = memory.store.clone();
         let items = tokio::task::spawn_blocking(move || store.recall(&embedding, top_k)).await??;
+<<<<<<< HEAD
         let max_content_bytes = self.limits.max_content_bytes;
 >>>>>>> mcoda/task/bck-05-us-10-t26
         Ok(json!({
@@ -5606,6 +5710,19 @@ impl McpServer {
             "record_bytes": stored.record_bytes
 =======
             "limit_info": limit_info,
+=======
+        let limits = json!({
+            "top_k": {
+                "requested": requested_top_k,
+                "applied": top_k,
+                "max": 50,
+                "truncated": top_k_truncated
+            }
+        });
+        Ok(json!({
+            "top_k": top_k,
+            "limits": limits,
+>>>>>>> mcoda/task/bck-05-us-06-t13
             "results": items.into_iter().map(|item| json!({
                 "content": item.content,
                 "score": item.score,

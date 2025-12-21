@@ -196,29 +196,33 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         .and_then(|v| v.get("data"))
         .and_then(|v| v.as_object())
         .ok_or("rate-limit error missing error.data object")?;
+    let details = data_files
+        .get("details")
+        .and_then(|v| v.as_object())
+        .ok_or("rate-limit error missing error.data.details object")?;
     assert_eq!(
-        data_files.get("limit_key").and_then(|v| v.as_str()),
+        details.get("limit_key").and_then(|v| v.as_str()),
         Some("mcp_tools")
     );
     assert_eq!(
-        data_files.get("scope").and_then(|v| v.as_str()),
+        details.get("scope").and_then(|v| v.as_str()),
         Some("global")
     );
     assert!(
-        data_files
+        details
             .get("retry_after_ms")
             .and_then(|v| v.as_u64())
             .is_some(),
         "retry_after_ms must be an integer"
     );
     assert!(
-        data_files.keys().all(|k| {
+        details.keys().all(|k| {
             matches!(
                 k.as_str(),
-                "code" | "retry_after_ms" | "retry_at" | "limit_key" | "scope"
+                "retry_after_ms" | "retry_at" | "limit_key" | "scope"
             )
         }),
-        "error.data should only include stable keys"
+        "error.data.details should only include stable keys"
     );
 
     // Wait long enough for the limiter to refill 1 token (per_minute=60).

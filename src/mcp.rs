@@ -12,6 +12,7 @@ use crate::ratelimit::RateLimiter;
 use crate::search;
 use crate::symbols::SymbolsStore;
 use anyhow::{Context, Result};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
@@ -80,13 +81,16 @@ fn mcp_error_data(
     tool: Option<&str>,
     details: Option<serde_json::Value>,
 ) -> serde_json::Value {
-    let message = truncate_bytes(message, MAX_ERROR_MESSAGE_BYTES);
+    let message = sanitize_message(message);
     let message_for_data = message.clone();
+    let reason = reason
+        .map(sanitize_reason)
+        .filter(|value| !value.is_empty());
     let mut envelope_error = serde_json::Map::new();
     envelope_error.insert("code".to_string(), json!(code));
     envelope_error.insert("message".to_string(), json!(message));
-    if let Some(reason) = reason.clone().map(|value| truncate_bytes(value, MAX_ERROR_REASON_BYTES)) {
-        envelope_error.insert("reason".to_string(), json!(reason.clone()));
+    if let Some(reason) = reason.clone() {
+        envelope_error.insert("reason".to_string(), json!(reason));
     }
     if let Some(tool) = tool {
         envelope_error.insert("tool".to_string(), json!(tool));
@@ -100,7 +104,7 @@ fn mcp_error_data(
     data.insert("code".to_string(), json!(code));
     data.insert("message".to_string(), json!(message_for_data));
     data.insert("error".to_string(), envelope_error_value);
-    if let Some(reason) = reason.map(|value| truncate_bytes(value, MAX_ERROR_REASON_BYTES)) {
+    if let Some(reason) = reason {
         data.insert("reason".to_string(), json!(reason));
     }
     if let Some(tool) = tool {
@@ -112,10 +116,9 @@ fn mcp_error_data(
     serde_json::Value::Object(data)
 }
 
-fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
+fn rate_limit_details(err: &RateLimited) -> serde_json::Value {
     #[derive(Serialize)]
-    struct RateLimitData<'a> {
-        code: &'static str,
+    struct RateLimitDetails<'a> {
         retry_after_ms: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         retry_at: Option<String>,
@@ -123,14 +126,13 @@ fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
         scope: &'a str,
     }
 
-    serde_json::to_value(RateLimitData {
-        code: ERR_RATE_LIMITED,
+    serde_json::to_value(RateLimitDetails {
         retry_after_ms: err.retry_after_ms,
         retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
         limit_key: &err.limit_key,
         scope: &err.scope,
     })
-    .expect("rate-limit data should serialize")
+    .expect("rate-limit details should serialize")
 }
 
 fn truncate_bytes(input: String, max_bytes: usize) -> String {
@@ -146,6 +148,42 @@ fn truncate_bytes(input: String, max_bytes: usize) -> String {
     out
 }
 
+fn normalize_error_text(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut prev_space = false;
+    for ch in input.chars() {
+        if ch.is_control() {
+            continue;
+        }
+        if ch.is_whitespace() {
+            if !prev_space {
+                out.push(' ');
+                prev_space = true;
+            }
+            continue;
+        }
+        prev_space = false;
+        out.push(ch);
+    }
+    out.trim().to_string()
+}
+
+fn sanitize_message(input: impl Into<String>) -> String {
+    let normalized = normalize_error_text(&input.into());
+    if normalized.is_empty() {
+        return "error".to_string();
+    }
+    truncate_bytes(normalized, MAX_ERROR_MESSAGE_BYTES)
+}
+
+fn sanitize_reason(input: impl Into<String>) -> String {
+    let normalized = normalize_error_text(&input.into());
+    if normalized.is_empty() {
+        return String::new();
+    }
+    truncate_bytes(normalized, MAX_ERROR_REASON_BYTES)
+}
+
 fn rpc_error(
     rpc_code: i32,
     message: impl Into<String>,
@@ -154,7 +192,7 @@ fn rpc_error(
     tool: Option<&str>,
     details: Option<serde_json::Value>,
 ) -> RpcError {
-    let message = truncate_bytes(message.into(), MAX_ERROR_MESSAGE_BYTES);
+    let message = sanitize_message(message);
     RpcError {
         code: rpc_code,
         message: message.clone(),
@@ -163,11 +201,14 @@ fn rpc_error(
 }
 
 fn rpc_rate_limited(err: &RateLimited) -> RpcError {
-    RpcError {
-        code: ERR_RATE_LIMITED_RPC,
-        message: truncate_bytes(err.message.clone(), MAX_ERROR_MESSAGE_BYTES),
-        data: Some(mcp_rate_limited_data(err)),
-    }
+    rpc_error(
+        ERR_RATE_LIMITED_RPC,
+        err.message.clone(),
+        ERR_RATE_LIMITED,
+        None,
+        None,
+        Some(rate_limit_details(err)),
+    )
 }
 
 fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
@@ -175,8 +216,9 @@ fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
         return rpc_rate_limited(rate);
     }
     let (mcp_code, details) = classify_tool_error(err);
+    let rpc_code = rpc_code_for_mcp_code(mcp_code);
     rpc_error(
-        ERR_INVALID_PARAMS,
+        rpc_code,
         default_message_for_code(mcp_code),
         mcp_code,
         Some(err.to_string()),
@@ -185,8 +227,55 @@ fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
     )
 }
 
+fn rpc_validation_error(
+    err: &serde_json::Error,
+    tool: Option<&str>,
+    method: Option<&str>,
+) -> RpcError {
+    let mut details = serde_json::Map::new();
+    details.insert("validation".to_string(), json!("serde"));
+    if let Some(tool) = tool {
+        details.insert("tool".to_string(), json!(tool));
+    }
+    if let Some(method) = method {
+        details.insert("method".to_string(), json!(method));
+    }
+    rpc_error(
+        ERR_INVALID_PARAMS,
+        default_message_for_code("invalid_params"),
+        "invalid_params",
+        Some(err.to_string()),
+        tool,
+        Some(serde_json::Value::Object(details)),
+    )
+}
+
+fn parse_method_params<T: DeserializeOwned>(
+    params: Option<serde_json::Value>,
+    method: &'static str,
+) -> Result<T, RpcError> {
+    let value = params.unwrap_or_default();
+    serde_json::from_value(value).map_err(|err| rpc_validation_error(&err, None, Some(method)))
+}
+
+fn parse_tool_args<T: DeserializeOwned>(
+    args: serde_json::Value,
+    tool: &'static str,
+) -> Result<T, RpcError> {
+    serde_json::from_value(args).map_err(|err| rpc_validation_error(&err, Some(tool), None))
+}
+
+fn clamp_limit(requested: Option<usize>, default: usize, max: usize) -> usize {
+    requested.unwrap_or(default).clamp(1, max)
+}
+
+fn clamp_offset(requested: Option<usize>, max: usize) -> usize {
+    requested.unwrap_or(0).min(max)
+}
+
 fn default_message_for_code(code: &str) -> &'static str {
     match code {
+        "parse_error" => "parse error",
         "invalid_request" => "invalid request",
         "invalid_params" => "invalid parameters",
         "invalid_argument" => "invalid argument",
@@ -195,6 +284,7 @@ fn default_message_for_code(code: &str) -> &'static str {
         "invalid_path" => "invalid path",
         "invalid_range" => "invalid range",
         "max_content_exceeded" => "content too large",
+        "method_not_found" => "method not found",
         ERR_EMBEDDING_TIMEOUT => "embedding timeout",
         ERR_EMBEDDING_MODEL_NOT_FOUND => "embedding model not found",
         ERR_EMBEDDING_FAILED => "embedding failed",
@@ -212,10 +302,15 @@ fn default_message_for_code(code: &str) -> &'static str {
     }
 }
 
-fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
-    if let Some(rate) = err.downcast_ref::<RateLimited>() {
-        return (rate.code, Some(mcp_rate_limited_data(rate)));
+fn rpc_code_for_mcp_code(code: &str) -> i32 {
+    if code == ERR_INTERNAL_ERROR {
+        ERR_INTERNAL
+    } else {
+        ERR_INVALID_PARAMS
     }
+}
+
+fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
     if let Some(app) = err.downcast_ref::<AppError>() {
         return (app.code, app.details.clone());
     }
@@ -541,7 +636,7 @@ impl McpServer {
                                 result: None,
                                 error: Some(rpc_error(
                                     ERR_PARSE,
-                                    format!("invalid JSON: {err}"),
+                                    default_message_for_code("parse_error"),
                                     "parse_error",
                                     Some(err.to_string()),
                                     None,
@@ -565,7 +660,7 @@ impl McpServer {
                             result: None,
                             error: Some(rpc_error(
                                 ERR_INTERNAL,
-                                "internal error",
+                                default_message_for_code(ERR_INTERNAL_ERROR),
                                 "internal_error",
                                 Some(err.to_string()),
                                 None,
@@ -609,63 +704,41 @@ impl McpServer {
                     result: None,
                     error: Some(rpc_error(
                         ERR_INVALID_REQUEST,
-                        format!("unsupported jsonrpc version: {version}"),
+                        default_message_for_code("invalid_request"),
                         "invalid_request",
+                        Some(format!("unsupported jsonrpc version: {version}")),
                         None,
-                        None,
-                        Some(json!({ "expected": JSONRPC_VERSION })),
+                        Some(json!({
+                            "expected": JSONRPC_VERSION,
+                            "got": version
+                        })),
                     )),
                 }));
             }
         }
         match req.method.as_str() {
             "initialize" => {
-                let init_params: InitializeParams =
-                    serde_json::from_value(req.params.clone().unwrap_or_default())
-                        .unwrap_or_default();
+                let init_params: InitializeParams = serde_json::from_value(
+                    req.params.clone().unwrap_or_default(),
+                )
+                .unwrap_or_default();
                 if let Some(client_root) = init_params
                     .workspace_root
                     .or(init_params.project_root)
                     .as_ref()
                 {
-                    match client_root.canonicalize() {
-                        Ok(canon) => {
-                            if canon != self.repo_root {
-                                return Ok(Some(RpcResponse {
-                                    jsonrpc: JSONRPC_VERSION,
-                                    id: id.clone(),
-                                    result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_REQUEST,
-                                        default_message_for_code(ERR_UNKNOWN_REPO),
-                                        ERR_UNKNOWN_REPO,
-                                        None,
-                                        None,
-                                        Some(json!({
-                                            "expected": self.repo_root.display().to_string(),
-                                            "got": canon.display().to_string()
-                                        })),
-                                    )),
-                                }));
-                            }
-                            self.default_project_root = Some(canon);
-                        }
-                        Err(err) => {
-                            return Ok(Some(RpcResponse {
-                                jsonrpc: JSONRPC_VERSION,
-                                id: id.clone(),
-                                result: None,
-                            error: Some(rpc_error(
-                                ERR_INVALID_REQUEST,
-                                default_message_for_code("invalid_request"),
-                                "invalid_request",
-                                Some(err.to_string()),
-                                None,
-                                None,
-                            )),
-                            }));
-                        }
+                    if let Err(err) = self.ensure_same_repo(client_root) {
+                        return Ok(Some(RpcResponse {
+                            jsonrpc: JSONRPC_VERSION,
+                            id: id.clone(),
+                            result: None,
+                            error: Some(rpc_tool_error(&err, None)),
+                        }));
                     }
+                    let canon = client_root
+                        .canonicalize()
+                        .unwrap_or_else(|_| client_root.to_path_buf());
+                    self.default_project_root = Some(canon);
                 }
                 let protocol_version = init_params
                     .protocol_version
@@ -719,23 +792,17 @@ impl McpServer {
                 error: None,
             })),
             "resources/read" => {
-                let params_res: Result<ResourceReadParams, _> =
-                    serde_json::from_value(req.params.clone().unwrap_or_default());
-                let params = match params_res {
-                    Ok(p) => p,
+                let params = match parse_method_params::<ResourceReadParams>(
+                    req.params.clone(),
+                    "resources/read",
+                ) {
+                    Ok(params) => params,
                     Err(err) => {
                         return Ok(Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,
                             id: id.clone(),
                             result: None,
-                            error: Some(rpc_error(
-                                ERR_INVALID_PARAMS,
-                                default_message_for_code("invalid_params"),
-                                "invalid_params",
-                                Some(err.to_string()),
-                                None,
-                                Some(json!({ "validation": "serde", "method": "resources/read" })),
-                            )),
+                            error: Some(err),
                         }))
                     }
                 };
@@ -755,23 +822,17 @@ impl McpServer {
                 }
             }
             "tools/call" => {
-                let params_res: Result<ToolCallParams, _> =
-                    serde_json::from_value(req.params.clone().unwrap_or_default());
-                let params = match params_res {
-                    Ok(p) => p,
+                let params = match parse_method_params::<ToolCallParams>(
+                    req.params.clone(),
+                    "tools/call",
+                ) {
+                    Ok(params) => params,
                     Err(err) => {
                         return Ok(Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,
                             id: id.clone(),
                             result: None,
-                            error: Some(rpc_error(
-                                ERR_INVALID_PARAMS,
-                                default_message_for_code("invalid_params"),
-                                "invalid_params",
-                                Some(err.to_string()),
-                                None,
-                                Some(json!({ "validation": "serde", "method": "tools/call" })),
-                            )),
+                            error: Some(err),
                         }))
                     }
                 };
@@ -787,23 +848,17 @@ impl McpServer {
                 }
                 let result = match params.name.as_str() {
                     "docdex_search" | "docdex.search" => {
-                        let args_res: Result<SearchArgs, _> =
-                            serde_json::from_value(params.arguments.clone());
-                        let args = match args_res {
+                        let args = match parse_tool_args::<SearchArgs>(
+                            params.arguments.clone(),
+                            "docdex_search",
+                        ) {
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
-                                        Some(err.to_string()),
-                                        Some("docdex_search"),
-                                        Some(json!({ "validation": "serde", "tool": "docdex_search" })),
-                                    )),
+                                    error: Some(err),
                                 }))
                             }
                         };
@@ -820,23 +875,17 @@ impl McpServer {
                         }
                     }
                     "docdex_index" | "docdex.index" => {
-                        let args_res: Result<IndexArgs, _> =
-                            serde_json::from_value(params.arguments.clone());
-                        let args = match args_res {
+                        let args = match parse_tool_args::<IndexArgs>(
+                            params.arguments.clone(),
+                            "docdex_index",
+                        ) {
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
-                                        Some(err.to_string()),
-                                        Some("docdex_index"),
-                                        Some(json!({ "validation": "serde", "tool": "docdex_index" })),
-                                    )),
+                                    error: Some(err),
                                 }))
                             }
                         };
@@ -853,23 +902,17 @@ impl McpServer {
                         }
                     }
                     "docdex_files" | "docdex.files" => {
-                        let args_res: Result<FilesArgs, _> =
-                            serde_json::from_value(params.arguments.clone());
-                        let args = match args_res {
+                        let args = match parse_tool_args::<FilesArgs>(
+                            params.arguments.clone(),
+                            "docdex_files",
+                        ) {
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
-                                        Some(err.to_string()),
-                                        Some("docdex_files"),
-                                        Some(json!({ "validation": "serde", "tool": "docdex_files" })),
-                                    )),
+                                    error: Some(err),
                                 }))
                             }
                         };
@@ -886,23 +929,17 @@ impl McpServer {
                         }
                     }
                     "docdex_open" | "docdex.open" => {
-                        let args_res: Result<OpenArgs, _> =
-                            serde_json::from_value(params.arguments.clone());
-                        let args = match args_res {
+                        let args = match parse_tool_args::<OpenArgs>(
+                            params.arguments.clone(),
+                            "docdex_open",
+                        ) {
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
-                                        Some(err.to_string()),
-                                        Some("docdex_open"),
-                                        Some(json!({ "validation": "serde", "tool": "docdex_open" })),
-                                    )),
+                                    error: Some(err),
                                 }))
                             }
                         };
@@ -919,23 +956,17 @@ impl McpServer {
                         }
                     }
                     "docdex_stats" | "docdex.stats" => {
-                        let args_res: Result<StatsArgs, _> =
-                            serde_json::from_value(params.arguments.clone());
-                        let args = match args_res {
+                        let args = match parse_tool_args::<StatsArgs>(
+                            params.arguments.clone(),
+                            "docdex_stats",
+                        ) {
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
-                                        Some(err.to_string()),
-                                        Some("docdex_stats"),
-                                        Some(json!({ "validation": "serde", "tool": "docdex_stats" })),
-                                    )),
+                                    error: Some(err),
                                 }))
                             }
                         };
@@ -952,23 +983,17 @@ impl McpServer {
                         }
                     }
                     "docdex_repo_inspect" | "docdex.repo_inspect" => {
-                        let args_res: Result<RepoInspectArgs, _> =
-                            serde_json::from_value(params.arguments.clone());
-                        let args = match args_res {
+                        let args = match parse_tool_args::<RepoInspectArgs>(
+                            params.arguments.clone(),
+                            "docdex_repo_inspect",
+                        ) {
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
-                                        Some(err.to_string()),
-                                        Some("docdex_repo_inspect"),
-                                        Some(json!({ "validation": "serde", "tool": "docdex_repo_inspect" })),
-                                    )),
+                                    error: Some(err),
                                 }))
                             }
                         };
@@ -985,23 +1010,17 @@ impl McpServer {
                         }
                     }
                     "docdex_symbols" | "docdex.symbols" => {
-                        let args_res: Result<SymbolsArgs, _> =
-                            serde_json::from_value(params.arguments.clone());
-                        let args = match args_res {
+                        let args = match parse_tool_args::<SymbolsArgs>(
+                            params.arguments.clone(),
+                            "docdex_symbols",
+                        ) {
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
-                                        Some(err.to_string()),
-                                        Some("docdex_symbols"),
-                                        Some(json!({ "validation": "serde", "tool": "docdex_symbols" })),
-                                    )),
+                                    error: Some(err),
                                 }))
                             }
                         };
@@ -1018,23 +1037,17 @@ impl McpServer {
                         }
                     }
                     "docdex_memory_store" | "docdex.memory_store" => {
-                        let args_res: Result<MemoryStoreArgs, _> =
-                            serde_json::from_value(params.arguments.clone());
-                        let args = match args_res {
+                        let args = match parse_tool_args::<MemoryStoreArgs>(
+                            params.arguments.clone(),
+                            "docdex_memory_store",
+                        ) {
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
-                                        Some(err.to_string()),
-                                        Some("docdex_memory_store"),
-                                        Some(json!({ "validation": "serde", "tool": "docdex_memory_store" })),
-                                    )),
+                                    error: Some(err),
                                 }))
                             }
                         };
@@ -1051,23 +1064,17 @@ impl McpServer {
                         }
                     }
                     "docdex_memory_recall" | "docdex.memory_recall" => {
-                        let args_res: Result<MemoryRecallArgs, _> =
-                            serde_json::from_value(params.arguments.clone());
-                        let args = match args_res {
+                        let args = match parse_tool_args::<MemoryRecallArgs>(
+                            params.arguments.clone(),
+                            "docdex_memory_recall",
+                        ) {
                             Ok(args) => args,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_error(
-                                        ERR_INVALID_PARAMS,
-                                        default_message_for_code("invalid_params"),
-                                        "invalid_params",
-                                        Some(err.to_string()),
-                                        Some("docdex_memory_recall"),
-                                        Some(json!({ "validation": "serde", "tool": "docdex_memory_recall" })),
-                                    )),
+                                    error: Some(err),
                                 }))
                             }
                         };
@@ -1090,9 +1097,9 @@ impl McpServer {
                             result: None,
                             error: Some(rpc_error(
                                 ERR_METHOD_NOT_FOUND,
-                                format!("unknown tool: {other}"),
+                                default_message_for_code("method_not_found"),
                                 "method_not_found",
-                                None,
+                                Some(format!("unknown tool: {other}")),
                                 None,
                                 Some(json!({
                                     "known_tools": [
@@ -1131,9 +1138,9 @@ impl McpServer {
                 result: None,
                 error: Some(rpc_error(
                     ERR_METHOD_NOT_FOUND,
-                    format!("unknown method: {other}"),
+                    default_message_for_code("method_not_found"),
                     "method_not_found",
-                    None,
+                    Some(format!("unknown method: {other}")),
                     None,
                     None,
                 )),
@@ -1277,10 +1284,7 @@ impl McpServer {
     async fn handle_search(&self, args: SearchArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
         let query = args.query.trim();
-        let limit = args
-            .limit
-            .unwrap_or(self.max_results)
-            .clamp(1, self.max_results);
+        let limit = clamp_limit(args.limit, self.max_results, self.max_results);
         let hits =
             search::run_query(&self.indexer, self.libs_indexer.as_ref(), query, limit).await?;
         let hits_value = serde_json::to_value(&hits.hits)?;
@@ -1361,11 +1365,8 @@ impl McpServer {
 
     async fn handle_files(&self, args: FilesArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
-        let limit = args
-            .limit
-            .unwrap_or(FILES_DEFAULT_LIMIT)
-            .clamp(1, FILES_MAX_LIMIT);
-        let offset = args.offset.unwrap_or(0).min(FILES_MAX_OFFSET);
+        let limit = clamp_limit(args.limit, FILES_DEFAULT_LIMIT, FILES_MAX_LIMIT);
+        let offset = clamp_offset(args.offset, FILES_MAX_OFFSET);
         let (docs, total) = self.indexer.list_docs(offset, limit)?;
         Ok(json!({
             "results": docs,
@@ -1546,7 +1547,7 @@ impl McpServer {
             return Err(AppError::new(ERR_INVALID_ARGUMENT, "query must not be empty").into());
         }
 
-        let top_k = args.top_k.unwrap_or(5).max(1).min(50);
+        let top_k = clamp_limit(args.top_k, 5, 50);
         let embedding = memory.embedder.embed(query).await?;
 
         let store = memory.store.clone();
@@ -1699,10 +1700,26 @@ mod tests {
         let data = rpc.data.expect("rate limited rpc should include data");
         let obj = data.as_object().expect("rate limited data should be object");
         assert_eq!(obj.get("code").and_then(|v| v.as_str()), Some(ERR_RATE_LIMITED));
-        assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(0));
-        assert_eq!(obj.get("limit_key").and_then(|v| v.as_str()), Some("mcp_tools"));
-        assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
-        assert!(obj.get("retry_at").is_none(), "retry_at should be omitted when unset");
+        let details = obj
+            .get("details")
+            .and_then(|v| v.as_object())
+            .expect("rate limited data should include details");
+        assert_eq!(
+            details.get("retry_after_ms").and_then(|v| v.as_u64()),
+            Some(0)
+        );
+        assert_eq!(
+            details.get("limit_key").and_then(|v| v.as_str()),
+            Some("mcp_tools")
+        );
+        assert_eq!(
+            details.get("scope").and_then(|v| v.as_str()),
+            Some("global")
+        );
+        assert!(
+            details.get("retry_at").is_none(),
+            "retry_at should be omitted when unset"
+        );
     }
 
     #[test]
@@ -1717,8 +1734,15 @@ mod tests {
         );
         let data = rpc.data.expect("rate limited rpc should include data");
         let obj = data.as_object().expect("rate limited data should be object");
-        assert!(obj.get("retry_at").and_then(|v| v.as_str()).is_some());
-        assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(1234));
+        let details = obj
+            .get("details")
+            .and_then(|v| v.as_object())
+            .expect("rate limited data should include details");
+        assert!(details.get("retry_at").and_then(|v| v.as_str()).is_some());
+        assert_eq!(
+            details.get("retry_after_ms").and_then(|v| v.as_u64()),
+            Some(1234)
+        );
     }
 
     #[test]
@@ -1760,15 +1784,22 @@ mod tests {
                         obj.get("code").and_then(|v| v.as_str()),
                         Some(ERR_RATE_LIMITED)
                     );
+                    let details = obj
+                        .get("details")
+                        .and_then(|v| v.as_object())
+                        .expect("rate limited data should include details");
                     assert!(
-                        obj.get("retry_after_ms").and_then(|v| v.as_u64()).is_some(),
+                        details.get("retry_after_ms").and_then(|v| v.as_u64()).is_some(),
                         "retry_after_ms must be an integer"
                     );
                     assert_eq!(
-                        obj.get("limit_key").and_then(|v| v.as_str()),
+                        details.get("limit_key").and_then(|v| v.as_str()),
                         Some("mcp_tools")
                     );
-                    assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
+                    assert_eq!(
+                        details.get("scope").and_then(|v| v.as_str()),
+                        Some("global")
+                    );
 
                     let payload_bytes = serde_json::to_vec(&rpc).expect("rpc error should serialize");
                     assert!(

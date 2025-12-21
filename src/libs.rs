@@ -3,6 +3,7 @@
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 use crate::error::BackoffRequired;
 =======
 use crate::error::{
@@ -23,6 +24,9 @@ use crate::error::{AppError, ERR_BACKOFF_REQUIRED, ERR_STALE_INDEX};
 =======
 use crate::error::{AppError, ERR_BACKOFF_REQUIRED, ERR_INDEX_SCHEMA_MISMATCH};
 >>>>>>> mcoda/task/bck-05-us-07-t09
+=======
+use crate::error::{backoff_details, AppError, DEFAULT_BACKOFF_RETRY_AFTER_MS, ERR_BACKOFF_REQUIRED};
+>>>>>>> mcoda/task/bck-05-us-06-t29
 use crate::index::{
     DocSnapshot, Hit, QueryRewrite, SearchError, SearchQueryMeta, SearchSnippetOrigin,
     SnippetOrigin, SnippetResult,
@@ -371,6 +375,7 @@ impl LibsIndexer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
             .with_message(
                 "libs index writer unavailable (another docdexd may be indexing); retry later",
 >>>>>>> mcoda/task/bck-05-us-09-t22
@@ -389,6 +394,11 @@ impl LibsIndexer {
 =======
             .with_details(backoff_required_details("libs_writer", "repo"))
 >>>>>>> mcoda/task/bck-05-us-09-t37
+=======
+            .with_details(backoff_details(Duration::from_millis(
+                DEFAULT_BACKOFF_RETRY_AFTER_MS,
+            )))
+>>>>>>> mcoda/task/bck-05-us-06-t29
             .into()
         })
     }

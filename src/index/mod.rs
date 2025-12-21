@@ -32,6 +32,7 @@ use std::path::{Component, Path, PathBuf};
 <<<<<<< HEAD
 use std::sync::Arc;
 <<<<<<< HEAD
+<<<<<<< HEAD
 use std::time::Duration;
 =======
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -49,6 +50,9 @@ use std::sync::{
     Arc,
 };
 >>>>>>> mcoda/task/bck-05-us-08-t10
+=======
+use std::time::Duration;
+>>>>>>> mcoda/task/bck-05-us-06-t29
 use tantivy::collector::TopDocs;
 use tantivy::directory::error::LockError;
 use tantivy::query::QueryParser;
@@ -151,6 +155,7 @@ use crate::symbols::{SymbolOutcomeStatus, SymbolsStore};
 =======
 use crate::error::{
 <<<<<<< HEAD
+<<<<<<< HEAD
     repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
     ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
 =======
@@ -159,6 +164,11 @@ use crate::error::{
     repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INDEX_SCHEMA_MISMATCH,
     ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
 >>>>>>> mcoda/task/bck-05-us-07-t09
+=======
+    backoff_details, repo_resolution_details, AppError, DEFAULT_BACKOFF_RETRY_AFTER_MS,
+    ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH,
+    ERR_REPO_STATE_MISMATCH,
+>>>>>>> mcoda/task/bck-05-us-06-t29
 };
 use crate::repo_resolution;
 use crate::symbols;
@@ -2898,6 +2908,7 @@ impl Indexer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
                 .with_message(
                     "index writer unavailable (another docdexd may be indexing); retry later",
 >>>>>>> mcoda/task/bck-05-us-09-t22
@@ -2916,6 +2927,11 @@ impl Indexer {
 =======
                 .with_details(backoff_required_details("index_writer", "repo"))
 >>>>>>> mcoda/task/bck-05-us-09-t37
+=======
+                .with_details(backoff_details(Duration::from_millis(
+                    DEFAULT_BACKOFF_RETRY_AFTER_MS,
+                )))
+>>>>>>> mcoda/task/bck-05-us-06-t29
                 .into()
             })
 =======

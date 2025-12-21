@@ -267,6 +267,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 - Rate limits (MCP tool calls): when `DOCDEX_MCP_RATE_LIMIT_PER_MIN` is enabled and exceeded, tool calls return JSON-RPC code `-32029` with the canonical MCP error envelope; retry hints live under `error.data.details` and are mirrored at the top level for compatibility: `{ retry_after_ms: <int>, retry_at?: <RFC3339>, limit_key: <string>, scope: <string> }`.
 =======
 - Rate limits (MCP tool calls): when `DOCDEX_MCP_RATE_LIMIT_PER_MIN` is enabled and exceeded, tool calls return JSON-RPC code `-32029`. `error.data` follows the canonical envelope (`code`, `message`, `error`) and includes stable retry hints: `{ code: \"rate_limited\", message: <string>, retry_after_ms: <int>, retry_at?: <RFC3339>, limit_key: <string>, scope: <string> }`. Payloads are capped (message <= 256 bytes; rate-limit/backoff data <= 2 KiB).
@@ -278,6 +279,9 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - Correlation metadata: MCP tool results include `request_id`, `session_id`, and `tracing` in the JSON payload; MCP errors include the same fields in `error.data` (random UUIDs; no repo/user data).
 - Rate limits (MCP tool calls): when `DOCDEX_MCP_RATE_LIMIT_PER_MIN` is enabled and exceeded, tool calls return JSON-RPC code `-32029` with `error.data` containing stable retry hints plus the correlation metadata: `{ code: \"rate_limited\", retry_after_ms: <int>, retry_at?: <RFC3339>, limit_key: <string>, scope: <string> }`.
 >>>>>>> mcoda/task/bck-05-us-06-t30
+=======
+- Rate limits (MCP tool calls): when `DOCDEX_MCP_RATE_LIMIT_PER_MIN` is enabled and exceeded, tool calls return JSON-RPC code `-32602` with `error.data.code=\"rate_limited\"` and retry hints under `error.data.details`: `{ retry_after_ms: <int>, retry_at?: <RFC3339>, limit_key: <string>, scope: <string> }`.
+>>>>>>> mcoda/task/bck-05-us-06-t29
 - Agent guidance: call `docdex_search` with concise queries before coding; fetch only a few hits; if results look stale, call `docdex_index`; keep using HTTP/CLI if your stack isn't MCP-aware.
 - Help: `docdexd mcp --help` shows MCP flags and defaults; `docdexd help-all` includes an MCP section listing tools and usage.
 

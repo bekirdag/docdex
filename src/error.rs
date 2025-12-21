@@ -71,6 +71,7 @@ pub const ERR_INTERNAL_ERROR: &str = "internal_error";
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 pub const MAX_RATE_LIMIT_FIELD_BYTES: usize = 128;
 
 fn clamp_utf8(mut input: String, max_bytes: usize) -> String {
@@ -121,6 +122,9 @@ pub const WARN_REPO_EVICTED: &str = "repo_evicted";
 #[allow(dead_code)]
 pub const WARN_REPO_THRASHING: &str = "repo_thrashing";
 >>>>>>> mcoda/task/bck-05-us-07-t05
+=======
+pub const DEFAULT_BACKOFF_RETRY_AFTER_MS: u64 = 1000;
+>>>>>>> mcoda/task/bck-05-us-06-t29
 
 #[derive(Debug, Clone)]
 pub struct StartupError {
@@ -593,6 +597,7 @@ impl BackoffRequired {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 #[derive(Debug, Clone, Serialize)]
 pub struct RetryHint {
     pub code: &'static str,
@@ -778,4 +783,11 @@ impl RetryHint {
     }
 =======
 >>>>>>> mcoda/task/bck-05-us-07-t15
+=======
+pub fn backoff_details(retry_after: Duration) -> Value {
+    let retry_after_ms = retry_after.as_millis().min(u128::from(u64::MAX)) as u64;
+    let mut details = serde_json::Map::new();
+    details.insert("retry_after_ms".to_string(), Value::from(retry_after_ms));
+    Value::Object(details)
+>>>>>>> mcoda/task/bck-05-us-06-t29
 }

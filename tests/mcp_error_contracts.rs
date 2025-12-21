@@ -905,6 +905,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     assert!(
         data_files
             .get("message")
@@ -920,17 +921,23 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
 >>>>>>> mcoda/task/bck-05-us-09-t29
     );
 =======
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t29
     let details_files = data_files
         .get("details")
         .and_then(|v| v.as_object())
         .ok_or("rate-limit error missing error.data.details object")?;
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-06-t37
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t29
     assert_eq!(
         details_files.get("limit_key").and_then(|v| v.as_str()),
         Some("mcp_tools")
     );
     assert_eq!(
         details_files.get("scope").and_then(|v| v.as_str()),
+<<<<<<< HEAD
 =======
     let details = data_files
         .get("details")
@@ -943,6 +950,8 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         details.get("scope").and_then(|v| v.as_str()),
 >>>>>>> mcoda/task/bck-05-us-06-t35
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t29
         Some("global")
     );
     assert_eq!(
@@ -959,6 +968,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     );
     assert!(
 <<<<<<< HEAD
+<<<<<<< HEAD
         data_files
             .get("denied_total")
             .and_then(|v| v.as_u64())
@@ -970,11 +980,15 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
 =======
         details
 >>>>>>> mcoda/task/bck-05-us-06-t35
+=======
+        details_files
+>>>>>>> mcoda/task/bck-05-us-06-t29
             .get("retry_after_ms")
             .and_then(|v| v.as_u64())
             .is_some(),
         "retry_after_ms must be an integer"
     );
+<<<<<<< HEAD
 <<<<<<< HEAD
     let envelope = data_files
         .get("error")
@@ -1079,6 +1093,25 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         }),
         "error.data.details should only include stable keys"
 >>>>>>> mcoda/task/bck-05-us-06-t35
+=======
+    let nested_files = data_files
+        .get("error")
+        .and_then(|v| v.as_object())
+        .ok_or("rate-limit error missing error.data.error object")?;
+    assert_eq!(
+        nested_files.get("code").and_then(|v| v.as_str()),
+        Some("rate_limited")
+    );
+    assert!(
+        data_files.keys().all(|k| matches!(k.as_str(), "code" | "message" | "details" | "error" | "tool")),
+        "error.data should only include stable envelope keys"
+    );
+    assert!(
+        details_files
+            .keys()
+            .all(|k| matches!(k.as_str(), "retry_after_ms" | "retry_at" | "limit_key" | "scope")),
+        "error.data.details should only include stable retry keys"
+>>>>>>> mcoda/task/bck-05-us-06-t29
     );
 
     // Wait long enough for the limiter to refill 1 token (per_minute=60).

@@ -138,6 +138,7 @@ These codes are the **required** set for repo/index/dependency failures and are 
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 - `rate_limited`: request rejected due to rate limiting (see `docs/contracts/rate_limit_error_contract_v1.md`).
 =======
 - `rate_limited`: request rejected due to rate limiting; MCP uses JSON-RPC code `-32029` with retry hints in `error.data`.
@@ -148,6 +149,9 @@ These codes are the **required** set for repo/index/dependency failures and are 
 =======
 - `rate_limited`: request rejected due to rate limiting. `error.data.details` includes `retry_after_ms`, optional `retry_at`, `limit_key`, and `scope`.
 >>>>>>> mcoda/task/bck-05-us-06-t47
+=======
+- `rate_limited`: request rejected due to rate limiting.
+>>>>>>> mcoda/task/bck-05-us-06-t29
 - `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable).
 <<<<<<< HEAD
 =======
@@ -435,6 +439,7 @@ Notes:
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 
 ## Tool result size limits (server-scoped)
 
@@ -479,3 +484,6 @@ Docdex enforces repo-invariant bounds on MCP tool outputs. When a client request
 =======
 - MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with validation issues plus `details.max_bytes` and `details.actual_bytes`.
 >>>>>>> mcoda/task/bck-05-us-06-t36
+=======
+- MCP `rate_limited` and `backoff_required` errors include retry metadata in `error.data.details` (`retry_after_ms`, optional `retry_at`); `rate_limited` additionally includes `limit_key` and `scope`.
+>>>>>>> mcoda/task/bck-05-us-06-t29

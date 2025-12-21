@@ -43,6 +43,7 @@ use crate::error::{
 >>>>>>> mcoda/task/bck-05-us-09-t22
 =======
     repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
+<<<<<<< HEAD
     ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
     ERR_TIER2_UNAVAILABLE, ERR_UNKNOWN_REPO,
 >>>>>>> mcoda/task/bck-05-us-09-t21
@@ -61,6 +62,10 @@ use crate::error::{
     ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_MISSING_REPO_PATH,
     ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
 >>>>>>> mcoda/task/bck-05-us-07-t30
+=======
+    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_CAPACITY, ERR_REPO_STATE_MISMATCH,
+    ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
+>>>>>>> mcoda/task/bck-05-us-07-t04
 };
 <<<<<<< HEAD
 use crate::explainability::ExplainabilityStore;
@@ -858,6 +863,7 @@ fn default_message_for_code(code: &str) -> &'static str {
         ERR_MISSING_REPO => "missing repo",
         ERR_MISSING_REPO_PATH => "repo path not found",
         ERR_UNKNOWN_REPO => "unknown repo",
+        ERR_REPO_CAPACITY => "repo capacity exceeded",
         ERR_MISSING_INDEX => "missing index",
         ERR_INDEX_SCHEMA_MISMATCH => "index schema mismatch",
         ERR_STALE_INDEX => "stale index",

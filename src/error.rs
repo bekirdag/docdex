@@ -32,6 +32,7 @@ pub const ERR_UNSUPPORTED_VERSION: &str = "unsupported_version";
 pub const ERR_MISSING_REPO: &str = "missing_repo";
 pub const ERR_MISSING_REPO_PATH: &str = "missing_repo_path";
 pub const ERR_UNKNOWN_REPO: &str = "unknown_repo";
+pub const ERR_REPO_CAPACITY: &str = "repo_capacity_exceeded";
 pub const ERR_MISSING_INDEX: &str = "missing_index";
 pub const ERR_INDEX_SCHEMA_MISMATCH: &str = "index_schema_mismatch";
 pub const ERR_STALE_INDEX: &str = "stale_index";

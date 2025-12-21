@@ -22,6 +22,7 @@ use crate::error::{
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     ERR_RATE_LIMITED, ERR_TIER2_UNAVAILABLE,
 >>>>>>> mcoda/task/bck-05-us-09-t21
 =======
@@ -73,6 +74,9 @@ use crate::error::{
     ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_MISSING_INDEX,
     ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH,
 >>>>>>> mcoda/task/bck-05-us-07-t11
+=======
+    ERR_RATE_LIMITED, ERR_REPO_CAPACITY,
+>>>>>>> mcoda/task/bck-05-us-07-t04
 };
 use crate::libs::LibsIndexer;
 use crate::max_size::{
@@ -754,6 +758,7 @@ fn status_for_app_error(code: &str) -> StatusCode {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         ERR_TIER2_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
 =======
         ERR_MISSING_INDEX => StatusCode::CONFLICT,
@@ -788,6 +793,9 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_INDEX_MIGRATION_REQUIRED => StatusCode::CONFLICT,
         ERR_INDEX_SCHEMA_UNSUPPORTED => StatusCode::UPGRADE_REQUIRED,
 >>>>>>> mcoda/task/bck-05-us-07-t11
+=======
+        ERR_REPO_CAPACITY => StatusCode::TOO_MANY_REQUESTS,
+>>>>>>> mcoda/task/bck-05-us-07-t04
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }

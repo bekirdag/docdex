@@ -2,7 +2,7 @@
 
 Docdex’s MCP server (`docdexd mcp`) reports failures as JSON-RPC errors. The **machine-readable** error code is carried in `error.data.code` (and duplicated under `error.data.error.code`) so clients can reliably branch on it.
 
-This document defines the **canonical MCP error envelope**, a **stable code taxonomy**, and a **parity mapping** to Docdex’s HTTP daemon responses and CLI error output.
+This document defines the **canonical MCP error envelope**, a **stable code taxonomy**, and a **parity mapping** to Docdex’s HTTP daemon responses and CLI error output. The JSON schema lives at `docs/contracts/mcp_error_envelope_schema_v1.json`.
 
 ## Canonical MCP envelope
 
@@ -38,6 +38,7 @@ On failure, the MCP server returns a JSON-RPC error response:
 - `reason` (string, optional): a more specific reason (typically an underlying error string).
 - `tool` (string, optional): tool name (for `tools/call` failures), e.g. `docdex_search`.
 <<<<<<< HEAD
+<<<<<<< HEAD
 - `details` (object, optional): structured context (limits, fields, expected/got, etc). For repo move/rename/mismatch errors, `details` may include `normalizedPath`, `attemptedFingerprint`, `knownCanonicalPath`, and `recoverySteps` (often including `docdexd repo inspect` for diagnostics and `docdexd repo reassociate` for moved repos under shared state dirs). For index-state errors, `details` may include `stateDir`, `repoRoot`, `staleReason`, `indexLastUpdatedEpochMs`, `repoLastModifiedEpochMs`, `hint`, and `recoverySteps`.
 - `error` (object, required): the canonical envelope, containing the same fields as above (`code/message/reason/tool/details`).
 =======
@@ -51,6 +52,12 @@ Privacy note: correlation ids are randomly generated and do not encode user, rep
 >>>>>>> mcoda/task/bck-05-us-06-t30
 
 Rate-limited responses include retry hints at the top level of `error.data`: `retry_after_ms`, optional `retry_at` (RFC3339), `limit_key`, and `scope`. These fields are additive and do not replace the canonical envelope fields.
+=======
+- `details` (object, optional): structured, safe-to-display context (limits, fields, expected/got, etc). For repo move/rename/mismatch errors, `details` may include `normalizedPath`, `attemptedFingerprint`, `knownCanonicalPath`, and `recoverySteps` (often including `docdexd repo inspect` for diagnostics and `docdexd repo reassociate` for moved repos under shared state dirs).
+- `retry` (object, optional): retry/backoff hints for machine handling. Includes `kind` (`rate_limited` or `backoff_required`) and, when available, `retry_after_ms`, `retry_at`, `limit_key`, and `scope`.
+- `correlation_id` (string, optional): stringified JSON-RPC id for cross-logging/correlation.
+- `error` (object, required): the canonical envelope, containing the same fields as above (`code/message/reason/tool/details/retry/correlation_id`).
+>>>>>>> mcoda/task/bck-05-us-06-t25
 
 Compatibility guidance for clients:
 
@@ -518,6 +525,7 @@ Notes:
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 
 ## Tool result size limits (server-scoped)
 
@@ -576,3 +584,6 @@ Docdex enforces repo-invariant bounds on MCP tool outputs. When a client request
 =======
 - MCP `docdex_memory_recall` clamps `top_k` to `1..50` and returns the effective `top_k` in the response.
 >>>>>>> mcoda/task/bck-05-us-06-t34
+=======
+- MCP rate-limit/backoff errors include `error.data.retry` for machine-readable retry hints.
+>>>>>>> mcoda/task/bck-05-us-06-t25

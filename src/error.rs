@@ -9,11 +9,15 @@ use chrono::{DateTime, Utc};
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 >>>>>>> mcoda/task/bck-05-us-08-t31
 =======
 >>>>>>> mcoda/task/bck-05-us-07-t05
 use serde::Serialize;
+=======
+use serde::{Deserialize, Serialize};
+>>>>>>> mcoda/task/bck-05-us-06-t25
 use serde_json::Value;
 =======
 use serde_json::{json, Value};
@@ -65,6 +69,7 @@ pub const ERR_INDEX_SCHEMA_UNSUPPORTED: &str = "index_schema_unsupported";
 pub const ERR_TIER2_UNAVAILABLE: &str = "tier2_unavailable";
 >>>>>>> mcoda/task/bck-05-us-07-t33
 pub const ERR_INTERNAL_ERROR: &str = "internal_error";
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -124,6 +129,34 @@ pub const WARN_REPO_THRASHING: &str = "repo_thrashing";
 =======
 pub const DEFAULT_BACKOFF_RETRY_AFTER_MS: u64 = 1000;
 >>>>>>> mcoda/task/bck-05-us-06-t29
+=======
+pub const MCP_ERROR_CODE_REGISTRY: &[&str] = &[
+    "parse_error",
+    "invalid_request",
+    "method_not_found",
+    "invalid_params",
+    "invalid_argument",
+    "missing_query",
+    "invalid_query",
+    "invalid_path",
+    "invalid_range",
+    "max_content_exceeded",
+    ERR_EMBEDDING_TIMEOUT,
+    ERR_EMBEDDING_MODEL_NOT_FOUND,
+    ERR_EMBEDDING_FAILED,
+    ERR_MEMORY_DISABLED,
+    ERR_MISSING_REPO,
+    ERR_MISSING_REPO_PATH,
+    ERR_UNKNOWN_REPO,
+    ERR_REPO_STATE_MISMATCH,
+    ERR_MISSING_INDEX,
+    ERR_STALE_INDEX,
+    ERR_MISSING_DEPENDENCY,
+    ERR_RATE_LIMITED,
+    ERR_BACKOFF_REQUIRED,
+    ERR_INTERNAL_ERROR,
+];
+>>>>>>> mcoda/task/bck-05-us-06-t25
 
 #[derive(Debug, Clone)]
 pub struct StartupError {
@@ -625,6 +658,7 @@ impl BackoffRequired {
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 #[derive(Debug, Clone, Serialize)]
 pub struct RetryHint {
     pub code: &'static str,
@@ -817,4 +851,78 @@ pub fn backoff_details(retry_after: Duration) -> Value {
     details.insert("retry_after_ms".to_string(), Value::from(retry_after_ms));
     Value::Object(details)
 >>>>>>> mcoda/task/bck-05-us-06-t29
+=======
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpRetryKind {
+    RateLimited,
+    BackoffRequired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpRetryHint {
+    pub kind: McpRetryKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+}
+
+impl McpRetryHint {
+    pub fn rate_limited(err: &RateLimited) -> Self {
+        Self {
+            kind: McpRetryKind::RateLimited,
+            retry_after_ms: Some(err.retry_after_ms),
+            retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
+            limit_key: Some(err.limit_key.clone()),
+            scope: Some(err.scope.clone()),
+        }
+    }
+
+    pub fn backoff_required() -> Self {
+        Self {
+            kind: McpRetryKind::BackoffRequired,
+            retry_after_ms: None,
+            retry_at: None,
+            limit_key: None,
+            scope: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpErrorCore {
+    pub code: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry: Option<McpRetryHint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpErrorEnvelope {
+    #[serde(flatten)]
+    pub core: McpErrorCore,
+    pub error: McpErrorCore,
+}
+
+impl McpErrorEnvelope {
+    pub fn new(core: McpErrorCore) -> Self {
+        Self {
+            error: core.clone(),
+            core,
+        }
+    }
+>>>>>>> mcoda/task/bck-05-us-06-t25
 }

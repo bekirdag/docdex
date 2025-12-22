@@ -47,6 +47,7 @@ use crate::error::{
     repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
     ERR_TIER2_UNAVAILABLE, ERR_UNKNOWN_REPO,
 >>>>>>> mcoda/task/bck-05-us-09-t21
@@ -89,6 +90,10 @@ use crate::error::{
     ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
     ERR_UNKNOWN_REPO,
 >>>>>>> mcoda/task/bck-05-us-06-t20
+=======
+    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
+    McpErrorCore, McpErrorEnvelope, McpRetryHint,
+>>>>>>> mcoda/task/bck-05-us-06-t25
 };
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -697,6 +702,7 @@ fn mcp_error_data(
     reason: Option<String>,
     tool: Option<&str>,
     details: Option<serde_json::Value>,
+<<<<<<< HEAD
     trace: Option<&McpTraceContext>,
 ) -> serde_json::Value {
 <<<<<<< HEAD
@@ -1202,6 +1208,27 @@ fn rate_limit_details(err: &RateLimited) -> serde_json::Value {
     data.insert("scope".to_string(), json!(err.scope));
     serde_json::Value::Object(data)
 >>>>>>> mcoda/task/bck-05-us-06-t34
+=======
+    retry: Option<McpRetryHint>,
+    correlation_id: Option<String>,
+) -> serde_json::Value {
+    let message = truncate_bytes(message, MAX_ERROR_MESSAGE_BYTES);
+    let reason = reason.map(|value| truncate_bytes(value, MAX_ERROR_REASON_BYTES));
+    let core = McpErrorCore {
+        code: code.to_string(),
+        message: message.clone(),
+        reason,
+        tool: tool.map(|value| value.to_string()),
+        details,
+        retry,
+        correlation_id,
+    };
+    serde_json::to_value(McpErrorEnvelope::new(core)).expect("mcp error data should serialize")
+}
+
+fn mcp_rate_limited_retry(err: &RateLimited) -> McpRetryHint {
+    McpRetryHint::rate_limited(err)
+>>>>>>> mcoda/task/bck-05-us-06-t25
 }
 
 fn truncate_bytes(input: String, max_bytes: usize) -> String {
@@ -1218,6 +1245,7 @@ fn truncate_bytes(input: String, max_bytes: usize) -> String {
     out
 }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1321,6 +1349,18 @@ fn truncate_utf8(input: &str, max_bytes: usize) -> (String, bool) {
 }
 
 >>>>>>> mcoda/task/bck-05-us-06-t13
+=======
+fn correlation_id_from_value(id: &serde_json::Value) -> Option<String> {
+    match id {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(value) => Some(value.clone()),
+        serde_json::Value::Number(value) => Some(value.to_string()),
+        serde_json::Value::Bool(value) => Some(value.to_string()),
+        other => Some(other.to_string()),
+    }
+}
+
+>>>>>>> mcoda/task/bck-05-us-06-t25
 fn rpc_error(
     rpc_code: i32,
     message: impl Into<String>,
@@ -1328,7 +1368,12 @@ fn rpc_error(
     reason: Option<String>,
     tool: Option<&str>,
     details: Option<serde_json::Value>,
+<<<<<<< HEAD
     trace: Option<&McpTraceContext>,
+=======
+    retry: Option<McpRetryHint>,
+    correlation_id: Option<String>,
+>>>>>>> mcoda/task/bck-05-us-06-t25
 ) -> RpcError {
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -1361,6 +1406,7 @@ fn rpc_error(
     RpcError {
         code: rpc_code,
         message: message.clone(),
+<<<<<<< HEAD
 <<<<<<< HEAD
         data: Some(data),
     }
@@ -1451,20 +1497,54 @@ fn record_mcp_error(mcp_code: &'static str, rpc_code: i32, tool: Option<&str>) {
 
 fn is_known_mcp_code(code: &str) -> bool {
     MCP_CANONICAL_CODES.contains(&code)
+=======
+        data: Some(mcp_error_data(
+            mcp_code,
+            message,
+            reason,
+            tool,
+            details,
+            retry,
+            correlation_id,
+        )),
+    }
 }
 
-fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>) -> RpcError {
+fn rpc_rate_limited(err: &RateLimited, tool: Option<&str>, correlation_id: Option<String>) -> RpcError {
+    rpc_error(
+        ERR_RATE_LIMITED_RPC,
+        err.message.clone(),
+        ERR_RATE_LIMITED,
+        None,
+        tool,
+        None,
+        Some(mcp_rate_limited_retry(err)),
+        correlation_id,
+    )
+>>>>>>> mcoda/task/bck-05-us-06-t25
+}
+
+fn rpc_tool_error(err: &anyhow::Error, tool: Option<&str>, correlation_id: Option<String>) -> RpcError {
     if let Some(rate) = err.downcast_ref::<RateLimited>() {
-        return rpc_rate_limited(rate);
+        return rpc_rate_limited(rate, tool, correlation_id);
     }
     let (mcp_code, details) = classify_tool_error(err);
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-06-t16
+=======
+    let retry = if mcp_code == ERR_BACKOFF_REQUIRED {
+        Some(McpRetryHint::backoff_required())
+    } else {
+        None
+    };
+>>>>>>> mcoda/task/bck-05-us-06-t25
     rpc_error(
         ERR_INVALID_PARAMS,
         err.message.clone(),
         ERR_RATE_LIMITED,
         None,
         tool,
+<<<<<<< HEAD
         Some(rate_limit_details(err)),
 =======
 fn rpc_rate_limited(err: &RateLimited, tool: Option<&str>) -> RpcError {
@@ -1492,6 +1572,11 @@ fn rpc_rate_limited(err: &RateLimited, tool: Option<&str>) -> RpcError {
         tool,
         Some(rate_limit_details(err)),
 >>>>>>> mcoda/task/bck-05-us-06-t17
+=======
+        details,
+        retry,
+        correlation_id,
+>>>>>>> mcoda/task/bck-05-us-06-t25
     )
 }
 
@@ -1861,6 +1946,7 @@ fn index_state_details(
 =======
 fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
 <<<<<<< HEAD
+<<<<<<< HEAD
     if let Some(rate) = err.downcast_ref::<RateLimited>() {
 <<<<<<< HEAD
         return (rate.code, Some(rate_limit_details(rate)));
@@ -1954,6 +2040,8 @@ fn rpc_code_for_mcp_code(code: &str) -> i32 {
 fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
 =======
 >>>>>>> mcoda/task/bck-05-us-06-t26
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t25
     if let Some(app) = err.downcast_ref::<AppError>() {
         return (app.code, app.details.clone());
 >>>>>>> mcoda/task/bck-05-us-06-t35
@@ -3214,7 +3302,12 @@ impl McpServer {
                                     Some(err.to_string()),
                                     None,
                                     None,
+<<<<<<< HEAD
                                     Some(&trace),
+=======
+                                    None,
+                                    None,
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                 )),
                             };
                             write_response(&mut writer, &resp).await?;
@@ -3259,7 +3352,12 @@ impl McpServer {
                                 Some(err.to_string()),
                                 None,
                                 None,
+<<<<<<< HEAD
                                 Some(&trace),
+=======
+                                None,
+                                None,
+>>>>>>> mcoda/task/bck-05-us-06-t25
                             )),
                         }),
                     };
@@ -3310,6 +3408,7 @@ impl McpServer {
             return Ok(None);
         }
         let id = req.id.clone().unwrap();
+        let correlation_id = correlation_id_from_value(&id);
 
         if let Some(version) = req.jsonrpc.as_deref() {
             if version != JSONRPC_VERSION {
@@ -3337,8 +3436,13 @@ impl McpServer {
 =======
                         None,
                         Some(json!({ "expected": JSONRPC_VERSION })),
+<<<<<<< HEAD
                         Some(trace),
 >>>>>>> mcoda/task/bck-05-us-06-t30
+=======
+                        None,
+                        correlation_id.clone(),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                     )),
                 }));
             }
@@ -3385,7 +3489,12 @@ impl McpServer {
                                             "expected": self.repo_root.display().to_string(),
                                             "got": canon.display().to_string()
                                         })),
+<<<<<<< HEAD
                                         Some(trace),
+=======
+                                        None,
+                                        correlation_id.clone(),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                     )),
                                 }));
                             }
@@ -3409,6 +3518,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
                                 error: Some(rpc_error(
                                     ERR_INVALID_REQUEST,
 <<<<<<< HEAD
@@ -3418,11 +3528,16 @@ impl McpServer {
                                     None,
                                     err.details,
 =======
+=======
+                                error: Some(rpc_error(
+                                    ERR_INVALID_REQUEST,
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                     default_message_for_code("invalid_request"),
                                     "invalid_request",
                                     Some(err.to_string()),
                                     None,
                                     None,
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-07-t31
                                 )),
 =======
@@ -3456,6 +3571,11 @@ impl McpServer {
                                     details,
                                 )),
 >>>>>>> mcoda/task/bck-05-us-06-t16
+=======
+                                    None,
+                                    correlation_id.clone(),
+                                )),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                             }));
                         }
                     };
@@ -3604,7 +3724,12 @@ impl McpServer {
                                 Some(err.to_string()),
                                 None,
                                 Some(json!({ "validation": "serde", "method": "resources/read" })),
+<<<<<<< HEAD
                                 Some(trace),
+=======
+                                None,
+                                correlation_id.clone(),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                             )),
 >>>>>>> mcoda/task/bck-05-us-07-t33
 =======
@@ -3655,7 +3780,11 @@ impl McpServer {
                         jsonrpc: JSONRPC_VERSION,
                         id: id.clone(),
                         result: None,
+<<<<<<< HEAD
                         error: Some(rpc_tool_error(&err, None, Some(trace))),
+=======
+                        error: Some(rpc_tool_error(&err, None, correlation_id.clone())),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                     })),
                 }
             }
@@ -3705,7 +3834,12 @@ impl McpServer {
                                 Some(err.to_string()),
                                 None,
                                 Some(json!({ "validation": "serde", "method": "tools/call" })),
+<<<<<<< HEAD
                                 Some(trace),
+=======
+                                None,
+                                correlation_id.clone(),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                             )),
 >>>>>>> mcoda/task/bck-05-us-07-t33
 =======
@@ -3759,6 +3893,7 @@ impl McpServer {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
                             error: Some(rpc_rate_limited(&err, Some(params.name.as_str()))),
 =======
                             error: Some(rpc_rate_limited(&err, None)),
@@ -3775,6 +3910,13 @@ impl McpServer {
 =======
                             error: Some(rpc_rate_limited(&err, Some(params.name.as_str()))),
 >>>>>>> mcoda/task/bck-05-us-06-t17
+=======
+                            error: Some(rpc_rate_limited(
+                                &err,
+                                Some(params.name.as_str()),
+                                correlation_id.clone(),
+                            )),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                         }));
                     }
 =======
@@ -3830,7 +3972,12 @@ impl McpServer {
                                         Some(err.to_string()),
                                         Some("docdex_search"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_search" })),
+<<<<<<< HEAD
                                         Some(trace),
+=======
+                                        None,
+                                        correlation_id.clone(),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                     )),
 >>>>>>> mcoda/task/bck-05-us-07-t33
 =======
@@ -3855,7 +4002,15 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_tool_error(&err, Some("docdex_search"), Some(trace))),
+=======
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_search"),
+                                        correlation_id.clone(),
+                                    )),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                 }))
                             }
                         }
@@ -3943,8 +4098,13 @@ impl McpServer {
 =======
                                         Some("docdex_index"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_index" })),
+<<<<<<< HEAD
                                         Some(trace),
 >>>>>>> mcoda/task/bck-05-us-06-t30
+=======
+                                        None,
+                                        correlation_id.clone(),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                     )),
 =======
                                     error: Some(err),
@@ -3993,7 +4153,15 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_tool_error(&err, Some("docdex_index"), Some(trace))),
+=======
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_index"),
+                                        correlation_id.clone(),
+                                    )),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                 }))
                             }
                         }
@@ -4040,7 +4208,12 @@ impl McpServer {
                                         Some(err.to_string()),
                                         Some("docdex_files"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_files" })),
+<<<<<<< HEAD
                                         Some(trace),
+=======
+                                        None,
+                                        correlation_id.clone(),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                     )),
 >>>>>>> mcoda/task/bck-05-us-07-t33
 =======
@@ -4065,7 +4238,15 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_tool_error(&err, Some("docdex_files"), Some(trace))),
+=======
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_files"),
+                                        correlation_id.clone(),
+                                    )),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                 }))
                             }
                         }
@@ -4112,7 +4293,12 @@ impl McpServer {
                                         Some(err.to_string()),
                                         Some("docdex_open"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_open" })),
+<<<<<<< HEAD
                                         Some(trace),
+=======
+                                        None,
+                                        correlation_id.clone(),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                     )),
 >>>>>>> mcoda/task/bck-05-us-07-t33
 =======
@@ -4137,7 +4323,15 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_tool_error(&err, Some("docdex_open"), Some(trace))),
+=======
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_open"),
+                                        correlation_id.clone(),
+                                    )),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                 }))
                             }
                         }
@@ -4184,7 +4378,12 @@ impl McpServer {
                                         Some(err.to_string()),
                                         Some("docdex_stats"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_stats" })),
+<<<<<<< HEAD
                                         Some(trace),
+=======
+                                        None,
+                                        correlation_id.clone(),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                     )),
 >>>>>>> mcoda/task/bck-05-us-07-t33
 =======
@@ -4209,7 +4408,15 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_tool_error(&err, Some("docdex_stats"), Some(trace))),
+=======
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_stats"),
+                                        correlation_id.clone(),
+                                    )),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                 }))
                             }
                         }
@@ -4259,10 +4466,15 @@ impl McpServer {
                                         Some("docdex_repo_inspect"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_repo_inspect" })),
 <<<<<<< HEAD
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-07-t33
 =======
                                         Some(trace),
 >>>>>>> mcoda/task/bck-05-us-06-t30
+=======
+                                        None,
+                                        correlation_id.clone(),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                     )),
 =======
                                     error: Some(err),
@@ -4286,7 +4498,15 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_tool_error(&err, Some("docdex_repo_inspect"), Some(trace))),
+=======
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_repo_inspect"),
+                                        correlation_id.clone(),
+                                    )),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                 }))
                             }
                         }
@@ -4333,7 +4553,12 @@ impl McpServer {
                                         Some(err.to_string()),
                                         Some("docdex_symbols"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_symbols" })),
+<<<<<<< HEAD
                                         Some(trace),
+=======
+                                        None,
+                                        correlation_id.clone(),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                     )),
 >>>>>>> mcoda/task/bck-05-us-07-t33
 =======
@@ -4358,7 +4583,15 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_tool_error(&err, Some("docdex_symbols"), Some(trace))),
+=======
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_symbols"),
+                                        correlation_id.clone(),
+                                    )),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                 }))
                             }
                         }
@@ -4408,10 +4641,15 @@ impl McpServer {
                                         Some("docdex_memory_store"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_memory_store" })),
 <<<<<<< HEAD
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-07-t33
 =======
                                         Some(trace),
 >>>>>>> mcoda/task/bck-05-us-06-t30
+=======
+                                        None,
+                                        correlation_id.clone(),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                     )),
 =======
                                     error: Some(err),
@@ -4435,7 +4673,15 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_tool_error(&err, Some("docdex_memory_store"), Some(trace))),
+=======
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_memory_store"),
+                                        correlation_id.clone(),
+                                    )),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                 }))
                             }
                         }
@@ -4482,10 +4728,15 @@ impl McpServer {
                                         Some("docdex_memory_recall"),
                                         Some(json!({ "validation": "serde", "tool": "docdex_memory_recall" })),
 <<<<<<< HEAD
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-07-t33
 =======
                                         Some(trace),
 >>>>>>> mcoda/task/bck-05-us-06-t30
+=======
+                                        None,
+                                        correlation_id.clone(),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                     )),
 =======
                                     error: Some(err),
@@ -4506,6 +4757,7 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
+<<<<<<< HEAD
                                     error: Some(rpc_tool_error(&err, Some("docdex_memory_recall"), Some(trace))),
                                 }))
                             }
@@ -4546,6 +4798,13 @@ impl McpServer {
                                     id: id.clone(),
                                     result: None,
                                     error: Some(rpc_tool_error(&err, Some("docdex_explainability_record"))),
+=======
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_memory_recall"),
+                                        correlation_id.clone(),
+                                    )),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                                 }))
                             }
                         }
@@ -4590,7 +4849,12 @@ impl McpServer {
                                         "docdex_explainability_record"
                                     ]
                                 })),
+<<<<<<< HEAD
                                 Some(trace),
+=======
+                                None,
+                                correlation_id.clone(),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                             )),
                         }));
                     }
@@ -4628,7 +4892,13 @@ impl McpServer {
 >>>>>>> mcoda/task/bck-05-us-06-t35
                     None,
                     None,
+<<<<<<< HEAD
                     Some(trace),
+=======
+                    None,
+                    None,
+                    correlation_id.clone(),
+>>>>>>> mcoda/task/bck-05-us-06-t25
                 )),
             })),
         }

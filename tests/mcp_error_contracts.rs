@@ -1029,6 +1029,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
 >>>>>>> mcoda/task/bck-05-us-06-t29
     assert_eq!(
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
         data_files.get("message").and_then(|v| v.as_str()),
         Some("rate limited")
@@ -1075,6 +1076,10 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
 =======
 >>>>>>> mcoda/task/bck-05-us-06-t26
         Some("global")
+=======
+        data_files.get("code").and_then(|v| v.as_str()),
+        Some("rate_limited")
+>>>>>>> mcoda/task/bck-05-us-06-t25
     );
     assert_eq!(
         data_files.get("resource_key").and_then(|v| v.as_str()),
@@ -1093,6 +1098,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
 <<<<<<< HEAD
 <<<<<<< HEAD
         data_files
+<<<<<<< HEAD
             .get("denied_total")
             .and_then(|v| v.as_u64())
             .is_some(),
@@ -1109,6 +1115,39 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
 =======
         details_files
 >>>>>>> mcoda/task/bck-05-us-06-t26
+=======
+            .get("message")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "rate-limit error should include a message"
+    );
+    assert_eq!(
+        data_files.get("tool").and_then(|v| v.as_str()),
+        Some("docdex_files")
+    );
+    assert_eq!(
+        data_files.get("correlation_id").and_then(|v| v.as_str()),
+        Some("2")
+    );
+    let retry_files = data_files
+        .get("retry")
+        .and_then(|v| v.as_object())
+        .ok_or("rate-limit error missing error.data.retry object")?;
+    assert_eq!(
+        retry_files.get("kind").and_then(|v| v.as_str()),
+        Some("rate_limited")
+    );
+    assert_eq!(
+        retry_files.get("limit_key").and_then(|v| v.as_str()),
+        Some("mcp_tools")
+    );
+    assert_eq!(
+        retry_files.get("scope").and_then(|v| v.as_str()),
+        Some("global")
+    );
+    assert!(
+        retry_files
+>>>>>>> mcoda/task/bck-05-us-06-t25
             .get("retry_after_ms")
             .and_then(|v| v.as_u64())
             .is_some(),
@@ -1188,6 +1227,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         data_files.keys().all(|k| {
             matches!(
                 k.as_str(),
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-06-t30
                 "code"
                     | "retry_after_ms"
@@ -1207,6 +1247,16 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
                     | "session_id"
                     | "tracing"
 >>>>>>> mcoda/task/bck-05-us-06-t30
+=======
+                "code"
+                    | "message"
+                    | "reason"
+                    | "tool"
+                    | "details"
+                    | "retry"
+                    | "correlation_id"
+                    | "error"
+>>>>>>> mcoda/task/bck-05-us-06-t25
             )
         }),
         "error.data should only include stable keys"
@@ -1289,6 +1339,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     assert_eq!(
         data_search.get("limit_key").and_then(|v| v.as_str()),
         Some("mcp_tools")
@@ -1306,10 +1357,13 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     );
 =======
 =======
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t25
     assert_eq!(
         data_search.get("tool").and_then(|v| v.as_str()),
         Some("docdex_search")
     );
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-06-t26
     let details_search = data_search
         .get("details")
@@ -1319,6 +1373,35 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
 >>>>>>> mcoda/task/bck-05-us-06-t37
 =======
 >>>>>>> mcoda/task/bck-05-us-06-t26
+=======
+    assert_eq!(
+        data_search.get("correlation_id").and_then(|v| v.as_str()),
+        Some("4")
+    );
+    let retry_search = data_search
+        .get("retry")
+        .and_then(|v| v.as_object())
+        .ok_or("rate-limit error missing error.data.retry object (docdex_search)")?;
+    assert_eq!(
+        retry_search.get("kind").and_then(|v| v.as_str()),
+        Some("rate_limited")
+    );
+    assert_eq!(
+        retry_search.get("limit_key").and_then(|v| v.as_str()),
+        Some("mcp_tools")
+    );
+    assert_eq!(
+        retry_search.get("scope").and_then(|v| v.as_str()),
+        Some("global")
+    );
+    assert!(
+        retry_search
+            .get("retry_after_ms")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "retry_after_ms must be an integer (docdex_search)"
+    );
+>>>>>>> mcoda/task/bck-05-us-06-t25
 
     fn shape_signature(details: &serde_json::Map<String, Value>) -> Vec<(String, &'static str)> {
         let mut out: Vec<(String, &'static str)> = details

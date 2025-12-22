@@ -3,6 +3,7 @@ use std::fmt;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -21,6 +22,32 @@ pub const ERR_RATE_LIMITED: &str = "rate_limited";
 pub const ERR_BACKOFF_REQUIRED: &str = "backoff_required";
 pub const ERR_REPO_STATE_MISMATCH: &str = "repo_state_mismatch";
 pub const ERR_INTERNAL_ERROR: &str = "internal_error";
+pub const MCP_ERROR_CODE_REGISTRY: &[&str] = &[
+    "parse_error",
+    "invalid_request",
+    "method_not_found",
+    "invalid_params",
+    "invalid_argument",
+    "missing_query",
+    "invalid_query",
+    "invalid_path",
+    "invalid_range",
+    "max_content_exceeded",
+    ERR_EMBEDDING_TIMEOUT,
+    ERR_EMBEDDING_MODEL_NOT_FOUND,
+    ERR_EMBEDDING_FAILED,
+    ERR_MEMORY_DISABLED,
+    ERR_MISSING_REPO,
+    ERR_MISSING_REPO_PATH,
+    ERR_UNKNOWN_REPO,
+    ERR_REPO_STATE_MISMATCH,
+    ERR_MISSING_INDEX,
+    ERR_STALE_INDEX,
+    ERR_MISSING_DEPENDENCY,
+    ERR_RATE_LIMITED,
+    ERR_BACKOFF_REQUIRED,
+    ERR_INTERNAL_ERROR,
+];
 
 #[derive(Debug, Clone)]
 pub struct StartupError {
@@ -139,5 +166,79 @@ impl RateLimited {
     pub fn with_retry_at(mut self, retry_at: DateTime<Utc>) -> Self {
         self.retry_at = Some(retry_at);
         self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpRetryKind {
+    RateLimited,
+    BackoffRequired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpRetryHint {
+    pub kind: McpRetryKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+}
+
+impl McpRetryHint {
+    pub fn rate_limited(err: &RateLimited) -> Self {
+        Self {
+            kind: McpRetryKind::RateLimited,
+            retry_after_ms: Some(err.retry_after_ms),
+            retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
+            limit_key: Some(err.limit_key.clone()),
+            scope: Some(err.scope.clone()),
+        }
+    }
+
+    pub fn backoff_required() -> Self {
+        Self {
+            kind: McpRetryKind::BackoffRequired,
+            retry_after_ms: None,
+            retry_at: None,
+            limit_key: None,
+            scope: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpErrorCore {
+    pub code: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry: Option<McpRetryHint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpErrorEnvelope {
+    #[serde(flatten)]
+    pub core: McpErrorCore,
+    pub error: McpErrorCore,
+}
+
+impl McpErrorEnvelope {
+    pub fn new(core: McpErrorCore) -> Self {
+        Self {
+            error: core.clone(),
+            core,
+        }
     }
 }

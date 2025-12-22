@@ -197,15 +197,42 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         .and_then(|v| v.as_object())
         .ok_or("rate-limit error missing error.data object")?;
     assert_eq!(
-        data_files.get("limit_key").and_then(|v| v.as_str()),
-        Some("mcp_tools")
-    );
-    assert_eq!(
-        data_files.get("scope").and_then(|v| v.as_str()),
-        Some("global")
+        data_files.get("code").and_then(|v| v.as_str()),
+        Some("rate_limited")
     );
     assert!(
         data_files
+            .get("message")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "rate-limit error should include a message"
+    );
+    assert_eq!(
+        data_files.get("tool").and_then(|v| v.as_str()),
+        Some("docdex_files")
+    );
+    assert_eq!(
+        data_files.get("correlation_id").and_then(|v| v.as_str()),
+        Some("2")
+    );
+    let retry_files = data_files
+        .get("retry")
+        .and_then(|v| v.as_object())
+        .ok_or("rate-limit error missing error.data.retry object")?;
+    assert_eq!(
+        retry_files.get("kind").and_then(|v| v.as_str()),
+        Some("rate_limited")
+    );
+    assert_eq!(
+        retry_files.get("limit_key").and_then(|v| v.as_str()),
+        Some("mcp_tools")
+    );
+    assert_eq!(
+        retry_files.get("scope").and_then(|v| v.as_str()),
+        Some("global")
+    );
+    assert!(
+        retry_files
             .get("retry_after_ms")
             .and_then(|v| v.as_u64())
             .is_some(),
@@ -215,7 +242,14 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         data_files.keys().all(|k| {
             matches!(
                 k.as_str(),
-                "code" | "retry_after_ms" | "retry_at" | "limit_key" | "scope"
+                "code"
+                    | "message"
+                    | "reason"
+                    | "tool"
+                    | "details"
+                    | "retry"
+                    | "correlation_id"
+                    | "error"
             )
         }),
         "error.data should only include stable keys"
@@ -257,6 +291,37 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
         .and_then(|v| v.get("data"))
         .and_then(|v| v.as_object())
         .ok_or("rate-limit error missing error.data object (docdex_search)")?;
+    assert_eq!(
+        data_search.get("tool").and_then(|v| v.as_str()),
+        Some("docdex_search")
+    );
+    assert_eq!(
+        data_search.get("correlation_id").and_then(|v| v.as_str()),
+        Some("4")
+    );
+    let retry_search = data_search
+        .get("retry")
+        .and_then(|v| v.as_object())
+        .ok_or("rate-limit error missing error.data.retry object (docdex_search)")?;
+    assert_eq!(
+        retry_search.get("kind").and_then(|v| v.as_str()),
+        Some("rate_limited")
+    );
+    assert_eq!(
+        retry_search.get("limit_key").and_then(|v| v.as_str()),
+        Some("mcp_tools")
+    );
+    assert_eq!(
+        retry_search.get("scope").and_then(|v| v.as_str()),
+        Some("global")
+    );
+    assert!(
+        retry_search
+            .get("retry_after_ms")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "retry_after_ms must be an integer (docdex_search)"
+    );
 
     fn shape_signature(data: &serde_json::Map<String, Value>) -> Vec<(String, &'static str)> {
         let mut out: Vec<(String, &'static str)> = data

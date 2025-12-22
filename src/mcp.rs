@@ -124,10 +124,14 @@ use crate::repo_manager::RepoManagerConfig;
 >>>>>>> mcoda/task/bck-05-us-07-t02
 use crate::ratelimit::RateLimiter;
 <<<<<<< HEAD
+<<<<<<< HEAD
 >>>>>>> mcoda/task/bck-05-us-09-t20
 =======
 use crate::repo_resolution;
 >>>>>>> mcoda/task/bck-05-us-07-t31
+=======
+use crate::repo_identity::RepoInspectStatus;
+>>>>>>> mcoda/task/bck-05-us-06-t04
 use crate::search;
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -163,9 +167,15 @@ use serde::{Deserialize, Serialize};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 >>>>>>> mcoda/task/bck-05-us-06-t26
 use serde_json::json;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+<<<<<<< HEAD
 use std::time::{Duration, Instant, SystemTime};
+=======
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+>>>>>>> mcoda/task/bck-05-us-06-t04
 use tantivy::directory::error::LockError;
 use tantivy::TantivyError;
 use thiserror::Error;
@@ -242,6 +252,7 @@ const MEMORY_MAX_TOP_K: usize = 50;
 >>>>>>> mcoda/task/bck-05-us-06-t39
 const MAX_ERROR_MESSAGE_BYTES: usize = 256;
 const MAX_ERROR_REASON_BYTES: usize = 768;
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -333,6 +344,9 @@ const MCP_CANONICAL_CODES: &[&str] = &[
 =======
 const INDEX_META_FILENAME: &str = "meta.json";
 >>>>>>> mcoda/task/bck-05-us-06-t18
+=======
+const DEFAULT_MAX_OPEN_REPOS: usize = 12;
+>>>>>>> mcoda/task/bck-05-us-06-t04
 
 #[derive(Error, Debug)]
 #[error("path must be relative and not contain parent components")]
@@ -2236,6 +2250,7 @@ fn env_flag_enabled(name: &str) -> bool {
     }
 }
 
+<<<<<<< HEAD
 fn invalid_params_error(
     err: serde_json::Error,
     tool: Option<&str>,
@@ -2266,6 +2281,14 @@ fn parse_tool_args<T: DeserializeOwned>(
 ) -> Result<T, RpcError> {
     serde_json::from_value(args).map_err(|err| {
         invalid_params_error(err, Some(tool), json!({ "validation": "serde", "tool": tool }))
+=======
+fn missing_repo_details() -> serde_json::Value {
+    json!({
+        "recoverySteps": [
+            "Provide project_root in tool arguments.",
+            "Or send initialize with workspace_root/project_root to set the default repo context."
+        ]
+>>>>>>> mcoda/task/bck-05-us-06-t04
     })
 }
 
@@ -2816,6 +2839,7 @@ pub async fn serve(
     .ok()
     .flatten();
 <<<<<<< HEAD
+<<<<<<< HEAD
     let web_config = web::WebConfig::from_env();
     let web_discovery = web::ddg::DdgDiscovery::new(web_config)?;
 =======
@@ -2824,6 +2848,15 @@ pub async fn serve(
     let mut server = McpServer {
         repo_root,
         repo_normalized_path: repo_resolution.normalized_path,
+=======
+    let repo_manager = RepoHandleManager::new(
+        repo_root.clone(),
+        env_flag_enabled("DOCDEX_MCP_REQUIRE_PROJECT_ROOT"),
+    );
+    let mut server = McpServer {
+        repo_root,
+        repo_manager,
+>>>>>>> mcoda/task/bck-05-us-06-t04
         indexer,
         libs_indexer,
 <<<<<<< HEAD
@@ -2881,9 +2914,96 @@ struct McpMemoryState {
     embedder: OllamaEmbedder,
 }
 
+struct RepoHandleManager {
+    repo_root: PathBuf,
+    require_project_root: bool,
+}
+
+impl RepoHandleManager {
+    fn new(repo_root: PathBuf, require_project_root: bool) -> Self {
+        Self {
+            repo_root,
+            require_project_root,
+        }
+    }
+
+    fn resolve_project_root(
+        &self,
+        candidate: Option<&Path>,
+        default_project_root: Option<&Path>,
+    ) -> Result<PathBuf> {
+        if let Some(path) = candidate {
+            return self.ensure_same_repo(path);
+        }
+        if let Some(path) = default_project_root {
+            return self.ensure_same_repo(path);
+        }
+        if self.require_project_root {
+            return Err(
+                AppError::new(ERR_MISSING_REPO, "missing repo")
+                    .with_details(missing_repo_details())
+                    .into(),
+            );
+        }
+        Ok(self.repo_root.clone())
+    }
+
+    fn ensure_same_repo(&self, candidate: &Path) -> Result<PathBuf> {
+        if !candidate.exists() {
+            let normalized_path = candidate.to_string_lossy().replace('\\', "/");
+            let details = repo_resolution_details(
+                normalized_path,
+                None,
+                Some(self.repo_root.to_string_lossy().replace('\\', "/")),
+                vec![
+                    "Repo may have moved or been renamed.".to_string(),
+                    "Pass the current repo path (or omit `project_root` to use the MCP server default)."
+                        .to_string(),
+                    "If the MCP server is pointed at the wrong path, restart it with `docdexd mcp --repo <repo>`."
+                        .to_string(),
+                ],
+            );
+            return Err(
+                AppError::new(ERR_MISSING_REPO_PATH, "repo path not found")
+                    .with_details(details)
+                    .into(),
+            );
+        }
+
+        let normalized = candidate.canonicalize().unwrap_or_else(|_| candidate.to_path_buf());
+        if normalized != self.repo_root {
+            let attempted_fingerprint =
+                crate::repo_identity::repo_fingerprint_sha256(&normalized).ok();
+            let details = repo_resolution_details(
+                normalized.to_string_lossy().replace('\\', "/"),
+                attempted_fingerprint,
+                Some(self.repo_root.to_string_lossy().replace('\\', "/")),
+                vec![
+                    "Repo may have moved or been renamed.".to_string(),
+                    "Restart the MCP server with `docdexd mcp --repo <repo>` matching the repo you want to use."
+                        .to_string(),
+                    "Alternatively, omit `project_root` in tool arguments to use the MCP server default."
+                        .to_string(),
+                ],
+            );
+            return Err(
+                AppError::new(ERR_UNKNOWN_REPO, "unknown repo")
+                    .with_details(details)
+                    .into(),
+            );
+        }
+
+        Ok(normalized)
+    }
+}
+
 struct McpServer {
     repo_root: PathBuf,
+<<<<<<< HEAD
     repo_normalized_path: String,
+=======
+    repo_manager: RepoHandleManager,
+>>>>>>> mcoda/task/bck-05-us-06-t04
     indexer: Indexer,
     libs_indexer: Option<libs::LibsIndexer>,
 <<<<<<< HEAD
@@ -4730,6 +4850,7 @@ impl McpServer {
         }]
     }
 
+<<<<<<< HEAD
     fn index_state_snapshot(&mut self) -> Result<IndexStateSnapshot> {
         if let Some(cache) = self.index_state_cache.as_ref() {
             if cache.checked_at.elapsed() < Duration::from_millis(INDEX_STATE_CACHE_TTL_MS) {
@@ -4843,6 +4964,10 @@ impl McpServer {
 =======
         self.ensure_index_ready()?;
 >>>>>>> mcoda/task/bck-05-us-06-t18
+=======
+    async fn handle_search(&self, args: SearchArgs) -> Result<serde_json::Value> {
+        let project_root = self.resolve_project_root(args.project_root.as_deref())?;
+>>>>>>> mcoda/task/bck-05-us-06-t04
         let query = args.query.trim();
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -4897,12 +5022,7 @@ impl McpServer {
         }
 >>>>>>> mcoda/task/bck-05-us-08-t32
         let hits_value = serde_json::to_value(&hits.hits)?;
-        let project_root_path = self
-            .default_project_root
-            .as_ref()
-            .unwrap_or(&self.repo_root)
-            .display()
-            .to_string();
+        let project_root_path = project_root.display().to_string();
         let mut meta = hits.meta.unwrap_or_else(|| search::SearchMeta {
             generated_at_epoch_ms: 0,
             index_last_updated_epoch_ms: None,
@@ -5011,8 +5131,13 @@ impl McpServer {
     }
 
     async fn handle_index(&mut self, args: IndexArgs) -> Result<serde_json::Value> {
+<<<<<<< HEAD
         self.ensure_project_root(args.project_root.as_deref())?;
         self.ensure_schema_version("docdex_index", args.schema_version)?;
+=======
+        let project_root = self.resolve_project_root(args.project_root.as_deref())?;
+        let project_root_path = project_root.display().to_string();
+>>>>>>> mcoda/task/bck-05-us-06-t04
         if args.paths.is_empty() {
 <<<<<<< HEAD
             let _ = self.indexer.reindex_all_with_summary().await?;
@@ -5029,12 +5154,7 @@ impl McpServer {
                 "action": "reindex_all",
                 "repo_root": self.repo_root.display().to_string(),
                 "state_dir": self.indexer.config().state_dir().display().to_string(),
-                "project_root": self
-                    .default_project_root
-                    .as_ref()
-                    .unwrap_or(&self.repo_root)
-                    .display()
-                    .to_string(),
+                "project_root": project_root_path,
             }));
         }
         if args.paths.len() > INDEX_MAX_PATHS {
@@ -5111,15 +5231,11 @@ impl McpServer {
             "action": "ingest",
             "paths": ingested,
             "decisions": decisions,
-            "project_root": self
-                .default_project_root
-                .as_ref()
-                .unwrap_or(&self.repo_root)
-                .display()
-                .to_string(),
+            "project_root": project_root_path,
         }))
     }
 
+<<<<<<< HEAD
     async fn handle_files(&mut self, args: FilesArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
 <<<<<<< HEAD
@@ -5163,6 +5279,10 @@ impl McpServer {
 =======
         self.ensure_index_ready()?;
 >>>>>>> mcoda/task/bck-05-us-06-t18
+=======
+    async fn handle_files(&self, args: FilesArgs) -> Result<serde_json::Value> {
+        let project_root = self.resolve_project_root(args.project_root.as_deref())?;
+>>>>>>> mcoda/task/bck-05-us-06-t04
         let limit = args
             .limit
             .unwrap_or(limits::MCP_FILES_DEFAULT_LIMIT)
@@ -5217,15 +5337,11 @@ impl McpServer {
             "offset": offset,
             "limits": limits,
             "repo_root": self.repo_root.display().to_string(),
-            "project_root": self
-                .default_project_root
-                .as_ref()
-                .unwrap_or(&self.repo_root)
-                .display()
-                .to_string(),
+            "project_root": project_root.display().to_string(),
         }))
     }
 
+<<<<<<< HEAD
     async fn handle_stats(&mut self, args: StatsArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
 <<<<<<< HEAD
@@ -5262,6 +5378,10 @@ impl McpServer {
 =======
         self.ensure_index_ready()?;
 >>>>>>> mcoda/task/bck-05-us-06-t18
+=======
+    async fn handle_stats(&self, args: StatsArgs) -> Result<serde_json::Value> {
+        let project_root = self.resolve_project_root(args.project_root.as_deref())?;
+>>>>>>> mcoda/task/bck-05-us-06-t04
         let stats = self.indexer.stats()?;
         let run_summaries = self.indexer.run_summaries(args.runs_limit)?;
 =======
@@ -5283,12 +5403,7 @@ impl McpServer {
             "index_status": stats.index_status,
 >>>>>>> mcoda/task/bck-05-us-08-t12
             "repo_root": self.repo_root.display().to_string(),
-            "project_root": self
-                .default_project_root
-                .as_ref()
-                .unwrap_or(&self.repo_root)
-                .display()
-                .to_string(),
+            "project_root": project_root.display().to_string(),
         }))
     }
 
@@ -5330,8 +5445,12 @@ impl McpServer {
     }
 
     async fn handle_repo_inspect(&self, args: RepoInspectArgs) -> Result<serde_json::Value> {
+<<<<<<< HEAD
         self.ensure_project_root(args.project_root.as_deref())?;
         self.ensure_schema_version("docdex_repo_inspect", args.schema_version)?;
+=======
+        let _project_root = self.resolve_project_root(args.project_root.as_deref())?;
+>>>>>>> mcoda/task/bck-05-us-06-t04
         let report = crate::repo_identity::inspect_repo(
             &self.repo_root,
             Some(self.indexer.config().state_dir()),
@@ -5340,6 +5459,7 @@ impl McpServer {
     }
 
     async fn handle_open(&self, args: OpenArgs) -> Result<serde_json::Value> {
+<<<<<<< HEAD
         self.ensure_project_root(args.project_root.as_deref())?;
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5350,6 +5470,10 @@ impl McpServer {
 =======
         self.ensure_index_ready()?;
 >>>>>>> mcoda/task/bck-05-us-06-t18
+=======
+        let project_root = self.resolve_project_root(args.project_root.as_deref())?;
+        let project_root_path = project_root.display().to_string();
+>>>>>>> mcoda/task/bck-05-us-06-t04
         let rel_path = normalize_rel_path(&args.path).ok_or(InvalidPathError)?;
         let abs_path = self.repo_root.join(&rel_path);
         let canonical = abs_path
@@ -5379,12 +5503,7 @@ impl McpServer {
                 "content": "",
                 "limits": limits,
                 "repo_root": self.repo_root.display().to_string(),
-                "project_root": self
-                    .default_project_root
-                    .as_ref()
-                    .unwrap_or(&self.repo_root)
-                    .display()
-                    .to_string(),
+                "project_root": project_root_path,
             }));
         }
         let start = args.start_line.unwrap_or(1).max(1);
@@ -5437,15 +5556,11 @@ impl McpServer {
             "limits": limits,
 >>>>>>> mcoda/task/bck-05-us-06-t13
             "repo_root": self.repo_root.display().to_string(),
-            "project_root": self
-                .default_project_root
-                .as_ref()
-                .unwrap_or(&self.repo_root)
-                .display()
-                .to_string(),
+            "project_root": project_root_path,
         }))
     }
 
+<<<<<<< HEAD
     async fn handle_symbols(&mut self, args: SymbolsArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
 <<<<<<< HEAD
@@ -5462,6 +5577,10 @@ impl McpServer {
 =======
         self.ensure_index_ready()?;
 >>>>>>> mcoda/task/bck-05-us-06-t18
+=======
+    async fn handle_symbols(&self, args: SymbolsArgs) -> Result<serde_json::Value> {
+        let _project_root = self.resolve_project_root(args.project_root.as_deref())?;
+>>>>>>> mcoda/task/bck-05-us-06-t04
         if !self.indexer.config().symbols_enabled() {
             return Err(missing_dependency_error(
                 "DOCDEX_ENABLE_SYMBOL_EXTRACTION",
@@ -5543,6 +5662,7 @@ impl McpServer {
     }
 
     async fn handle_memory_store(&self, args: MemoryStoreArgs) -> Result<serde_json::Value> {
+<<<<<<< HEAD
         self.ensure_project_root(args.project_root.as_deref())?;
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5550,6 +5670,9 @@ impl McpServer {
 =======
         self.ensure_index_ready()?;
 >>>>>>> mcoda/task/bck-05-us-06-t18
+=======
+        let _project_root = self.resolve_project_root(args.project_root.as_deref())?;
+>>>>>>> mcoda/task/bck-05-us-06-t04
         let Some(memory) = self.memory.clone() else {
 <<<<<<< HEAD
             return Err(AppError::new(
@@ -5602,6 +5725,7 @@ impl McpServer {
     }
 
     async fn handle_memory_recall(&self, args: MemoryRecallArgs) -> Result<serde_json::Value> {
+<<<<<<< HEAD
         self.ensure_project_root(args.project_root.as_deref())?;
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5609,6 +5733,9 @@ impl McpServer {
 =======
         self.ensure_index_ready()?;
 >>>>>>> mcoda/task/bck-05-us-06-t18
+=======
+        let _project_root = self.resolve_project_root(args.project_root.as_deref())?;
+>>>>>>> mcoda/task/bck-05-us-06-t04
         let Some(memory) = self.memory.clone() else {
 <<<<<<< HEAD
             return Err(AppError::new(
@@ -5768,6 +5895,7 @@ impl McpServer {
         self.handle_open(open_args).await
     }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -5951,6 +6079,11 @@ impl McpServer {
             ),
         );
         serde_json::Value::Object(details)
+=======
+    fn resolve_project_root(&self, candidate: Option<&Path>) -> Result<PathBuf> {
+        self.repo_manager
+            .resolve_project_root(candidate, self.default_project_root.as_deref())
+>>>>>>> mcoda/task/bck-05-us-06-t04
     }
 
     fn ensure_index_ready(&self) -> Result<()> {

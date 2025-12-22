@@ -284,6 +284,15 @@ fn env_flag_enabled(name: &str) -> bool {
     }
 }
 
+fn missing_repo_details() -> serde_json::Value {
+    json!({
+        "recoverySteps": [
+            "Provide project_root in tool arguments.",
+            "Or send initialize with workspace_root/project_root to set the default repo context."
+        ]
+    })
+}
+
 #[derive(Deserialize)]
 struct RpcRequest {
     #[serde(default)]
@@ -492,8 +501,13 @@ pub async fn serve(
     ))
     .ok()
     .flatten();
+    let repo_manager = RepoHandleManager::new(
+        repo_root.clone(),
+        env_flag_enabled("DOCDEX_MCP_REQUIRE_PROJECT_ROOT"),
+    );
     let mut server = McpServer {
         repo_root,
+        repo_manager,
         indexer,
         libs_indexer,
         max_results: max_results.max(1),
@@ -510,8 +524,92 @@ struct McpMemoryState {
     embedder: OllamaEmbedder,
 }
 
+struct RepoHandleManager {
+    repo_root: PathBuf,
+    require_project_root: bool,
+}
+
+impl RepoHandleManager {
+    fn new(repo_root: PathBuf, require_project_root: bool) -> Self {
+        Self {
+            repo_root,
+            require_project_root,
+        }
+    }
+
+    fn resolve_project_root(
+        &self,
+        candidate: Option<&Path>,
+        default_project_root: Option<&Path>,
+    ) -> Result<PathBuf> {
+        if let Some(path) = candidate {
+            return self.ensure_same_repo(path);
+        }
+        if let Some(path) = default_project_root {
+            return self.ensure_same_repo(path);
+        }
+        if self.require_project_root {
+            return Err(
+                AppError::new(ERR_MISSING_REPO, "missing repo")
+                    .with_details(missing_repo_details())
+                    .into(),
+            );
+        }
+        Ok(self.repo_root.clone())
+    }
+
+    fn ensure_same_repo(&self, candidate: &Path) -> Result<PathBuf> {
+        if !candidate.exists() {
+            let normalized_path = candidate.to_string_lossy().replace('\\', "/");
+            let details = repo_resolution_details(
+                normalized_path,
+                None,
+                Some(self.repo_root.to_string_lossy().replace('\\', "/")),
+                vec![
+                    "Repo may have moved or been renamed.".to_string(),
+                    "Pass the current repo path (or omit `project_root` to use the MCP server default)."
+                        .to_string(),
+                    "If the MCP server is pointed at the wrong path, restart it with `docdexd mcp --repo <repo>`."
+                        .to_string(),
+                ],
+            );
+            return Err(
+                AppError::new(ERR_MISSING_REPO_PATH, "repo path not found")
+                    .with_details(details)
+                    .into(),
+            );
+        }
+
+        let normalized = candidate.canonicalize().unwrap_or_else(|_| candidate.to_path_buf());
+        if normalized != self.repo_root {
+            let attempted_fingerprint =
+                crate::repo_identity::repo_fingerprint_sha256(&normalized).ok();
+            let details = repo_resolution_details(
+                normalized.to_string_lossy().replace('\\', "/"),
+                attempted_fingerprint,
+                Some(self.repo_root.to_string_lossy().replace('\\', "/")),
+                vec![
+                    "Repo may have moved or been renamed.".to_string(),
+                    "Restart the MCP server with `docdexd mcp --repo <repo>` matching the repo you want to use."
+                        .to_string(),
+                    "Alternatively, omit `project_root` in tool arguments to use the MCP server default."
+                        .to_string(),
+                ],
+            );
+            return Err(
+                AppError::new(ERR_UNKNOWN_REPO, "unknown repo")
+                    .with_details(details)
+                    .into(),
+            );
+        }
+
+        Ok(normalized)
+    }
+}
+
 struct McpServer {
     repo_root: PathBuf,
+    repo_manager: RepoHandleManager,
     indexer: Indexer,
     libs_indexer: Option<libs::LibsIndexer>,
     max_results: usize,
@@ -1279,7 +1377,7 @@ impl McpServer {
     }
 
     async fn handle_search(&self, args: SearchArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
+        let project_root = self.resolve_project_root(args.project_root.as_deref())?;
         let query = args.query.trim();
         let limit = args
             .limit
@@ -1288,12 +1386,7 @@ impl McpServer {
         let hits =
             search::run_query(&self.indexer, self.libs_indexer.as_ref(), query, limit).await?;
         let hits_value = serde_json::to_value(&hits.hits)?;
-        let project_root_path = self
-            .default_project_root
-            .as_ref()
-            .unwrap_or(&self.repo_root)
-            .display()
-            .to_string();
+        let project_root_path = project_root.display().to_string();
         let mut meta = hits.meta.unwrap_or_else(|| search::SearchMeta {
             generated_at_epoch_ms: 0,
             index_last_updated_epoch_ms: None,
@@ -1316,7 +1409,8 @@ impl McpServer {
     }
 
     async fn handle_index(&mut self, args: IndexArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
+        let project_root = self.resolve_project_root(args.project_root.as_deref())?;
+        let project_root_path = project_root.display().to_string();
         if args.paths.is_empty() {
             self.indexer.reindex_all().await?;
             return Ok(json!({
@@ -1324,12 +1418,7 @@ impl McpServer {
                 "action": "reindex_all",
                 "repo_root": self.repo_root.display().to_string(),
                 "state_dir": self.indexer.config().state_dir().display().to_string(),
-                "project_root": self
-                    .default_project_root
-                    .as_ref()
-                    .unwrap_or(&self.repo_root)
-                    .display()
-                    .to_string(),
+                "project_root": project_root_path,
             }));
         }
         let mut ingested = Vec::new();
@@ -1354,17 +1443,12 @@ impl McpServer {
             "action": "ingest",
             "paths": ingested.into_iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
             "decisions": decisions,
-            "project_root": self
-                .default_project_root
-                .as_ref()
-                .unwrap_or(&self.repo_root)
-                .display()
-                .to_string(),
+            "project_root": project_root_path,
         }))
     }
 
     async fn handle_files(&self, args: FilesArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
+        let project_root = self.resolve_project_root(args.project_root.as_deref())?;
         let limit = args
             .limit
             .unwrap_or(FILES_DEFAULT_LIMIT)
@@ -1377,17 +1461,12 @@ impl McpServer {
             "limit": limit,
             "offset": offset,
             "repo_root": self.repo_root.display().to_string(),
-            "project_root": self
-                .default_project_root
-                .as_ref()
-                .unwrap_or(&self.repo_root)
-                .display()
-                .to_string(),
+            "project_root": project_root.display().to_string(),
         }))
     }
 
     async fn handle_stats(&self, args: StatsArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
+        let project_root = self.resolve_project_root(args.project_root.as_deref())?;
         let stats = self.indexer.stats()?;
         Ok(json!({
             "num_docs": stats.num_docs,
@@ -1398,17 +1477,12 @@ impl McpServer {
             "generated_at_epoch_ms": stats.generated_at_epoch_ms,
             "last_updated_epoch_ms": stats.last_updated_epoch_ms,
             "repo_root": self.repo_root.display().to_string(),
-            "project_root": self
-                .default_project_root
-                .as_ref()
-                .unwrap_or(&self.repo_root)
-                .display()
-                .to_string(),
+            "project_root": project_root.display().to_string(),
         }))
     }
 
     async fn handle_repo_inspect(&self, args: RepoInspectArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
+        let _project_root = self.resolve_project_root(args.project_root.as_deref())?;
         let report = crate::repo_identity::inspect_repo(
             &self.repo_root,
             Some(self.indexer.config().state_dir()),
@@ -1417,7 +1491,8 @@ impl McpServer {
     }
 
     async fn handle_open(&self, args: OpenArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
+        let project_root = self.resolve_project_root(args.project_root.as_deref())?;
+        let project_root_path = project_root.display().to_string();
         let rel_path = normalize_rel_path(&args.path).ok_or(InvalidPathError)?;
         let abs_path = self.repo_root.join(&rel_path);
         let canonical = abs_path
@@ -1445,12 +1520,7 @@ impl McpServer {
                 "total_lines": 0,
                 "content": "",
                 "repo_root": self.repo_root.display().to_string(),
-                "project_root": self
-                    .default_project_root
-                    .as_ref()
-                    .unwrap_or(&self.repo_root)
-                    .display()
-                    .to_string(),
+                "project_root": project_root_path,
             }));
         }
         let start = args.start_line.unwrap_or(1).max(1);
@@ -1473,17 +1543,12 @@ impl McpServer {
             "total_lines": total_lines,
             "content": slice,
             "repo_root": self.repo_root.display().to_string(),
-            "project_root": self
-                .default_project_root
-                .as_ref()
-                .unwrap_or(&self.repo_root)
-                .display()
-                .to_string(),
+            "project_root": project_root_path,
         }))
     }
 
     async fn handle_symbols(&self, args: SymbolsArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
+        let _project_root = self.resolve_project_root(args.project_root.as_deref())?;
         if !self.indexer.config().symbols_enabled() {
             return Err(MissingSymbolsDependencyError.into());
         }
@@ -1501,7 +1566,7 @@ impl McpServer {
     }
 
     async fn handle_memory_store(&self, args: MemoryStoreArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
+        let _project_root = self.resolve_project_root(args.project_root.as_deref())?;
         let Some(memory) = self.memory.clone() else {
             return Err(AppError::new(
                 ERR_MEMORY_DISABLED,
@@ -1537,7 +1602,7 @@ impl McpServer {
     }
 
     async fn handle_memory_recall(&self, args: MemoryRecallArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
+        let _project_root = self.resolve_project_root(args.project_root.as_deref())?;
         let Some(memory) = self.memory.clone() else {
             return Err(AppError::new(
                 ERR_MEMORY_DISABLED,
@@ -1587,61 +1652,9 @@ impl McpServer {
         self.handle_open(open_args).await
     }
 
-    fn ensure_same_repo(&self, candidate: &Path) -> Result<()> {
-        if !candidate.exists() {
-            let normalized_path = candidate.to_string_lossy().replace('\\', "/");
-            let details = repo_resolution_details(
-                normalized_path,
-                None,
-                Some(self.repo_root.to_string_lossy().replace('\\', "/")),
-                vec![
-                    "Repo may have moved or been renamed.".to_string(),
-                    "Pass the current repo path (or omit `project_root` to use the MCP server default)."
-                        .to_string(),
-                    "If the MCP server is pointed at the wrong path, restart it with `docdexd mcp --repo <repo>`."
-                        .to_string(),
-                ],
-            );
-            return Err(
-                AppError::new(ERR_MISSING_REPO_PATH, "repo path not found")
-                    .with_details(details)
-                    .into(),
-            );
-        }
-
-        let normalized = candidate.canonicalize().unwrap_or_else(|_| candidate.to_path_buf());
-        if normalized != self.repo_root {
-            let attempted_fingerprint = crate::repo_identity::repo_fingerprint_sha256(&normalized).ok();
-            let details = repo_resolution_details(
-                normalized.to_string_lossy().replace('\\', "/"),
-                attempted_fingerprint,
-                Some(self.repo_root.to_string_lossy().replace('\\', "/")),
-                vec![
-                    "Repo may have moved or been renamed.".to_string(),
-                    "Restart the MCP server with `docdexd mcp --repo <repo>` matching the repo you want to use."
-                        .to_string(),
-                    "Alternatively, omit `project_root` in tool arguments to use the MCP server default."
-                        .to_string(),
-                ],
-            );
-            return Err(
-                AppError::new(ERR_UNKNOWN_REPO, "unknown repo")
-                    .with_details(details)
-                    .into(),
-            );
-        }
-
-        Ok(())
-    }
-
-    fn ensure_project_root(&self, candidate: Option<&Path>) -> Result<()> {
-        if let Some(path) = candidate {
-            return self.ensure_same_repo(path);
-        }
-        if let Some(default_root) = self.default_project_root.as_ref() {
-            return self.ensure_same_repo(default_root);
-        }
-        Ok(())
+    fn resolve_project_root(&self, candidate: Option<&Path>) -> Result<PathBuf> {
+        self.repo_manager
+            .resolve_project_root(candidate, self.default_project_root.as_deref())
     }
 }
 

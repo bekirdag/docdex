@@ -515,6 +515,62 @@ fn mcp_missing_project_root_path_is_missing_repo_path() -> Result<(), Box<dyn Er
 }
 
 #[test]
+fn mcp_missing_repo_context_is_missing_repo_when_required() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let mut mcp = McpHarness::spawn_with_env(
+        repo.path(),
+        &[("DOCDEX_MCP_REQUIRE_PROJECT_ROOT", "1")],
+    )?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 13,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": { "query": "MCP_ROADMAP" }
+            }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("missing_repo"));
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_missing_repo_context_is_missing_repo_when_required() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let mut mcp = McpHarness::spawn_with_env(
+        repo.path(),
+        &[("DOCDEX_MCP_REQUIRE_PROJECT_ROOT", "1")],
+    )?;
+
+    send_line(
+        &mut mcp.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 13,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": { "query": "MCP_ROADMAP" }
+            }
+        }),
+    )?;
+    let resp = read_line(&mut mcp.reader)?;
+    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    assert_eq!(mcp_error_data_code(&resp), Some("missing_repo"));
+
+    mcp.shutdown();
+    Ok(())
+}
+
+#[test]
 fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let repo_str = repo.path().to_string_lossy().to_string();

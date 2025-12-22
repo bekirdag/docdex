@@ -15,6 +15,7 @@ On failure, the MCP server returns a JSON-RPC error response:
   - `-32600` invalid request (`invalid_request`)
   - `-32601` unknown method/tool (`method_not_found`)
   - `-32602` tool failures and argument validation (`invalid_params` *and* domain failures like `missing_index`)
+  - `-32029` rate-limited tool calls (`rate_limited`) with retry hints in `error.data`
   - `-32000` internal server error (`internal_error`) when the MCP server fails outside tool handling
 - `error.message` (string): a short, stable category message.
 - `error.data` (object): Docdex error envelope (below).
@@ -29,6 +30,8 @@ On failure, the MCP server returns a JSON-RPC error response:
 - `tool` (string, optional): tool name (for `tools/call` failures), e.g. `docdex_search`.
 - `details` (object, optional): structured context (limits, fields, expected/got, etc). For repo move/rename/mismatch errors, `details` may include `normalizedPath`, `attemptedFingerprint`, `knownCanonicalPath`, and `recoverySteps` (often including `docdexd repo inspect` for diagnostics and `docdexd repo reassociate` for moved repos under shared state dirs).
 - `error` (object, required): the canonical envelope, containing the same fields as above (`code/message/reason/tool/details`).
+
+Rate-limited responses include retry hints at the top level of `error.data`: `retry_after_ms`, optional `retry_at` (RFC3339), `limit_key`, and `scope`. These fields are additive and do not replace the canonical envelope fields.
 
 Compatibility guidance for clients:
 
@@ -57,7 +60,7 @@ These codes are the **required** set for repo/index/dependency failures and are 
 - `missing_index`: on-disk index is not present (e.g. `docdexd query` before indexing).
 - `stale_index`: index exists but is known to be stale (reserved for future use).
 - `missing_dependency`: a required optional feature/dependency is disabled (e.g. symbols extraction disabled).
-- `rate_limited`: request rejected due to rate limiting (reserved for future use in MCP).
+- `rate_limited`: request rejected due to rate limiting.
 - `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable).
 - `internal_error`: unexpected server failure.
 
@@ -72,6 +75,12 @@ Use these codes for invalid inputs:
 - `invalid_path`: invalid or unsafe path (absolute path, parent traversal, outside repo, etc).
 - `invalid_range`: invalid line window (`start_line`/`end_line` out of bounds).
 - `max_content_exceeded`: response content would exceed server limits (e.g. `docdex_open` file too large).
+
+Parameter validation semantics:
+
+- `invalid_params` is emitted for JSON/serde decoding failures. `error.data.details` includes `validation: "serde"` plus the tool or method name, and `error.data.reason` carries the serde error string.
+- `invalid_argument` is emitted for semantically invalid inputs after decoding (empty strings, out-of-range values after coercion).
+- `invalid_query`, `invalid_path`, `invalid_range`, and `max_content_exceeded` follow the same envelope with structured context in `error.data.details` when available.
 
 ### Feature/domain codes (currently emitted)
 
@@ -118,7 +127,7 @@ Docdex presents the same underlying failures in three different wrappers:
 | Index missing (query/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
 | Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Not currently emitted by the per-repo CLI |
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |
-| Rate limited | `rate_limited` | `-32602` | `429` (security middleware returns status-only; no JSON envelope) | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
+| Rate limited | `rate_limited` | `-32029` | `429` with JSON error body `{error:{code,message,retry_after_ms,retry_at?,limit_key,scope}}` | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
 | Optional dependency disabled (e.g. symbols) | `missing_dependency` | `-32602` | N/A (no HTTP endpoint for MCP symbols) | N/A (no CLI symbols command) |
 | Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_params` | `-32602` | N/A | N/A |
 | Invalid path for `docdex_open` | `invalid_path` | `-32602` | N/A | N/A |
@@ -131,3 +140,4 @@ Notes:
 - HTTP `/search` enforces `limit` by clamping to the daemon’s configured max and does not error on over-limit; MCP `docdex_search` similarly clamps `limit` to the MCP server’s `--max-results`.
 - MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`.
 - MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with `details.max_bytes` and `details.actual_bytes`.
+- MCP `docdex_memory_recall` clamps `top_k` to `1..50` and returns the effective `top_k` in the response.

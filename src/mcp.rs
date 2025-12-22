@@ -113,24 +113,18 @@ fn mcp_error_data(
 }
 
 fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
-    #[derive(Serialize)]
-    struct RateLimitData<'a> {
-        code: &'static str,
-        retry_after_ms: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        retry_at: Option<String>,
-        limit_key: &'a str,
-        scope: &'a str,
+    let base = mcp_error_data(ERR_RATE_LIMITED, err.message.clone(), None, None, None);
+    let mut data = match base {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    data.insert("retry_after_ms".to_string(), json!(err.retry_after_ms));
+    if let Some(retry_at) = err.retry_at.as_ref() {
+        data.insert("retry_at".to_string(), json!(retry_at.to_rfc3339()));
     }
-
-    serde_json::to_value(RateLimitData {
-        code: ERR_RATE_LIMITED,
-        retry_after_ms: err.retry_after_ms,
-        retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
-        limit_key: &err.limit_key,
-        scope: &err.scope,
-    })
-    .expect("rate-limit data should serialize")
+    data.insert("limit_key".to_string(), json!(err.limit_key));
+    data.insert("scope".to_string(), json!(err.scope));
+    serde_json::Value::Object(data)
 }
 
 fn truncate_bytes(input: String, max_bytes: usize) -> String {
@@ -1699,10 +1693,23 @@ mod tests {
         let data = rpc.data.expect("rate limited rpc should include data");
         let obj = data.as_object().expect("rate limited data should be object");
         assert_eq!(obj.get("code").and_then(|v| v.as_str()), Some(ERR_RATE_LIMITED));
+        assert_eq!(obj.get("message").and_then(|v| v.as_str()), Some("rate limited"));
         assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(0));
         assert_eq!(obj.get("limit_key").and_then(|v| v.as_str()), Some("mcp_tools"));
         assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
         assert!(obj.get("retry_at").is_none(), "retry_at should be omitted when unset");
+        let nested = obj
+            .get("error")
+            .and_then(|v| v.as_object())
+            .expect("rate limited data should include error envelope");
+        assert_eq!(
+            nested.get("code").and_then(|v| v.as_str()),
+            Some(ERR_RATE_LIMITED)
+        );
+        assert_eq!(
+            nested.get("message").and_then(|v| v.as_str()),
+            Some("rate limited")
+        );
     }
 
     #[test]

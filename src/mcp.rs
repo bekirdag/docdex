@@ -842,6 +842,7 @@ fn schema_version_details(schema_name: &'static str, requested: u32) -> serde_js
 fn mcp_rate_limited_data(err: &RateLimited) -> serde_json::Value {
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 fn mcp_rate_limited_data(err: &RateLimited, trace: Option<&McpTraceContext>) -> serde_json::Value {
 >>>>>>> mcoda/task/bck-05-us-06-t30
@@ -1187,6 +1188,20 @@ fn rate_limit_details(err: &RateLimited) -> serde_json::Value {
         Some(serde_json::Value::Object(details)),
     )
 >>>>>>> mcoda/task/bck-05-us-06-t15
+=======
+    let base = mcp_error_data(ERR_RATE_LIMITED, err.message.clone(), None, None, None);
+    let mut data = match base {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    data.insert("retry_after_ms".to_string(), json!(err.retry_after_ms));
+    if let Some(retry_at) = err.retry_at.as_ref() {
+        data.insert("retry_at".to_string(), json!(retry_at.to_rfc3339()));
+    }
+    data.insert("limit_key".to_string(), json!(err.limit_key));
+    data.insert("scope".to_string(), json!(err.scope));
+    serde_json::Value::Object(data)
+>>>>>>> mcoda/task/bck-05-us-06-t34
 }
 
 fn truncate_bytes(input: String, max_bytes: usize) -> String {
@@ -6553,6 +6568,7 @@ mod tests {
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         assert_eq!(obj.get("message").and_then(|v| v.as_str()), Some("rate limited"));
 =======
         assert!(obj.get("message").and_then(|v| v.as_str()).is_some());
@@ -6580,6 +6596,9 @@ mod tests {
             Some(0)
         );
 >>>>>>> mcoda/task/bck-05-us-09-t37
+=======
+        assert_eq!(obj.get("message").and_then(|v| v.as_str()), Some("rate limited"));
+>>>>>>> mcoda/task/bck-05-us-06-t34
         assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(0));
         assert_eq!(obj.get("limit_key").and_then(|v| v.as_str()), Some("mcp_tools"));
         assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
@@ -6588,6 +6607,7 @@ mod tests {
         assert_eq!(obj.get("limit_burst").and_then(|v| v.as_u64()), Some(1));
         assert!(obj.get("denied_total").and_then(|v| v.as_u64()).is_some());
         assert!(obj.get("retry_at").is_none(), "retry_at should be omitted when unset");
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 =======
@@ -6613,11 +6633,16 @@ mod tests {
         assert_eq!(details.get("scope").and_then(|v| v.as_str()), Some("global"));
         assert!(details.get("retry_at").is_none(), "details.retry_at should be omitted when unset");
 >>>>>>> mcoda/task/bck-05-us-09-t24
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t34
         let nested = obj
             .get("error")
             .and_then(|v| v.as_object())
             .expect("rate limited data should include error envelope");
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t34
         assert_eq!(
             nested.get("code").and_then(|v| v.as_str()),
             Some(ERR_RATE_LIMITED)
@@ -6626,6 +6651,7 @@ mod tests {
             nested.get("message").and_then(|v| v.as_str()),
             Some("rate limited")
         );
+<<<<<<< HEAD
         let details = nested
             .get("details")
             .and_then(|v| v.as_object())
@@ -6781,6 +6807,8 @@ mod tests {
 >>>>>>> mcoda/task/bck-05-us-06-t16
 =======
 >>>>>>> mcoda/task/bck-05-us-06-t15
+=======
+>>>>>>> mcoda/task/bck-05-us-06-t34
     }
 
     #[test]

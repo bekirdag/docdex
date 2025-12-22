@@ -264,6 +264,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
   - Open file: `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"docdex_open","arguments":{"path":"docs/readme.md","start_line":1,"end_line":20}}}`
   - Stats: `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"docdex_stats","arguments":{}}}`
 <<<<<<< HEAD
+<<<<<<< HEAD
 - Errors: invalid JSON → code -32700; unsupported/missing `jsonrpc` → -32600; unknown tool/method → -32601; invalid params (empty query, bad args, project_root mismatch) → -32602; internal errors include a `reason` string in `error.data`.
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -293,6 +294,10 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - Rate limits (MCP tool calls): when `DOCDEX_MCP_RATE_LIMIT_PER_MIN` is enabled and exceeded, tool calls return JSON-RPC code `-32029` with `error.data` containing stable retry hints: `{ code: \"rate_limited\", retry_after_ms: <int>, retry_at?: <RFC3339>, limit_key: <string>, scope: <string> }`.
 - Traceability metadata: responses echo `repo_root` and resolved `project_root`; `docdex_search.meta` includes `generated_at_epoch_ms`, optional `index_last_updated_epoch_ms`, and query rewrite info. HTTP responses include `x-request-id` headers for correlation.
 >>>>>>> mcoda/task/bck-05-us-06-t08
+=======
+- Errors: invalid JSON → code -32700; unsupported/missing `jsonrpc` → -32600; unknown tool/method → -32601; invalid params (empty query, bad args, project_root mismatch) → -32602; internal errors include a `reason` string in `error.data`. Full envelope + parity mapping: `docs/mcp/errors.md`.
+- Rate limits (MCP tool calls): when `DOCDEX_MCP_RATE_LIMIT_PER_MIN` is enabled and exceeded, tool calls return JSON-RPC code `-32029` with `error.data` containing the canonical envelope (`code`, `message`, `error`) plus retry hints: `{ retry_after_ms: <int>, retry_at?: <RFC3339>, limit_key: <string>, scope: <string> }`.
+>>>>>>> mcoda/task/bck-05-us-06-t34
 - Agent guidance: call `docdex_search` with concise queries before coding; fetch only a few hits; if results look stale, call `docdex_index`; keep using HTTP/CLI if your stack isn't MCP-aware.
 - Help: `docdexd mcp --help` shows MCP flags and defaults; `docdexd help-all` includes an MCP section listing tools and usage.
 

@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 >>>>>>> mcoda/task/bck-05-us-08-t31
 =======
@@ -18,6 +19,10 @@ use serde::Serialize;
 =======
 use serde::{Deserialize, Serialize};
 >>>>>>> mcoda/task/bck-05-us-06-t25
+=======
+use once_cell::sync::Lazy;
+use regex::Regex;
+>>>>>>> mcoda/task/bck-05-us-06-t22
 use serde_json::Value;
 =======
 use serde_json::{json, Value};
@@ -157,6 +162,42 @@ pub const MCP_ERROR_CODE_REGISTRY: &[&str] = &[
     ERR_INTERNAL_ERROR,
 ];
 >>>>>>> mcoda/task/bck-05-us-06-t25
+
+static ERROR_PATH_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)(?:[a-z]:[\\/][^\s"'<>]+|\\\\[^\s"'<>]+|/[^\\s"'<>]+)"#)
+        .expect("error path regex should compile")
+});
+static ERROR_FINGERPRINT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\b[a-f0-9]{64}\b").expect("error fingerprint regex should compile")
+});
+
+pub fn sanitize_error_message(message: &str) -> String {
+    let mut output = message.to_string();
+    output = ERROR_FINGERPRINT_RE
+        .replace_all(&output, "<fingerprint>")
+        .to_string();
+    output = ERROR_PATH_RE.replace_all(&output, "<path>").to_string();
+    output
+}
+
+pub fn sanitize_error_display<T: fmt::Display + ?Sized>(err: &T) -> String {
+    sanitize_error_message(&err.to_string())
+}
+
+pub fn sanitize_error_details(details: &Value) -> Value {
+    match details {
+        Value::String(value) => Value::String(sanitize_error_message(value)),
+        Value::Array(items) => Value::Array(items.iter().map(sanitize_error_details).collect()),
+        Value::Object(map) => {
+            let mut sanitized = serde_json::Map::new();
+            for (key, value) in map {
+                sanitized.insert(key.clone(), sanitize_error_details(value));
+            }
+            Value::Object(sanitized)
+        }
+        _ => details.clone(),
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct StartupError {

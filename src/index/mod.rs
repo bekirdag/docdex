@@ -1457,16 +1457,32 @@ fn known_canonical_path_from_repo_meta(index_state_dir: &Path) -> Option<String>
         return None;
     }
     let base_dir = repos_dir.parent()?;
-    let meta_path = base_dir
-        .join("repos")
-        .join(state_key)
-        .join("repo_meta.json");
-    let raw = fs::read_to_string(&meta_path).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    parsed
-        .get("canonical_path")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+    let registry_path = base_dir.join("repos").join("repo_registry.json");
+    if let Ok(raw) = fs::read_to_string(&registry_path) {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(repos) = parsed.get("repos").and_then(|v| v.as_object()) {
+                for entry in repos.values() {
+                    let entry_state_key = entry.get("state_key").and_then(|v| v.as_str())?;
+                    if entry_state_key == state_key {
+                        return entry
+                            .get("canonical_path")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                    }
+                }
+            }
+        }
+    }
+    let meta_path = base_dir.join("repos").join(&state_key).join("repo_meta.json");
+    if let Ok(raw) = fs::read_to_string(&meta_path) {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
+            return parsed
+                .get("canonical_path")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+        }
+    }
+    None
 }
 
 fn missing_repo_path_error(repo_root: &Path) -> AppError {
@@ -1576,19 +1592,11 @@ fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<Pat
         }
         Some(custom) => Ok(repo_root.join(custom)),
         None => {
-            let default_dir = repo_root.join(".docdex").join("index");
-            let legacy_dir = repo_root.join(".gpt-creator").join("docdex").join("index");
-            if !default_dir.exists() && legacy_dir.exists() {
-                warn!(
-                    target: "docdexd",
-                    legacy = %legacy_dir.display(),
-                    default = %default_dir.display(),
-                    "using legacy docdex index path; consider migrating to the new default"
-                );
-                Ok(legacy_dir)
-            } else {
-                Ok(default_dir)
-            }
+            let base_dir = crate::state_paths::default_state_base_dir()?;
+            let repo_root = repo_root
+                .canonicalize()
+                .unwrap_or_else(|_| repo_root.to_path_buf());
+            crate::repo_manager::resolve_shared_index_state_dir(&repo_root, &base_dir)
         }
     }
 }

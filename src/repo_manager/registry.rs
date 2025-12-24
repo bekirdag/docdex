@@ -266,22 +266,19 @@ pub fn inspect_repo(
         }
     }
 
-    if let Some(state_key) = report.state_key.as_deref() {
-        if let Some(meta) = read_repo_meta(&shared_base_dir, state_key) {
-            if meta.fingerprint_sha256 != fingerprint {
-                report.status = RepoInspectStatus::RepoStateMismatch;
-                report.diagnostics = Some(RepoInspectDiagnostics {
-                    code: "state_meta_fingerprint_mismatch",
-                    message: "repo state metadata fingerprint mismatch".to_string(),
-                    details: Some(serde_json::json!({
-                        "stateKey": state_key,
-                        "expectedFingerprint": fingerprint,
-                        "foundFingerprint": meta.fingerprint_sha256,
-                        "metaCanonicalPath": meta.canonical_path,
-                    })),
-                });
-                return Ok(report);
-            }
+    if let Some(meta) = read_repo_meta(&repo_root) {
+        if meta.fingerprint_sha256 != fingerprint {
+            report.status = RepoInspectStatus::RepoStateMismatch;
+            report.diagnostics = Some(RepoInspectDiagnostics {
+                code: "repo_meta_fingerprint_mismatch",
+                message: "repo metadata fingerprint mismatch".to_string(),
+                details: Some(serde_json::json!({
+                    "expectedFingerprint": fingerprint,
+                    "foundFingerprint": meta.fingerprint_sha256,
+                    "metaCanonicalPath": meta.canonical_path,
+                })),
+            });
+            return Ok(report);
         }
     }
 
@@ -298,6 +295,7 @@ pub fn resolve_shared_state_key(
     shared_base_dir: &Path,
 ) -> Result<RepoStateKeyResolution> {
     let fingerprint = repo_fingerprint_sha256(repo_root)?;
+    validate_repo_meta(repo_root, &fingerprint, None)?;
     let registry_path = repo_registry_path(shared_base_dir);
     let registry = load_registry(&registry_path)?;
 
@@ -322,7 +320,7 @@ pub fn resolve_shared_state_key(
     }
 
     // Fast-fail on explicit mismatches when metadata exists.
-    validate_state_meta(shared_base_dir, &state_key, &fingerprint)?;
+    validate_repo_meta(repo_root, &fingerprint, Some(&state_key))?;
 
     Ok(RepoStateKeyResolution { state_key })
 }
@@ -350,15 +348,21 @@ pub fn resolve_shared_index_state_dir(
 }
 
 pub fn record_repo_opened(repo_root: &Path, index_state_dir: &Path) -> Result<()> {
-    let Some((base_dir, state_key)) = base_dir_and_state_key_from_index_dir(index_state_dir) else {
+    let fingerprint = repo_fingerprint_sha256(repo_root)?;
+    let canonical_path = normalize_path(repo_root);
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let maybe_state = base_dir_and_state_key_from_index_dir(index_state_dir);
+    validate_repo_meta(
+        repo_root,
+        &fingerprint,
+        maybe_state.as_ref().map(|(_, state_key)| state_key.as_str()),
+    )?;
+
+    let Some((base_dir, state_key)) = maybe_state else {
+        write_repo_meta(repo_root, &fingerprint, &canonical_path, now_ms)?;
         return Ok(());
     };
 
-    let fingerprint = repo_fingerprint_sha256(repo_root)?;
-    validate_state_meta(&base_dir, &state_key, &fingerprint)?;
-
-    let canonical_path = normalize_path(repo_root);
-    let now_ms = chrono::Utc::now().timestamp_millis();
     let registry_path = repo_registry_path(&base_dir);
     fs::create_dir_all(registry_path.parent().expect("registry parent"))
         .with_context(|| format!("create {}", registry_path.parent().unwrap().display()))?;
@@ -408,13 +412,7 @@ pub fn record_repo_opened(repo_root: &Path, index_state_dir: &Path) -> Result<()
     }
     entry.last_seen_at_epoch_ms = now_ms;
 
-    write_repo_meta(
-        &base_dir,
-        &entry.state_key,
-        &fingerprint,
-        &canonical_path,
-        now_ms,
-    )?;
+    write_repo_meta(repo_root, &fingerprint, &canonical_path, now_ms)?;
     save_registry_atomic(&registry_path, &registry)?;
 
     Ok(())
@@ -422,10 +420,11 @@ pub fn record_repo_opened(repo_root: &Path, index_state_dir: &Path) -> Result<()
 
 pub fn validate_repo_state_dir(repo_root: &Path, index_state_dir: &Path) -> Result<()> {
     let Some((base_dir, state_key)) = base_dir_and_state_key_from_index_dir(index_state_dir) else {
-        return Ok(());
+        let fingerprint = repo_fingerprint_sha256(repo_root)?;
+        return validate_repo_meta(repo_root, &fingerprint, None);
     };
     let fingerprint = repo_fingerprint_sha256(repo_root)?;
-    validate_state_meta(&base_dir, &state_key, &fingerprint)?;
+    validate_repo_meta(repo_root, &fingerprint, Some(&state_key))?;
 
     let canonical_path = normalize_path(repo_root);
     let registry_path = repo_registry_path(&base_dir);
@@ -558,14 +557,8 @@ pub fn reassociate_repo_path(
     let state_key = entry.state_key.clone();
     let canonical_path = entry.canonical_path.clone();
 
-    validate_state_meta(&base_dir, &state_key, &target_fingerprint)?;
-    write_repo_meta(
-        &base_dir,
-        &state_key,
-        &target_fingerprint,
-        &canonical_path,
-        now_ms,
-    )?;
+    validate_repo_meta(repo_root, &target_fingerprint, Some(&state_key))?;
+    write_repo_meta(repo_root, &target_fingerprint, &canonical_path, now_ms)?;
     save_registry_atomic(&registry_path, &registry)?;
 
     Ok(RepoReassociateResult {
@@ -668,8 +661,8 @@ fn resolve_state_dir_for_inspect(
     }
 }
 
-fn read_repo_meta(shared_base_dir: &Path, state_key: &str) -> Option<RepoStateMetaV1> {
-    let path = repo_meta_path(shared_base_dir, state_key);
+fn read_repo_meta(repo_root: &Path) -> Option<RepoStateMetaV1> {
+    let path = repo_meta_path(repo_root);
     let raw = fs::read_to_string(&path).ok()?;
     serde_json::from_str(&raw).ok()
 }
@@ -682,8 +675,8 @@ fn shared_repo_root_dir(shared_base_dir: &Path, state_key: &str) -> PathBuf {
     shared_base_dir.join("repos").join(state_key)
 }
 
-fn repo_meta_path(shared_base_dir: &Path, state_key: &str) -> PathBuf {
-    shared_repo_root_dir(shared_base_dir, state_key).join(REPO_META_FILENAME)
+fn repo_meta_path(repo_root: &Path) -> PathBuf {
+    repo_root.join(REPO_META_FILENAME)
 }
 
 fn load_registry(path: &Path) -> Result<RepoRegistryFile> {
@@ -722,12 +715,12 @@ fn save_registry_atomic(path: &Path, registry: &RepoRegistryFile) -> Result<()> 
     Ok(())
 }
 
-fn validate_state_meta(
-    shared_base_dir: &Path,
-    state_key: &str,
+fn validate_repo_meta(
+    repo_root: &Path,
     expected_fingerprint: &str,
+    state_key: Option<&str>,
 ) -> Result<()> {
-    let path = repo_meta_path(shared_base_dir, state_key);
+    let path = repo_meta_path(repo_root);
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -737,7 +730,7 @@ fn validate_state_meta(
         serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
     if parsed.fingerprint_sha256 != expected_fingerprint {
         return Err(RepoIdentityError::StateMetaFingerprintMismatch {
-            state_key: state_key.to_string(),
+            state_key: state_key.unwrap_or("<repo_meta>").to_string(),
             expected_fingerprint: expected_fingerprint.to_string(),
             found_fingerprint: parsed.fingerprint_sha256,
         }
@@ -747,15 +740,12 @@ fn validate_state_meta(
 }
 
 fn write_repo_meta(
-    shared_base_dir: &Path,
-    state_key: &str,
+    repo_root: &Path,
     fingerprint: &str,
     canonical_path: &str,
     now_ms: i64,
 ) -> Result<()> {
-    let path = repo_meta_path(shared_base_dir, state_key);
-    fs::create_dir_all(path.parent().expect("repo meta parent"))
-        .with_context(|| format!("create {}", path.parent().unwrap().display()))?;
+    let path = repo_meta_path(repo_root);
 
     let mut created_at = now_ms;
     if let Ok(raw) = fs::read_to_string(&path) {

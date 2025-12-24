@@ -136,9 +136,9 @@ Based on the provided SDS and the current file structure of `docdex` v0.1.10, he
 
 * **HTTP API (`src/api/http`)**
 * **Updates:**
-* **OpenAI Compatibility:** Ensure `POST /v1/chat/completions` matches OpenAI spec exactly, but *requires* a repo ID (header/body).
-* **New Endpoint:** `GET /v1/graph/impact` for the dependency graph.
-* **Auth:** Middleware to check Bearer token if `--expose` is active.
+* **OpenAI Compatibility:** Ensure `POST /v1/chat/completions` matches OpenAI spec exactly, but *requires* a repo ID (header/body). Implemented in `src/api/v1/chat.rs`, routed from `src/search/mod.rs`.
+* **New Endpoint:** `GET /v1/graph/impact` for the dependency graph (currently routed from `src/search/mod.rs`).
+* **Auth:** Middleware to check Bearer token if `--expose` is active (currently in `src/search/mod.rs`; `src/api/http` re-exports the router).
 
 
 
@@ -722,25 +722,17 @@ src
 
 ### Key Changes in this Step
 
-1. **`src/api/http/middleware.rs`**: This module acts as the Gatekeeper.
-* **Repo Enforcement**: It intercepts every request to extract the `repo_id` (from header `x-docdex-repo-id`, body, or query). If missing, it rejects the request immediately.
-* **Auth Guard**: It checks the global config. If `daemon.exposed` is true, it verifies the `Authorization: Bearer <token>` header. If the token is invalid or missing, it returns `401 Unauthorized`.
+1. **`src/api/http/mod.rs`**: Re-exports the HTTP router and config types from `src/search/mod.rs` to keep the import path stable while handlers live there.
+* **Repo/Auth Guardrails**: Request gating (repo/auth/rate limits) currently lives in `src/search/mod.rs` and is applied globally via router middleware.
 
 
-2. **`src/api/v1/models.rs`**: This file defines the structs required to match the **OpenAI API Specification**.
-* It includes `ChatCompletionRequest`, `ChatCompletionResponse`, `Message`, and `Delta` (for streaming).
+2. **`src/api/v1/chat.rs`**: This file defines the OpenAI-compatible request/response structs inline and wires chat completions to the Waterfall.
 
 
-3. **`src/api/v1/chat.rs`**: This handler connects the HTTP request to your **Orchestrator**.
-* It parses the OpenAI-formatted request.
-* It retrieves the `RepoContext` via the `RepoManager`.
-* It calls the `Orchestrator` to run the Waterfall logic (Local -> Web -> Memory).
-* It streams the result back as Server-Sent Events (SSE) to support real-time typing.
+3. **`src/search/mod.rs`**: The router still owns most HTTP handlers, including `GET /v1/graph/impact` and the middleware pipeline.
 
 
-4. **`src/api/v1/graph.rs`**: This new handler implements `GET /v1/graph/impact`.
-* It accepts a `file` path and `repo_id`.
-* It queries the `symbols.db` (via `index/symbols.rs`) to return inbound and outbound dependency edges.
+4. **`src/api/v1/graph.rs`**: Not yet split out; `GET /v1/graph/impact` remains in `src/search/mod.rs`.
 
 Based on **Step 9** ("CLI: Add `check`, `libs`, `dag`, `web-*` commands"), the `src/cli/commands` directory will expand significantly. This step exposes the new daemon capabilities directly to the user through the command line.
 
@@ -752,15 +744,12 @@ Here is the final updated `src` tree after all steps are complete:
 src
 ├── api
 │   ├── http
-│   │   ├── middleware.rs
 │   │   └── mod.rs
 │   ├── mcp
 │   │   └── mod.rs
 │   └── v1
 │       ├── chat.rs
-│       ├── graph.rs
-│       ├── mod.rs
-│       └── models.rs
+│       └── mod.rs
 ├── audit.rs
 ├── cli
 │   ├── commands

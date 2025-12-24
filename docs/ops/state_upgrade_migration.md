@@ -10,7 +10,7 @@ Docdex. It does not cover installer upgrades or downgrades; see
   metadata. When schemas change, the supported upgrade path is reindexing.
 - Shared-state metadata is versioned JSON:
   - `repos/repo_registry.json` (version 1)
-  - `repos/<state_key>/repo_meta.json` (version 1)
+  - `repo_meta.json` at the repo root (version 1)
   Docdex fails closed if metadata does not match the current repo identity.
 - Code intelligence payloads include a `schema` block with `version` and
   `compatible` range; clients should validate compatibility before consuming
@@ -20,12 +20,11 @@ Docdex. It does not cover installer upgrades or downgrades; see
 ## State directory resolution (shared across CLI/HTTP/MCP)
 
 - Repo paths are normalized via canonicalization and slash normalization.
-- Default index state dir: `<repo>/.docdex/index`.
-- Legacy fallback: `<repo>/.gpt-creator/docdex/index` is used only when the default
-  is missing but the legacy directory exists.
+- Default state base dir: `~/.docdex/state` (per-repo state under `repos/<repo_id>/index`).
 - Relative `--state-dir` values are resolved under the repo root.
 - Absolute `--state-dir` values outside the repo root are treated as a shared base
   directory; per-repo state lives under `<state-dir>/repos/<state_key>/index`.
+- Legacy in-repo state dirs (such as `.docdex/index` or `.gpt-creator/docdex/index`) are only used when explicitly passed via `--state-dir`.
 
 ### Repo fingerprint and registry
 
@@ -35,22 +34,23 @@ Docdex. It does not cover installer upgrades or downgrades; see
 - Shared base dir metadata:
   - `repos/repo_registry.json` maps fingerprint -> state_key + canonical path +
     prior paths.
-  - `repos/<state_key>/repo_meta.json` records fingerprint + canonical path +
+- Repo metadata:
+  - `repo_meta.json` at the repo root records fingerprint + canonical path +
     timestamps.
 - Docdex refuses to reuse a state directory if the metadata does not match the
   current repo identity, preventing cross-repo data mixing.
 
 ## Migration workflows
 
-### In-repo state dir (.docdex)
+### Repo-local state dir (custom --state-dir)
 
-1) If you move the repo and keep `.docdex/index` with it, update `--repo` and
-   continue.
-2) If the state dir did not move, rebuild it: `docdexd index --repo <repo>`.
-3) To move off the legacy `.gpt-creator/docdex/index`:
+1) If you move the repo and keep your custom state dir (for example `.docdex/index`) with it,
+   update `--repo` and re-run with the same `--state-dir`.
+2) If the state dir did not move, rebuild it: `docdexd index --repo <repo> --state-dir <path>`.
+3) To migrate off a repo-local state dir, remove it and reindex to the default shared base:
    - Stop the daemon.
-   - Rename or archive the legacy directory.
-   - Run `docdexd index --repo <repo>` to create the new default.
+   - Remove or archive the repo-local directory.
+   - Run `docdexd index --repo <repo>` to create the default shared state.
 
 ### Shared state dir (absolute --state-dir)
 
@@ -81,8 +81,6 @@ Docdex uses the same underlying error codes for CLI/HTTP/MCP; see
 
 ## Partial migration and corruption playbook
 
-- If both `.docdex/index` and legacy `.gpt-creator/docdex/index` exist, Docdex
-  uses `.docdex/index`. Remove or rename the directory you do not intend to use.
 - If library ingest reports corruption or write failures, rebuild the libs index:
   1) Stop docdexd.
   2) Back up the state dir.
@@ -95,6 +93,7 @@ Docdex uses the same underlying error codes for CLI/HTTP/MCP; see
   3) Run `docdexd index --repo <repo>`.
 - For persistent corruption in the main index, remove the affected index dir and
   rebuild:
-  - In-repo: remove `<repo>/.docdex/index` (or legacy path).
-  - Shared base: remove `<state-dir>/repos/<state_key>/index` after confirming
-    with `docdexd repo inspect`.
+  - Shared base: remove `~/.docdex/state/repos/<repo_id>/index` (or the index dir
+    reported by `docdexd repo inspect`).
+  - Repo-local: remove the custom `--state-dir` directory you used (for example
+    `.docdex/index` under the repo root).

@@ -21,12 +21,15 @@ fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
     Ok(temp)
 }
 
-fn run_docdex<I, S>(args: I) -> Result<std::process::Output, Box<dyn Error>>
+fn run_docdex<I, S>(state_root: &Path, args: I) -> Result<std::process::Output, Box<dyn Error>>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    Ok(Command::new(docdex_bin()).args(args).output()?)
+    Ok(Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root)
+        .args(args)
+        .output()?)
 }
 
 fn pick_free_port() -> Option<u16> {
@@ -40,9 +43,15 @@ fn pick_free_port() -> Option<u16> {
     }
 }
 
-fn spawn_server(repo_root: &Path, host: &str, port: u16) -> Result<Child, Box<dyn Error>> {
+fn spawn_server(
+    state_root: &Path,
+    repo_root: &Path,
+    host: &str,
+    port: u16,
+) -> Result<Child, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     Ok(Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root)
         .args([
             "serve",
             "--repo",
@@ -73,6 +82,39 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
     Err("docdexd healthz endpoint did not respond in time".into())
 }
 
+fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<Value, Box<dyn Error>> {
+    let repo_str = repo_root.to_string_lossy().to_string();
+    let state_root_str = state_root.to_string_lossy().to_string();
+    let output = Command::new(docdex_bin())
+        .args([
+            "repo",
+            "inspect",
+            "--repo",
+            repo_str.as_str(),
+            "--state-dir",
+            state_root_str.as_str(),
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "docdexd repo inspect exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+fn resolve_index_dir(state_root: &Path, repo_root: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let payload = inspect_repo_state(state_root, repo_root)?;
+    let resolved = payload
+        .get("resolvedIndexStateDir")
+        .and_then(|value| value.as_str())
+        .ok_or("missing resolvedIndexStateDir")?;
+    Ok(PathBuf::from(resolved))
+}
+
 #[derive(Serialize)]
 struct DagRecord {
     id: String,
@@ -95,6 +137,7 @@ fn write_dag_records(state_dir: &Path, records: &[DagRecord]) -> Result<(), Box<
 }
 
 fn cli_export(
+    state_root: &Path,
     repo_root: &Path,
     session_id: &str,
     max_nodes: Option<usize>,
@@ -112,7 +155,10 @@ fn cli_export(
         args.push("--max-nodes".to_string());
         args.push(max_nodes.to_string());
     }
-    let output = Command::new(docdex_bin()).args(args).output()?;
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root)
+        .args(args)
+        .output()?;
     if !output.status.success() {
         return Err(format!(
             "dag view failed: {}",
@@ -144,10 +190,11 @@ fn http_export(
 #[test]
 fn dag_export_cli_matches_http_json() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
-    let state_dir = repo.path().join(".docdex").join("index");
+    let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
     write_dag_records(
         &state_dir,
         &[
@@ -175,13 +222,13 @@ fn dag_export_cli_matches_http_json() -> Result<(), Box<dyn Error>> {
         ],
     )?;
 
-    let cli_payload = cli_export(repo.path(), "sess-1", None)?;
+    let cli_payload = cli_export(state_root.path(), repo.path(), "sess-1", None)?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = spawn_server(repo.path(), host, port)?;
+    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
     wait_for_health(host, port)?;
 
     let http_payload = http_export(host, port, "sess-1", None)?;
@@ -207,10 +254,11 @@ fn dag_export_cli_matches_http_json() -> Result<(), Box<dyn Error>> {
 #[test]
 fn dag_export_respects_max_nodes() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
-    let state_dir = repo.path().join(".docdex").join("index");
+    let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
     write_dag_records(
         &state_dir,
         &[
@@ -238,7 +286,7 @@ fn dag_export_respects_max_nodes() -> Result<(), Box<dyn Error>> {
         ],
     )?;
 
-    let cli_payload = cli_export(repo.path(), "sess-3", Some(2))?;
+    let cli_payload = cli_export(state_root.path(), repo.path(), "sess-3", Some(2))?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());

@@ -187,7 +187,7 @@ pub fn resolve_state_paths(repo_root: &Path, state_dir_override: Option<PathBuf>
         repo_root: repo_state_root.clone(),
         index_dir: repo_state_root.join("index"),
         libs_index_dir: repo_state_root.join("libs_index"),
-        memory_path: repo_state_root.join("memory.jsonl"),
+        memory_path: repo_state_root.join("memory.db"),
         symbols_dir: repo_state_root.join("symbols.db"),
         dag_path: repo_state_root.join("dag.db"),
         fingerprint,
@@ -213,7 +213,7 @@ pub(crate) fn resolve_state_paths_for_inspect(
         repo_root: repo_state_root.clone(),
         index_dir: repo_state_root.join("index"),
         libs_index_dir: repo_state_root.join("libs_index"),
-        memory_path: repo_state_root.join("memory.jsonl"),
+        memory_path: repo_state_root.join("memory.db"),
         symbols_dir: repo_state_root.join("symbols.db"),
         dag_path: repo_state_root.join("dag.db"),
         fingerprint,
@@ -323,13 +323,32 @@ fn known_canonical_path_from_repo_meta(index_state_dir: &Path) -> Option<String>
         return None;
     }
     let base_dir = repos_dir.parent()?;
-    let meta_path = base_dir.join("repos").join(state_key).join("repo_meta.json");
-    let raw = fs::read_to_string(&meta_path).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    parsed
-        .get("canonical_path")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+    let registry_path = base_dir.join("repos").join("repo_registry.json");
+    if let Ok(raw) = fs::read_to_string(&registry_path) {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(repos) = parsed.get("repos").and_then(|v| v.as_object()) {
+                for entry in repos.values() {
+                    let entry_state_key = entry.get("state_key").and_then(|v| v.as_str())?;
+                    if entry_state_key == state_key {
+                        return entry
+                            .get("canonical_path")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                    }
+                }
+            }
+        }
+    }
+    let meta_path = base_dir.join("repos").join(&state_key).join("repo_meta.json");
+    if let Ok(raw) = fs::read_to_string(&meta_path) {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
+            return parsed
+                .get("canonical_path")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+        }
+    }
+    None
 }
 
 pub(crate) fn missing_repo_path_error(repo_root: &Path) -> AppError {

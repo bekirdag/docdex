@@ -1,11 +1,9 @@
 use crate::memory::ops::{cosine_similarity, MemoryCandidate, MemoryItem};
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use rusqlite::{params, Connection, OpenFlags};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -24,6 +22,27 @@ impl MemoryStore {
         }
     }
 
+    fn open_connection(&self) -> Result<Connection> {
+        let conn = Connection::open_with_flags(
+            &self.path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_FULL_MUTEX,
+        )
+        .with_context(|| format!("open {}", self.path.display()))?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS memories(
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                embedding BLOB NOT NULL,
+                created_at INTEGER NOT NULL,
+                metadata TEXT NOT NULL
+            )",
+        )
+        .context("ensure memory schema")?;
+        Ok(conn)
+    }
+
     pub fn store(
         &self,
         content: &str,
@@ -33,23 +52,21 @@ impl MemoryStore {
     ) -> Result<(Uuid, i64)> {
         let _guard = self.lock.lock();
         let id = Uuid::new_v4();
-        let record = MemoryRecord {
-            id: id.to_string(),
-            content: content.to_string(),
-            embedding: embedding.to_vec(),
-            created_at: created_at_ms,
-            metadata,
-        };
-        let line = serde_json::to_string(&record).context("serialize memory record")?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .with_context(|| format!("open {}", self.path.display()))?;
-        file.write_all(line.as_bytes())
-            .context("write memory record")?;
-        file.write_all(b"\n").context("write newline")?;
-        file.flush().ok();
+        let embedding_blob = encode_embedding(embedding);
+        let metadata_json = serde_json::to_string(&metadata).context("serialize metadata")?;
+        let conn = self.open_connection()?;
+        conn.execute(
+            "INSERT INTO memories (id, content, embedding, created_at, metadata)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                id.to_string(),
+                content,
+                embedding_blob,
+                created_at_ms,
+                metadata_json
+            ],
+        )
+        .context("insert memory record")?;
         Ok((id, created_at_ms))
     }
 
@@ -59,38 +76,45 @@ impl MemoryStore {
         top_k: usize,
     ) -> Result<Vec<MemoryCandidate>> {
         let _guard = self.lock.lock();
-        let file = match OpenOptions::new().read(true).open(&self.path) {
-            Ok(file) => file,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(err) => return Err(err).with_context(|| format!("open {}", self.path.display())),
-        };
-        let reader = BufReader::new(file);
+        let conn = self.open_connection()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, content, embedding, created_at, metadata
+                 FROM memories",
+            )
+            .context("prepare memory recall")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
         let mut scored: Vec<MemoryCandidate> = Vec::new();
 
-        for line in reader.lines() {
-            let line = match line {
-                Ok(line) => line,
+        for row in rows {
+            let (id, content, embedding_blob, created_at_ms, metadata_raw) = match row {
+                Ok(row) => row,
                 Err(_) => continue,
             };
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let parsed: MemoryRecord = match serde_json::from_str(trimmed) {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-            let Some(score) = cosine_similarity(query_embedding, &parsed.embedding) else {
+            let Some(embedding) = decode_embedding(&embedding_blob) else {
                 continue;
             };
-            let metadata = match parsed.metadata {
-                Value::Object(_) => parsed.metadata,
+            let Some(score) = cosine_similarity(query_embedding, &embedding) else {
+                continue;
+            };
+            let metadata_value =
+                serde_json::from_str::<Value>(&metadata_raw).unwrap_or_else(|_| json!({}));
+            let metadata = match metadata_value {
+                Value::Object(_) => metadata_value,
                 _ => json!({}),
             };
             scored.push(MemoryCandidate {
-                id: parsed.id,
-                created_at_ms: parsed.created_at,
-                content: parsed.content,
+                id,
+                created_at_ms,
+                content,
                 score,
                 metadata,
             });
@@ -119,12 +143,22 @@ impl MemoryStore {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct MemoryRecord {
-    id: String,
-    content: String,
-    embedding: Vec<f32>,
-    created_at: i64,
-    #[serde(default)]
-    metadata: Value,
+fn encode_embedding(embedding: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(embedding.len().saturating_mul(4));
+    for value in embedding {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out
+}
+
+fn decode_embedding(blob: &[u8]) -> Option<Vec<f32>> {
+    if blob.len() % 4 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(blob.len() / 4);
+    for chunk in blob.chunks_exact(4) {
+        let bytes: [u8; 4] = chunk.try_into().ok()?;
+        out.push(f32::from_le_bytes(bytes));
+    }
+    Some(out)
 }

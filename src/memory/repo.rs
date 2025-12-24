@@ -10,6 +10,11 @@ pub fn ensure_repo_state_dir(repo_state_root: &Path) -> Result<()> {
 }
 
 /// Repository-scoped memory storage path.
-pub fn memory_path(repo_state_root: &Path) -> PathBuf {
-    repo_state_root.join("memory.jsonl")
+pub fn memory_path(state_dir: &Path) -> PathBuf {
+    if state_dir.file_name().and_then(|name| name.to_str()) == Some("index") {
+        if let Some(parent) = state_dir.parent() {
+            return parent.join("memory.db");
+        }
+    }
+    state_dir.join("memory.db")
 }

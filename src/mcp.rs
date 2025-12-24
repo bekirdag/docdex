@@ -9,8 +9,8 @@ use crate::index::{IndexConfig, Indexer};
 use crate::libs;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
-use crate::ratelimit::RateLimiter;
 use crate::orchestrator::{run_waterfall, MemoryBudget, WaterfallRequest, WebGateConfig};
+use crate::ratelimit::RateLimiter;
 use crate::search;
 use crate::symbols::SymbolsStore;
 use crate::tier2::Tier2Config;
@@ -1319,9 +1319,7 @@ impl McpServer {
         self.ensure_project_root(project_root.as_deref())?;
         let query_owned = query;
         let query = query_owned.trim();
-        let limit = limit
-            .unwrap_or(self.max_results)
-            .clamp(1, self.max_results);
+        let limit = limit.unwrap_or(self.max_results).clamp(1, self.max_results);
         let project_root_path = self
             .default_project_root
             .as_ref()

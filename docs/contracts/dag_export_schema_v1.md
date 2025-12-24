@@ -4,13 +4,10 @@ Scope: per-session reasoning DAG export from the local state store. Applies to C
 
 ## Storage source
 
-- State file: `<state_dir>/dag.jsonl` (default `<repo>/.docdex/index/dag.jsonl`).
-- Each line is a JSON object with:
-  - `id` (string)
-  - `session_id` (string)
-  - `type` (string; e.g., `UserRequest`, `Thought`, `ToolCall`, `Observation`, `Decision`)
-  - `payload` (object; optional, defaults to `{}`)
-  - `created_at` (int; epoch ms)
+- State file: `<repo_state_root>/dag.db` (default `~/.docdex/state/repos/<repo_id>/dag.db`).
+- SQLite schema (current): `nodes(session_id TEXT, type TEXT, payload TEXT, created_at INTEGER)`.
+- Legacy JSON traces (if present) live under `<repo_state_root>/dag/<session_id>.json`
+  and may be either an array of nodes or an object with a `nodes` array.
 
 ## CLI usage
 

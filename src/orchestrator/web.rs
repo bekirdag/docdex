@@ -210,6 +210,53 @@ fn build_completion(query: &str, hits: &[Hit]) -> String {
     lines.join("\n")
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_attempt_accounts_for_threshold_and_force_web() {
+        let gate = WebGateConfig {
+            enabled: true,
+            trigger_threshold: 0.5,
+            browser_hint: None,
+            browser_available: true,
+        };
+
+        assert!(gate.should_attempt(Some(0.3), false));
+        assert!(!gate.should_attempt(Some(0.8), false));
+        assert!(gate.should_attempt(Some(0.8), true));
+        assert!(gate.should_attempt(None, false));
+    }
+
+    #[test]
+    fn evaluate_gate_status_skips_when_confident() {
+        let gate = WebGateConfig {
+            enabled: true,
+            trigger_threshold: 0.45,
+            browser_hint: None,
+            browser_available: true,
+        };
+        let status = evaluate_gate_status("req", &gate, Some(0.8), false);
+        assert_eq!(status.status, WebDiscoveryStatusCode::Skipped);
+        assert_eq!(status.reason.as_deref(), Some("confidence_above_threshold"));
+    }
+
+    #[test]
+    fn evaluate_gate_status_reports_unavailable_without_browser() {
+        let gate = WebGateConfig {
+            enabled: true,
+            trigger_threshold: 0.45,
+            browser_hint: Some("chrome".to_string()),
+            browser_available: false,
+        };
+        let status = evaluate_gate_status("req", &gate, Some(0.1), false);
+        assert_eq!(status.status, WebDiscoveryStatusCode::Unavailable);
+        assert_eq!(status.reason.as_deref(), Some("missing_dependency"));
+        assert!(status.message.as_deref().unwrap().contains("chrome"));
+    }
+}
+
 fn env_boolish(key: &str) -> Option<bool> {
     let raw = env::var(key).ok()?;
     let trimmed = raw.trim().to_ascii_lowercase();

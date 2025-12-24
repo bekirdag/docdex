@@ -29,9 +29,11 @@ When symbol extraction is disabled:
 
 The symbols store lives under Docdex’s **state/index directory**:
 
-- Default: `<repo>/.docdex/index`
-- Legacy fallback (if present): `<repo>/.gpt-creator/docdex/index`
-- Override: `--state-dir <path>` / `DOCDEX_STATE_DIR` (relative paths are resolved under `repo`)
+- Default: `~/.docdex/state/repos/<repo_id>/index`
+- Override: `--state-dir <path>` / `DOCDEX_STATE_DIR`
+  - Relative paths are resolved under the repo root.
+  - Absolute paths outside the repo are treated as shared bases and scoped under `<state-dir>/repos/<repo_id>/index`.
+- Legacy in-repo state (opt-in): `--state-dir .docdex/index` or `--state-dir .gpt-creator/docdex/index`
 
 ### Symbols store path and layout
 

@@ -11,6 +11,7 @@ use crate::orchestrator::web::{
     build_gate_meta, evaluate_gate_status, run_web_research, WebDiscoveryStatus,
     WebDiscoveryStatusCode, WebGateConfig, WebResearchResponse,
 };
+use crate::metrics;
 use crate::search::{MemoryState, SearchResponse};
 use crate::tier2::{self, Tier2Config, Tier2Limiter, Tier2Unavailable};
 
@@ -75,10 +76,18 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
         crate::search::run_query(request.indexer, request.libs_indexer, request.query, request.limit)
             .await?;
 
-    let tier2 = if request.web_gate.should_attempt(
-        search_response.top_score,
-        request.force_web,
-    ) {
+    let should_run_tier2 =
+        request
+            .web_gate
+            .should_attempt(search_response.top_score, request.force_web);
+    let metrics = metrics::global();
+    if should_run_tier2 {
+        metrics.inc_waterfall_tier2_attempt();
+    } else {
+        metrics.inc_waterfall_tier2_skipped();
+    }
+
+    let tier2 = if should_run_tier2 {
         run_tier2(&request, search_response.top_score).await?
     } else {
         Tier2Outcome {
@@ -98,6 +107,14 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
     } else {
         None
     };
+
+    if let Some(ctx) = &memory_context {
+        metrics.record_waterfall_memory_context(
+            ctx.prune_trace.candidates,
+            ctx.prune_trace.kept,
+            ctx.prune_trace.dropped.len(),
+        );
+    }
 
     Ok(WaterfallResult {
         search_response,
@@ -132,8 +149,10 @@ async fn run_tier2(
     .await?;
 
     let status = if let Some(response) = run_result.value.as_ref() {
+        metrics::global().inc_waterfall_tier2_served();
         response.web_discovery.clone()
     } else if let Some(unavailable) = run_result.tier2_unavailable.as_ref() {
+        metrics::global().inc_waterfall_tier2_unavailable();
         build_tier2_unavailable_status(
             request.web_gate,
             top_score,

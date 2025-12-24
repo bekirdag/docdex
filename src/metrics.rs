@@ -17,6 +17,16 @@ pub struct Metrics {
     tier2_permits_acquired_total: AtomicU64,
     tier2_overload_rejections: AtomicU64,
 
+    waterfall_tier2_attempts: AtomicU64,
+    waterfall_tier2_skipped: AtomicU64,
+    waterfall_tier2_served: AtomicU64,
+    waterfall_tier2_unavailable: AtomicU64,
+
+    waterfall_memory_context_requests: AtomicU64,
+    waterfall_memory_context_candidates: AtomicU64,
+    waterfall_memory_context_kept: AtomicU64,
+    waterfall_memory_context_dropped: AtomicU64,
+
     chrome_watchdog_reap_attempts: AtomicU64,
     chrome_watchdog_reaped: AtomicU64,
     chrome_watchdog_reap_failures: AtomicU64,
@@ -68,6 +78,35 @@ impl Metrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn inc_waterfall_tier2_attempt(&self) {
+        self.waterfall_tier2_attempts
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_waterfall_tier2_skipped(&self) {
+        self.waterfall_tier2_skipped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_waterfall_tier2_served(&self) {
+        self.waterfall_tier2_served.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_waterfall_tier2_unavailable(&self) {
+        self.waterfall_tier2_unavailable
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_waterfall_memory_context(&self, candidates: usize, kept: usize, dropped: usize) {
+        self.waterfall_memory_context_requests
+            .fetch_add(1, Ordering::Relaxed);
+        self.waterfall_memory_context_candidates
+            .fetch_add(candidates as u64, Ordering::Relaxed);
+        self.waterfall_memory_context_kept
+            .fetch_add(kept as u64, Ordering::Relaxed);
+        self.waterfall_memory_context_dropped
+            .fetch_add(dropped as u64, Ordering::Relaxed);
+    }
+
     pub fn inc_chrome_watchdog_reap_attempt(&self) {
         self.chrome_watchdog_reap_attempts
             .fetch_add(1, Ordering::Relaxed);
@@ -112,9 +151,33 @@ impl Metrics {
                 "# HELP docdex_tier2_overload_rejections_total Tier2 browser overload rejections\n",
                 "# TYPE docdex_tier2_overload_rejections_total counter\n",
                 "docdex_tier2_overload_rejections_total {}\n",
-                "# HELP docdex_chrome_watchdog_reap_attempts_total Chrome watchdog reap attempts\n",
-                "# TYPE docdex_chrome_watchdog_reap_attempts_total counter\n",
-                "docdex_chrome_watchdog_reap_attempts_total {}\n",
+                "# HELP docdex_waterfall_tier2_attempts_total Tier2 gate attempts\n",
+                "# TYPE docdex_waterfall_tier2_attempts_total counter\n",
+                "docdex_waterfall_tier2_attempts_total {}\n",
+                "# HELP docdex_waterfall_tier2_skipped_total Tier2 gate skips\n",
+                "# TYPE docdex_waterfall_tier2_skipped_total counter\n",
+                "docdex_waterfall_tier2_skipped_total {}\n",
+                "# HELP docdex_waterfall_tier2_served_total Tier2 browser responses\n",
+                "# TYPE docdex_waterfall_tier2_served_total counter\n",
+                "docdex_waterfall_tier2_served_total {}\n",
+                "# HELP docdex_waterfall_tier2_unavailable_total Tier2 fallbacks due to unavailability\n",
+                "# TYPE docdex_waterfall_tier2_unavailable_total counter\n",
+                "docdex_waterfall_tier2_unavailable_total {}\n",
+                "# HELP docdex_waterfall_memory_context_requests_total Memory context assemblies\n",
+                "# TYPE docdex_waterfall_memory_context_requests_total counter\n",
+                "docdex_waterfall_memory_context_requests_total {}\n",
+                "# HELP docdex_waterfall_memory_context_candidates_total Memory recall candidates considered\n",
+                "# TYPE docdex_waterfall_memory_context_candidates_total counter\n",
+                "docdex_waterfall_memory_context_candidates_total {}\n",
+                "# HELP docdex_waterfall_memory_context_kept_total Memory context items kept\n",
+                "# TYPE docdex_waterfall_memory_context_kept_total counter\n",
+                "docdex_waterfall_memory_context_kept_total {}\n",
+                "# HELP docdex_waterfall_memory_context_dropped_total Memory context items dropped\n",
+                "# TYPE docdex_waterfall_memory_context_dropped_total counter\n",
+                "docdex_waterfall_memory_context_dropped_total {}\n",
+            "# HELP docdex_chrome_watchdog_reap_attempts_total Chrome watchdog reap attempts\n",
+            "# TYPE docdex_chrome_watchdog_reap_attempts_total counter\n",
+            "docdex_chrome_watchdog_reap_attempts_total {}\n",
                 "# HELP docdex_chrome_watchdog_reaped_total Chrome watchdog successful reaps\n",
                 "# TYPE docdex_chrome_watchdog_reaped_total counter\n",
                 "docdex_chrome_watchdog_reaped_total {}\n",
@@ -131,6 +194,14 @@ impl Metrics {
             self.tier2_permits_in_use.load(Ordering::Relaxed),
             self.tier2_permits_acquired_total.load(Ordering::Relaxed),
             self.tier2_overload_rejections.load(Ordering::Relaxed),
+            self.waterfall_tier2_attempts.load(Ordering::Relaxed),
+            self.waterfall_tier2_skipped.load(Ordering::Relaxed),
+            self.waterfall_tier2_served.load(Ordering::Relaxed),
+            self.waterfall_tier2_unavailable.load(Ordering::Relaxed),
+            self.waterfall_memory_context_requests.load(Ordering::Relaxed),
+            self.waterfall_memory_context_candidates.load(Ordering::Relaxed),
+            self.waterfall_memory_context_kept.load(Ordering::Relaxed),
+            self.waterfall_memory_context_dropped.load(Ordering::Relaxed),
             self.chrome_watchdog_reap_attempts.load(Ordering::Relaxed),
             self.chrome_watchdog_reaped.load(Ordering::Relaxed),
             self.chrome_watchdog_reap_failures.load(Ordering::Relaxed),

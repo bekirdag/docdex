@@ -1,7 +1,7 @@
 use crate::error::{
     AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    ERR_RATE_LIMITED,
+    ERR_MISSING_REPO, ERR_RATE_LIMITED, ERR_UNKNOWN_REPO,
 };
 use crate::index::{
     DocSnapshot, Hit, Indexer, SearchError, SearchQueryMeta, SnippetOrigin, SnippetResult,
@@ -9,16 +9,17 @@ use crate::index::{
 use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
+use crate::orchestrator::web::WebDiscoveryStatus;
 use crate::orchestrator::{
     run_waterfall, MemoryBudget, MemoryContextAssembly, WaterfallRequest, WebGateConfig,
 };
-use crate::orchestrator::web::WebDiscoveryStatus;
+use crate::repo_manager;
 use crate::ratelimit::RateLimiter;
 use crate::tier2::Tier2Config;
 use anyhow::Result;
 use axum::body::HttpBody;
 use axum::{
-    extract::{ConnectInfo, Path, Query, RawQuery, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{header::CONTENT_LENGTH, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Json, Response},
@@ -26,7 +27,6 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -38,6 +38,7 @@ const DEFAULT_SNIPPET_WINDOW: usize = 40;
 const MIN_SNIPPET_WINDOW: usize = 10;
 const MAX_SNIPPET_WINDOW: usize = 400;
 const MAX_RATE_LIMIT_MESSAGE_BYTES: usize = 256;
+const REPO_ID_HEADER: &str = "x-docdex-repo-id";
 
 // Rate limiting is shared with MCP and other surfaces via crate::ratelimit.
 
@@ -187,7 +188,14 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/search", get(search_handler))
         .route("/snippet/*doc_id", get(snippet_handler))
-        .route("/v1/graph/impact", get(impact_graph_handler))
+        .route(
+            "/v1/chat/completions",
+            post(crate::api::v1::chat::chat_completions_handler),
+        )
+        .route(
+            "/v1/graph/impact",
+            get(crate::api::v1::graph::impact_graph_handler),
+        )
         .route("/v1/memory/store", post(memory_store_handler))
         .route("/v1/memory/recall", post(memory_recall_handler))
         .route("/ai-help", get(ai_help_handler))
@@ -209,221 +217,20 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-#[derive(Serialize)]
-struct ImpactErrorResponse {
-    error: ImpactErrorDetail,
+#[derive(Deserialize)]
+struct RepoIdQuery {
+    #[serde(default)]
+    repo_id: Option<String>,
 }
 
-#[derive(Serialize)]
-struct ImpactErrorDetail {
-    code: &'static str,
-    message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    details: Option<serde_json::Value>,
-}
-
-fn invalid_argument_details(
-    issues: Vec<crate::impact::InvalidFieldIssue>,
-) -> crate::impact::InvalidArgumentDetails {
-    crate::impact::InvalidArgumentDetails::new(issues)
-}
-
-fn invalid_argument_response(
-    message: impl Into<String>,
-    details: crate::impact::InvalidArgumentDetails,
-) -> Response {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ImpactErrorResponse {
-            error: ImpactErrorDetail {
-                code: "invalid_argument",
-                message: message.into(),
-                details: Some(serde_json::to_value(details).unwrap_or_else(|_| json!({}))),
-            },
-        }),
-    )
-        .into_response()
-}
-
-fn push_issue(
-    issues: &mut Vec<crate::impact::InvalidFieldIssue>,
-    field: &'static str,
-    code: &'static str,
-    message: impl Into<String>,
-) {
-    issues.push(crate::impact::InvalidFieldIssue {
-        field,
-        code,
-        message: message.into(),
-    });
-}
-
-fn parse_i64_param(
-    issues: &mut Vec<crate::impact::InvalidFieldIssue>,
-    field: &'static str,
-    raw: &str,
-) -> Option<i64> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        push_issue(
-            issues,
-            field,
-            "must_be_integer",
-            format!("{field} must be an integer"),
-        );
-        return None;
-    }
-    match trimmed.parse::<i64>() {
-        Ok(value) => Some(value),
-        Err(_) => {
-            push_issue(
-                issues,
-                field,
-                "must_be_integer",
-                format!("{field} must be an integer"),
-            );
-            None
-        }
-    }
-}
-
-fn parse_impact_graph_query(
-    raw_query: Option<&str>,
-) -> std::result::Result<
-    (String, crate::impact::ImpactQueryControls),
-    crate::impact::InvalidArgumentError,
-> {
-    let mut issues: Vec<crate::impact::InvalidFieldIssue> = Vec::new();
-    let mut file: Option<String> = None;
-    let mut max_edges: Option<i64> = None;
-    let mut max_depth: Option<i64> = None;
-    let mut edge_types: Vec<String> = Vec::new();
-    let mut edge_types_seen = false;
-
-    let pairs = match raw_query {
-        None => Vec::new(),
-        Some(raw) if raw.is_empty() => Vec::new(),
-        Some(raw) => match serde_urlencoded::from_str::<Vec<(String, String)>>(raw) {
-            Ok(pairs) => pairs,
-            Err(_) => {
-                push_issue(
-                    &mut issues,
-                    "query",
-                    "invalid_encoding",
-                    "invalid query string encoding",
-                );
-                return Err(crate::impact::InvalidArgumentError {
-                    details: invalid_argument_details(issues),
-                });
-            }
-        },
-    };
-
-    for (key, value) in pairs {
-        match key.as_str() {
-            "file" => file = Some(value),
-            "maxEdges" => max_edges = parse_i64_param(&mut issues, "maxEdges", &value),
-            "maxDepth" => max_depth = parse_i64_param(&mut issues, "maxDepth", &value),
-            "edgeTypes" => {
-                edge_types_seen = true;
-                for item in value.split(',') {
-                    let trimmed = item.trim();
-                    if trimmed.is_empty() {
-                        push_issue(
-                            &mut issues,
-                            "edgeTypes",
-                            "must_be_non_empty_string",
-                            "edgeTypes entries must be non-empty strings",
-                        );
-                    } else {
-                        edge_types.push(trimmed.to_string());
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let source = file.unwrap_or_default();
-    let source_trimmed = source.trim();
-    if source_trimmed.is_empty() {
-        push_issue(
-            &mut issues,
-            "file",
-            "must_be_non_empty",
-            "file must not be empty",
-        );
-    }
-
-    if !issues.is_empty() {
-        return Err(crate::impact::InvalidArgumentError {
-            details: invalid_argument_details(issues),
-        });
-    }
-
-    let raw_controls = crate::impact::ImpactQueryControlsRaw {
-        max_edges,
-        max_depth,
-        edge_types: if edge_types_seen {
-            Some(edge_types)
-        } else {
-            None
-        },
-    };
-    let controls = raw_controls.validate()?;
-
-    Ok((source_trimmed.to_string(), controls))
-}
-
-async fn impact_graph_handler(
-    State(state): State<AppState>,
-    RawQuery(raw): RawQuery,
-) -> impl IntoResponse {
-    let (source, controls) = match parse_impact_graph_query(raw.as_deref()) {
-        Ok(value) => value,
-        Err(err) => {
-            let message =
-                if err.details.issues.len() == 1 && err.details.field_errors.contains_key("file") {
-                    "file must not be empty"
-                } else {
-                    "invalid query parameters"
-                };
-            return invalid_argument_response(message, err.details);
-        }
-    };
-
-    let repo_id = crate::symbols::repo_id_for_root(state.indexer.repo_root())
-        .unwrap_or_else(|_| String::new());
-    let store = crate::impact::ImpactGraphStore::new(state.indexer.state_dir());
-    let all_edges = match store.read_edges() {
-        Ok(edges) => edges,
-        Err(err) => {
-            state.metrics.inc_error();
-            warn!(target: "docdexd", error = ?err, "impact graph read failed");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ImpactErrorResponse {
-                    error: ImpactErrorDetail {
-                        code: "internal_error",
-                        message: "impact graph unavailable".to_string(),
-                        details: None,
-                    },
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    let traversal = crate::impact::traverse_impact(&source, &all_edges, &controls);
-    let response = crate::impact::build_impact_response(&repo_id, &source, traversal, &controls);
-    Json(response).into_response()
-}
 
 #[derive(Deserialize)]
 struct MemoryStoreRequest {
     text: String,
     #[serde(default)]
     metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    repo_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -437,6 +244,8 @@ struct MemoryRecallRequest {
     query: String,
     #[serde(default)]
     top_k: Option<usize>,
+    #[serde(default)]
+    repo_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -463,7 +272,11 @@ fn status_for_app_error(code: &str) -> StatusCode {
     }
 }
 
-fn json_error(status: StatusCode, code: &'static str, message: impl Into<String>) -> Response {
+pub(crate) fn json_error(
+    status: StatusCode,
+    code: &'static str,
+    message: impl Into<String>,
+) -> Response {
     (
         status,
         Json(ErrorBody {
@@ -473,9 +286,102 @@ fn json_error(status: StatusCode, code: &'static str, message: impl Into<String>
         .into_response()
 }
 
+pub(crate) struct RepoIdError {
+    pub status: StatusCode,
+    pub code: &'static str,
+    pub message: String,
+}
+
+pub(crate) fn resolve_repo_id(
+    headers: &HeaderMap,
+    query_repo_id: Option<&str>,
+    body_repo_id: Option<&str>,
+    indexer: &Indexer,
+    require: bool,
+) -> Result<Option<String>, RepoIdError> {
+    let mut selected: Option<String> = None;
+    if let Some(value) = headers.get(REPO_ID_HEADER) {
+        let header_value = value.to_str().map_err(|_| RepoIdError {
+            status: StatusCode::BAD_REQUEST,
+            code: ERR_INVALID_ARGUMENT,
+            message: format!("{REPO_ID_HEADER} must be valid UTF-8"),
+        })?;
+        let trimmed = header_value.trim();
+        if trimmed.is_empty() {
+            return Err(RepoIdError {
+                status: StatusCode::BAD_REQUEST,
+                code: ERR_INVALID_ARGUMENT,
+                message: format!("{REPO_ID_HEADER} must not be empty"),
+            });
+        }
+        selected = Some(trimmed.to_string());
+    }
+
+    for value in [query_repo_id, body_repo_id] {
+        let Some(raw) = value else {
+            continue;
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(RepoIdError {
+                status: StatusCode::BAD_REQUEST,
+                code: ERR_INVALID_ARGUMENT,
+                message: "repo_id must not be empty".to_string(),
+            });
+        }
+        match selected.as_deref() {
+            None => selected = Some(trimmed.to_string()),
+            Some(existing) if existing != trimmed => {
+                return Err(RepoIdError {
+                    status: StatusCode::BAD_REQUEST,
+                    code: ERR_INVALID_ARGUMENT,
+                    message: "repo_id values must match across header, query, and body".to_string(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    let Some(candidate) = selected else {
+        return if require {
+            Err(RepoIdError {
+                status: StatusCode::BAD_REQUEST,
+                code: ERR_MISSING_REPO,
+                message: "repo_id is required".to_string(),
+            })
+        } else {
+            Ok(None)
+        };
+    };
+
+    let repo_root = indexer.repo_root();
+    let fingerprint =
+        repo_manager::repo_fingerprint_sha256(repo_root).map_err(|_| RepoIdError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: ERR_INTERNAL_ERROR,
+            message: "repo identity unavailable".to_string(),
+        })?;
+    let legacy = repo_manager::fingerprint::legacy_repo_id_for_root(repo_root);
+    let mut expected = HashSet::new();
+    expected.insert(fingerprint);
+    expected.insert(legacy);
+
+    if !expected.contains(&candidate) {
+        return Err(RepoIdError {
+            status: StatusCode::NOT_FOUND,
+            code: ERR_UNKNOWN_REPO,
+            message: "unknown repo".to_string(),
+        });
+    }
+
+    Ok(Some(candidate))
+}
+
 async fn memory_store_handler(
     State(state): State<AppState>,
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    headers: HeaderMap,
+    Query(repo_id): Query<RepoIdQuery>,
     Json(req): Json<MemoryStoreRequest>,
 ) -> impl IntoResponse {
     let Some(memory) = state.memory.clone() else {
@@ -485,6 +391,16 @@ async fn memory_store_handler(
             "memory is disabled; start the daemon with --enable-memory=true",
         );
     };
+    if let Err(err) = resolve_repo_id(
+        &headers,
+        repo_id.repo_id.as_deref(),
+        req.repo_id.as_deref(),
+        state.indexer.as_ref(),
+        true,
+    ) {
+        return json_error(err.status, err.code, err.message);
+    }
+
     let text = req.text.trim();
     if text.is_empty() {
         return json_error(
@@ -577,6 +493,8 @@ async fn memory_store_handler(
 async fn memory_recall_handler(
     State(state): State<AppState>,
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    headers: HeaderMap,
+    Query(repo_id): Query<RepoIdQuery>,
     Json(req): Json<MemoryRecallRequest>,
 ) -> impl IntoResponse {
     let Some(memory) = state.memory.clone() else {
@@ -586,6 +504,16 @@ async fn memory_recall_handler(
             "memory is disabled; start the daemon with --enable-memory=true",
         );
     };
+    if let Err(err) = resolve_repo_id(
+        &headers,
+        repo_id.repo_id.as_deref(),
+        req.repo_id.as_deref(),
+        state.indexer.as_ref(),
+        true,
+    ) {
+        return json_error(err.status, err.code, err.message);
+    }
+
     let query = req.query.trim();
     if query.is_empty() {
         return json_error(
@@ -763,6 +691,12 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             },
             AiHelpEndpoint {
                 method: "POST",
+                path: "/v1/chat/completions",
+                description: "OpenAI-compatible chat completions (local-only summary of matching docs).",
+                params: &["model=<string optional>", "messages=[{role,content}...]"],
+            },
+            AiHelpEndpoint {
+                method: "POST",
                 path: "/v1/memory/store",
                 description: "Store a memory item (requires --enable-memory=true).",
                 params: &[],
@@ -897,6 +831,8 @@ struct SearchParams {
     include_libs: Option<bool>,
     #[serde(default)]
     force_web: Option<bool>,
+    #[serde(default)]
+    repo_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1312,8 +1248,18 @@ fn build_search_meta(
 async fn search_handler(
     State(state): State<AppState>,
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    headers: HeaderMap,
     Query(params): Query<SearchParams>,
 ) -> impl IntoResponse {
+    if let Err(err) = resolve_repo_id(
+        &headers,
+        params.repo_id.as_deref(),
+        None,
+        state.indexer.as_ref(),
+        false,
+    ) {
+        return json_error(err.status, err.code, err.message).into_response();
+    }
     let limit = params.limit.unwrap_or(8).min(state.security.max_limit);
     let raw = match params.q.as_deref() {
         Some(value) => value,
@@ -1435,12 +1381,7 @@ async fn search_handler(
                 pruned,
                 selected_sources,
             };
-            let meta = build_search_meta(
-                &state.indexer,
-                query_meta,
-                Some(context_assembly),
-            )
-            .ok();
+            let meta = build_search_meta(&state.indexer, query_meta, Some(context_assembly)).ok();
             Json(SearchResponse {
                 hits,
                 top_score,
@@ -1485,6 +1426,8 @@ struct SnippetParams {
     text_only: Option<bool>,
     max_tokens: Option<u64>,
     strip_html: Option<bool>,
+    #[serde(default)]
+    repo_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1509,8 +1452,18 @@ async fn snippet_handler(
     State(state): State<AppState>,
     Path(doc_id): Path<String>,
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    headers: HeaderMap,
     Query(params): Query<SnippetParams>,
 ) -> impl IntoResponse {
+    if let Err(err) = resolve_repo_id(
+        &headers,
+        params.repo_id.as_deref(),
+        None,
+        state.indexer.as_ref(),
+        false,
+    ) {
+        return json_error(err.status, err.code, err.message).into_response();
+    }
     let window = params
         .window
         .unwrap_or(DEFAULT_SNIPPET_WINDOW)

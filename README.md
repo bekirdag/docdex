@@ -78,6 +78,12 @@ Smithery is a meta-framework that launches trusted local tools for MPC-aware age
 
 These clients already speak Smithery's discovery format (`smithery.yaml`, JSON-RPC tooling definitions, MCP handshake). Register `docdexd mcp --repo . --log warn --max-results 8` as the `docdex` MCP server and the client will treat it as a local tool; no network proxy is required.
 
+## Hardware-aware LLM guidance
+Use `docdexd llm-list` or `docdexd llm-setup` to print your host’s RAM + GPU summary (powered by `hardware::detect_hardware`) together with catalog entries from `docs/llm_list.json`. The commands highlight the recommended entry that satisfies `minRamGb`/`requiresGpu`, so you can always pick the model that fits your machine instead of guessing. Those tool outputs also double-check Ollama availability before you launch memory-heavy prompts.
+
+## Repo-scoped caches & guardrails
+State is fingerprinted and isolated under `~/.docdex/state/repos/<fingerprint>` so Tier‑1/2/3 artifacts—indexes, `memory.db`, `dag.db`, and per-repo caches—stay repo-bound. `StateLayout`/`repo_manager` lock down secure directories, ensure `cache/web` and `cache/libs` are only ingested per fingerprint, and emit warnings when a repo tries to share an unexpected state key; this keeps web discoveries and memory contexts from leaking between projects.
+
 ## Usage cheat sheet
 - Build index: `docdexd index --repo <path>` (add `--exclude-*` to skip paths).
 - Serve with watcher: `docdexd serve --repo <path> --host 127.0.0.1 --port 46137 --log warn --auth-token <token>` (secure mode also allowlists loopback and rate-limits by default; add `--allow-ip`/`--secure-mode=false`/`--rate-limit-per-min` as needed for remote use).

@@ -1,82 +1,32 @@
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-use crate::error::BackoffRequired;
-=======
-use crate::error::{
-    retry_hint_details, AppError, DEFAULT_BACKOFF_RETRY_AFTER_MS, ERR_BACKOFF_REQUIRED,
-};
->>>>>>> mcoda/task/bck-05-us-09-t28
-=======
-use crate::error::{
-    backoff_retry_details, AppError, DEFAULT_BACKOFF_RETRY_AFTER_MS, ERR_BACKOFF_REQUIRED,
-};
->>>>>>> mcoda/task/bck-05-us-09-t24
-=======
-use crate::error::{backoff_required_details, AppError, ERR_BACKOFF_REQUIRED};
->>>>>>> mcoda/task/bck-05-us-09-t37
-=======
-use crate::error::{AppError, ERR_BACKOFF_REQUIRED, ERR_STALE_INDEX};
->>>>>>> mcoda/task/bck-05-us-07-t12
-=======
-use crate::error::{AppError, ERR_BACKOFF_REQUIRED, ERR_INDEX_SCHEMA_MISMATCH};
->>>>>>> mcoda/task/bck-05-us-07-t09
-=======
-use crate::error::{backoff_details, AppError, DEFAULT_BACKOFF_RETRY_AFTER_MS, ERR_BACKOFF_REQUIRED};
->>>>>>> mcoda/task/bck-05-us-06-t29
+use crate::error::{AppError, ERR_BACKOFF_REQUIRED};
 use crate::index::{
     DocSnapshot, Hit, QueryRewrite, SearchError, SearchQueryMeta, SearchSnippetOrigin,
     SnippetOrigin, SnippetResult,
 };
-use crate::state_paths::StatePaths;
 use anyhow::{Context, Result};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
-<<<<<<< HEAD
 use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
-use tantivy::{doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, Searcher, Term};
-<<<<<<< HEAD
-=======
-use tantivy::schema::{FieldType, Schema, FAST, STORED, STRING, TEXT};
 use tantivy::{doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
->>>>>>> mcoda/task/bck-05-us-07-t12
-=======
->>>>>>> mcoda/task/bck-05-us-06-t11
 use tracing::warn;
 
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
 const MAX_LIB_DOC_BYTES: u64 = 512 * 1024;
 const MAX_LIB_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
 
-pub(crate) fn libs_state_dir_from_index_state_dir(repo_root: &Path, index_state_dir: &Path) -> PathBuf {
-    let fallback = index_state_dir
+pub(crate) fn libs_state_dir_from_index_state_dir(index_state_dir: &Path) -> PathBuf {
+    index_state_dir
         .parent()
         .unwrap_or(index_state_dir)
-        .join("libs_index");
-    match StatePaths::new().and_then(|paths| paths.repo_cache_dir(repo_root, "libs")) {
-        Ok(path) => path,
-        Err(err) => {
-            warn!(
-                target: "docdexd",
-                error = %err,
-                "failed to resolve global libs cache dir; falling back to repo-local libs index"
-            );
-            fallback
-        }
-    }
+        .join("libs_index")
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -182,26 +132,10 @@ struct LibsManifestEntry {
 }
 
 #[derive(Clone)]
-struct ReaderSnapshot {
-    _reader: Arc<IndexReader>,
-    searcher: Searcher,
-}
-
-impl ReaderSnapshot {
-    fn new(reader: Arc<IndexReader>) -> Self {
-        let searcher = reader.searcher();
-        Self {
-            _reader: reader,
-            searcher,
-        }
-    }
-}
-
-#[derive(Clone)]
 pub struct LibsIndexer {
     libs_state_dir: PathBuf,
     index: Index,
-    reader: Arc<RwLock<Arc<IndexReader>>>,
+    reader: IndexReader,
     doc_id_field: tantivy::schema::Field,
     rel_path_field: tantivy::schema::Field,
     body_field: tantivy::schema::Field,
@@ -216,53 +150,21 @@ pub struct LibsIndexer {
 
 impl LibsIndexer {
     pub fn open_or_create(libs_state_dir: PathBuf) -> Result<Self> {
-<<<<<<< HEAD
-        if let Ok(paths) = StatePaths::new() {
-            paths
-                .assert_repo_scoped_cache_dir("libs", &libs_state_dir)
-                .with_context(|| {
-                    format!(
-                        "libs cache dir must be repo-scoped: {}",
-                        libs_state_dir.display()
-                    )
-                })?;
-        }
         crate::index::ensure_state_dir_secure(&libs_state_dir)?;
-<<<<<<< HEAD
-=======
-        crate::state_layout::ensure_state_dir_secure(&libs_state_dir)?;
->>>>>>> mcoda/task/ops-01-us-03-t02
         let (schema, fields) = build_schema();
-<<<<<<< HEAD
-=======
-        let schema = build_schema();
->>>>>>> mcoda/task/bck-05-us-07-t12
         let index = Index::open_or_create(
             tantivy::directory::MmapDirectory::open(&libs_state_dir)?,
-            schema,
+            schema.clone(),
         )?;
-<<<<<<< HEAD
-        let reader = Arc::new(
-            index
-                .reader_builder()
-                .reload_policy(ReloadPolicy::Manual)
-                .try_into()?,
-        );
-=======
-        let fields = schema_fields_from_index(&index.schema())?;
-=======
-        let index = open_or_create_index(&libs_state_dir, &schema)?;
->>>>>>> mcoda/task/bck-05-us-07-t09
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommit)
             .try_into()?;
->>>>>>> mcoda/task/bck-05-us-07-t12
         let writer = index.writer(MAX_INDEX_RAM_BYTES)?;
         Ok(Self {
             libs_state_dir,
             index,
-            reader: Arc::new(RwLock::new(reader)),
+            reader,
             doc_id_field: fields.doc_id,
             rel_path_field: fields.rel_path,
             body_field: fields.body,
@@ -277,39 +179,15 @@ impl LibsIndexer {
     }
 
     pub fn open_read_only(libs_state_dir: PathBuf) -> Result<Option<Self>> {
-        if let Ok(paths) = StatePaths::new() {
-            paths
-                .assert_repo_scoped_cache_dir("libs", &libs_state_dir)
-                .with_context(|| {
-                    format!(
-                        "libs cache dir must be repo-scoped: {}",
-                        libs_state_dir.display()
-                    )
-                })?;
-        }
         if !libs_state_dir.exists() {
             return Ok(None);
         }
-<<<<<<< HEAD
         let index = Index::open_in_dir(&libs_state_dir)
             .with_context(|| format!("open libs index at {}", libs_state_dir.display()))?;
-<<<<<<< HEAD
-        let reader = Arc::new(
-            index
-                .reader_builder()
-                .reload_policy(ReloadPolicy::Manual)
-                .try_into()?,
-        );
-=======
-        let (expected_schema, _) = build_schema();
-        let Some(index) = open_existing_index(&libs_state_dir, &expected_schema)? else {
-            return Ok(None);
-        };
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommit)
             .try_into()?;
->>>>>>> mcoda/task/bck-05-us-07-t09
         let schema = index.schema();
         let doc_id_field = schema.get_field("doc_id").unwrap();
         let rel_path_field = schema.get_field("rel_path").unwrap();
@@ -323,7 +201,7 @@ impl LibsIndexer {
         Ok(Some(Self {
             libs_state_dir,
             index,
-            reader: Arc::new(RwLock::new(reader)),
+            reader,
             doc_id_field,
             rel_path_field,
             body_field,
@@ -333,93 +211,18 @@ impl LibsIndexer {
             version_field,
             source_field,
             title_field,
-=======
-        let reader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommit)
-            .try_into()?;
-        let fields = schema_fields_from_index(&index.schema())?;
-        Ok(Some(Self {
-            libs_state_dir,
-            index,
-            reader,
-            doc_id_field: fields.doc_id,
-            rel_path_field: fields.rel_path,
-            body_field: fields.body,
-            summary_field: fields.summary,
-            token_field: fields.token,
-            library_field: fields.library,
-            version_field: fields.version,
-            source_field: fields.source,
-            title_field: fields.title,
->>>>>>> mcoda/task/bck-05-us-07-t12
             writer: None,
         }))
     }
 
     fn writer(&self) -> Result<Arc<Mutex<IndexWriter>>> {
         self.writer.clone().ok_or_else(|| {
-            BackoffRequired::new(
-<<<<<<< HEAD
-<<<<<<< HEAD
-                Duration::from_secs(1),
-                "libs_writer".to_string(),
-                "repo".to_string(),
-=======
-                Duration::from_millis(0),
-                "libs_index_writer".to_string(),
-                "libs_index".to_string(),
-=======
+            AppError::new(
+                ERR_BACKOFF_REQUIRED,
                 "libs index writer unavailable (another docdexd may be indexing); retry later",
-                "libs_index_writer",
-                "repo",
->>>>>>> mcoda/task/bck-05-us-09-t07
             )
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-            .with_message(
-                "libs index writer unavailable (another docdexd may be indexing); retry later",
->>>>>>> mcoda/task/bck-05-us-09-t22
-            )
-            .with_message("libs index writer unavailable (another docdexd may be indexing); retry later")
-=======
-            .with_details(retry_hint_details(
-                DEFAULT_BACKOFF_RETRY_AFTER_MS,
-                "libs_writer",
-                "repo",
-            ))
->>>>>>> mcoda/task/bck-05-us-09-t28
-=======
-            .with_details(backoff_retry_details(DEFAULT_BACKOFF_RETRY_AFTER_MS))
->>>>>>> mcoda/task/bck-05-us-09-t24
-=======
-            .with_details(backoff_required_details("libs_writer", "repo"))
->>>>>>> mcoda/task/bck-05-us-09-t37
-=======
-            .with_details(backoff_details(Duration::from_millis(
-                DEFAULT_BACKOFF_RETRY_AFTER_MS,
-            )))
->>>>>>> mcoda/task/bck-05-us-06-t29
             .into()
         })
-    }
-
-    fn snapshot(&self) -> ReaderSnapshot {
-        let reader = self.reader.read().clone();
-        ReaderSnapshot::new(reader)
-    }
-
-    fn refresh_reader(&self) -> Result<()> {
-        let reader = Arc::new(
-            self.index
-                .reader_builder()
-                .reload_policy(ReloadPolicy::Manual)
-                .try_into()?,
-        );
-        *self.reader.write() = reader;
-        Ok(())
     }
 
     pub fn search_with_query_meta(
@@ -441,8 +244,7 @@ impl LibsIndexer {
             .into());
         }
 
-        let snapshot = self.snapshot();
-        let searcher = &snapshot.searcher;
+        let searcher = self.reader.searcher();
         let parser = QueryParser::for_index(
             &self.index,
             vec![
@@ -491,7 +293,7 @@ impl LibsIndexer {
         };
 
         let mut snippet_generator =
-            tantivy::SnippetGenerator::create(searcher, tantivy_query.as_ref(), self.body_field)
+            tantivy::SnippetGenerator::create(&searcher, tantivy_query.as_ref(), self.body_field)
                 .ok();
         if let Some(generator) = snippet_generator.as_mut() {
             generator.set_max_num_chars(420);
@@ -570,26 +372,17 @@ impl LibsIndexer {
         query: Option<&str>,
         fallback_lines: usize,
     ) -> Result<Option<(DocSnapshot, Option<SnippetResult>)>> {
-<<<<<<< HEAD
-        let snapshot = self.snapshot();
-        let Some(doc) = self.fetch_document(&snapshot.searcher, doc_id)? else {
-            return Ok(None);
-        };
-        let snapshot = self.snapshot_from_document(doc_id, &doc);
-        let snippet = self.snippet_from_document(&snapshot.searcher, &doc, query, fallback_lines)?;
-=======
-        let searcher = self.reader.searcher();
-        let Some(doc) = self.fetch_document(&searcher, doc_id)? else {
+        let Some(doc) = self.fetch_document(doc_id)? else {
             return Ok(None);
         };
         let snapshot = self.snapshot_from_document(doc_id, &doc);
         let snippet =
-            self.snippet_from_document(&searcher, &doc, query, fallback_lines)?;
->>>>>>> mcoda/task/bck-05-us-06-t11
+            self.snippet_from_document(&doc, query, fallback_lines)?;
         Ok(Some((snapshot, snippet)))
     }
 
-    fn fetch_document(&self, searcher: &Searcher, doc_id: &str) -> Result<Option<Document>> {
+    fn fetch_document(&self, doc_id: &str) -> Result<Option<Document>> {
+        let searcher = self.reader.searcher();
         let term = Term::from_field_text(self.doc_id_field, doc_id);
         let term_query =
             tantivy::query::TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
@@ -624,11 +417,11 @@ impl LibsIndexer {
 
     fn snippet_from_document(
         &self,
-        searcher: &Searcher,
         doc: &Document,
         query: Option<&str>,
         fallback_lines: usize,
     ) -> Result<Option<SnippetResult>> {
+        let searcher = self.reader.searcher();
         if let Some(query) = query.and_then(|q| {
             let trimmed = q.trim();
             if trimmed.is_empty() { None } else { Some(trimmed) }
@@ -636,7 +429,7 @@ impl LibsIndexer {
             let parser = QueryParser::for_index(&self.index, vec![self.body_field]);
             if let Ok(parsed) = parser.parse_query(query) {
                 if let Ok(mut generator) =
-                    tantivy::SnippetGenerator::create(searcher, parsed.as_ref(), self.body_field)
+                    tantivy::SnippetGenerator::create(&searcher, parsed.as_ref(), self.body_field)
                 {
                     generator.set_max_num_chars(420);
                     let snippet = generator.snippet_from_doc(doc);
@@ -821,7 +614,7 @@ impl LibsIndexer {
             if let Some(writer) = writer_guard.as_mut() {
                 writer.commit()?;
             }
-            self.refresh_reader()?;
+            self.reader.reload()?;
         }
 
         manifest.input_sources = normalized_sources
@@ -1173,200 +966,31 @@ struct SchemaFields {
     source: tantivy::schema::Field,
 }
 
-fn build_schema() -> Schema {
+fn build_schema() -> (Schema, SchemaFields) {
     let mut builder = Schema::builder();
-    builder.add_text_field("doc_id", STRING | STORED);
-    builder.add_text_field("rel_path", STRING | STORED);
-    builder.add_text_field("title", TEXT | STORED);
-    builder.add_text_field("body", TEXT | STORED);
-    builder.add_text_field("summary", TEXT | STORED);
-    builder.add_u64_field("token_estimate", FAST | STORED);
-    builder.add_text_field("library", STRING | STORED);
-    builder.add_text_field("version", STRING | STORED);
-    builder.add_text_field("source", STRING | STORED);
-    builder.build()
-}
-
-fn schema_fields_from_index(schema: &Schema) -> Result<SchemaFields> {
-    Ok(SchemaFields {
-        doc_id: require_text_field(schema, "doc_id")?,
-        rel_path: require_text_field(schema, "rel_path")?,
-        title: require_text_field(schema, "title")?,
-        body: require_text_field(schema, "body")?,
-        summary: require_text_field(schema, "summary")?,
-        token: require_u64_field(schema, "token_estimate")?,
-        library: require_text_field(schema, "library")?,
-        version: require_text_field(schema, "version")?,
-        source: require_text_field(schema, "source")?,
-    })
-}
-
-fn require_text_field(schema: &Schema, name: &str) -> Result<tantivy::schema::Field> {
-    let field = schema
-        .get_field(name)
-        .ok_or_else(|| schema_mismatch_error(format!("missing required field '{name}'")))?;
-    let entry = schema.get_field_entry(field);
-    match entry.field_type() {
-        FieldType::Str(_) => Ok(field),
-        _ => Err(schema_mismatch_error(format!(
-            "field '{name}' has incompatible type"
-        ))
-        .into()),
-    }
-}
-
-fn require_u64_field(schema: &Schema, name: &str) -> Result<tantivy::schema::Field> {
-    let field = schema
-        .get_field(name)
-        .ok_or_else(|| schema_mismatch_error(format!("missing required field '{name}'")))?;
-    let entry = schema.get_field_entry(field);
-    match entry.field_type() {
-        FieldType::U64(_) => Ok(field),
-        _ => Err(schema_mismatch_error(format!(
-            "field '{name}' has incompatible type"
-        ))
-        .into()),
-    }
-}
-
-fn schema_mismatch_error(reason: String) -> AppError {
-    AppError::new(
-        ERR_STALE_INDEX,
-        format!("libs index schema mismatch; {reason}"),
+    let doc_id = builder.add_text_field("doc_id", STRING | STORED);
+    let rel_path = builder.add_text_field("rel_path", STRING | STORED);
+    let title = builder.add_text_field("title", TEXT | STORED);
+    let body = builder.add_text_field("body", TEXT | STORED);
+    let summary = builder.add_text_field("summary", TEXT | STORED);
+    let token = builder.add_u64_field("token_estimate", FAST | STORED);
+    let library = builder.add_text_field("library", STRING | STORED);
+    let version = builder.add_text_field("version", STRING | STORED);
+    let source = builder.add_text_field("source", STRING | STORED);
+    (
+        builder.build(),
+        SchemaFields {
+            doc_id,
+            rel_path,
+            title,
+            body,
+            summary,
+            token,
+            library,
+            version,
+            source,
+        },
     )
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct SchemaFieldDescriptor {
-    name: String,
-    field_type: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct SchemaFieldMismatch {
-    name: String,
-    expected: String,
-    actual: String,
-}
-
-const LIBS_SCHEMA_FIELDS: &[&str] = &[
-    "doc_id",
-    "rel_path",
-    "title",
-    "body",
-    "summary",
-    "token_estimate",
-    "library",
-    "version",
-    "source",
-];
-
-fn schema_field_descriptor(
-    name: &str,
-    field_type: &tantivy::schema::FieldType,
-) -> SchemaFieldDescriptor {
-    SchemaFieldDescriptor {
-        name: name.to_string(),
-        field_type: format!("{:?}", field_type),
-    }
-}
-
-fn schema_descriptors(schema: &Schema) -> Vec<SchemaFieldDescriptor> {
-    let mut fields: Vec<SchemaFieldDescriptor> = schema
-        .fields()
-        .map(|(_, entry)| schema_field_descriptor(entry.name(), entry.field_type()))
-        .collect();
-    fields.sort_by(|a, b| a.name.cmp(&b.name));
-    fields
-}
-
-fn expected_schema_descriptors(schema: &Schema, fields: &[&str]) -> Vec<SchemaFieldDescriptor> {
-    let mut expected = Vec::with_capacity(fields.len());
-    for field_name in fields {
-        let field = schema
-            .get_field(field_name)
-            .expect("expected libs schema missing field");
-        let entry = schema.get_field_entry(field);
-        expected.push(schema_field_descriptor(entry.name(), entry.field_type()));
-    }
-    expected
-}
-
-fn schema_signature(fields: &[SchemaFieldDescriptor]) -> String {
-    let mut parts: Vec<String> = fields
-        .iter()
-        .map(|field| format!("{}:{}", field.name, field.field_type))
-        .collect();
-    parts.sort();
-    parts.join("|")
-}
-
-fn ensure_schema_compatible(actual: &Schema, expected: &Schema, index_kind: &str) -> Result<()> {
-    let expected_fields = expected_schema_descriptors(expected, LIBS_SCHEMA_FIELDS);
-    let actual_fields = schema_descriptors(actual);
-    let mut missing_fields: Vec<String> = Vec::new();
-    let mut mismatched_fields: Vec<SchemaFieldMismatch> = Vec::new();
-
-    for expected_field in &expected_fields {
-        match actual.get_field(&expected_field.name) {
-            Ok(field) => {
-                let actual_type =
-                    format!("{:?}", actual.get_field_entry(field).field_type());
-                if actual_type != expected_field.field_type {
-                    mismatched_fields.push(SchemaFieldMismatch {
-                        name: expected_field.name.clone(),
-                        expected: expected_field.field_type.clone(),
-                        actual: actual_type,
-                    });
-                }
-            }
-            Err(_) => missing_fields.push(expected_field.name.clone()),
-        }
-    }
-
-    if !missing_fields.is_empty() || !mismatched_fields.is_empty() {
-        let details = json!({
-            "indexKind": index_kind,
-            "expected": {
-                "fields": expected_fields,
-                "signature": schema_signature(&expected_fields),
-            },
-            "actual": {
-                "fields": actual_fields,
-                "signature": schema_signature(&actual_fields),
-            },
-            "missingFields": missing_fields,
-            "mismatchedFields": mismatched_fields,
-        });
-        return Err(AppError::new(
-            ERR_INDEX_SCHEMA_MISMATCH,
-            "index schema mismatch; reindex required",
-        )
-        .with_details(details)
-        .into());
-    }
-    Ok(())
-}
-
-fn open_or_create_index(libs_state_dir: &Path, expected: &Schema) -> Result<Index> {
-    let directory = tantivy::directory::MmapDirectory::open(libs_state_dir)?;
-    if Index::exists(&directory)? {
-        let index = Index::open(directory)?;
-        ensure_schema_compatible(&index.schema(), expected, "libs")?;
-        Ok(index)
-    } else {
-        Ok(Index::open_or_create(directory, expected.clone())?)
-    }
-}
-
-fn open_existing_index(libs_state_dir: &Path, expected: &Schema) -> Result<Option<Index>> {
-    let directory = tantivy::directory::MmapDirectory::open(libs_state_dir)?;
-    if !Index::exists(&directory)? {
-        return Ok(None);
-    }
-    let index = Index::open(directory)?;
-    ensure_schema_compatible(&index.schema(), expected, "libs")?;
-    Ok(Some(index))
 }
 
 fn load_manifest(path: &Path) -> Result<LibsManifest> {

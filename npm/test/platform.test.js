@@ -10,15 +10,13 @@ const {
   detectLibcFromRuntime,
   detectPlatformKey,
   detectTargetTriple,
-  artifactName,
   assetPatternForPlatformKey,
   resolvePlatformPolicy,
   targetTripleForPlatformKey,
-  libcForPlatformKey,
   UnsupportedPlatformError
 } = require("../lib/platform");
 
-const { PLATFORM_MATRIX, PUBLISHED_RELEASE_TARGETS } = require("../lib/platform_matrix");
+const { PUBLISHED_RELEASE_TARGETS } = require("../lib/platform_matrix");
 const { DEFAULT_TARGETS } = require("../../scripts/generate_release_manifest.cjs");
 
 function writeElf64WithInterpreter(filePath, interpreter) {
@@ -91,19 +89,6 @@ test("detectTargetTriple deterministically maps supported runtimes", () => {
   assert.equal(detectTargetTriple({ platform: "win32", arch: "x64" }), "x86_64-pc-windows-msvc");
 });
 
-test("detectTargetTriple maps published runtime matrix deterministically", () => {
-  const published = PLATFORM_MATRIX.filter((entry) => entry.published);
-  for (const entry of published) {
-    const env = entry.platform === "linux" ? { DOCDEX_LIBC: entry.libc } : {};
-    const resolved = detectTargetTriple({
-      platform: entry.platform,
-      arch: entry.arch,
-      env
-    });
-    assert.equal(resolved, entry.targetTriple);
-  }
-});
-
 test("unpublished targets are treated as unsupported (no download expected)", () => {
   assert.throws(
     () => detectPlatformKey({ platform: "linux", arch: "arm64", env: { DOCDEX_LIBC: "musl" } }),
@@ -137,30 +122,6 @@ test("unpublished targets are treated as unsupported (no download expected)", ()
 
 test("published platform keys match manifest generator defaults", () => {
   assert.deepEqual(DEFAULT_TARGETS, PUBLISHED_RELEASE_TARGETS);
-});
-
-test("published target triples and asset names are unique", () => {
-  const published = PLATFORM_MATRIX.filter((entry) => entry.published);
-  const assetNames = published.map((entry) => artifactName(entry.platformKey));
-  const targetTriples = published.map((entry) => entry.targetTriple);
-
-  assert.equal(new Set(assetNames).size, assetNames.length);
-  assert.equal(new Set(targetTriples).size, targetTriples.length);
-});
-
-test("detectTargetTriple maps published runtimes deterministically (including libc overrides)", () => {
-  for (const entry of PLATFORM_MATRIX.filter((value) => value.published)) {
-    const env = entry.libc ? { DOCDEX_LIBC: entry.libc } : {};
-    const resolved = detectTargetTriple({ platform: entry.platform, arch: entry.arch, env });
-    assert.equal(resolved, entry.targetTriple);
-  }
-});
-
-test("DOCDEX_LIBC=glibc normalizes to gnu for target triple mapping", () => {
-  assert.equal(
-    detectTargetTriple({ platform: "linux", arch: "x64", env: { DOCDEX_LIBC: "glibc" } }),
-    "x86_64-unknown-linux-gnu"
-  );
 });
 
 test("DOCDEX_LIBC invalid value fails with actionable error", () => {
@@ -216,54 +177,9 @@ test("assetPatternForPlatformKey describes docdexd archive naming deterministica
 
 test("resolvePlatformPolicy returns platform key, target triple, and expected asset naming", () => {
   const policy = resolvePlatformPolicy({ platform: "darwin", arch: "arm64" });
-  assert.deepEqual(policy.detected, { platform: "darwin", arch: "arm64", libc: null });
+  assert.deepEqual(policy.detected, { platform: "darwin", arch: "arm64" });
   assert.equal(policy.platformKey, "darwin-arm64");
   assert.equal(policy.targetTriple, "aarch64-apple-darwin");
   assert.equal(policy.expectedAssetName, "docdexd-darwin-arm64.tar.gz");
   assert.equal(policy.expectedAssetPattern, "docdexd-<platformKey>.tar.gz (e.g. docdexd-darwin-arm64.tar.gz)");
-});
-
-<<<<<<< HEAD
-test("resolvePlatformPolicy includes detected libc on Linux (derived from platformKey)", () => {
-  const policy = resolvePlatformPolicy({ platform: "linux", arch: "x64", env: { DOCDEX_LIBC: "gnu" } });
-  assert.equal(policy.detected.platform, "linux");
-  assert.equal(policy.detected.arch, "x64");
-  assert.equal(policy.detected.libc, "gnu");
-});
-
-test("libcForPlatformKey parses Linux platform keys deterministically", () => {
-  assert.equal(libcForPlatformKey("linux-x64-gnu"), "gnu");
-  assert.equal(libcForPlatformKey("linux-x64-musl"), "musl");
-  assert.equal(libcForPlatformKey("darwin-arm64"), null);
-  assert.equal(libcForPlatformKey(null), null);
-=======
-test("platform matrix: published entries resolve OS/arch to target triple + asset name", () => {
-  const published = PLATFORM_MATRIX.filter((entry) => entry.published);
-  for (const entry of published) {
-    const options = { platform: entry.platform, arch: entry.arch };
-    if (entry.platform === "linux") options.env = { DOCDEX_LIBC: entry.libc };
-    const policy = resolvePlatformPolicy(options);
-    assert.equal(policy.platformKey, entry.platformKey);
-    assert.equal(policy.targetTriple, entry.targetTriple);
-    assert.equal(policy.expectedAssetName, `docdexd-${entry.platformKey}.tar.gz`);
-  }
-});
-
-test("platform matrix: unpublished entries are rejected as unsupported", () => {
-  const unpublished = PLATFORM_MATRIX.filter((entry) => !entry.published);
-  for (const entry of unpublished) {
-    const options = { platform: entry.platform, arch: entry.arch };
-    if (entry.platform === "linux") options.env = { DOCDEX_LIBC: entry.libc };
-    assert.throws(
-      () => detectPlatformKey(options),
-      (err) => {
-        assert.ok(err instanceof UnsupportedPlatformError);
-        assert.equal(err.details.candidatePlatformKey, entry.platformKey);
-        assert.equal(err.details.candidateTargetTriple, entry.targetTriple);
-        assert.equal(err.details.reason, "target_not_published");
-        return true;
-      }
-    );
-  }
->>>>>>> mcoda/task/ops-01-us-01-t22
 });

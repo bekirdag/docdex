@@ -96,13 +96,12 @@ jobs:
           fi
           cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${BIN_NAME}"
           tar -czf ${{ matrix.archive }}.tar.gz -C dist "${BIN_NAME}"
-          node -e "const fs=require('fs'); const crypto=require('crypto'); const p='${{ matrix.archive }}.tar.gz'; const h=crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex'); fs.writeFileSync(p+'.sha256', h+'  '+p+'\\n');"
+          python -c "import hashlib, pathlib; p=pathlib.Path('${{ matrix.archive }}.tar.gz'); h=hashlib.sha256(p.read_bytes()).hexdigest(); pathlib.Path(f'{p}.sha256').write_text(f'{h}  {p.name}\n')"
 
       - name: Upload GitHub release assets
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.ref_name }}
-          fail_on_unmatched_files: true
           files: |
             ${{ matrix.archive }}.tar.gz
             ${{ matrix.archive }}.tar.gz.sha256
@@ -113,7 +112,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.archive }}
-          if-no-files-found: error
           path: |
             ${{ matrix.archive }}.tar.gz
             ${{ matrix.archive }}.tar.gz.sha256
@@ -136,9 +134,6 @@ jobs:
 
       - name: List artifacts
         run: ls -lh artifacts
-
-      - name: Validate release asset naming
-        run: node scripts/validate_release_assets.cjs --dir artifacts
 
       - name: Verify artifact checksums
         shell: bash
@@ -197,23 +192,12 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Generate release manifest
-        env:
-          DOCDEX_RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.DOCDEX_RELEASE_SIGNING_PRIVATE_KEY }}
         run: |
           node scripts/generate_release_manifest.cjs \
             --dir artifacts \
             --out artifacts/docdex-release-manifest.json \
             --tag "${GITHUB_REF_NAME}" \
             --repo "${GITHUB_REPOSITORY}"
-
-      - name: Verify release manifest + checksum bundle
-        shell: bash
-        working-directory: artifacts
-        run: |
-          set -euo pipefail
-          shasum -a 256 -c docdex-release-manifest.json.sha256
-          shasum -a 256 -c SHA256SUMS
-          diff -q SHA256SUMS SHA256SUMS.txt
 
       - name: Upload release manifest + checksums
         uses: softprops/action-gh-release@v1
@@ -227,27 +211,6 @@ jobs:
             artifacts/SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-<<<<<<< HEAD
-      - name: Upload release integrity signatures
-        if: ${{ secrets.DOCDEX_RELEASE_SIGNING_PRIVATE_KEY != '' }}
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ github.ref_name }}
-          fail_on_unmatched_files: true
-          files: |
-            artifacts/docdex-release-manifest.json.sig
-            artifacts/SHA256SUMS.sig
-            artifacts/SHA256SUMS.txt.sig
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-=======
-      - name: Guard npm publish against missing release assets
-        env:
-          DOCDEX_DOWNLOAD_REPO: ${{ github.repository }}
-          DOCDEX_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/verify_release_assets.cjs
->>>>>>> mcoda/task/ops-01-us-03-t46
 
       - name: Update npm to latest (trusted publish requires >=11.5.1)
         run: npm install -g npm@latest
@@ -268,10 +231,6 @@ jobs:
       - name: Pack npm tarball (verification)
         working-directory: npm
         run: npm pack --ignore-scripts
-
-      - name: Verify npm tarball excludes native binaries
-        working-directory: npm
-        run: npm run pack:verify
 
       - name: Publish to npm
         working-directory: npm

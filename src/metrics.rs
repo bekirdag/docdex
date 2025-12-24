@@ -1,6 +1,5 @@
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -9,7 +8,6 @@ pub struct Metrics {
     rate_limit_denies: AtomicU64,
     auth_denies: AtomicU64,
     error_count: AtomicU64,
-    mcp_error_counts: RwLock<BTreeMap<String, u64>>,
 
     browser_sessions_active: AtomicI64,
     browser_session_launch_failures: AtomicU64,
@@ -22,13 +20,6 @@ pub struct Metrics {
     chrome_watchdog_reap_attempts: AtomicU64,
     chrome_watchdog_reaped: AtomicU64,
     chrome_watchdog_reap_failures: AtomicU64,
-
-    ddg_discovery_spacing_events: AtomicU64,
-    ddg_discovery_spacing_ms_total: AtomicU64,
-    ddg_discovery_backoff_events: AtomicU64,
-    ddg_discovery_backoff_ms_total: AtomicU64,
-    ddg_discovery_retry_events: AtomicU64,
-    ddg_discovery_stop_events: AtomicU64,
 }
 
 impl Metrics {
@@ -42,12 +33,6 @@ impl Metrics {
 
     pub fn inc_error(&self) {
         self.error_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn inc_mcp_error(&self, code: &str) {
-        let mut counts = self.mcp_error_counts.write();
-        let entry = counts.entry(code.to_string()).or_insert(0);
-        *entry = entry.saturating_add(1);
     }
 
     pub fn inc_browser_session_active(&self) {
@@ -96,32 +81,8 @@ impl Metrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn inc_ddg_discovery_spacing(&self, spacing_ms: u64) {
-        self.ddg_discovery_spacing_events
-            .fetch_add(1, Ordering::Relaxed);
-        self.ddg_discovery_spacing_ms_total
-            .fetch_add(spacing_ms, Ordering::Relaxed);
-    }
-
-    pub fn inc_ddg_discovery_backoff(&self, backoff_ms: u64) {
-        self.ddg_discovery_backoff_events
-            .fetch_add(1, Ordering::Relaxed);
-        self.ddg_discovery_backoff_ms_total
-            .fetch_add(backoff_ms, Ordering::Relaxed);
-    }
-
-    pub fn inc_ddg_discovery_retry(&self) {
-        self.ddg_discovery_retry_events
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn inc_ddg_discovery_stop(&self) {
-        self.ddg_discovery_stop_events
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
     pub fn render_prometheus(&self) -> String {
-        let mut out = format!(
+        format!(
             concat!(
                 "# HELP docdex_rate_limit_denies_total Rate limit denials\n",
                 "# TYPE docdex_rate_limit_denies_total counter\n",
@@ -159,24 +120,6 @@ impl Metrics {
                 "# HELP docdex_chrome_watchdog_reap_failures_total Chrome watchdog reap failures\n",
                 "# TYPE docdex_chrome_watchdog_reap_failures_total counter\n",
                 "docdex_chrome_watchdog_reap_failures_total {}\n",
-                "# HELP docdex_ddg_discovery_spacing_total DDG discovery spacing events\n",
-                "# TYPE docdex_ddg_discovery_spacing_total counter\n",
-                "docdex_ddg_discovery_spacing_total {}\n",
-                "# HELP docdex_ddg_discovery_spacing_ms_total DDG discovery spacing time in milliseconds\n",
-                "# TYPE docdex_ddg_discovery_spacing_ms_total counter\n",
-                "docdex_ddg_discovery_spacing_ms_total {}\n",
-                "# HELP docdex_ddg_discovery_backoff_total DDG discovery backoff events\n",
-                "# TYPE docdex_ddg_discovery_backoff_total counter\n",
-                "docdex_ddg_discovery_backoff_total {}\n",
-                "# HELP docdex_ddg_discovery_backoff_ms_total DDG discovery backoff time in milliseconds\n",
-                "# TYPE docdex_ddg_discovery_backoff_ms_total counter\n",
-                "docdex_ddg_discovery_backoff_ms_total {}\n",
-                "# HELP docdex_ddg_discovery_retries_total DDG discovery retry attempts\n",
-                "# TYPE docdex_ddg_discovery_retries_total counter\n",
-                "docdex_ddg_discovery_retries_total {}\n",
-                "# HELP docdex_ddg_discovery_stop_outcomes_total DDG discovery stop outcomes\n",
-                "# TYPE docdex_ddg_discovery_stop_outcomes_total counter\n",
-                "docdex_ddg_discovery_stop_outcomes_total {}\n",
             ),
             self.rate_limit_denies.load(Ordering::Relaxed),
             self.auth_denies.load(Ordering::Relaxed),
@@ -190,33 +133,8 @@ impl Metrics {
             self.chrome_watchdog_reap_attempts.load(Ordering::Relaxed),
             self.chrome_watchdog_reaped.load(Ordering::Relaxed),
             self.chrome_watchdog_reap_failures.load(Ordering::Relaxed),
-<<<<<<< HEAD
-            self.ddg_discovery_spacing_events.load(Ordering::Relaxed),
-            self.ddg_discovery_spacing_ms_total.load(Ordering::Relaxed),
-            self.ddg_discovery_backoff_events.load(Ordering::Relaxed),
-            self.ddg_discovery_backoff_ms_total.load(Ordering::Relaxed),
-            self.ddg_discovery_retry_events.load(Ordering::Relaxed),
-            self.ddg_discovery_stop_events.load(Ordering::Relaxed),
         )
-=======
-        );
-        out.push_str("# HELP docdex_mcp_errors_total MCP errors by code\n");
-        out.push_str("# TYPE docdex_mcp_errors_total counter\n");
-        let counts = self.mcp_error_counts.read();
-        for (code, count) in counts.iter() {
-            out.push_str(&format!(
-                "docdex_mcp_errors_total{{code=\"{}\"}} {}\n",
-                escape_label_value(code),
-                count
-            ));
-        }
-        out
->>>>>>> mcoda/task/bck-05-us-06-t15
     }
-}
-
-fn escape_label_value(value: &str) -> String {
-    value.replace('\\', r"\\").replace('"', r#"\""#)
 }
 
 fn dec_saturating(gauge: &AtomicI64) {
@@ -247,3 +165,4 @@ pub fn global() -> Arc<Metrics> {
 pub fn set_global(metrics: Arc<Metrics>) {
     *GLOBAL_METRICS.write() = metrics;
 }
+

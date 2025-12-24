@@ -2,100 +2,40 @@ mod audit;
 mod browser_session;
 mod chrome_watchdog;
 mod config;
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-mod dag;
-=======
-mod ddg_discovery;
->>>>>>> mcoda/task/bck-05-us-07-t15
-=======
-mod dag;
->>>>>>> mcoda/task/bck-05-us-07-t25
-=======
-mod dag;
->>>>>>> mcoda/task/bck-05-us-07-t24
-=======
-mod dag;
->>>>>>> mcoda/task/bck-05-us-07-t23
-=======
-mod dag;
->>>>>>> mcoda/task/bck-05-us-07-t26
-=======
-mod dag;
->>>>>>> mcoda/task/bck-05-us-07-t27
 mod daemon;
 mod error;
-<<<<<<< HEAD
-mod explainability;
-=======
-mod max_size;
->>>>>>> mcoda/task/bck-05-us-10-t25
 mod metrics;
-mod policy;
 mod tier2;
-mod waterfall_trace;
 mod impact;
 mod index;
 mod libs;
 mod libs_source_resolver;
-mod limits;
 mod memory;
 mod mcp;
 mod ollama;
 mod ratelimit;
-mod repo_manager;
 mod repo_identity;
-<<<<<<< HEAD
-mod repo_resolution;
-=======
-mod repo_manager;
->>>>>>> mcoda/task/bck-05-us-07-t06
 mod search;
-mod state_layout;
 mod symbols;
-mod state_paths;
 mod util;
-<<<<<<< HEAD
-mod web_discovery;
-=======
-mod web;
->>>>>>> mcoda/task/bck-05-us-07-t16
 mod watcher;
-mod web_research;
 
 use crate::config::RepoArgs;
-<<<<<<< HEAD
-<<<<<<< HEAD
-use crate::error::{BackoffRequired, StartupError};
-=======
-use crate::error::{StartupError, ERR_MISSING_INDEX, ERR_STALE_INDEX};
->>>>>>> mcoda/task/bck-05-us-08-t05
-=======
-use crate::error::{BackoffRequired, StartupError};
->>>>>>> mcoda/task/bck-05-us-07-t15
+use crate::error::StartupError;
 use anyhow::{anyhow, Context, Result};
-use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use serde_json::json;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use tracing::info;
-use uuid::Uuid;
 
 #[derive(Parser, Debug)]
 #[command(
     name = "docdexd",
     version,
     about = "Local documentation index/search daemon",
-<<<<<<< HEAD
-    long_about = "Docdex indexes plain-text/markdown documentation under a workspace and serves top-k search/snippet results over HTTP or CLI. Defaults store data under ~/.docdex/state/repos/<fingerprint>/index and avoid common tool caches; override paths and exclusions with --state-dir/--exclude-* or matching env vars. Optional MCP server (`docdexd mcp`) exposes docdex_search/index/files/open/stats tools over stdio for MCP-aware clients; register it in your MCP client as server \"docdex\" with command: docdexd mcp --repo <repo> --log warn."
-=======
-    long_about = "Docdex indexes plain-text/markdown documentation under a workspace and serves top-k search/snippet results over HTTP or CLI. Defaults store data under ~/.docdex/state/repos/<fingerprint>/index; override the global state root and exclusions with --state-dir/--exclude-* or matching env vars. Optional MCP server (`docdexd mcp`) exposes docdex_search/index/files/open/stats tools over stdio for MCP-aware clients; register it in your MCP client as server \"docdex\" with command: docdexd mcp --repo <repo> --log warn."
->>>>>>> mcoda/task/ops-01-us-03-t02
+    long_about = "Docdex indexes plain-text/markdown documentation under a workspace and serves top-k search/snippet results over HTTP or CLI. Defaults store data in <repo>/.docdex/index and avoid common tool caches; override paths and exclusions with --state-dir/--exclude-* or matching env vars. Optional MCP server (`docdexd mcp`) exposes docdex_search/index/files/open/stats tools over stdio for MCP-aware clients; register it in your MCP client as server \"docdex\" with command: docdexd mcp --repo <repo> --log warn."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -187,14 +127,6 @@ enum Command {
         max_request_bytes: usize,
         #[arg(
             long,
-            env = "DOCDEX_MAX_OPEN_REPOS",
-            default_value_t = repo_manager::DEFAULT_MAX_OPEN_REPOS,
-            value_parser = repo_manager::parse_max_open_repos,
-            help = "Cap concurrently open repos for the shared repo manager (4-16)"
-        )]
-        max_open_repos: usize,
-        #[arg(
-            long,
             env = "DOCDEX_RATE_LIMIT_PER_MIN",
             default_value_t = 0u32,
             help = "Optional per-IP request rate limit per minute (0 disables rate limiting; defaults on in secure mode)"
@@ -278,11 +210,7 @@ enum Command {
         #[arg(
             long,
             env = "DOCDEX_AUDIT_LOG_PATH",
-<<<<<<< HEAD
-            help = "Audit log path (JSON lines with hash chain; defaults to <repo_state_dir>/audit.log)"
-=======
-            help = "Audit log path (JSON lines with hash chain; defaults to <repo-state-root>/audit.log)"
->>>>>>> mcoda/task/ops-01-us-03-t02
+            help = "Audit log path (JSON lines with hash chain; defaults to <state-dir>/audit.log)"
         )]
         audit_log_path: Option<PathBuf>,
         #[arg(
@@ -369,11 +297,6 @@ enum Command {
         )]
         include_default_patterns: bool,
     },
-    /// Report index schema compatibility/migration status for a repo.
-    IndexStatus {
-        #[command(flatten)]
-        repo: RepoArgs,
-    },
     /// Build or rebuild the entire index for a repo.
     Index {
         #[command(flatten)]
@@ -400,26 +323,6 @@ enum Command {
             help = "Only search the repo index (ignore any repo-scoped libs index, if present)"
         )]
         repo_only: bool,
-    },
-<<<<<<< HEAD
-    /// Report index stats, symbols enablement, and recent run summaries.
-    Stats {
-        #[command(flatten)]
-        repo: RepoArgs,
-        #[arg(
-            long,
-            default_value_t = index::RUN_SUMMARY_DEFAULT_LIMIT,
-            help = "Max run summaries to return (clamped to 20)"
-        )]
-        runs_limit: usize,
-=======
-    /// Perform DuckDuckGo HTML discovery (JSON output).
-    WebSearch {
-        #[arg(long, value_parser = config::non_empty_string, help = "Search query string")]
-        query: String,
-        #[arg(long, default_value_t = 8, help = "Max results to return (clamped to config)")]
-        limit: usize,
->>>>>>> mcoda/task/bck-05-us-07-t16
     },
     /// Ingest library documentation sources into the repo-scoped libs index.
     LibsIngest {
@@ -491,16 +394,6 @@ enum Command {
         top_k: usize,
         #[arg(
             long,
-            help = "Optional max items to keep after deterministic pruning (0..=50). Defaults to --top-k."
-        )]
-        max_items: Option<usize>,
-        #[arg(
-            long,
-            help = "Optional token budget for deterministic memory context truncation (whitespace token estimate)."
-        )]
-        max_tokens: Option<usize>,
-        #[arg(
-            long,
             env = "DOCDEX_EMBEDDING_BASE_URL",
             value_parser = config::non_empty_string,
             help = "Ollama base URL for embedding calls; takes precedence over --ollama-base-url when both are set"
@@ -529,53 +422,6 @@ enum Command {
         )]
         embedding_timeout_ms: u64,
     },
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-    /// View reasoning DAG sessions stored in repo-scoped dag.db.
-    Dag {
-        #[command(subcommand)]
-        command: DagCommand,
-=======
-    /// Run web research with graceful local fallback (JSON output).
-    WebResearch {
-        #[command(flatten)]
-        repo: RepoArgs,
-        #[arg(short, long)]
-        query: String,
-        #[arg(
-            long,
-            default_value_t = false,
-            help = "Force web discovery attempt even if confidence is high"
-        )]
-        force_web: bool,
-        #[arg(
-            long,
-            default_value_t = 8,
-            help = "Max local hits to include (clamped to server max)"
-        )]
-        limit: usize,
-        #[arg(
-            long,
-            default_value_t = true,
-            action = ArgAction::Set,
-            help = "Include repo-scoped libs index in local fallback"
-        )]
-        include_libs: bool,
->>>>>>> mcoda/task/bck-05-us-07-t18
-=======
-    /// Export a session DAG in text or DOT format.
-    Dag {
-        #[command(subcommand)]
-        command: DagCommand,
->>>>>>> mcoda/task/bck-05-us-07-t26
-=======
-    /// Export a session DAG from the local store.
-    Dag {
-        #[command(subcommand)]
-        command: DagCommand,
->>>>>>> mcoda/task/bck-05-us-07-t27
-    },
     /// Manage explicit repo identity mappings for shared state dirs.
     Repo {
         #[command(subcommand)]
@@ -594,14 +440,6 @@ enum Command {
             help = "Maximum results to return from docdex_search tool"
         )]
         max_results: usize,
-        #[arg(
-            long,
-            env = "DOCDEX_MAX_OPEN_REPOS",
-            default_value_t = repo_manager::DEFAULT_MAX_OPEN_REPOS,
-            value_parser = repo_manager::parse_max_open_repos,
-            help = "Cap concurrently open repos for the shared repo manager (4-16)"
-        )]
-        max_open_repos: usize,
         #[arg(
             long,
             env = "DOCDEX_MCP_RATE_LIMIT_PER_MIN",
@@ -662,36 +500,6 @@ enum Command {
 }
 
 #[derive(Subcommand, Debug)]
-enum DagCommand {
-<<<<<<< HEAD
-    /// Render a session DAG as JSON from repo-scoped dag.db.
-    View {
-        #[command(flatten)]
-        repo: RepoArgs,
-        #[arg(value_parser = config::non_empty_string, value_name = "SESSION_ID")]
-        session_id: String,
-=======
-    /// Export a session DAG as text or DOT.
-    View {
-        #[command(flatten)]
-        repo: RepoArgs,
-        #[arg(value_parser = config::non_empty_string, help = "Session identifier")]
-        session_id: String,
-        #[arg(
-            short,
-            long,
-            default_value = "text",
-            value_parser = ["text", "dot"],
-            help = "Output format"
-        )]
-        format: String,
-        #[arg(short, long, value_name = "PATH", help = "Write output to a file instead of stdout")]
-        output: Option<PathBuf>,
->>>>>>> mcoda/task/bck-05-us-07-t26
-    },
-}
-
-#[derive(Subcommand, Debug)]
 enum RepoCommand {
     /// Explicitly re-associate a moved/renamed repo path to existing state under a shared `--state-dir`.
     Reassociate {
@@ -716,38 +524,6 @@ enum RepoCommand {
     Inspect {
         #[command(flatten)]
         repo: RepoArgs,
-    },
-}
-
-#[derive(Debug, Clone, ValueEnum)]
-enum DagFormatArg {
-    Json,
-    Text,
-    Dot,
-}
-
-impl DagFormatArg {
-    fn to_export_format(self) -> dag::DagExportFormat {
-        match self {
-            DagFormatArg::Json => dag::DagExportFormat::Json,
-            DagFormatArg::Text => dag::DagExportFormat::Text,
-            DagFormatArg::Dot => dag::DagExportFormat::Dot,
-        }
-    }
-}
-
-#[derive(Subcommand, Debug)]
-enum DagCommand {
-    /// Export a session DAG in JSON, text, or DOT format.
-    View {
-        #[command(flatten)]
-        repo: RepoArgs,
-        #[arg(value_name = "SESSION_ID", value_parser = config::non_empty_string)]
-        session_id: String,
-        #[arg(long, value_enum, default_value = "json")]
-        format: DagFormatArg,
-        #[arg(long, default_value_t = dag::DEFAULT_MAX_NODES)]
-        max_nodes: usize,
     },
 }
 
@@ -779,7 +555,6 @@ async fn run() -> Result<()> {
             max_limit,
             max_query_bytes,
             max_request_bytes,
-            max_open_repos,
             rate_limit_per_min,
             rate_limit_burst,
             strip_snippet_html,
@@ -823,7 +598,6 @@ async fn run() -> Result<()> {
                 )
                 .with_hint("Verify repo/state-dir paths and permissions; consider removing --state-dir or running `docdexd index` once to initialize metadata.")
             })?;
-            let repo_manager_config = repo_manager::RepoManagerConfig::new(max_open_repos)?;
             let tls = daemon::TlsConfig::from_options(
                 tls_cert,
                 tls_key,
@@ -840,7 +614,7 @@ async fn run() -> Result<()> {
             } else {
                 let path = audit_log_path
                     .clone()
-                    .unwrap_or_else(|| index_config.repo_state_dir().join("audit.log"));
+                    .unwrap_or_else(|| index_config.state_dir().join("audit.log"));
                 Some(audit::AuditLogger::new(
                     path,
                     audit_max_bytes,
@@ -884,7 +658,6 @@ async fn run() -> Result<()> {
                 embedding_base_url,
                 embedding_model,
                 embedding_timeout_ms,
-                repo_manager_config,
             )
             .await?;
         }
@@ -944,7 +717,7 @@ async fn run() -> Result<()> {
                 }
             }
             if findings.is_empty() {
-                let report_path = index_config.repo_state_dir().join("self_check_report.json");
+                let report_path = index_config.state_dir().join("self_check_report.json");
                 let empty: Vec<serde_json::Value> = Vec::new();
                 let report = serde_json::json!({
                     "repo": repo_root,
@@ -958,14 +731,14 @@ async fn run() -> Result<()> {
                 );
                 // best-effort audit log for admin self-check action
                 let _ = audit::AuditLogger::new(
-                    index_config.repo_state_dir().join("audit.log"),
+                    index_config.state_dir().join("audit.log"),
                     5_000_000,
                     5,
                 )
                 .map(|logger| logger.log("self_check", "pass", None, None, None, None, None, None));
                 return Ok(());
             }
-            let report_path = index_config.repo_state_dir().join("self_check_report.json");
+            let report_path = index_config.state_dir().join("self_check_report.json");
             let report = serde_json::json!({
                 "repo": repo_root,
                 "checked_at": chrono::Utc::now().to_rfc3339(),
@@ -992,9 +765,8 @@ async fn run() -> Result<()> {
                 }
                 eprintln!("{line}");
             }
-<<<<<<< HEAD
             let _ =
-                audit::AuditLogger::new(index_config.repo_state_dir().join("audit.log"), 5_000_000, 5)
+                audit::AuditLogger::new(index_config.state_dir().join("audit.log"), 5_000_000, 5)
                     .map(|logger| {
                         logger.log(
                             "self_check",
@@ -1007,38 +779,7 @@ async fn run() -> Result<()> {
                             Some("sensitive terms found"),
                         )
                     });
-=======
-            let _ = audit::AuditLogger::new(
-                index_config.repo_state_dir().join("audit.log"),
-                5_000_000,
-                5,
-            )
-            .map(|logger| {
-                logger.log(
-                    "self_check",
-                    "fail",
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some("sensitive terms found"),
-                )
-            });
->>>>>>> mcoda/task/ops-01-us-03-t02
             return Err(anyhow!("sensitive terms detected in index"));
-        }
-        Command::IndexStatus { repo } => {
-            let repo_root = repo.repo_root();
-            let index_config = index::IndexConfig::with_overrides(
-                &repo_root,
-                repo.state_dir_override(),
-                repo.exclude_dir_overrides(),
-                repo.exclude_prefix_overrides(),
-                repo.symbols_enabled(),
-            )?;
-            let report = index::index_compatibility_report(&repo_root, index_config.state_dir())?;
-            println!("{}", serde_json::to_string_pretty(&report)?);
         }
         Command::Index { repo } => {
             let repo_root = repo.repo_root();
@@ -1051,8 +792,8 @@ async fn run() -> Result<()> {
             )?;
             util::init_logging("info")?;
             info!("Rebuilding index for {}", repo_root.display());
-            let _ = index::Indexer::with_config(repo_root, index_config)?
-                .reindex_all_with_summary()
+            index::Indexer::with_config(repo_root, index_config)?
+                .reindex_all()
                 .await?;
         }
         Command::Ingest { repo, file } => {
@@ -1066,7 +807,7 @@ async fn run() -> Result<()> {
             )?;
             util::init_logging("warn")?;
             let _ = index::Indexer::with_config(repo_root, index_config)?
-                .ingest_file_with_summary(file)
+                .ingest_file(file)
                 .await?;
         }
         Command::Query {
@@ -1088,92 +829,12 @@ async fn run() -> Result<()> {
             let libs_indexer = if repo_only {
                 None
             } else {
-                let libs_dir =
-                    libs::libs_state_dir_from_index_state_dir(server.repo_root(), server.state_dir());
+                let libs_dir = libs::libs_state_dir_from_index_state_dir(server.state_dir());
                 libs::LibsIndexer::open_read_only(libs_dir).ok().flatten()
             };
             let hits = search::run_query(&server, libs_indexer.as_ref(), &query, limit).await?;
             println!("{}", serde_json::to_string_pretty(&hits)?);
         }
-<<<<<<< HEAD
-<<<<<<< HEAD
-        Command::Stats { repo, runs_limit } => {
-            let repo_root = repo.repo_root();
-            let index_config = index::IndexConfig::with_overrides(
-                &repo_root,
-                repo.state_dir_override(),
-                repo.exclude_dir_overrides(),
-                repo.exclude_prefix_overrides(),
-                repo.symbols_enabled(),
-            )?;
-            util::init_logging("warn")?;
-            let indexer = index::Indexer::with_config_read_only(repo_root.clone(), index_config)?;
-            let stats = indexer.stats()?;
-            let run_summaries = indexer.run_summaries(Some(runs_limit))?;
-            let payload = serde_json::json!({
-                "num_docs": stats.num_docs,
-                "state_dir": stats.state_dir.display().to_string(),
-                "index_size_bytes": stats.index_size_bytes,
-                "segments": stats.segments,
-                "avg_bytes_per_doc": stats.avg_bytes_per_doc,
-                "generated_at_epoch_ms": stats.generated_at_epoch_ms,
-                "last_updated_epoch_ms": stats.last_updated_epoch_ms,
-                "symbols_enabled": indexer.config().symbols_enabled(),
-                "symbols_store_ready": indexer.symbols_store_ready(),
-                "run_summaries": run_summaries,
-                "repo_root": repo_root.display().to_string(),
-            });
-            println!("{}", serde_json::to_string_pretty(&payload)?);
-=======
-        Command::WebSearch { query, limit } => {
-            util::init_logging("warn")?;
-            let config = web::WebConfig::from_env();
-            let discovery = web::ddg::DdgDiscovery::new(config)?;
-            let response = discovery.discover(&query, limit).await?;
-            println!("{}", serde_json::to_string_pretty(&response)?);
->>>>>>> mcoda/task/bck-05-us-07-t16
-        }
-=======
-        Command::Dag { command } => match command {
-            DagCommand::View { repo, session_id } => {
-                let repo_root = repo.repo_root();
-                let index_config = index::IndexConfig::with_overrides(
-                    &repo_root,
-                    repo.state_dir_override(),
-                    repo.exclude_dir_overrides(),
-                    repo.exclude_prefix_overrides(),
-                    repo.symbols_enabled(),
-                )?;
-                util::init_logging("warn")?;
-                if let Err(err) = crate::repo_identity::validate_repo_state_dir(
-                    &repo_root,
-                    index_config.state_dir(),
-                ) {
-                    if let Some(identity) =
-                        err.downcast_ref::<crate::repo_identity::RepoIdentityError>()
-                    {
-                        return Err(index::repo_state_mismatch_error(
-                            &repo_root,
-                            Some(index_config.state_dir()),
-                            identity,
-                        )
-                        .into());
-                    }
-                    return Err(err);
-                }
-                let store = dag::DagStore::new(&repo_root, index_config.state_dir())?;
-                let Some(session) = store.load_session(&session_id)? else {
-                    return Err(error::AppError::new(
-                        error::ERR_INVALID_ARGUMENT,
-                        "session not found",
-                    )
-                    .with_details(json!({ "sessionId": session_id }))
-                    .into());
-                };
-                println!("{}", serde_json::to_string_pretty(&session)?);
-            }
-        },
->>>>>>> mcoda/task/bck-05-us-07-t22
         Command::Repo { command } => match command {
             RepoCommand::Reassociate {
                 repo,
@@ -1296,8 +957,7 @@ async fn run() -> Result<()> {
                 repo.symbols_enabled(),
             )?;
             util::init_logging("warn")?;
-            let libs_dir =
-                libs::libs_state_dir_from_index_state_dir(&repo_root, index_config.state_dir());
+            let libs_dir = libs::libs_state_dir_from_index_state_dir(index_config.state_dir());
             let indexer = libs::LibsIndexer::open_or_create(libs_dir)?;
             let raw = fs::read_to_string(&sources)
                 .with_context(|| format!("read libs sources file {}", sources.display()))?;
@@ -1341,11 +1001,7 @@ async fn run() -> Result<()> {
                 repo.symbols_enabled(),
             )?;
             util::init_logging("warn")?;
-<<<<<<< HEAD
-            index::ensure_state_dir_secure(index_config.repo_state_dir())?;
-=======
-            state_layout::ensure_state_dir_secure(index_config.state_dir())?;
->>>>>>> mcoda/task/ops-01-us-03-t02
+            index::ensure_state_dir_secure(index_config.state_dir())?;
 
             let timeout = std::time::Duration::from_millis(embedding_timeout_ms.max(1));
             let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);
@@ -1368,7 +1024,7 @@ async fn run() -> Result<()> {
                 embedder.provider(),
                 embedder.model(),
             );
-            let store = memory::MemoryStore::new(index_config.repo_state_dir());
+            let store = memory::MemoryStore::new(index_config.state_dir());
             let created_at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_millis() as i64;
@@ -1389,8 +1045,6 @@ async fn run() -> Result<()> {
             repo,
             query,
             top_k,
-            max_items,
-            max_tokens,
             embedding_base_url,
             ollama_base_url,
             embedding_model,
@@ -1405,32 +1059,16 @@ async fn run() -> Result<()> {
                 repo.symbols_enabled(),
             )?;
             util::init_logging("warn")?;
-<<<<<<< HEAD
-            index::ensure_state_dir_secure(index_config.repo_state_dir())?;
-=======
-            state_layout::ensure_state_dir_secure(index_config.state_dir())?;
->>>>>>> mcoda/task/ops-01-us-03-t02
+            index::ensure_state_dir_secure(index_config.state_dir())?;
 
             let timeout = std::time::Duration::from_millis(embedding_timeout_ms.max(1));
             let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);
             let embedder =
                 ollama::OllamaEmbedder::new(embedding_base_url, embedding_model, timeout)?;
             let embedding = embedder.embed(&query).await?;
-            let store = memory::MemoryStore::new(index_config.repo_state_dir());
+            let store = memory::MemoryStore::new(index_config.state_dir());
             let top_k = top_k.max(1).min(50);
-            let max_items = max_items.unwrap_or(top_k).min(50);
-            let max_tokens = max_tokens;
-            let results = tokio::task::spawn_blocking(move || {
-                let candidates = store.recall_candidates(&embedding, top_k)?;
-                let budget = max_tokens.unwrap_or(usize::MAX);
-                let (kept, _trace) = memory::prune_and_truncate_memory_context(
-                    &candidates,
-                    max_items,
-                    budget,
-                );
-                Ok::<_, anyhow::Error>(kept)
-            })
-            .await??;
+            let results = tokio::task::spawn_blocking(move || store.recall(&embedding, top_k)).await??;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -1444,127 +1082,10 @@ async fn run() -> Result<()> {
                 }))?
             );
         }
-<<<<<<< HEAD
-<<<<<<< HEAD
-        Command::WebResearch {
-            repo,
-            query,
-            force_web,
-            limit,
-            include_libs,
-        } => {
-            let repo_root = repo.repo_root();
-            let index_config = index::IndexConfig::with_overrides(
-                &repo_root,
-                repo.state_dir_override(),
-                repo.exclude_dir_overrides(),
-                repo.exclude_prefix_overrides(),
-                repo.symbols_enabled(),
-            )?;
-            util::init_logging("warn")?;
-            let indexer =
-                index::Indexer::with_config_read_only(repo_root.clone(), index_config.clone())?;
-            let libs_indexer = if include_libs {
-                let libs_dir = libs::libs_state_dir_from_index_state_dir(indexer.state_dir());
-                libs::LibsIndexer::open_read_only(libs_dir).ok().flatten()
-            } else {
-                None
-            };
-            let limit = limit.max(1);
-            let gate = web_research::WebGateConfig::from_env();
-            let request_id = Uuid::new_v4().to_string();
-            let response = web_research::run_web_research(
-                &request_id,
-                &indexer,
-                libs_indexer.as_ref(),
-                &query,
-                limit,
-                force_web,
-                &gate,
-            )
-            .await?;
-            println!("{}", serde_json::to_string_pretty(&response)?);
-        }
-=======
-=======
->>>>>>> mcoda/task/bck-05-us-07-t27
-        Command::Dag { command } => match command {
-            DagCommand::View {
-                repo,
-                session_id,
-                format,
-<<<<<<< HEAD
-                output,
-=======
-                max_nodes,
->>>>>>> mcoda/task/bck-05-us-07-t27
-            } => {
-                let repo_root = repo.repo_root();
-                let index_config = index::IndexConfig::with_overrides(
-                    &repo_root,
-                    repo.state_dir_override(),
-                    repo.exclude_dir_overrides(),
-                    repo.exclude_prefix_overrides(),
-                    repo.symbols_enabled(),
-                )?;
-                util::init_logging("warn")?;
-                index::ensure_state_dir_secure(index_config.state_dir())?;
-
-                let store = dag::DagStore::new(index_config.state_dir());
-<<<<<<< HEAD
-                let session = store
-                    .load_session(&session_id)
-                    .map_err(dag::map_dag_error)?;
-                let format = dag::DagExportFormat::parse(&format).ok_or_else(|| {
-                    error::AppError::new(
-                        error::ERR_INVALID_ARGUMENT,
-                        "format must be one of: text, dot",
-                    )
-                })?;
-                let rendered = dag::export_session(&session, format);
-                if let Some(path) = output {
-                    if path.as_os_str() == "-" {
-                        print!("{rendered}");
-                    } else {
-                        if let Some(parent) = path.parent() {
-                            if !parent.as_os_str().is_empty() {
-                                fs::create_dir_all(parent)?;
-                            }
-                        }
-                        fs::write(&path, rendered)?;
-                    }
-                } else {
-                    print!("{rendered}");
-                }
-            }
-        },
->>>>>>> mcoda/task/bck-05-us-07-t26
-=======
-                let options = dag::DagExportOptions::from_optional(Some(max_nodes));
-                let export = store.export_session(&session_id, options)?;
-                let repo_id =
-                    symbols::repo_id_for_root(&repo_root).unwrap_or_else(|_| String::new());
-                let response = dag::build_export_response(&repo_id, &session_id, export);
-
-                match format.to_export_format() {
-                    dag::DagExportFormat::Json => {
-                        println!("{}", serde_json::to_string_pretty(&response)?);
-                    }
-                    dag::DagExportFormat::Text => {
-                        print!("{}", dag::render_text(&response));
-                    }
-                    dag::DagExportFormat::Dot => {
-                        print!("{}", dag::render_dot(&response));
-                    }
-                }
-            }
-        },
->>>>>>> mcoda/task/bck-05-us-07-t27
         Command::Mcp {
             repo,
             log,
             max_results,
-            max_open_repos,
             rate_limit_per_min,
             rate_limit_burst,
         } => {
@@ -1573,7 +1094,6 @@ async fn run() -> Result<()> {
                 .and_then(|v| v.parse::<usize>().ok())
                 .unwrap_or(max_results)
                 .max(1);
-            let repo_manager_config = repo_manager::RepoManagerConfig::new(max_open_repos)?;
             let repo_root = repo.repo_root();
             let index_config = index::IndexConfig::with_overrides(
                 &repo_root,
@@ -1590,7 +1110,6 @@ async fn run() -> Result<()> {
                 max_results,
                 rate_limit_per_min,
                 rate_limit_burst,
-                repo_manager_config,
             )
             .await?;
         }
@@ -1644,106 +1163,47 @@ async fn run() -> Result<()> {
 
 fn render_error_and_exit(err: anyhow::Error) -> ! {
     if let Some(startup) = err.downcast_ref::<StartupError>() {
-        let payload = crate::error::startup_error_payload(startup);
+        let mut body = serde_json::Map::new();
+        body.insert("code".to_string(), json!(startup.code));
+        body.insert("message".to_string(), json!(startup.message.as_str()));
+        if let Some(hint) = startup.hint.as_ref() {
+            body.insert("hint".to_string(), json!(hint));
+        }
+        if let Some(steps) = startup.remediation.as_ref() {
+            body.insert("remediation".to_string(), json!(steps));
+        }
+        let payload = serde_json::Value::Object({
+            let mut root = serde_json::Map::new();
+            root.insert("error".to_string(), serde_json::Value::Object(body));
+            root
+        });
         match serde_json::to_string(&payload) {
             Ok(line) => eprintln!("{line}"),
             Err(_) => eprintln!("{}", startup.message),
         }
         std::process::exit(1);
     }
-<<<<<<< HEAD
-    if let Some(backoff) = err.downcast_ref::<crate::error::BackoffRequired>() {
-        let mut body = serde_json::Map::new();
-        body.insert("code".to_string(), json!(backoff.code));
-        body.insert("message".to_string(), json!(backoff.message.as_str()));
-        if let Ok(details) =
-            serde_json::to_value(crate::error::RetryHint::from_backoff(backoff))
-        {
-            body.insert("details".to_string(), details);
-        }
-        let payload = serde_json::Value::Object({
-            let mut root = serde_json::Map::new();
-            root.insert("error".to_string(), serde_json::Value::Object(body));
-            root
-        });
-        match serde_json::to_string(&payload) {
-            Ok(line) => eprintln!("{line}"),
-            Err(_) => eprintln!("{}", backoff.message),
-        }
-        std::process::exit(1);
-    }
-    if let Some(backoff) = err.downcast_ref::<crate::error::BackoffRequired>() {
-        let mut body = serde_json::Map::new();
-        body.insert("code".to_string(), json!(backoff.code));
-        body.insert("message".to_string(), json!(backoff.message.as_str()));
-        if let Ok(details) =
-            serde_json::to_value(crate::error::RetryHint::from_backoff(backoff))
-        {
-            body.insert("details".to_string(), details);
-        }
-=======
-    if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
-        let mut body = serde_json::Map::new();
-        body.insert("code".to_string(), json!(backoff.code));
-        body.insert("message".to_string(), json!(backoff.message.as_str()));
-        body.insert("retry_after_ms".to_string(), json!(backoff.retry_after_ms));
-        if let Some(retry_at) = backoff.retry_at.as_ref() {
-            body.insert("retry_at".to_string(), json!(retry_at.to_rfc3339()));
-        }
-        body.insert("limit_key".to_string(), json!(backoff.limit_key.as_str()));
-        body.insert("scope".to_string(), json!(backoff.scope.as_str()));
->>>>>>> mcoda/task/bck-05-us-09-t22
-        let payload = serde_json::Value::Object({
-            let mut root = serde_json::Map::new();
-            root.insert("error".to_string(), serde_json::Value::Object(body));
-            root
-        });
-        match serde_json::to_string(&payload) {
-            Ok(line) => eprintln!("{line}"),
-            Err(_) => eprintln!("{}", backoff.message),
-        }
-        std::process::exit(1);
-    }
     if let Some(app) = err.downcast_ref::<crate::error::AppError>() {
-        let payload = crate::error::app_error_payload(app);
+        let mut body = serde_json::Map::new();
+        body.insert("code".to_string(), json!(app.code));
+        body.insert("message".to_string(), json!(app.message.as_str()));
+        if let Some(details) = app.details.as_ref() {
+            body.insert("details".to_string(), details.clone());
+        }
+        let payload = serde_json::Value::Object({
+            let mut root = serde_json::Map::new();
+            root.insert("error".to_string(), serde_json::Value::Object(body));
+            root
+        });
         match serde_json::to_string(&payload) {
             Ok(line) => eprintln!("{line}"),
             Err(_) => eprintln!("{}", app.message),
-        }
-        std::process::exit(exit_code_for_app_error(app));
-    }
-    if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
-        let mut body = serde_json::Map::new();
-        body.insert("code".to_string(), json!(backoff.code));
-        body.insert("message".to_string(), json!(backoff.message.as_str()));
-        body.insert("retry_after_ms".to_string(), json!(backoff.retry_after_ms));
-        if let Some(retry_at) = backoff.retry_at.as_ref() {
-            body.insert("retry_at".to_string(), json!(retry_at.to_rfc3339()));
-        }
-        body.insert("limit_key".to_string(), json!(backoff.limit_key.as_str()));
-        body.insert("scope".to_string(), json!(backoff.scope.as_str()));
-        let payload = serde_json::Value::Object({
-            let mut root = serde_json::Map::new();
-            root.insert("error".to_string(), serde_json::Value::Object(body));
-            root
-        });
-        match serde_json::to_string(&payload) {
-            Ok(line) => eprintln!("{line}"),
-            Err(_) => eprintln!("{}", backoff.message),
         }
         std::process::exit(1);
     }
 
     eprintln!("{err}");
     std::process::exit(1);
-}
-
-fn exit_code_for_app_error(app: &crate::error::AppError) -> i32 {
-    match app.code {
-        ERR_MISSING_INDEX => 2,
-        ERR_STALE_INDEX => 3,
-        _ => 1,
-    }
 }
 
 fn print_full_help() -> Result<()> {
@@ -1753,21 +1213,10 @@ fn print_full_help() -> Result<()> {
     for name in [
         "serve",
         "self-check",
-        "index-status",
         "index",
         "ingest",
         "query",
-<<<<<<< HEAD
-<<<<<<< HEAD
-        "stats",
-=======
-        "web-search",
->>>>>>> mcoda/task/bck-05-us-07-t16
-=======
-        "dag",
->>>>>>> mcoda/task/bck-05-us-07-t26
         "repo",
-        "dag",
         "memory-store",
         "memory-recall",
     ] {
@@ -1788,12 +1237,7 @@ fn print_full_help() -> Result<()> {
     println!("  - docdex_search: search repo docs; args: query (required), limit (<= max_results), project_root (optional)");
     println!("  - docdex_index: reindex all or ingest provided paths; args: paths[], project_root (optional)");
     println!("  - docdex_files: list indexed docs with pagination; args: limit (<=1000), offset (<=50000), project_root (optional)");
-<<<<<<< HEAD
     println!("  - docdex_stats: index metadata; args: project_root (optional)");
-    println!("  - docdex_explainability_record: persist explainability record; args: record (required), project_root (optional)");
-=======
-    println!("  - docdex_stats: index metadata + symbols state + run summaries; args: project_root (optional), runs_limit (<=20)");
->>>>>>> mcoda/task/bck-05-us-10-t06
     println!("  Notes: set DOCDEX_MCP_MAX_RESULTS to clamp docdex_search; run `docdexd mcp --help` for full MCP flags.");
     Ok(())
 }

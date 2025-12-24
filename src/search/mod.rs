@@ -1,133 +1,20 @@
-use crate::dag;
 use crate::index::{
-<<<<<<< HEAD
-<<<<<<< HEAD
-    DocSnapshot, Hit, Indexer, RunSummaryResponse, SearchError, SearchQueryMeta, SnippetOrigin,
-=======
-    DocSnapshot, Hit, IndexSnapshot, Indexer, SearchError, SearchQueryMeta, SnippetOrigin,
->>>>>>> mcoda/task/bck-05-us-06-t11
-    SnippetResult,
+    DocSnapshot, Hit, Indexer, SearchError, SearchQueryMeta, SnippetOrigin, SnippetResult,
 };
 use crate::error::{
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-    AppError, RateLimited, RetryHint, StartupError, ERR_EMBEDDING_FAILED,
-    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR,
-    ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-=======
     AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-    ERR_RATE_LIMITED, ERR_TIER2_UNAVAILABLE,
->>>>>>> mcoda/task/bck-05-us-09-t21
-=======
->>>>>>> mcoda/task/bck-05-us-09-t07
-=======
-    ERR_MISSING_INDEX, ERR_RATE_LIMITED, ERR_STALE_INDEX,
->>>>>>> mcoda/task/bck-05-us-08-t33
-=======
-    ERR_MISSING_INDEX, ERR_RATE_LIMITED, ERR_STALE_INDEX,
->>>>>>> mcoda/task/bck-05-us-08-t09
-=======
-    ERR_MISSING_INDEX, ERR_RATE_LIMITED, ERR_STALE_INDEX,
->>>>>>> mcoda/task/bck-05-us-08-t11
-=======
-    AppError, RateLimited, StartupError, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
-    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
-    ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_RATE_LIMITED,
-    ERR_STALE_INDEX,
->>>>>>> mcoda/task/bck-05-us-08-t10
-=======
-    DocSnapshot, Hit, IndexConfig, Indexer, SearchError, SearchQueryMeta, SnippetOrigin,
-    SnippetResult,
-};
-use crate::error::{
-    AppError, RateLimited, StartupError, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
-    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR,
-    ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_MISSING_INDEX, ERR_RATE_LIMITED,
-    ERR_STALE_INDEX,
->>>>>>> mcoda/task/bck-05-us-08-t03
-=======
-    ERR_MISSING_INDEX, ERR_RATE_LIMITED, ERR_STALE_INDEX,
->>>>>>> mcoda/task/bck-05-us-08-t01
-=======
-    AppError, RateLimited, StartupError, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
-    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
-    ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY, ERR_RATE_LIMITED,
->>>>>>> mcoda/task/bck-05-us-07-t16
-=======
-    ERR_EMBEDDING_TIMEOUT, ERR_INDEX_SCHEMA_MISMATCH, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
-    ERR_MEMORY_DISABLED, ERR_RATE_LIMITED,
->>>>>>> mcoda/task/bck-05-us-07-t09
-=======
-    AppError, BackoffRequired, RateLimited, StartupError, ERR_BACKOFF_REQUIRED,
-    ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR,
-    ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_RATE_LIMITED,
->>>>>>> mcoda/task/bck-05-us-07-t15
-=======
-    ERR_EMBEDDING_TIMEOUT, ERR_INDEX_MIGRATION_REQUIRED, ERR_INDEX_SCHEMA_UNSUPPORTED,
-    ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_MISSING_INDEX,
-    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH,
->>>>>>> mcoda/task/bck-05-us-07-t11
-=======
-    ERR_RATE_LIMITED, ERR_REPO_CAPACITY,
->>>>>>> mcoda/task/bck-05-us-07-t04
-=======
-    ERR_RATE_LIMITED, ERR_REPO_CAPACITY_EXCEEDED, UserWarning,
->>>>>>> mcoda/task/bck-05-us-07-t05
-=======
-    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_INVALID_QUERY,
-    ERR_MEMORY_DISABLED, ERR_MISSING_QUERY, ERR_RATE_LIMITED,
->>>>>>> mcoda/task/bck-05-us-07-t33
-=======
-    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY,
     ERR_RATE_LIMITED,
->>>>>>> mcoda/task/bck-05-us-06-t20
 };
 use crate::libs::LibsIndexer;
-use crate::max_size::{
-    clamp_option, DEFAULT_MEMORY_RECALL, DEFAULT_SEARCH_LIMIT, DEFAULT_SNIPPET_WINDOW,
-    MAX_MEMORY_RECALL, MAX_RATE_LIMIT_MESSAGE_BYTES, MAX_SNIPPET_WINDOW, MIN_SNIPPET_WINDOW,
-    MaxSizePolicy, truncate_utf8_bytes,
-};
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-use crate::ratelimit::{RateLimitConfig, RateLimiter};
-=======
-=======
-use crate::repo_manager::RepoManagerConfig;
->>>>>>> mcoda/task/bck-05-us-07-t02
-=======
-use crate::policy::{self, Dependency};
->>>>>>> mcoda/task/bck-05-us-07-t30
 use crate::ratelimit::RateLimiter;
-use crate::web::ddg::DdgDiscovery;
->>>>>>> mcoda/task/bck-05-us-07-t16
 use anyhow::Result;
-use crate::web_research;
 use axum::body::HttpBody;
 use axum::{
     extract::{ConnectInfo, Path, Query, RawQuery, State},
-<<<<<<< HEAD
-    http::{header::CONTENT_LENGTH, header::CONTENT_TYPE, HeaderMap, HeaderValue, StatusCode},
-=======
-    http::{header::{CONTENT_LENGTH, CONTENT_TYPE}, HeaderMap, HeaderValue, StatusCode},
->>>>>>> mcoda/task/bck-05-us-07-t27
+    http::{header::CONTENT_LENGTH, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Json, Response},
     routing::{get, post},
@@ -137,50 +24,26 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 use tracing::warn;
 use uuid::Uuid;
-use walkdir::WalkDir;
 
-<<<<<<< HEAD
-=======
 const DEFAULT_SNIPPET_WINDOW: usize = 40;
 const MIN_SNIPPET_WINDOW: usize = 10;
 const MAX_SNIPPET_WINDOW: usize = 400;
 const MAX_RATE_LIMIT_MESSAGE_BYTES: usize = 256;
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-const HTTP_RATE_LIMIT_PAYLOAD_MAX_BYTES: usize = 1024;
-=======
-const MAX_RATE_LIMIT_FIELD_BYTES: usize = 64;
->>>>>>> mcoda/task/bck-05-us-09-t30
-=======
-const MAX_RATE_LIMIT_LABEL_BYTES: usize = 64;
-const MAX_RATE_LIMIT_PAYLOAD_BYTES: usize = 1024;
->>>>>>> mcoda/task/bck-05-us-09-t37
-=======
-const INDEX_STATE_CACHE_TTL_MS: u128 = 2000;
-const INDEX_STALE_GRACE_MS: u128 = 0;
->>>>>>> mcoda/task/bck-05-us-08-t03
 
->>>>>>> mcoda/task/bck-05-us-09-t40
 // Rate limiting is shared with MCP and other surfaces via crate::ratelimit.
 
 #[derive(Clone)]
 pub struct SecurityConfig {
     pub auth_token: Option<String>,
     pub allow_nets: Vec<ipnet::IpNet>,
-    pub max_size: MaxSizePolicy,
+    pub max_limit: usize,
     pub max_query_bytes: usize,
     pub max_request_bytes: usize,
     pub rate_limit: Option<RateLimiter<IpAddr>>,
-    pub rate_limit_per_min: Option<u32>,
-    pub rate_limit_burst: Option<u32>,
-    pub rate_limit_source: &'static str,
-    pub rate_limit_burst_source: &'static str,
     pub strip_snippet_html: bool,
     pub disable_snippet_text: bool,
 }
@@ -231,68 +94,35 @@ impl SecurityConfig {
             ])
             .into());
         }
-<<<<<<< HEAD
-        let rate_limit = RateLimitConfig::for_http(
-            rate_limit_per_min,
-            rate_limit_burst,
-            secure_mode,
-        )?
-        .limiter();
-=======
         let effective_per_min = if secure_mode && rate_limit_per_min == 0 {
             60
         } else {
             rate_limit_per_min
         };
-        let effective_burst = if effective_per_min == 0 {
-            0
-        } else if rate_limit_burst == 0 {
+        let effective_burst = if secure_mode && rate_limit_burst == 0 {
             effective_per_min
         } else {
             rate_limit_burst
         };
-        let rate_limit_source = if effective_per_min == 0 {
-            "disabled"
-        } else if secure_mode && rate_limit_per_min == 0 {
-            "secure_mode_default"
-        } else {
-            "explicit"
-        };
-        let rate_limit_burst_source = if effective_per_min == 0 {
-            "disabled"
-        } else if rate_limit_burst == 0 {
-            "default"
-        } else {
-            "explicit"
-        };
         let rate_limit = if effective_per_min > 0 {
             Some(RateLimiter::new(
                 effective_per_min,
-                effective_burst,
+                if effective_burst == 0 {
+                    effective_per_min
+                } else {
+                    effective_burst
+                },
             ))
         } else {
             None
         };
->>>>>>> mcoda/task/bck-05-us-09-t13
         Ok(Self {
             auth_token,
             allow_nets,
-            max_size: MaxSizePolicy::new(max_limit),
+            max_limit: max_limit.max(1),
             max_query_bytes,
             max_request_bytes,
             rate_limit,
-            rate_limit_per_min: if effective_per_min > 0 {
-                Some(effective_per_min)
-            } else {
-                None
-            },
-            rate_limit_burst: if effective_per_min > 0 {
-                Some(effective_burst)
-            } else {
-                None
-            },
-            rate_limit_source,
-            rate_limit_burst_source,
             strip_snippet_html,
             disable_snippet_text,
         })
@@ -323,17 +153,6 @@ impl SecurityConfig {
     }
 }
 
-#[derive(Default)]
-struct IndexStateCache {
-    last_checked_epoch_ms: u128,
-    repo_last_modified_epoch_ms: Option<u128>,
-}
-
-struct IndexStateSnapshot {
-    index_last_updated_epoch_ms: Option<u128>,
-    repo_last_modified_epoch_ms: Option<u128>,
-}
-
 #[derive(Clone)]
 pub struct AppState {
     pub indexer: Arc<Indexer>,
@@ -342,17 +161,7 @@ pub struct AppState {
     pub access_log: bool,
     pub audit: Option<crate::audit::AuditLogger>,
     pub metrics: Arc<crate::metrics::Metrics>,
-    pub web_discovery: DdgDiscovery,
     pub memory: Option<MemoryState>,
-<<<<<<< HEAD
-<<<<<<< HEAD
-    pub index_state: Arc<Mutex<IndexStateCache>>,
-=======
-    pub repo_manager_config: RepoManagerConfig,
->>>>>>> mcoda/task/bck-05-us-07-t02
-=======
-    pub web_gate: policy::WebGateDecision,
->>>>>>> mcoda/task/bck-05-us-07-t30
 }
 
 #[derive(Clone)]
@@ -369,24 +178,9 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/search", get(search_handler))
         .route("/snippet/*doc_id", get(snippet_handler))
-        .route("/v1/index/status", get(index_status_handler))
         .route("/v1/graph/impact", get(impact_graph_handler))
-<<<<<<< HEAD
-<<<<<<< HEAD
-        .route("/v1/stats", get(stats_handler))
-=======
-        .route("/v1/dag/session/:session_id", get(dag_export_handler))
->>>>>>> mcoda/task/bck-05-us-07-t25
-=======
-        .route("/v1/dag/export", get(dag_export_handler))
->>>>>>> mcoda/task/bck-05-us-07-t27
         .route("/v1/memory/store", post(memory_store_handler))
         .route("/v1/memory/recall", post(memory_recall_handler))
-<<<<<<< HEAD
-        .route("/v1/web/search", get(web_search_handler))
-=======
-        .route("/v1/web/research", post(web_research_handler))
->>>>>>> mcoda/task/bck-05-us-07-t18
         .route("/ai-help", get(ai_help_handler))
         .route("/metrics", get(metrics_handler))
         .route_layer(middleware::from_fn_with_state(
@@ -404,33 +198,6 @@ pub fn router(state: AppState) -> Router {
 
 async fn healthz() -> &'static str {
     "ok"
-}
-
-async fn index_status_handler(State(state): State<AppState>) -> impl IntoResponse {
-    match crate::index::index_compatibility_report(state.indexer.repo_root(), state.indexer.state_dir()) {
-        Ok(report) => Json(report).into_response(),
-        Err(err) => {
-            if let Some(app) = err.downcast_ref::<AppError>() {
-                return json_error_with_details(
-                    status_for_app_error(app.code),
-                    app.code,
-                    app.message.clone(),
-                    app.details.clone(),
-                );
-            }
-            state.metrics.inc_error();
-            warn!(
-                target: "docdexd",
-                error = ?err,
-                "index status handler failed"
-            );
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                ERR_INTERNAL_ERROR,
-                "index status failed",
-            )
-        }
-    }
 }
 
 #[derive(Serialize)]
@@ -597,13 +364,9 @@ async fn impact_graph_handler(
         }
     };
 
-    if let Err(response) = ensure_index_fresh(&state) {
-        return response;
-    }
-
     let repo_id = crate::symbols::repo_id_for_root(state.indexer.repo_root())
         .unwrap_or_else(|_| String::new());
-    let store = crate::impact::ImpactGraphStore::new(state.indexer.repo_state_dir());
+    let store = crate::impact::ImpactGraphStore::new(state.indexer.state_dir());
     let all_edges = match store.read_edges() {
         Ok(edges) => edges,
         Err(err) => {
@@ -626,183 +389,6 @@ async fn impact_graph_handler(
     let traversal = crate::impact::traverse_impact(&source, &all_edges, &controls);
     let response = crate::impact::build_impact_response(&repo_id, &source, traversal, &controls);
     Json(response).into_response()
-}
-
-#[derive(Deserialize)]
-struct DagExportQuery {
-<<<<<<< HEAD
-    format: Option<String>,
-=======
-    #[serde(rename = "session_id", alias = "sessionId")]
-    session_id: Option<String>,
-    #[serde(default)]
-    format: Option<String>,
-    #[serde(rename = "max_nodes", alias = "maxNodes")]
-    max_nodes: Option<usize>,
-}
-
-fn text_response(body: String, content_type: &'static str) -> Response {
-    (
-        StatusCode::OK,
-        [(CONTENT_TYPE, content_type)],
-        body,
-    )
-        .into_response()
->>>>>>> mcoda/task/bck-05-us-07-t27
-}
-
-async fn dag_export_handler(
-    State(state): State<AppState>,
-<<<<<<< HEAD
-    Path(session_id): Path<String>,
-    Query(query): Query<DagExportQuery>,
-    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
-) -> impl IntoResponse {
-    let session_trimmed = session_id.trim();
-    if session_trimmed.is_empty() {
-        return json_error(
-            StatusCode::BAD_REQUEST,
-            ERR_INVALID_ARGUMENT,
-            "session_id must not be empty",
-        );
-    }
-    let session_uuid = match Uuid::parse_str(session_trimmed) {
-        Ok(value) => value,
-        Err(_) => {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                ERR_INVALID_ARGUMENT,
-                "session_id must be a UUID",
-            )
-        }
-    };
-    let format_raw = query.format.as_deref().unwrap_or("text");
-    let format = match dag::DagFormat::parse(format_raw) {
-        Some(format) => format,
-        None => {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                ERR_INVALID_ARGUMENT,
-                "format must be text or dot",
-            )
-        }
-    };
-
-    let state_dir = state.indexer.state_dir().to_path_buf();
-    let read = tokio::task::spawn_blocking(move || {
-        let store = dag::DagStore::new(&state_dir);
-        store.read_session(&session_uuid)
-    })
-    .await;
-
-    match read {
-        Ok(Ok(session)) => {
-            let body = match format {
-                dag::DagFormat::Text => dag::export_text(&session),
-                dag::DagFormat::Dot => dag::export_dot(&session),
-            };
-            let mut headers = HeaderMap::new();
-            let _ = headers.insert(
-                CONTENT_TYPE,
-                HeaderValue::from_static(format.content_type()),
-            );
-            (StatusCode::OK, headers, body).into_response()
-        }
-        Ok(Err(err)) => {
-            if let Some(app) = err.downcast_ref::<AppError>() {
-                if app.code != ERR_INVALID_ARGUMENT {
-                    state.metrics.inc_error();
-                    warn!(
-                        target: "docdexd",
-                        request_id = %request_id.0,
-                        error_code = %app.code,
-                        "dag export failed"
-                    );
-                }
-                return json_error(status_for_app_error(app.code), app.code, app.message.clone());
-            }
-            state.metrics.inc_error();
-            warn!(
-                target: "docdexd",
-                request_id = %request_id.0,
-                error = ?err,
-                "dag export failed"
-            );
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                ERR_INTERNAL_ERROR,
-                "dag export failed",
-            )
-        }
-        Err(err) => {
-            state.metrics.inc_error();
-            warn!(
-                target: "docdexd",
-                request_id = %request_id.0,
-                error = ?err,
-                "dag export task join failed"
-            );
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                ERR_INTERNAL_ERROR,
-                "dag export failed",
-            )
-=======
-    Query(params): Query<DagExportQuery>,
-) -> impl IntoResponse {
-    let session_id = match params.session_id {
-        Some(value) if !value.trim().is_empty() => value.trim().to_string(),
-        _ => {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                ERR_INVALID_ARGUMENT,
-                "session_id must not be empty",
-            );
-        }
-    };
-    let format = match params.format {
-        None => crate::dag::DagExportFormat::Json,
-        Some(raw) => match crate::dag::DagExportFormat::parse(&raw) {
-            Some(value) => value,
-            None => {
-                return json_error(
-                    StatusCode::BAD_REQUEST,
-                    ERR_INVALID_ARGUMENT,
-                    "format must be one of json, text, dot",
-                );
-            }
-        },
-    };
-
-    let options = crate::dag::DagExportOptions::from_optional(params.max_nodes);
-    let store = crate::dag::DagStore::new(state.indexer.state_dir());
-    let export = match store.export_session(&session_id, options) {
-        Ok(value) => value,
-        Err(err) => {
-            state.metrics.inc_error();
-            warn!(target: "docdexd", error = ?err, "dag export failed");
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                ERR_INTERNAL_ERROR,
-                "dag export unavailable",
-            );
-        }
-    };
-
-    let repo_id = crate::symbols::repo_id_for_root(state.indexer.repo_root())
-        .unwrap_or_else(|_| String::new());
-    let response = crate::dag::build_export_response(&repo_id, &session_id, export);
-
-    match format {
-        crate::dag::DagExportFormat::Json => Json(response).into_response(),
-        crate::dag::DagExportFormat::Text => {
-            text_response(crate::dag::render_text(&response), "text/plain; charset=utf-8")
-        }
-        crate::dag::DagExportFormat::Dot => {
-            text_response(crate::dag::render_dot(&response), "text/vnd.graphviz; charset=utf-8")
->>>>>>> mcoda/task/bck-05-us-07-t27
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -842,281 +428,19 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_EMBEDDING_TIMEOUT => StatusCode::GATEWAY_TIMEOUT,
         ERR_EMBEDDING_MODEL_NOT_FOUND => StatusCode::BAD_REQUEST,
         ERR_EMBEDDING_FAILED => StatusCode::BAD_GATEWAY,
-        ERR_BACKOFF_REQUIRED => StatusCode::TOO_MANY_REQUESTS,
         ERR_INVALID_ARGUMENT => StatusCode::BAD_REQUEST,
-<<<<<<< HEAD
-<<<<<<< HEAD
-        ERR_INDEX_SCHEMA_MISMATCH => StatusCode::CONFLICT,
-=======
-        ERR_MISSING_DEPENDENCY => StatusCode::FAILED_DEPENDENCY,
->>>>>>> mcoda/task/bck-05-us-07-t25
         ERR_MEMORY_DISABLED => StatusCode::CONFLICT,
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-        ERR_TIER2_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
-=======
-        ERR_MISSING_INDEX => StatusCode::CONFLICT,
-        ERR_STALE_INDEX => StatusCode::CONFLICT,
->>>>>>> mcoda/task/bck-05-us-08-t09
-=======
-        ERR_MISSING_INDEX => StatusCode::CONFLICT,
-        ERR_STALE_INDEX => StatusCode::CONFLICT,
->>>>>>> mcoda/task/bck-05-us-08-t11
-=======
-        ERR_MISSING_INDEX => StatusCode::CONFLICT,
-        ERR_STALE_INDEX => StatusCode::CONFLICT,
-        ERR_BACKOFF_REQUIRED => StatusCode::CONFLICT,
-        ERR_MISSING_DEPENDENCY => StatusCode::CONFLICT,
->>>>>>> mcoda/task/bck-05-us-08-t10
-=======
-        ERR_MISSING_INDEX | ERR_STALE_INDEX => StatusCode::CONFLICT,
-        ERR_BACKOFF_REQUIRED => StatusCode::SERVICE_UNAVAILABLE,
->>>>>>> mcoda/task/bck-05-us-08-t03
-=======
-        ERR_MISSING_INDEX => StatusCode::CONFLICT,
-        ERR_STALE_INDEX => StatusCode::CONFLICT,
->>>>>>> mcoda/task/bck-05-us-08-t01
-=======
-        ERR_MISSING_DEPENDENCY => StatusCode::CONFLICT,
-        ERR_BACKOFF_REQUIRED => StatusCode::TOO_MANY_REQUESTS,
->>>>>>> mcoda/task/bck-05-us-07-t16
-=======
-        ERR_MISSING_REPO_PATH => StatusCode::NOT_FOUND,
-        ERR_MISSING_INDEX => StatusCode::NOT_FOUND,
-        ERR_REPO_STATE_MISMATCH => StatusCode::CONFLICT,
-        ERR_INDEX_MIGRATION_REQUIRED => StatusCode::CONFLICT,
-        ERR_INDEX_SCHEMA_UNSUPPORTED => StatusCode::UPGRADE_REQUIRED,
->>>>>>> mcoda/task/bck-05-us-07-t11
-=======
-        ERR_REPO_CAPACITY => StatusCode::TOO_MANY_REQUESTS,
->>>>>>> mcoda/task/bck-05-us-07-t04
-=======
-        ERR_REPO_CAPACITY_EXCEEDED => StatusCode::TOO_MANY_REQUESTS,
->>>>>>> mcoda/task/bck-05-us-07-t05
-=======
-        ERR_MISSING_DEPENDENCY => StatusCode::CONFLICT,
->>>>>>> mcoda/task/bck-05-us-06-t20
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
-fn error_response(status: StatusCode, detail: ErrorDetail) -> Response {
-    (status, Json(ErrorBody { error: detail })).into_response()
-}
-
 fn json_error(status: StatusCode, code: &'static str, message: impl Into<String>) -> Response {
-<<<<<<< HEAD
-    error_response(status, ErrorDetail::new(code, message))
-}
-
-fn app_error_response(state: &AppState, app: &AppError) -> Response {
-    let mut detail = ErrorDetail::new(app.code, app.message.clone());
-    if let Some(details) = app.details.clone() {
-        detail = detail.with_details(details);
-    } else if matches!(app.code, ERR_MISSING_INDEX | ERR_STALE_INDEX) {
-        let index_last = state
-            .indexer
-            .stats()
-            .ok()
-            .and_then(|stats| stats.last_updated_epoch_ms);
-        let repo_last = cached_repo_last_modified_epoch_ms(state);
-        detail = detail.with_details(index_state_details(state, index_last, repo_last));
-    }
-    if matches!(app.code, ERR_MISSING_INDEX | ERR_STALE_INDEX) {
-        detail = detail.with_remediation(index_state_remediation(app.code, state));
-    }
-    error_response(status_for_app_error(app.code), detail)
-}
-
-fn index_state_remediation(code: &'static str, state: &AppState) -> Vec<String> {
-    let repo = state.indexer.repo_root().display().to_string();
-    match code {
-        ERR_MISSING_INDEX => vec![format!(
-            "Run: `docdexd index --repo \"{repo}\"` to build the index."
-        )],
-        ERR_STALE_INDEX => vec![
-            format!("Run: `docdexd index --repo \"{repo}\"` to rebuild the index."),
-            "If you expect the watcher to catch up, wait briefly and retry.".to_string(),
-        ],
-        _ => Vec::new(),
-    }
-}
-
-fn index_state_details(
-    state: &AppState,
-    index_last_updated_epoch_ms: Option<u128>,
-    repo_last_modified_epoch_ms: Option<u128>,
-) -> serde_json::Value {
-    json!({
-        "repo_root": state.indexer.repo_root().display().to_string(),
-        "state_dir": state.indexer.state_dir().display().to_string(),
-        "index_last_updated_epoch_ms": index_last_updated_epoch_ms,
-        "repo_last_modified_epoch_ms": repo_last_modified_epoch_ms,
-        "stale_grace_ms": INDEX_STALE_GRACE_MS,
-    })
-}
-
-fn index_state_error_response(
-    state: &AppState,
-    code: &'static str,
-    message: impl Into<String>,
-    index_last_updated_epoch_ms: Option<u128>,
-    repo_last_modified_epoch_ms: Option<u128>,
-) -> Response {
-    error_response(
-        StatusCode::CONFLICT,
-        ErrorDetail::new(code, message)
-            .with_details(index_state_details(
-                state,
-                index_last_updated_epoch_ms,
-                repo_last_modified_epoch_ms,
-            ))
-            .with_remediation(index_state_remediation(code, state)),
-    )
-}
-
-fn repo_last_modified_epoch_ms(repo_root: &Path, config: &IndexConfig) -> Option<u128> {
-    let mut latest: Option<u128> = None;
-    for entry in WalkDir::new(repo_root).into_iter().filter_map(|entry| entry.ok()) {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let path = entry.path();
-        if !crate::index::should_index(path, repo_root, config) {
-            continue;
-        }
-        let Ok(meta) = entry.metadata() else {
-            continue;
-        };
-        let Ok(modified) = meta.modified() else {
-            continue;
-        };
-        let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) else {
-            continue;
-        };
-        let millis = dur.as_millis();
-        if latest.map(|current| millis > current).unwrap_or(true) {
-            latest = Some(millis);
-        }
-    }
-    latest
-}
-
-fn cached_repo_last_modified_epoch_ms(state: &AppState) -> Option<u128> {
-    let now = now_epoch_ms().unwrap_or(0);
-    let mut cache = state.index_state.lock().expect("index state cache poisoned");
-    if now > 0 && now.saturating_sub(cache.last_checked_epoch_ms) < INDEX_STATE_CACHE_TTL_MS {
-        return cache.repo_last_modified_epoch_ms;
-    }
-    let latest = repo_last_modified_epoch_ms(state.indexer.repo_root(), state.indexer.config());
-    cache.last_checked_epoch_ms = now;
-    cache.repo_last_modified_epoch_ms = latest;
-    latest
-}
-
-fn ensure_index_fresh(state: &AppState) -> Result<IndexStateSnapshot, Response> {
-    let state_dir = state.indexer.state_dir();
-    if !state_dir.exists() {
-        state.metrics.inc_error();
-        return Err(index_state_error_response(
-            state,
-            ERR_MISSING_INDEX,
-            "index not found",
-            None,
-            cached_repo_last_modified_epoch_ms(state),
-        ));
-    }
-    let stats = match state.indexer.stats() {
-        Ok(stats) => stats,
-        Err(err) => {
-            state.metrics.inc_error();
-            warn!(target: "docdexd", error = ?err, "index stats failed");
-            return Err(error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                ErrorDetail::new(ERR_INTERNAL_ERROR, "index metadata unavailable"),
-            ));
-        }
-    };
-    let index_last_updated_epoch_ms = stats.last_updated_epoch_ms;
-    if index_last_updated_epoch_ms.is_none() {
-        state.metrics.inc_error();
-        return Err(index_state_error_response(
-            state,
-            ERR_MISSING_INDEX,
-            "index not found",
-            index_last_updated_epoch_ms,
-            cached_repo_last_modified_epoch_ms(state),
-        ));
-    }
-    let repo_last_modified_epoch_ms = cached_repo_last_modified_epoch_ms(state);
-    if let (Some(repo_last), Some(index_last)) =
-        (repo_last_modified_epoch_ms, index_last_updated_epoch_ms)
-    {
-        if repo_last > index_last.saturating_add(INDEX_STALE_GRACE_MS) {
-            state.metrics.inc_error();
-            return Err(index_state_error_response(
-                state,
-                ERR_STALE_INDEX,
-                "index is stale",
-                index_last_updated_epoch_ms,
-                repo_last_modified_epoch_ms,
-            ));
-        }
-    }
-    Ok(IndexStateSnapshot {
-        index_last_updated_epoch_ms,
-        repo_last_modified_epoch_ms,
-    })
-}
-
-fn json_error_detail(status: StatusCode, detail: ErrorDetail) -> Response {
-    (status, Json(ErrorBody { error: detail })).into_response()
-=======
-    json_error_with_details(status, code, message, None)
->>>>>>> mcoda/task/bck-05-us-07-t05
-}
-
-fn json_error_with_details(
-    status: StatusCode,
-    code: &'static str,
-    message: impl Into<String>,
-    details: Option<serde_json::Value>,
-) -> Response {
-<<<<<<< HEAD
     (
         status,
         Json(ErrorBody {
-            error: ErrorDetail::new(code, message).with_details(details),
+            error: ErrorDetail::new(code, message),
         }),
-    )
-        .into_response()
-}
-
-fn json_error_with_details(
-    status: StatusCode,
-    code: &'static str,
-    message: impl Into<String>,
-    details: Option<serde_json::Value>,
-) -> Response {
-    (
-        status,
-        Json(ErrorBody {
-            error: ErrorDetail::new(code, message).with_details(details),
-        }),
-=======
-    let error = ErrorDetail::new(code, message).with_details(details);
-    (
-        status,
-        Json(ErrorBody { error }),
->>>>>>> mcoda/task/bck-05-us-07-t05
     )
         .into_response()
 }
@@ -1126,25 +450,12 @@ async fn memory_store_handler(
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
     Json(req): Json<MemoryStoreRequest>,
 ) -> impl IntoResponse {
-<<<<<<< HEAD
-    let memory = match policy::require_option(Dependency::Memory, state.memory.clone()) {
-        Ok(memory) => memory,
-        Err(err) => {
-            return json_error(status_for_app_error(err.code), err.code, err.message);
-        }
-=======
     let Some(memory) = state.memory.clone() else {
         return json_error(
             StatusCode::CONFLICT,
-<<<<<<< HEAD
             ERR_MEMORY_DISABLED,
-            "memory is disabled; enable with --enable-memory=true or DOCDEX_ENABLE_MEMORY=1",
-=======
-            ERR_MISSING_DEPENDENCY,
             "memory is disabled; start the daemon with --enable-memory=true",
->>>>>>> mcoda/task/bck-05-us-06-t20
         );
->>>>>>> mcoda/task/bck-05-us-06-t47
     };
     let text = req.text.trim();
     if text.is_empty() {
@@ -1158,21 +469,10 @@ async fn memory_store_handler(
     {
         Ok(value) => value,
         Err(err) => {
-            let (code, status, message, details) = if let Some(app) = err.downcast_ref::<AppError>()
-            {
-                (
-                    app.code,
-                    status_for_app_error(app.code),
-                    app.message.clone(),
-                    app.details.clone(),
-                )
+            let (code, status, message) = if let Some(app) = err.downcast_ref::<AppError>() {
+                (app.code, status_for_app_error(app.code), app.message.clone())
             } else {
-                (
-                    ERR_INTERNAL_ERROR,
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "embedding failed".to_string(),
-                    None,
-                )
+                (ERR_INTERNAL_ERROR, StatusCode::INTERNAL_SERVER_ERROR, "embedding failed".to_string())
             };
             state.metrics.inc_error();
             warn!(
@@ -1181,7 +481,7 @@ async fn memory_store_handler(
                 error_code = %code,
                 "memory_store embedding failed"
             );
-            return json_error_with_details(status, code, message, details);
+            return json_error(status, code, message);
         }
     };
 
@@ -1241,25 +541,12 @@ async fn memory_recall_handler(
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
     Json(req): Json<MemoryRecallRequest>,
 ) -> impl IntoResponse {
-<<<<<<< HEAD
-    let memory = match policy::require_option(Dependency::Memory, state.memory.clone()) {
-        Ok(memory) => memory,
-        Err(err) => {
-            return json_error(status_for_app_error(err.code), err.code, err.message);
-        }
-=======
     let Some(memory) = state.memory.clone() else {
         return json_error(
             StatusCode::CONFLICT,
-<<<<<<< HEAD
             ERR_MEMORY_DISABLED,
-            "memory is disabled; enable with --enable-memory=true or DOCDEX_ENABLE_MEMORY=1",
-=======
-            ERR_MISSING_DEPENDENCY,
             "memory is disabled; start the daemon with --enable-memory=true",
->>>>>>> mcoda/task/bck-05-us-06-t20
         );
->>>>>>> mcoda/task/bck-05-us-06-t47
     };
     let query = req.query.trim();
     if query.is_empty() {
@@ -1269,7 +556,7 @@ async fn memory_recall_handler(
             "query must not be empty",
         );
     }
-    let top_k = clamp_option(req.top_k, DEFAULT_MEMORY_RECALL, 1, MAX_MEMORY_RECALL);
+    let top_k = req.top_k.unwrap_or(5).max(1).min(50);
 
     let query_embedding = match memory
         .embedder
@@ -1278,21 +565,10 @@ async fn memory_recall_handler(
     {
         Ok(value) => value,
         Err(err) => {
-            let (code, status, message, details) = if let Some(app) = err.downcast_ref::<AppError>()
-            {
-                (
-                    app.code,
-                    status_for_app_error(app.code),
-                    app.message.clone(),
-                    app.details.clone(),
-                )
+            let (code, status, message) = if let Some(app) = err.downcast_ref::<AppError>() {
+                (app.code, status_for_app_error(app.code), app.message.clone())
             } else {
-                (
-                    ERR_INTERNAL_ERROR,
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "embedding failed".to_string(),
-                    None,
-                )
+                (ERR_INTERNAL_ERROR, StatusCode::INTERNAL_SERVER_ERROR, "embedding failed".to_string())
             };
             state.metrics.inc_error();
             warn!(
@@ -1301,7 +577,7 @@ async fn memory_recall_handler(
                 error_code = %code,
                 "memory_recall embedding failed"
             );
-            return json_error_with_details(status, code, message, details);
+            return json_error(status, code, message);
         }
     };
 
@@ -1354,49 +630,6 @@ async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     state.metrics.render_prometheus()
 }
 
-async fn stats_handler(
-    State(state): State<AppState>,
-    Query(params): Query<StatsParams>,
-) -> impl IntoResponse {
-    let stats = match state.indexer.stats() {
-        Ok(stats) => stats,
-        Err(err) => {
-            state.metrics.inc_error();
-            warn!(target: "docdexd", error = ?err, "stats read failed");
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                ERR_INTERNAL_ERROR,
-                "stats unavailable",
-            );
-        }
-    };
-    let run_summaries = match state.indexer.run_summaries(params.runs_limit) {
-        Ok(summaries) => summaries,
-        Err(err) => {
-            state.metrics.inc_error();
-            warn!(target: "docdexd", error = ?err, "run summaries read failed");
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                ERR_INTERNAL_ERROR,
-                "stats unavailable",
-            );
-        }
-    };
-    Json(StatsResponse {
-        num_docs: stats.num_docs,
-        state_dir: stats.state_dir.display().to_string(),
-        index_size_bytes: stats.index_size_bytes,
-        segments: stats.segments,
-        avg_bytes_per_doc: stats.avg_bytes_per_doc,
-        generated_at_epoch_ms: stats.generated_at_epoch_ms,
-        last_updated_epoch_ms: stats.last_updated_epoch_ms,
-        symbols_enabled: state.indexer.config().symbols_enabled(),
-        symbols_store_ready: state.indexer.symbols_store_ready(),
-        run_summaries,
-        repo_root: state.indexer.repo_root().display().to_string(),
-    })
-}
-
 #[derive(Serialize)]
 struct AiHelpEndpoint {
     method: &'static str,
@@ -1438,32 +671,13 @@ struct AiHelpPayload {
     http_endpoints: Vec<AiHelpEndpoint>,
     cli_commands: Vec<AiHelpCli>,
     mcp_tools: Vec<AiHelpMcpTool>,
-    best_practices: Vec<String>,
+    best_practices: Vec<&'static str>,
     limits: AiHelpLimits,
     index_stats_fields: Vec<&'static str>,
 }
 
 fn rate_limit_hint(security: &SecurityConfig) -> Option<u32> {
-    security.rate_limit_per_min
-}
-
-fn rate_limit_best_practice(security: &SecurityConfig) -> String {
-    if let Some(per_min) = security.rate_limit_per_min {
-        let burst = security.rate_limit_burst.unwrap_or(per_min);
-        format!(
-            "Rate limits (HTTP): {per_min}/min burst {burst} (per_min source: {}, burst source: {}).",
-            security.rate_limit_source, security.rate_limit_burst_source
-        )
-    } else {
-        format!(
-            "Rate limits (HTTP): disabled (source: {}).",
-            security.rate_limit_source
-        )
-    }
-}
-
-fn retry_hint_best_practice() -> String {
-    "Backoff guidance: rate_limited errors include retry_after_ms (retry_at optional) and HTTP adds Retry-After; backoff_required errors include the same fields under error.details (CLI/MCP).".to_string()
+    security.rate_limit.as_ref().map(|lim| lim.per_minute())
 }
 
 async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
@@ -1506,34 +720,6 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 ],
             },
             AiHelpEndpoint {
-                method: "GET",
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-                path: "/v1/stats",
-                description: "Report index metadata, symbols enablement, and recent run summaries (max 20 runs; sample lists capped at 25; error summaries truncated to 240 chars).",
-                params: &["runs_limit=<int optional, max 20, clamped>"],
-=======
-                path: "/v1/index/status",
-                description: "Report index schema compatibility/migration status.",
-                params: &[],
->>>>>>> mcoda/task/bck-05-us-07-t11
-=======
-                path: "/v1/dag/session/:session_id",
-                description: "Export a session reasoning DAG (text or DOT).",
-                params: &["format=text|dot (optional)"],
->>>>>>> mcoda/task/bck-05-us-07-t25
-=======
-                path: "/v1/dag/export",
-                description: "Export a session DAG in json/text/dot format.",
-                params: &[
-                    "session_id=<session identifier>",
-                    "format=json|text|dot (optional; default json)",
-                    "max_nodes=<int optional>",
-                ],
->>>>>>> mcoda/task/bck-05-us-07-t27
-            },
-            AiHelpEndpoint {
                 method: "POST",
                 path: "/v1/memory/store",
                 description: "Store a memory item (requires --enable-memory=true).",
@@ -1559,11 +745,6 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 example: "docdexd index --repo /workspace",
             },
             AiHelpCli {
-                command: "docdexd index-status --repo <path>",
-                description: "Report index schema compatibility/migration status.",
-                example: "docdexd index-status --repo /workspace",
-            },
-            AiHelpCli {
                 command: "docdexd serve --repo <path> [--host 127.0.0.1] [--port 46137]",
                 description: "Serve HTTP API with watcher for incremental ingest.",
                 example: "docdexd serve --repo /workspace --host 127.0.0.1 --port 46137",
@@ -1572,17 +753,6 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 command: "docdexd query --repo <path> --query \"text\" [--limit 8]",
                 description: "Ad-hoc search via CLI (JSON to stdout).",
                 example: "docdexd query --repo /workspace --query \"payment flow\" --limit 5",
-            },
-            AiHelpCli {
-<<<<<<< HEAD
-                command: "docdexd stats --repo <path> [--runs-limit 5]",
-                description: "Report index metadata, symbols enablement, and recent run summaries (runs clamped to 20).",
-                example: "docdexd stats --repo /workspace --runs-limit 5",
-=======
-                command: "docdexd dag view --repo <path> <session_id> [--format json|text|dot]",
-                description: "Export a session DAG (JSON/text/DOT).",
-                example: "docdexd dag view --repo /workspace sess-123 --format json",
->>>>>>> mcoda/task/bck-05-us-07-t27
             },
             AiHelpCli {
                 command: "docdexd ingest --repo <path> --file <file>",
@@ -1600,11 +770,11 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 name: "docdex_search",
                 description: "Search docs; returns rel_path, summary, snippet, doc_id, token_estimate.",
                 args: &["query (string, required)", "limit (int, optional, clamped)", "project_root (string, optional)"],
-                returns: &["results[]", "repo_root", "state_dir", "limit", "limits"],
+                returns: &["results[]", "repo_root", "state_dir", "limit"],
             },
             AiHelpMcpTool {
                 name: "docdex_index",
-                description: "Rebuild index or ingest specific files for the repo (paths capped at 1000).",
+                description: "Rebuild index or ingest specific files for the repo.",
                 args: &["paths (array of file paths, empty => full reindex)", "project_root (string, optional)"],
                 returns: &["status", "action", "paths?"],
             },
@@ -1612,46 +782,19 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 name: "docdex_files",
                 description: "List indexed docs (rel_path/doc_id/summary/token_estimate) with pagination.",
                 args: &["limit (int, optional, default 200, max 1000)", "offset (int, optional, default 0)", "project_root (string, optional)"],
-                returns: &["results[]", "total", "limit", "offset", "repo_root", "limits"],
+                returns: &["results[]", "total", "limit", "offset", "repo_root"],
             },
             AiHelpMcpTool {
                 name: "docdex_open",
-                description: "Read a file from the repo; optional line range; rejects paths outside the repo; max 512 KiB.",
+                description: "Read a file from the repo; optional line range; rejects paths outside the repo.",
                 args: &["path (string, required, relative)", "start_line (int, optional)", "end_line (int, optional)", "project_root (string, optional)"],
-                returns: &["path", "start_line", "end_line", "total_lines", "content", "repo_root", "limits"],
-            },
-            AiHelpMcpTool {
-                name: "docdex_symbols",
-                description: "Read the symbol extraction result for a file, including per-file outcome (ok/skipped/failed); capped to 5000 symbols / 512 KiB.",
-                args: &["path (string, required, relative)", "project_root (string, optional)"],
-                returns: &["schema", "repo_id", "file", "symbols[]", "outcome"],
+                returns: &["path", "start_line", "end_line", "total_lines", "content", "repo_root"],
             },
             AiHelpMcpTool {
                 name: "docdex_stats",
-<<<<<<< HEAD
-                description: "Report index metadata, symbols enablement, and recent run summaries (max 20 runs; sample lists capped at 25; error summaries truncated to 240 chars).",
-                args: &[
-                    "project_root (string, optional)",
-                    "runs_limit (int, optional, max 20, clamped)",
-                ],
-                returns: &[
-                    "num_docs",
-                    "state_dir",
-                    "index_size_bytes",
-                    "segments",
-                    "avg_bytes_per_doc",
-                    "generated_at_epoch_ms",
-                    "last_updated_epoch_ms",
-                    "symbols_enabled",
-                    "symbols_store_ready",
-                    "run_summaries",
-                    "repo_root",
-                ],
-=======
                 description: "Report index metadata.",
                 args: &["project_root (string, optional)"],
-                returns: &["num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "index_status", "repo_root"],
->>>>>>> mcoda/task/bck-05-us-08-t12
+                returns: &["num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "repo_root"],
             },
             AiHelpMcpTool {
                 name: "docdex_memory_store",
@@ -1662,23 +805,11 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             AiHelpMcpTool {
                 name: "docdex_memory_recall",
                 description: "Recall memory items by semantic similarity (requires DOCDEX_ENABLE_MEMORY=1).",
-<<<<<<< HEAD
-                args: &[
-                    "query (string, required)",
-                    "top_k (int, optional)",
-                    "max_items (int, optional)",
-                    "max_tokens (int, optional)",
-                    "project_root (string, optional)",
-                ],
-                returns: &["results[]"],
-=======
                 args: &["query (string, required)", "top_k (int, optional)", "project_root (string, optional)"],
-                returns: &["results[]", "top_k", "limits"],
->>>>>>> mcoda/task/bck-05-us-06-t13
+                returns: &["results[]"],
             },
         ],
         best_practices: vec![
-<<<<<<< HEAD
             "Prefer narrow queries (file names, headings, concepts) to keep snippets focused.",
             "Use /search to get doc_id, then /snippet/:doc_id for a larger window when needed.",
             "Use /search with snippets=false to read summaries first; only fetch 1-2 snippets you need.",
@@ -1686,44 +817,15 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             "Respect the reported `token_estimate` to avoid oversized prompts.",
             "When running remote, set --auth-token and TLS (certbot or manual cert/key).",
             "Keep server logging minimal for agent pipelines (e.g., --log warn --access-log=false).",
-            "State paths are isolated under ~/.docdex/state/repos/<fingerprint>/; run separate serve instances per repo.",
+            "Use state_dir per project to keep indexes isolated; run separate serve instances per repo.",
             "Use text_only=true on /snippet or --strip-snippet-html/--disable-snippet-text to trim payloads.",
             "When building prompts, keep rel_path + summary + trimmed snippet; drop score/token_estimate/doc_id and normalize whitespace.",
             "Trim noisy content up front with --exclude-dir/--exclude-prefix so snippets stay relevant and short.",
             "Cache doc_id/rel_path/summary client-side to avoid repeat snippet fetches; only call /snippet for new doc_ids.",
             "For MCP-aware agents, register a server named docdex that runs `docdexd mcp --repo <repo> --log warn --max-results 8`, then use docdex_search before edits and docdex_index when results look stale.",
-=======
-            "Prefer narrow queries (file names, headings, concepts) to keep snippets focused."
-                .to_string(),
-            "Use /search to get doc_id, then /snippet/:doc_id for a larger window when needed."
-                .to_string(),
-            "Use /search with snippets=false to read summaries first; only fetch 1-2 snippets you need."
-                .to_string(),
-            "Keep q short; long query strings are rejected by max_query_bytes to save bandwidth/tokens."
-                .to_string(),
-            "Respect the reported `token_estimate` to avoid oversized prompts.".to_string(),
-            "When running remote, set --auth-token and TLS (certbot or manual cert/key)."
-                .to_string(),
-            "Keep server logging minimal for agent pipelines (e.g., --log warn --access-log=false)."
-                .to_string(),
-            "Use state_dir per project to keep indexes isolated; run separate serve instances per repo."
-                .to_string(),
-            "Use text_only=true on /snippet or --strip-snippet-html/--disable-snippet-text to trim payloads."
-                .to_string(),
-            "When building prompts, keep rel_path + summary + trimmed snippet; drop score/token_estimate/doc_id and normalize whitespace."
-                .to_string(),
-            "Trim noisy content up front with --exclude-dir/--exclude-prefix so snippets stay relevant and short."
-                .to_string(),
-            "Cache doc_id/rel_path/summary client-side to avoid repeat snippet fetches; only call /snippet for new doc_ids."
-                .to_string(),
-            "For MCP-aware agents, register a server named docdex that runs `docdexd mcp --repo <repo> --log warn --max-results 8`, then use docdex_search before edits and docdex_index when results look stale."
-                .to_string(),
-            rate_limit_best_practice(&state.security),
-            retry_hint_best_practice(),
->>>>>>> mcoda/task/bck-05-us-09-t13
         ],
         limits: AiHelpLimits {
-            max_limit: state.security.max_size.max_results,
+            max_limit: state.security.max_limit,
             max_query_bytes: state.security.max_query_bytes,
             max_request_bytes: state.security.max_request_bytes,
             rate_limit_per_min: rate_limit_hint(&state.security),
@@ -1738,38 +840,10 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             "avg_bytes_per_doc",
             "generated_at_epoch_ms",
             "last_updated_epoch_ms",
-<<<<<<< HEAD
-            "symbols_enabled",
-            "symbols_store_ready",
-            "run_summaries",
-=======
-            "index_status",
->>>>>>> mcoda/task/bck-05-us-08-t12
             "repo_root",
         ],
     };
     Json(payload)
-}
-
-#[derive(Deserialize)]
-struct StatsParams {
-    #[serde(default)]
-    runs_limit: Option<usize>,
-}
-
-#[derive(Serialize)]
-struct StatsResponse {
-    num_docs: u64,
-    state_dir: String,
-    index_size_bytes: u64,
-    segments: usize,
-    avg_bytes_per_doc: Option<u64>,
-    generated_at_epoch_ms: u128,
-    last_updated_epoch_ms: Option<u128>,
-    symbols_enabled: bool,
-    symbols_store_ready: bool,
-    run_summaries: RunSummaryResponse,
-    repo_root: String,
 }
 
 #[derive(Deserialize)]
@@ -1779,20 +853,6 @@ struct SearchParams {
     snippets: Option<bool>,
     max_tokens: Option<u64>,
     include_libs: Option<bool>,
-}
-
-#[derive(Deserialize)]
-<<<<<<< HEAD
-struct WebSearchParams {
-    query: Option<String>,
-    limit: Option<usize>,
-=======
-struct WebResearchRequest {
-    query: String,
-    limit: Option<usize>,
-    force_web: Option<bool>,
-    include_libs: Option<bool>,
->>>>>>> mcoda/task/bck-05-us-07-t18
 }
 
 #[derive(Serialize)]
@@ -1812,13 +872,9 @@ pub struct SearchMeta {
     pub index_last_updated_epoch_ms: Option<u128>,
     pub repo_root: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub repo_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub query: Option<SearchQueryMeta>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_assembly: Option<ContextAssemblyMeta>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<UserWarning>,
 }
 
 #[derive(Serialize)]
@@ -1861,7 +917,6 @@ pub struct ContextAssemblyMeta {
     pub hits_before_pruning: usize,
     pub hits_after_pruning: usize,
     pub token_estimate_sum_kept: u64,
-    pub token_estimate_sum_pruned: u64,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pruned: Vec<PrunedHitMeta>,
     pub selected_sources: Vec<SelectedSourceMeta>,
@@ -1872,8 +927,6 @@ struct ErrorBody {
     error: ErrorDetail,
 }
 
-<<<<<<< HEAD
-=======
 fn truncate_bytes(input: &str, max_bytes: usize) -> String {
     if input.len() <= max_bytes {
         return input.to_string();
@@ -1887,11 +940,6 @@ fn truncate_bytes(input: &str, max_bytes: usize) -> String {
     out
 }
 
-fn truncate_label(input: &str) -> String {
-    truncate_bytes(input, MAX_RATE_LIMIT_LABEL_BYTES)
-}
-
->>>>>>> mcoda/task/bck-05-us-09-t37
 #[derive(Serialize)]
 struct ErrorDetail {
     code: &'static str,
@@ -1904,42 +952,6 @@ struct ErrorDetail {
     limit_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scope: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-    details: Option<serde_json::Value>,
-=======
-    resource_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    limit_per_min: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    limit_burst: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    denied_total: Option<u64>,
->>>>>>> mcoda/task/bck-05-us-09-t05
-=======
-    details: Option<serde_json::Value>,
->>>>>>> mcoda/task/bck-05-us-08-t10
-=======
-    details: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    remediation: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    hint: Option<String>,
->>>>>>> mcoda/task/bck-05-us-08-t03
-=======
-    details: Option<serde_json::Value>,
->>>>>>> mcoda/task/bck-05-us-08-t01
-=======
-    details: Option<serde_json::Value>,
->>>>>>> mcoda/task/bck-05-us-07-t11
-=======
-    details: Option<serde_json::Value>,
->>>>>>> mcoda/task/bck-05-us-07-t05
 }
 
 impl ErrorDetail {
@@ -1951,267 +963,37 @@ impl ErrorDetail {
             retry_at: None,
             limit_key: None,
             scope: None,
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-            details: None,
-=======
-            resource_key: None,
-            limit_per_min: None,
-            limit_burst: None,
-            denied_total: None,
->>>>>>> mcoda/task/bck-05-us-09-t05
-=======
-            details: None,
->>>>>>> mcoda/task/bck-05-us-08-t10
-=======
-            details: None,
-            remediation: None,
-            hint: None,
->>>>>>> mcoda/task/bck-05-us-08-t03
         }
-    }
-
-    fn with_details(mut self, details: serde_json::Value) -> Self {
-        self.details = Some(details);
-        self
-    }
-
-    fn with_remediation(mut self, remediation: Vec<String>) -> Self {
-        if !remediation.is_empty() {
-            self.remediation = Some(remediation);
-        }
-        self
-    }
-
-    #[allow(dead_code)]
-    fn with_hint(mut self, hint: impl Into<String>) -> Self {
-        self.hint = Some(hint.into());
-=======
-            details: None,
-        }
-    }
-
-<<<<<<< HEAD
-    fn with_details(mut self, details: Option<serde_json::Value>) -> Self {
-        self.details = details;
->>>>>>> mcoda/task/bck-05-us-08-t01
-=======
-            details: None,
-        }
-    }
-
-    fn with_details(mut self, details: Option<serde_json::Value>) -> Self {
-        self.details = details;
->>>>>>> mcoda/task/bck-05-us-07-t11
-=======
-            details: None,
-        }
-    }
-
-    fn with_details(mut self, details: Option<serde_json::Value>) -> Self {
-        if details.is_some() {
-            self.details = details;
-        }
->>>>>>> mcoda/task/bck-05-us-07-t05
-        self
     }
 
     fn rate_limited(err: &RateLimited) -> Self {
-<<<<<<< HEAD
-<<<<<<< HEAD
-        let hint = RetryHint::from_rate_limited(err);
         Self {
-<<<<<<< HEAD
             code: ERR_RATE_LIMITED,
-            message: truncate_utf8_bytes(&err.message, MAX_RATE_LIMIT_MESSAGE_BYTES),
-            retry_after_ms: Some(err.retry_after_ms),
-<<<<<<< HEAD
-            retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
-<<<<<<< HEAD
-            limit_key: Some(err.limit_key.clone()),
-            scope: Some(err.scope.clone()),
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-=======
-        let hint = err.retry_hint();
-        Self {
->>>>>>> mcoda/task/bck-05-us-09-t32
-=======
-        let hint = err.retry_hint();
-        Self {
->>>>>>> mcoda/task/bck-05-us-09-t07
-            code: hint.code,
-            message: truncate_bytes(&err.message, MAX_RATE_LIMIT_MESSAGE_BYTES),
-            retry_after_ms: Some(hint.retry_after_ms),
-            retry_at: hint.retry_at,
-            limit_key: Some(hint.limit_key),
-            scope: Some(hint.scope),
-<<<<<<< HEAD
-<<<<<<< HEAD
->>>>>>> mcoda/task/bck-05-us-09-t34
-=======
->>>>>>> mcoda/task/bck-05-us-09-t32
-=======
-            retry_at: err.retry_at.as_ref().map(|at| {
-                let raw = at.to_rfc3339();
-                truncate_bytes(&raw, MAX_RATE_LIMIT_FIELD_BYTES)
-            }),
-            limit_key: Some(truncate_bytes(&err.limit_key, MAX_RATE_LIMIT_FIELD_BYTES)),
-            scope: Some(truncate_bytes(&err.scope, MAX_RATE_LIMIT_FIELD_BYTES)),
->>>>>>> mcoda/task/bck-05-us-09-t30
-=======
->>>>>>> mcoda/task/bck-05-us-09-t07
-=======
-            details: None,
->>>>>>> mcoda/task/bck-05-us-08-t33
-=======
-            limit_key: Some(truncate_label(&err.limit_key)),
-            scope: Some(truncate_label(&err.scope)),
->>>>>>> mcoda/task/bck-05-us-09-t37
-=======
-            resource_key: Some(err.resource_key.clone()),
-            limit_per_min: Some(err.limit_per_min),
-            limit_burst: Some(err.limit_burst),
-            denied_total: Some(err.denied_total),
->>>>>>> mcoda/task/bck-05-us-09-t05
-=======
-            details: None,
-=======
-            details: None,
-            remediation: None,
-            hint: None,
->>>>>>> mcoda/task/bck-05-us-08-t03
-=======
-            details: None,
->>>>>>> mcoda/task/bck-05-us-08-t01
-        }
-    }
-
-    fn from_app_error(app: &AppError) -> Self {
-        Self {
-            code: app.code,
-            message: app.message.clone(),
-            retry_after_ms: None,
-            retry_at: None,
-            limit_key: None,
-            scope: None,
-            details: app.details.clone(),
->>>>>>> mcoda/task/bck-05-us-08-t10
-        }
-    }
-
-    fn from_app_error(app: &AppError) -> Self {
-        Self {
-            code: app.code,
-            message: app.message.clone(),
-            retry_after_ms: None,
-            retry_at: None,
-            limit_key: None,
-            scope: None,
-            details: app.details.clone(),
-        }
-    }
-}
-
-fn index_state_error_response(app: &AppError) -> Response {
-    (
-        StatusCode::CONFLICT,
-        Json(ErrorBody {
-            error: ErrorDetail::from_app_error(app),
-        }),
-    )
-        .into_response()
-}
-
-fn preflight_index_state(state: &AppState) -> Result<(), Response> {
-    if let Err(err) = state.indexer.preflight_index_state() {
-        if let Some(app) = err.downcast_ref::<AppError>() {
-            if matches!(app.code, ERR_MISSING_INDEX | ERR_STALE_INDEX) {
-                return Err(index_state_error_response(app));
-            }
-        }
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal error",
-        )
-            .into_response());
-    }
-    Ok(())
-=======
-    fn backoff_required(err: &BackoffRequired) -> Self {
-        Self {
-            code: ERR_BACKOFF_REQUIRED,
             message: truncate_bytes(&err.message, MAX_RATE_LIMIT_MESSAGE_BYTES),
             retry_after_ms: Some(err.retry_after_ms),
             retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
             limit_key: Some(err.limit_key.clone()),
             scope: Some(err.scope.clone()),
-            details: None,
         }
     }
->>>>>>> mcoda/task/bck-05-us-07-t15
 }
 
 #[cfg(test)]
 mod rate_limit_contract_tests {
     use super::*;
     use chrono::Utc;
-    use crate::error::MAX_RATE_LIMIT_FIELD_BYTES;
     use serde_json::Value;
     use std::time::Duration;
 
-    fn assert_rate_limit_keys(obj: &serde_json::Map<String, Value>, include_retry_at: bool) {
-        let mut keys: Vec<String> = obj.keys().cloned().collect();
-        keys.sort();
-        let mut expected = vec![
-            "code".to_string(),
-            "limit_key".to_string(),
-            "message".to_string(),
-            "retry_after_ms".to_string(),
-            "scope".to_string(),
-        ];
-        if include_retry_at {
-            expected.push("retry_at".to_string());
-        }
-        expected.sort();
-        assert_eq!(keys, expected, "rate-limit error keys must remain stable");
-    }
-
     #[test]
     fn http_rate_limited_error_truncates_message_and_bounds_payload() {
-<<<<<<< HEAD
-        let long = "x".repeat(MAX_RATE_LIMIT_FIELD_BYTES * 8);
         let err = RateLimited::new(
             Duration::from_millis(1234),
-<<<<<<< HEAD
-            long.clone(),
-            long,
-=======
             "http_ip".to_string(),
             "ip".to_string(),
-            "127.0.0.1".to_string(),
-            60,
-            10,
-            3,
->>>>>>> mcoda/task/bck-05-us-09-t05
         )
         .with_message("x".repeat(10_000))
         .with_retry_at(Utc::now());
-=======
-        let long_key = "k".repeat(2048);
-        let long_scope = "s".repeat(2048);
-        let err = RateLimited::new(Duration::from_millis(1234), long_key, long_scope)
-            .with_message("x".repeat(10_000))
-            .with_retry_at(Utc::now());
->>>>>>> mcoda/task/bck-05-us-09-t30
 
         let body = ErrorBody {
             error: ErrorDetail::rate_limited(&err),
@@ -2224,11 +1006,7 @@ mod rate_limit_contract_tests {
 
         let bytes = serde_json::to_vec(&body).expect("rate-limit error body should serialize");
         assert!(
-<<<<<<< HEAD
-            bytes.len() <= HTTP_RATE_LIMIT_PAYLOAD_MAX_BYTES,
-=======
-            bytes.len() <= MAX_RATE_LIMIT_PAYLOAD_BYTES,
->>>>>>> mcoda/task/bck-05-us-09-t37
+            bytes.len() <= 1024,
             "rate-limit payload should remain small (got {} bytes)",
             bytes.len()
         );
@@ -2238,7 +1016,6 @@ mod rate_limit_contract_tests {
             .get("error")
             .and_then(|v| v.as_object())
             .expect("rate-limit response should contain error object");
-        assert_rate_limit_keys(error, true);
 
         assert_eq!(
             error.get("code").and_then(|v| v.as_str()),
@@ -2248,64 +1025,17 @@ mod rate_limit_contract_tests {
             .get("retry_after_ms")
             .and_then(|v| v.as_u64())
             .is_some());
-<<<<<<< HEAD
         assert!(error.get("limit_key").and_then(|v| v.as_str()).is_some());
         assert!(error.get("scope").and_then(|v| v.as_str()).is_some());
-<<<<<<< HEAD
-        let limit_key = error
-            .get("limit_key")
-            .and_then(|v| v.as_str())
-            .expect("limit_key should be a string");
-        let scope = error
-            .get("scope")
-            .and_then(|v| v.as_str())
-            .expect("scope should be a string");
-        assert!(
-            limit_key.len() <= MAX_RATE_LIMIT_FIELD_BYTES,
-            "limit_key should be truncated"
-        );
-        assert!(
-            scope.len() <= MAX_RATE_LIMIT_FIELD_BYTES,
-            "scope should be truncated"
-=======
-        let limit_key = error
-            .get("limit_key")
-            .and_then(|v| v.as_str())
-            .expect("rate-limit response should contain limit_key");
-        assert!(
-            limit_key.len() <= MAX_RATE_LIMIT_FIELD_BYTES + "…".len(),
-            "limit_key should be bounded"
-        );
-        let scope = error
-            .get("scope")
-            .and_then(|v| v.as_str())
-            .expect("rate-limit response should contain scope");
-        assert!(
-            scope.len() <= MAX_RATE_LIMIT_FIELD_BYTES + "…".len(),
-            "scope should be bounded"
->>>>>>> mcoda/task/bck-05-us-09-t30
-        );
-=======
-        assert!(error.get("resource_key").and_then(|v| v.as_str()).is_some());
-        assert!(error.get("limit_per_min").and_then(|v| v.as_u64()).is_some());
-        assert!(error.get("limit_burst").and_then(|v| v.as_u64()).is_some());
-        assert!(error.get("denied_total").and_then(|v| v.as_u64()).is_some());
->>>>>>> mcoda/task/bck-05-us-09-t05
     }
 }
 
 #[cfg(test)]
 mod latency_perf_tests {
-    use crate::error::{AppError, ERR_MISSING_INDEX, ERR_STALE_INDEX};
     use crate::{index, libs};
-    use serde_json::json;
     use std::fs;
-    use std::path::Path;
-    use std::sync::Arc;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
     use tempfile::TempDir;
-    use tokio::sync::{mpsc, Barrier};
-    use tokio::task::JoinSet;
 
     fn percentile(sorted: &[u128], p: f64) -> u128 {
         if sorted.is_empty() {
@@ -2322,74 +1052,6 @@ mod latency_perf_tests {
         let p95 = percentile(&samples_us, 0.95);
         let max = *samples_us.last().unwrap_or(&0);
         (p50, p95, max)
-    }
-
-    const STALE_INDEX_MARKER: &str = ".docdex_index_stale";
-
-    fn preflight_index_state(state_dir: &Path) -> anyhow::Result<()> {
-        if !state_dir.exists() {
-            return Err(AppError::new(
-                ERR_MISSING_INDEX,
-                format!(
-                    "index not found at {}; run `docdexd index --repo <repo>` first",
-                    state_dir.display()
-                ),
-            )
-            .with_details(json!({
-                "hint": "Run: docdexd index --repo <repo>"
-            }))
-            .into());
-        }
-        if state_dir.join(STALE_INDEX_MARKER).exists() {
-            return Err(AppError::new(
-                ERR_STALE_INDEX,
-                format!(
-                    "index at {} is stale; rebuild with `docdexd index --repo <repo>`",
-                    state_dir.display()
-                ),
-            )
-            .with_details(json!({
-                "hint": "Rebuild: docdexd index --repo <repo>"
-            }))
-            .into());
-        }
-        Ok(())
-    }
-
-    fn measure_preflight_success(state_dir: &Path, iterations: usize) -> anyhow::Result<Vec<u128>> {
-        let mut samples = Vec::with_capacity(iterations);
-        for _ in 0..iterations {
-            let start = Instant::now();
-            preflight_index_state(state_dir)?;
-            samples.push(start.elapsed().as_micros());
-        }
-        Ok(samples)
-    }
-
-    fn measure_preflight_error(
-        state_dir: &Path,
-        expected_code: &str,
-        iterations: usize,
-    ) -> anyhow::Result<Vec<u128>> {
-        let mut samples = Vec::with_capacity(iterations);
-        for _ in 0..iterations {
-            let start = Instant::now();
-            let err = preflight_index_state(state_dir)
-                .err()
-                .ok_or_else(|| anyhow::Error::msg("expected preflight failure"))?;
-            let elapsed = start.elapsed().as_micros();
-            let app = err
-                .downcast_ref::<AppError>()
-                .ok_or_else(|| anyhow::Error::msg("expected AppError for preflight failure"))?;
-            if app.code != expected_code {
-                return Err(anyhow::Error::msg(format!(
-                    "expected preflight error code {expected_code}, got {}",
-                    app.code
-                )));
-            }
-            samples.push(elapsed);
-        }
-        Ok(samples)
     }
 
     /// NFR check: repo-only search p95 should remain under 50ms even when a libs index exists.
@@ -2430,8 +1092,7 @@ mod latency_perf_tests {
             "# Serde\n\nLIBS_ONLY_TERM_123 appears only in library docs.\n",
         )?;
 
-        let libs_dir =
-            libs::libs_state_dir_from_index_state_dir(indexer.repo_root(), indexer.state_dir());
+        let libs_dir = libs::libs_state_dir_from_index_state_dir(indexer.state_dir());
         let libs_writer = libs::LibsIndexer::open_or_create(libs_dir.clone())?;
         let sources = [libs::LibSource {
             library: "serde".to_string(),
@@ -2453,8 +1114,7 @@ mod latency_perf_tests {
         let limit = 8usize;
         for _ in 0..20usize {
             let _ = indexer.search_with_query_meta(query, limit)?;
-            let _ =
-                super::search_with_optional_libs(&indexer, None, Some(&libs_indexer), query, limit)?;
+            let _ = super::search_with_optional_libs(&indexer, Some(&libs_indexer), query, limit)?;
         }
 
         let iterations = 250usize;
@@ -2468,8 +1128,7 @@ mod latency_perf_tests {
         let mut combined_us = Vec::with_capacity(iterations);
         for _ in 0..iterations {
             let start = Instant::now();
-            let _ =
-                super::search_with_optional_libs(&indexer, None, Some(&libs_indexer), query, limit)?;
+            let _ = super::search_with_optional_libs(&indexer, Some(&libs_indexer), query, limit)?;
             combined_us.push(start.elapsed().as_micros());
         }
 
@@ -2500,155 +1159,6 @@ mod latency_perf_tests {
 
         Ok(())
     }
-
-    /// NFR check: concurrent search + incremental updates stay within latency targets,
-    /// including index-state preflight overhead and fast-fail error paths.
-    #[tokio::test]
-    #[ignore]
-    async fn concurrent_search_update_p95_with_index_state_preflight() -> anyhow::Result<()> {
-        let repo = TempDir::new()?;
-        let repo_root = repo.path();
-
-        let docs_dir = repo_root.join("docs");
-        fs::create_dir_all(&docs_dir)?;
-        for i in 0..240usize {
-            let body = if i % 7 == 0 {
-                format!("# Doc {i}\n\nCONCURRENT_NEEDLE_ABC appears here.\n")
-            } else {
-                format!("# Doc {i}\n\nFiller content for indexing.\n")
-            };
-            fs::write(docs_dir.join(format!("doc_{i}.md")), body)?;
-        }
-        let update_path = docs_dir.join("update.md");
-        fs::write(
-            &update_path,
-            "# Update\n\nCONCURRENT_NEEDLE_ABC in update file.\n",
-        )?;
-
-        let index_config =
-            index::IndexConfig::with_overrides(repo_root, None, Vec::new(), Vec::new(), false)?;
-        let indexer = index::Indexer::with_config(repo_root.to_path_buf(), index_config)?;
-        indexer.reindex_all().await?;
-        let indexer = Arc::new(indexer);
-
-        let query = "CONCURRENT_NEEDLE_ABC";
-        let limit = 8usize;
-        for _ in 0..20usize {
-            let _ = indexer.search_with_query_meta(query, limit)?;
-        }
-
-        let preflight_samples = measure_preflight_success(indexer.state_dir(), 80)?;
-        let (preflight_p50, preflight_p95, preflight_max) = summarize(preflight_samples);
-        eprintln!(
-            "index preflight: p50={}us p95={}us max={}us",
-            preflight_p50, preflight_p95, preflight_max
-        );
-
-        let search_tasks = 8usize;
-        let iterations = 60usize;
-        let update_iterations = 70usize;
-        let barrier = Arc::new(Barrier::new(search_tasks + 2));
-
-        let update_indexer = indexer.clone();
-        let update_barrier = barrier.clone();
-        let update_path_clone = update_path.clone();
-        let update_task = tokio::spawn(async move {
-            update_barrier.wait().await;
-            for i in 0..update_iterations {
-                fs::write(
-                    &update_path_clone,
-                    format!("# Update {i}\n\nCONCURRENT_NEEDLE_ABC in update file.\n"),
-                )?;
-                update_indexer.ingest_file(update_path_clone.clone()).await?;
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-            Ok::<(), anyhow::Error>(())
-        });
-
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut join_set = JoinSet::new();
-        for _ in 0..search_tasks {
-            let indexer = indexer.clone();
-            let barrier = barrier.clone();
-            let tx = tx.clone();
-            join_set.spawn(async move {
-                barrier.wait().await;
-                for _ in 0..iterations {
-                    let start = Instant::now();
-                    preflight_index_state(indexer.state_dir())?;
-                    let _ = indexer.search_with_query_meta(query, limit)?;
-                    let _ = tx.send(start.elapsed().as_micros());
-                }
-                Ok::<(), anyhow::Error>(())
-            });
-        }
-        drop(tx);
-        barrier.wait().await;
-
-        let mut samples = Vec::with_capacity(search_tasks * iterations);
-        while let Some(sample) = rx.recv().await {
-            samples.push(sample);
-        }
-
-        while let Some(res) = join_set.join_next().await {
-            res??;
-        }
-        update_task.await??;
-
-        let (p50, p95, max) = summarize(samples);
-        eprintln!(
-            "search+preflight under update load: p50={}us p95={}us max={}us",
-            p50, p95, max
-        );
-
-        let missing_dir = repo_root.join("missing-index-dir");
-        let missing_samples = measure_preflight_error(&missing_dir, ERR_MISSING_INDEX, 120)?;
-        let (missing_p50, missing_p95, missing_max) = summarize(missing_samples);
-        eprintln!(
-            "preflight missing_index: p50={}us p95={}us max={}us",
-            missing_p50, missing_p95, missing_max
-        );
-
-        let stale_dir = TempDir::new()?;
-        fs::create_dir_all(stale_dir.path())?;
-        fs::write(stale_dir.path().join(STALE_INDEX_MARKER), "1")?;
-        let stale_samples = measure_preflight_error(stale_dir.path(), ERR_STALE_INDEX, 120)?;
-        let (stale_p50, stale_p95, stale_max) = summarize(stale_samples);
-        eprintln!(
-            "preflight stale_index: p50={}us p95={}us max={}us",
-            stale_p50, stale_p95, stale_max
-        );
-
-        if cfg!(debug_assertions) {
-            eprintln!(
-                "note: perf assertions are enforced in release builds; re-run with `cargo test --release ... -- --ignored --nocapture`"
-            );
-            return Ok(());
-        }
-
-        assert!(
-            p95 < 50_000,
-            "concurrent search p95 {}us exceeds 50ms (see docs/sds/sds.md)",
-            p95
-        );
-        assert!(
-            preflight_p95 < 20_000,
-            "index preflight p95 {}us exceeds 20ms",
-            preflight_p95
-        );
-        assert!(
-            missing_p95 < 20_000,
-            "missing_index preflight p95 {}us exceeds 20ms",
-            missing_p95
-        );
-        assert!(
-            stale_p95 < 20_000,
-            "stale_index preflight p95 {}us exceeds 20ms",
-            stale_p95
-        );
-
-        Ok(())
-    }
 }
 
 pub async fn run_query(
@@ -2657,76 +1167,23 @@ pub async fn run_query(
     query: &str,
     limit: usize,
 ) -> Result<SearchResponse> {
-<<<<<<< HEAD
-    indexer.preflight_index_state()?;
     let (hits, query_meta) = search_with_optional_libs(indexer, libs_indexer, query, limit)?;
-=======
-    let snapshot = indexer.snapshot();
-    let (hits, query_meta) =
-        search_with_optional_libs(indexer, Some(&snapshot), libs_indexer, query, limit)?;
->>>>>>> mcoda/task/bck-05-us-06-t11
     let top_score = hits.first().map(|hit| hit.score);
-    let token_estimate_sum_kept: u64 = hits.iter().map(|hit| hit.token_estimate).sum();
-    let selected_sources = hits
-        .iter()
-        .map(|hit| SelectedSourceMeta {
-            doc_id: hit.doc_id.clone(),
-            rel_path: hit.rel_path.clone(),
-            score: hit.score,
-            token_estimate: hit.token_estimate,
-            snippet_origin: hit.snippet_origin.clone(),
-            snippet_truncated: hit.snippet_truncated,
-        })
-        .collect::<Vec<_>>();
-    let context_assembly = ContextAssemblyMeta {
-        requested_limit: Some(limit),
-        effective_limit: limit,
-        snippet_policy: SnippetPolicy::Full,
-        max_tokens: None,
-        token_budget_mode: "per_hit_token_estimate",
-        hits_before_pruning: hits.len(),
-        hits_after_pruning: hits.len(),
-        token_estimate_sum_kept,
-        token_estimate_sum_pruned: 0,
-        pruned: Vec::new(),
-        selected_sources,
-    };
     Ok(SearchResponse {
         hits,
         top_score,
         top_score_camel: top_score,
-<<<<<<< HEAD
-<<<<<<< HEAD
-        meta: Some(build_search_meta(
-            indexer,
-            Some(query_meta),
-            Some(context_assembly),
-        )?),
-=======
-        meta: Some(build_search_meta(indexer, Some(query_meta), None, None)?),
->>>>>>> mcoda/task/bck-05-us-08-t03
-=======
-        meta: Some(build_search_meta(
-            indexer,
-            Some(&snapshot),
-            Some(query_meta),
-            None,
-        )?),
->>>>>>> mcoda/task/bck-05-us-06-t11
+        meta: Some(build_search_meta(indexer, Some(query_meta), None)?),
     })
 }
 
 fn search_with_optional_libs(
     indexer: &Indexer,
-    snapshot: Option<&IndexSnapshot>,
     libs_indexer: Option<&LibsIndexer>,
     query: &str,
     limit: usize,
 ) -> Result<(Vec<Hit>, SearchQueryMeta)> {
-    let (repo_hits, query_meta) = match snapshot {
-        Some(snapshot) => indexer.search_with_query_meta_snapshot(snapshot, query, limit)?,
-        None => indexer.search_with_query_meta(query, limit)?,
-    };
+    let (repo_hits, query_meta) = indexer.search_with_query_meta(query, limit)?;
     let Some(libs) = libs_indexer else {
         return Ok((repo_hits, query_meta));
     };
@@ -2782,32 +1239,17 @@ fn now_epoch_ms() -> Result<u128> {
 
 fn build_search_meta(
     indexer: &Indexer,
-    snapshot: Option<&IndexSnapshot>,
     query: Option<SearchQueryMeta>,
     context_assembly: Option<ContextAssemblyMeta>,
-    index_last_updated_epoch_ms: Option<u128>,
 ) -> Result<SearchMeta> {
     let generated_at_epoch_ms = now_epoch_ms()?;
-<<<<<<< HEAD
-    let last_updated = index_last_updated_epoch_ms
-        .or_else(|| indexer.stats().ok().and_then(|s| s.last_updated_epoch_ms));
-=======
-    let last_updated = match snapshot {
-        Some(snapshot) => indexer
-            .stats_with_searcher(snapshot.searcher())
-            .ok()
-            .and_then(|s| s.last_updated_epoch_ms),
-        None => indexer.stats().ok().and_then(|s| s.last_updated_epoch_ms),
-    };
->>>>>>> mcoda/task/bck-05-us-06-t11
+    let last_updated = indexer.stats().ok().and_then(|s| s.last_updated_epoch_ms);
     Ok(SearchMeta {
         generated_at_epoch_ms,
         index_last_updated_epoch_ms: last_updated,
         repo_root: indexer.repo_root().display().to_string(),
-        repo_id: crate::symbols::repo_id_for_root(indexer.repo_root()).ok(),
         query,
         context_assembly,
-        warnings: Vec::new(),
     })
 }
 
@@ -2816,19 +1258,14 @@ async fn search_handler(
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
     Query(params): Query<SearchParams>,
 ) -> impl IntoResponse {
-    let limit = clamp_option(
-        params.limit,
-        DEFAULT_SEARCH_LIMIT,
-        1,
-        state.security.max_size.max_results,
-    );
+    let limit = params.limit.unwrap_or(8).min(state.security.max_limit);
     let raw = match params.q.as_deref() {
         Some(value) => value,
         None => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorBody {
-                    error: ErrorDetail::new(ERR_MISSING_QUERY, "q is required"),
+                    error: ErrorDetail::new("missing_query", "q is required"),
                 }),
             )
                 .into_response();
@@ -2839,19 +1276,11 @@ async fn search_handler(
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorBody {
-                error: ErrorDetail::new(ERR_INVALID_QUERY, "q must not be empty"),
+                error: ErrorDetail::new("invalid_query", "q must not be empty"),
             }),
         )
             .into_response();
     }
-    if let Err(resp) = preflight_index_state(&state) {
-        return resp;
-    }
-
-    let index_state = match ensure_index_fresh(&state) {
-        Ok(snapshot) => snapshot,
-        Err(response) => return response,
-    };
 
     let include_libs = params.include_libs.unwrap_or(true);
     let libs_indexer = if include_libs {
@@ -2860,14 +1289,7 @@ async fn search_handler(
         None
     };
 
-    let snapshot = state.indexer.snapshot();
-    match search_with_optional_libs(
-        state.indexer.as_ref(),
-        Some(&snapshot),
-        libs_indexer,
-        query,
-        limit,
-    ) {
+    match search_with_optional_libs(state.indexer.as_ref(), libs_indexer, query, limit) {
         Ok((mut hits, query_meta)) => {
             let max_tokens = params.max_tokens;
             let snippet_policy = if state.security.disable_snippet_text {
@@ -2880,14 +1302,11 @@ async fn search_handler(
 
             let hits_before_pruning = hits.len();
             let mut pruned: Vec<PrunedHitMeta> = Vec::new();
-            let mut token_estimate_sum_pruned: u64 = 0;
             if let Some(budget) = max_tokens {
                 hits.retain(|hit| {
                     if hit.token_estimate <= budget {
                         true
                     } else {
-                        token_estimate_sum_pruned =
-                            token_estimate_sum_pruned.saturating_add(hit.token_estimate);
                         pruned.push(PrunedHitMeta {
                             doc_id: hit.doc_id.clone(),
                             rel_path: hit.rel_path.clone(),
@@ -2929,28 +1348,11 @@ async fn search_handler(
                 hits_before_pruning,
                 hits_after_pruning: hits.len(),
                 token_estimate_sum_kept,
-                token_estimate_sum_pruned,
                 pruned,
                 selected_sources,
             };
-<<<<<<< HEAD
             let meta =
-                build_search_meta(
-                    &state.indexer,
-                    Some(query_meta),
-                    Some(context_assembly),
-                    index_state.index_last_updated_epoch_ms,
-                )
-                .ok();
-=======
-            let meta = build_search_meta(
-                &state.indexer,
-                Some(&snapshot),
-                Some(query_meta),
-                Some(context_assembly),
-            )
-            .ok();
->>>>>>> mcoda/task/bck-05-us-06-t11
+                build_search_meta(&state.indexer, Some(query_meta), Some(context_assembly)).ok();
             Json(SearchResponse {
                 hits,
                 top_score,
@@ -2959,173 +1361,6 @@ async fn search_handler(
             })
             .into_response()
         }
-        Err(err) => {
-            if let Some(SearchError::InvalidQuery { reason }) = err.downcast_ref::<SearchError>() {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorBody {
-                        error: ErrorDetail::new(ERR_INVALID_QUERY, reason.clone()),
-                    }),
-                )
-                    .into_response();
-            }
-<<<<<<< HEAD
-            if let Some(app) = err.downcast_ref::<AppError>() {
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-                return json_error(
-                    status_for_app_error(app.code),
-                    app.code,
-                    app.message.clone(),
-=======
-                state.metrics.inc_error();
-                warn!(
-                    target: "docdexd",
-                    error = ?err,
-                    request_id = %request_id.0,
-                    error_code = %app.code,
-                    limit,
-                    "search handler failed"
-                );
-                return json_error_detail(
-                    status_for_app_error(app.code),
-                    ErrorDetail::from_app_error(app),
->>>>>>> mcoda/task/bck-05-us-08-t10
-                );
-=======
-                return app_error_response(&state, app);
->>>>>>> mcoda/task/bck-05-us-08-t03
-=======
-                return json_error_with_details(
-                    status_for_app_error(app.code),
-                    app.code,
-                    app.message.clone(),
-                    app.details.clone(),
-                );
->>>>>>> mcoda/task/bck-05-us-08-t01
-=======
-            if let Some(backoff) = err.downcast_ref::<BackoffRequired>() {
-                let mut headers = HeaderMap::new();
-                let retry_after_seconds = backoff.retry_after_ms.saturating_add(999) / 1000;
-                if let Ok(value) = HeaderValue::from_str(&retry_after_seconds.to_string()) {
-                    headers.insert(axum::http::header::RETRY_AFTER, value);
-                }
-                return (
-                    StatusCode::TOO_MANY_REQUESTS,
-                    headers,
-                    Json(ErrorBody {
-                        error: ErrorDetail::backoff_required(backoff),
-                    }),
-                )
-                    .into_response();
->>>>>>> mcoda/task/bck-05-us-07-t15
-            }
-            state.metrics.inc_error();
-            warn!(
-                target: "docdexd",
-                error = ?err,
-                request_id = %request_id.0,
-                limit,
-                "search handler failed"
-            );
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("internal error (request id: {})", request_id.0),
-            )
-                .into_response()
-        }
-    }
-}
-
-<<<<<<< HEAD
-async fn web_search_handler(
-    State(state): State<AppState>,
-    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
-    Query(params): Query<WebSearchParams>,
-) -> impl IntoResponse {
-    let raw = match params.query.as_deref() {
-        Some(value) => value,
-        None => {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                ERR_INVALID_ARGUMENT,
-                "query is required",
-            );
-        }
-    };
-    let query = raw.trim();
-    if query.is_empty() {
-        return json_error(
-            StatusCode::BAD_REQUEST,
-            ERR_INVALID_ARGUMENT,
-            "query must not be empty",
-        );
-    }
-    let limit = params
-        .limit
-        .unwrap_or_else(|| state.web_discovery.max_results())
-        .max(1);
-
-    match state.web_discovery.discover(query, limit).await {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(err) => {
-            let (code, status, message) = if let Some(app) = err.downcast_ref::<AppError>() {
-                (app.code, status_for_app_error(app.code), app.message.clone())
-            } else {
-                (
-                    ERR_INTERNAL_ERROR,
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "web discovery failed".to_string(),
-                )
-            };
-            state.metrics.inc_error();
-            warn!(
-                target: "docdexd",
-                request_id = %request_id.0,
-                code = %code,
-                error = %err,
-                "web discovery failed"
-            );
-            json_error(status, code, message)
-=======
-async fn web_research_handler(
-    State(state): State<AppState>,
-    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
-    Json(payload): Json<WebResearchRequest>,
-) -> impl IntoResponse {
-    let query = payload.query.trim();
-    if query.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorBody {
-                error: ErrorDetail::new("invalid_query", "query must not be empty"),
-            }),
-        )
-            .into_response();
-    }
-    let limit = payload.limit.unwrap_or(8).min(state.security.max_limit);
-    let include_libs = payload.include_libs.unwrap_or(true);
-    let libs_indexer = if include_libs {
-        state.libs_indexer.as_deref()
-    } else {
-        None
-    };
-    let force_web = payload.force_web.unwrap_or(false);
-    let gate = web_research::WebGateConfig::from_env();
-
-    match web_research::run_web_research(
-        &request_id.0,
-        state.indexer.as_ref(),
-        libs_indexer,
-        query,
-        limit,
-        force_web,
-        &gate,
-    )
-    .await
-    {
-        Ok(response) => Json(response).into_response(),
         Err(err) => {
             if let Some(SearchError::InvalidQuery { reason }) = err.downcast_ref::<SearchError>() {
                 return (
@@ -3142,14 +1377,13 @@ async fn web_research_handler(
                 error = ?err,
                 request_id = %request_id.0,
                 limit,
-                "web research handler failed"
+                "search handler failed"
             );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("internal error (request id: {})", request_id.0),
             )
                 .into_response()
->>>>>>> mcoda/task/bck-05-us-07-t18
         }
     }
 }
@@ -3187,27 +1421,10 @@ async fn snippet_handler(
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
     Query(params): Query<SnippetParams>,
 ) -> impl IntoResponse {
-<<<<<<< HEAD
-<<<<<<< HEAD
-    let window = clamp_option(
-        params.window,
-        DEFAULT_SNIPPET_WINDOW,
-        MIN_SNIPPET_WINDOW,
-        MAX_SNIPPET_WINDOW,
-    );
-=======
-    if let Err(resp) = preflight_index_state(&state) {
-        return resp;
-=======
-    if let Err(response) = ensure_index_fresh(&state) {
-        return response;
->>>>>>> mcoda/task/bck-05-us-08-t03
-    }
     let window = params
         .window
         .unwrap_or(DEFAULT_SNIPPET_WINDOW)
         .clamp(MIN_SNIPPET_WINDOW, MAX_SNIPPET_WINDOW);
->>>>>>> mcoda/task/bck-05-us-08-t33
     let strip_html_flag = params.strip_html.unwrap_or(false)
         | params.text_only.unwrap_or(false)
         | state.security.strip_snippet_html;
@@ -3244,41 +1461,7 @@ async fn snippet_handler(
         })
         .into_response(),
         Err(err) => {
-            if let Some(app) = err.downcast_ref::<AppError>() {
-<<<<<<< HEAD
-<<<<<<< HEAD
-                return json_error(
-                    status_for_app_error(app.code),
-                    app.code,
-                    app.message.clone(),
-                );
-=======
-                return app_error_response(&state, app);
->>>>>>> mcoda/task/bck-05-us-08-t03
-=======
-                return json_error_with_details(
-                    status_for_app_error(app.code),
-                    app.code,
-                    app.message.clone(),
-                    app.details.clone(),
-                );
->>>>>>> mcoda/task/bck-05-us-08-t01
-            }
             state.metrics.inc_error();
-            if let Some(app) = err.downcast_ref::<AppError>() {
-                warn!(
-                    target: "docdexd",
-                    error = ?err,
-                    request_id = %request_id.0,
-                    window,
-                    error_code = %app.code,
-                    "snippet handler failed"
-                );
-                return json_error_detail(
-                    status_for_app_error(app.code),
-                    ErrorDetail::from_app_error(app),
-                );
-            }
             warn!(
                 target: "docdexd",
                 error = ?err,
@@ -3349,12 +1532,9 @@ async fn security_middleware(
     }
     if path != "/healthz" {
         if let Some(limiter) = state.security.rate_limit.as_ref() {
-            if let Err(err) = limiter.check_or_rate_limited(
-                addr.ip(),
-                "http_ip",
-                "ip",
-                addr.ip().to_string(),
-            ) {
+            if let Err(err) =
+                limiter.check_or_rate_limited(addr.ip(), "http_ip", "ip")
+            {
                 state.metrics.inc_rate_limit();
                 let mut headers = HeaderMap::new();
                 let retry_after_seconds = err.retry_after_ms.saturating_add(999) / 1000;
@@ -3500,9 +1680,7 @@ fn sanitize_snippet_html(html: &str) -> String {
 }
 
 fn path_template(path: &str) -> String {
-    if path.starts_with("/v1/dag/session/") {
-        "/v1/dag/session/:session_id".to_string()
-    } else if path.starts_with("/snippet/") {
+    if path.starts_with("/snippet/") {
         "/snippet/:doc_id".to_string()
     } else {
         path.to_string()

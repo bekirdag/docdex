@@ -21,40 +21,27 @@ Symbol extraction is **disabled by default**.
 When symbol extraction is disabled:
 
 - Indexing and search work normally (no dependency on the symbols store).
-- The MCP tool `docdex_symbols` returns an MCP error with Docdex code `missing_dependency` and details `{ "dependency": "DOCDEX_ENABLE_SYMBOL_EXTRACTION", "enable_env": "DOCDEX_ENABLE_SYMBOL_EXTRACTION=1", "enable_flag": "--enable-symbol-extraction=true" }`.
+- The MCP tool `docdex_symbols` returns an MCP error with Docdex code `missing_dependency` and details `{ "dependency": "DOCDEX_ENABLE_SYMBOL_EXTRACTION" }`.
 
 ## Store location and lifecycle
 
 ### State directory
 
-The symbols store lives under Docdex’s **per-repo state root**:
+The symbols store lives under Docdex’s **state/index directory**:
 
-<<<<<<< HEAD
-- Default: `~/.docdex/state/repos/<fingerprint>`
-- Override base: `--state-dir <path>` / `DOCDEX_STATE_DIR` (relative paths or in-repo absolute paths keep legacy layout)
-=======
-- Default (`<repo-state-root>`): `~/.docdex/state/repos/<fingerprint>/`
-- Override: `--state-dir <state-root>` / `DOCDEX_STATE_DIR` (relative paths are resolved under `repo`; per-repo state root is `<state-root>/repos/<fingerprint>/`)
-- Inspect: `docdexd repo inspect --repo <path>` reports `repoStateRoot` and `indexDir`.
->>>>>>> mcoda/task/ops-01-us-03-t02
+- Default: `<repo>/.docdex/index`
+- Legacy fallback (if present): `<repo>/.gpt-creator/docdex/index`
+- Override: `--state-dir <path>` / `DOCDEX_STATE_DIR` (relative paths are resolved under `repo`)
 
 ### Symbols store path and layout
 
 When enabled, the symbols store root is:
 
-<<<<<<< HEAD
-`<repo_state_dir>/symbols.db/`
+`<state_dir>/symbols.db/`
 
 Current on-disk layout:
 
-- `<repo_state_dir>/symbols.db/files/`
-=======
-`<repo-state-root>/symbols.db/`
-
-Current on-disk layout:
-
-- `<repo-state-root>/symbols.db/files/`
->>>>>>> mcoda/task/ops-01-us-03-t02
+- `<state_dir>/symbols.db/files/`
   - One JSON file per repo-relative path: `<sha256(rel_path)>.json`
 
 Notes:
@@ -65,11 +52,7 @@ Notes:
 ### Lifecycle rules
 
 - Full reindex (`docdexd index`):
-<<<<<<< HEAD
-  - Docdex attempts to delete `<repo_state_dir>/symbols.db/` and recreate `<repo_state_dir>/symbols.db/files/`.
-=======
-  - Docdex attempts to delete `<repo-state-root>/symbols.db/` and recreate `<repo-state-root>/symbols.db/files/`.
->>>>>>> mcoda/task/ops-01-us-03-t02
+  - Docdex attempts to delete `<state_dir>/symbols.db/` and recreate `<state_dir>/symbols.db/files/`.
   - If the reset fails, indexing continues; stale symbol records may remain on disk for paths that are no longer indexed.
 - Incremental ingest (`docdexd ingest` / watcher ingestion):
   - Docdex overwrites the per-file record for the ingested file.
@@ -85,25 +68,12 @@ Tool name aliases: `docdex_symbols` and `docdex.symbols`.
 Arguments:
 
 ```json
-<<<<<<< HEAD
-{ "path": "path/relative/to/repo.ext", "limit": 200, "project_root": "/path/to/repo (optional)" }
-=======
-{ "path": "path/relative/to/repo.ext", "project_root": "/path/to/repo (optional)", "limit": 2000 }
->>>>>>> mcoda/task/bck-05-us-10-t03
+{ "path": "path/relative/to/repo.ext", "project_root": "/path/to/repo (optional)" }
 ```
-
-- `limit` (optional): max symbols to return (clamped to 2000).
 
 Return value:
 
 - A `docdex.symbols` payload, as defined in `docs/contracts/code_intelligence_schema_v1.md`.
-- The MCP response is bounded to 5000 symbols or 512 KiB; larger payloads fail with a `max_content_exceeded` error.
-
-Bounds and determinism:
-
-- `limit` clamps the number of returned symbols to `<= 1000` (minimum `1`); omitted means "use the max".
-- Symbols are sorted by `symbol_id`, then truncated, so the cap is deterministic.
-- `symbols[].signature`, `outcome.reason`, and `outcome.error_summary` are truncated to `<= 512` bytes (ellipsis added when truncated).
 
 Failure semantics (MCP JSON-RPC errors):
 
@@ -111,19 +81,13 @@ Failure semantics (MCP JSON-RPC errors):
 - `missing_index`: no symbols record exists for that `path` (common after enabling symbols without reindexing).
 - `invalid_path`: path is not a safe repo-relative path.
 
-Bounded outputs:
-
-- Symbols are sorted by `symbol_id`.
-- Results are capped at 2000 symbols per file (deterministic truncation by `symbol_id` order).
-- `outcome.error_summary` is truncated to 512 bytes.
-
 See `docs/mcp/errors.md` for the common error envelope.
 
 ### Rust interface (internal)
 
 Internal consumers can use the `SymbolsStore` API in `src/symbols.rs`:
 
-- `SymbolsStore::new(repo_root, repo_state_dir) -> Result<SymbolsStore>`
+- `SymbolsStore::new(repo_root, state_dir) -> Result<SymbolsStore>`
 - `SymbolsStore::read_symbols(rel_path) -> Result<Option<SymbolsResponseV1>>`
 - `SymbolsStore::upsert_symbols(rel_path, payload) -> Result<()>`
 - `SymbolsStore::delete_symbols(rel_path) -> Result<()>`
@@ -145,59 +109,14 @@ Each stored record is a `docdex.symbols` JSON payload:
 `SymbolsStore::read_symbols()` is backward-tolerant for older/missing fields:
 
 - If `repo_id` or `file` are missing/empty, it fills them from the store context and the read path.
-- Symbol IDs are recomputed after normalization to stay consistent with truncated fields.
+- If `symbol_id` is missing/empty on any symbol, it is recomputed.
 - Symbols are sorted by `symbol_id` for deterministic outputs.
-- Symbols are capped at 2000 per file; `outcome.error_summary` is truncated to 512 bytes.
-- If the stored `repo_id` does not match the store repo, the record is treated as missing.
-
-<<<<<<< HEAD
-## Output caps (deterministic)
-
-To keep symbol outputs bounded and predictable across tools, Docdex enforces fixed caps:
-
-- Max symbols per file: `1000` (extra symbols are dropped after sorting by `symbol_id`).
-- Max symbols per run: `50000` (full reindex or multi-file ingest budget; once exhausted, remaining supported files record `status=skipped` with `reason=symbols_budget_exhausted`).
-- Max `signature` length: `240` characters.
-- Max `outcome.error_summary` length: `200` characters.
-
-These limits are fixed (not configurable) and do not vary by repo.
-=======
-### Outcome metadata
-
-`outcome` may include parser/runtime metadata:
-
-- `outcome.parser`: `{ name, version? }` for the extractor parser (when known).
-- `outcome.runtime`: `{ name, version? }` for the Docdex runtime.
-
-### Limits and truncation
-
-To keep payload sizes predictable, Docdex clamps symbol outputs deterministically:
-
-- Max symbols per file: 512
-- Max symbol `name`: 200 chars
-- Max symbol `kind`: 32 chars
-- Max symbol `signature`: 240 chars
-- Max `outcome.reason`: 160 chars
-- Max `outcome.error_summary`: 360 chars
-- Max `outcome.parser.name`/`outcome.runtime.name`: 64 chars
-- Max `outcome.parser.version`/`outcome.runtime.version`: 64 chars
-
-Lengths are Unicode scalar chars; truncation does not add extra fields.
->>>>>>> mcoda/task/bck-05-us-10-t04
-
-## Deterministic ordering and bounds
-
-Docdex normalizes symbol payloads before returning or storing them:
-
-- `symbols` is sorted by `symbol_id` (ascending) and clamped to at most 1000 items. If more symbols are present, extra items are dropped deterministically; no additional fields are added.
-- `signature` is truncated to 256 characters; `outcome.error_summary` is truncated to 512 characters (if present). Truncation uses an ASCII `...` suffix when space allows.
-- Limits are global to the MCP server process and do not vary by repo.
 
 ## Stable identifiers
 
 ### `repo_id`
 
-`repo_id` is the repo fingerprint (SHA-256 of the repo identity). It is derived from the `.git` directory when present, falling back to the repo root on non-git directories.
+`repo_id` is a SHA-256 hex digest derived from the repo root path after canonicalization and slash normalization.
 
 Assumption/implication:
 
@@ -220,12 +139,6 @@ For every indexed file, when symbol extraction is enabled, Docdex attempts to pe
 - `symbols`: extracted symbols (may be empty)
 - `outcome`: per-file status and optional metadata
 
-### Eligibility rules
-
-- Extraction is attempted only for supported file extensions (see below).
-- Unsupported files are recorded with `outcome.status = skipped` and an empty `symbols` list.
-- `docdex_symbols` only accepts safe repo-relative paths; invalid paths are rejected.
-
 ### Outcome statuses
 
 The `outcome.status` field is one of:
@@ -239,7 +152,6 @@ The `outcome.status` field is one of:
 Docdex currently uses these `outcome.reason` values:
 
 - `unsupported_language` (status: `skipped`)
-- `symbols_budget_exhausted` (status: `skipped`)
 - `read_failed (<language>)` (status: `failed`)
 - `extract_failed (<language>)` (status: `failed`)
 

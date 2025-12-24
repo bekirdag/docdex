@@ -9,11 +9,7 @@ pub struct RepoArgs {
     #[arg(
         long,
         env = "DOCDEX_STATE_DIR",
-<<<<<<< HEAD
-        help = "Override state base directory (default: ~/.docdex/state, per-repo under repos/<fingerprint>/index). Relative paths or absolute paths inside the repo keep legacy in-repo layout; absolute paths outside the repo are treated as shared bases and scoped under <state-dir>/repos/<repo_id>/index."
-=======
-        help = "Override Docdex state root (default: ~/.docdex/state). State is always scoped under <state-root>/repos/<fingerprint>/index to prevent cross-repo mixing. Relative paths are resolved under the repo root."
->>>>>>> mcoda/task/ops-01-us-03-t02
+        help = "Override index storage directory (default: <repo>/.docdex/index; falls back to legacy .gpt-creator/docdex/index if present). If an absolute path outside the repo is provided, Docdex scopes state under <state-dir>/repos/<repo_id>/index to prevent cross-repo mixing."
     )]
     pub state_dir: Option<PathBuf>,
     #[arg(
@@ -45,7 +41,9 @@ pub struct RepoArgs {
 
 impl RepoArgs {
     pub fn repo_root(&self) -> PathBuf {
-        crate::repo_resolution::resolve_repo_root(&self.repo).repo_root
+        self.repo
+            .canonicalize()
+            .unwrap_or_else(|_| self.repo.clone())
     }
 
     pub fn state_dir_override(&self) -> Option<PathBuf> {

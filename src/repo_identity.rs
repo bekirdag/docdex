@@ -1,11 +1,10 @@
 use anyhow::{Context, Result};
-use crate::error::{AppError, ERR_INVALID_ARGUMENT};
+use crate::error::{repo_resolution_details, AppError, ERR_INVALID_ARGUMENT, ERR_MISSING_REPO_PATH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use crate::state_paths::{default_state_base_dir, StatePaths};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepoIdentityError {
@@ -60,42 +59,6 @@ pub struct RepoStateKeyResolution {
     pub state_key: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct RepoRootResolution {
-    pub canonical_path: PathBuf,
-    pub normalized_path: String,
-}
-
-pub fn resolve_repo_root(repo_root: &Path, recovery_steps: Vec<String>) -> Result<RepoRootResolution> {
-    if !repo_root.exists() {
-        return Err(AppError::new(ERR_MISSING_REPO_PATH, "repo path not found")
-            .with_details(repo_resolution_details(
-                normalize_input_path(repo_root),
-                None,
-                None,
-                recovery_steps,
-            ))
-            .into());
-    }
-    if !repo_root.is_dir() {
-        return Err(AppError::new(
-            ERR_INVALID_ARGUMENT,
-            format!("repo root is not a directory: {}", repo_root.display()),
-        )
-        .into());
-    }
-
-    let canonical_path = repo_root
-        .canonicalize()
-        .unwrap_or_else(|_| repo_root.to_path_buf());
-    let normalized_path = normalize_path(&canonical_path);
-
-    Ok(RepoRootResolution {
-        canonical_path,
-        normalized_path,
-    })
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct RepoReassociateResult {
     pub fingerprint: String,
@@ -116,8 +79,6 @@ pub struct RepoInspectReport {
     pub shared_state_base_dir: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub state_paths: Option<crate::state_layout::StatePathsDebug>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mapping: Option<RepoInspectMapping>,
     pub status: RepoInspectStatus,
@@ -177,8 +138,6 @@ struct RepoRegistryEntry {
 struct RepoStateMetaV1 {
     version: u32,
     fingerprint_sha256: String,
-    #[serde(default = "default_fingerprint_version")]
-    fingerprint_version: u32,
     canonical_path: String,
     #[serde(default)]
     created_at_epoch_ms: i64,
@@ -188,16 +147,8 @@ struct RepoStateMetaV1 {
 
 const REPO_REGISTRY_VERSION: u32 = 1;
 const REPO_META_VERSION: u32 = 1;
-<<<<<<< HEAD
-=======
-const FINGERPRINT_VERSION: u32 = 1;
 const REPO_REGISTRY_FILENAME: &str = "repo_registry.json";
 const REPO_META_FILENAME: &str = "repo_meta.json";
->>>>>>> mcoda/task/ops-01-us-03-t03
-
-fn default_fingerprint_version() -> u32 {
-    FINGERPRINT_VERSION
-}
 
 pub fn legacy_repo_id_for_root(repo_root: &Path) -> String {
     let normalized = normalize_path(repo_root);
@@ -217,10 +168,17 @@ pub fn repo_fingerprint_sha256(repo_root: &Path) -> Result<String> {
 
 pub fn inspect_repo(repo_root: &Path, state_dir_override: Option<&Path>) -> Result<RepoInspectReport> {
     if !repo_root.exists() {
-        return Err(
-            crate::policy::missing_repo_path_error(repo_root, crate::policy::RepoSurface::Cli)
-                .into(),
-        );
+        return Err(AppError::new(ERR_MISSING_REPO_PATH, "repo path not found")
+            .with_details(repo_resolution_details(
+                repo_root.to_string_lossy().replace('\\', "/"),
+                None,
+                None,
+                vec![
+                    "Repo may have moved or been renamed.".to_string(),
+                    "Re-run with the repo's current path.".to_string(),
+                ],
+            ))
+            .into());
     }
     if !repo_root.is_dir() {
         return Err(AppError::new(
@@ -237,23 +195,22 @@ pub fn inspect_repo(repo_root: &Path, state_dir_override: Option<&Path>) -> Resu
     let normalized_path = normalize_path(&repo_root);
     let computed_fingerprint = repo_fingerprint_sha256(&repo_root).ok();
 
-    let resolved = crate::state_layout::resolve_state_paths_for_inspect(
-        &repo_root,
-        state_dir_override.map(|path| path.to_path_buf()),
-    )?;
+    let resolved = resolve_state_dir_for_inspect(&repo_root, state_dir_override);
     let mut report = RepoInspectReport {
         repo_root: repo_root_str,
         normalized_path,
         computed_fingerprint: computed_fingerprint.clone(),
-        resolved_index_state_dir: resolved.index_dir().display().to_string(),
-        shared_state_base_dir: Some(resolved.layout().base_dir().display().to_string()),
-        state_key: Some(resolved.state_key().to_string()),
-        state_paths: Some(resolved.debug_report()),
+        resolved_index_state_dir: resolved.resolved_index_dir.display().to_string(),
+        shared_state_base_dir: resolved.shared_base_dir.as_ref().map(|p| p.display().to_string()),
+        state_key: resolved.state_key.clone(),
         mapping: None,
-        status: RepoInspectStatus::Unmapped,
+        status: RepoInspectStatus::LocalStateDir,
         diagnostics: None,
     };
-    let shared_base_dir = resolved.layout().base_dir().to_path_buf();
+
+    let Some(shared_base_dir) = resolved.shared_base_dir else {
+        return Ok(report);
+    };
 
     let Some(fingerprint) = computed_fingerprint else {
         report.status = RepoInspectStatus::Unmapped;
@@ -338,21 +295,6 @@ pub fn inspect_repo(repo_root: &Path, state_dir_override: Option<&Path>) -> Resu
 }
 
 pub fn resolve_shared_state_key(repo_root: &Path, shared_base_dir: &Path) -> Result<RepoStateKeyResolution> {
-    resolve_shared_state_key_internal(repo_root, shared_base_dir, true)
-}
-
-pub(crate) fn resolve_shared_state_key_lenient(
-    repo_root: &Path,
-    shared_base_dir: &Path,
-) -> Result<RepoStateKeyResolution> {
-    resolve_shared_state_key_internal(repo_root, shared_base_dir, false)
-}
-
-fn resolve_shared_state_key_internal(
-    repo_root: &Path,
-    shared_base_dir: &Path,
-    validate_meta: bool,
-) -> Result<RepoStateKeyResolution> {
     let fingerprint = repo_fingerprint_sha256(repo_root)?;
     let registry_path = repo_registry_path(shared_base_dir);
     let registry = load_registry(&registry_path)?;
@@ -377,12 +319,12 @@ fn resolve_shared_state_key_internal(
         }
     }
 
-    if validate_meta {
-        // Fast-fail on explicit mismatches when metadata exists.
-        validate_state_meta(shared_base_dir, &state_key, &fingerprint)?;
-    }
+    // Fast-fail on explicit mismatches when metadata exists.
+    validate_state_meta(shared_base_dir, &state_key, &fingerprint)?;
 
-    Ok(RepoStateKeyResolution { state_key })
+    Ok(RepoStateKeyResolution {
+        state_key,
+    })
 }
 
 pub fn resolve_shared_index_state_dir(repo_root: &Path, custom_state_dir: &Path) -> Result<PathBuf> {
@@ -629,10 +571,6 @@ pub fn reassociate_repo_path(
     })
 }
 
-pub(crate) fn normalize_input_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
-
 fn normalize_path(path: &Path) -> String {
     path.canonicalize()
         .unwrap_or_else(|_| path.to_path_buf())
@@ -640,7 +578,6 @@ fn normalize_path(path: &Path) -> String {
         .replace('\\', "/")
 }
 
-<<<<<<< HEAD
 struct InspectStateDirResolution {
     resolved_index_dir: PathBuf,
     shared_base_dir: Option<PathBuf>,
@@ -711,44 +648,25 @@ fn resolve_state_dir_for_inspect(repo_root: &Path, state_dir_override: Option<&P
             state_key: None,
         },
         None => {
-            let Ok(base_dir) = default_state_base_dir() else {
-                return InspectStateDirResolution {
-                    resolved_index_dir: repo_root.join(".docdex").join("index"),
+            let default_dir = repo_root.join(".docdex").join("index");
+            let legacy_dir = repo_root.join(".gpt-creator").join("docdex").join("index");
+            if !default_dir.exists() && legacy_dir.exists() {
+                InspectStateDirResolution {
+                    resolved_index_dir: legacy_dir,
                     shared_base_dir: None,
                     state_key: None,
-                };
-            };
-            let fingerprint = repo_fingerprint_sha256(repo_root).ok();
-            let state_key = fingerprint.clone().and_then(|fp| {
-                let registry = load_registry(&repo_registry_path(&base_dir)).ok()?;
-                if let Some(entry) = registry.repos.get(&fp) {
-                    return Some(entry.state_key.clone());
                 }
-
-                let preferred = shared_repo_root_dir(&base_dir, &fp).join("index");
-                let legacy = legacy_repo_id_for_root(repo_root);
-                let legacy_dir = shared_repo_root_dir(&base_dir, &legacy).join("index");
-                if preferred.exists() {
-                    Some(fp)
-                } else if legacy_dir.exists() {
-                    Some(legacy)
-                } else {
-                    Some(fp)
+            } else {
+                InspectStateDirResolution {
+                    resolved_index_dir: default_dir,
+                    shared_base_dir: None,
+                    state_key: None,
                 }
-            });
-            let expected_key = state_key.clone().unwrap_or_else(|| "<unknown>".to_string());
-            let resolved_index_dir = StatePaths::new(base_dir.clone()).repo_index_dir(&expected_key);
-            InspectStateDirResolution {
-                resolved_index_dir,
-                shared_base_dir: Some(base_dir),
-                state_key,
             }
         }
     }
 }
 
-=======
->>>>>>> mcoda/task/ops-01-us-03-t02
 fn read_repo_meta(shared_base_dir: &Path, state_key: &str) -> Option<RepoStateMetaV1> {
     let path = repo_meta_path(shared_base_dir, state_key);
     let raw = fs::read_to_string(&path).ok()?;
@@ -756,15 +674,15 @@ fn read_repo_meta(shared_base_dir: &Path, state_key: &str) -> Option<RepoStateMe
 }
 
 fn repo_registry_path(shared_base_dir: &Path) -> PathBuf {
-    StatePaths::new(shared_base_dir.to_path_buf()).repo_registry_path()
+    shared_base_dir.join("repos").join(REPO_REGISTRY_FILENAME)
 }
 
 fn shared_repo_root_dir(shared_base_dir: &Path, state_key: &str) -> PathBuf {
-    StatePaths::new(shared_base_dir.to_path_buf()).repo_root(state_key)
+    shared_base_dir.join("repos").join(state_key)
 }
 
 fn repo_meta_path(shared_base_dir: &Path, state_key: &str) -> PathBuf {
-    StatePaths::new(shared_base_dir.to_path_buf()).repo_meta_path(state_key)
+    shared_repo_root_dir(shared_base_dir, state_key).join(REPO_META_FILENAME)
 }
 
 fn load_registry(path: &Path) -> Result<RepoRegistryFile> {
@@ -847,7 +765,6 @@ fn write_repo_meta(
     let payload = RepoStateMetaV1 {
         version: REPO_META_VERSION,
         fingerprint_sha256: fingerprint.to_string(),
-        fingerprint_version: FINGERPRINT_VERSION,
         canonical_path: canonical_path.to_string(),
         created_at_epoch_ms: created_at,
         last_seen_at_epoch_ms: now_ms,
@@ -876,7 +793,7 @@ fn base_dir_and_state_key_from_index_dir(index_state_dir: &Path) -> Option<(Path
     Some((base_dir, state_key))
 }
 
-pub(crate) fn split_scoped_state_dir(custom_state_dir: &Path) -> Option<(PathBuf, Option<String>, bool)> {
+fn split_scoped_state_dir(custom_state_dir: &Path) -> Option<(PathBuf, Option<String>, bool)> {
     let name = custom_state_dir.file_name()?.to_string_lossy();
     if name == "index" {
         let state_key_dir = custom_state_dir.parent()?;
@@ -934,8 +851,7 @@ fn file_identity_payload(path: &Path) -> Result<String> {
     {
         use std::os::unix::fs::MetadataExt;
         return Ok(format!(
-            "v{}|unix|dev={}|ino={}|is_dir={}",
-            FINGERPRINT_VERSION,
+            "v1|unix|dev={}|ino={}|is_dir={}",
             meta.dev(),
             meta.ino(),
             meta.is_dir()
@@ -948,8 +864,7 @@ fn file_identity_payload(path: &Path) -> Result<String> {
         let vsn = meta.volume_serial_number().unwrap_or(0);
         let file_index = meta.file_index().unwrap_or(0);
         return Ok(format!(
-            "v{}|windows|volume_serial_number={vsn}|file_index={file_index}|is_dir={}",
-            FINGERPRINT_VERSION,
+            "v1|windows|volume_serial_number={vsn}|file_index={file_index}|is_dir={}",
             meta.is_dir()
         ));
     }
@@ -957,7 +872,7 @@ fn file_identity_payload(path: &Path) -> Result<String> {
     #[cfg(not(any(unix, windows)))]
     {
         let normalized = normalize_path(path);
-        Ok(format!("v{}|path|{}", FINGERPRINT_VERSION, normalized))
+        Ok(format!("v1|path|{}", normalized))
     }
 }
 
@@ -970,32 +885,6 @@ mod tests {
         fs::create_dir_all(dir)?;
         fs::create_dir_all(dir.join(".git"))?;
         fs::write(dir.join("readme.md"), "# Repo\n")?;
-        Ok(())
-    }
-
-    #[test]
-    fn fingerprint_deterministic_for_same_repo() -> Result<()> {
-        let base = TempDir::new()?;
-        let repo = base.path().join("repo");
-        create_git_repo(&repo)?;
-
-        let first = repo_fingerprint_sha256(&repo)?;
-        let second = repo_fingerprint_sha256(&repo)?;
-        assert_eq!(first, second);
-        Ok(())
-    }
-
-    #[test]
-    fn fingerprint_differs_for_distinct_repos() -> Result<()> {
-        let base = TempDir::new()?;
-        let repo_a = base.path().join("repo-a");
-        let repo_b = base.path().join("repo-b");
-        create_git_repo(&repo_a)?;
-        create_git_repo(&repo_b)?;
-
-        let fp_a = repo_fingerprint_sha256(&repo_a)?;
-        let fp_b = repo_fingerprint_sha256(&repo_b)?;
-        assert_ne!(fp_a, fp_b);
         Ok(())
     }
 
@@ -1017,7 +906,7 @@ mod tests {
     fn registry_updates_canonical_path_and_keeps_state_key() -> Result<()> {
         let base = TempDir::new()?;
         let shared = base.path().join("state");
-        fs::create_dir_all(StatePaths::new(shared.clone()).repos_dir())?;
+        fs::create_dir_all(shared.join("repos"))?;
 
         let repo_root = base.path().join("repo-a");
         create_git_repo(&repo_root)?;
@@ -1066,7 +955,7 @@ mod tests {
     fn canonical_path_collision_is_rejected() -> Result<()> {
         let base = TempDir::new()?;
         let shared = base.path().join("state");
-        fs::create_dir_all(StatePaths::new(shared.clone()).repos_dir())?;
+        fs::create_dir_all(shared.join("repos"))?;
 
         let repo_a = base.path().join("repo-a");
         let repo_b = base.path().join("repo-b");
@@ -1106,7 +995,7 @@ mod tests {
     fn inspect_reports_reassociation_required_after_repo_move() -> Result<()> {
         let base = TempDir::new()?;
         let shared = base.path().join("state");
-        fs::create_dir_all(StatePaths::new(shared.clone()).repos_dir())?;
+        fs::create_dir_all(shared.join("repos"))?;
 
         let repo_root = base.path().join("repo-a");
         create_git_repo(&repo_root)?;
@@ -1163,7 +1052,7 @@ mod tests {
     fn inspect_includes_shared_mapping_and_last_seen() -> Result<()> {
         let base = TempDir::new()?;
         let shared = base.path().join("state");
-        fs::create_dir_all(StatePaths::new(shared.clone()).repos_dir())?;
+        fs::create_dir_all(shared.join("repos"))?;
 
         let repo_root = base.path().join("repo-a");
         create_git_repo(&repo_root)?;
@@ -1194,25 +1083,6 @@ mod tests {
             assert!(mapping_obj.contains_key(key), "missing mapping key: {key}");
         }
         assert!(mapping_obj.contains_key("lastSeenAtEpochMs"));
-        Ok(())
-    }
-
-    #[test]
-    fn repo_meta_includes_fingerprint_version() -> Result<()> {
-        let base = TempDir::new()?;
-        let shared = base.path().join("state");
-        fs::create_dir_all(shared.join("repos"))?;
-
-        let repo_root = base.path().join("repo-a");
-        create_git_repo(&repo_root)?;
-        let resolution = resolve_shared_state_key(&repo_root, &shared)?;
-        let state_key = resolution.state_key.clone();
-        let state_index = shared_repo_root_dir(&shared, &state_key).join("index");
-        fs::create_dir_all(&state_index)?;
-
-        record_repo_opened(&repo_root, &state_index)?;
-        let meta = read_repo_meta(&shared, &state_key).expect("repo meta");
-        assert_eq!(meta.fingerprint_version, FINGERPRINT_VERSION);
         Ok(())
     }
 }

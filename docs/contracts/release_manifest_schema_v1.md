@@ -13,40 +13,32 @@ For each tag `vX.Y.Z`, the release workflow uploads the manifest and checksums a
 - Manifest: `docdex-release-manifest.json`
 - Manifest checksum: `docdex-release-manifest.json.sha256`
 - Fallback checksums bundle: `SHA256SUMS` and `SHA256SUMS.txt`
-- Optional detached signatures over integrity metadata (when enabled): `*.sig` (see `docs/contracts/release_integrity_signatures_v1.md`)
 
 The release workflow that generates and uploads these is `.github/workflows/release.yml` (step “Generate release manifest”, implemented by `scripts/generate_release_manifest.cjs`).
 
-Signature policy: this repo’s default integrity mechanism is SHA-256 checksums (no signature verification by the npm installer). If you need signatures in your environment/fork, see `docs/ops/release_integrity.md`.
-
 ## Asset naming (canonical identifiers)
 
-Docdex publishes one tarball per supported platform **per release tag** `vX.Y.Z`. The canonical release asset identifier includes the version tag and the per-platform filename:
+Docdex publishes one tarball per supported platform, named deterministically:
 
-- Release tag (version): `v<version>`
-- Archive filename: `docdexd-<platformKey>.tar.gz`
-- Canonical release asset id (tag + filename): `v<version>/docdexd-<platformKey>.tar.gz`
+- Archive: `docdexd-<platformKey>.tar.gz`
 - Per-asset checksum sidecar (legacy fallback): `docdexd-<platformKey>.tar.gz.sha256`
 
-`platformKey` is the installer’s stable platform identifier (see `npm/lib/platform_matrix.js` and `docs/ops/installer_supported_platforms.md`). It maps 1:1 to the Rust target triple and encodes Linux libc (`gnu` vs `musl`) in the key.
-
-The manifest stores only the filename under `asset.name`; the version is implied by the release tag that the manifest is attached to.
+`platformKey` is the installer’s stable platform identifier (see `npm/lib/platform_matrix.js` and `docs/ops/installer_supported_platforms.md`).
 
 ## Supported target triples (published artifacts)
 
 Published targets are the `published: true` entries in `npm/lib/platform_matrix.js` and are the ones the manifest for a release is expected to include under `targets`:
 
-| Rust target triple | Linux libc | `platformKey` | Canonical archive asset (filename) |
-|---|---|---|---|
-| `aarch64-apple-darwin` | n/a | `darwin-arm64` | `docdexd-darwin-arm64.tar.gz` |
-| `x86_64-apple-darwin` | n/a | `darwin-x64` | `docdexd-darwin-x64.tar.gz` |
-| `aarch64-unknown-linux-gnu` | `gnu` | `linux-arm64-gnu` | `docdexd-linux-arm64-gnu.tar.gz` |
-| `x86_64-unknown-linux-gnu` | `gnu` | `linux-x64-gnu` | `docdexd-linux-x64-gnu.tar.gz` |
-| `x86_64-unknown-linux-musl` | `musl` | `linux-x64-musl` | `docdexd-linux-x64-musl.tar.gz` |
-| `x86_64-pc-windows-msvc` | n/a | `win32-x64` | `docdexd-win32-x64.tar.gz` |
+| Rust target triple | `platformKey` | Canonical archive asset |
+|---|---|---|
+| `aarch64-apple-darwin` | `darwin-arm64` | `docdexd-darwin-arm64.tar.gz` |
+| `x86_64-apple-darwin` | `darwin-x64` | `docdexd-darwin-x64.tar.gz` |
+| `aarch64-unknown-linux-gnu` | `linux-arm64-gnu` | `docdexd-linux-arm64-gnu.tar.gz` |
+| `x86_64-unknown-linux-gnu` | `linux-x64-gnu` | `docdexd-linux-x64-gnu.tar.gz` |
+| `x86_64-unknown-linux-musl` | `linux-x64-musl` | `docdexd-linux-x64-musl.tar.gz` |
+| `x86_64-pc-windows-msvc` | `win32-x64` | `docdexd-win32-x64.tar.gz` |
 
 If additional targets are added in the platform matrix, the manifest generator (`scripts/generate_release_manifest.cjs`) will include them automatically for published entries.
-Runtime mapping (Node OS/arch/libc -> `platformKey` -> `targetTriple`) is defined in `docs/contracts/installer_platform_mapping_v1.md`.
 
 ## Artifact names (manifest + fallbacks)
 
@@ -60,10 +52,6 @@ The installer tries manifest candidates in a deterministic order (see `npm/lib/i
 4) `manifest.json` (legacy/compat)
 
 The candidate list can be overridden by setting `DOCDEX_MANIFEST_NAMES` (comma-separated) or `DOCDEX_MANIFEST_NAME`.
-
-You can also control whether the installer uses the manifest at all (and whether it falls back to other integrity sources) via:
-- `DOCDEX_INTEGRITY_METADATA_SOURCES` (order matters; includes/excludes `manifest`)
-- `DOCDEX_INTEGRITY_MISSING_POLICY` (`fallback` or `abort`)
 
 ### Checksums filenames (fallback candidates)
 
@@ -91,17 +79,16 @@ Optional (metadata; ignored by the installer unless noted):
 - `tag` (string): release tag, typically `vX.Y.Z`.
 - `version` (string): `X.Y.Z`.
 - `generatedAt` (string): ISO-8601 timestamp.
-- `publishedAssets` (array): `{name, sha256}` pairs (optionally `size` in bytes) for release automation auditing (installer ignores this).
+- `publishedAssets` (array): `{name, sha256}` pairs for release automation auditing (installer ignores this).
 
 ### `targets` entry object (required fields)
 
 For each target triple key `T` in `targets`:
-- `targets[T].asset.name` (string): canonical GitHub Release asset filename (e.g. `docdexd-linux-x64-gnu.tar.gz`; version comes from the release tag).
+- `targets[T].asset.name` (string): canonical GitHub Release asset name (e.g. `docdexd-linux-x64-gnu.tar.gz`).
 - `targets[T].integrity.sha256` (string): lowercase 64-hex SHA-256 of the asset file bytes for `asset.name`.
 
 Optional fields (tolerated by the installer):
 - `targets[T].asset.id` (string|number): provider-specific asset id (not used for resolution).
-- `targets[T].integrity.size` (number): asset size in bytes (optional integrity metadata; ignored by the installer).
 - Additional keys are permitted but ignored by the installer.
 
 ### Legacy-compatible shape (`assets` array)
@@ -123,10 +110,7 @@ and MUST include a canonical asset identifier/name plus SHA-256 under one of the
   "targets": {
     "x86_64-unknown-linux-gnu": {
       "asset": { "name": "docdexd-linux-x64-gnu.tar.gz" },
-      "integrity": {
-        "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        "size": 123456
-      }
+      "integrity": { "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
     }
   }
 }
@@ -141,28 +125,12 @@ The npm installer resolves an install plan deterministically (see `npm/lib/insta
    - `targetTriple` (e.g. `x86_64-unknown-linux-gnu`)
 2) Try to fetch and parse the manifest using the candidate list above.
    - If a candidate returns HTTP 200 and resolves exactly one entry for `targetTriple` with `integrity.sha256`, the installer uses that asset name and SHA-256.
-   - If the release provides a detached signature for the selected manifest (`<manifest>.sig`), the installer verifies it **before** trusting any `integrity.sha256` values.
    - If a manifest is present (HTTP 200) but does not support the target triple (`DOCDEX_ASSET_NO_MATCH`) or is ambiguous (`DOCDEX_ASSET_MULTI_MATCH`), the installer fails closed and does not attempt fallback.
    - If a candidate is missing (404), invalid JSON, too large, or missing required fields, the installer continues to the next candidate; if none are usable, it falls back.
 3) Fallback (when no usable manifest exists): use the deterministic archive name `docdexd-<platformKey>.tar.gz` and attempt to obtain integrity metadata by:
    - Prefer `SHA256SUMS` / `SHA256SUMS.txt` entries for that filename.
-   - If the release provides a detached signature for the selected checksums file (`SHA256SUMS.sig` / `SHA256SUMS.txt.sig`), the installer verifies it **before** trusting any checksum entries.
    - Legacy fallback: `<archive>.sha256` sidecar for that filename.
-<<<<<<< HEAD
-   - If integrity metadata is still unavailable, behavior is controlled by `DOCDEX_INTEGRITY_POLICY`:
-     - Default (`required`): fail closed with `DOCDEX_CHECKSUM_UNUSABLE` (exit `24`).
-     - Overrides (`allow-missing|off`): warn and proceed unverified (insecure; never silent).
-4) Download, verify SHA-256 (fatal on mismatch unless `DOCDEX_INTEGRITY_POLICY=off`), extract, and confirm the expected `docdexd` binary exists.
-
-Integrity policy (fail-closed):
-- If SHA-256 integrity metadata cannot be obtained from the manifest or fallback checksums, the installer aborts with `DOCDEX_CHECKSUM_UNUSABLE` (no “silent” install).
-- There is no supported mode that installs a downloaded `docdexd` archive without SHA-256 verification.
-=======
-   - If no SHA-256 metadata is available from the manifest or fallbacks, the installer fails closed with `DOCDEX_CHECKSUM_UNUSABLE`.
 4) Download, verify SHA-256 (fatal on mismatch), extract, and confirm the expected `docdexd` binary exists.
->>>>>>> mcoda/task/ops-01-us-04-t38
-
-If a supported target triple resolves but the archive is missing (404), the installer fails with `DOCDEX_ASSET_MISSING` and prints the detected platform, `platformKey`, `targetTriple`, and expected asset naming pattern.
 
 If installation fails, fatal errors are deterministic and include whether fallback was attempted; see `docs/contracts/installer_error_contract_v1.md` and `docs/ops/installer_error_codes.md`.
 
@@ -195,7 +163,6 @@ This confirms the fallback checksum bundle matches the released assets (and shou
 
 ## See also
 
-- `docs/contracts/npm_daemon_version_contract_v1.md`
 - Installer supported platforms + mapping: `docs/ops/installer_supported_platforms.md`
 - Installer error codes + remediation: `docs/ops/installer_error_codes.md`
 - Installer error contract: `docs/contracts/installer_error_contract_v1.md`

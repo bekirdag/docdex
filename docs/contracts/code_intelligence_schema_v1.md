@@ -40,19 +40,7 @@ Symbol responses represent extracted symbols within a repo, scoped to a file.
 - `outcome` (object, optional): Per-file extraction outcome metadata.
   - `status` (string, required): `ok` | `skipped` | `failed`
   - `reason` (string, optional): Short stable reason code/message (e.g. `unsupported_language`, `read_failed (markdown)`).
-<<<<<<< HEAD
   - `error_summary` (string, optional): Best-effort human-readable error summary (must be bounded; avoid stack traces).
-  - `parser` (object, optional): Parser metadata for the extractor.
-    - `name` (string, required)
-    - `version` (string, optional)
-  - `runtime` (object, optional): Runtime metadata for the extractor process.
-    - `name` (string, required)
-    - `version` (string, optional)
-
-Docdex caps `error_summary` to 200 chars, `signature` to 240 chars, and the `symbols` array to 1000 items per file.
-=======
-  - `error_summary` (string, optional): Best-effort human-readable error summary (must be bounded; avoid stack traces). Docdex truncates to 512 bytes.
->>>>>>> mcoda/task/bck-05-us-10-t03
 
 **Symbol item fields (v1)**
 
@@ -63,36 +51,6 @@ Docdex caps `error_summary` to 200 chars, `signature` to 240 chars, and the `sym
 - `range` (object, required): 1-based positions within `file`.
   - `start_line`, `start_col`, `end_line`, `end_col` (integers)
 - `signature` (string, optional): Language-specific display signature if available.
-
-<<<<<<< HEAD
-<<<<<<< HEAD
-### Symbols limits (v1)
-
-Docdex clamps symbol outputs deterministically to keep schemas stable:
-
-- Max symbols per file: 512
-- Max symbol `name`: 200 chars
-- Max symbol `kind`: 32 chars
-- Max symbol `signature`: 240 chars
-- Max `outcome.reason`: 160 chars
-- Max `outcome.error_summary`: 360 chars
-- Max `outcome.parser.name`/`outcome.runtime.name`: 64 chars
-- Max `outcome.parser.version`/`outcome.runtime.version`: 64 chars
-
-Lengths are Unicode scalar chars; truncation is deterministic and does not add extra fields.
-=======
-**Deterministic ordering and bounds**
-
-- Symbols are returned sorted by `symbol_id`.
-- Responses may be truncated to a server-defined maximum (currently 2000 symbols per file) without additional fields.
->>>>>>> mcoda/task/bck-05-us-10-t03
-=======
-**Ordering and bounds (v1)**
-
-- `symbols` is sorted ascending by `symbol_id` and clamped to at most 1000 items. If more are present, extra items are dropped deterministically; no additional fields are added.
-- `signature` is truncated to 256 characters; `outcome.error_summary` is truncated to 512 characters (if present). Truncation uses an ASCII `...` suffix when space allows.
-- Limits are global to the server process and do not vary by repo.
->>>>>>> mcoda/task/bck-05-us-10-t01
 
 ## Impact graph response (`docdex.impact_graph`)
 
@@ -124,15 +82,3 @@ For a request where `source = F`:
 - `inbound` is the set of `source` paths for edges where `target == F`.
 
 `edges[].kind` is an optional classifier such as `import`, `include`, or `require` (implementation-defined).
-
-### Output bounds (deterministic)
-
-Impact graph responses are bounded to keep payloads predictable and repo-safe:
-
-- `maxEdges` is hard-capped at 10,000. Requests above the cap are clamped to 10,000 and reported via `appliedLimits.maxEdges`.
-- `inbound` and `outbound` arrays are capped to the applied `maxEdges` value (and therefore never exceed 10,000).
-- Node path strings (`source`, `target`, `inbound`, `outbound`) are truncated to 512 bytes when needed.
-- Edge label strings (`edges[].kind`, `edgeTypes`) are truncated to 128 bytes when needed.
-- `truncated` is set to `true` when any clamp or truncation occurs (limits, filtering, or text truncation).
-
-Truncation is UTF-8 safe and deterministic; it truncates at a character boundary and appends `...` when space allows.

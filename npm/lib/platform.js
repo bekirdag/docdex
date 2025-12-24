@@ -55,14 +55,6 @@ class UnsupportedPlatformError extends Error {
 const SUPPORTED_PLATFORM_KEYS = PUBLISHED_PLATFORM_KEYS;
 const SUPPORTED_TARGET_TRIPLES = PUBLISHED_TARGET_TRIPLES;
 
-function libcForPlatformKey(platformKey) {
-  if (!platformKey || typeof platformKey !== "string") return null;
-  if (!platformKey.startsWith("linux-")) return null;
-  if (platformKey.endsWith("-gnu")) return "gnu";
-  if (platformKey.endsWith("-musl")) return "musl";
-  return null;
-}
-
 function normalizeLibc(value) {
   if (value == null) return null;
   const libc = String(value).toLowerCase().trim();
@@ -287,27 +279,10 @@ function detectTargetTriple(options) {
 function resolvePlatformPolicy(options) {
   const platform = options?.platform ?? process.platform;
   const arch = options?.arch ?? process.arch;
-<<<<<<< HEAD
-  const libc =
-    platform === "linux" ? normalizeLibc(options?.libc) ?? detectLibcFromRuntime(options) : null;
-  const detectOptions = { ...(options || {}), platform, arch, libc };
-  const platformKey = detectPlatformKey(detectOptions);
-=======
-  const libc = platform === "linux" ? normalizeLibc(options?.libc) ?? detectLibcFromRuntime(options) : null;
-  const platformKey = detectPlatformKey({ ...(options || {}), platform, arch, libc });
->>>>>>> mcoda/task/ops-01-us-01-t38
+  const platformKey = detectPlatformKey(options);
   const targetTriple = targetTripleForPlatformKey(platformKey);
-  const libc = platform === "linux" ? libcForPlatformKey(platformKey) : null;
   return {
-<<<<<<< HEAD
-<<<<<<< HEAD
-    detected: { platform, arch, ...(libc ? { libc } : {}) },
-=======
-    detected: { platform, arch, libc },
->>>>>>> mcoda/task/ops-01-us-02-t39
-=======
-    detected: { platform, arch, libc },
->>>>>>> mcoda/task/ops-01-us-01-t38
+    detected: { platform, arch },
     platformKey,
     targetTriple,
     expectedAssetName: artifactName(platformKey),
@@ -320,7 +295,6 @@ module.exports = {
   detectLibcFromRuntime,
   detectPlatformKey,
   UnsupportedPlatformError,
-  libcForPlatformKey,
   artifactName,
   assetPatternForPlatformKey,
   targetTripleForPlatformKey,

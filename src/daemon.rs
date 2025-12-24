@@ -5,13 +5,7 @@ use crate::libs;
 use crate::memory::MemoryStore;
 use crate::metrics;
 use crate::ollama::OllamaEmbedder;
-<<<<<<< HEAD
-use crate::repo_manager::RepoManagerConfig;
-=======
-use crate::policy;
->>>>>>> mcoda/task/bck-05-us-07-t30
 use crate::search::{self, AppState, SecurityConfig};
-use crate::web;
 use crate::util;
 use crate::watcher;
 use anyhow::{anyhow, Context, Result};
@@ -23,10 +17,7 @@ use rustls_pemfile;
 use std::env;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::{
-    io,
-    sync::{Arc, Mutex},
-};
+use std::{io, sync::Arc};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio_rustls::{
@@ -232,7 +223,6 @@ pub async fn serve(
     ollama_base_url: String,
     embedding_model: String,
     embedding_timeout_ms: u64,
-    repo_manager_config: RepoManagerConfig,
 ) -> Result<()> {
     #[cfg(unix)]
     {
@@ -264,11 +254,7 @@ pub async fn serve(
     })?;
 
     let indexer = Arc::new(Indexer::with_config(repo, config).map_err(|err| {
-        if err.downcast_ref::<crate::error::AppError>().is_some()
-            || err
-                .downcast_ref::<crate::error::BackoffRequired>()
-                .is_some()
-        {
+        if err.downcast_ref::<crate::error::AppError>().is_some() {
             return err;
         }
         StartupError::new(
@@ -279,8 +265,7 @@ pub async fn serve(
         .into()
     })?);
     let libs_indexer = {
-        let libs_dir =
-            libs::libs_state_dir_from_index_state_dir(indexer.repo_root(), indexer.state_dir());
+        let libs_dir = libs::libs_state_dir_from_index_state_dir(indexer.state_dir());
         libs::LibsIndexer::open_read_only(libs_dir)
             .ok()
             .flatten()
@@ -305,24 +290,14 @@ pub async fn serve(
             .with_hint("Expected a URL like http://127.0.0.1:11434")
         })?;
         Some(search::MemoryState {
-            store: MemoryStore::new(indexer.repo_state_dir()),
+            store: MemoryStore::new(indexer.state_dir()),
             embedder,
         })
     } else {
         None
     };
-    let web_config = web::WebConfig::from_env();
-    let web_discovery =
-        web::ddg::DdgDiscovery::new(web_config).map_err(|err| {
-            StartupError::new(
-                "startup_config_invalid",
-                format!("failed to initialize web discovery: {err}"),
-            )
-            .with_hint("Check DOCDEX_WEB_* settings or disable with DOCDEX_WEB_ENABLED=0.")
-        })?;
     let metrics = Arc::new(metrics::Metrics::default());
     metrics::set_global(metrics.clone());
-    let web_gate = policy::web_gate_from_env();
     let state = AppState {
         indexer: indexer.clone(),
         libs_indexer,
@@ -330,17 +305,7 @@ pub async fn serve(
         access_log,
         audit,
         metrics: metrics.clone(),
-        web_discovery,
         memory,
-<<<<<<< HEAD
-<<<<<<< HEAD
-        index_state: Arc::new(Mutex::new(Default::default())),
-=======
-        repo_manager_config,
->>>>>>> mcoda/task/bck-05-us-07-t02
-=======
-        web_gate,
->>>>>>> mcoda/task/bck-05-us-07-t30
     };
     watcher::spawn(indexer.clone()).map_err(|err| {
         StartupError::new(

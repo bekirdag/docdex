@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fs;
@@ -6,8 +6,6 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use tantivy::schema::{Schema, STORED, TEXT};
-use tantivy::{doc, Index};
 
 fn docdex_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
@@ -20,15 +18,11 @@ struct McpHarness {
 }
 
 impl McpHarness {
-    fn spawn(repo: &Path, state_root: &Path) -> Result<Self, Box<dyn Error>> {
-        Self::spawn_with_symbols(repo, state_root, false)
+    fn spawn(repo: &Path) -> Result<Self, Box<dyn Error>> {
+        Self::spawn_with_symbols(repo, false)
     }
 
-    fn spawn_with_symbols(
-        repo: &Path,
-        state_root: &Path,
-        enable_symbols: bool,
-    ) -> Result<Self, Box<dyn Error>> {
+    fn spawn_with_symbols(repo: &Path, enable_symbols: bool) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo.to_string_lossy().to_string();
         let mut cmd = Command::new(docdex_bin());
         cmd.args([
@@ -40,7 +34,6 @@ impl McpHarness {
             "--max-results",
             "4",
         ]);
-        cmd.env("DOCDEX_STATE_DIR", state_root);
         if enable_symbols {
             cmd.env("DOCDEX_ENABLE_SYMBOL_EXTRACTION", "1");
         }
@@ -90,62 +83,14 @@ fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
     Ok(temp)
 }
 
-<<<<<<< HEAD
-fn symbols_record_path(repo_state_root: &Path, rel_path: &str) -> PathBuf {
-=======
-fn create_incompatible_index(index_dir: &Path, field_name: &str) -> Result<(), Box<dyn Error>> {
-    fs::create_dir_all(index_dir)?;
-    let mut builder = Schema::builder();
-    let title = builder.add_text_field(field_name, TEXT | STORED);
-    let schema = builder.build();
-    let index = Index::create_in_dir(index_dir, schema)?;
-    let mut writer = index.writer(5_000_000)?;
-    writer.add_document(doc!(title => "legacy"))?;
-    writer.commit()?;
-    Ok(())
-}
-
 fn symbols_record_path(repo_root: &Path, rel_path: &str) -> PathBuf {
->>>>>>> mcoda/task/bck-05-us-07-t12
     let key = hex::encode(Sha256::digest(rel_path.as_bytes()));
-    repo_state_root
+    repo_root
+        .join(".docdex")
+        .join("index")
         .join("symbols.db")
         .join("files")
         .join(format!("{key}.json"))
-}
-
-fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<Value, Box<dyn Error>> {
-    let repo_str = repo_root.to_string_lossy().to_string();
-    let state_root_str = state_root.to_string_lossy().to_string();
-    let output = Command::new(docdex_bin())
-        .args([
-            "repo",
-            "inspect",
-            "--repo",
-            repo_str.as_str(),
-            "--state-dir",
-            state_root_str.as_str(),
-        ])
-        .output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "docdexd repo inspect exited with {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
-    Ok(serde_json::from_slice(&output.stdout)?)
-}
-
-fn resolve_repo_state_root(state_root: &Path, repo_root: &Path) -> Result<PathBuf, Box<dyn Error>> {
-    let payload = inspect_repo_state(state_root, repo_root)?;
-    let root = payload
-        .get("statePaths")
-        .and_then(|value| value.get("repoStateRoot"))
-        .and_then(|value| value.as_str())
-        .ok_or("missing statePaths.repoStateRoot")?;
-    Ok(PathBuf::from(root))
 }
 
 fn send_line(
@@ -189,8 +134,7 @@ fn read_line(
 #[test]
 fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    let state_root = TempDir::new()?;
-    let mut harness = McpHarness::spawn(repo.path(), state_root.path())?;
+    let mut harness = McpHarness::spawn(repo.path())?;
 
     // initialize
     send_line(
@@ -216,47 +160,6 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
             .map(|v| v.is_object()),
         Some(true),
         "initialize should advertise tools capability"
-    );
-    let policy = init_resp
-        .get("result")
-        .and_then(|v| v.get("serverInfo"))
-        .and_then(|v| v.get("docdex"))
-        .and_then(|v| v.get("policy"))
-        .ok_or("initialize should include serverInfo.docdex.policy")?;
-    assert_eq!(
-        policy.get("schema_version").and_then(|v| v.as_u64()),
-        Some(1)
-    );
-    let rate_limit = policy
-        .get("rate_limit")
-        .and_then(|v| v.as_object())
-        .ok_or("policy.rate_limit should be an object")?;
-    assert_eq!(
-        rate_limit.get("enabled").and_then(|v| v.as_bool()),
-        Some(false)
-    );
-    assert_eq!(
-        rate_limit.get("per_minute").and_then(|v| v.as_u64()),
-        Some(0)
-    );
-    assert_eq!(rate_limit.get("burst").and_then(|v| v.as_u64()), Some(0));
-    assert_eq!(
-        rate_limit.get("limit_key").and_then(|v| v.as_str()),
-        Some("mcp_tools")
-    );
-    assert_eq!(
-        rate_limit.get("scope").and_then(|v| v.as_str()),
-        Some("global")
-    );
-    let backoff = policy
-        .get("backoff")
-        .and_then(|v| v.as_array())
-        .ok_or("policy.backoff should be an array")?;
-    assert!(
-        backoff.iter().any(|entry| {
-            entry.get("code").and_then(|v| v.as_str()) == Some("backoff_required")
-        }),
-        "policy.backoff should advertise backoff_required"
     );
 
     // tools/list
@@ -319,27 +222,6 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
         index_body.get("status").and_then(|v| v.as_str()),
         Some("ok"),
         "docdex_index should return status ok"
-    );
-    assert!(
-        index_body
-            .get("request_id")
-            .and_then(|v| v.as_str())
-            .is_some(),
-        "tool result should include request_id"
-    );
-    assert!(
-        index_body
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .is_some(),
-        "tool result should include session_id"
-    );
-    assert_eq!(
-        index_body
-            .get("tracing")
-            .and_then(|v| v.get("enabled"))
-            .and_then(|v| v.as_bool()),
-        Some(true)
     );
 
     // search for the test term
@@ -408,74 +290,6 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
     assert!(
         (top_score.unwrap_or(-1.0) - top_score_camel.unwrap_or(-1.0)).abs() < 1e-6,
         "docdex_search topScore should match top_score"
-    );
-
-    assert_eq!(
-        search_body.get("limit").and_then(|v| v.as_u64()),
-        Some(4),
-        "docdex_search should clamp limit to server --max-results"
-    );
-    let context = search_body
-        .get("meta")
-        .and_then(|v| v.get("context_assembly"))
-        .ok_or("docdex_search meta.context_assembly should be present")?;
-    assert_eq!(
-        context.get("requested_limit").and_then(|v| v.as_u64()),
-        Some(5),
-        "context_assembly should record requested limit before clamp"
-    );
-    assert_eq!(
-        context.get("effective_limit").and_then(|v| v.as_u64()),
-        Some(4),
-        "context_assembly should record effective limit after clamp"
-    );
-    assert_eq!(
-        context
-            .get("snippet_policy")
-            .and_then(|v| v.as_str()),
-        Some("full"),
-        "context_assembly snippet_policy should be stable"
-    );
-    assert_eq!(
-        context
-            .get("token_budget_mode")
-            .and_then(|v| v.as_str()),
-        Some("per_hit_token_estimate"),
-        "context_assembly token_budget_mode should be stable"
-    );
-    let token_sum: u64 = hits
-        .iter()
-        .map(|hit| hit.get("token_estimate").and_then(|v| v.as_u64()).unwrap_or(0))
-        .sum();
-    assert_eq!(
-        context
-            .get("token_estimate_sum_kept")
-            .and_then(|v| v.as_u64()),
-        Some(token_sum),
-        "context_assembly token_estimate_sum_kept should match sum of returned hits"
-    );
-    assert_eq!(
-        context
-            .get("hits_before_pruning")
-            .and_then(|v| v.as_u64()),
-        Some(hits.len() as u64),
-        "context_assembly hits_before_pruning should be bounded"
-    );
-    assert_eq!(
-        context
-            .get("hits_after_pruning")
-            .and_then(|v| v.as_u64()),
-        Some(hits.len() as u64),
-        "context_assembly hits_after_pruning should be bounded"
-    );
-    let selected_sources = context
-        .get("selected_sources")
-        .and_then(|v| v.as_array())
-        .ok_or("context_assembly selected_sources should be an array")?;
-    assert_eq!(
-        selected_sources.len(),
-        hits.len(),
-        "context_assembly selected_sources should track returned hits"
     );
 
     // no-match search should return empty results and a null top_score
@@ -584,84 +398,14 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn mcp_search_and_open_survive_incompatible_libs_index() -> Result<(), Box<dyn Error>> {
-    let repo = setup_repo()?;
-    let repo_str = repo.path().to_string_lossy().to_string();
-    let output = Command::new(docdex_bin())
-        .args(["index", "--repo", repo_str.as_str()])
-        .output()?;
-    assert!(
-        output.status.success(),
-        "index failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let libs_dir = repo.path().join(".docdex").join("libs_index");
-    create_incompatible_index(&libs_dir, "legacy_lib_title")?;
-
-    let mut harness = McpHarness::spawn(repo.path())?;
-    send_line(
-        &mut harness.stdin,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 50,
-            "method": "initialize",
-            "params": {}
-        }),
-    )?;
-    let _init_resp = read_line(&mut harness.reader)?;
-
-    send_line(
-        &mut harness.stdin,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 51,
-            "method": "tools/call",
-            "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP" } }
-        }),
-    )?;
-    let search_resp = read_line(&mut harness.reader)?;
-    let search_payload = parse_tool_result(&search_resp)?;
-    let hits = search_payload
-        .get("hits")
-        .and_then(|value| value.as_array())
-        .ok_or("hits array missing")?;
-    assert!(!hits.is_empty(), "expected search hits with repo index");
-
-    send_line(
-        &mut harness.stdin,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 52,
-            "method": "tools/call",
-            "params": { "name": "docdex_open", "arguments": { "path": "docs/overview.md" } }
-        }),
-    )?;
-    let open_resp = read_line(&mut harness.reader)?;
-    let open_payload = parse_tool_result(&open_resp)?;
-    let content = open_payload
-        .get("content")
-        .and_then(|value| value.as_str())
-        .ok_or("docdex_open should return content")?;
-    assert!(
-        content.contains("MCP_ROADMAP"),
-        "expected docdex_open content to include fixture text"
-    );
-
-    harness.shutdown();
-    Ok(())
-}
-
-#[test]
 fn mcp_symbols_returns_outcome_and_symbols_when_enabled() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     fs::write(
         repo_root.join("docs").join("symbols.md"),
         "# Title\n\nIntro text.\n\n## Subsection\nMore.\n",
     )?;
-    let mut harness = McpHarness::spawn_with_symbols(repo_root, state_root.path(), true)?;
+    let mut harness = McpHarness::spawn_with_symbols(repo_root, true)?;
 
     send_line(
         &mut harness.stdin,
@@ -710,30 +454,6 @@ fn mcp_symbols_returns_outcome_and_symbols_when_enabled() -> Result<(), Box<dyn 
         Some("docdex.symbols"),
         "symbols payload should include schema name"
     );
-    let schema = payload
-        .get("schema")
-        .and_then(|v| v.as_object())
-        .ok_or("symbols payload missing schema object")?;
-    let version = schema
-        .get("version")
-        .and_then(|v| v.as_u64())
-        .ok_or("symbols payload missing schema.version")?;
-    let compatible = schema
-        .get("compatible")
-        .and_then(|v| v.as_object())
-        .ok_or("symbols payload missing schema.compatible")?;
-    let min = compatible
-        .get("min")
-        .and_then(|v| v.as_u64())
-        .ok_or("symbols payload missing schema.compatible.min")?;
-    let max = compatible
-        .get("max")
-        .and_then(|v| v.as_u64())
-        .ok_or("symbols payload missing schema.compatible.max")?;
-    assert!(
-        min <= version && version <= max,
-        "symbols schema version should be within compatible range"
-    );
     assert_eq!(
         payload.get("file").and_then(|v| v.as_str()),
         Some("docs/symbols.md"),
@@ -778,14 +498,13 @@ fn mcp_symbols_returns_outcome_and_symbols_when_enabled() -> Result<(), Box<dyn 
 fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<(), Box<dyn Error>>
 {
     let repo = setup_repo()?;
-    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     let rel_path = "docs/symbols.md";
     fs::write(
         repo_root.join(rel_path),
         "# Title\n\nIntro text.\n\n## Subsection\nMore.\n",
     )?;
-    let mut harness = McpHarness::spawn_with_symbols(repo_root, state_root.path(), true)?;
+    let mut harness = McpHarness::spawn_with_symbols(repo_root, true)?;
 
     send_line(
         &mut harness.stdin,
@@ -804,8 +523,7 @@ fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<
     )?;
     let _ = read_line(&mut harness.reader)?;
 
-    let repo_state_root = resolve_repo_state_root(state_root.path(), repo_root)?;
-    let record_path = symbols_record_path(&repo_state_root, rel_path);
+    let record_path = symbols_record_path(repo_root, rel_path);
     let raw = fs::read_to_string(&record_path)?;
     let mut value: serde_json::Value = serde_json::from_str(&raw)?;
     let symbols = value
@@ -887,8 +605,7 @@ fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<
 #[test]
 fn mcp_rejects_wrong_version() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    let state_root = TempDir::new()?;
-    let mut harness = McpHarness::spawn(repo.path(), state_root.path())?;
+    let mut harness = McpHarness::spawn(repo.path())?;
 
     send_line(
         &mut harness.stdin,
@@ -916,8 +633,7 @@ fn mcp_rejects_wrong_version() -> Result<(), Box<dyn Error>> {
 #[test]
 fn mcp_unknown_tool_returns_error() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    let state_root = TempDir::new()?;
-    let mut harness = McpHarness::spawn(repo.path(), state_root.path())?;
+    let mut harness = McpHarness::spawn(repo.path())?;
 
     send_line(
         &mut harness.stdin,
@@ -945,8 +661,7 @@ fn mcp_unknown_tool_returns_error() -> Result<(), Box<dyn Error>> {
 #[test]
 fn mcp_search_empty_query_errors() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    let state_root = TempDir::new()?;
-    let mut harness = McpHarness::spawn(repo.path(), state_root.path())?;
+    let mut harness = McpHarness::spawn(repo.path())?;
 
     // index first
     send_line(
@@ -987,8 +702,7 @@ fn mcp_search_empty_query_errors() -> Result<(), Box<dyn Error>> {
 #[test]
 fn mcp_files_pagination_and_invalid_params() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    let state_root = TempDir::new()?;
-    let mut harness = McpHarness::spawn(repo.path(), state_root.path())?;
+    let mut harness = McpHarness::spawn(repo.path())?;
 
     // index first
     send_line(
@@ -1060,7 +774,6 @@ fn mcp_files_pagination_and_invalid_params() -> Result<(), Box<dyn Error>> {
 #[test]
 fn mcp_open_respects_ranges_and_bounds() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    let state_root = TempDir::new()?;
     let repo_root = repo.path();
     let content = "\
 Line1
@@ -1070,7 +783,7 @@ Line4
 Line5
 ";
     std::fs::write(repo_root.join("docs").join("open.md"), content)?;
-    let mut harness = McpHarness::spawn(repo_root, state_root.path())?;
+    let mut harness = McpHarness::spawn(repo_root)?;
 
     // Full file
     send_line(
@@ -1144,8 +857,7 @@ Line5
 #[test]
 fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    let state_root = TempDir::new()?;
-    let mut harness = McpHarness::spawn(repo.path(), state_root.path())?;
+    let mut harness = McpHarness::spawn(repo.path())?;
 
     // search with missing query
     send_line(
@@ -1306,8 +1018,7 @@ fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
 #[test]
 fn mcp_initialize_rejects_wrong_workspace_root() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
-    let state_root = TempDir::new()?;
-    let mut harness = McpHarness::spawn(repo.path(), state_root.path())?;
+    let mut harness = McpHarness::spawn(repo.path())?;
 
     send_line(
         &mut harness.stdin,

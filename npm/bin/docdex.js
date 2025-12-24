@@ -2,11 +2,9 @@
 "use strict";
 
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const { recoverInterruptedInstallSync } = require("../lib/install");
 const {
   artifactName,
   detectLibcFromRuntime,
@@ -27,29 +25,6 @@ function printLines(lines, { stderr } = {}) {
     if (stderr) console.error(line);
     else console.log(line);
   }
-}
-
-function ensureExecutable(binaryPath, fsModule = fs) {
-  if (process.platform === "win32") return true;
-  if (typeof fsModule?.accessSync !== "function") return true;
-  const xOk = fsModule?.constants?.X_OK;
-  if (typeof xOk !== "number") return true;
-
-  try {
-    fsModule.accessSync(binaryPath, xOk);
-    return true;
-  } catch {
-    if (typeof fsModule?.chmodSync === "function") {
-      try {
-        fsModule.chmodSync(binaryPath, 0o755);
-        fsModule.accessSync(binaryPath, xOk);
-        return true;
-      } catch {}
-    }
-  }
-
-  console.error(`[docdex] Binary is not executable: ${binaryPath}`);
-  return false;
 }
 
 function runDoctor() {
@@ -172,57 +147,18 @@ function run() {
     process.exit(1);
   }
 
-<<<<<<< HEAD
-  const env = process.env || {};
-  const stateRootDir =
-    typeof env.DOCDEX_INSTALL_STATE_DIR === "string" && env.DOCDEX_INSTALL_STATE_DIR.trim()
-      ? path.resolve(env.DOCDEX_INSTALL_STATE_DIR.trim())
-      : path.join(os.homedir(), ".docdex", "state");
-
-  const stateBinaryPath = path.join(
-    stateRootDir,
-    "daemon",
-    platformKey,
-=======
   const basePath = path.join(__dirname, "..", "dist", platformKey);
-  try {
-    recoverInterruptedInstallSync({
-      fsModule: fs,
-      pathModule: path,
-      distDir: basePath,
-      isWin32: process.platform === "win32"
-    });
-  } catch {}
   const binaryPath = path.join(
     basePath,
->>>>>>> mcoda/task/ops-01-us-05-t05
     process.platform === "win32" ? "docdexd.exe" : "docdexd"
   );
 
-  const distBinaryPath = path.join(
-    __dirname,
-    "..",
-    "dist",
-    platformKey,
-    process.platform === "win32" ? "docdexd.exe" : "docdexd"
-  );
-
-  const binaryPath = fs.existsSync(stateBinaryPath)
-    ? stateBinaryPath
-    : fs.existsSync(distBinaryPath)
-      ? distBinaryPath
-      : null;
-
-  if (!binaryPath) {
+  if (!fs.existsSync(binaryPath)) {
     console.error(`[docdex] Missing binary for ${platformKey}. Try reinstalling or set DOCDEX_DOWNLOAD_REPO to a repo with release assets.`);
     try {
       console.error(`[docdex] Expected target triple: ${targetTripleForPlatformKey(platformKey)}`);
       console.error(`[docdex] Asset naming pattern: ${assetPatternForPlatformKey(platformKey)}`);
     } catch {}
-    process.exit(1);
-  }
-
-  if (!ensureExecutable(binaryPath)) {
     process.exit(1);
   }
 

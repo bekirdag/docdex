@@ -6,10 +6,6 @@ Assumptions (explicit):
 - The installer runs in Node.js >= 18 and exits with a single process exit code (0–255).
 - A “manifest” is a JSON file attached to the GitHub Release (candidate names are installer-configurable; default is `docdex-release-manifest.json`).
 - `manifestVersion` is optional in current manifests; when absent it is reported as `null`.
-- Integrity policy is configurable via `DOCDEX_INTEGRITY_POLICY`:
-  - Default: `required` (fail closed on missing integrity metadata; verify archive SHA-256 before install).
-  - Overrides: `allow-missing` (continue unverified if metadata is missing) or `off` (disable verification).
-  - This error contract describes the default `required` behavior unless explicitly stated otherwise.
 
 ## Goals
 
@@ -48,19 +44,6 @@ Additional common keys (when available):
 - `platformKey` (string|null)
 - `repoSlug` (string|null)
 - `version` (string|null)
-<<<<<<< HEAD
-<<<<<<< HEAD
-- `installedVersion` (string|null)
-=======
-- `detectedVersion` (string|null)
-- `detectedVersionStatus` (`"installed"|"not_installed"|"unknown"|"error"|null`)
-- `detectedVersionSource` (`"metadata"|"binary"|null`)
-- `detectedVersionError` (string|null)
->>>>>>> mcoda/task/ops-01-us-03-t43
-=======
-- `expectedVersion` (string|null)
-- `installedVersion` (string|null)
->>>>>>> mcoda/task/ops-01-us-03-t44
 - `downloadUrl` (string|null)
 - `manifestName` (string|null)
 - `source` (`"manifest:<name>"|"fallback"|null`)
@@ -69,21 +52,6 @@ Additional common keys (when available):
 - `statusCode` (number|null)
 - `expectedSha256` (string|null)
 - `actualSha256` (string|null)
-<<<<<<< HEAD
-- `signedName` (string|null) — integrity metadata filename whose signature was checked (e.g. `SHA256SUMS`)
-- `signatureName` (string|null) — detached signature filename (e.g. `SHA256SUMS.sig`)
-- `signatureUrl` (string|null)
-- `signatureAlgorithm` (string|null) — currently `ed25519`
-- `signaturePolicy` (string|null) — `optional|required|disabled`
-- `signatureFailureReason` (string|null) — verifier-specific reason (when available)
-=======
-- `verificationMethod` (string|null; currently `sha256`)
-- `integrityMetadataSource` (string|null; one of `manifest`, `checksums`, `sidecar`)
-- `integrityMetadataName` (string|null; e.g. `docdex-release-manifest.json`, `SHA256SUMS`, or `<archive>.sha256`)
-- `integrityMetadataSources` (string[]|null; configured list of sources in order)
-- `integrityMissingPolicy` (string|null; `fallback` or `abort`)
-- `integrityAttemptedSources` (string[]|null; sources actually attempted in order)
->>>>>>> mcoda/task/ops-01-us-04-t21
 
 ## Canonical codes + exit codes
 
@@ -136,40 +104,9 @@ If all fallback paths fail (e.g., checksums are also unavailable), the resulting
 - `DOCDEX_INTEGRITY_MISMATCH` → exit `22`
   - SHA-256 verification failed for the downloaded archive.
 - `DOCDEX_ARCHIVE_INVALID` → exit `23`
-<<<<<<< HEAD
-  - Archive extracted but the expected binary is missing or reports an unexpected version.
-=======
-  - Archive extracted but the expected binary is missing or fails the smoke check (`--version`).
->>>>>>> mcoda/task/ops-01-us-01-t41
+  - Archive extracted but the expected binary is missing.
 - `DOCDEX_CHECKSUM_UNUSABLE` → exit `24`
   - The installer could not obtain SHA-256 integrity metadata for the selected asset (manifest missing/unusable and checksum fallback missing/malformed).
-<<<<<<< HEAD
-- `DOCDEX_INSTALL_SWAP_FAILED` → exit `25`
-  - The installer fetched + verified + extracted successfully, but could not atomically swap the staged install directory into `dist/<platformKey>/` (e.g., permissions or the directory/binary is locked by a running process).
-
-### Install finalization (fatal)
-
-- `DOCDEX_REPLACE_FAILED` → exit `25`
-  - The installer fetched/verified/extracted successfully, but could not safely place the verified binary into its final location (common causes: permission denied, or `docdexd.exe` locked/running on Windows).
-
-### Integrity metadata signature verification (fatal when enforced)
-
-These errors apply to detached signatures over integrity metadata (manifest/checksums). Signature verification, when attempted, happens before trusting any checksum values.
-
-- `DOCDEX_INTEGRITY_SIGNATURE_MISSING` → exit `15`
-  - Signature policy is `required` and the release did not include the expected `.sig` asset for the selected integrity metadata.
-- `DOCDEX_INTEGRITY_SIGNATURE_INVALID` → exit `16`
-  - A `.sig` asset was present but signature verification failed.
-- `DOCDEX_INTEGRITY_SIGNATURE_FETCH_FAILED` → exit `17`
-  - Signature policy is `required` and the `.sig` asset could not be fetched (non-404 failure).
-=======
-  - Note: with `DOCDEX_INTEGRITY_POLICY=allow-missing|off`, this condition is handled deterministically but may not be fatal (installer warns and proceeds unverified).
->>>>>>> mcoda/task/ops-01-us-04-t17
-
-### Filesystem / permissions (fatal)
-
-- `DOCDEX_PERMISSION_DENIED` → exit `25`
-  - The installer could not write to the temp directory or install location (EACCES/EPERM/EROFS).
 
 ### Installer configuration (fatal)
 
@@ -183,21 +120,3 @@ All fatal reports:
 - Start with `[docdex] install failed: ...`
 - Include `[docdex] error code: <CODE>` and (when helpful) a short “Next steps” section.
 - For manifest-related failures, include whether fallback was attempted (`details.fallbackAttempted`) and why it was not used.
-<<<<<<< HEAD
-<<<<<<< HEAD
-### Install finalization (fatal)
-
-- `DOCDEX_REPLACE_FAILED` → exit `25`
-  - The installer fetched/verified/extracted successfully, but could not safely place the verified binary into its final location (common causes: permission denied, or `docdexd.exe` locked/running on Windows).
-
-=======
-- `DOCDEX_INSTALL_SWAP_FAILED` → exit `25`
-  - The installer fetched + verified + extracted successfully, but could not atomically swap the staged install directory into `dist/<platformKey>/` (e.g., permissions or the directory/binary is locked by a running process).
->>>>>>> mcoda/task/ops-01-us-05-t07
-=======
-- Integrity policy is configurable via `DOCDEX_INTEGRITY_POLICY`:
-  - Default: `required` (fail closed on missing integrity metadata; verify archive SHA-256 before install).
-  - Overrides: `allow-missing` (continue unverified if metadata is missing) or `off` (disable verification).
-  - This error contract describes the default `required` behavior unless explicitly stated otherwise.
-  - Note: with `DOCDEX_INTEGRITY_POLICY=allow-missing|off`, this condition is handled deterministically but may not be fatal (installer warns and proceeds unverified).
->>>>>>> mcoda/task/ops-01-us-04-t17

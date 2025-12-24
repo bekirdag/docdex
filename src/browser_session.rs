@@ -13,11 +13,7 @@ use thiserror::Error;
 use tokio::process::Command;
 use tokio::sync::Notify;
 
-use crate::error::RateLimited;
 use crate::metrics;
-
-const BROWSER_SESSION_LIMIT_KEY: &str = "browser_session";
-const BROWSER_SESSION_LIMIT_SCOPE: &str = "global";
 
 #[derive(Debug, Clone)]
 pub struct BrowserSessionOptions {
@@ -42,8 +38,6 @@ pub enum BrowserSessionError {
     Cancelled,
     #[error("browser session timed out after {0:?}")]
     TimedOut(Duration),
-    #[error(transparent)]
-    RateLimited(#[from] RateLimited),
     #[error("browser session work failed: {0}")]
     WorkFailed(String),
     #[error("browser session launch failed: {0}")]
@@ -80,11 +74,8 @@ pub struct BrowserSession {
 impl BrowserSession {
     pub async fn spawn(mut command: Command, opts: BrowserSessionOptions) -> Result<Self, BrowserSessionError> {
         let lock_path = opts.lock_file.clone();
-        let lock_retry_after = opts
-            .graceful_shutdown_timeout
-            .saturating_add(opts.kill_timeout);
         let lock = match opts.lock_file {
-            Some(path) => Some(create_lock_file(&path, lock_retry_after).map_err(|err| {
+            Some(path) => Some(create_lock_file(&path).map_err(|err| {
                 metrics::global().inc_browser_session_launch_failure();
                 tracing::warn!(
                     target: "docdexd_browser_guard",
@@ -207,19 +198,7 @@ impl BrowserSession {
             Err(err) => Err(err),
             Ok(()) => match outcome {
                 Outcome::Work(Ok(value)) => Ok(value),
-                Outcome::Work(Err(err)) => {
-                    if let Some(rate) = err.downcast_ref::<RateLimited>() {
-                        Err(BrowserSessionError::RateLimited(rate.clone()))
-                    } else if let Some(browser_err) = err.downcast_ref::<BrowserSessionError>() {
-                        if let BrowserSessionError::RateLimited(rate) = browser_err {
-                            Err(BrowserSessionError::RateLimited(rate.clone()))
-                        } else {
-                            Err(BrowserSessionError::WorkFailed(err.to_string()))
-                        }
-                    } else {
-                        Err(BrowserSessionError::WorkFailed(err.to_string()))
-                    }
-                }
+                Outcome::Work(Err(err)) => Err(BrowserSessionError::WorkFailed(err.to_string())),
                 Outcome::Cancelled => Err(BrowserSessionError::Cancelled),
                 Outcome::TimedOut => Err(BrowserSessionError::TimedOut(timeout)),
             },
@@ -281,7 +260,7 @@ enum Outcome<T> {
     TimedOut,
 }
 
-fn create_lock_file(path: &PathBuf, retry_after: Duration) -> Result<LockFile, BrowserSessionError> {
+fn create_lock_file(path: &PathBuf) -> Result<LockFile, BrowserSessionError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|err| BrowserSessionError::LaunchFailed(err.to_string()))?;
@@ -291,16 +270,12 @@ fn create_lock_file(path: &PathBuf, retry_after: Duration) -> Result<LockFile, B
         .write(true)
         .open(path)
         .map_err(|err| {
-            if err.kind() == io::ErrorKind::AlreadyExists {
-                let rate = RateLimited::backoff_required(
-                    retry_after,
-                    BROWSER_SESSION_LIMIT_KEY.to_string(),
-                    BROWSER_SESSION_LIMIT_SCOPE.to_string(),
-                )
-                .with_message("browser session lock already held");
-                return BrowserSessionError::RateLimited(rate);
-            }
-            BrowserSessionError::LaunchFailed(err.to_string())
+            let message = if err.kind() == io::ErrorKind::AlreadyExists {
+                format!("lock already held: {}", path.display())
+            } else {
+                err.to_string()
+            };
+            BrowserSessionError::LaunchFailed(message)
         })?;
     Ok(LockFile {
         path: path.clone(),
@@ -495,7 +470,6 @@ fn best_effort_abort_sync(inner: &Inner) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::RateLimited;
     use crate::tier2::{
         classify_browser_session_failure, run_with_fallback, Tier2Config, Tier2Limiter,
         Tier2UnavailableReason,
@@ -672,53 +646,6 @@ mod tests {
         assert!(!pid_alive(child_pid), "child process still alive");
     }
 
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn scoped_rate_limit_triggers_cleanup() {
-        let temp = TempDir::new().expect("temp dir");
-        let lock_path = temp.path().join("locks").join("browser.lock");
-
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg("sleep 1000");
-
-        let session = BrowserSession::spawn(
-            cmd,
-            BrowserSessionOptions {
-                lock_file: Some(lock_path),
-                graceful_shutdown_timeout: Duration::from_millis(200),
-                kill_timeout: Duration::from_millis(200),
-            },
-        )
-        .await
-        .expect("spawn browser session");
-
-        let pgid = session.process_group_id();
-        let result = session
-            .run_scoped(
-                Duration::from_secs(10),
-                std::future::pending::<()>(),
-                async {
-                    Err::<(), anyhow::Error>(
-                        RateLimited::new(
-                            Duration::from_millis(250),
-                            BROWSER_SESSION_LIMIT_KEY.to_string(),
-                            BROWSER_SESSION_LIMIT_SCOPE.to_string(),
-                        )
-                        .into(),
-                    )
-                },
-            )
-            .await;
-
-        assert!(matches!(result, Err(BrowserSessionError::RateLimited(_))));
-
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline && process_group_alive(pgid) {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        assert!(!process_group_alive(pgid), "process group still alive");
-    }
-
     #[test]
     fn tier2_reason_codes_cover_browser_session_failures() {
         let cases: Vec<(BrowserSessionError, Option<Tier2UnavailableReason>)> = vec![
@@ -739,14 +666,6 @@ mod tests {
                 Some(Tier2UnavailableReason::Crashed),
             ),
             (BrowserSessionError::Cancelled, None),
-            (
-                BrowserSessionError::RateLimited(RateLimited::new(
-                    Duration::from_millis(1),
-                    BROWSER_SESSION_LIMIT_KEY.to_string(),
-                    BROWSER_SESSION_LIMIT_SCOPE.to_string(),
-                )),
-                None,
-            ),
         ];
 
         for (err, expected) in cases {
@@ -773,7 +692,6 @@ mod tests {
                 request_id,
                 config,
                 limiter,
-                None,
                 tier2,
                 || async { Ok::<_, anyhow::Error>("tier3".to_string()) },
             )
@@ -846,7 +764,6 @@ mod tests {
         let err = run_with_fallback(
             "req-bug",
             Tier2Config::enabled(),
-            None,
             None,
             || async { Err::<String, anyhow::Error>(anyhow!("boom")) },
             || async { Ok::<_, anyhow::Error>("tier3".to_string()) },

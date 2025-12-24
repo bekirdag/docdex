@@ -63,9 +63,11 @@ impl DdgDiscovery {
             return Err(AppError::new(ERR_INVALID_ARGUMENT, "query must not be empty").into());
         }
         if !self.config.enabled {
-            return Err(AppError::new(ERR_MISSING_DEPENDENCY, "web discovery is disabled")
-                .with_details(json!({ "dependency": "web_discovery" }))
-                .into());
+            return Err(
+                AppError::new(ERR_MISSING_DEPENDENCY, "web discovery is disabled")
+                    .with_details(json!({ "dependency": "web_discovery" }))
+                    .into(),
+            );
         }
 
         let limit = limit.clamp(1, self.config.max_results);

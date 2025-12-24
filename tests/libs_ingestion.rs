@@ -81,13 +81,16 @@ fn libs_ingestion_is_partial_and_searchable() -> Result<(), Box<dyn Error>> {
 
     run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
-    let ingest_out = run_docdex(state_root.path(), [
-        "libs-ingest",
-        "--repo",
-        repo_str.as_str(),
-        "--sources",
-        sources_path.to_string_lossy().as_ref(),
-    ])?;
+    let ingest_out = run_docdex(
+        state_root.path(),
+        [
+            "libs-ingest",
+            "--repo",
+            repo_str.as_str(),
+            "--sources",
+            sources_path.to_string_lossy().as_ref(),
+        ],
+    )?;
     let ingest_payload: Value = serde_json::from_slice(&ingest_out)?;
     assert_eq!(
         ingest_payload
@@ -111,15 +114,18 @@ fn libs_ingestion_is_partial_and_searchable() -> Result<(), Box<dyn Error>> {
         1
     );
 
-    let query_out = run_docdex(state_root.path(), [
-        "query",
-        "--repo",
-        repo_str.as_str(),
-        "--query",
-        "LIBS_ONLY_TERM_123",
-        "--limit",
-        "5",
-    ])?;
+    let query_out = run_docdex(
+        state_root.path(),
+        [
+            "query",
+            "--repo",
+            repo_str.as_str(),
+            "--query",
+            "LIBS_ONLY_TERM_123",
+            "--limit",
+            "5",
+        ],
+    )?;
     let query_payload: Value = serde_json::from_slice(&query_out)?;
     let hits = query_payload
         .get("hits")
@@ -134,7 +140,8 @@ fn libs_ingestion_is_partial_and_searchable() -> Result<(), Box<dyn Error>> {
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .starts_with("libs:")
-            || hit.get("rel_path")
+            || hit
+                .get("rel_path")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .starts_with("libs/")

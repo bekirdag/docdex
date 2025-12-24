@@ -195,18 +195,13 @@ fn http_search_includes_repo_id_and_is_reasonably_fast() -> Result<(), Box<dyn E
         "warn",
         "--secure-mode=false",
     ]);
-    let child = cmd
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+    let child = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
     let _daemon = Daemon { child };
 
     wait_for_health(port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
-    let url = format!(
-        "http://127.0.0.1:{port}/search?q=INTERACTIVE_NEEDLE&limit=2&snippets=false"
-    );
+    let url = format!("http://127.0.0.1:{port}/search?q=INTERACTIVE_NEEDLE&limit=2&snippets=false");
 
     let warm = client.get(&url).send()?;
     assert!(
@@ -229,7 +224,10 @@ fn http_search_includes_repo_id_and_is_reasonably_fast() -> Result<(), Box<dyn E
         .get("hits")
         .and_then(|v| v.as_array())
         .ok_or("HTTP /search payload missing hits array")?;
-    assert!(!hits.is_empty(), "expected at least one hit from HTTP /search");
+    assert!(
+        !hits.is_empty(),
+        "expected at least one hit from HTTP /search"
+    );
 
     let repo_id = repo_id_from_payload(&payload)?;
     assert_sha256_hex(repo_id, "HTTP /search repo_id");

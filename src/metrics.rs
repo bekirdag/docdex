@@ -64,7 +64,8 @@ impl Metrics {
     }
 
     pub fn inc_tier2_overload_rejection(&self) {
-        self.tier2_overload_rejections.fetch_add(1, Ordering::Relaxed);
+        self.tier2_overload_rejections
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn inc_chrome_watchdog_reap_attempt(&self) {
@@ -143,12 +144,7 @@ fn dec_saturating(gauge: &AtomicI64) {
         if current <= 0 {
             return;
         }
-        match gauge.compare_exchange(
-            current,
-            current - 1,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
+        match gauge.compare_exchange(current, current - 1, Ordering::Relaxed, Ordering::Relaxed) {
             Ok(_) => return,
             Err(next) => current = next,
         }
@@ -165,4 +161,3 @@ pub fn global() -> Arc<Metrics> {
 pub fn set_global(metrics: Arc<Metrics>) {
     *GLOBAL_METRICS.write() = metrics;
 }
-

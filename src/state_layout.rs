@@ -160,8 +160,8 @@ pub fn resolve_state_paths(repo_root: &Path, state_dir_override: Option<PathBuf>
     let repo_root = canonical_repo_root(repo_root)?;
     let base_resolution = resolve_state_base(&repo_root, state_dir_override)?;
 
-    let fingerprint = crate::repo_identity::repo_fingerprint_sha256(&repo_root)?;
-    let state_key = crate::repo_identity::resolve_shared_state_key(&repo_root, &base_resolution.base_dir)?
+    let fingerprint = crate::repo_manager::repo_fingerprint_sha256(&repo_root)?;
+    let state_key = crate::repo_manager::resolve_shared_state_key(&repo_root, &base_resolution.base_dir)?
         .state_key;
 
     if let Some(scoped_key) = base_resolution.scoped_state_key {
@@ -171,7 +171,7 @@ pub fn resolve_state_paths(repo_root: &Path, state_dir_override: Option<PathBuf>
                 .join("repos")
                 .join(&scoped_key)
                 .join("index");
-            let identity = crate::repo_identity::RepoIdentityError::StateKeyConflict {
+            let identity = crate::repo_manager::RepoIdentityError::StateKeyConflict {
                 fingerprint: fingerprint.clone(),
                 existing_state_key: scoped_key,
                 requested_state_key: state_key.clone(),
@@ -202,8 +202,8 @@ pub(crate) fn resolve_state_paths_for_inspect(
     let repo_root = canonical_repo_root(repo_root)?;
     let base_resolution = resolve_state_base(&repo_root, state_dir_override)?;
 
-    let fingerprint = crate::repo_identity::repo_fingerprint_sha256(&repo_root)?;
-    let state_key = crate::repo_identity::resolve_shared_state_key_lenient(&repo_root, &base_resolution.base_dir)?
+    let fingerprint = crate::repo_manager::repo_fingerprint_sha256(&repo_root)?;
+    let state_key = crate::repo_manager::resolve_shared_state_key_lenient(&repo_root, &base_resolution.base_dir)?
         .state_key;
 
     let layout = StateLayout::new(base_resolution.base_dir);
@@ -233,7 +233,7 @@ fn resolve_state_base(repo_root: &Path, state_dir_override: Option<PathBuf>) -> 
         None => default_state_root()?,
     };
 
-    if let Some((base_dir, scoped_key, _)) = crate::repo_identity::split_scoped_state_dir(&resolved) {
+    if let Some((base_dir, scoped_key, _)) = crate::repo_manager::split_scoped_state_dir(&resolved) {
         return Ok(StateBaseResolution {
             base_dir,
             scoped_state_key: scoped_key,
@@ -349,14 +349,14 @@ pub(crate) fn missing_repo_path_error(repo_root: &Path) -> AppError {
 pub(crate) fn repo_state_mismatch_error(
     repo_root: &Path,
     index_state_dir: Option<&Path>,
-    identity: &crate::repo_identity::RepoIdentityError,
+    identity: &crate::repo_manager::RepoIdentityError,
 ) -> AppError {
-    let attempted_fingerprint = crate::repo_identity::repo_fingerprint_sha256(repo_root).ok();
+    let attempted_fingerprint = crate::repo_manager::repo_fingerprint_sha256(repo_root).ok();
     let mut known_canonical_path = index_state_dir.and_then(known_canonical_path_from_repo_meta);
-    if let crate::repo_identity::RepoIdentityError::CanonicalPathCollision { canonical_path, .. } = identity {
+    if let crate::repo_manager::RepoIdentityError::CanonicalPathCollision { canonical_path, .. } = identity {
         known_canonical_path = Some(canonical_path.clone());
     }
-    if let crate::repo_identity::RepoIdentityError::ReassociationRequired {
+    if let crate::repo_manager::RepoIdentityError::ReassociationRequired {
         registered_canonical_path,
         ..
     } = identity
@@ -401,7 +401,7 @@ mod tests {
         let state_root = TempDir::new()?;
 
         let paths = resolve_state_paths(repo.path(), Some(state_root.path().to_path_buf()))?;
-        let fingerprint = crate::repo_identity::repo_fingerprint_sha256(repo.path())?;
+        let fingerprint = crate::repo_manager::repo_fingerprint_sha256(repo.path())?;
         let expected_index = state_root
             .path()
             .join("repos")

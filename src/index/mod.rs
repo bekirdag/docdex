@@ -1,3 +1,9 @@
+use crate::error::{
+    repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
+    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+};
+use crate::symbols;
+use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
 use anyhow::{anyhow, Context, Result};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -16,12 +22,6 @@ use tantivy::{
 };
 use thiserror::Error;
 use tracing::warn;
-use crate::error::{
-    repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
-    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
-};
-use crate::symbols;
-use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
 use walkdir::WalkDir;
 
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
@@ -397,9 +397,14 @@ impl Indexer {
         } else {
             None
         };
-        if let Err(err) = crate::repo_identity::record_repo_opened(&repo_root, config.state_dir()) {
-            if let Some(identity) = err.downcast_ref::<crate::repo_identity::RepoIdentityError>() {
-                return Err(repo_state_mismatch_error(&repo_root, Some(config.state_dir()), identity).into());
+        if let Err(err) = crate::repo_manager::record_repo_opened(&repo_root, config.state_dir()) {
+            if let Some(identity) = err.downcast_ref::<crate::repo_manager::RepoIdentityError>() {
+                return Err(repo_state_mismatch_error(
+                    &repo_root,
+                    Some(config.state_dir()),
+                    identity,
+                )
+                .into());
             }
             return Err(err).context("record repo identity metadata");
         }
@@ -456,9 +461,16 @@ impl Indexer {
         } else {
             None
         };
-        if let Err(err) = crate::repo_identity::validate_repo_state_dir(&repo_root, config.state_dir()) {
-            if let Some(identity) = err.downcast_ref::<crate::repo_identity::RepoIdentityError>() {
-                return Err(repo_state_mismatch_error(&repo_root, Some(config.state_dir()), identity).into());
+        if let Err(err) =
+            crate::repo_manager::validate_repo_state_dir(&repo_root, config.state_dir())
+        {
+            if let Some(identity) = err.downcast_ref::<crate::repo_manager::RepoIdentityError>() {
+                return Err(repo_state_mismatch_error(
+                    &repo_root,
+                    Some(config.state_dir()),
+                    identity,
+                )
+                .into());
             }
             return Err(err).context("validate repo identity metadata");
         }
@@ -790,15 +802,13 @@ impl Indexer {
     }
 
     fn writer(&self) -> Result<Arc<Mutex<IndexWriter>>> {
-        self.writer
-            .clone()
-            .ok_or_else(|| {
-                AppError::new(
-                    ERR_BACKOFF_REQUIRED,
-                    "index writer unavailable (another docdexd may be indexing); retry later",
-                )
-                .into()
-            })
+        self.writer.clone().ok_or_else(|| {
+            AppError::new(
+                ERR_BACKOFF_REQUIRED,
+                "index writer unavailable (another docdexd may be indexing); retry later",
+            )
+            .into()
+        })
     }
 
     pub fn config(&self) -> &IndexConfig {
@@ -1116,7 +1126,12 @@ struct DocumentIngest {
 fn env_flag_enabled(key: &str) -> bool {
     std::env::var(key)
         .ok()
-        .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|v| {
+            matches!(
+                v.trim().to_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -1268,7 +1283,9 @@ pub(crate) fn decide_file(path: &Path, repo_root: &Path, config: &IndexConfig) -
                 .iter()
                 .any(|excluded| excluded == &name_lower)
             {
-                return FileDecision::exclude(FileDecisionReason::ExcludedDirName { name: name_lower });
+                return FileDecision::exclude(FileDecisionReason::ExcludedDirName {
+                    name: name_lower,
+                });
             }
         }
     }
@@ -1324,8 +1341,8 @@ mod file_decision_tests {
     fn decide_file_excludes_state_dir_before_prefix_rules() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config =
-            IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false).expect("config");
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false)
+            .expect("config");
         let file = config.state_dir().join("doc.md");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
         fs::write(&file, "# state dir\n").expect("write file");
@@ -1339,8 +1356,8 @@ mod file_decision_tests {
     fn decide_file_excludes_default_vendor_dir() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config =
-            IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false).expect("config");
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false)
+            .expect("config");
         let file = repo_root.join("vendor/doc.md");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
         fs::write(&file, "# vendor\n").expect("write file");
@@ -1359,8 +1376,8 @@ mod file_decision_tests {
     fn decide_file_excludes_outside_repo() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config =
-            IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false).expect("config");
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false)
+            .expect("config");
 
         let other = TempDir::new().expect("other repo");
         let outside = other.path().join("note.md");
@@ -1375,8 +1392,8 @@ mod file_decision_tests {
     fn decide_file_includes_supported_extensions() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config =
-            IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false).expect("config");
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false)
+            .expect("config");
         let file = repo_root.join("docs/notes.txt");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
         fs::write(&file, "hello\n").expect("write file");
@@ -1440,7 +1457,10 @@ fn known_canonical_path_from_repo_meta(index_state_dir: &Path) -> Option<String>
         return None;
     }
     let base_dir = repos_dir.parent()?;
-    let meta_path = base_dir.join("repos").join(state_key).join("repo_meta.json");
+    let meta_path = base_dir
+        .join("repos")
+        .join(state_key)
+        .join("repo_meta.json");
     let raw = fs::read_to_string(&meta_path).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
     parsed
@@ -1466,14 +1486,17 @@ fn missing_repo_path_error(repo_root: &Path) -> AppError {
 fn repo_state_mismatch_error(
     repo_root: &Path,
     index_state_dir: Option<&Path>,
-    identity: &crate::repo_identity::RepoIdentityError,
+    identity: &crate::repo_manager::RepoIdentityError,
 ) -> AppError {
-    let attempted_fingerprint = crate::repo_identity::repo_fingerprint_sha256(repo_root).ok();
+    let attempted_fingerprint = crate::repo_manager::repo_fingerprint_sha256(repo_root).ok();
     let mut known_canonical_path = index_state_dir.and_then(known_canonical_path_from_repo_meta);
-    if let crate::repo_identity::RepoIdentityError::CanonicalPathCollision { canonical_path, .. } = identity {
+    if let crate::repo_manager::RepoIdentityError::CanonicalPathCollision {
+        canonical_path, ..
+    } = identity
+    {
         known_canonical_path = Some(canonical_path.clone());
     }
-    if let crate::repo_identity::RepoIdentityError::ReassociationRequired {
+    if let crate::repo_manager::RepoIdentityError::ReassociationRequired {
         registered_canonical_path,
         ..
     } = identity
@@ -1524,23 +1547,28 @@ fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<Pat
             if custom.starts_with(&repo_root) {
                 return Ok(custom);
             }
-            match crate::repo_identity::resolve_shared_index_state_dir(&repo_root, &custom) {
+            match crate::repo_manager::resolve_shared_index_state_dir(&repo_root, &custom) {
                 Ok(path) => Ok(path),
                 Err(err) => {
-                    if let Some(identity) = err.downcast_ref::<crate::repo_identity::RepoIdentityError>() {
+                    if let Some(identity) =
+                        err.downcast_ref::<crate::repo_manager::RepoIdentityError>()
+                    {
                         let index_dir_hint = match identity {
-                            crate::repo_identity::RepoIdentityError::StateMetaFingerprintMismatch { state_key, .. } => {
+                            crate::repo_manager::RepoIdentityError::StateMetaFingerprintMismatch { state_key, .. } => {
                                 Some(custom.join("repos").join(state_key).join("index"))
                             }
-                            crate::repo_identity::RepoIdentityError::StateKeyConflict {
+                            crate::repo_manager::RepoIdentityError::StateKeyConflict {
                                 existing_state_key,
                                 ..
                             } => Some(custom.join("repos").join(existing_state_key).join("index")),
                             _ => None,
                         };
-                        return Err(
-                            repo_state_mismatch_error(&repo_root, index_dir_hint.as_deref(), identity).into(),
-                        );
+                        return Err(repo_state_mismatch_error(
+                            &repo_root,
+                            index_dir_hint.as_deref(),
+                            identity,
+                        )
+                        .into());
                     }
                     Err(err)
                 }

@@ -37,7 +37,9 @@ fn pick_free_port() -> Option<u16> {
     match TcpListener::bind("127.0.0.1:0") {
         Ok(listener) => Some(listener.local_addr().ok()?.port()),
         Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
-            eprintln!("skipping HTTP determinism tests: TCP bind not permitted in this environment");
+            eprintln!(
+                "skipping HTTP determinism tests: TCP bind not permitted in this environment"
+            );
             None
         }
         Err(err) => panic!("bind ephemeral port: {err}"),
@@ -117,9 +119,7 @@ prune_term prune_term
         .join(" ");
     fs::write(
         docs_dir.join("huge.md"),
-        format!(
-            "# Huge\n\n{huge_body}\n\ncommonterm\n"
-        ),
+        format!("# Huge\n\n{huge_body}\n\ncommonterm\n"),
     )?;
 
     let chunk_line = std::iter::repeat("chunk_term")
@@ -184,7 +184,11 @@ fn snippet_signature(payload: &Value) -> Value {
     })
 }
 
-fn capture_determinism_signatures(client: &Client, host: &str, port: u16) -> Result<Value, Box<dyn Error>> {
+fn capture_determinism_signatures(
+    client: &Client,
+    host: &str,
+    port: u16,
+) -> Result<Value, Box<dyn Error>> {
     let search_url = format!("http://{host}:{port}/search");
 
     let ordering_payload: Value = client
@@ -234,10 +238,16 @@ fn capture_determinism_signatures(client: &Client, host: &str, port: u16) -> Res
 
     let snippet = chunk_payload.get("snippet").cloned().unwrap_or(Value::Null);
     assert!(
-        snippet.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false),
+        snippet
+            .get("truncated")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         "expected preview snippet to be truncated for docs/chunk.md"
     );
-    let text = snippet.get("text").and_then(|v| v.as_str()).unwrap_or_default();
+    let text = snippet
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
     assert!(
         text.ends_with('…'),
         "expected truncated preview snippet text to end with ellipsis"
@@ -300,7 +310,8 @@ fn e2e_context_assembly_ordering_is_deterministic() -> Result<(), Box<dyn Error>
 }
 
 #[test]
-fn e2e_context_assembly_is_deterministic_across_reindex_and_restart() -> Result<(), Box<dyn Error>> {
+fn e2e_context_assembly_is_deterministic_across_reindex_and_restart() -> Result<(), Box<dyn Error>>
+{
     let repo = setup_determinism_repo()?;
     let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
@@ -428,10 +439,16 @@ fn e2e_context_assembly_chunking_is_deterministic() -> Result<(), Box<dyn Error>
 
     let snippet = baseline.get("snippet").cloned().unwrap_or(Value::Null);
     assert!(
-        snippet.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false),
+        snippet
+            .get("truncated")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         "expected preview snippet to be truncated for docs/chunk.md"
     );
-    let text = snippet.get("text").and_then(|v| v.as_str()).unwrap_or_default();
+    let text = snippet
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
     assert!(
         text.ends_with('…'),
         "expected truncated preview snippet text to end with ellipsis"

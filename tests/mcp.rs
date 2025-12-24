@@ -327,11 +327,17 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
         "no-match docdex_search should return empty results array"
     );
     assert!(
-        no_match_body.get("top_score").map(|v| v.is_null()).unwrap_or(false),
+        no_match_body
+            .get("top_score")
+            .map(|v| v.is_null())
+            .unwrap_or(false),
         "no-match docdex_search should return top_score: null"
     );
     assert!(
-        no_match_body.get("topScore").map(|v| v.is_null()).unwrap_or(false),
+        no_match_body
+            .get("topScore")
+            .map(|v| v.is_null())
+            .unwrap_or(false),
         "no-match docdex_search should return topScore: null"
     );
 
@@ -450,7 +456,10 @@ fn mcp_symbols_returns_outcome_and_symbols_when_enabled() -> Result<(), Box<dyn 
     let payload = parse_tool_result(&symbols_resp)?;
 
     assert_eq!(
-        payload.get("schema").and_then(|v| v.get("name")).and_then(|v| v.as_str()),
+        payload
+            .get("schema")
+            .and_then(|v| v.get("name"))
+            .and_then(|v| v.as_str()),
         Some("docdex.symbols"),
         "symbols payload should include schema name"
     );
@@ -553,7 +562,11 @@ fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<
         .and_then(|v| v.as_array())
         .ok_or("symbols payload missing symbols array")?
         .iter()
-        .filter_map(|v| v.get("symbol_id").and_then(|id| id.as_str()).map(|s| s.to_string()))
+        .filter_map(|v| {
+            v.get("symbol_id")
+                .and_then(|id| id.as_str())
+                .map(|s| s.to_string())
+        })
         .collect();
     assert!(
         !ids_first.is_empty(),
@@ -591,7 +604,11 @@ fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<
         .and_then(|v| v.as_array())
         .ok_or("symbols payload missing symbols array")?
         .iter()
-        .filter_map(|v| v.get("symbol_id").and_then(|id| id.as_str()).map(|s| s.to_string()))
+        .filter_map(|v| {
+            v.get("symbol_id")
+                .and_then(|id| id.as_str())
+                .map(|s| s.to_string())
+        })
         .collect();
     assert_eq!(
         ids_first, ids_second,

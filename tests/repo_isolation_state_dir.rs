@@ -72,7 +72,10 @@ fn parse_error(stderr: &[u8]) -> Result<Value, Box<dyn Error>> {
     Ok(serde_json::from_str(json_line.trim())?)
 }
 
-fn registry_entry_for_path(state_root: &Path, canonical_path: &str) -> Result<(String, String), Box<dyn Error>> {
+fn registry_entry_for_path(
+    state_root: &Path,
+    canonical_path: &str,
+) -> Result<(String, String), Box<dyn Error>> {
     let registry_path = state_root.join("repos").join("repo_registry.json");
     let registry_raw = fs::read_to_string(&registry_path)?;
     let registry_json: Value = serde_json::from_str(&registry_raw)?;
@@ -111,8 +114,20 @@ fn absolute_state_dir_is_repo_scoped_and_prevents_cross_repo_mixing() -> Result<
     let repo_b_str = repo_b.path().to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
 
-    run_docdex(["index", "--repo", repo_a_str.as_str(), "--state-dir", &state_root_str])?;
-    run_docdex(["index", "--repo", repo_b_str.as_str(), "--state-dir", &state_root_str])?;
+    run_docdex([
+        "index",
+        "--repo",
+        repo_a_str.as_str(),
+        "--state-dir",
+        &state_root_str,
+    ])?;
+    run_docdex([
+        "index",
+        "--repo",
+        repo_b_str.as_str(),
+        "--state-dir",
+        &state_root_str,
+    ])?;
 
     let repos_dir = state_root.join("repos");
     let mut repo_dirs: Vec<PathBuf> = fs::read_dir(&repos_dir)?
@@ -120,7 +135,11 @@ fn absolute_state_dir_is_repo_scoped_and_prevents_cross_repo_mixing() -> Result<
         .filter_map(|entry| {
             let path = entry.path();
             let file_type = entry.file_type().ok()?;
-            if file_type.is_dir() { Some(path) } else { None }
+            if file_type.is_dir() {
+                Some(path)
+            } else {
+                None
+            }
         })
         .collect();
     repo_dirs.sort();
@@ -195,7 +214,13 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
     let state_root_str = state_root.to_string_lossy().to_string();
     let repo_a_str = repo_a.to_string_lossy().to_string();
     let repo_b_str = repo_b.to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_a_str.as_str(), "--state-dir", &state_root_str])?;
+    run_docdex([
+        "index",
+        "--repo",
+        repo_a_str.as_str(),
+        "--state-dir",
+        &state_root_str,
+    ])?;
 
     let repos_dir = state_root.join("repos");
     let mut repo_dirs: Vec<PathBuf> = fs::read_dir(&repos_dir)?
@@ -203,11 +228,19 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
         .filter_map(|entry| {
             let path = entry.path();
             let file_type = entry.file_type().ok()?;
-            if file_type.is_dir() { Some(path) } else { None }
+            if file_type.is_dir() {
+                Some(path)
+            } else {
+                None
+            }
         })
         .collect();
     repo_dirs.sort();
-    assert_eq!(repo_dirs.len(), 1, "expected one repo state dir after first index");
+    assert_eq!(
+        repo_dirs.len(),
+        1,
+        "expected one repo state dir after first index"
+    );
 
     let canon_a = normalize_path(&repo_a);
     let (fp_a, state_key) = registry_entry_for_path(&state_root, &canon_a)?;
@@ -242,10 +275,9 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
         .and_then(|v| v.as_array())
         .ok_or("expected recoverySteps array")?;
     assert!(
-        steps.iter().any(|v| v
-            .as_str()
-            .unwrap_or_default()
-            .contains("repo reassociate")),
+        steps
+            .iter()
+            .any(|v| v.as_str().unwrap_or_default().contains("repo reassociate")),
         "expected recoverySteps to mention `repo reassociate`; got: {err_payload}"
     );
     let known_canonical = err_payload
@@ -303,14 +335,24 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
         "expected reassociate to report the prior canonical path"
     );
 
-    run_docdex(["index", "--repo", repo_b_str.as_str(), "--state-dir", &state_root_str])?;
+    run_docdex([
+        "index",
+        "--repo",
+        repo_b_str.as_str(),
+        "--state-dir",
+        &state_root_str,
+    ])?;
 
     let repo_dirs_after: Vec<PathBuf> = fs::read_dir(&repos_dir)?
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| {
             let path = entry.path();
             let file_type = entry.file_type().ok()?;
-            if file_type.is_dir() { Some(path) } else { None }
+            if file_type.is_dir() {
+                Some(path)
+            } else {
+                None
+            }
         })
         .collect();
     assert_eq!(
@@ -352,7 +394,10 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
         .unwrap_or_else(|_| repo_b.clone())
         .to_string_lossy()
         .replace('\\', "/");
-    assert_eq!(canonical, expected, "expected registry canonical path to update after move");
+    assert_eq!(
+        canonical, expected,
+        "expected registry canonical path to update after move"
+    );
 
     Ok(())
 }
@@ -425,7 +470,9 @@ fn reassociate_fails_closed_when_fingerprint_mismatches() -> Result<(), Box<dyn 
         .get("repos")
         .and_then(|value| value.as_object())
         .ok_or("registry missing repos object")?;
-    let entry = repos.get(&fp_a).ok_or("expected registry entry for repo-a fingerprint")?;
+    let entry = repos
+        .get(&fp_a)
+        .ok_or("expected registry entry for repo-a fingerprint")?;
     assert_eq!(
         entry
             .get("canonical_path")
@@ -448,7 +495,8 @@ fn reassociate_fails_closed_when_fingerprint_mismatches() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn never_cross_associates_repo_requests_via_other_repo_scoped_state_dir() -> Result<(), Box<dyn Error>> {
+fn never_cross_associates_repo_requests_via_other_repo_scoped_state_dir(
+) -> Result<(), Box<dyn Error>> {
     let state_root = TempDir::new()?;
     let state_root = state_root.path().canonicalize()?;
 

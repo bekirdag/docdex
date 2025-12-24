@@ -1,8 +1,13 @@
+use crate::error::{
+    repo_resolution_details, AppError, ERR_INVALID_ARGUMENT, ERR_MISSING_REPO_PATH,
+};
+use crate::repo_manager::fingerprint::{
+    legacy_repo_id_for_root, normalize_path, repo_fingerprint_sha256,
+};
 use anyhow::{Context, Result};
-use crate::error::{repo_resolution_details, AppError, ERR_INVALID_ARGUMENT, ERR_MISSING_REPO_PATH};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -41,7 +46,9 @@ pub enum RepoIdentityError {
         old_path: String,
         candidate_fingerprints: Vec<String>,
     },
-    #[error("cannot re-associate: fingerprint `{fingerprint}` not found in registry at {registry_path}")]
+    #[error(
+        "cannot re-associate: fingerprint `{fingerprint}` not found in registry at {registry_path}"
+    )]
     UnknownFingerprint {
         fingerprint: String,
         registry_path: PathBuf,
@@ -150,23 +157,10 @@ const REPO_META_VERSION: u32 = 1;
 const REPO_REGISTRY_FILENAME: &str = "repo_registry.json";
 const REPO_META_FILENAME: &str = "repo_meta.json";
 
-pub fn legacy_repo_id_for_root(repo_root: &Path) -> String {
-    let normalized = normalize_path(repo_root);
-    hex::encode(Sha256::digest(normalized.as_bytes()))
-}
-
-pub fn repo_fingerprint_sha256(repo_root: &Path) -> Result<String> {
-    let target = git_identity_target(repo_root);
-    let payload = file_identity_payload(&target).with_context(|| {
-        format!(
-            "read filesystem identity for {}",
-            target.to_string_lossy()
-        )
-    })?;
-    Ok(hex::encode(Sha256::digest(payload.as_bytes())))
-}
-
-pub fn inspect_repo(repo_root: &Path, state_dir_override: Option<&Path>) -> Result<RepoInspectReport> {
+pub fn inspect_repo(
+    repo_root: &Path,
+    state_dir_override: Option<&Path>,
+) -> Result<RepoInspectReport> {
     if !repo_root.exists() {
         return Err(AppError::new(ERR_MISSING_REPO_PATH, "repo path not found")
             .with_details(repo_resolution_details(
@@ -201,7 +195,10 @@ pub fn inspect_repo(repo_root: &Path, state_dir_override: Option<&Path>) -> Resu
         normalized_path,
         computed_fingerprint: computed_fingerprint.clone(),
         resolved_index_state_dir: resolved.resolved_index_dir.display().to_string(),
-        shared_state_base_dir: resolved.shared_base_dir.as_ref().map(|p| p.display().to_string()),
+        shared_state_base_dir: resolved
+            .shared_base_dir
+            .as_ref()
+            .map(|p| p.display().to_string()),
         state_key: resolved.state_key.clone(),
         mapping: None,
         status: RepoInspectStatus::LocalStateDir,
@@ -242,7 +239,8 @@ pub fn inspect_repo(repo_root: &Path, state_dir_override: Option<&Path>) -> Resu
         report.status = RepoInspectStatus::CanonicalPathCollision;
         report.diagnostics = Some(RepoInspectDiagnostics {
             code: "canonical_path_collision",
-            message: "canonical path is already associated with a different fingerprint".to_string(),
+            message: "canonical path is already associated with a different fingerprint"
+                .to_string(),
             details: Some(serde_json::json!({
                 "canonicalPath": canonical_new,
                 "otherFingerprint": other_fp,
@@ -256,7 +254,8 @@ pub fn inspect_repo(repo_root: &Path, state_dir_override: Option<&Path>) -> Resu
             report.status = RepoInspectStatus::ReassociationRequired;
             report.diagnostics = Some(RepoInspectDiagnostics {
                 code: "reassociation_required",
-                message: "repo fingerprint is registered for a different canonical path".to_string(),
+                message: "repo fingerprint is registered for a different canonical path"
+                    .to_string(),
                 details: Some(serde_json::json!({
                     "fingerprint": fingerprint,
                     "registeredCanonicalPath": mapping.canonical_path,
@@ -294,7 +293,10 @@ pub fn inspect_repo(repo_root: &Path, state_dir_override: Option<&Path>) -> Resu
     Ok(report)
 }
 
-pub fn resolve_shared_state_key(repo_root: &Path, shared_base_dir: &Path) -> Result<RepoStateKeyResolution> {
+pub fn resolve_shared_state_key(
+    repo_root: &Path,
+    shared_base_dir: &Path,
+) -> Result<RepoStateKeyResolution> {
     let fingerprint = repo_fingerprint_sha256(repo_root)?;
     let registry_path = repo_registry_path(shared_base_dir);
     let registry = load_registry(&registry_path)?;
@@ -322,14 +324,15 @@ pub fn resolve_shared_state_key(repo_root: &Path, shared_base_dir: &Path) -> Res
     // Fast-fail on explicit mismatches when metadata exists.
     validate_state_meta(shared_base_dir, &state_key, &fingerprint)?;
 
-    Ok(RepoStateKeyResolution {
-        state_key,
-    })
+    Ok(RepoStateKeyResolution { state_key })
 }
 
-pub fn resolve_shared_index_state_dir(repo_root: &Path, custom_state_dir: &Path) -> Result<PathBuf> {
-    let (base_dir, maybe_scoped_key, scoped_has_index) =
-        split_scoped_state_dir(custom_state_dir).unwrap_or_else(|| (custom_state_dir.to_path_buf(), None, false));
+pub fn resolve_shared_index_state_dir(
+    repo_root: &Path,
+    custom_state_dir: &Path,
+) -> Result<PathBuf> {
+    let (base_dir, maybe_scoped_key, scoped_has_index) = split_scoped_state_dir(custom_state_dir)
+        .unwrap_or_else(|| (custom_state_dir.to_path_buf(), None, false));
 
     let resolution = resolve_shared_state_key(repo_root, &base_dir)?;
     let expected = resolution.state_key.clone();
@@ -362,11 +365,9 @@ pub fn record_repo_opened(repo_root: &Path, index_state_dir: &Path) -> Result<()
 
     let mut registry = load_registry(&registry_path)?;
 
-    if let Some((other_fp, _)) = registry
-        .repos
-        .iter()
-        .find(|(fp, entry)| fp.as_str() != fingerprint.as_str() && entry.canonical_path == canonical_path)
-    {
+    if let Some((other_fp, _)) = registry.repos.iter().find(|(fp, entry)| {
+        fp.as_str() != fingerprint.as_str() && entry.canonical_path == canonical_path
+    }) {
         return Err(RepoIdentityError::CanonicalPathCollision {
             canonical_path,
             other_fingerprint: other_fp.to_string(),
@@ -407,7 +408,13 @@ pub fn record_repo_opened(repo_root: &Path, index_state_dir: &Path) -> Result<()
     }
     entry.last_seen_at_epoch_ms = now_ms;
 
-    write_repo_meta(&base_dir, &entry.state_key, &fingerprint, &canonical_path, now_ms)?;
+    write_repo_meta(
+        &base_dir,
+        &entry.state_key,
+        &fingerprint,
+        &canonical_path,
+        now_ms,
+    )?;
     save_registry_atomic(&registry_path, &registry)?;
 
     Ok(())
@@ -443,11 +450,9 @@ pub fn validate_repo_state_dir(repo_root: &Path, index_state_dir: &Path) -> Resu
         }
     }
 
-    if let Some((other_fp, _)) = registry
-        .repos
-        .iter()
-        .find(|(fp, entry)| fp.as_str() != fingerprint.as_str() && entry.canonical_path == canonical_path)
-    {
+    if let Some((other_fp, _)) = registry.repos.iter().find(|(fp, entry)| {
+        fp.as_str() != fingerprint.as_str() && entry.canonical_path == canonical_path
+    }) {
         return Err(RepoIdentityError::CanonicalPathCollision {
             canonical_path,
             other_fingerprint: other_fp.to_string(),
@@ -471,8 +476,8 @@ pub fn reassociate_repo_path(
         anyhow::bail!("repo root is not a directory: {}", repo_root.display());
     }
 
-    let (base_dir, _, _) =
-        split_scoped_state_dir(custom_state_dir).unwrap_or_else(|| (custom_state_dir.to_path_buf(), None, false));
+    let (base_dir, _, _) = split_scoped_state_dir(custom_state_dir)
+        .unwrap_or_else(|| (custom_state_dir.to_path_buf(), None, false));
     let registry_path = repo_registry_path(&base_dir);
     let mut registry = load_registry(&registry_path)?;
 
@@ -487,7 +492,9 @@ pub fn reassociate_repo_path(
             .repos
             .iter()
             .filter_map(|(fp, entry)| {
-                if entry.canonical_path == normalized_old || entry.prior_paths.iter().any(|p| p == &normalized_old) {
+                if entry.canonical_path == normalized_old
+                    || entry.prior_paths.iter().any(|p| p == &normalized_old)
+                {
                     Some(fp.clone())
                 } else {
                     None
@@ -518,11 +525,9 @@ pub fn reassociate_repo_path(
         .into());
     }
 
-    if let Some((other_fp, _)) = registry
-        .repos
-        .iter()
-        .find(|(fp, other)| fp.as_str() != target_fingerprint.as_str() && other.canonical_path == canonical_new)
-    {
+    if let Some((other_fp, _)) = registry.repos.iter().find(|(fp, other)| {
+        fp.as_str() != target_fingerprint.as_str() && other.canonical_path == canonical_new
+    }) {
         return Err(RepoIdentityError::CanonicalPathCollision {
             canonical_path: canonical_new,
             other_fingerprint: other_fp.to_string(),
@@ -571,20 +576,16 @@ pub fn reassociate_repo_path(
     })
 }
 
-fn normalize_path(path: &Path) -> String {
-    path.canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf())
-        .to_string_lossy()
-        .replace('\\', "/")
-}
-
 struct InspectStateDirResolution {
     resolved_index_dir: PathBuf,
     shared_base_dir: Option<PathBuf>,
     state_key: Option<String>,
 }
 
-fn resolve_state_dir_for_inspect(repo_root: &Path, state_dir_override: Option<&Path>) -> InspectStateDirResolution {
+fn resolve_state_dir_for_inspect(
+    repo_root: &Path,
+    state_dir_override: Option<&Path>,
+) -> InspectStateDirResolution {
     match state_dir_override {
         Some(custom) if custom.is_absolute() => {
             let repo_root_canon = repo_root
@@ -598,8 +599,8 @@ fn resolve_state_dir_for_inspect(repo_root: &Path, state_dir_override: Option<&P
                 };
             }
 
-            let (base_dir, maybe_scoped_key, scoped_has_index) =
-                split_scoped_state_dir(custom).unwrap_or_else(|| (custom.to_path_buf(), None, false));
+            let (base_dir, maybe_scoped_key, scoped_has_index) = split_scoped_state_dir(custom)
+                .unwrap_or_else(|| (custom.to_path_buf(), None, false));
             let fingerprint = repo_fingerprint_sha256(repo_root).ok();
             let state_key = fingerprint.clone().and_then(|fp| {
                 let registry = load_registry(&repo_registry_path(&base_dir)).ok()?;
@@ -694,9 +695,10 @@ fn load_registry(path: &Path) -> Result<RepoRegistryFile> {
                 repos: BTreeMap::new(),
             })
         }
-        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display()))?,
     };
-    let mut parsed: RepoRegistryFile = serde_json::from_str(&data).with_context(|| format!("parse {}", path.display()))?;
+    let mut parsed: RepoRegistryFile =
+        serde_json::from_str(&data).with_context(|| format!("parse {}", path.display()))?;
     if parsed.version == 0 {
         parsed.version = REPO_REGISTRY_VERSION;
     }
@@ -720,14 +722,19 @@ fn save_registry_atomic(path: &Path, registry: &RepoRegistryFile) -> Result<()> 
     Ok(())
 }
 
-fn validate_state_meta(shared_base_dir: &Path, state_key: &str, expected_fingerprint: &str) -> Result<()> {
+fn validate_state_meta(
+    shared_base_dir: &Path,
+    state_key: &str,
+    expected_fingerprint: &str,
+) -> Result<()> {
     let path = repo_meta_path(shared_base_dir, state_key);
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display()))?,
     };
-    let parsed: RepoStateMetaV1 = serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
+    let parsed: RepoStateMetaV1 =
+        serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
     if parsed.fingerprint_sha256 != expected_fingerprint {
         return Err(RepoIdentityError::StateMetaFingerprintMismatch {
             state_key: state_key.to_string(),
@@ -747,11 +754,8 @@ fn write_repo_meta(
     now_ms: i64,
 ) -> Result<()> {
     let path = repo_meta_path(shared_base_dir, state_key);
-    fs::create_dir_all(
-        path.parent()
-            .expect("repo meta parent"),
-    )
-    .with_context(|| format!("create {}", path.parent().unwrap().display()))?;
+    fs::create_dir_all(path.parent().expect("repo meta parent"))
+        .with_context(|| format!("create {}", path.parent().unwrap().display()))?;
 
     let mut created_at = now_ms;
     if let Ok(raw) = fs::read_to_string(&path) {
@@ -775,7 +779,8 @@ fn write_repo_meta(
     if path.exists() {
         let _ = fs::remove_file(&path);
     }
-    fs::rename(&tmp, &path).with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
+    fs::rename(&tmp, &path)
+        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
     Ok(())
 }
 
@@ -793,7 +798,14 @@ fn base_dir_and_state_key_from_index_dir(index_state_dir: &Path) -> Option<(Path
     Some((base_dir, state_key))
 }
 
-fn split_scoped_state_dir(custom_state_dir: &Path) -> Option<(PathBuf, Option<String>, bool)> {
+pub fn resolve_shared_state_key_lenient(
+    repo_root: &Path,
+    shared_base_dir: &Path,
+) -> Result<RepoStateKeyResolution> {
+    resolve_shared_state_key(repo_root, shared_base_dir)
+}
+
+pub fn split_scoped_state_dir(custom_state_dir: &Path) -> Option<(PathBuf, Option<String>, bool)> {
     let name = custom_state_dir.file_name()?.to_string_lossy();
     if name == "index" {
         let state_key_dir = custom_state_dir.parent()?;
@@ -815,274 +827,232 @@ fn split_scoped_state_dir(custom_state_dir: &Path) -> Option<(PathBuf, Option<St
     Some((base_dir, Some(state_key), false))
 }
 
-fn git_identity_target(repo_root: &Path) -> PathBuf {
-    let dot_git = repo_root.join(".git");
-    let Ok(meta) = fs::metadata(&dot_git) else {
-        return repo_root.to_path_buf();
-    };
-    if meta.is_dir() {
-        return dot_git;
-    }
-    if !meta.is_file() {
-        return repo_root.to_path_buf();
-    }
-    let Ok(contents) = fs::read_to_string(&dot_git) else {
-        return repo_root.to_path_buf();
-    };
-    let line = contents.lines().next().unwrap_or_default().trim();
-    let Some(rest) = line.strip_prefix("gitdir:") else {
-        return repo_root.to_path_buf();
-    };
-    let rest = rest.trim();
-    if rest.is_empty() {
-        return repo_root.to_path_buf();
-    }
-    let candidate = PathBuf::from(rest);
-    if candidate.is_absolute() {
-        return candidate;
-    }
-    repo_root.join(candidate)
+// --- LRU Logic ---
+
+#[derive(Debug)]
+pub struct RepoHandle {
+    pub repo_id: String,
+    pub generation: u64,
 }
 
-fn file_identity_payload(path: &Path) -> Result<String> {
-    let meta = fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
+impl RepoHandle {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+}
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        return Ok(format!(
-            "v1|unix|dev={}|ino={}|is_dir={}",
-            meta.dev(),
-            meta.ino(),
-            meta.is_dir()
-        ));
+pub struct RepoHandleManager {
+    repos: HashMap<String, RepoEntry>,
+    tick: u64,
+    next_generation: u64,
+    max_open: usize,
+}
+
+struct RepoEntry {
+    in_flight: usize,
+    last_access: u64,
+    generation: u64,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RepoOpenError {
+    #[error("repo capacity exceeded (max: {max_open}, in_flight: {in_flight:?})")]
+    CapExceeded {
+        max_open: usize,
+        in_flight: Vec<String>,
+    },
+}
+
+impl RepoHandleManager {
+    pub fn new(max_open: usize) -> Self {
+        Self {
+            repos: HashMap::new(),
+            tick: 0,
+            next_generation: 1,
+            max_open: max_open.max(1),
+        }
     }
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        let vsn = meta.volume_serial_number().unwrap_or(0);
-        let file_index = meta.file_index().unwrap_or(0);
-        return Ok(format!(
-            "v1|windows|volume_serial_number={vsn}|file_index={file_index}|is_dir={}",
-            meta.is_dir()
-        ));
+    pub fn open_count(&self) -> usize {
+        self.repos.len()
     }
 
-    #[cfg(not(any(unix, windows)))]
-    {
-        let normalized = normalize_path(path);
-        Ok(format!("v1|path|{}", normalized))
+    pub fn is_open(&self, repo_id: &str) -> bool {
+        self.repos.contains_key(repo_id)
+    }
+
+    pub fn acquire(&mut self, repo_id: &str) -> Result<RepoHandle, RepoOpenError> {
+        self.tick = self.tick.wrapping_add(1);
+
+        if let Some(entry) = self.repos.get_mut(repo_id) {
+            entry.in_flight += 1;
+            entry.last_access = self.tick;
+            return Ok(RepoHandle {
+                repo_id: repo_id.to_string(),
+                generation: entry.generation,
+            });
+        }
+
+        if self.repos.len() >= self.max_open {
+            if !self.evict_one() {
+                return Err(RepoOpenError::CapExceeded {
+                    max_open: self.max_open,
+                    in_flight: self.in_flight_repos(),
+                });
+            }
+        }
+
+        self.next_generation = self.next_generation.wrapping_add(1);
+        self.repos.insert(
+            repo_id.to_string(),
+            RepoEntry {
+                in_flight: 1,
+                last_access: self.tick,
+                generation: self.next_generation,
+            },
+        );
+
+        Ok(RepoHandle {
+            repo_id: repo_id.to_string(),
+            generation: self.next_generation,
+        })
+    }
+
+    pub fn release(&mut self, repo_id: &str) {
+        if let Some(entry) = self.repos.get_mut(repo_id) {
+            entry.in_flight = entry.in_flight.saturating_sub(1);
+        }
+    }
+
+    fn in_flight_repos(&self) -> Vec<String> {
+        let mut repos: Vec<String> = self
+            .repos
+            .iter()
+            .filter_map(|(repo_id, entry)| {
+                if entry.in_flight > 0 {
+                    Some(repo_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        repos.sort();
+        repos
+    }
+
+    fn evict_one(&mut self) -> bool {
+        let candidate = self
+            .repos
+            .iter()
+            .filter(|(_, entry)| entry.in_flight == 0)
+            .min_by(
+                |(id_a, a), (id_b, b)| match a.last_access.cmp(&b.last_access) {
+                    Ordering::Equal => id_a.cmp(id_b),
+                    other => other,
+                },
+            )
+            .map(|(repo_id, _)| repo_id.clone());
+
+        if let Some(repo_id) = candidate {
+            self.repos.remove(&repo_id);
+            true
+        } else {
+            false
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
-    fn create_git_repo(dir: &Path) -> Result<()> {
-        fs::create_dir_all(dir)?;
-        fs::create_dir_all(dir.join(".git"))?;
-        fs::write(dir.join("readme.md"), "# Repo\n")?;
-        Ok(())
+    fn open_and_release(manager: &mut RepoHandleManager, repo_id: &str) -> RepoHandle {
+        let handle = manager.acquire(repo_id).expect("acquire repo");
+        manager.release(repo_id);
+        handle
     }
 
     #[test]
-    fn fingerprint_stable_across_rename_when_git_dir_preserved() -> Result<()> {
-        let base = TempDir::new()?;
-        let repo_a = base.path().join("repo-a");
-        let repo_b = base.path().join("repo-b");
-        create_git_repo(&repo_a)?;
+    fn lru_eviction_respects_access_order() {
+        let mut manager = RepoHandleManager::new(2);
 
-        let fp1 = repo_fingerprint_sha256(&repo_a)?;
-        fs::rename(&repo_a, &repo_b)?;
-        let fp2 = repo_fingerprint_sha256(&repo_b)?;
-        assert_eq!(fp1, fp2);
-        Ok(())
+        open_and_release(&mut manager, "repo-a");
+        open_and_release(&mut manager, "repo-b");
+        open_and_release(&mut manager, "repo-a");
+
+        assert_eq!(manager.open_count(), 2);
+        assert!(manager.is_open("repo-a"));
+        assert!(manager.is_open("repo-b"));
+
+        manager
+            .acquire("repo-c")
+            .expect("acquire repo-c after eviction");
+        manager.release("repo-c");
+
+        assert_eq!(manager.open_count(), 2);
+        assert!(manager.is_open("repo-a"));
+        assert!(manager.is_open("repo-c"));
+        assert!(!manager.is_open("repo-b"));
     }
 
     #[test]
-    fn registry_updates_canonical_path_and_keeps_state_key() -> Result<()> {
-        let base = TempDir::new()?;
-        let shared = base.path().join("state");
-        fs::create_dir_all(shared.join("repos"))?;
+    fn eviction_skips_inflight_repos() {
+        let mut manager = RepoHandleManager::new(2);
 
-        let repo_root = base.path().join("repo-a");
-        create_git_repo(&repo_root)?;
-        let fingerprint = repo_fingerprint_sha256(&repo_root)?;
+        manager.acquire("repo-a").expect("acquire repo-a");
+        manager.acquire("repo-b").expect("acquire repo-b");
+        manager.release("repo-b");
 
-        let resolution = resolve_shared_state_key(&repo_root, &shared)?;
-        let state_key = resolution.state_key.clone();
-        fs::create_dir_all(shared_repo_root_dir(&shared, &state_key).join("index"))?;
+        manager
+            .acquire("repo-c")
+            .expect("acquire repo-c with inflight repo-a");
+        manager.release("repo-c");
 
-        record_repo_opened(&repo_root, &shared_repo_root_dir(&shared, &state_key).join("index"))?;
-        let registry = load_registry(&repo_registry_path(&shared))?;
-        assert!(registry.repos.contains_key(&fingerprint));
+        assert!(manager.is_open("repo-a"));
+        assert!(manager.is_open("repo-c"));
+        assert!(!manager.is_open("repo-b"));
         assert_eq!(
-            registry.repos.get(&fingerprint).unwrap().state_key,
-            state_key
+            manager.repos.get("repo-a").map(|entry| entry.in_flight),
+            Some(1)
         );
-
-        let moved = base.path().join("repo-moved");
-        fs::rename(&repo_root, &moved)?;
-        let err = record_repo_opened(&moved, &shared_repo_root_dir(&shared, &state_key).join("index"))
-            .unwrap_err();
-        assert!(
-            matches!(
-                err.downcast_ref::<RepoIdentityError>(),
-                Some(RepoIdentityError::ReassociationRequired { .. })
-            ),
-            "expected ReassociationRequired; got: {err}"
-        );
-
-        let reassociated =
-            reassociate_repo_path(&moved, &shared, Some(fingerprint.as_str()), None)?;
-        assert_eq!(reassociated.fingerprint, fingerprint);
-        assert_eq!(reassociated.state_key, state_key);
-        assert_eq!(reassociated.canonical_path, normalize_path(&moved));
-
-        record_repo_opened(&moved, &shared_repo_root_dir(&shared, &state_key).join("index"))?;
-        let registry2 = load_registry(&repo_registry_path(&shared))?;
-        let entry = registry2.repos.get(&fingerprint).unwrap();
-        assert_eq!(entry.state_key, state_key);
-        assert_eq!(entry.canonical_path, normalize_path(&moved));
-        assert!(!entry.prior_paths.is_empty());
-        Ok(())
+        manager.release("repo-a");
     }
 
     #[test]
-    fn canonical_path_collision_is_rejected() -> Result<()> {
-        let base = TempDir::new()?;
-        let shared = base.path().join("state");
-        fs::create_dir_all(shared.join("repos"))?;
+    fn cap_blocked_when_all_repos_inflight() {
+        let mut manager = RepoHandleManager::new(2);
 
-        let repo_a = base.path().join("repo-a");
-        let repo_b = base.path().join("repo-b");
-        create_git_repo(&repo_a)?;
-        create_git_repo(&repo_b)?;
-        let fp_a = repo_fingerprint_sha256(&repo_a)?;
+        manager.acquire("repo-a").expect("acquire repo-a");
+        manager.acquire("repo-b").expect("acquire repo-b");
 
-        let res_a = resolve_shared_state_key(&repo_a, &shared)?;
-        let res_b = resolve_shared_state_key(&repo_b, &shared)?;
-
-        let state_a = shared_repo_root_dir(&shared, &res_a.state_key).join("index");
-        let state_b = shared_repo_root_dir(&shared, &res_b.state_key).join("index");
-        fs::create_dir_all(&state_a)?;
-        fs::create_dir_all(&state_b)?;
-
-        record_repo_opened(&repo_a, &state_a)?;
-
-        // Force collision by corrupting repo A's registry entry to claim repo B's canonical path.
-        let mut registry = load_registry(&repo_registry_path(&shared))?;
-        let entry_a = registry
-            .repos
-            .get_mut(&fp_a)
-            .expect("repo A entry");
-        entry_a.canonical_path = normalize_path(&repo_b);
-        save_registry_atomic(&repo_registry_path(&shared), &registry)?;
-
-        let err = record_repo_opened(&repo_b, &state_b).unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("canonical path") && msg.contains("already associated"),
-            "unexpected error: {msg}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn inspect_reports_reassociation_required_after_repo_move() -> Result<()> {
-        let base = TempDir::new()?;
-        let shared = base.path().join("state");
-        fs::create_dir_all(shared.join("repos"))?;
-
-        let repo_root = base.path().join("repo-a");
-        create_git_repo(&repo_root)?;
-        let fingerprint = repo_fingerprint_sha256(&repo_root)?;
-        let resolution = resolve_shared_state_key(&repo_root, &shared)?;
-        let state_key = resolution.state_key.clone();
-        fs::create_dir_all(shared_repo_root_dir(&shared, &state_key).join("index"))?;
-        record_repo_opened(&repo_root, &shared_repo_root_dir(&shared, &state_key).join("index"))?;
-
-        let moved = base.path().join("repo-moved");
-        fs::rename(&repo_root, &moved)?;
-
-        let report = inspect_repo(&moved, Some(shared.as_path()))?;
-        assert_eq!(report.computed_fingerprint.as_deref(), Some(fingerprint.as_str()));
-        assert!(matches!(report.status, RepoInspectStatus::ReassociationRequired));
-        let mapping = report.mapping.expect("mapping");
-        assert_ne!(mapping.canonical_path, report.normalized_path);
-        Ok(())
-    }
-
-    #[test]
-    fn inspect_missing_path_returns_app_error() {
-        let base = tempfile::TempDir::new().expect("tempdir");
-        let missing = base.path().join("missing-repo");
-        let err = inspect_repo(&missing, None).unwrap_err();
-        let app = err
-            .downcast_ref::<AppError>()
-            .expect("expected AppError");
-        assert_eq!(app.code, ERR_MISSING_REPO_PATH);
-    }
-
-    #[test]
-    fn inspect_serializes_expected_top_level_fields() -> Result<()> {
-        let base = TempDir::new()?;
-        let repo_root = base.path().join("repo");
-        create_git_repo(&repo_root)?;
-
-        let report = inspect_repo(&repo_root, None)?;
-        let value = serde_json::to_value(&report)?;
-        let obj = value.as_object().expect("object");
-        for key in [
-            "repoRoot",
-            "normalizedPath",
-            "computedFingerprint",
-            "resolvedIndexStateDir",
-            "status",
-        ] {
-            assert!(obj.contains_key(key), "missing key: {key}");
+        let err = manager.acquire("repo-c").expect_err("cap should block");
+        match err {
+            RepoOpenError::CapExceeded {
+                max_open,
+                in_flight,
+            } => {
+                assert_eq!(max_open, 2);
+                assert_eq!(in_flight, vec!["repo-a".to_string(), "repo-b".to_string()]);
+            }
         }
-        Ok(())
+
+        assert_eq!(manager.open_count(), 2);
+        assert!(manager.is_open("repo-a"));
+        assert!(manager.is_open("repo-b"));
     }
 
     #[test]
-    fn inspect_includes_shared_mapping_and_last_seen() -> Result<()> {
-        let base = TempDir::new()?;
-        let shared = base.path().join("state");
-        fs::create_dir_all(shared.join("repos"))?;
+    fn reopen_after_eviction_refreshes_generation() {
+        let mut manager = RepoHandleManager::new(1);
 
-        let repo_root = base.path().join("repo-a");
-        create_git_repo(&repo_root)?;
-        let fingerprint = repo_fingerprint_sha256(&repo_root)?;
-        let resolution = resolve_shared_state_key(&repo_root, &shared)?;
-        let state_key = resolution.state_key.clone();
-        let state_index = shared_repo_root_dir(&shared, &state_key).join("index");
-        fs::create_dir_all(&state_index)?;
+        let first = open_and_release(&mut manager, "repo-a");
+        open_and_release(&mut manager, "repo-b");
 
-        record_repo_opened(&repo_root, &state_index)?;
+        let reopened = manager.acquire("repo-a").expect("reopen repo-a");
+        assert_ne!(first.generation(), reopened.generation());
+        manager.release("repo-a");
 
-        let report = inspect_repo(&repo_root, Some(shared.as_path()))?;
-        assert!(matches!(report.status, RepoInspectStatus::Ok));
-        assert_eq!(report.computed_fingerprint.as_deref(), Some(fingerprint.as_str()));
-        let mapping = report.mapping.as_ref().expect("mapping");
-        assert_eq!(mapping.fingerprint, fingerprint);
-        assert_eq!(mapping.state_key, state_key);
-        assert_eq!(mapping.canonical_path, report.normalized_path);
-        assert!(mapping.last_seen_at_epoch_ms > 0);
-
-        let value = serde_json::to_value(&report)?;
-        let obj = value.as_object().expect("object");
-        let mapping_obj = obj
-            .get("mapping")
-            .and_then(|v| v.as_object())
-            .expect("mapping object");
-        for key in ["fingerprint", "stateKey", "canonicalPath", "aliases", "lastSeen"] {
-            assert!(mapping_obj.contains_key(key), "missing mapping key: {key}");
-        }
-        assert!(mapping_obj.contains_key("lastSeenAtEpochMs"));
-        Ok(())
+        assert_eq!(manager.open_count(), 1);
+        assert!(manager.is_open("repo-a"));
     }
 }

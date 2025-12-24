@@ -110,8 +110,8 @@ impl MockOllama {
             let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
             rt.block_on(async move {
                 let app = Router::new().route("/api/embeddings", handler);
-                let listener = tokio::net::TcpListener::from_std(std_listener)
-                    .expect("tokio listener");
+                let listener =
+                    tokio::net::TcpListener::from_std(std_listener).expect("tokio listener");
                 axum::serve(listener, app)
                     .with_graceful_shutdown(async move {
                         let _ = rx.await;
@@ -221,7 +221,10 @@ fn http_memory_store_timeout_returns_stable_code() -> Result<(), Box<dyn Error>>
     let repo = setup_repo()?;
     let Some(slow) = MockOllama::spawn(post(move || async move {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        (axum::http::StatusCode::OK, Json(json!({ "embedding": [0.1, 0.2] })))
+        (
+            axum::http::StatusCode::OK,
+            Json(json!({ "embedding": [0.1, 0.2] })),
+        )
     }))?
     else {
         return Ok(());
@@ -232,16 +235,20 @@ fn http_memory_store_timeout_returns_stable_code() -> Result<(), Box<dyn Error>>
     };
     let host = "127.0.0.1";
     let state_root = TempDir::new()?;
-    let mut server =
-        spawn_server(state_root.path(), repo.path(), host, port, &slow.base_url, "fake-embed", 50)?;
+    let mut server = spawn_server(
+        state_root.path(),
+        repo.path(),
+        host,
+        port,
+        &slow.base_url,
+        "fake-embed",
+        50,
+    )?;
     wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/v1/memory/store");
-    let resp = client
-        .post(&url)
-        .json(&json!({ "text": "hello" }))
-        .send()?;
+    let resp = client.post(&url).json(&json!({ "text": "hello" })).send()?;
     assert_eq!(resp.status().as_u16(), 504);
     let body: Value = resp.json()?;
     assert_eq!(
@@ -266,7 +273,10 @@ fn mcp_memory_store_timeout_returns_stable_code() -> Result<(), Box<dyn Error>> 
     let state_root = TempDir::new()?;
     let Some(slow) = MockOllama::spawn(post(|| async move {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        (axum::http::StatusCode::OK, Json(json!({ "embedding": [0.1, 0.2] })))
+        (
+            axum::http::StatusCode::OK,
+            Json(json!({ "embedding": [0.1, 0.2] })),
+        )
     }))?
     else {
         return Ok(());
@@ -346,7 +356,10 @@ fn invalid_model_is_explicit_and_daemon_stays_healthy() -> Result<(), Box<dyn Er
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let store_url = format!("http://{host}:{port}/v1/memory/store");
-    let resp = client.post(&store_url).json(&json!({ "text": "hello" })).send()?;
+    let resp = client
+        .post(&store_url)
+        .json(&json!({ "text": "hello" }))
+        .send()?;
     assert_eq!(resp.status().as_u16(), 400);
     let body: Value = resp.json()?;
     assert_eq!(
@@ -374,7 +387,10 @@ fn memory_metadata_includes_embedding_model() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
     let Some(mock) = MockOllama::spawn(post(|| async move {
-        (axum::http::StatusCode::OK, Json(json!({ "embedding": [1.0, 0.0] })))
+        (
+            axum::http::StatusCode::OK,
+            Json(json!({ "embedding": [1.0, 0.0] })),
+        )
     }))?
     else {
         return Ok(());
@@ -432,8 +448,14 @@ fn memory_metadata_includes_embedding_model() -> Result<(), Box<dyn Error>> {
         .and_then(|v| v.get("metadata"))
         .cloned()
         .unwrap_or(json!({}));
-    assert_eq!(meta.get("embeddingModel").and_then(|v| v.as_str()), Some("test-embed-model"));
-    assert_eq!(meta.get("embeddingProvider").and_then(|v| v.as_str()), Some("ollama"));
+    assert_eq!(
+        meta.get("embeddingModel").and_then(|v| v.as_str()),
+        Some("test-embed-model")
+    );
+    assert_eq!(
+        meta.get("embeddingProvider").and_then(|v| v.as_str()),
+        Some("ollama")
+    );
     assert_eq!(meta.get("source").and_then(|v| v.as_str()), Some("test"));
 
     server.kill().ok();
@@ -447,7 +469,10 @@ fn cli_timeout_error_is_machine_readable() -> Result<(), Box<dyn Error>> {
     let state_root = TempDir::new()?;
     let Some(slow) = MockOllama::spawn(post(|| async move {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        (axum::http::StatusCode::OK, Json(json!({ "embedding": [0.1, 0.2] })))
+        (
+            axum::http::StatusCode::OK,
+            Json(json!({ "embedding": [0.1, 0.2] })),
+        )
     }))?
     else {
         return Ok(());
@@ -456,17 +481,17 @@ fn cli_timeout_error_is_machine_readable() -> Result<(), Box<dyn Error>> {
     let output = Command::new(docdex_bin())
         .env("DOCDEX_STATE_DIR", state_root.path())
         .args([
-        "memory-store",
-        "--repo",
-        repo.path().to_string_lossy().as_ref(),
-        "--text",
-        "hello",
-        "--ollama-base-url",
-        slow.base_url.as_str(),
-        "--embedding-model",
-        "fake-embed",
-        "--embedding-timeout-ms",
-        "50",
+            "memory-store",
+            "--repo",
+            repo.path().to_string_lossy().as_ref(),
+            "--text",
+            "hello",
+            "--ollama-base-url",
+            slow.base_url.as_str(),
+            "--embedding-model",
+            "fake-embed",
+            "--embedding-timeout-ms",
+            "50",
         ])
         .output()?;
     assert!(!output.status.success());

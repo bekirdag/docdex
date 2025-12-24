@@ -78,14 +78,19 @@ fn cli_missing_repo_path_includes_move_hint_and_details() -> Result<(), Box<dyn 
         .and_then(|v| v.as_array())
         .ok_or("expected details.recoverySteps array")?;
     assert!(
-        steps.iter().any(|v| v.as_str().unwrap_or_default().to_lowercase().contains("moved")),
+        steps.iter().any(|v| v
+            .as_str()
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("moved")),
         "expected recoverySteps to mention moved/renamed; got: {details}"
     );
     Ok(())
 }
 
 #[test]
-fn cli_repo_state_mismatch_fast_fails_with_fingerprint_and_guidance() -> Result<(), Box<dyn Error>> {
+fn cli_repo_state_mismatch_fast_fails_with_fingerprint_and_guidance() -> Result<(), Box<dyn Error>>
+{
     let workspace = TempDir::new()?;
     let state_root = TempDir::new()?;
     let state_root = state_root.path().canonicalize()?;

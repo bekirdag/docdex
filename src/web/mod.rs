@@ -1,6 +1,11 @@
+pub mod cache;
 pub mod ddg;
+pub mod ddg_policy;
+pub mod discovery;
 pub mod normalize;
 pub mod policy;
+pub mod research;
+pub mod scraper;
 
 use std::env;
 use std::time::Duration;
@@ -22,13 +27,13 @@ pub struct WebConfig {
 impl WebConfig {
     pub fn from_env() -> Self {
         let enabled = env_bool("DOCDEX_WEB_ENABLED", true);
-        let user_agent = env::var("DOCDEX_WEB_USER_AGENT").unwrap_or_else(|_| {
-            format!("docdexd/{}", env!("CARGO_PKG_VERSION"))
-        });
+        let user_agent = env::var("DOCDEX_WEB_USER_AGENT")
+            .unwrap_or_else(|_| format!("docdexd/{}", env!("CARGO_PKG_VERSION")));
         let base_url = env::var("DOCDEX_DDG_BASE_URL")
             .unwrap_or_else(|_| "https://html.duckduckgo.com/html/".to_string());
-        let ddg_base_url = Url::parse(&base_url)
-            .unwrap_or_else(|_| Url::parse("https://html.duckduckgo.com/html/").expect("default url is valid"));
+        let ddg_base_url = Url::parse(&base_url).unwrap_or_else(|_| {
+            Url::parse("https://html.duckduckgo.com/html/").expect("default url is valid")
+        });
         let max_results = env_u64("DOCDEX_WEB_MAX_RESULTS", 8).max(1) as usize;
         let request_timeout_ms = env_u64("DOCDEX_WEB_REQUEST_TIMEOUT_MS", 10_000).max(1);
         let min_spacing_ms = env_u64("DOCDEX_WEB_MIN_SPACING_MS", 2000);

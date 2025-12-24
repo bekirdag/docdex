@@ -1,34 +1,42 @@
 mod audit;
 mod browser_session;
-mod chrome_watchdog;
 mod config;
 mod daemon;
+mod dag;
 mod error;
-mod metrics;
-mod tier2;
+mod hardware;
 mod impact;
 mod index;
 mod libs;
 mod libs_source_resolver;
-mod memory;
+mod llm;
 mod mcp;
+mod memory;
+mod metrics;
 mod ollama;
 mod ratelimit;
-mod repo_identity;
+mod repo_manager;
 mod search;
 mod symbols;
+mod tier2;
 mod util;
 mod watcher;
+mod web;
 
 use crate::config::RepoArgs;
 use crate::error::StartupError;
+use crate::llm;
+use crate::orchestrator::{run_waterfall, MemoryBudget, WaterfallRequest, WebGateConfig};
+use crate::tier2::Tier2Config;
 use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use serde_json::json;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command as StdCommand;
 use tracing::info;
+use which::which;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -296,6 +304,18 @@ enum Command {
             help = "Include built-in sensitive patterns (tokens/keys/passwords) in the scan"
         )]
         include_default_patterns: bool,
+    },
+    /// Show hardware-aware LLM recommendations.
+    LlmList,
+    /// Guide hardware-aware LLM setup and report Ollama availability.
+    LlmSetup {
+        #[arg(
+            long,
+            env = "DOCDEX_OLLAMA_PATH",
+            value_name = "PATH",
+            help = "Explicit path to the Ollama binary (falls back to PATH)"
+        )]
+        ollama_path: Option<PathBuf>,
     },
     /// Build or rebuild the entire index for a repo.
     Index {
@@ -578,9 +598,8 @@ async fn run() -> Result<()> {
         } => {
             if let Some(ref dir) = chroot_dir {
                 daemon::enter_chroot(dir).map_err(|err| {
-                    StartupError::new("startup_state_invalid", err.to_string()).with_hint(
-                        "Verify the chroot path exists and is accessible (Unix only).",
-                    )
+                    StartupError::new("startup_state_invalid", err.to_string())
+                        .with_hint("Verify the chroot path exists and is accessible (Unix only).")
                 })?;
             }
             let repo_root = repo.repo_root();
@@ -615,15 +634,15 @@ async fn run() -> Result<()> {
                 let path = audit_log_path
                     .clone()
                     .unwrap_or_else(|| index_config.state_dir().join("audit.log"));
-                Some(audit::AuditLogger::new(
-                    path,
-                    audit_max_bytes,
-                    audit_max_files,
+                Some(
+                    audit::AuditLogger::new(path, audit_max_bytes, audit_max_files).map_err(
+                        |err| {
+                            StartupError::new("startup_state_invalid", err.to_string()).with_hint(
+                                "Verify the state dir is writable or set --audit-disable.",
+                            )
+                        },
+                    )?,
                 )
-                .map_err(|err| {
-                    StartupError::new("startup_state_invalid", err.to_string())
-                        .with_hint("Verify the state dir is writable or set --audit-disable.")
-                })?)
             };
             let security = search::SecurityConfig::from_options(
                 auth_token,
@@ -638,7 +657,13 @@ async fn run() -> Result<()> {
                 disable_snippet_text,
             )?;
             let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);
-            let _ = chrome_watchdog::init_global_from_env();
+            let hardware_profile = hardware::detect_hardware();
+            info!(
+                "hardware profile: {}; recommended model: {}",
+                hardware::format_hardware_summary(&hardware_profile),
+                hardware::recommend_model(&hardware_profile)
+            );
+            let _ = web::scraper::init_global_from_env();
             daemon::serve(
                 repo_root,
                 host,
@@ -781,6 +806,84 @@ async fn run() -> Result<()> {
                     });
             return Err(anyhow!("sensitive terms detected in index"));
         }
+        Command::LlmList => {
+            util::init_logging("warn")?;
+            let profile = hardware::detect_hardware();
+            let models = llm::load_catalog()?;
+            println!(
+                "hardware summary: {}",
+                hardware::format_hardware_summary(&profile)
+            );
+            if let Some(model) = llm::recommended_model(&profile, &models) {
+                println!(
+                    "recommended model: {} ({})",
+                    model.display_name, model.description
+                );
+            } else {
+                println!("recommended model: none (hardware does not meet catalog minimums)");
+            }
+            println!("\navailable models:");
+            for model in &models {
+                let supported = llm::supports(&profile, model);
+                let status = if supported {
+                    "supported"
+                } else {
+                    "requires more RAM/GPU"
+                };
+                println!(
+                    "- {} (min RAM: {} GB{}): {} [{}]",
+                    model.display_name,
+                    model.min_ram_gb,
+                    if model.requires_gpu { ", GPU" } else { "" },
+                    model.description,
+                    status
+                );
+            }
+            return Ok(());
+        }
+        Command::LlmSetup { ollama_path } => {
+            util::init_logging("warn")?;
+            let profile = hardware::detect_hardware();
+            let models = llm::load_catalog()?;
+            println!(
+                "hardware summary: {}",
+                hardware::format_hardware_summary(&profile)
+            );
+            if let Some(model) = llm::recommended_model(&profile, &models) {
+                println!(
+                    "recommended model: {} ({})",
+                    model.display_name, model.description
+                );
+            } else {
+                println!("recommended model: none (hardware does not meet catalog minimums)");
+            }
+            let binary = ollama_path.or_else(|| which("ollama").ok());
+            if let Some(bin) = binary {
+                match StdCommand::new(&bin).arg("--version").output() {
+                    Ok(output) if output.status.success() => {
+                        let version = String::from_utf8_lossy(&output.stdout);
+                        println!(
+                            "ollama available at {} (version {})",
+                            bin.display(),
+                            version.trim()
+                        );
+                    }
+                    Ok(output) => {
+                        println!(
+                            "ollama binary at {} returned non-zero (stderr: {})",
+                            bin.display(),
+                            String::from_utf8_lossy(&output.stderr).trim()
+                        );
+                    }
+                    Err(err) => {
+                        println!("failed to run ollama at {}: {}", bin.display(), err);
+                    }
+                }
+            } else {
+                println!("ollama binary not found; install Ollama (https://ollama.ai) or set --ollama-path.");
+            }
+            return Ok(());
+        }
         Command::Index { repo } => {
             let repo_root = repo.repo_root();
             let index_config = index::IndexConfig::with_overrides(
@@ -832,8 +935,27 @@ async fn run() -> Result<()> {
                 let libs_dir = libs::libs_state_dir_from_index_state_dir(server.state_dir());
                 libs::LibsIndexer::open_read_only(libs_dir).ok().flatten()
             };
-            let hits = search::run_query(&server, libs_indexer.as_ref(), &query, limit).await?;
-            println!("{}", serde_json::to_string_pretty(&hits)?);
+            let web_gate = WebGateConfig::from_env();
+            let request = WaterfallRequest {
+                request_id: "cli-query",
+                query: &query,
+                limit,
+                force_web: false,
+                indexer: &server,
+                libs_indexer: libs_indexer.as_ref(),
+                web_gate: &web_gate,
+                tier2_config: Tier2Config::enabled(),
+                tier2_limiter: None,
+                memory: None,
+                memory_budget: MemoryBudget::default(),
+            };
+            let waterfall = run_waterfall(request).await?;
+            let tier2_status = waterfall.tier2.status;
+            let memory_context = waterfall.memory_context;
+            let mut response = waterfall.search_response;
+            response.web_discovery = Some(tier2_status);
+            response.memory_context = memory_context;
+            println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Command::Repo { command } => match command {
             RepoCommand::Reassociate {
@@ -855,7 +977,7 @@ async fn run() -> Result<()> {
                     repo_root.join(state_dir)
                 };
 
-                match crate::repo_identity::reassociate_repo_path(
+                match crate::repo_manager::reassociate_repo_path(
                     &repo_root,
                     &state_dir,
                     fingerprint.as_deref(),
@@ -864,18 +986,18 @@ async fn run() -> Result<()> {
                     Ok(result) => println!("{}", serde_json::to_string_pretty(&result)?),
                     Err(err) => {
                         if let Some(identity) =
-                            err.downcast_ref::<crate::repo_identity::RepoIdentityError>()
+                            err.downcast_ref::<crate::repo_manager::RepoIdentityError>()
                         {
                             let normalized = repo_root.to_string_lossy().replace('\\', "/");
                             let attempted =
-                                crate::repo_identity::repo_fingerprint_sha256(&repo_root).ok();
+                                crate::repo_manager::repo_fingerprint_sha256(&repo_root).ok();
                             let mut known_canonical: Option<String> = None;
                             let mut code = error::ERR_REPO_STATE_MISMATCH;
                             let mut message = "repo re-association refused".to_string();
                             let mut extra_details: Option<serde_json::Value> = None;
 
                             match identity {
-                                crate::repo_identity::RepoIdentityError::AmbiguousOldPath {
+                                crate::repo_manager::RepoIdentityError::AmbiguousOldPath {
                                     old_path,
                                     candidate_fingerprints,
                                 } => {
@@ -886,17 +1008,17 @@ async fn run() -> Result<()> {
                                         "candidateFingerprints": candidate_fingerprints,
                                     }));
                                 }
-                                crate::repo_identity::RepoIdentityError::UnknownFingerprint { .. } => {
+                                crate::repo_manager::RepoIdentityError::UnknownFingerprint { .. } => {
                                     code = error::ERR_INVALID_ARGUMENT;
                                     message = "unknown fingerprint; no registry entry found".to_string();
                                 }
-                                crate::repo_identity::RepoIdentityError::ReassociationRequired {
+                                crate::repo_manager::RepoIdentityError::ReassociationRequired {
                                     registered_canonical_path,
                                     ..
                                 } => {
                                     known_canonical = Some(registered_canonical_path.clone());
                                 }
-                                crate::repo_identity::RepoIdentityError::CanonicalPathCollision {
+                                crate::repo_manager::RepoIdentityError::CanonicalPathCollision {
                                     canonical_path,
                                     ..
                                 } => {
@@ -911,7 +1033,7 @@ async fn run() -> Result<()> {
                             ];
                             if matches!(
                                 identity,
-                                crate::repo_identity::RepoIdentityError::AmbiguousOldPath { .. }
+                                crate::repo_manager::RepoIdentityError::AmbiguousOldPath { .. }
                             ) {
                                 steps.push(
                                     "Re-run with `--fingerprint <sha256>` to select the intended repo entry."
@@ -934,7 +1056,9 @@ async fn run() -> Result<()> {
                                     }
                                 }
                             }
-                            return Err(error::AppError::new(code, message).with_details(details).into());
+                            return Err(error::AppError::new(code, message)
+                                .with_details(details)
+                                .into());
                         }
                         return Err(err);
                     }
@@ -943,7 +1067,7 @@ async fn run() -> Result<()> {
             RepoCommand::Inspect { repo } => {
                 let repo_root = repo.repo_root();
                 let state_dir = repo.state_dir_override();
-                let report = crate::repo_identity::inspect_repo(&repo_root, state_dir.as_deref())?;
+                let report = crate::repo_manager::inspect_repo(&repo_root, state_dir.as_deref())?;
                 println!("{}", serde_json::to_string_pretty(&report)?);
             }
         },
@@ -1010,14 +1134,14 @@ async fn run() -> Result<()> {
             let embedding = embedder.embed(&text).await?;
             let user_metadata = match metadata {
                 None => None,
-                Some(raw) => Some(
-                    serde_json::from_str::<serde_json::Value>(&raw).map_err(|err| {
+                Some(raw) => Some(serde_json::from_str::<serde_json::Value>(&raw).map_err(
+                    |err| {
                         error::AppError::new(
                             error::ERR_INVALID_ARGUMENT,
                             format!("invalid --metadata JSON: {err}"),
                         )
-                    })?,
-                ),
+                    },
+                )?),
             };
             let metadata = memory::inject_embedding_metadata(
                 user_metadata,
@@ -1068,7 +1192,8 @@ async fn run() -> Result<()> {
             let embedding = embedder.embed(&query).await?;
             let store = memory::MemoryStore::new(index_config.state_dir());
             let top_k = top_k.max(1).min(50);
-            let results = tokio::task::spawn_blocking(move || store.recall(&embedding, top_k)).await??;
+            let results =
+                tokio::task::spawn_blocking(move || store.recall(&embedding, top_k)).await??;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -1103,7 +1228,7 @@ async fn run() -> Result<()> {
                 repo.symbols_enabled(),
             )?;
             util::init_logging(&log)?;
-            let _ = chrome_watchdog::init_global_from_env();
+            let _ = web::scraper::init_global_from_env();
             mcp::serve(
                 repo_root,
                 index_config,

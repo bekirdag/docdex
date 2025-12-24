@@ -1,8 +1,8 @@
 use crate::index::Hit;
+use crate::index::Indexer;
 use crate::libs::LibsIndexer;
 use crate::search;
 use crate::tier2::{Tier2Unavailable, Tier2UnavailableReason};
-use crate::index::Indexer;
 use serde::Serialize;
 use std::env;
 use std::path::Path;
@@ -39,6 +39,19 @@ impl WebGateConfig {
             return true;
         }
         top_score.map_or(true, |score| score < self.trigger_threshold)
+    }
+}
+
+pub(crate) fn build_gate_meta(
+    gate: &WebGateConfig,
+    top_score: Option<f32>,
+    force_web: bool,
+) -> WebGateMeta {
+    WebGateMeta {
+        enabled: gate.enabled,
+        forced: force_web,
+        threshold: gate.trigger_threshold,
+        top_score,
     }
 }
 
@@ -97,7 +110,7 @@ pub async fn run_web_research(
     let top_score = search_response.top_score;
     let hits = search_response.hits;
     let completion = build_completion(query, &hits);
-    let web_discovery = build_web_status(request_id, gate, top_score, force_web);
+    let web_discovery = evaluate_gate_status(request_id, gate, top_score, force_web);
     Ok(WebResearchResponse {
         completion,
         hits,
@@ -107,18 +120,13 @@ pub async fn run_web_research(
     })
 }
 
-fn build_web_status(
+pub(crate) fn evaluate_gate_status(
     request_id: &str,
     gate: &WebGateConfig,
     top_score: Option<f32>,
     force_web: bool,
 ) -> WebDiscoveryStatus {
-    let gate_meta = WebGateMeta {
-        enabled: gate.enabled,
-        forced: force_web,
-        threshold: gate.trigger_threshold,
-        top_score,
-    };
+    let gate_meta = build_gate_meta(gate, top_score, force_web);
 
     if !gate.enabled {
         let unavailable = Tier2Unavailable::new(
@@ -242,11 +250,6 @@ fn resolve_browser_available(hint: Option<&str>) -> bool {
         return false;
     }
 
-    let candidates = [
-        "google-chrome",
-        "chromium",
-        "chromium-browser",
-        "chrome",
-    ];
+    let candidates = ["google-chrome", "chromium", "chromium-browser", "chrome"];
     candidates.iter().any(|cmd| which(cmd).is_ok())
 }

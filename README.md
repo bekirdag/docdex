@@ -61,6 +61,23 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - When MCP-aware, register a server named `docdex` that runs `docdexd mcp --repo . --log warn --max-results 8`, then call `docdex_search` before coding and `docdex_index` when stale.
 - Prefer summary-first (snippets=false), fetch specific snippets only when needed, keep queries short, and respect token estimates.
 
+## Smithery local usage
+Smithery already launches Docdex as a local MCP tool. `smithery.yaml` sets `runtime: "local"` and runs `docdexd mcp --repo {{repo_path}} --log warn --max-results 8` over stdio, so the tool never requires a remote HTTP endpoint; just point the `repo_path` parameter at your workspace (the example config defaults to `.`). Run `docdexd index --repo` before invoking Smithery so the index exists, then let the MCP command share that local repo—no remote server or proxy is involved.
+
+## What is Smithery?
+Smithery is a meta-framework that launches trusted local tools for MPC-aware agents and coding assistants. Instead of wiring Docdex through a remote HTTP server, the Smithery runtime keeps everything local: it runs the `docdexd mcp` command inside your workspace, streams stdout/stderr over stdio, and uses MCP JSON-RPC to deliver Docdex's search and indexing tools to the client. That means no `server.js`/`server.json` stub is needed—just the local `docdexd` binary and the repo path.
+
+### Smithery-aware clients
+- Codex CLI / Codex Studio
+- Cursor
+- Continue AI
+- Windsurf
+- Cline
+- Claude Desktop devtools
+- docdex's built-in helper harness (`docdex mcp-add`)
+
+These clients already speak Smithery's discovery format (`smithery.yaml`, JSON-RPC tooling definitions, MCP handshake). Register `docdexd mcp --repo . --log warn --max-results 8` as the `docdex` MCP server and the client will treat it as a local tool; no network proxy is required.
+
 ## Usage cheat sheet
 - Build index: `docdexd index --repo <path>` (add `--exclude-*` to skip paths).
 - Serve with watcher: `docdexd serve --repo <path> --host 127.0.0.1 --port 46137 --log warn --auth-token <token>` (secure mode also allowlists loopback and rate-limits by default; add `--allow-ip`/`--secure-mode=false`/`--rate-limit-per-min` as needed for remote use).
@@ -156,6 +173,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - Indexing options: `docdexd index --help` (exclude paths, custom state dir).
 - Ad-hoc queries: `docdexd query --help`.
 - Self-check scanner options: `docdexd self-check --help`.
+- Hardware guidance: `docdexd llm-list` outputs model recommendations based on detected RAM/VRAM; `docdexd llm-setup` repeats that guidance and reports Ollama availability.
 - Agent help endpoint: `curl http://127.0.0.1:46137/ai-help` (include `Authorization: Bearer <token>` if `--auth-token` is set) for a JSON listing of endpoints, limits, and best practices.
 - MCP help/registration: `docdexd mcp --help` lists MCP flags; register with your client using `docdexd mcp --repo <repo> --log warn`. Example Codex config snippet:
   ```json

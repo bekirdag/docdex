@@ -1,4 +1,4 @@
-use crate::repo_identity;
+use crate::repo_manager::fingerprint;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
@@ -49,7 +49,7 @@ impl RepoResolutionCache {
         if self.entries.len() >= self.max_entries {
             self.evict_one();
         }
-        let fingerprint = repo_identity::repo_fingerprint_sha256(&canonical).ok();
+        let fingerprint = fingerprint::repo_fingerprint_sha256(&canonical).ok();
         let resolution = RepoResolution {
             repo_root: canonical,
             normalized_path: normalized.clone(),

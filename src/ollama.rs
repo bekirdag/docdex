@@ -4,8 +4,8 @@ use crate::error::{
 };
 use anyhow::{anyhow, Context};
 use serde::Deserialize;
-use serde_json::Value;
 use serde_json::json;
+use serde_json::Value;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -54,11 +54,9 @@ impl OllamaClient {
     ) -> Result<Vec<f32>, anyhow::Error> {
         let model = model.trim();
         if model.is_empty() {
-            return Err(AppError::new(
-                ERR_EMBEDDING_FAILED,
-                "embedding model is not configured",
-            )
-            .into());
+            return Err(
+                AppError::new(ERR_EMBEDDING_FAILED, "embedding model is not configured").into(),
+            );
         }
         if prompt.trim().is_empty() {
             return Err(AppError::new(ERR_INVALID_ARGUMENT, "prompt must not be empty").into());
@@ -185,11 +183,9 @@ impl OllamaEmbedder {
     pub fn new(base_url: String, model: String, timeout: Duration) -> Result<Self, anyhow::Error> {
         let model = model.trim().to_string();
         if model.is_empty() {
-            return Err(AppError::new(
-                ERR_EMBEDDING_FAILED,
-                "embedding model is not configured",
-            )
-            .into());
+            return Err(
+                AppError::new(ERR_EMBEDDING_FAILED, "embedding model is not configured").into(),
+            );
         }
         Ok(Self {
             client: OllamaClient::new(base_url)?,
@@ -225,9 +221,7 @@ fn parse_authority(authority: &str) -> Result<(String, String), anyhow::Error> {
         let port = if after.is_empty() {
             80
         } else if let Some(port_str) = after.strip_prefix(':') {
-            port_str
-                .parse::<u16>()
-                .context("parse port")?
+            port_str.parse::<u16>().context("parse port")?
         } else {
             anyhow::bail!("invalid IPv6 authority");
         };
@@ -296,10 +290,7 @@ fn parse_http_response(raw: &[u8]) -> Result<(u16, Vec<u8>), anyhow::Error> {
 fn decode_chunked(mut input: &[u8]) -> Result<Vec<u8>, anyhow::Error> {
     let mut out = Vec::new();
     loop {
-        let Some(line_end) = input
-            .windows(2)
-            .position(|w| w == b"\r\n")
-        else {
+        let Some(line_end) = input.windows(2).position(|w| w == b"\r\n") else {
             return Err(anyhow!("invalid chunked encoding (missing size line)"));
         };
         let size_line = &input[..line_end];

@@ -110,7 +110,7 @@ pub fn missing_repo_path_error(repo_root: &Path, surface: RepoSurface) -> AppErr
 }
 
 fn unknown_repo_error(candidate: &Path, expected: &Path, surface: RepoSurface) -> AppError {
-    let attempted_fingerprint = crate::repo_identity::repo_fingerprint_sha256(candidate).ok();
+    let attempted_fingerprint = crate::repo_manager::repo_fingerprint_sha256(candidate).ok();
     AppError::new(ERR_UNKNOWN_REPO, "unknown repo").with_details(repo_resolution_details(
         normalize_for_details(candidate),
         attempted_fingerprint,

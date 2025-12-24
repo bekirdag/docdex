@@ -147,7 +147,11 @@ fn assert_http_rate_limit_payload(body: &Value) -> Result<HashSet<String>, BoxEr
         .and_then(|v| v.as_str())
         .ok_or("rate-limit error.message missing or not a string")?;
     if message.len() > MAX_RATE_LIMIT_MESSAGE_BYTES + "…".len() {
-        return Err(format!("rate-limit error.message too large: {} bytes", message.len()).into());
+        return Err(format!(
+            "rate-limit error.message too large: {} bytes",
+            message.len()
+        )
+        .into());
     }
     error
         .get("retry_after_ms")
@@ -172,30 +176,23 @@ fn assert_http_rate_limit_payload(body: &Value) -> Result<HashSet<String>, BoxEr
         .and_then(|v| v.as_str())
         .ok_or("rate-limit error.resource_key missing or not a string")?;
     if resource_key.parse::<std::net::IpAddr>().is_err() {
-        return Err(format!(
-            "rate-limit error.resource_key is not an IP address: {resource_key}"
-        )
-        .into());
+        return Err(
+            format!("rate-limit error.resource_key is not an IP address: {resource_key}").into(),
+        );
     }
     let limit_per_min = error
         .get("limit_per_min")
         .and_then(|v| v.as_u64())
         .ok_or("rate-limit error.limit_per_min missing or not an integer")?;
     if limit_per_min != 60 {
-        return Err(format!(
-            "rate-limit error.limit_per_min mismatch: {limit_per_min}"
-        )
-        .into());
+        return Err(format!("rate-limit error.limit_per_min mismatch: {limit_per_min}").into());
     }
     let limit_burst = error
         .get("limit_burst")
         .and_then(|v| v.as_u64())
         .ok_or("rate-limit error.limit_burst missing or not an integer")?;
     if limit_burst != 2 {
-        return Err(format!(
-            "rate-limit error.limit_burst mismatch: {limit_burst}"
-        )
-        .into());
+        return Err(format!("rate-limit error.limit_burst mismatch: {limit_burst}").into());
     }
     error
         .get("denied_total")
@@ -271,28 +268,28 @@ fn http_rate_limit_signaling_is_stable_under_concurrency() -> Result<(), BoxErro
         let snippet_url = snippet_url.clone();
         handles.push(thread::spawn(
             move || -> Result<(u16, Option<String>, Vec<u8>), BoxError> {
-            let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
-            barrier.wait();
-            let resp = if i % 2 == 0 {
-                client
-                    .get(&search_url)
-                    .query(&[("q", "roadmap"), ("limit", "1")])
-                    .send()?
-            } else {
-                client
-                    .get(&snippet_url)
-                    .query(&[("window", "8"), ("q", "roadmap"), ("text_only", "true")])
-                    .send()?
-            };
-            let status = resp.status().as_u16();
-            let retry_after = resp
-                .headers()
-                .get(RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .map(|v| v.to_string());
-            let bytes = resp.bytes()?.to_vec();
-            Ok((status, retry_after, bytes))
-        },
+                let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+                barrier.wait();
+                let resp = if i % 2 == 0 {
+                    client
+                        .get(&search_url)
+                        .query(&[("q", "roadmap"), ("limit", "1")])
+                        .send()?
+                } else {
+                    client
+                        .get(&snippet_url)
+                        .query(&[("window", "8"), ("q", "roadmap"), ("text_only", "true")])
+                        .send()?
+                };
+                let status = resp.status().as_u16();
+                let retry_after = resp
+                    .headers()
+                    .get(RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| v.to_string());
+                let bytes = resp.bytes()?.to_vec();
+                Ok((status, retry_after, bytes))
+            },
         ));
     }
 

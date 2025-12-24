@@ -1,0 +1,23 @@
+[
+  {
+    "id": "ultra-light",
+    "displayName": "Ultra-light (local-friendly)",
+    "minRamGb": 0,
+    "requiresGpu": false,
+    "description": "Fallback tier for machines with very limited RAM (<8GB). Use only when heavier models cannot run."
+  },
+  {
+    "id": "llama3.1:8b",
+    "displayName": "llama3.1:8b (default)",
+    "minRamGb": 16,
+    "requiresGpu": false,
+    "description": "Balanced model for ≥16GB RAM hosts. Recommended default for most local machines."
+  },
+  {
+    "id": "llama3.1:70b",
+    "displayName": "llama3.1:70b (high-end)",
+    "minRamGb": 32,
+    "requiresGpu": true,
+    "description": "Large model for ≥32GB RAM with one or more GPUs. Use only when both memory and GPU resources are available."
+  }
+]

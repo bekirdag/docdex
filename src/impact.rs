@@ -283,7 +283,11 @@ pub fn traverse_impact(
     controls: &ImpactQueryControls,
 ) -> ImpactTraversalResult {
     fn edge_sort_key(edge: &ImpactGraphEdge) -> (&str, &str, Option<&str>) {
-        (edge.source.as_str(), edge.target.as_str(), edge.kind.as_deref())
+        (
+            edge.source.as_str(),
+            edge.target.as_str(),
+            edge.kind.as_deref(),
+        )
     }
 
     let mut outgoing: HashMap<&str, Vec<usize>> = HashMap::new();
@@ -303,11 +307,10 @@ pub fn traverse_impact(
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();
     queue.push_back((root.to_string(), 0));
 
-    let incident_edges =
-        |node: &str,
-         outgoing: &HashMap<&str, Vec<usize>>,
-         incoming: &HashMap<&str, Vec<usize>>|
-         -> Vec<usize> {
+    let incident_edges = |node: &str,
+                          outgoing: &HashMap<&str, Vec<usize>>,
+                          incoming: &HashMap<&str, Vec<usize>>|
+     -> Vec<usize> {
         let mut incident: Vec<usize> = Vec::new();
         if let Some(list) = outgoing.get(node) {
             incident.extend(list.iter().copied());
@@ -364,7 +367,11 @@ pub fn traverse_impact(
             }
             result.push(edge.clone());
 
-            let neighbor = if edge.source == node { &edge.target } else { &edge.source };
+            let neighbor = if edge.source == node {
+                &edge.target
+            } else {
+                &edge.source
+            };
             if depth + 1 <= controls.max_depth && visited.insert(neighbor.clone()) {
                 queue.push_back((neighbor.clone(), depth + 1));
             }
@@ -632,7 +639,10 @@ mod tests {
         .validate()
         .unwrap();
         let res = traverse_impact("a.ts", &fixture_edges(), &controls);
-        assert!(res.edges.iter().all(|e| e.kind.as_deref() == Some("include")));
+        assert!(res
+            .edges
+            .iter()
+            .all(|e| e.kind.as_deref() == Some("include")));
         assert_eq!(res.edges.len(), 1);
         assert_eq!(res.edges[0].source, "x.ts");
         assert_eq!(res.edges[0].target, "a.ts");
@@ -704,9 +714,14 @@ mod tests {
         .unwrap();
         let res = traverse_impact("a.ts", &edges, &controls);
 
-        assert!(res.edges.iter().all(|edge| edge.kind.as_deref() == Some("include")));
+        assert!(res
+            .edges
+            .iter()
+            .all(|edge| edge.kind.as_deref() == Some("include")));
         assert!(
-            !res.edges.iter().any(|edge| edge.source == "c.ts" && edge.target == "d.ts"),
+            !res.edges
+                .iter()
+                .any(|edge| edge.source == "c.ts" && edge.target == "d.ts"),
             "should not reach c.ts without traversing the excluded b.ts -> c.ts require edge"
         );
     }

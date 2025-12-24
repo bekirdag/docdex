@@ -289,21 +289,22 @@ mod observability_tests {
                 }
 
                 fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
-                    self.0
-                        .insert(field.name().to_string(), value.to_string());
+                    self.0.insert(field.name().to_string(), value.to_string());
                 }
 
                 fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
-                    self.0
-                        .insert(field.name().to_string(), value.to_string());
+                    self.0.insert(field.name().to_string(), value.to_string());
                 }
 
                 fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-                    self.0
-                        .insert(field.name().to_string(), value.to_string());
+                    self.0.insert(field.name().to_string(), value.to_string());
                 }
 
-                fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
                     self.0
                         .insert(field.name().to_string(), format!("{value:?}"));
                 }

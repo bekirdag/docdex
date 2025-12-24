@@ -337,7 +337,8 @@ impl LibsIndexer {
                     }
                 })
                 .or_else(|| {
-                    preview_snippet_from_body(body, 40).map(|text| (text, SearchSnippetOrigin::Preview))
+                    preview_snippet_from_body(body, 40)
+                        .map(|text| (text, SearchSnippetOrigin::Preview))
                 })
                 .unwrap_or_else(|| (summary.clone(), SearchSnippetOrigin::Summary));
 
@@ -376,8 +377,7 @@ impl LibsIndexer {
             return Ok(None);
         };
         let snapshot = self.snapshot_from_document(doc_id, &doc);
-        let snippet =
-            self.snippet_from_document(&doc, query, fallback_lines)?;
+        let snippet = self.snippet_from_document(&doc, query, fallback_lines)?;
         Ok(Some((snapshot, snippet)))
     }
 
@@ -424,7 +424,11 @@ impl LibsIndexer {
         let searcher = self.reader.searcher();
         if let Some(query) = query.and_then(|q| {
             let trimmed = q.trim();
-            if trimmed.is_empty() { None } else { Some(trimmed) }
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
         }) {
             let parser = QueryParser::for_index(&self.index, vec![self.body_field]);
             if let Ok(parsed) = parser.parse_query(query) {
@@ -508,12 +512,10 @@ impl LibsIndexer {
         let mut failed_sources = 0usize;
         let mut skipped_sources = 0usize;
 
-        let desired_keys: BTreeSet<String> = normalized_sources.iter().map(source_key_for).collect();
+        let desired_keys: BTreeSet<String> =
+            normalized_sources.iter().map(source_key_for).collect();
         let manifest_keys: BTreeSet<String> = manifest.sources.keys().cloned().collect();
-        let removed_keys: Vec<String> = manifest_keys
-            .difference(&desired_keys)
-            .cloned()
-            .collect();
+        let removed_keys: Vec<String> = manifest_keys.difference(&desired_keys).cloned().collect();
 
         struct PreparedSource {
             source: LibSource,
@@ -571,7 +573,11 @@ impl LibsIndexer {
         };
 
         let needs_writer = !removed_keys.is_empty() || overall_stale;
-        let writer_arc = if needs_writer { Some(self.writer()?) } else { None };
+        let writer_arc = if needs_writer {
+            Some(self.writer()?)
+        } else {
+            None
+        };
         let mut writer_guard = None;
         if let Some(arc) = writer_arc.as_ref() {
             writer_guard = Some(arc.lock());
@@ -692,8 +698,10 @@ fn upsert_manifest_status(
     error: Option<String>,
     checked_at_epoch_ms: u128,
 ) {
-    let entry = manifest.sources.entry(source_key.to_string()).or_insert_with(|| {
-        LibsManifestEntry {
+    let entry = manifest
+        .sources
+        .entry(source_key.to_string())
+        .or_insert_with(|| LibsManifestEntry {
             fingerprint_sha256: String::new(),
             doc_ids: Vec::new(),
             updated_at_epoch_ms: 0,
@@ -701,8 +709,7 @@ fn upsert_manifest_status(
             last_status: None,
             last_error: None,
             last_checked_at_epoch_ms: None,
-        }
-    });
+        });
     entry.last_status = Some(status);
     entry.last_error = error;
     entry.last_checked_at_epoch_ms = Some(checked_at_epoch_ms);
@@ -882,16 +889,16 @@ fn ingest_one_source_prepared(
     );
 
     if let Err(err) = writer.add_document(doc!(
-            indexer.doc_id_field => doc_id.clone(),
-            indexer.rel_path_field => rel_path,
-            indexer.body_field => capped_body,
-            indexer.summary_field => summary,
-            indexer.token_field => tokens,
-            indexer.library_field => library.clone(),
-            indexer.version_field => version.clone().unwrap_or_default(),
-            indexer.source_field => source_label.clone(),
-            indexer.title_field => title.unwrap_or_else(|| library.clone()),
-        )) {
+        indexer.doc_id_field => doc_id.clone(),
+        indexer.rel_path_field => rel_path,
+        indexer.body_field => capped_body,
+        indexer.summary_field => summary,
+        indexer.token_field => tokens,
+        indexer.library_field => library.clone(),
+        indexer.version_field => version.clone().unwrap_or_default(),
+        indexer.source_field => source_label.clone(),
+        indexer.title_field => title.unwrap_or_else(|| library.clone()),
+    )) {
         warn!(target: "docdexd", error = ?err, source_key = %source_key, "failed to add libs doc to index");
         upsert_manifest_status(
             manifest,
@@ -1023,7 +1030,11 @@ fn read_text_limited(path: &Path, max_bytes: u64) -> Result<(String, u64, bool)>
         .read_to_end(&mut buf)
         .with_context(|| format!("read {}", path.display()))?;
     let truncated = total > max_bytes;
-    Ok((String::from_utf8_lossy(&buf).to_string(), buf.len() as u64, truncated))
+    Ok((
+        String::from_utf8_lossy(&buf).to_string(),
+        buf.len() as u64,
+        truncated,
+    ))
 }
 
 fn sanitize_query(input: &str) -> String {

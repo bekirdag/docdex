@@ -27,34 +27,32 @@ pub fn spawn(indexer: Arc<Indexer>) -> Result<()> {
         while let Some(action) = rx.recv().await {
             let idx = indexer.clone();
             match action {
-                WatchAction::Upsert(path) => {
-                    match idx.ingest_file(path.clone()).await {
-                        Ok(decision) => {
-                            if decision.should_index() {
-                                debug!(
-                                    target: "docdexd",
-                                    file = %path.display(),
-                                    "indexed modified document"
-                                );
-                            } else {
-                                debug!(
-                                    target: "docdexd",
-                                    file = %path.display(),
-                                    reason = ?decision.reason,
-                                    "skipped file change"
-                                );
-                            }
-                        }
-                        Err(err) => {
-                            warn!(
+                WatchAction::Upsert(path) => match idx.ingest_file(path.clone()).await {
+                    Ok(decision) => {
+                        if decision.should_index() {
+                            debug!(
                                 target: "docdexd",
-                                error = ?err,
                                 file = %path.display(),
-                                "failed to ingest file change"
+                                "indexed modified document"
+                            );
+                        } else {
+                            debug!(
+                                target: "docdexd",
+                                file = %path.display(),
+                                reason = ?decision.reason,
+                                "skipped file change"
                             );
                         }
                     }
-                }
+                    Err(err) => {
+                        warn!(
+                            target: "docdexd",
+                            error = ?err,
+                            file = %path.display(),
+                            "failed to ingest file change"
+                        );
+                    }
+                },
                 WatchAction::Delete(path) => {
                     if let Err(err) = idx.delete_file(path.clone()).await {
                         warn!(

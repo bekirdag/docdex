@@ -48,10 +48,7 @@ impl SpacingBackoff {
         if let Some(until) = state.cooldown_until {
             if now < until {
                 let retry_after = until.saturating_duration_since(now);
-                return Err(backoff_error(
-                    "web discovery backoff required",
-                    retry_after,
-                ));
+                return Err(backoff_error("web discovery backoff required", retry_after));
             }
         }
 
@@ -101,13 +98,24 @@ impl SpacingBackoff {
 
     pub fn backoff_delay(&self, attempt: usize) -> Duration {
         let attempt = attempt.max(1) as u32;
-        let base_ms = self.policy.base_backoff.as_millis().min(u128::from(u64::MAX)) as f64;
-        let mut delay_ms =
-            base_ms * self.policy.backoff_multiplier.powi(attempt.saturating_sub(1) as i32);
+        let base_ms = self
+            .policy
+            .base_backoff
+            .as_millis()
+            .min(u128::from(u64::MAX)) as f64;
+        let mut delay_ms = base_ms
+            * self
+                .policy
+                .backoff_multiplier
+                .powi(attempt.saturating_sub(1) as i32);
         if delay_ms.is_nan() || delay_ms.is_infinite() {
             delay_ms = base_ms;
         }
-        let max_ms = self.policy.max_backoff.as_millis().min(u128::from(u64::MAX)) as f64;
+        let max_ms = self
+            .policy
+            .max_backoff
+            .as_millis()
+            .min(u128::from(u64::MAX)) as f64;
         if delay_ms > max_ms {
             delay_ms = max_ms;
         }

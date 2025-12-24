@@ -152,15 +152,18 @@ fn cli_index_and_query_smoke() -> Result<(), Box<dyn Error>> {
 
     run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
-    let stdout = run_docdex(state_root.path(), [
-        "query",
-        "--repo",
-        repo_str.as_str(),
-        "--query",
-        "roadmap",
-        "--limit",
-        "4",
-    ])?;
+    let stdout = run_docdex(
+        state_root.path(),
+        [
+            "query",
+            "--repo",
+            repo_str.as_str(),
+            "--query",
+            "roadmap",
+            "--limit",
+            "4",
+        ],
+    )?;
     let payload: Value = serde_json::from_slice(&stdout)?;
     let hits = payload
         .get("hits")
@@ -175,7 +178,10 @@ fn cli_index_and_query_smoke() -> Result<(), Box<dyn Error>> {
         .get("path")
         .and_then(|value| value.as_str())
         .unwrap_or_default();
-    assert!(!path.is_empty(), "hit.path should be present in CLI query response");
+    assert!(
+        !path.is_empty(),
+        "hit.path should be present in CLI query response"
+    );
     assert!(
         first.get("snippet").and_then(|v| v.as_str()).is_some(),
         "hit.snippet should be present in CLI query response"
@@ -224,13 +230,16 @@ fn index_honors_custom_state_dir() -> Result<(), Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     let custom_state = ".alt-docdex";
 
-    run_docdex(state_root.path(), [
-        "index",
-        "--repo",
-        repo_str.as_str(),
-        "--state-dir",
-        custom_state,
-    ])?;
+    run_docdex(
+        state_root.path(),
+        [
+            "index",
+            "--repo",
+            repo_str.as_str(),
+            "--state-dir",
+            custom_state,
+        ],
+    )?;
 
     let custom_base = repo_root.join(custom_state);
     let resolved_index = resolve_index_dir(&custom_base, repo_root)?;
@@ -270,12 +279,15 @@ fn symbols_enabled_creates_symbols_store_records() -> Result<(), Box<dyn Error>>
     let repo_str = repo_root.to_string_lossy().to_string();
     let rel_path = "docs/overview.md";
 
-    run_docdex(state_root.path(), [
-        "index",
-        "--repo",
-        repo_str.as_str(),
-        "--enable-symbol-extraction=true",
-    ])?;
+    run_docdex(
+        state_root.path(),
+        [
+            "index",
+            "--repo",
+            repo_str.as_str(),
+            "--enable-symbol-extraction=true",
+        ],
+    )?;
 
     let repo_state_root = resolve_repo_state_root(state_root.path(), repo_root)?;
     let record_path = symbols_record_path(&repo_state_root, rel_path);
@@ -322,23 +334,29 @@ fn exclude_dir_flag_skips_vendor_docs() -> Result<(), Box<dyn Error>> {
         "# Vendor Doc\nSHOULD_BE_SKIPPED_VENDOR_TEST\n",
     )?;
 
-    run_docdex(state_root.path(), [
-        "index",
-        "--repo",
-        repo_str.as_str(),
-        "--exclude-dir",
-        "vendor",
-    ])?;
+    run_docdex(
+        state_root.path(),
+        [
+            "index",
+            "--repo",
+            repo_str.as_str(),
+            "--exclude-dir",
+            "vendor",
+        ],
+    )?;
 
-    let stdout = run_docdex(state_root.path(), [
-        "query",
-        "--repo",
-        repo_str.as_str(),
-        "--query",
-        "SHOULD_BE_SKIPPED_VENDOR_TEST",
-        "--limit",
-        "4",
-    ])?;
+    let stdout = run_docdex(
+        state_root.path(),
+        [
+            "query",
+            "--repo",
+            repo_str.as_str(),
+            "--query",
+            "SHOULD_BE_SKIPPED_VENDOR_TEST",
+            "--limit",
+            "4",
+        ],
+    )?;
     let payload: Value = serde_json::from_slice(&stdout)?;
     let empty: Vec<Value> = Vec::new();
     let hits = payload
@@ -366,25 +384,31 @@ fn exclude_prefix_on_ingest_skips_secret_file() -> Result<(), Box<dyn Error>> {
     let needle = "SHOULD_NOT_BE_INDEXED_SECRET_123";
     fs::write(&secret_file, format!("# Secret\n{needle}\n"))?;
 
-    run_docdex(state_root.path(), [
-        "ingest",
-        "--repo",
-        repo_str.as_str(),
-        "--exclude-prefix",
-        "secret/",
-        "--file",
-        secret_file.to_string_lossy().as_ref(),
-    ])?;
+    run_docdex(
+        state_root.path(),
+        [
+            "ingest",
+            "--repo",
+            repo_str.as_str(),
+            "--exclude-prefix",
+            "secret/",
+            "--file",
+            secret_file.to_string_lossy().as_ref(),
+        ],
+    )?;
 
-    let stdout = run_docdex(state_root.path(), [
-        "query",
-        "--repo",
-        repo_str.as_str(),
-        "--query",
-        needle,
-        "--limit",
-        "4",
-    ])?;
+    let stdout = run_docdex(
+        state_root.path(),
+        [
+            "query",
+            "--repo",
+            repo_str.as_str(),
+            "--query",
+            needle,
+            "--limit",
+            "4",
+        ],
+    )?;
     let payload: Value = serde_json::from_slice(&stdout)?;
     let empty: Vec<Value> = Vec::new();
     let hits = payload
@@ -667,11 +691,17 @@ fn http_search_no_matches_returns_empty_hits_and_null_top_score() -> Result<(), 
         .unwrap_or(999);
     assert_eq!(hits, 0, "no-match query should return empty hits");
     assert!(
-        payload.get("top_score").map(|v| v.is_null()).unwrap_or(false),
+        payload
+            .get("top_score")
+            .map(|v| v.is_null())
+            .unwrap_or(false),
         "no-match query should return top_score: null"
     );
     assert!(
-        payload.get("topScore").map(|v| v.is_null()).unwrap_or(false),
+        payload
+            .get("topScore")
+            .map(|v| v.is_null())
+            .unwrap_or(false),
         "no-match query should return topScore: null"
     );
 
@@ -765,7 +795,10 @@ fn non_loopback_plain_http_requires_tls_or_opt_out() -> Result<(), Box<dyn Error
         "stderr should mention TLS requirement, got: {stderr}"
     );
     assert_eq!(
-        trimmed.lines().filter(|line| !line.trim().is_empty()).count(),
+        trimmed
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count(),
         1,
         "startup failures should emit a single primary error line, got: {stderr}"
     );

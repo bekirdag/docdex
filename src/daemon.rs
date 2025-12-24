@@ -17,8 +17,8 @@ use rustls_pemfile;
 use std::env;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::{io, sync::Arc};
 use std::time::Duration;
+use std::{io, sync::Arc};
 use tokio::net::TcpListener;
 use tokio_rustls::{
     rustls::{self, pki_types::CertificateDer, pki_types::PrivateKeyDer},
@@ -239,8 +239,11 @@ pub async fn serve(
 
     let tls_config = match tls {
         Some(tls) => Some(Arc::new(tls.to_rustls().map_err(|err| {
-            StartupError::new("startup_config_invalid", format!("invalid TLS configuration: {err}"))
-                .with_hint("Check certificate/key paths and PEM contents (or disable TLS options).")
+            StartupError::new(
+                "startup_config_invalid",
+                format!("invalid TLS configuration: {err}"),
+            )
+            .with_hint("Check certificate/key paths and PEM contents (or disable TLS options).")
         })?)),
         None => None,
     };
@@ -282,13 +285,14 @@ pub async fn serve(
             .into());
         }
         let timeout = Duration::from_millis(embedding_timeout_ms.max(1));
-        let embedder = OllamaEmbedder::new(ollama_base_url, model.clone(), timeout).map_err(|err| {
-            StartupError::new(
-                "startup_config_invalid",
-                format!("invalid embedding base URL: {err}"),
-            )
-            .with_hint("Expected a URL like http://127.0.0.1:11434")
-        })?;
+        let embedder =
+            OllamaEmbedder::new(ollama_base_url, model.clone(), timeout).map_err(|err| {
+                StartupError::new(
+                    "startup_config_invalid",
+                    format!("invalid embedding base URL: {err}"),
+                )
+                .with_hint("Expected a URL like http://127.0.0.1:11434")
+            })?;
         Some(search::MemoryState {
             store: MemoryStore::new(indexer.state_dir()),
             embedder,

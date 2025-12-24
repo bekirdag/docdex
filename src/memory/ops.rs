@@ -1,17 +1,5 @@
-use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use uuid::Uuid;
-
-#[derive(Clone)]
-pub struct MemoryStore {
-    path: PathBuf,
-    lock: Arc<parking_lot::Mutex<()>>,
-}
 
 #[derive(Debug, Clone)]
 pub struct MemoryCandidate {
@@ -58,160 +46,6 @@ pub struct MemoryContextPruneTrace {
     pub dropped: Vec<MemoryContextDropped>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct MemoryRecord {
-    id: String,
-    content: String,
-    embedding: Vec<f32>,
-    created_at: i64,
-    #[serde(default)]
-    metadata: Value,
-}
-
-impl MemoryStore {
-    pub fn new(state_dir: &Path) -> Self {
-        Self {
-            path: state_dir.join("memory.jsonl"),
-            lock: Arc::new(parking_lot::Mutex::new(())),
-        }
-    }
-
-    pub fn store(
-        &self,
-        content: &str,
-        embedding: &[f32],
-        metadata: Value,
-        created_at_ms: i64,
-    ) -> Result<(Uuid, i64)> {
-        let _guard = self.lock.lock();
-        let id = Uuid::new_v4();
-        let record = MemoryRecord {
-            id: id.to_string(),
-            content: content.to_string(),
-            embedding: embedding.to_vec(),
-            created_at: created_at_ms,
-            metadata,
-        };
-        let line = serde_json::to_string(&record).context("serialize memory record")?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .with_context(|| format!("open {}", self.path.display()))?;
-        file.write_all(line.as_bytes())
-            .context("write memory record")?;
-        file.write_all(b"\n").context("write newline")?;
-        file.flush().ok();
-        Ok((id, created_at_ms))
-    }
-
-    pub fn recall_candidates(
-        &self,
-        query_embedding: &[f32],
-        top_k: usize,
-    ) -> Result<Vec<MemoryCandidate>> {
-        let _guard = self.lock.lock();
-        let file = match OpenOptions::new().read(true).open(&self.path) {
-            Ok(file) => file,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(err) => return Err(err).with_context(|| format!("open {}", self.path.display())),
-        };
-        let reader = BufReader::new(file);
-        let mut scored: Vec<MemoryCandidate> = Vec::new();
-
-        for line in reader.lines() {
-            let line = match line {
-                Ok(line) => line,
-                Err(_) => continue,
-            };
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let parsed: MemoryRecord = match serde_json::from_str(trimmed) {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-            let Some(score) = cosine_similarity(query_embedding, &parsed.embedding) else {
-                continue;
-            };
-            let metadata = match parsed.metadata {
-                Value::Object(_) => parsed.metadata,
-                _ => json!({}),
-            };
-            scored.push(MemoryCandidate {
-                id: parsed.id,
-                created_at_ms: parsed.created_at,
-                content: parsed.content,
-                score,
-                metadata,
-            });
-        }
-
-        // Deterministic ordering: score desc, created_at desc, id asc.
-        scored.sort_by(|a, b| {
-            b.score
-                .total_cmp(&a.score)
-                .then_with(|| b.created_at_ms.cmp(&a.created_at_ms))
-                .then_with(|| a.id.cmp(&b.id))
-        });
-        scored.truncate(top_k.max(1));
-        Ok(scored)
-    }
-
-    pub fn recall(&self, query_embedding: &[f32], top_k: usize) -> Result<Vec<MemoryItem>> {
-        Ok(self
-            .recall_candidates(query_embedding, top_k)?
-            .into_iter()
-            .map(|item| MemoryItem {
-                content: item.content,
-                score: item.score,
-                metadata: item.metadata,
-            })
-            .collect())
-    }
-}
-
-fn estimate_tokens(text: &str) -> usize {
-    text.split_whitespace().count()
-}
-
-fn truncate_to_tokens(text: &str, max_tokens: usize) -> (String, bool) {
-    if max_tokens == 0 {
-        return (String::new(), !text.trim().is_empty());
-    }
-    let mut iter = text.split_whitespace();
-    let mut out = String::new();
-    let mut remaining = max_tokens;
-    while remaining > 0 {
-        let Some(token) = iter.next() else {
-            break;
-        };
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        out.push_str(token);
-        remaining -= 1;
-    }
-    let truncated = iter.next().is_some();
-    if truncated && !out.is_empty() {
-        // Append an ellipsis without introducing an extra whitespace-delimited token.
-        out.push('…');
-    }
-    (out, truncated)
-}
-
-/// Deterministically prune + truncate a set of memory candidates into "memory context".
-///
-/// Rules:
-/// - Ordering: score desc, created_at_ms desc, id asc.
-/// - Pruning:
-///   - Drop items beyond `max_items` (reason: "max_items").
-///   - Then, in order, consume `budget_tokens` using a greedy fill.
-///   - If an item does not fit, truncate it to the remaining token budget and keep it.
-///   - Once budget is exhausted, drop remaining items (reason: "budget_exhausted").
-/// - Truncation boundary: whitespace token boundary (`split_whitespace`) with a trailing `…`
-///   appended to the last token (no extra token added).
 pub fn prune_and_truncate_memory_context(
     candidates: &[MemoryCandidate],
     max_items: usize,
@@ -250,7 +84,8 @@ pub fn prune_and_truncate_memory_context(
             let used = token_estimate;
             (candidate.content, false, used)
         } else {
-            let (truncated_content, was_truncated) = truncate_to_tokens(&candidate.content, remaining);
+            let (truncated_content, was_truncated) =
+                truncate_to_tokens(&candidate.content, remaining);
             let used = estimate_tokens(&truncated_content);
             (truncated_content, was_truncated, used)
         };
@@ -301,7 +136,7 @@ pub fn inject_embedding_metadata(
     value
 }
 
-fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
+pub(crate) fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
     if a.len() != b.len() || a.is_empty() {
         return None;
     }
@@ -317,6 +152,34 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
         return None;
     }
     Some((dot / (norm_a.sqrt() * norm_b.sqrt())) as f32)
+}
+
+fn estimate_tokens(text: &str) -> usize {
+    text.split_whitespace().count()
+}
+
+fn truncate_to_tokens(text: &str, max_tokens: usize) -> (String, bool) {
+    if max_tokens == 0 {
+        return (String::new(), !text.trim().is_empty());
+    }
+    let mut iter = text.split_whitespace();
+    let mut out = String::new();
+    let mut remaining = max_tokens;
+    while remaining > 0 {
+        let Some(token) = iter.next() else {
+            break;
+        };
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(token);
+        remaining -= 1;
+    }
+    let truncated = iter.next().is_some();
+    if truncated && !out.is_empty() {
+        out.push('…');
+    }
+    (out, truncated)
 }
 
 #[cfg(test)]

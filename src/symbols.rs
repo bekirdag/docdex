@@ -125,7 +125,7 @@ pub fn language_for_path(rel_path: &str) -> Option<SourceLanguage> {
 }
 
 pub fn repo_id_for_root(repo_root: &Path) -> Result<String> {
-    crate::repo_identity::repo_fingerprint_sha256(repo_root)
+    crate::repo_manager::repo_fingerprint_sha256(repo_root)
 }
 
 fn file_key(rel_path: &str) -> String {
@@ -170,7 +170,8 @@ impl SymbolsStore {
         if dest.exists() {
             let _ = fs::remove_file(&dest);
         }
-        fs::rename(&tmp, &dest).with_context(|| format!("rename {} -> {}", tmp.display(), dest.display()))?;
+        fs::rename(&tmp, &dest)
+            .with_context(|| format!("rename {} -> {}", tmp.display(), dest.display()))?;
         Ok(())
     }
 
@@ -214,7 +215,8 @@ impl SymbolsStore {
     }
 
     fn file_record_path(&self, rel_path: &str) -> PathBuf {
-        self.files_dir().join(format!("{}.json", file_key(rel_path)))
+        self.files_dir()
+            .join(format!("{}.json", file_key(rel_path)))
     }
 }
 
@@ -252,7 +254,13 @@ pub fn extract_symbols_best_effort(
     Ok(symbols)
 }
 
-fn make_symbol_id(repo_id: &str, file: &str, range: &SymbolRange, kind: &str, name: &str) -> String {
+fn make_symbol_id(
+    repo_id: &str,
+    file: &str,
+    range: &SymbolRange,
+    kind: &str,
+    name: &str,
+) -> String {
     format!(
         "{repo_id}:{file}#{}:{}-{}:{}:{kind}:{name}",
         range.start_line, range.start_col, range.end_line, range.end_col
@@ -286,7 +294,11 @@ fn make_symbol(
     }
 }
 
-fn extract_markdown_symbols(repo_id: &str, rel_path: &str, content: &str) -> Result<Vec<SymbolItem>> {
+fn extract_markdown_symbols(
+    repo_id: &str,
+    rel_path: &str,
+    content: &str,
+) -> Result<Vec<SymbolItem>> {
     static HEADING: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"^(?P<hashes>#{1,6})\s+(?P<title>.+?)\s*$").unwrap());
     let mut symbols = Vec::new();
@@ -318,8 +330,9 @@ fn extract_markdown_symbols(repo_id: &str, rel_path: &str, content: &str) -> Res
 }
 
 fn extract_rust_symbols(repo_id: &str, rel_path: &str, content: &str) -> Result<Vec<SymbolItem>> {
-    static FN: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap());
+    static FN: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap()
+    });
     static TYPE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(struct|enum|trait)\s+([A-Za-z_][A-Za-z0-9_]*)")
             .unwrap()
@@ -333,7 +346,11 @@ fn extract_rust_symbols(repo_id: &str, rel_path: &str, content: &str) -> Result<
         if let Some(caps) = FN.captures(line) {
             let name = caps.get(1).unwrap().as_str().to_string();
             let start_col = (caps.get(1).unwrap().start() + 1) as u32;
-            let end_col = (caps.get(1).unwrap().end().max(caps.get(1).unwrap().start() + 1)) as u32;
+            let end_col = (caps
+                .get(1)
+                .unwrap()
+                .end()
+                .max(caps.get(1).unwrap().start() + 1)) as u32;
             symbols.push(make_symbol(
                 repo_id,
                 rel_path,
@@ -350,7 +367,11 @@ fn extract_rust_symbols(repo_id: &str, rel_path: &str, content: &str) -> Result<
         if let Some(caps) = TYPE.captures(line) {
             let name = caps.get(2).unwrap().as_str().to_string();
             let start_col = (caps.get(2).unwrap().start() + 1) as u32;
-            let end_col = (caps.get(2).unwrap().end().max(caps.get(2).unwrap().start() + 1)) as u32;
+            let end_col = (caps
+                .get(2)
+                .unwrap()
+                .end()
+                .max(caps.get(2).unwrap().start() + 1)) as u32;
             symbols.push(make_symbol(
                 repo_id,
                 rel_path,
@@ -367,7 +388,11 @@ fn extract_rust_symbols(repo_id: &str, rel_path: &str, content: &str) -> Result<
         if let Some(caps) = MOD.captures(line) {
             let name = caps.get(1).unwrap().as_str().to_string();
             let start_col = (caps.get(1).unwrap().start() + 1) as u32;
-            let end_col = (caps.get(1).unwrap().end().max(caps.get(1).unwrap().start() + 1)) as u32;
+            let end_col = (caps
+                .get(1)
+                .unwrap()
+                .end()
+                .max(caps.get(1).unwrap().start() + 1)) as u32;
             symbols.push(make_symbol(
                 repo_id,
                 rel_path,
@@ -426,18 +451,21 @@ fn extract_python_symbols(repo_id: &str, rel_path: &str, content: &str) -> Resul
 }
 
 fn extract_js_ts_symbols(repo_id: &str, rel_path: &str, content: &str) -> Result<Vec<SymbolItem>> {
-    static FN: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"^\s*(?:export\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(").unwrap());
-    static CLASS: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"^\s*(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)\b").unwrap());
+    static FN: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^\s*(?:export\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(").unwrap()
+    });
+    static CLASS: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^\s*(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)\b").unwrap()
+    });
     static ARROW: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>")
             .unwrap()
     });
     static TYPE_ALIAS: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"^\s*(?:export\s+)?type\s+([A-Za-z_$][A-Za-z0-9_$]*)\b").unwrap());
-    static INTERFACE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"^\s*(?:export\s+)?interface\s+([A-Za-z_$][A-Za-z0-9_$]*)\b").unwrap());
+    static INTERFACE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^\s*(?:export\s+)?interface\s+([A-Za-z_$][A-Za-z0-9_$]*)\b").unwrap()
+    });
 
     let mut symbols = Vec::new();
     for (idx, line) in content.lines().enumerate() {
@@ -521,8 +549,9 @@ fn extract_js_ts_symbols(repo_id: &str, rel_path: &str, content: &str) -> Result
 }
 
 fn extract_go_symbols(repo_id: &str, rel_path: &str, content: &str) -> Result<Vec<SymbolItem>> {
-    static FUNC: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(").unwrap());
+    static FUNC: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(").unwrap()
+    });
     static TYPE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\b").unwrap());
     static PACKAGE: Lazy<Regex> =

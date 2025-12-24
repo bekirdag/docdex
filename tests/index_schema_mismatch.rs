@@ -3,9 +3,9 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tempfile::TempDir;
 use tantivy::schema::{Schema, STORED, TEXT};
 use tantivy::{doc, Index};
+use tempfile::TempDir;
 
 fn docdex_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
@@ -84,11 +84,7 @@ fn reindex_does_not_clobber_incompatible_schema() -> Result<(), Box<dyn Error>> 
     let before = fs::read_to_string(&meta_path)?;
 
     let output = Command::new(docdex_bin())
-        .args([
-            "index",
-            "--repo",
-            repo.path().to_string_lossy().as_ref(),
-        ])
+        .args(["index", "--repo", repo.path().to_string_lossy().as_ref()])
         .output()?;
     assert!(!output.status.success(), "expected non-zero exit");
     let payload = parse_error(&output.stderr)?;
@@ -102,6 +98,9 @@ fn reindex_does_not_clobber_incompatible_schema() -> Result<(), Box<dyn Error>> 
 
     let after = fs::read_to_string(&meta_path)?;
     assert!(after.contains("legacy_title"));
-    assert_eq!(before, after, "expected schema metadata to remain unchanged");
+    assert_eq!(
+        before, after,
+        "expected schema metadata to remain unchanged"
+    );
     Ok(())
 }

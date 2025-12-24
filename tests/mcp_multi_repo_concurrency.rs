@@ -155,7 +155,11 @@ fn run_search_and_open(
         assert!(!hits.is_empty(), "expected at least one hit");
         let paths: Vec<String> = hits
             .iter()
-            .filter_map(|hit| hit.get("path").and_then(|v| v.as_str()).map(|s| s.to_string()))
+            .filter_map(|hit| {
+                hit.get("path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
             .collect();
         assert!(
             !paths.is_empty(),

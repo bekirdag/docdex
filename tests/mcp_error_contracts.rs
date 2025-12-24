@@ -24,10 +24,7 @@ impl McpHarness {
         Self::spawn_with_env(repo, &[])
     }
 
-    fn spawn_with_env(
-        repo: &Path,
-        envs: &[(&str, &str)],
-    ) -> Result<Self, Box<dyn Error>> {
+    fn spawn_with_env(repo: &Path, envs: &[(&str, &str)]) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo.to_string_lossy().to_string();
         let mut cmd = Command::new(docdex_bin());
         cmd.args([
@@ -140,7 +137,9 @@ fn parse_tool_result(resp: &serde_json::Value) -> Result<serde_json::Value, Box<
 }
 
 fn mcp_error_code(resp: &Value) -> Option<i64> {
-    resp.get("error").and_then(|v| v.get("code")).and_then(|v| v.as_i64())
+    resp.get("error")
+        .and_then(|v| v.get("code"))
+        .and_then(|v| v.as_i64())
 }
 
 fn mcp_error_data_code(resp: &Value) -> Option<&str> {
@@ -462,7 +461,10 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
         .get("recoverySteps")
         .and_then(|v| v.as_array())
         .ok_or("mismatch details should include recoverySteps array")?;
-    assert!(!steps.is_empty(), "mismatch details should include recovery steps");
+    assert!(
+        !steps.is_empty(),
+        "mismatch details should include recovery steps"
+    );
     assert!(
         steps.iter().any(|v| v
             .as_str()
@@ -547,7 +549,10 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
         .and_then(|v| v.as_array())
         .map(|v| v.len())
         .unwrap_or(0);
-    assert!(hits_len <= 4, "docdex_search hits should not exceed max-results");
+    assert!(
+        hits_len <= 4,
+        "docdex_search hits should not exceed max-results"
+    );
 
     // Clamp docdex_files to max (1000) even if request is larger.
     send_line(
@@ -586,7 +591,8 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
     assert_eq!(mcp_error_code(&open_err), Some(-32602));
     assert_eq!(mcp_error_data_code(&open_err), Some("max_content_exceeded"));
     assert_eq!(
-        open_err.get("error")
+        open_err
+            .get("error")
             .and_then(|v| v.get("data"))
             .and_then(|v| v.get("details"))
             .and_then(|v| v.get("max_bytes"))

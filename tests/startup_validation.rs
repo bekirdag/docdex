@@ -65,7 +65,9 @@ fn pick_free_port() -> Option<u16> {
     match TcpListener::bind("127.0.0.1:0") {
         Ok(listener) => Some(listener.local_addr().ok()?.port()),
         Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
-            eprintln!("skipping startup validation tests: TCP bind not permitted in this environment");
+            eprintln!(
+                "skipping startup validation tests: TCP bind not permitted in this environment"
+            );
             None
         }
         Err(err) => panic!("bind ephemeral port: {err}"),
@@ -170,7 +172,9 @@ fn daemon_refuses_requests_until_state_validation_completes() -> Result<(), Box<
         assert_eq!(mode, 0o700, "state dir should be chmod 700 on unix");
     }
 
-    let client = Client::builder().timeout(Duration::from_millis(200)).build()?;
+    let client = Client::builder()
+        .timeout(Duration::from_millis(200))
+        .build()?;
     let url = format!("http://127.0.0.1:{port}/healthz");
     let early = client.get(&url).send();
     assert!(
@@ -317,7 +321,8 @@ fn startup_failure_emits_single_error_envelope_for_config_parse() -> Result<(), 
 }
 
 #[test]
-fn startup_failure_emits_single_error_envelope_for_rate_limit_config() -> Result<(), Box<dyn Error>> {
+fn startup_failure_emits_single_error_envelope_for_rate_limit_config() -> Result<(), Box<dyn Error>>
+{
     let repo = setup_repo()?;
     let repo_arg = repo.path().to_string_lossy().to_string();
     let output = Command::new(docdex_bin())
@@ -358,7 +363,8 @@ fn startup_failure_emits_single_error_envelope_for_rate_limit_config() -> Result
 }
 
 #[test]
-fn startup_failure_emits_single_error_envelope_for_rate_limit_config() -> Result<(), Box<dyn Error>> {
+fn startup_failure_emits_single_error_envelope_for_rate_limit_config() -> Result<(), Box<dyn Error>>
+{
     let repo = setup_repo()?;
     let repo_arg = repo.path().to_string_lossy().to_string();
     let output = Command::new(docdex_bin())

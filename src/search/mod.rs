@@ -1,15 +1,20 @@
-use crate::index::{
-    DocSnapshot, Hit, Indexer, SearchError, SearchQueryMeta, SnippetOrigin, SnippetResult,
-};
 use crate::error::{
     AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
     ERR_RATE_LIMITED,
 };
+use crate::index::{
+    DocSnapshot, Hit, Indexer, SearchError, SearchQueryMeta, SnippetOrigin, SnippetResult,
+};
 use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
+use crate::orchestrator::{
+    run_waterfall, MemoryBudget, MemoryContextAssembly, WaterfallRequest, WebGateConfig,
+};
+use crate::orchestrator::web::WebDiscoveryStatus;
 use crate::ratelimit::RateLimiter;
+use crate::tier2::Tier2Config;
 use anyhow::Result;
 use axum::body::HttpBody;
 use axum::{
@@ -62,7 +67,11 @@ impl SecurityConfig {
         disable_snippet_text: bool,
     ) -> Result<Self> {
         let mut allow_nets: Vec<ipnet::IpNet> = Vec::new();
-        for raw in allow_ips.iter().map(|raw| raw.trim()).filter(|raw| !raw.is_empty()) {
+        for raw in allow_ips
+            .iter()
+            .map(|raw| raw.trim())
+            .filter(|raw| !raw.is_empty())
+        {
             match raw.parse::<ipnet::IpNet>() {
                 Ok(net) => allow_nets.push(net),
                 Err(err) => {
@@ -219,7 +228,10 @@ fn invalid_argument_details(
     crate::impact::InvalidArgumentDetails::new(issues)
 }
 
-fn invalid_argument_response(message: impl Into<String>, details: crate::impact::InvalidArgumentDetails) -> Response {
+fn invalid_argument_response(
+    message: impl Into<String>,
+    details: crate::impact::InvalidArgumentDetails,
+) -> Response {
     (
         StatusCode::BAD_REQUEST,
         Json(ImpactErrorResponse {
@@ -253,13 +265,23 @@ fn parse_i64_param(
 ) -> Option<i64> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        push_issue(issues, field, "must_be_integer", format!("{field} must be an integer"));
+        push_issue(
+            issues,
+            field,
+            "must_be_integer",
+            format!("{field} must be an integer"),
+        );
         return None;
     }
     match trimmed.parse::<i64>() {
         Ok(value) => Some(value),
         Err(_) => {
-            push_issue(issues, field, "must_be_integer", format!("{field} must be an integer"));
+            push_issue(
+                issues,
+                field,
+                "must_be_integer",
+                format!("{field} must be an integer"),
+            );
             None
         }
     }
@@ -267,8 +289,10 @@ fn parse_i64_param(
 
 fn parse_impact_graph_query(
     raw_query: Option<&str>,
-) -> std::result::Result<(String, crate::impact::ImpactQueryControls), crate::impact::InvalidArgumentError>
-{
+) -> std::result::Result<
+    (String, crate::impact::ImpactQueryControls),
+    crate::impact::InvalidArgumentError,
+> {
     let mut issues: Vec<crate::impact::InvalidFieldIssue> = Vec::new();
     let mut file: Option<String> = None;
     let mut max_edges: Option<i64> = None;
@@ -340,7 +364,11 @@ fn parse_impact_graph_query(
     let raw_controls = crate::impact::ImpactQueryControlsRaw {
         max_edges,
         max_depth,
-        edge_types: if edge_types_seen { Some(edge_types) } else { None },
+        edge_types: if edge_types_seen {
+            Some(edge_types)
+        } else {
+            None
+        },
     };
     let controls = raw_controls.validate()?;
 
@@ -354,12 +382,12 @@ async fn impact_graph_handler(
     let (source, controls) = match parse_impact_graph_query(raw.as_deref()) {
         Ok(value) => value,
         Err(err) => {
-            let message = if err.details.issues.len() == 1 && err.details.field_errors.contains_key("file")
-            {
-                "file must not be empty"
-            } else {
-                "invalid query parameters"
-            };
+            let message =
+                if err.details.issues.len() == 1 && err.details.field_errors.contains_key("file") {
+                    "file must not be empty"
+                } else {
+                    "invalid query parameters"
+                };
             return invalid_argument_response(message, err.details);
         }
     };
@@ -459,20 +487,28 @@ async fn memory_store_handler(
     };
     let text = req.text.trim();
     if text.is_empty() {
-        return json_error(StatusCode::BAD_REQUEST, ERR_INVALID_ARGUMENT, "text must not be empty");
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "text must not be empty",
+        );
     }
 
-    let embedding = match memory
-        .embedder
-        .embed(text)
-        .await
-    {
+    let embedding = match memory.embedder.embed(text).await {
         Ok(value) => value,
         Err(err) => {
             let (code, status, message) = if let Some(app) = err.downcast_ref::<AppError>() {
-                (app.code, status_for_app_error(app.code), app.message.clone())
+                (
+                    app.code,
+                    status_for_app_error(app.code),
+                    app.message.clone(),
+                )
             } else {
-                (ERR_INTERNAL_ERROR, StatusCode::INTERNAL_SERVER_ERROR, "embedding failed".to_string())
+                (
+                    ERR_INTERNAL_ERROR,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "embedding failed".to_string(),
+                )
             };
             state.metrics.inc_error();
             warn!(
@@ -497,8 +533,10 @@ async fn memory_store_handler(
     let store = memory.store.clone();
     let text_owned = text.to_string();
 
-    let write = tokio::task::spawn_blocking(move || store.store(&text_owned, &embedding, metadata, created_at))
-        .await;
+    let write = tokio::task::spawn_blocking(move || {
+        store.store(&text_owned, &embedding, metadata, created_at)
+    })
+    .await;
     match write {
         Ok(Ok((id, created_at))) => Json(MemoryStoreResponse {
             id: id.to_string(),
@@ -558,17 +596,21 @@ async fn memory_recall_handler(
     }
     let top_k = req.top_k.unwrap_or(5).max(1).min(50);
 
-    let query_embedding = match memory
-        .embedder
-        .embed(query)
-        .await
-    {
+    let query_embedding = match memory.embedder.embed(query).await {
         Ok(value) => value,
         Err(err) => {
             let (code, status, message) = if let Some(app) = err.downcast_ref::<AppError>() {
-                (app.code, status_for_app_error(app.code), app.message.clone())
+                (
+                    app.code,
+                    status_for_app_error(app.code),
+                    app.message.clone(),
+                )
             } else {
-                (ERR_INTERNAL_ERROR, StatusCode::INTERNAL_SERVER_ERROR, "embedding failed".to_string())
+                (
+                    ERR_INTERNAL_ERROR,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "embedding failed".to_string(),
+                )
             };
             state.metrics.inc_error();
             warn!(
@@ -853,6 +895,8 @@ struct SearchParams {
     snippets: Option<bool>,
     max_tokens: Option<u64>,
     include_libs: Option<bool>,
+    #[serde(default)]
+    force_web: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -861,6 +905,10 @@ pub struct SearchResponse {
     pub top_score: Option<f32>,
     #[serde(rename = "topScore")]
     pub top_score_camel: Option<f32>,
+    #[serde(rename = "webDiscovery", skip_serializing_if = "Option::is_none")]
+    pub web_discovery: Option<WebDiscoveryStatus>,
+    #[serde(rename = "memoryContext", skip_serializing_if = "Option::is_none")]
+    pub memory_context: Option<MemoryContextAssembly>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meta: Option<SearchMeta>,
 }
@@ -1071,9 +1119,7 @@ mod latency_perf_tests {
         fs::create_dir_all(&docs_dir)?;
         for i in 0..250usize {
             let body = if i % 9 == 0 {
-                format!(
-                    "# Doc {i}\n\nREPO_NEEDLE_ABC appears in this document.\n\nMore text.\n"
-                )
+                format!("# Doc {i}\n\nREPO_NEEDLE_ABC appears in this document.\n\nMore text.\n")
             } else {
                 format!("# Doc {i}\n\nFiller content for indexing.\n")
             };
@@ -1173,6 +1219,8 @@ pub async fn run_query(
         hits,
         top_score,
         top_score_camel: top_score,
+        web_discovery: None,
+        memory_context: None,
         meta: Some(build_search_meta(indexer, Some(query_meta), None)?),
     })
 }
@@ -1201,8 +1249,16 @@ fn merge_hits(repo_hits: Vec<Hit>, libs_hits: Vec<Hit>, limit: usize) -> Vec<Hit
     if libs_hits.is_empty() {
         return repo_hits;
     }
-    let repo_max = repo_hits.first().map(|h| h.score).unwrap_or(0.0).max(0.0001);
-    let libs_max = libs_hits.first().map(|h| h.score).unwrap_or(0.0).max(0.0001);
+    let repo_max = repo_hits
+        .first()
+        .map(|h| h.score)
+        .unwrap_or(0.0)
+        .max(0.0001);
+    let libs_max = libs_hits
+        .first()
+        .map(|h| h.score)
+        .unwrap_or(0.0)
+        .max(0.0001);
 
     struct Ranked {
         rank: f32,
@@ -1289,8 +1345,33 @@ async fn search_handler(
         None
     };
 
-    match search_with_optional_libs(state.indexer.as_ref(), libs_indexer, query, limit) {
-        Ok((mut hits, query_meta)) => {
+    let request_id_value = request_id.0;
+    let request_id_str = request_id_value.as_str();
+    let web_gate = WebGateConfig::from_env();
+    let force_web = params.force_web.unwrap_or(false);
+
+    match run_waterfall(WaterfallRequest {
+        request_id: request_id_str,
+        query,
+        limit,
+        force_web,
+        indexer: state.indexer.as_ref(),
+        libs_indexer,
+        web_gate: &web_gate,
+        tier2_config: Tier2Config::enabled(),
+        tier2_limiter: None,
+        memory: state.memory.as_ref(),
+        memory_budget: MemoryBudget::default(),
+    })
+    .await
+    {
+        Ok(waterfall_result) => {
+            let mut hits = waterfall_result.search_response.hits;
+            let query_meta = waterfall_result
+                .search_response
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.query.clone());
             let max_tokens = params.max_tokens;
             let snippet_policy = if state.security.disable_snippet_text {
                 SnippetPolicy::Disabled
@@ -1312,7 +1393,10 @@ async fn search_handler(
                             rel_path: hit.rel_path.clone(),
                             score: hit.score,
                             token_estimate: hit.token_estimate,
-                            reason: format!("token_estimate {}/{} exceeds max_tokens", hit.token_estimate, budget),
+                            reason: format!(
+                                "token_estimate {}/{} exceeds max_tokens",
+                                hit.token_estimate, budget
+                            ),
                         });
                         false
                     }
@@ -1351,12 +1435,18 @@ async fn search_handler(
                 pruned,
                 selected_sources,
             };
-            let meta =
-                build_search_meta(&state.indexer, Some(query_meta), Some(context_assembly)).ok();
+            let meta = build_search_meta(
+                &state.indexer,
+                query_meta,
+                Some(context_assembly),
+            )
+            .ok();
             Json(SearchResponse {
                 hits,
                 top_score,
                 top_score_camel: top_score,
+                web_discovery: Some(waterfall_result.tier2.status),
+                memory_context: waterfall_result.memory_context,
                 meta,
             })
             .into_response()
@@ -1375,13 +1465,13 @@ async fn search_handler(
             warn!(
                 target: "docdexd",
                 error = ?err,
-                request_id = %request_id.0,
+                request_id = %request_id_value,
                 limit,
                 "search handler failed"
             );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("internal error (request id: {})", request_id.0),
+                format!("internal error (request id: {})", request_id_value),
             )
                 .into_response()
         }
@@ -1532,9 +1622,7 @@ async fn security_middleware(
     }
     if path != "/healthz" {
         if let Some(limiter) = state.security.rate_limit.as_ref() {
-            if let Err(err) =
-                limiter.check_or_rate_limited(addr.ip(), "http_ip", "ip")
-            {
+            if let Err(err) = limiter.check_or_rate_limited(addr.ip(), "http_ip", "ip") {
                 state.metrics.inc_rate_limit();
                 let mut headers = HeaderMap::new();
                 let retry_after_seconds = err.retry_after_ms.saturating_add(999) / 1000;

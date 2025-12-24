@@ -72,7 +72,10 @@ pub struct BrowserSession {
 }
 
 impl BrowserSession {
-    pub async fn spawn(mut command: Command, opts: BrowserSessionOptions) -> Result<Self, BrowserSessionError> {
+    pub async fn spawn(
+        mut command: Command,
+        opts: BrowserSessionOptions,
+    ) -> Result<Self, BrowserSessionError> {
         let lock_path = opts.lock_file.clone();
         let lock = match opts.lock_file {
             Some(path) => Some(create_lock_file(&path).map_err(|err| {
@@ -206,11 +209,7 @@ impl BrowserSession {
     }
 
     async fn cleanup(&self, force_kill: bool) -> Result<(), BrowserSessionError> {
-        if !self
-            .inner
-            .cleanup_started
-            .swap(true, Ordering::AcqRel)
-        {
+        if !self.inner.cleanup_started.swap(true, Ordering::AcqRel) {
             let result = cleanup_inner(&self.inner, force_kill).await;
             *self.inner.cleanup_result.lock() = Some(result.clone());
             self.inner.cleanup_notify.notify_waiters();
@@ -232,11 +231,7 @@ impl Drop for BrowserSession {
             return;
         }
 
-        if self
-            .inner
-            .cleanup_started
-            .swap(true, Ordering::AcqRel)
-        {
+        if self.inner.cleanup_started.swap(true, Ordering::AcqRel) {
             return;
         }
 
@@ -474,14 +469,14 @@ mod tests {
         classify_browser_session_failure, run_with_fallback, Tier2Config, Tier2Limiter,
         Tier2UnavailableReason,
     };
-    use tracing::Subscriber;
-    use tracing_subscriber::layer::{Context, Layer};
-    use tracing_subscriber::prelude::*;
-    use tracing_subscriber::{registry::LookupSpan, Registry};
     use anyhow::anyhow;
     use std::time::Instant;
     use std::{collections::BTreeMap, sync::Mutex};
     use tempfile::TempDir;
+    use tracing::Subscriber;
+    use tracing_subscriber::layer::{Context, Layer};
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::{registry::LookupSpan, Registry};
 
     #[cfg(unix)]
     fn process_group_alive(pgid: i32) -> bool {
@@ -688,13 +683,9 @@ mod tests {
         ) where
             T2Fut: Future<Output = Result<String, anyhow::Error>>,
         {
-            let result = run_with_fallback(
-                request_id,
-                config,
-                limiter,
-                tier2,
-                || async { Ok::<_, anyhow::Error>("tier3".to_string()) },
-            )
+            let result = run_with_fallback(request_id, config, limiter, tier2, || async {
+                Ok::<_, anyhow::Error>("tier3".to_string())
+            })
             .await
             .expect("run");
             assert_eq!(result.value, "tier3");
@@ -739,7 +730,9 @@ mod tests {
             Tier2Config::enabled(),
             None,
             || async {
-                Err::<String, anyhow::Error>(BrowserSessionError::WorkFailed("boom".to_string()).into())
+                Err::<String, anyhow::Error>(
+                    BrowserSessionError::WorkFailed("boom".to_string()).into(),
+                )
             },
             Tier2UnavailableReason::Crashed,
         )
@@ -789,10 +782,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn launch_failure_increments_metric() {
         let before = crate::metrics::global().render_prometheus();
-        let before_val = prometheus_counter(
-            &before,
-            "docdex_browser_session_launch_failures_total",
-        );
+        let before_val =
+            prometheus_counter(&before, "docdex_browser_session_launch_failures_total");
 
         let cmd = Command::new("docdexd-definitely-not-a-real-command");
         let err = BrowserSession::spawn(cmd, BrowserSessionOptions::default())
@@ -801,10 +792,7 @@ mod tests {
         assert!(matches!(err, BrowserSessionError::LaunchFailed(_)));
 
         let after = crate::metrics::global().render_prometheus();
-        let after_val = prometheus_counter(
-            &after,
-            "docdex_browser_session_launch_failures_total",
-        );
+        let after_val = prometheus_counter(&after, "docdex_browser_session_launch_failures_total");
         assert!(
             after_val >= before_val + 1,
             "expected launch failures counter to increment"
@@ -832,18 +820,15 @@ mod tests {
                 }
 
                 fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
-                    self.0
-                        .insert(field.name().to_string(), value.to_string());
+                    self.0.insert(field.name().to_string(), value.to_string());
                 }
 
                 fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
-                    self.0
-                        .insert(field.name().to_string(), value.to_string());
+                    self.0.insert(field.name().to_string(), value.to_string());
                 }
 
                 fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-                    self.0
-                        .insert(field.name().to_string(), value.to_string());
+                    self.0.insert(field.name().to_string(), value.to_string());
                 }
 
                 fn record_debug(
@@ -893,12 +878,19 @@ mod tests {
             .iter()
             .any(|fields| fields.get("event").is_some_and(|v| v == "test_capture"));
         assert!(capture_ok, "capture layer did not record test event");
-        let started = events
-            .iter()
-            .any(|fields| fields.get("event").is_some_and(|v| v == "browser_session_started"));
-        let cleaned = events
-            .iter()
-            .any(|fields| fields.get("event").is_some_and(|v| v == "browser_session_cleanup_done"));
-        assert!(started && cleaned, "expected lifecycle logs in tracing events");
+        let started = events.iter().any(|fields| {
+            fields
+                .get("event")
+                .is_some_and(|v| v == "browser_session_started")
+        });
+        let cleaned = events.iter().any(|fields| {
+            fields
+                .get("event")
+                .is_some_and(|v| v == "browser_session_cleanup_done")
+        });
+        assert!(
+            started && cleaned,
+            "expected lifecycle logs in tracing events"
+        );
     }
 }

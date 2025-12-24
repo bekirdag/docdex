@@ -127,9 +127,7 @@ impl WebDiscoveryBackoffPolicy {
         if self.jitter_ratio > 0.0 && delay_ms > 0 {
             let jitter_span = (delay_ms as f64 * self.jitter_ratio).round() as i128;
             if jitter_span > 0 {
-                let range = (jitter_span as u128)
-                    .saturating_mul(2)
-                    .saturating_add(1);
+                let range = (jitter_span as u128).saturating_mul(2).saturating_add(1);
                 let offset = (next_u64(rng_state) as u128 % range) as i128 - jitter_span;
                 delay_ms = (delay_ms as i128 + offset).max(0) as u128;
             }
@@ -170,8 +168,13 @@ pub struct WebDiscoveryBackoff {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WebDiscoveryDecision {
-    Retry { delay: Duration, failure: WebDiscoveryFailure },
-    Stop { outcome: WebDiscoveryOutcome },
+    Retry {
+        delay: Duration,
+        failure: WebDiscoveryFailure,
+    },
+    Stop {
+        outcome: WebDiscoveryOutcome,
+    },
 }
 
 impl WebDiscoveryBackoff {
@@ -249,8 +252,10 @@ fn is_ddg_blocked_status(status: u16) -> bool {
 }
 
 static DDG_BLOCK_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new("(?i)(captcha|unusual traffic|access denied|verify you are a human|robot check|blocked)")
-        .expect("valid ddg block regex")
+    Regex::new(
+        "(?i)(captcha|unusual traffic|access denied|verify you are a human|robot check|blocked)",
+    )
+    .expect("valid ddg block regex")
 });
 
 fn ddg_blocked_body(body: &str) -> bool {
@@ -303,8 +308,8 @@ mod tests {
 
     #[test]
     fn ddg_blocked_body_is_detected() {
-        let failure = classify_ddg_html_failure(200, "Please solve the captcha")
-            .expect("blocked failure");
+        let failure =
+            classify_ddg_html_failure(200, "Please solve the captcha").expect("blocked failure");
         assert_eq!(failure.kind, WebDiscoveryFailureKind::Blocked);
         assert_eq!(failure.http_status, Some(200));
     }
@@ -319,8 +324,7 @@ mod tests {
             0.0,
         );
         let start = Instant::now();
-        let mut backoff =
-            WebDiscoveryBackoff::new_with_seed_and_start(policy, Some(1), start);
+        let mut backoff = WebDiscoveryBackoff::new_with_seed_and_start(policy, Some(1), start);
         let failure = WebDiscoveryFailure::http_error(500, None);
 
         match backoff.register_failure_at(failure.clone(), start) {
@@ -357,8 +361,7 @@ mod tests {
             0.0,
         );
         let start = Instant::now();
-        let mut backoff =
-            WebDiscoveryBackoff::new_with_seed_and_start(policy, Some(7), start);
+        let mut backoff = WebDiscoveryBackoff::new_with_seed_and_start(policy, Some(7), start);
         let failure = WebDiscoveryFailure::http_error(500, None);
 
         match backoff.register_failure_at(failure, start + Duration::from_millis(100)) {

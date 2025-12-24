@@ -106,9 +106,7 @@ impl DdgDiscoveryPacer {
     }
 
     fn next_allowed_at(&self) -> Option<Instant> {
-        let spacing_ready = self
-            .last_attempt_at
-            .map(|at| at + self.config.min_spacing);
+        let spacing_ready = self.last_attempt_at.map(|at| at + self.config.min_spacing);
         match (spacing_ready, self.backoff_until) {
             (Some(spacing), Some(backoff)) => Some(spacing.max(backoff)),
             (Some(spacing), None) => Some(spacing),

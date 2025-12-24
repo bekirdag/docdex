@@ -1,3 +1,8 @@
+pub mod logging;
+pub mod repo;
+pub mod view;
+
+use crate::dag::repo as dag_repo;
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
@@ -60,6 +65,7 @@ pub fn load_session_dag(
     let repo_fingerprint = fingerprint_repo(&repo_root)?;
     let state_root = resolve_state_root(global_state_dir)?;
     let repo_dir = state_root.join("repos").join(&repo_fingerprint);
+    let _ = dag_repo::ensure_repo_state_dir(&repo_dir);
     let mut warnings = Vec::new();
 
     if !state_root.exists() {

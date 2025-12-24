@@ -74,7 +74,10 @@ impl LibsSourceResolver {
         Self { repo_root }
     }
 
-    pub fn resolve(&self, explicit_sources: Option<&LibSourcesFile>) -> Result<LibsSourceResolution> {
+    pub fn resolve(
+        &self,
+        explicit_sources: Option<&LibSourcesFile>,
+    ) -> Result<LibsSourceResolution> {
         if !self.repo_root.is_dir() {
             anyhow::bail!("repo root is not a directory: {}", self.repo_root.display());
         }
@@ -179,7 +182,10 @@ impl LibsSourceResolver {
             })
             .collect();
 
-        Ok(LibsSourceResolution { sources, diagnostics })
+        Ok(LibsSourceResolution {
+            sources,
+            diagnostics,
+        })
     }
 
     fn discover_package_json(
@@ -188,7 +194,8 @@ impl LibsSourceResolver {
         diagnostics: &mut Vec<LibDocSourceDiagnostic>,
     ) {
         let path = self.repo_root.join("package.json");
-        let Some(raw) = read_optional_text(&path, "package.json", &self.repo_root, diagnostics) else {
+        let Some(raw) = read_optional_text(&path, "package.json", &self.repo_root, diagnostics)
+        else {
             return;
         };
         let manifest_path = display_path(&self.repo_root, &path);
@@ -207,7 +214,12 @@ impl LibsSourceResolver {
         };
 
         let mut deps: BTreeMap<String, String> = BTreeMap::new();
-        for key in ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"] {
+        for key in [
+            "dependencies",
+            "optionalDependencies",
+            "peerDependencies",
+            "devDependencies",
+        ] {
             let Some(obj) = parsed.get(key).and_then(|v| v.as_object()) else {
                 continue;
             };
@@ -245,8 +257,7 @@ impl LibsSourceResolver {
         diagnostics: &mut Vec<LibDocSourceDiagnostic>,
     ) {
         let path = self.repo_root.join("requirements.txt");
-        let Some(raw) =
-            read_optional_text(&path, "requirements.txt", &self.repo_root, diagnostics)
+        let Some(raw) = read_optional_text(&path, "requirements.txt", &self.repo_root, diagnostics)
         else {
             return;
         };
@@ -365,7 +376,8 @@ impl LibsSourceResolver {
         diagnostics: &mut Vec<LibDocSourceDiagnostic>,
     ) {
         let path = self.repo_root.join("Cargo.toml");
-        let Some(raw) = read_optional_text(&path, "Cargo.toml", &self.repo_root, diagnostics) else {
+        let Some(raw) = read_optional_text(&path, "Cargo.toml", &self.repo_root, diagnostics)
+        else {
             return;
         };
         let manifest_path = display_path(&self.repo_root, &path);
@@ -391,11 +403,7 @@ impl LibsSourceResolver {
 
             if rhs.starts_with('"') || rhs.starts_with('\'') {
                 let v = rhs.trim_end_matches(',').trim();
-                let version = v
-                    .trim_matches('"')
-                    .trim_matches('\'')
-                    .trim()
-                    .to_string();
+                let version = v.trim_matches('"').trim_matches('\'').trim().to_string();
                 insert_source(
                     sources,
                     LibDocSourceType::RustCargoToml,
@@ -431,7 +439,11 @@ impl LibsSourceResolver {
                     Regex::new(r#"version\s*=\s*("([^"]+)"|'([^']+)')"#).expect("regex");
                 let version = version_re
                     .captures(rhs)
-                    .and_then(|caps| caps.get(2).or_else(|| caps.get(3)).map(|m| m.as_str().to_string()))
+                    .and_then(|caps| {
+                        caps.get(2)
+                            .or_else(|| caps.get(3))
+                            .map(|m| m.as_str().to_string())
+                    })
                     .filter(|s| !s.trim().is_empty());
                 insert_source(
                     sources,
@@ -628,11 +640,11 @@ fn parse_pep621_dependencies(toml_text: &str) -> Vec<String> {
             }
         }
         if !in_deps && !buf.is_empty() {
-            out.extend(
-                quoted
-                    .captures_iter(&buf)
-                    .filter_map(|caps| caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str().to_string())),
-            );
+            out.extend(quoted.captures_iter(&buf).filter_map(|caps| {
+                caps.get(1)
+                    .or_else(|| caps.get(2))
+                    .map(|m| m.as_str().to_string())
+            }));
             buf.clear();
         }
     }
@@ -663,11 +675,7 @@ fn parse_poetry_dependencies(toml_text: &str) -> Vec<(String, Option<String>, Op
 
         if rhs.starts_with('"') || rhs.starts_with('\'') {
             let v = rhs.trim_end_matches(',').trim();
-            let version = v
-                .trim_matches('"')
-                .trim_matches('\'')
-                .trim()
-                .to_string();
+            let version = v.trim_matches('"').trim_matches('\'').trim().to_string();
             out.push((name, Some(version).filter(|s| !s.is_empty()), None));
             continue;
         }
@@ -708,8 +716,11 @@ mod tests {
         )
         .expect("write package.json");
         fs::write(repo.path().join("requirements.txt"), "requests==2.31.0\n").expect("write");
-        fs::write(repo.path().join("go.mod"), "module x\nrequire github.com/a/b v1.0.0\n")
-            .expect("write");
+        fs::write(
+            repo.path().join("go.mod"),
+            "module x\nrequire github.com/a/b v1.0.0\n",
+        )
+        .expect("write");
 
         let resolver = LibsSourceResolver::new(repo.path().to_path_buf());
         let a = resolver.resolve(None).expect("resolve");
@@ -759,7 +770,7 @@ mod tests {
         assert!(result
             .diagnostics
             .iter()
-            .any(|d| d.code == "cargo_dependency_unsupported" && d.library.as_deref() == Some("fancy")));
+            .any(|d| d.code == "cargo_dependency_unsupported"
+                && d.library.as_deref() == Some("fancy")));
     }
 }
-

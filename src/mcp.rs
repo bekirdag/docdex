@@ -1,16 +1,19 @@
 use crate::error::{
-    AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
-    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    repo_resolution_details, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
-    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNKNOWN_REPO,
+    repo_resolution_details, AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
+    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
+    ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
+    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
+    ERR_UNKNOWN_REPO,
 };
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::ratelimit::RateLimiter;
+use crate::orchestrator::{run_waterfall, MemoryBudget, WaterfallRequest, WebGateConfig};
 use crate::search;
 use crate::symbols::SymbolsStore;
+use crate::tier2::Tier2Config;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -85,7 +88,10 @@ fn mcp_error_data(
     let mut envelope_error = serde_json::Map::new();
     envelope_error.insert("code".to_string(), json!(code));
     envelope_error.insert("message".to_string(), json!(message));
-    if let Some(reason) = reason.clone().map(|value| truncate_bytes(value, MAX_ERROR_REASON_BYTES)) {
+    if let Some(reason) = reason
+        .clone()
+        .map(|value| truncate_bytes(value, MAX_ERROR_REASON_BYTES))
+    {
         envelope_error.insert("reason".to_string(), json!(reason.clone()));
     }
     if let Some(tool) = tool {
@@ -252,7 +258,10 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
             })),
         );
     }
-    if err.downcast_ref::<MissingSymbolsDependencyError>().is_some() {
+    if err
+        .downcast_ref::<MissingSymbolsDependencyError>()
+        .is_some()
+    {
         return (
             ERR_MISSING_DEPENDENCY,
             Some(json!({
@@ -341,6 +350,8 @@ struct SearchArgs {
     query: String,
     #[serde(default)]
     limit: Option<usize>,
+    #[serde(default)]
+    force_web: Option<bool>,
     #[serde(default)]
     project_root: Option<PathBuf>,
 }
@@ -483,9 +494,9 @@ pub async fn serve(
     } else {
         None
     };
-    let libs_indexer = libs::LibsIndexer::open_read_only(libs::libs_state_dir_from_index_state_dir(
-        indexer.state_dir(),
-    ))
+    let libs_indexer = libs::LibsIndexer::open_read_only(
+        libs::libs_state_dir_from_index_state_dir(indexer.state_dir()),
+    )
     .ok()
     .flatten();
     let mut server = McpServer {
@@ -655,14 +666,14 @@ impl McpServer {
                                 jsonrpc: JSONRPC_VERSION,
                                 id: id.clone(),
                                 result: None,
-                            error: Some(rpc_error(
-                                ERR_INVALID_REQUEST,
-                                default_message_for_code("invalid_request"),
-                                "invalid_request",
-                                Some(err.to_string()),
-                                None,
-                                None,
-                            )),
+                                error: Some(rpc_error(
+                                    ERR_INVALID_REQUEST,
+                                    default_message_for_code("invalid_request"),
+                                    "invalid_request",
+                                    Some(err.to_string()),
+                                    None,
+                                    None,
+                                )),
                             }));
                         }
                     }
@@ -802,12 +813,15 @@ impl McpServer {
                                         "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_search"),
-                                        Some(json!({ "validation": "serde", "tool": "docdex_search" })),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_search" }),
+                                        ),
                                     )),
                                 }))
                             }
                         };
-                        match self.handle_search(args).await {
+                        let request_id = format!("mcp-{}", id.clone());
+                        match self.handle_search(request_id, args).await {
                             Ok(value) => value,
                             Err(err) => {
                                 return Ok(Some(RpcResponse {
@@ -835,7 +849,9 @@ impl McpServer {
                                         "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_index"),
-                                        Some(json!({ "validation": "serde", "tool": "docdex_index" })),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_index" }),
+                                        ),
                                     )),
                                 }))
                             }
@@ -868,7 +884,9 @@ impl McpServer {
                                         "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_files"),
-                                        Some(json!({ "validation": "serde", "tool": "docdex_files" })),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_files" }),
+                                        ),
                                     )),
                                 }))
                             }
@@ -901,7 +919,9 @@ impl McpServer {
                                         "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_open"),
-                                        Some(json!({ "validation": "serde", "tool": "docdex_open" })),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_open" }),
+                                        ),
                                     )),
                                 }))
                             }
@@ -934,7 +954,9 @@ impl McpServer {
                                         "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_stats"),
-                                        Some(json!({ "validation": "serde", "tool": "docdex_stats" })),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_stats" }),
+                                        ),
                                     )),
                                 }))
                             }
@@ -967,7 +989,9 @@ impl McpServer {
                                         "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_repo_inspect"),
-                                        Some(json!({ "validation": "serde", "tool": "docdex_repo_inspect" })),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_repo_inspect" }),
+                                        ),
                                     )),
                                 }))
                             }
@@ -1000,7 +1024,9 @@ impl McpServer {
                                         "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_symbols"),
-                                        Some(json!({ "validation": "serde", "tool": "docdex_symbols" })),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_symbols" }),
+                                        ),
                                     )),
                                 }))
                             }
@@ -1033,7 +1059,9 @@ impl McpServer {
                                         "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_memory_store"),
-                                        Some(json!({ "validation": "serde", "tool": "docdex_memory_store" })),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_memory_store" }),
+                                        ),
                                     )),
                                 }))
                             }
@@ -1066,7 +1094,9 @@ impl McpServer {
                                         "invalid_params",
                                         Some(err.to_string()),
                                         Some("docdex_memory_recall"),
-                                        Some(json!({ "validation": "serde", "tool": "docdex_memory_recall" })),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_memory_recall" }),
+                                        ),
                                     )),
                                 }))
                             }
@@ -1152,6 +1182,7 @@ impl McpServer {
                     "properties": {
                         "query": { "type": "string", "minLength": 1, "description": "Concise search query (will be rejected if empty)" },
                         "limit": { "type": "integer", "minimum": 1, "maximum": self.max_results as i64, "default": self.max_results, "description": "Max results to return (clamped to server max)" },
+                        "force_web": { "type": "boolean", "description": "When true, bypasses the Tier 2 gate and runs web research" },
                         "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
                     },
                     "required": ["query"]
@@ -1274,23 +1305,59 @@ impl McpServer {
         }]
     }
 
-    async fn handle_search(&self, args: SearchArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
-        let query = args.query.trim();
-        let limit = args
-            .limit
+    async fn handle_search(
+        &self,
+        request_id: String,
+        args: SearchArgs,
+    ) -> Result<serde_json::Value> {
+        let SearchArgs {
+            query,
+            limit,
+            force_web: force_web_arg,
+            project_root,
+        } = args;
+        self.ensure_project_root(project_root.as_deref())?;
+        let query_owned = query;
+        let query = query_owned.trim();
+        let limit = limit
             .unwrap_or(self.max_results)
             .clamp(1, self.max_results);
-        let hits =
-            search::run_query(&self.indexer, self.libs_indexer.as_ref(), query, limit).await?;
-        let hits_value = serde_json::to_value(&hits.hits)?;
         let project_root_path = self
             .default_project_root
             .as_ref()
             .unwrap_or(&self.repo_root)
             .display()
             .to_string();
-        let mut meta = hits.meta.unwrap_or_else(|| search::SearchMeta {
+        let web_gate = WebGateConfig::from_env();
+        let force_web = force_web_arg.unwrap_or(false);
+        let mut memory_state = self.memory.as_ref().map(|state| search::MemoryState {
+            store: state.store.clone(),
+            embedder: state.embedder.clone(),
+        });
+        let request_id_ref = request_id.as_str();
+        let waterfall = run_waterfall(WaterfallRequest {
+            request_id: request_id_ref,
+            query,
+            limit,
+            force_web,
+            indexer: &self.indexer,
+            libs_indexer: self.libs_indexer.as_ref(),
+            web_gate: &web_gate,
+            tier2_config: Tier2Config::enabled(),
+            tier2_limiter: None,
+            memory: memory_state.as_ref(),
+            memory_budget: MemoryBudget::default(),
+        })
+        .await?;
+        let mut response = waterfall.search_response;
+        response.web_discovery = Some(waterfall.tier2.status.clone());
+        response.memory_context = waterfall.memory_context;
+        let hits_value = serde_json::to_value(&response.hits)?;
+        let top_score = response.top_score;
+        let top_score_camel = response.top_score_camel;
+        let web_discovery = response.web_discovery.clone();
+        let memory_context = response.memory_context.clone();
+        let mut meta = response.meta.unwrap_or_else(|| search::SearchMeta {
             generated_at_epoch_ms: 0,
             index_last_updated_epoch_ms: None,
             repo_root: self.repo_root.display().to_string(),
@@ -1298,17 +1365,24 @@ impl McpServer {
             context_assembly: None,
         });
         meta.repo_root = project_root_path.clone();
-        Ok(json!({
+        let mut payload = json!({
             "hits": hits_value.clone(),
             "results": hits_value,
-            "top_score": hits.top_score,
-            "topScore": hits.top_score,
+            "top_score": top_score,
+            "topScore": top_score_camel,
             "repo_root": self.repo_root.display().to_string(),
             "state_dir": self.indexer.config().state_dir().display().to_string(),
             "limit": limit,
             "project_root": project_root_path,
             "meta": meta
-        }))
+        });
+        if let Some(status) = web_discovery {
+            payload["webDiscovery"] = json!(status);
+        }
+        if let Some(context) = memory_context {
+            payload["memoryContext"] = json!(context);
+        }
+        Ok(payload)
     }
 
     async fn handle_index(&mut self, args: IndexArgs) -> Result<serde_json::Value> {
@@ -1405,7 +1479,7 @@ impl McpServer {
 
     async fn handle_repo_inspect(&self, args: RepoInspectArgs) -> Result<serde_json::Value> {
         self.ensure_project_root(args.project_root.as_deref())?;
-        let report = crate::repo_identity::inspect_repo(
+        let report = crate::repo_manager::inspect_repo(
             &self.repo_root,
             Some(self.indexer.config().state_dir()),
         )?;
@@ -1483,8 +1557,7 @@ impl McpServer {
         if !self.indexer.config().symbols_enabled() {
             return Err(MissingSymbolsDependencyError.into());
         }
-        let rel_path = normalize_rel_path(&args.path)
-            .ok_or(InvalidPathError)?;
+        let rel_path = normalize_rel_path(&args.path).ok_or(InvalidPathError)?;
         let rel_str = rel_path.to_string_lossy().replace('\\', "/");
         let store = SymbolsStore::new(self.indexer.repo_root(), self.indexer.config().state_dir())
             .context("open symbols store")?;
@@ -1598,16 +1671,17 @@ impl McpServer {
                         .to_string(),
                 ],
             );
-            return Err(
-                AppError::new(ERR_MISSING_REPO_PATH, "repo path not found")
-                    .with_details(details)
-                    .into(),
-            );
+            return Err(AppError::new(ERR_MISSING_REPO_PATH, "repo path not found")
+                .with_details(details)
+                .into());
         }
 
-        let normalized = candidate.canonicalize().unwrap_or_else(|_| candidate.to_path_buf());
+        let normalized = candidate
+            .canonicalize()
+            .unwrap_or_else(|_| candidate.to_path_buf());
         if normalized != self.repo_root {
-            let attempted_fingerprint = crate::repo_identity::repo_fingerprint_sha256(&normalized).ok();
+            let attempted_fingerprint =
+                crate::repo_manager::repo_fingerprint_sha256(&normalized).ok();
             let details = repo_resolution_details(
                 normalized.to_string_lossy().replace('\\', "/"),
                 attempted_fingerprint,
@@ -1620,11 +1694,9 @@ impl McpServer {
                         .to_string(),
                 ],
             );
-            return Err(
-                AppError::new(ERR_UNKNOWN_REPO, "unknown repo")
-                    .with_details(details)
-                    .into(),
-            );
+            return Err(AppError::new(ERR_UNKNOWN_REPO, "unknown repo")
+                .with_details(details)
+                .into());
         }
 
         Ok(())
@@ -1693,32 +1765,56 @@ mod tests {
 
     #[test]
     fn rate_limited_rpc_has_stable_data_shape() {
-        let err = RateLimited::new(Duration::from_millis(0), "mcp_tools".to_string(), "global".to_string());
+        let err = RateLimited::new(
+            Duration::from_millis(0),
+            "mcp_tools".to_string(),
+            "global".to_string(),
+        );
         let rpc = rpc_rate_limited(&err);
         assert_eq!(rpc.code, ERR_RATE_LIMITED_RPC);
         let data = rpc.data.expect("rate limited rpc should include data");
-        let obj = data.as_object().expect("rate limited data should be object");
-        assert_eq!(obj.get("code").and_then(|v| v.as_str()), Some(ERR_RATE_LIMITED));
+        let obj = data
+            .as_object()
+            .expect("rate limited data should be object");
+        assert_eq!(
+            obj.get("code").and_then(|v| v.as_str()),
+            Some(ERR_RATE_LIMITED)
+        );
         assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(0));
-        assert_eq!(obj.get("limit_key").and_then(|v| v.as_str()), Some("mcp_tools"));
+        assert_eq!(
+            obj.get("limit_key").and_then(|v| v.as_str()),
+            Some("mcp_tools")
+        );
         assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
-        assert!(obj.get("retry_at").is_none(), "retry_at should be omitted when unset");
+        assert!(
+            obj.get("retry_at").is_none(),
+            "retry_at should be omitted when unset"
+        );
     }
 
     #[test]
     fn rate_limited_rpc_truncates_long_message_and_allows_retry_at() {
-        let err = RateLimited::new(Duration::from_millis(1234), "bucket".to_string(), "global".to_string())
-            .with_message("x".repeat(10_000))
-            .with_retry_at(Utc::now());
+        let err = RateLimited::new(
+            Duration::from_millis(1234),
+            "bucket".to_string(),
+            "global".to_string(),
+        )
+        .with_message("x".repeat(10_000))
+        .with_retry_at(Utc::now());
         let rpc = rpc_rate_limited(&err);
         assert!(
             rpc.message.len() <= MAX_ERROR_MESSAGE_BYTES + "…".len(),
             "rpc error message should be bounded"
         );
         let data = rpc.data.expect("rate limited rpc should include data");
-        let obj = data.as_object().expect("rate limited data should be object");
+        let obj = data
+            .as_object()
+            .expect("rate limited data should be object");
         assert!(obj.get("retry_at").and_then(|v| v.as_str()).is_some());
-        assert_eq!(obj.get("retry_after_ms").and_then(|v| v.as_u64()), Some(1234));
+        assert_eq!(
+            obj.get("retry_after_ms").and_then(|v| v.as_u64()),
+            Some(1234)
+        );
     }
 
     #[test]
@@ -1750,8 +1846,13 @@ mod tests {
                         rpc.message.len() <= MAX_ERROR_MESSAGE_BYTES + "…".len(),
                         "rpc error message should remain bounded"
                     );
-                    let data = rpc.data.as_ref().expect("rate limited rpc should include data");
-                    let obj = data.as_object().expect("rate limited data should be object");
+                    let data = rpc
+                        .data
+                        .as_ref()
+                        .expect("rate limited rpc should include data");
+                    let obj = data
+                        .as_object()
+                        .expect("rate limited data should be object");
                     let mut keys: Vec<String> = obj.keys().cloned().collect();
                     keys.sort();
                     schema_variants.insert(keys);
@@ -1770,7 +1871,8 @@ mod tests {
                     );
                     assert_eq!(obj.get("scope").and_then(|v| v.as_str()), Some("global"));
 
-                    let payload_bytes = serde_json::to_vec(&rpc).expect("rpc error should serialize");
+                    let payload_bytes =
+                        serde_json::to_vec(&rpc).expect("rpc error should serialize");
                     assert!(
                         payload_bytes.len() <= 2048,
                         "rpc rate-limit payload should remain small (got {} bytes)",

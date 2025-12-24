@@ -120,20 +120,26 @@ fn write_impact_graph(state_dir: &Path) -> Result<(), Box<dyn Error>> {
     write_impact_graph_payload(
         state_dir,
         serde_json::json!({
-        "edges": [
-            { "source": "a.ts", "target": "b.ts", "kind": "import" },
-            { "source": "b.ts", "target": "c.ts", "kind": "import" },
-            { "source": "c.ts", "target": "d.ts", "kind": "require" },
-            { "source": "x.ts", "target": "a.ts", "kind": "include" },
-            { "source": "a.ts", "target": "z.ts" }
-        ]
-    }),
+            "edges": [
+                { "source": "a.ts", "target": "b.ts", "kind": "import" },
+                { "source": "b.ts", "target": "c.ts", "kind": "import" },
+                { "source": "c.ts", "target": "d.ts", "kind": "require" },
+                { "source": "x.ts", "target": "a.ts", "kind": "include" },
+                { "source": "a.ts", "target": "z.ts" }
+            ]
+        }),
     )
 }
 
-fn write_impact_graph_payload(state_dir: &Path, payload: serde_json::Value) -> Result<(), Box<dyn Error>> {
+fn write_impact_graph_payload(
+    state_dir: &Path,
+    payload: serde_json::Value,
+) -> Result<(), Box<dyn Error>> {
     std::fs::create_dir_all(state_dir)?;
-    std::fs::write(state_dir.join("impact_graph.json"), serde_json::to_vec_pretty(&payload)?)?;
+    std::fs::write(
+        state_dir.join("impact_graph.json"),
+        serde_json::to_vec_pretty(&payload)?,
+    )?;
     Ok(())
 }
 
@@ -146,7 +152,12 @@ fn issue_fields(body: &Value) -> Result<Vec<String>, Box<dyn Error>> {
         .ok_or("missing error.details.issues")?;
     let mut fields = issues
         .iter()
-        .filter_map(|issue| issue.get("field").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .filter_map(|issue| {
+            issue
+                .get("field")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
         .collect::<Vec<_>>();
     fields.sort();
     fields.dedup();
@@ -163,7 +174,11 @@ fn field_error_codes(body: &Value, field: &str) -> Result<Vec<String>, Box<dyn E
         .ok_or("missing error.details.fieldErrors.<field> array")?;
     let mut codes = errors
         .iter()
-        .filter_map(|err| err.get("code").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .filter_map(|err| {
+            err.get("code")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
         .collect::<Vec<_>>();
     codes.sort();
     codes.dedup();
@@ -232,10 +247,7 @@ fn impact_enforces_max_edges_and_sets_truncated() -> Result<(), Box<dyn Error>> 
         .and_then(|v| v.as_array())
         .ok_or("missing edges array")?;
     assert!(edges.len() <= 1);
-    assert_eq!(
-        resp.get("truncated").and_then(|v| v.as_bool()),
-        Some(true)
-    );
+    assert_eq!(resp.get("truncated").and_then(|v| v.as_bool()), Some(true));
     assert_eq!(
         resp.get("appliedLimits")
             .and_then(|v| v.get("maxEdges"))
@@ -282,10 +294,7 @@ fn impact_max_edges_zero_returns_empty_and_truncated() -> Result<(), Box<dyn Err
         .and_then(|v| v.as_array())
         .ok_or("missing edges array")?;
     assert!(edges.is_empty());
-    assert_eq!(
-        resp.get("truncated").and_then(|v| v.as_bool()),
-        Some(true)
-    );
+    assert_eq!(resp.get("truncated").and_then(|v| v.as_bool()), Some(true));
     assert_eq!(
         resp.get("appliedLimits")
             .and_then(|v| v.get("maxEdges"))
@@ -383,10 +392,7 @@ fn impact_max_depth_zero_returns_empty_and_truncated() -> Result<(), Box<dyn Err
         .and_then(|v| v.as_array())
         .ok_or("missing edges array")?;
     assert!(edges.is_empty());
-    assert_eq!(
-        resp.get("truncated").and_then(|v| v.as_bool()),
-        Some(true)
-    );
+    assert_eq!(resp.get("truncated").and_then(|v| v.as_bool()), Some(true));
     assert_eq!(
         resp.get("appliedLimits")
             .and_then(|v| v.get("maxDepth"))
@@ -474,10 +480,7 @@ fn impact_reports_applied_limits_and_not_truncated_by_default() -> Result<(), Bo
     let url = format!("http://{host}:{port}/v1/graph/impact");
     let resp: Value = client.get(&url).query(&[("file", "a.ts")]).send()?.json()?;
     assert_schema_signal(&resp, "docdex.impact_graph")?;
-    assert_eq!(
-        resp.get("truncated").and_then(|v| v.as_bool()),
-        Some(false)
-    );
+    assert_eq!(resp.get("truncated").and_then(|v| v.as_bool()), Some(false));
     assert_eq!(
         resp.get("appliedLimits")
             .and_then(|v| v.get("maxEdges"))
@@ -538,7 +541,11 @@ fn impact_edge_types_does_not_expand_through_excluded_edges() -> Result<(), Box<
         .and_then(|v| v.as_array())
         .ok_or("missing edges array")?;
 
-    assert_eq!(edges.len(), 1, "should not reach c.ts without traversing require edges");
+    assert_eq!(
+        edges.len(),
+        1,
+        "should not reach c.ts without traversing require edges"
+    );
     assert!(
         !edges.iter().any(|edge| {
             edge.get("source").and_then(|v| v.as_str()) == Some("c.ts")
@@ -553,7 +560,8 @@ fn impact_edge_types_does_not_expand_through_excluded_edges() -> Result<(), Box<
 }
 
 #[test]
-fn impact_invalid_params_return_invalid_argument_with_field_details() -> Result<(), Box<dyn Error>> {
+fn impact_invalid_params_return_invalid_argument_with_field_details() -> Result<(), Box<dyn Error>>
+{
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
@@ -598,7 +606,8 @@ fn impact_invalid_params_return_invalid_argument_with_field_details() -> Result<
 }
 
 #[test]
-fn impact_non_integer_params_return_invalid_argument_with_field_details() -> Result<(), Box<dyn Error>> {
+fn impact_non_integer_params_return_invalid_argument_with_field_details(
+) -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();
@@ -680,7 +689,8 @@ fn impact_missing_file_returns_invalid_argument_with_field_details() -> Result<(
 }
 
 #[test]
-fn impact_edge_types_empty_returns_invalid_argument_with_field_details() -> Result<(), Box<dyn Error>> {
+fn impact_edge_types_empty_returns_invalid_argument_with_field_details(
+) -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
     let repo_str = repo.path().to_string_lossy().to_string();

@@ -1,5 +1,5 @@
 import { McpError, McpErrorCode } from '../errors.js';
-import { getWorkspaceStore } from '../../core/workspace.js'; // Assumed existing store
+import { getWorkspaceStore } from '../../core/workspace';
 
 /**
  * Result of a successful context assembly.
@@ -31,7 +31,6 @@ export async function validateRepoScope(repoId: string | undefined | null): Prom
   }
 
   const workspace = getWorkspaceStore();
-  
   // 2. Check for unknown repo
   const repoConfig = workspace.getRepo(repoId);
   if (!repoConfig) {
@@ -58,3 +57,4 @@ export async function validateRepoScope(repoId: string | undefined | null): Prom
     rootPath: repoConfig.path,
     indexStatus: 'ready',
   };
+}

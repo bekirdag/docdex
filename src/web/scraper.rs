@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use parking_lot::Mutex;
 use once_cell::sync::OnceCell;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::env;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -97,7 +97,11 @@ pub struct ChromeProcessTracker {
 }
 
 impl ChromeProcessTracker {
-    pub fn register(&self, session_id: impl Into<String>, process: TrackedProcess) -> ChromeSessionHandle {
+    pub fn register(
+        &self,
+        session_id: impl Into<String>,
+        process: TrackedProcess,
+    ) -> ChromeSessionHandle {
         let session_id = session_id.into();
         let process_for_log = process.clone();
         let token;
@@ -279,10 +283,7 @@ impl ChromeWatchdog {
     }
 
     pub async fn shutdown(self) {
-        self.tracker
-            .inner
-            .shutdown
-            .store(true, Ordering::Release);
+        self.tracker.inner.shutdown.store(true, Ordering::Release);
         self.tracker.inner.shutdown_notify.notify_one();
         let _ = self.join.await;
     }
@@ -434,7 +435,8 @@ async fn run_scan(inner: &Arc<Inner>) {
                 // Safety: only enforce unresponsive timeouts when the session has opted into sending heartbeats.
                 record.last_heartbeat.and_then(|last| {
                     inner.config.unresponsive_timeout.and_then(|timeout| {
-                        (now.saturating_duration_since(last) >= timeout).then_some(ReapReason::SessionUnresponsive)
+                        (now.saturating_duration_since(last) >= timeout)
+                            .then_some(ReapReason::SessionUnresponsive)
                     })
                 })
             } else {
@@ -722,8 +724,8 @@ mod tests {
     #[tokio::test]
     #[cfg(unix)]
     async fn reaps_orphaned_process_after_grace() {
-        use tempfile::TempDir;
         use std::io;
+        use tempfile::TempDir;
         use tokio::process::Command;
 
         let before = crate::metrics::global().render_prometheus();
@@ -818,8 +820,8 @@ mod tests {
     #[tokio::test]
     #[cfg(unix)]
     async fn does_not_reap_active_session_without_opt_in_timeouts() {
-        use tempfile::TempDir;
         use std::io;
+        use tempfile::TempDir;
         use tokio::process::Command;
 
         let watchdog = ChromeWatchdog::start(ChromeWatchdogConfig {

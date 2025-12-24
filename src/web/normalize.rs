@@ -120,7 +120,8 @@ mod tests {
 
     #[test]
     fn unwrap_ddg_redirect_extracts_target() {
-        let url = "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdoc%3Futm_source%3Dfoo";
+        let url =
+            "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdoc%3Futm_source%3Dfoo";
         let normalized = normalize_url(url).expect("normalized");
         assert_eq!(normalized, "https://example.com/doc");
     }

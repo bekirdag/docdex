@@ -7,7 +7,6 @@ use anyhow::{anyhow, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -62,10 +61,11 @@ pub fn load_session_dag(
     let repo_root = repo_root
         .canonicalize()
         .context("resolve repo root for DAG lookup")?;
-    let repo_fingerprint = fingerprint_repo(&repo_root)?;
-    let state_root = resolve_state_root(global_state_dir)?;
-    let repo_dir = state_root.join("repos").join(&repo_fingerprint);
-    let _ = dag_repo::ensure_repo_state_dir(&repo_dir);
+    let state_paths =
+        crate::state_layout::resolve_state_paths_for_inspect(&repo_root, global_state_dir)?;
+    let repo_fingerprint = state_paths.fingerprint().to_string();
+    let state_root = state_paths.layout().base_dir();
+    let repo_dir = state_paths.repo_root().to_path_buf();
     let mut warnings = Vec::new();
 
     if !state_root.exists() {
@@ -85,7 +85,7 @@ pub fn load_session_dag(
         });
     }
 
-    let sqlite_path = repo_dir.join("dag.db");
+    let sqlite_path = state_paths.dag_path().to_path_buf();
     let json_path = repo_dir.join("dag").join(format!("{session_id}.json"));
 
     if !repo_dir.exists() {
@@ -201,15 +201,6 @@ pub fn resolve_state_root(global_state_dir: Option<PathBuf>) -> Result<PathBuf> 
     }
     let home = std::env::var("HOME").context("HOME not set for DAG lookup")?;
     Ok(Path::new(&home).join(".docdex").join("state"))
-}
-
-fn fingerprint_repo(repo_root: &Path) -> Result<String> {
-    let canonical = repo_root
-        .canonicalize()
-        .unwrap_or_else(|_| repo_root.to_path_buf());
-    let mut hasher = Sha256::new();
-    hasher.update(canonical.to_string_lossy().as_bytes());
-    Ok(hex::encode(hasher.finalize()))
 }
 
 fn load_from_sqlite(path: &Path, session_id: &str) -> Result<Option<Vec<DagNode>>> {

@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
+use fs4::FileExt;
 use rusqlite::{params, Connection, OpenFlags};
 use serde_json::Value;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,6 +15,14 @@ pub fn log_node(
     node_type: &str,
     payload: &Value,
 ) -> Result<()> {
+    dag_repo::ensure_repo_state_dir(repo_state_dir)?;
+    let lock_path = dag_repo::dag_lock_path(repo_state_dir);
+    let lock_dir = lock_path
+        .parent()
+        .map(|dir| dir.to_path_buf())
+        .unwrap_or_else(|| repo_state_dir.join("locks"));
+    crate::state_layout::ensure_state_dir_secure(&lock_dir)?;
+    let _lock = DagLock::acquire(&lock_path)?;
     let db_path = dag_repo::dag_db_path(repo_state_dir);
     let conn = Connection::open_with_flags(
         &db_path,
@@ -21,14 +31,19 @@ pub fn log_node(
     .with_context(|| format!("open {}", db_path.display()))?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS nodes (
-            session_id TEXT,
-            type TEXT,
-            payload TEXT,
-            created_at INTEGER
+            session_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at INTEGER NOT NULL
         )",
         [],
     )
     .context("prepare dag schema")?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_nodes_session_id ON nodes(session_id)",
+        [],
+    )
+    .context("prepare dag schema index")?;
     conn.execute(
         "INSERT INTO nodes (session_id, type, payload, created_at) VALUES (?1, ?2, ?3, ?4)",
         params![
@@ -66,6 +81,30 @@ pub fn load_json_trace(repo_state_dir: &Path, session_id: &str) -> Result<Option
 
 pub fn repo_state_dir_for_root(state_root: &Path, state_key: &str) -> PathBuf {
     state_root.join("repos").join(state_key)
+}
+
+struct DagLock {
+    file: std::fs::File,
+}
+
+impl DagLock {
+    fn acquire(path: &Path) -> Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(path)
+            .with_context(|| format!("open lock file {}", path.display()))?;
+        file.lock_exclusive()
+            .with_context(|| format!("lock {}", path.display()))?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for DagLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 
 #[cfg(test)]

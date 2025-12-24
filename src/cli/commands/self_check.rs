@@ -1,4 +1,5 @@
 use crate::audit;
+use crate::hardware;
 use crate::config::RepoArgs;
 use crate::index;
 use crate::search;
@@ -22,6 +23,15 @@ pub async fn run(
     limit: usize,
     include_default_patterns: bool,
 ) -> Result<()> {
+    let profile = hardware::detect_hardware();
+    println!(
+        "hardware summary: {}",
+        hardware::format_hardware_summary(&profile)
+    );
+    println!(
+        "hardware recommendation: {}",
+        profile.recommended_tier()
+    );
     let repo_root = repo.repo_root();
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,

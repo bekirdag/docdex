@@ -1,24 +1,36 @@
 use crate::memory::ops::{cosine_similarity, MemoryCandidate, MemoryItem};
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use fs4::FileExt;
 use rusqlite::{params, Connection, OpenFlags};
+use serde_json::{json, Value};
+use std::fs::OpenOptions;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tracing::warn;
 use uuid::Uuid;
+
+const MEMORY_WARN_ROWS: i64 = 50_000;
+static MEMORY_WARNED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
 pub struct MemoryStore {
     path: PathBuf,
     lock: Arc<parking_lot::Mutex<()>>,
+    lock_path: PathBuf,
 }
 
 impl MemoryStore {
     pub fn new(state_dir: &Path) -> Self {
         let _ = crate::memory::ensure_repo_state_dir(state_dir);
         let path = crate::memory::memory_path(state_dir);
+        let lock_dir = crate::memory::locks_dir_from_state_dir(state_dir);
+        let _ = crate::state_layout::ensure_state_dir_secure(&lock_dir);
+        let lock_path = crate::memory::memory_lock_path(state_dir);
         Self {
             path,
             lock: Arc::new(parking_lot::Mutex::new(())),
+            lock_path,
         }
     }
 
@@ -51,6 +63,7 @@ impl MemoryStore {
         created_at_ms: i64,
     ) -> Result<(Uuid, i64)> {
         let _guard = self.lock.lock();
+        let _file_lock = self.lock_exclusive()?;
         let id = Uuid::new_v4();
         let embedding_blob = encode_embedding(embedding);
         let metadata_json = serde_json::to_string(&metadata).context("serialize metadata")?;
@@ -67,6 +80,7 @@ impl MemoryStore {
             ],
         )
         .context("insert memory record")?;
+        self.warn_if_large(&conn)?;
         Ok((id, created_at_ms))
     }
 
@@ -76,6 +90,7 @@ impl MemoryStore {
         top_k: usize,
     ) -> Result<Vec<MemoryCandidate>> {
         let _guard = self.lock.lock();
+        let _file_lock = self.lock_shared()?;
         let conn = self.open_connection()?;
         let mut stmt = conn
             .prepare(
@@ -140,6 +155,62 @@ impl MemoryStore {
                 metadata: item.metadata,
             })
             .collect())
+    }
+
+    fn lock_shared(&self) -> Result<FileLock> {
+        FileLock::acquire(&self.lock_path, true)
+    }
+
+    fn lock_exclusive(&self) -> Result<FileLock> {
+        FileLock::acquire(&self.lock_path, false)
+    }
+
+    fn warn_if_large(&self, conn: &Connection) -> Result<()> {
+        if MEMORY_WARNED.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
+            .unwrap_or(0);
+        if count >= MEMORY_WARN_ROWS {
+            if !MEMORY_WARNED.swap(true, Ordering::Relaxed) {
+                warn!(
+                    target: "docdexd",
+                    count,
+                    "memory.db exceeds {MEMORY_WARN_ROWS} rows; consider pruning or compaction"
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+struct FileLock {
+    file: std::fs::File,
+}
+
+impl FileLock {
+    fn acquire(path: &Path, shared: bool) -> Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(path)
+            .with_context(|| format!("open lock file {}", path.display()))?;
+        if shared {
+            file.lock_shared()
+                .with_context(|| format!("lock shared {}", path.display()))?;
+        } else {
+            file.lock_exclusive()
+                .with_context(|| format!("lock exclusive {}", path.display()))?;
+        }
+        Ok(Self { file })
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
     }
 }
 

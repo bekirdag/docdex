@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use tokio::task;
 
+use super::budget::MemoryBudget;
 use crate::index::Indexer;
 use crate::libs::LibsIndexer;
 use crate::memory::{
@@ -14,24 +15,6 @@ use crate::orchestrator::web::{
 use crate::metrics;
 use crate::search::{MemoryState, SearchResponse};
 use crate::tier2::{self, Tier2Config, Tier2Limiter, Tier2Unavailable};
-
-/// Budget configuration for assembling memory context during Tier 3.
-#[derive(Clone, Debug)]
-pub struct MemoryBudget {
-    pub max_items: usize,
-    pub token_budget: usize,
-    pub recall_candidates: usize,
-}
-
-impl Default for MemoryBudget {
-    fn default() -> Self {
-        Self {
-            max_items: 5,
-            token_budget: 350,
-            recall_candidates: 20,
-        }
-    }
-}
 
 /// Description of the waterfall request.
 #[derive(Clone)]

@@ -1,9 +1,11 @@
+pub(crate) mod libs;
+mod symbols;
+
 use crate::error::{
     repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
     ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
 };
-use crate::symbols;
-use crate::symbols::{SymbolOutcome, SymbolOutcomeStatus, SymbolsStore};
+use crate::symbols::SymbolsStore;
 use anyhow::{anyhow, Context, Result};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -387,13 +389,7 @@ impl Indexer {
             .try_into()?;
         let writer = index.writer(MAX_INDEX_RAM_BYTES)?;
         let symbols_store = if config.symbols_enabled() {
-            match SymbolsStore::new(&repo_root, config.state_dir()) {
-                Ok(store) => Some(store),
-                Err(err) => {
-                    warn!(target: "docdexd", error = ?err, "symbols store init failed; symbol extraction disabled for this run");
-                    None
-                }
-            }
+            symbols::open_symbols_store(&repo_root, config.state_dir(), true)
         } else {
             None
         };
@@ -457,7 +453,7 @@ impl Indexer {
         let summary_field = schema.get_field("summary").unwrap();
         let token_field = schema.get_field("token_estimate").unwrap();
         let symbols_store = if config.symbols_enabled() {
-            SymbolsStore::new(&repo_root, config.state_dir()).ok()
+            symbols::open_symbols_store(&repo_root, config.state_dir(), false)
         } else {
             None
         };
@@ -493,11 +489,7 @@ impl Indexer {
         let writer_arc = self.writer()?;
         let mut writer = writer_arc.lock();
         writer.delete_all_documents()?;
-        if let Some(store) = self.symbols_store.as_ref() {
-            if let Err(err) = store.reset() {
-                warn!(target: "docdexd", error = ?err, "failed to reset symbols store; continuing without clearing old symbols");
-            }
-        }
+        self.reset_symbols_store();
         for entry in WalkDir::new(&self.repo_root)
             .into_iter()
             .filter_map(|e| e.ok())
@@ -545,11 +537,7 @@ impl Indexer {
         writer.delete_term(term);
         writer.commit()?;
         self.reader.reload()?;
-        if let Some(store) = self.symbols_store.as_ref() {
-            if let Err(err) = store.delete_symbols(&rel) {
-                warn!(target: "docdexd", error = ?err, rel_path = %rel, "failed to delete symbols record");
-            }
-        }
+        self.delete_symbols_record(&rel);
         Ok(())
     }
 
@@ -955,84 +943,6 @@ impl Indexer {
             .strip_prefix(&self.repo_root)
             .map_err(|_| anyhow!("{} is outside repo root", path.display()))?;
         Ok(rel.to_string_lossy().replace('\\', "/"))
-    }
-
-    fn maybe_update_symbols(&self, ingest: &DocumentIngest) {
-        let Some(store) = self.symbols_store.as_ref() else {
-            return;
-        };
-
-        let Some(language) = symbols::language_for_path(&ingest.rel_path) else {
-            let payload = symbols::build_symbols_payload(
-                store.repo_id(),
-                &ingest.rel_path,
-                Vec::new(),
-                SymbolOutcome {
-                    status: SymbolOutcomeStatus::Skipped,
-                    reason: Some("unsupported_language".to_string()),
-                    error_summary: None,
-                },
-            );
-            if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
-                warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");
-            }
-            return;
-        };
-
-        if let Some(err) = ingest.read_error.as_ref() {
-            let payload = symbols::build_symbols_payload(
-                store.repo_id(),
-                &ingest.rel_path,
-                Vec::new(),
-                SymbolOutcome {
-                    status: SymbolOutcomeStatus::Failed,
-                    reason: Some(format!("read_failed ({})", language.as_str())),
-                    error_summary: Some(err.clone()),
-                },
-            );
-            if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
-                warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");
-            }
-            return;
-        }
-
-        match symbols::extract_symbols_best_effort(
-            store.repo_id(),
-            &ingest.rel_path,
-            &ingest.content,
-            language,
-        ) {
-            Ok(symbols) => {
-                let payload = symbols::build_symbols_payload(
-                    store.repo_id(),
-                    &ingest.rel_path,
-                    symbols,
-                    SymbolOutcome {
-                        status: SymbolOutcomeStatus::Ok,
-                        reason: None,
-                        error_summary: None,
-                    },
-                );
-                if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
-                    warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");
-                }
-            }
-            Err(err) => {
-                let payload = symbols::build_symbols_payload(
-                    store.repo_id(),
-                    &ingest.rel_path,
-                    Vec::new(),
-                    SymbolOutcome {
-                        status: SymbolOutcomeStatus::Failed,
-                        reason: Some(format!("extract_failed ({})", language.as_str())),
-                        error_summary: Some(err.to_string()),
-                    },
-                );
-                if let Err(err) = store.upsert_symbols(&ingest.rel_path, &payload) {
-                    warn!(target: "docdexd", error = ?err, rel_path = %ingest.rel_path, "failed to persist symbols outcome");
-                }
-            }
-        };
     }
 
     fn snapshot_from_document(&self, doc_id: &str, doc: &Document) -> DocSnapshot {

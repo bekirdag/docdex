@@ -65,6 +65,12 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
         search_response.top_score_normalized,
     )
     .await;
+    let top_score = search_response.hits.first().map(|hit| hit.score);
+    let top_score_normalized = top_score.map(crate::search::normalize_score);
+    search_response.top_score = top_score;
+    search_response.top_score_camel = top_score;
+    search_response.top_score_normalized = top_score_normalized;
+    search_response.top_score_normalized_camel = top_score_normalized;
 
     let local_match_ratio = local_match_ratio(request.query, &search_response.hits);
     let should_run_tier2 = request.plan.web_gate.should_attempt(

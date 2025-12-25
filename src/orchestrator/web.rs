@@ -64,19 +64,30 @@ const WEB_QUALITY_CHALLENGE_THRESHOLD: u32 = 1;
 const WEB_QUALITY_COOLDOWN_SECS: u64 = 600;
 const WEB_QUALITY_TTL_SECS: u64 = 86_400;
 
+const COMMON_STOPWORDS: &[&str] = &[
+    "a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for", "from",
+    "how", "i", "if", "in", "is", "it", "of", "on", "or", "the", "to", "use",
+    "using", "was", "we", "what", "when", "where", "who", "why", "with", "you",
+    "your",
+];
+
+const DOMAIN_STOPWORDS: &[&str] = &[
+    "css", "html", "javascript", "js", "plain", "simple",
+    "code", "sample", "samples", "example", "examples", "tutorial", "tutorials",
+    "guide", "guides", "docs", "documentation", "reference", "references",
+    "overview", "intro", "introduction", "getting", "started", "learn", "learning",
+];
+
 static STOPWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
-    [
-        "a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for", "from",
-        "how", "i", "if", "in", "is", "it", "of", "on", "or", "the", "to", "use",
-        "using", "was", "we", "what", "when", "where", "who", "why", "with", "you",
-        "your",
-        "css", "html", "javascript", "js", "plain", "simple",
-        "code", "sample", "samples", "example", "examples", "tutorial", "tutorials",
-        "guide", "guides", "docs", "documentation", "reference", "references",
-        "overview", "intro", "introduction", "getting", "started", "learn", "learning",
-    ]
-    .into_iter()
-    .collect()
+    COMMON_STOPWORDS
+        .iter()
+        .chain(DOMAIN_STOPWORDS.iter())
+        .copied()
+        .collect()
+});
+
+static MATCH_STOPWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    COMMON_STOPWORDS.iter().copied().collect()
 });
 
 static CODE_BLOCK_RE: Lazy<regex::Regex> = Lazy::new(|| {
@@ -668,10 +679,11 @@ pub async fn run_web_research(
 ) -> Result<WebResearchResponse, anyhow::Error> {
     let query = query.trim();
     let search_response = search::run_query(indexer, libs_indexer, query, limit).await?;
-    let top_score = search_response.top_score;
-    let top_score_normalized = search_response.top_score_normalized;
+    let original_top_score_normalized = search_response.top_score_normalized;
     let hits =
-        filter_local_hits_with_llm(query, search_response.hits, top_score_normalized).await;
+        filter_local_hits_with_llm(query, search_response.hits, original_top_score_normalized).await;
+    let top_score = hits.first().map(|hit| hit.score);
+    let top_score_normalized = top_score.map(search::normalize_score);
     let local_match_ratio = local_match_ratio(query, &hits);
     let completion = build_completion(query, &hits);
     let web_discovery = if !gate.enabled {
@@ -746,7 +758,7 @@ pub(crate) async fn filter_local_hits_with_llm(
     if query.trim().is_empty() {
         return hits;
     }
-    let query_tokens = tokenize_terms(query);
+    let query_tokens = tokenize_terms_for_match(query);
     if query_tokens.is_empty() {
         return hits;
     }
@@ -1672,11 +1684,22 @@ async fn fetch_web_documents(
                 })
             };
 
-            let evaluation = evaluation.unwrap_or_else(|| WebEvalOutput {
+            let mut evaluation = evaluation.unwrap_or_else(|| WebEvalOutput {
                 relevance_score: 0.0,
                 kind: "summary".to_string(),
                 output: format_md_summary(content_text),
             });
+            if matches!(intent, QueryIntent::Code) && !code_blocks.is_empty() {
+                if evaluation.kind != "code" {
+                    let selected = select_code_blocks_for_query(query, &code_blocks);
+                    let raw_code = join_code_blocks(&selected);
+                    let (snippet, _) = truncate_utf8_chars(&raw_code, MAX_WEB_SUMMARY_INPUT_CHARS);
+                    if !snippet.trim().is_empty() {
+                        evaluation.kind = "code".to_string();
+                        evaluation.output = snippet;
+                    }
+                }
+            }
             let mut formatted_output = format_md_output(&evaluation.kind, &evaluation.output);
             let mut ai_kind = evaluation.kind.clone();
             let mut summary_error = None;
@@ -1902,7 +1925,7 @@ fn build_completion(query: &str, hits: &[Hit]) -> String {
 }
 
 pub(crate) fn local_match_ratio(query: &str, hits: &[Hit]) -> Option<f32> {
-    let query_tokens = tokenize_terms(query);
+    let query_tokens = tokenize_terms_for_match(query);
     if query_tokens.is_empty() {
         return None;
     }
@@ -1913,8 +1936,8 @@ pub(crate) fn local_match_ratio(query: &str, hits: &[Hit]) -> Option<f32> {
     let mut best_matches = 0usize;
     for hit in hits.iter().take(MAX_MATCH_HITS) {
         let mut hit_tokens = HashSet::new();
-        collect_tokens(&hit.summary, &mut hit_tokens);
-        collect_tokens(&hit.snippet, &mut hit_tokens);
+        collect_match_tokens(&hit.summary, &mut hit_tokens);
+        collect_match_tokens(&hit.snippet, &mut hit_tokens);
         if hit_tokens.is_empty() {
             continue;
         }
@@ -1936,37 +1959,51 @@ pub(crate) fn local_match_ratio(query: &str, hits: &[Hit]) -> Option<f32> {
 }
 
 fn tokenize_terms(text: &str) -> Vec<String> {
+    tokenize_terms_with_filter(text, should_keep_token)
+}
+
+fn tokenize_terms_for_match(text: &str) -> Vec<String> {
+    tokenize_terms_with_filter(text, should_keep_match_token)
+}
+
+fn tokenize_terms_with_filter(text: &str, keep: fn(&str) -> bool) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut buf = String::new();
     for ch in text.chars() {
         if ch.is_ascii_alphanumeric() {
             buf.push(ch.to_ascii_lowercase());
         } else if !buf.is_empty() {
-            push_token(&mut tokens, &mut buf);
+            push_token_with_filter(&mut tokens, &mut buf, keep);
         }
     }
     if !buf.is_empty() {
-        push_token(&mut tokens, &mut buf);
+        push_token_with_filter(&mut tokens, &mut buf, keep);
     }
     tokens
 }
 
 fn collect_tokens(text: &str, out: &mut HashSet<String>) {
+    collect_tokens_with_filter(text, out, should_keep_token);
+}
+
+fn collect_match_tokens(text: &str, out: &mut HashSet<String>) {
+    collect_tokens_with_filter(text, out, should_keep_match_token);
+}
+
+fn collect_tokens_with_filter(text: &str, out: &mut HashSet<String>, keep: fn(&str) -> bool) {
     let mut buf = String::new();
     for ch in text.chars() {
         if ch.is_ascii_alphanumeric() {
             buf.push(ch.to_ascii_lowercase());
         } else if !buf.is_empty() {
-            if should_keep_token(&buf) {
+            if keep(&buf) {
                 out.insert(buf.clone());
             }
             buf.clear();
         }
     }
-    if !buf.is_empty() {
-        if should_keep_token(&buf) {
-            out.insert(buf.clone());
-        }
+    if !buf.is_empty() && keep(&buf) {
+        out.insert(buf.clone());
     }
 }
 
@@ -2035,6 +2072,42 @@ fn join_code_blocks(blocks: &[String]) -> String {
         output.push_str(trimmed);
     }
     output
+}
+
+fn select_code_blocks_for_query(query: &str, blocks: &[String]) -> Vec<String> {
+    if blocks.is_empty() {
+        return Vec::new();
+    }
+    let tokens = tokenize_terms(query);
+    let max_keep = 3usize;
+    if tokens.is_empty() {
+        return blocks.iter().take(max_keep).cloned().collect();
+    }
+    let mut scored: Vec<(usize, usize)> = blocks
+        .iter()
+        .enumerate()
+        .map(|(idx, block)| {
+            let lower = block.to_ascii_lowercase();
+            let score = tokens.iter().filter(|token| lower.contains(*token)).count();
+            (score, idx)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let mut selected = Vec::new();
+    for (score, idx) in scored.into_iter() {
+        if score == 0 {
+            break;
+        }
+        selected.push(blocks[idx].clone());
+        if selected.len() >= max_keep {
+            break;
+        }
+    }
+    if selected.is_empty() {
+        blocks.iter().take(max_keep.min(2)).cloned().collect()
+    } else {
+        selected
+    }
 }
 
 fn extract_definition_sections(query: &str, html: &str, phrases: &[String]) -> Option<String> {
@@ -2620,8 +2693,8 @@ fn local_hit_matches(query_tokens: &[String], hit: &Hit) -> bool {
     let query_len = query_tokens.len();
     let min_required = if query_len >= 3 { 2 } else { 1 };
     let mut hit_tokens = HashSet::new();
-    collect_tokens(&hit.summary, &mut hit_tokens);
-    collect_tokens(&hit.snippet, &mut hit_tokens);
+    collect_match_tokens(&hit.summary, &mut hit_tokens);
+    collect_match_tokens(&hit.snippet, &mut hit_tokens);
     if hit_tokens.is_empty() {
         return false;
     }
@@ -2632,8 +2705,8 @@ fn local_hit_matches(query_tokens: &[String], hit: &Hit) -> bool {
     matched >= min_required
 }
 
-fn push_token(tokens: &mut Vec<String>, buf: &mut String) {
-    if should_keep_token(buf) {
+fn push_token_with_filter(tokens: &mut Vec<String>, buf: &mut String, keep: fn(&str) -> bool) {
+    if keep(buf) {
         tokens.push(buf.clone());
     }
     buf.clear();
@@ -2645,6 +2718,14 @@ fn should_keep_token(token: &str) -> bool {
         return false;
     }
     !STOPWORDS.contains(token)
+}
+
+fn should_keep_match_token(token: &str) -> bool {
+    let token = token.trim();
+    if token.len() < 2 {
+        return false;
+    }
+    !MATCH_STOPWORDS.contains(token)
 }
 
 #[cfg(test)]

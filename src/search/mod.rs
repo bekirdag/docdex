@@ -1204,7 +1204,7 @@ fn search_with_optional_libs(
     Ok((merge_hits(repo_hits, libs_hits, limit), query_meta))
 }
 
-fn normalize_score(score: f32) -> f32 {
+pub(crate) fn normalize_score(score: f32) -> f32 {
     if !score.is_finite() {
         return 0.0;
     }

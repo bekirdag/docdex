@@ -34,6 +34,7 @@ const MAX_WEB_SUMMARY_TOKENS: u32 = 256;
 const WEB_SUMMARY_TIMEOUT_MS: u64 = 15_000;
 const MAX_WEB_FALLBACK_EXCERPT_CHARS: usize = 480;
 const MAX_WEB_FALLBACK_EXCERPT_LINES: usize = 4;
+const WEB_CONTEXT_MIN_RELEVANCE_SCORE: f32 = 0.2;
 
 const MAX_MATCH_HITS: usize = 3;
 const LOCAL_RELEVANCE_TIMEOUT_MS: u64 = 8_000;
@@ -50,6 +51,8 @@ const WEB_CHUNK_MAX: usize = 4;
 const WEB_DEF_SECTION_MAX: usize = 4;
 const WEB_SECTION_MAX_CHARS: usize = 420;
 const WEB_HEADING_MAX_CHARS: usize = 120;
+const WEB_MIN_CONTENT_CHARS: usize = 200;
+const WEB_MIN_CONTENT_WORDS: usize = 30;
 const WEB_MAX_RESULTS_PER_DOMAIN: usize = 2;
 const WEB_NOISE_RATIO_THRESHOLD: f32 = 0.5;
 const WEB_STRUCTURED_MAX_ITEMS: usize = 24;
@@ -220,6 +223,12 @@ pub fn web_context_from_status(status: &WebDiscoveryStatus) -> Option<Vec<WebFet
     let fetches = status.fetches.as_ref()?;
     let mut items = Vec::new();
     for item in fetches {
+        if item
+            .relevance_score
+            .map_or(false, |score| score < WEB_CONTEXT_MIN_RELEVANCE_SCORE)
+        {
+            continue;
+        }
         let content = item
             .ai_digested_content
             .as_ref()
@@ -347,6 +356,7 @@ impl WebSummaryClient {
         if trimmed.is_empty() {
             return None;
         }
+        let intent = detect_query_intent(query);
         let prompt = build_summary_prompt(query, trimmed, code_blocks);
         let result = self
             .client
@@ -356,7 +366,11 @@ impl WebSummaryClient {
         let parsed: WebEvalResponse = parse_json_response(&result)?;
         let relevant = parsed.relevant;
         let score = parsed.score.clamp(0.0, 1.0);
-        let kind = parsed.kind.trim().to_ascii_lowercase();
+        let mut kind = parsed.kind.trim().to_ascii_lowercase();
+        let allow_code = matches!(intent, QueryIntent::Code) && !code_blocks.is_empty();
+        if kind == "code" && !allow_code {
+            kind = "summary".to_string();
+        }
         let output = if kind == "code" {
             let cleaned = clean_code_text(&parsed.output);
             format_md_code(&cleaned)
@@ -749,17 +763,28 @@ pub(crate) async fn filter_local_hits_with_llm(
             .filter(|hit| local_hit_matches(&query_tokens, hit))
             .collect();
     };
+    let mut all_hits = hits;
     let mut filtered = Vec::new();
-    for hit in hits {
-        match client.evaluate(query, &hit).await {
-            Some(response) if response.relevant => filtered.push(hit),
-            Some(_) => {}
-            None => {
-                if local_hit_matches(&query_tokens, &hit) {
-                    filtered.push(hit);
+    let mut llm_responses = 0usize;
+    let mut llm_failures = 0usize;
+    for hit in &all_hits {
+        match client.evaluate(query, hit).await {
+            Some(response) => {
+                llm_responses += 1;
+                if response.relevant {
+                    filtered.push(hit.clone());
                 }
             }
+            None => {
+                llm_failures += 1;
+            }
         }
+    }
+    if llm_responses == 0 && llm_failures > 0 {
+        return all_hits
+            .into_iter()
+            .filter(|hit| local_hit_matches(&query_tokens, hit))
+            .collect();
     }
     filtered
 }
@@ -1337,9 +1362,12 @@ async fn fetch_web_documents(
             let mut fetched_at_epoch_ms = None;
             let mut status: Option<u16> = None;
             let mut content: Option<String> = None;
+            let mut content_error: Option<String> = None;
+            let mut skip_summary = false;
             let mut code_blocks: Vec<String> = Vec::new();
             let mut quality_scale = 1.0f32;
             let mut debug_notes: Vec<String> = Vec::new();
+            let intent = detect_query_intent(query);
 
             if let Some(layout) = layout.as_ref() {
                 if let Ok(Some(payload)) =
@@ -1409,27 +1437,6 @@ async fn fetch_web_documents(
                             }
                         }
                         code_blocks = extract_code_blocks(&html);
-                        if is_js_challenge(&html) {
-                            record_domain_failure(
-                                layout.as_ref(),
-                                &host,
-                                DomainFailureKind::Challenge,
-                                now_ms,
-                            );
-                            batch_results.push(WebFetchResult {
-                                url: url.to_string(),
-                                status,
-                                fetched_at_epoch_ms,
-                                cached: false,
-                                content: None,
-                                ai_digested_content: None,
-                                ai_digested_kind: None,
-                                relevance_score: None,
-                                error: Some("web fetch blocked by JS challenge".to_string()),
-                                debug: None,
-                            });
-                            continue;
-                        }
                         let ad_markers = count_ad_markers(&html);
                         let readable_opt = extract_readable_text(&html, &url);
                         if debug_enabled && readable_opt.is_none() {
@@ -1444,62 +1451,123 @@ async fn fetch_web_documents(
                                 boiler_ratio = boilerplate_ratio(&readable, boilerplate_phrases);
                             }
                         }
-                        if debug_enabled && readable.trim().is_empty() {
-                            debug_notes.push("text extraction empty after fallback".to_string());
-                        }
-                        let penalty = quality_penalty(boiler_ratio, ad_markers);
-                        if penalty == 0.0 {
+                        if is_js_challenge(&html, &readable) {
+                            record_domain_failure(
+                                layout.as_ref(),
+                                &host,
+                                DomainFailureKind::Challenge,
+                                now_ms,
+                            );
+                            if debug_enabled {
+                                debug_notes.push("js challenge detected (multiple signals + short text)".to_string());
+                            }
                             batch_results.push(WebFetchResult {
                                 url: url.to_string(),
-                                status: status_probe,
+                                status,
                                 fetched_at_epoch_ms,
                                 cached: false,
                                 content: None,
                                 ai_digested_content: None,
                                 ai_digested_kind: None,
                                 relevance_score: None,
-                                error: Some("web fetch skipped due to boilerplate noise".to_string()),
-                                debug: None,
+                                error: Some("web fetch blocked by JS challenge".to_string()),
+                                debug: if debug_enabled && !debug_notes.is_empty() {
+                                    Some(debug_notes.clone())
+                                } else {
+                                    None
+                                },
                             });
                             continue;
                         }
-                        quality_scale = penalty;
-                        let filtered = filter_boilerplate_text(query, &readable, boilerplate_phrases);
-                        let readable = if filtered.trim().is_empty() {
-                            readable
-                        } else {
-                            filtered
-                        };
-                        let intent = detect_query_intent(query);
-                        let (content_input, should_chunk) = match intent {
-                            QueryIntent::Code => {
-                                if code_blocks.is_empty() {
-                                    (readable, true)
-                                } else {
-                                    (join_code_blocks(&code_blocks), false)
-                                }
-                            }
-                            QueryIntent::Definition => {
-                                match extract_definition_sections(query, &html, boilerplate_phrases) {
-                                    Some(value) => (value, false),
-                                    None => (readable, true),
-                                }
-                            }
-                            QueryIntent::General => (readable, true),
-                        };
-                        let focused = if should_chunk {
-                            select_top_chunks(query, &content_input)
-                        } else {
-                            content_input
-                        };
-                        let (trimmed, _) = truncate_utf8_chars(&focused, MAX_WEB_DOC_CHARS);
-                        if trimmed.trim().is_empty() {
+                        let cookie_result = strip_cookie_consent_lines(&readable);
+                        if cookie_result.removed_lines > 0 && debug_enabled {
+                            debug_notes.push(format!(
+                                "cookie/consent lines removed: {}/{}",
+                                cookie_result.removed_lines, cookie_result.total_lines
+                            ));
+                        }
+                        let mut readable = cookie_result.filtered;
+                        if is_cookie_only(&cookie_result) {
                             if debug_enabled {
-                                debug_notes.push("extracted text empty after chunking".to_string());
+                                debug_notes.push("content appears to be cookie/consent only".to_string());
                             }
+                            content_error = Some("cookie/consent only".to_string());
                             content = None;
                         } else {
-                            content = Some(trimmed);
+                            if debug_enabled && readable.trim().is_empty() {
+                                debug_notes.push("text extraction empty after fallback".to_string());
+                            }
+                            boiler_ratio = boilerplate_ratio(&readable, boilerplate_phrases);
+                            let penalty = quality_penalty(boiler_ratio, ad_markers);
+                            if penalty == 0.0 {
+                                batch_results.push(WebFetchResult {
+                                    url: url.to_string(),
+                                    status: status_probe,
+                                    fetched_at_epoch_ms,
+                                    cached: false,
+                                    content: None,
+                                    ai_digested_content: None,
+                                    ai_digested_kind: None,
+                                    relevance_score: None,
+                                    error: Some("web fetch skipped due to boilerplate noise".to_string()),
+                                    debug: None,
+                                });
+                                continue;
+                            }
+                            quality_scale = penalty;
+                            let filtered =
+                                filter_boilerplate_text(query, &readable, boilerplate_phrases);
+                            readable = if filtered.trim().is_empty() {
+                                readable
+                            } else {
+                                filtered
+                            };
+                            let (content_input, should_chunk) = match intent {
+                                QueryIntent::Code => {
+                                    if code_blocks.is_empty() {
+                                        (readable, true)
+                                    } else {
+                                        (join_code_blocks(&code_blocks), false)
+                                    }
+                                }
+                                QueryIntent::Definition => {
+                                    match extract_definition_sections(query, &html, boilerplate_phrases) {
+                                        Some(value) => (value, false),
+                                        None => (readable, true),
+                                    }
+                                }
+                                QueryIntent::General => (readable, true),
+                            };
+                            let focused = if should_chunk {
+                                select_top_chunks(query, &content_input)
+                            } else {
+                                content_input
+                            };
+                            let (trimmed, _) = truncate_utf8_chars(&focused, MAX_WEB_DOC_CHARS);
+                            if trimmed.trim().is_empty() {
+                                if debug_enabled {
+                                    debug_notes.push("extracted text empty after chunking".to_string());
+                                }
+                                content = None;
+                            } else {
+                                let char_count = trimmed.chars().count();
+                                let word_count = trimmed.split_whitespace().count();
+                                let allow_short = matches!(intent, QueryIntent::Code)
+                                    && !code_blocks.is_empty();
+                                if !allow_short
+                                    && char_count < WEB_MIN_CONTENT_CHARS
+                                    && word_count < WEB_MIN_CONTENT_WORDS
+                                {
+                                    skip_summary = true;
+                                    content_error = Some("low_content".to_string());
+                                    if debug_enabled {
+                                        debug_notes.push(format!(
+                                            "low content: {char_count} chars, {word_count} words"
+                                        ));
+                                    }
+                                }
+                                content = Some(trimmed);
+                            }
                         }
                     }
                     Err(err) => {
@@ -1524,6 +1592,7 @@ async fn fetch_web_documents(
             }
 
             let Some(content_text) = content.as_ref() else {
+                let empty_error = content_error.clone().unwrap_or_else(|| "content empty".to_string());
                 batch_results.push(WebFetchResult {
                     url: url.to_string(),
                     status,
@@ -1533,7 +1602,7 @@ async fn fetch_web_documents(
                     ai_digested_content: None,
                     ai_digested_kind: None,
                     relevance_score: Some(0.0),
-                    error: Some("content empty".to_string()),
+                    error: Some(empty_error),
                     debug: if debug_enabled && !debug_notes.is_empty() {
                         Some(debug_notes.clone())
                     } else {
@@ -1542,6 +1611,46 @@ async fn fetch_web_documents(
                 });
                 continue;
             };
+
+            if !skip_summary {
+                let char_count = content_text.chars().count();
+                let word_count = content_text.split_whitespace().count();
+                let allow_short =
+                    matches!(intent, QueryIntent::Code) && !code_blocks.is_empty();
+                if !allow_short
+                    && char_count < WEB_MIN_CONTENT_CHARS
+                    && word_count < WEB_MIN_CONTENT_WORDS
+                {
+                    skip_summary = true;
+                    content_error = Some("low_content".to_string());
+                    if debug_enabled {
+                        debug_notes.push(format!(
+                            "low content (post-cache): {char_count} chars, {word_count} words"
+                        ));
+                    }
+                }
+            }
+
+            if skip_summary {
+                let error = content_error.clone().unwrap_or_else(|| "low_content".to_string());
+                batch_results.push(WebFetchResult {
+                    url: url.to_string(),
+                    status,
+                    fetched_at_epoch_ms,
+                    cached,
+                    content: Some(content_text.clone()),
+                    ai_digested_content: None,
+                    ai_digested_kind: None,
+                    relevance_score: Some(0.0),
+                    error: Some(error),
+                    debug: if debug_enabled && !debug_notes.is_empty() {
+                        Some(debug_notes.clone())
+                    } else {
+                        None
+                    },
+                });
+                continue;
+            }
 
             let (query_hash, content_hash) =
                 summary_cache_entry(query, content_text, &code_blocks);
@@ -2058,6 +2167,83 @@ fn filter_boilerplate_text(query: &str, text: &str, phrases: &[String]) -> Strin
     kept.join("\n")
 }
 
+#[derive(Debug, Clone)]
+struct CookieFilterResult {
+    filtered: String,
+    removed_lines: usize,
+    total_lines: usize,
+}
+
+fn strip_cookie_consent_lines(text: &str) -> CookieFilterResult {
+    let mut kept = Vec::new();
+    let mut removed = 0usize;
+    let mut total = 0usize;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        total += 1;
+        if is_cookie_consent_line(trimmed) {
+            removed += 1;
+            continue;
+        }
+        kept.push(trimmed);
+    }
+    CookieFilterResult {
+        filtered: kept.join("\n"),
+        removed_lines: removed,
+        total_lines: total,
+    }
+}
+
+fn is_cookie_only(result: &CookieFilterResult) -> bool {
+    if result.total_lines == 0 {
+        return false;
+    }
+    let remaining_lines = result.total_lines.saturating_sub(result.removed_lines);
+    if remaining_lines == 0 {
+        return true;
+    }
+    let remaining = result.filtered.trim();
+    if remaining.is_empty() {
+        return true;
+    }
+    let removed_ratio = result.removed_lines as f32 / result.total_lines as f32;
+    let remaining_words = remaining.split_whitespace().count();
+    removed_ratio >= 0.6 && remaining.len() < 200 && remaining_words < 40
+}
+
+fn is_cookie_consent_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    let cookie_hit = lower.contains("cookie");
+    let consent_hit = lower.contains("consent")
+        || lower.contains("privacy")
+        || lower.contains("preferences")
+        || lower.contains("personalized")
+        || lower.contains("analytics")
+        || lower.contains("marketing")
+        || lower.contains("tracking");
+    let action_hit = lower.contains("accept")
+        || lower.contains("reject")
+        || lower.contains("manage")
+        || lower.contains("settings")
+        || lower.contains("agree");
+    let policy_hit = lower.contains("cookie policy")
+        || lower.contains("privacy policy")
+        || lower.contains("terms of use")
+        || lower.contains("data processing");
+    let banner_hit = lower.contains("we use cookies")
+        || lower.contains("use of cookies")
+        || lower.contains("cookie notice")
+        || lower.contains("cookie banner")
+        || lower.contains("your privacy");
+    if cookie_hit && (consent_hit || action_hit || policy_hit || banner_hit) {
+        return true;
+    }
+    consent_hit && action_hit && banner_hit
+}
+
 fn normalize_line(line: &str) -> String {
     let mut out = String::new();
     let mut last_space = false;
@@ -2133,7 +2319,7 @@ fn should_skip_status(status: Option<u16>) -> bool {
     matches!(status, Some(404 | 410))
 }
 
-fn is_js_challenge(html: &str) -> bool {
+fn is_js_challenge(html: &str, readable_text: &str) -> bool {
     let lower = html.to_ascii_lowercase();
     let patterns = [
         "just a moment",
@@ -2147,7 +2333,23 @@ fn is_js_challenge(html: &str) -> bool {
         "ddos protection",
         "access denied",
     ];
-    patterns.iter().any(|pat| lower.contains(pat))
+    let mut hits = 0usize;
+    for pat in patterns {
+        if lower.contains(pat) {
+            hits += 1;
+        }
+    }
+    if hits < 2 {
+        return false;
+    }
+    let trimmed = readable_text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let text_len = trimmed.len();
+    let word_count = trimmed.split_whitespace().count();
+    let short_text = text_len < 500 || word_count < 80;
+    short_text
 }
 
 fn count_ad_markers(html: &str) -> usize {

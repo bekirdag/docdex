@@ -860,8 +860,6 @@ pub struct SearchResponse {
     pub top_score_normalized_camel: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web_context: Option<Vec<WebFetchResult>>,
-    #[serde(rename = "webContext", skip_serializing_if = "Option::is_none")]
-    pub web_context_camel: Option<Vec<WebFetchResult>>,
     #[serde(rename = "webDiscovery", skip_serializing_if = "Option::is_none")]
     pub web_discovery: Option<WebDiscoveryStatus>,
     #[serde(rename = "memoryContext", skip_serializing_if = "Option::is_none")]
@@ -1180,7 +1178,6 @@ pub async fn run_query(
         top_score_normalized,
         top_score_normalized_camel: top_score_normalized,
         web_context: None,
-        web_context_camel: None,
         web_discovery: None,
         memory_context: None,
         meta: Some(build_search_meta(indexer, Some(query_meta), None)?),
@@ -1428,8 +1425,7 @@ async fn search_handler(
                 top_score_camel: top_score,
                 top_score_normalized,
                 top_score_normalized_camel: top_score_normalized,
-                web_context: web_context.clone(),
-                web_context_camel: web_context,
+                web_context,
                 web_discovery: Some(waterfall_result.tier2.status),
                 memory_context: waterfall_result.memory_context,
                 meta,

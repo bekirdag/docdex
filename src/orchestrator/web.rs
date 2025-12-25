@@ -39,6 +39,7 @@ const WEB_BATCH_SIZE: usize = 10;
 const WEB_MAX_BATCHES: usize = 2;
 const MAX_CODE_BLOCKS: usize = 4;
 const MAX_CODE_BLOCK_CHARS: usize = 1800;
+const WEB_MIN_RELEVANCE_SCORE: f32 = 0.4;
 
 static STOPWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
@@ -593,15 +594,26 @@ pub(crate) async fn filter_local_hits_with_llm(
     if score >= threshold {
         return hits;
     }
-    let Some(client) = load_local_relevance_client() else {
+    let query_tokens = tokenize_terms(query);
+    if query_tokens.is_empty() {
         return hits;
+    }
+    let Some(client) = load_local_relevance_client() else {
+        return hits
+            .into_iter()
+            .filter(|hit| local_hit_matches(&query_tokens, hit))
+            .collect();
     };
     let mut filtered = Vec::new();
     for hit in hits {
         match client.evaluate(query, &hit).await {
             Some(response) if response.relevant => filtered.push(hit),
             Some(_) => {}
-            None => filtered.push(hit),
+            None => {
+                if local_hit_matches(&query_tokens, &hit) {
+                    filtered.push(hit);
+                }
+            }
         }
     }
     filtered
@@ -777,7 +789,7 @@ async fn run_web_discovery(
         Ok(response) => {
             let (discovery_response, urls) =
                 normalize_discovery_response(response, &config, discovery_limit);
-            let fetches = fetch_web_documents(query, &urls, &config).await;
+            let fetches = fetch_web_documents(query, &urls, &config, limit).await;
             let message = if gate.browser_available {
                 None
             } else {
@@ -837,6 +849,7 @@ fn normalize_discovery_response(
     }
     let mut urls = dedupe_urls(urls);
     urls.retain(|value| is_allowed_url(value, &config.blocklist));
+    urls.retain(|value| !is_tracking_url(value));
     let results = urls
         .iter()
         .take(limit)
@@ -876,10 +889,34 @@ fn is_allowed_url(raw: &str, blocklist: &[String]) -> bool {
     true
 }
 
-async fn fetch_web_documents(query: &str, urls: &[String], config: &WebConfig) -> Vec<WebFetchResult> {
+fn is_tracking_url(raw: &str) -> bool {
+    let url = match url::Url::parse(raw) {
+        Ok(url) => url,
+        Err(_) => return true,
+    };
+    let host = url.host_str().unwrap_or("").trim().to_ascii_lowercase();
+    if host.is_empty() {
+        return true;
+    }
+    if host.ends_with("duckduckgo.com") {
+        let path = url.path();
+        if path.starts_with("/y.js") || path.starts_with("/l/") || path.starts_with("/u/") {
+            return true;
+        }
+    }
+    false
+}
+
+async fn fetch_web_documents(
+    query: &str,
+    urls: &[String],
+    config: &WebConfig,
+    target_count: usize,
+) -> Vec<WebFetchResult> {
     if urls.is_empty() {
         return Vec::new();
     }
+    let desired_count = target_count.max(1);
     let layout = cache::cache_layout_from_config();
     let summary_client = load_web_summary_client();
     if !config
@@ -919,8 +956,11 @@ async fn fetch_web_documents(query: &str, urls: &[String], config: &WebConfig) -
         }
     };
 
+    let mut all_results = Vec::new();
+    let mut success_count = 0usize;
     for batch in urls.chunks(WEB_BATCH_SIZE).take(WEB_MAX_BATCHES) {
         let mut batch_results = Vec::new();
+        let mut best_in_batch = 0.0f32;
         for raw in batch {
             let url = match url::Url::parse(raw) {
                 Ok(url) => url,
@@ -1015,6 +1055,11 @@ async fn fetch_web_documents(query: &str, urls: &[String], config: &WebConfig) -
                 }
             }
 
+            let match_stats = web_match_stats(query, content_text, &code_blocks);
+            let relevance_score = blend_relevance_score(evaluation.relevance_score, &match_stats);
+            if relevance_score > best_in_batch {
+                best_in_batch = relevance_score;
+            }
             batch_results.push(WebFetchResult {
                 url: url.to_string(),
                 status,
@@ -1023,23 +1068,33 @@ async fn fetch_web_documents(query: &str, urls: &[String], config: &WebConfig) -
                 content: Some(content_text.clone()),
                 ai_digested_content: Some(evaluation.output),
                 ai_digested_kind: Some(evaluation.kind),
-                relevance_score: Some(evaluation.relevance_score),
+                relevance_score: Some(relevance_score),
                 error: None,
             });
         }
 
         if !batch_results.is_empty() {
-            batch_results.sort_by(|a, b| {
-                b.relevance_score
-                    .unwrap_or(0.0)
-                    .partial_cmp(&a.relevance_score.unwrap_or(0.0))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            return batch_results;
+            success_count += batch_results
+                .iter()
+                .filter(|item| item.error.is_none())
+                .count();
+            all_results.extend(batch_results);
+            if best_in_batch >= WEB_MIN_RELEVANCE_SCORE && success_count >= desired_count {
+                break;
+            }
         }
     }
 
-    Vec::new()
+    if all_results.is_empty() {
+        return Vec::new();
+    }
+    all_results.sort_by(|a, b| {
+        b.relevance_score
+            .unwrap_or(0.0)
+            .partial_cmp(&a.relevance_score.unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    all_results
 }
 
 fn clean_web_text(html: &str) -> String {
@@ -1180,6 +1235,82 @@ fn collect_tokens(text: &str, out: &mut HashSet<String>) {
             out.insert(buf.clone());
         }
     }
+}
+
+struct WebMatchStats {
+    overlap_ratio: f32,
+    matched: usize,
+    query_len: usize,
+}
+
+fn web_match_stats(query: &str, content: &str, code_blocks: &[String]) -> WebMatchStats {
+    let query_tokens = tokenize_terms(query);
+    if query_tokens.is_empty() {
+        return WebMatchStats {
+            overlap_ratio: 0.0,
+            matched: 0,
+            query_len: 0,
+        };
+    }
+    let mut hit_tokens = HashSet::new();
+    collect_tokens(content, &mut hit_tokens);
+    for block in code_blocks {
+        collect_tokens(block, &mut hit_tokens);
+    }
+    if hit_tokens.is_empty() {
+        return WebMatchStats {
+            overlap_ratio: 0.0,
+            matched: 0,
+            query_len: query_tokens.len(),
+        };
+    }
+    let matched = query_tokens
+        .iter()
+        .filter(|token| hit_tokens.contains(*token))
+        .count();
+    let overlap_ratio = matched as f32 / query_tokens.len() as f32;
+    WebMatchStats {
+        overlap_ratio,
+        matched,
+        query_len: query_tokens.len(),
+    }
+}
+
+fn blend_relevance_score(model_score: f32, stats: &WebMatchStats) -> f32 {
+    let model_score = model_score.clamp(0.0, 1.0);
+    let overlap_score = stats.overlap_ratio.clamp(0.0, 1.0);
+    let blended = (model_score * 0.6) + (overlap_score * 0.4);
+    let penalty = if stats.query_len <= 1 {
+        1.0
+    } else if stats.query_len == 2 {
+        if stats.matched <= 1 { 0.75 } else { 1.0 }
+    } else if stats.matched <= 1 {
+        0.5
+    } else if stats.overlap_ratio < 0.5 {
+        0.8
+    } else {
+        1.0
+    };
+    (blended * penalty).clamp(0.0, 1.0)
+}
+
+fn local_hit_matches(query_tokens: &[String], hit: &Hit) -> bool {
+    if query_tokens.is_empty() {
+        return true;
+    }
+    let query_len = query_tokens.len();
+    let min_required = if query_len >= 3 { 2 } else { 1 };
+    let mut hit_tokens = HashSet::new();
+    collect_tokens(&hit.summary, &mut hit_tokens);
+    collect_tokens(&hit.snippet, &mut hit_tokens);
+    if hit_tokens.is_empty() {
+        return false;
+    }
+    let matched = query_tokens
+        .iter()
+        .filter(|token| hit_tokens.contains(*token))
+        .count();
+    matched >= min_required
 }
 
 fn push_token(tokens: &mut Vec<String>, buf: &mut String) {

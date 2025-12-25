@@ -43,6 +43,7 @@ pub async fn fetch_dom(url: &Url, config: &ChromeFetchConfig) -> Result<String> 
     command.arg("--disable-gpu");
     command.arg("--disable-extensions");
     command.arg("--disable-dev-shm-usage");
+    command.arg("--no-sandbox");
     command.arg("--no-first-run");
     command.arg("--no-default-browser-check");
     command.arg("--incognito");

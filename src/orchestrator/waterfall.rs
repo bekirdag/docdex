@@ -109,8 +109,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
     };
 
     let web_context = crate::orchestrator::web::web_context_from_status(&tier2.status);
-    search_response.web_context = web_context.clone();
-    search_response.web_context_camel = web_context;
+    search_response.web_context = web_context;
 
     if let Some(ctx) = &memory_context {
         metrics.record_waterfall_memory_context(

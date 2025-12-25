@@ -763,7 +763,7 @@ pub(crate) async fn filter_local_hits_with_llm(
             .filter(|hit| local_hit_matches(&query_tokens, hit))
             .collect();
     };
-    let mut all_hits = hits;
+    let all_hits = hits;
     let mut filtered = Vec::new();
     let mut llm_responses = 0usize;
     let mut llm_failures = 0usize;
@@ -1448,7 +1448,6 @@ async fn fetch_web_documents(
                             let structured = extract_structured_html_text(&html, boilerplate_phrases);
                             if !structured.trim().is_empty() {
                                 readable = structured;
-                                boiler_ratio = boilerplate_ratio(&readable, boilerplate_phrases);
                             }
                         }
                         if is_js_challenge(&html, &readable) {
@@ -1486,8 +1485,9 @@ async fn fetch_web_documents(
                                 cookie_result.removed_lines, cookie_result.total_lines
                             ));
                         }
+                        let cookie_only = is_cookie_only(&cookie_result);
                         let mut readable = cookie_result.filtered;
-                        if is_cookie_only(&cookie_result) {
+                        if cookie_only {
                             if debug_enabled {
                                 debug_notes.push("content appears to be cookie/consent only".to_string());
                             }

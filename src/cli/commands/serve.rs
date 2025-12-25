@@ -88,7 +88,8 @@ pub async fn run(
             .clone()
             .unwrap_or_else(|| index_config.state_dir().join("audit.log"));
         Some(
-            audit::AuditLogger::new(path, audit_max_bytes, audit_max_files).map_err(|err| {
+            audit::AuditLogger::new(path, audit_max_bytes, audit_max_files as usize).map_err(
+                |err| {
                 StartupError::new("startup_state_invalid", err.to_string())
                     .with_hint("Verify the state dir is writable or set --audit-disable.")
             })?,
@@ -170,8 +171,8 @@ fn resolve_bind_addr(
     port: Option<u16>,
     config: &config::AppConfig,
 ) -> Result<(String, u16)> {
-    if let (Some(host), Some(port)) = (host, port) {
-        return Ok((host, port));
+    if host.is_some() && port.is_some() {
+        return Ok((host.unwrap(), port.unwrap()));
     }
     let bind_addr = config.server.http_bind_addr.trim();
     let addr: SocketAddr = bind_addr.parse().map_err(|err| {

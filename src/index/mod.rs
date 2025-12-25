@@ -190,7 +190,7 @@ pub struct Indexer {
     symbols_store: Option<SymbolsStore>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Hit {
     pub doc_id: String,
     pub rel_path: String,

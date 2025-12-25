@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Ensure the repo-scoped state directory exists and is writable.

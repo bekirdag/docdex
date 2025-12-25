@@ -63,7 +63,7 @@ impl MemoryStore {
         let id = Uuid::new_v4();
         let embedding_blob = encode_embedding(embedding);
         let metadata_json = serde_json::to_string(&metadata).context("serialize metadata")?;
-        let (conn, _) = self.open_connection(Some(embedding.len()))?;
+        let (mut conn, _) = self.open_connection(Some(embedding.len()))?;
         conn.execute(
             "INSERT INTO memories (id, content, embedding, created_at, metadata)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -83,7 +83,7 @@ impl MemoryStore {
             params![rowid, embedding_json],
         )
         .context("insert memory vector")?;
-        self.enforce_guardrails(&conn)?;
+        self.enforce_guardrails(&mut conn)?;
         Ok((id, created_at_ms))
     }
 
@@ -171,7 +171,7 @@ impl MemoryStore {
         FileLock::acquire(&self.lock_path, false)
     }
 
-    fn enforce_guardrails(&self, conn: &Connection) -> Result<()> {
+    fn enforce_guardrails(&self, conn: &mut Connection) -> Result<()> {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
             .unwrap_or(0);
@@ -219,7 +219,9 @@ impl MemoryStore {
 
 fn ensure_vec_extension_loaded() -> Result<()> {
     SQLITE_VEC_INIT.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(sqlite_vec::sqlite3_vec_init));
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+            sqlite_vec::sqlite3_vec_init as *const (),
+        )));
     });
     Ok(())
 }

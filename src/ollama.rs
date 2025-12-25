@@ -178,6 +178,98 @@ impl OllamaClient {
             .into()),
         }
     }
+
+    pub async fn generate(
+        &self,
+        model: &str,
+        prompt: &str,
+        max_tokens: u32,
+        timeout: Duration,
+    ) -> Result<String, anyhow::Error> {
+        let model = model.trim();
+        if model.is_empty() {
+            anyhow::bail!("ollama model is not configured");
+        }
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            anyhow::bail!("ollama prompt must not be empty");
+        }
+
+        let num_predict = max_tokens.max(1) as i64;
+        let payload = json!({
+            "model": model,
+            "prompt": prompt,
+            "stream": false,
+            "options": {
+                "num_predict": num_predict,
+            },
+        });
+        let body = serde_json::to_vec(&payload).context("serialize ollama generate request")?;
+
+        let path = if self.path_prefix.is_empty() {
+            "/api/generate".to_string()
+        } else {
+            format!("{}/api/generate", self.path_prefix)
+        };
+
+        let host_header = self.host_header.clone();
+        let connect_addr = self.connect_addr.clone();
+        let result: Result<Result<String, anyhow::Error>, tokio::time::error::Elapsed> =
+            tokio::time::timeout(timeout, async move {
+                let mut stream = TcpStream::connect(&connect_addr)
+                    .await
+                    .context("connect to ollama")?;
+
+                let headers = format!(
+                    "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n",
+                    host = host_header,
+                    len = body.len()
+                );
+                stream
+                    .write_all(headers.as_bytes())
+                    .await
+                    .context("write request headers")?;
+                stream.write_all(&body).await.context("write request body")?;
+                stream.flush().await.ok();
+
+                let mut raw = Vec::new();
+                stream.read_to_end(&mut raw).await.context("read response")?;
+                let (status_code, response_body) = parse_http_response(&raw)?;
+
+                if let Some(error_message) = ollama_error_message(&response_body) {
+                    return Err(anyhow!("ollama generate request failed: {error_message}"));
+                }
+
+                if !(200..300).contains(&status_code) {
+                    return Err(anyhow!(
+                        "ollama generate request failed (status {status_code})"
+                    ));
+                }
+
+                #[derive(Deserialize)]
+                struct GenerateResponse {
+                    response: String,
+                }
+
+                let parsed: GenerateResponse =
+                    serde_json::from_slice(&response_body).context("parse ollama generate response")?;
+                let response = parsed.response.trim();
+                if response.is_empty() {
+                    return Err(anyhow!("ollama generate returned empty response"));
+                }
+                Ok(response.to_string())
+            })
+            .await;
+
+        match result {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(err)) => Err(err),
+            Err(_) => Err(anyhow!(
+                "ollama generate request timed out after {}ms",
+                timeout.as_millis()
+            )),
+        }
+    }
 }
 
 pub async fn check_reachable(base_url: &str, timeout: Duration) -> Result<(), anyhow::Error> {

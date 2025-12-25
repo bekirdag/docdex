@@ -42,8 +42,9 @@ impl RepoResolutionCache {
             .canonicalize()
             .unwrap_or_else(|_| repo_root.to_path_buf());
         let normalized = normalize_repo_path(&canonical);
+        let tick = self.tick();
         if let Some(entry) = self.entries.get_mut(&normalized) {
-            entry.last_access = self.tick();
+            entry.last_access = tick;
             return entry.resolution.clone();
         }
         if self.entries.len() >= self.max_entries {

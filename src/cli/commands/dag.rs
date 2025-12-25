@@ -1,7 +1,7 @@
 use crate::dag;
 use anyhow::Result;
 
-pub fn run(command: super::super::DagCommand) -> Result<()> {
+pub(crate) fn run(command: super::super::DagCommand) -> Result<()> {
     match command {
         super::super::DagCommand::View { repo, session_id } => {
             let repo_root = repo.repo_root();

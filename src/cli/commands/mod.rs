@@ -17,7 +17,7 @@ pub mod web;
 
 use anyhow::Result;
 
-pub async fn dispatch(command: super::Command) -> Result<()> {
+pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
     match command {
         super::Command::Check => check::run().await,
         super::Command::Serve {

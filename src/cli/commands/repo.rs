@@ -3,7 +3,7 @@ use crate::repo_manager;
 use anyhow::Result;
 use serde_json::json;
 
-pub fn run(command: super::super::RepoCommand) -> Result<()> {
+pub(crate) fn run(command: super::super::RepoCommand) -> Result<()> {
     match command {
         super::super::RepoCommand::Reassociate {
             repo,

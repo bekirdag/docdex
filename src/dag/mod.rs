@@ -4,7 +4,6 @@ pub mod view;
 
 use crate::dag::repo as dag_repo;
 use anyhow::{Context, Result};
-use fs4::FileExt;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -46,7 +46,7 @@ Docdex v2.0 runs a per-repo local-first daemon (`docdexd serve`) per repo. Run o
 - **Waterfall retrieval** (per repo): Tier 1 local indexes (source \+ libs), Tier 2 zero-cost web discovery/fetch (DuckDuckGo HTML \+ guarded headless Chrome), Tier 3 local cognition/memory (Ollama chat/embeddings, sqlite-vec memory). Cached library docs are treated as local within Tier 1\.  
 - **Context assembly**: fixed priority Memory → Repo Code → Library/Web; token budget roughly 10% system prompt, 20% memory, 50% repo/library/web, 20% generation buffer. Budgeting happens before Ollama calls.  
 - **Isolation model**: per-repo state under `~/.docdex/state/repos/<fingerprint>/`; global caches (`cache/web`, `cache/libs`) are reused but ingested per repo. CLI/MCP require explicit repo id/path; HTTP uses the daemon repo by default and validates any provided repo id/path.  
-- **Hardware awareness**: daemon detects RAM/VRAM to recommend or constrain Ollama models (e.g., \<8GB ultra-light; ≥16GB default `llama3.1:8b`; ≥32GB \+ GPU suggests `llama3.1:70b` if present). No auto-install; guidance only.  
+- **Hardware awareness**: daemon detects RAM/VRAM to recommend or constrain Ollama models (e.g., \<8GB ultra-light; ≥16GB default `phi3.5:3.8b`; ≥32GB \+ GPU suggests `llama3.1:70b` if present). No auto-install; guidance only.  
 - **Security posture**: binds to `127.0.0.1` by default; `--expose` demands token auth across HTTP/MCP. No telemetry or paid/cloud services.  
 - **Scalability & reliability (per PDR scope)**: targets ≥8 concurrent repos by running separate per-repo daemons; local search p95 \< 50ms (\<20ms typical). Browser guard prevents zombie Chrome; web rate limits (≥2s DDG, ≥1s fetch) mitigate bans.  
 - **Out-of-scope (per section)**: new surfaces, cloud/vector backends, cross-repo memory, clustered/multi-tenant daemon topologies are explicitly excluded.
@@ -89,7 +89,7 @@ Local-first, per-repo daemon discipline governs all decisions: `docdexd` serves 
 
 **Resource discipline and hardware awareness**
 
-- RAM/VRAM detection guides model recommendations (≤8GB: ultra-light; ≥16GB: `llama3.1:8b` default; ≥32GB \+ GPU: `llama3.1:70b` if installed).  
+- RAM/VRAM detection guides model recommendations (≤8GB: ultra-light; ≥16GB: `phi3.5:3.8b` default; ≥32GB \+ GPU: `llama3.1:70b` if installed).  
 - Bounded Chrome concurrency and per-domain rate limits; clear errors when caps are hit.
 
 **Out of scope (per PDR)**
@@ -192,7 +192,7 @@ Verification Strategy
 Docdexd detects host RAM and (when present) GPU VRAM to guide Ollama model recommendations and default selection, keeping inference local and resource-safe. This logic informs CLI commands (`docdexd llm-list`, `docdexd check`, `docdexd llm-setup`) but does not introduce new APIs beyond what is already defined.
 
 - **Detection scope**: Read total system RAM; detect GPU presence and VRAM when available. No other hardware signals are in scope per PDR.  
-- **Threshold policy (from PDR)**: RAM \<8GB → recommend ultra-light; ≥16GB → default `llama3.1:8b`; ≥32GB \+ GPU → suggest `llama3.1:70b` if installed. Keep decisions advisory; do not auto-download/install.  
+- **Threshold policy (from PDR)**: RAM \<8GB → recommend ultra-light; ≥16GB → default `phi3.5:3.8b`; ≥32GB \+ GPU → suggest `llama3.1:70b` if installed. Keep decisions advisory; do not auto-download/install.  
 - **Integration points**:  
   - `docdexd llm-list` runs detection, loads `llm_list.json`, filters, and outputs recommendations.  
   - `docdexd llm-setup` reuses detection to suggest pulls and update `[llm]` defaults in config; must honor offline-first (no automatic network installs).  
@@ -226,7 +226,7 @@ This section defines the daemon’s key subsystems and how they cooperate to sat
 
 - Responsibilities: Parse/validate `~/.docdex/config.toml`; ensure RW on `global_state_dir`; materialize defaults when missing; expose typed config to all services; enforce localhost bind unless `--expose` with token.  
 - State layout: Creates/validates `state/repos/<fingerprint>/{index/,libs_index/,memory.db,symbols.db,dag.db,impact_graph.json}` and shared caches `cache/web`, `cache/libs/<ecosystem>/<pkg>/`, `locks/` for browser/process guards.  
-- Hardware awareness: On startup and `llm-list`, detect RAM/VRAM to suggest models (`llama3.1:8b` default; heavier only if hardware allows).  
+- Hardware awareness: On startup and `llm-list`, detect RAM/VRAM to suggest models (`phi3.5:3.8b` default; heavier only if hardware allows).  
 - Data contract: Provides immutable config snapshot to consumers; emits normalized repo fingerprint function.
 
 ### Repo Manager
@@ -298,7 +298,7 @@ Config/state layer ensures typed configuration, RW validation, and deterministic
   - Validate RW on `global_state_dir` at startup and before per-repo init.  
   - Create missing config with defaults; on missing state subdirs/DBs for a repo, lazily initialize via Repo Manager.  
   - Expose normalized, typed config/state handles to: Repo Manager (per-repo paths), Waterfall (web caches), Memory/DAG/Index subsystems, and Chrome guard (locks path).  
-  - Hardware awareness surfaced to LLM config recommender: detect RAM/VRAM and suggest model tiers (`ultra-light` \<8GB, default `llama3.1:8b` ≥16GB, `llama3.1:70b` with GPU ≥32GB).  
+  - Hardware awareness surfaced to LLM config recommender: detect RAM/VRAM and suggest model tiers (`ultra-light` \<8GB, default `phi3.5:3.8b` ≥16GB, `llama3.1:70b` with GPU ≥32GB).  
 - **Interactions (textual diagram)**:  
   - On daemon start: Config Loader → parse/validate `config.toml` (defaults) → State Manager → validate/create `global_state_dir`, `cache/*`, `locks/`.  
   - Per repo access: Repo Manager → fingerprint(repo\_path) → State Manager → ensure `repos/<fp>/*` exist → return handles/paths to Indexer, Memory, DAG, Symbols.  
@@ -546,7 +546,7 @@ LLM/embedding layer is Ollama-only for both generation and embeddings, operating
 - **Context Assembly**: Priority order Memory → Repo code (Tantivy \+ symbols) → Library/web artifacts. Library docs treated as Tier-1 support. Waterfall orchestrator only escalates to web when confidence \< `web_trigger_threshold` or explicitly forced.  
 - **Repo Isolation**: CLI/MCP calls require repo id/path; HTTP defaults to the daemon repo and validates any provided repo id. Embeddings and memory stored per-repo (`state/repos/<fingerprint>/memory.db`), no cross-repo bleed. Unknown/unindexed repo returns clear error.  
 - **Embeddings**: Ollama embedding model only; used for memory\_store/recall, local rerank (optional), and any vector similarity in sqlite-vec. No external vector DB.  
-- **Hardware Awareness**: `llm-list` detects RAM/VRAM and recommends models (e.g., `llama3.1:8b` default, `:70b` if resources and installed; ultra-light if \<8GB RAM). `llm-setup` ensures `ollama` in PATH and guides pulls; no auto-install.  
+- **Hardware Awareness**: `llm-list` detects RAM/VRAM and recommends models (e.g., `phi3.5:3.8b` default, `:70b` if resources and installed; ultra-light if \<8GB RAM). `llm-setup` ensures `ollama` in PATH and guides pulls; no auto-install.  
 - **Reliability & Limits**: Streaming must tolerate backpressure; apply timeouts/retries aligned with daemon defaults. Ensure daemon startup (`check`) validates Ollama reachability/models and budget configuration. Token overflow mitigated by pruning per priorities above.  
 - **Security/Privacy**: Local-only by default (bind 127.0.0.1); when `--expose`, require auth token on HTTP/MCP. No telemetry; prompts and inference stay local.  
 - **Observability**: Log model used, token budget decisions, truncation events, and repo id; avoid logging sensitive prompt content. Additional metrics not requested in PDR.  
@@ -1280,7 +1280,7 @@ Validation and safeguards
 
 Hardware-aware model recommendations
 
-- Detect RAM/VRAM at `llm-list`/`llm-setup` time; filter `llm_list.json` per thresholds: RAM \<8GB → ultra-light only; ≥16GB → default `llama3.1:8b`; ≥32GB with GPU → recommend `llama3.1:70b` if installed.  
+- Detect RAM/VRAM at `llm-list`/`llm-setup` time; filter `llm_list.json` per thresholds: RAM \<8GB → ultra-light only; ≥16GB → default `phi3.5:3.8b`; ≥32GB with GPU → recommend `llama3.1:70b` if installed.  
 - Never auto-install models; only suggest pulls and update `[llm]` defaults upon user confirmation.
 
 Scope boundaries

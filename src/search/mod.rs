@@ -9,7 +9,7 @@ use crate::index::{
 use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
-use crate::orchestrator::web::WebDiscoveryStatus;
+use crate::orchestrator::web::{web_context_from_status, WebDiscoveryStatus, WebFetchResult};
 use crate::orchestrator::{
     run_waterfall, MemoryBudget, MemoryContextAssembly, WaterfallPlan, WaterfallRequest,
     WebGateConfig,
@@ -40,6 +40,7 @@ const MIN_SNIPPET_WINDOW: usize = 10;
 const MAX_SNIPPET_WINDOW: usize = 400;
 const MAX_RATE_LIMIT_MESSAGE_BYTES: usize = 256;
 const REPO_ID_HEADER: &str = "x-docdex-repo-id";
+const TOP_SCORE_NORMALIZATION_K: f32 = 8.0;
 
 // Rate limiting is shared with MCP and other surfaces via crate::ratelimit.
 
@@ -853,6 +854,14 @@ pub struct SearchResponse {
     pub top_score: Option<f32>,
     #[serde(rename = "topScore")]
     pub top_score_camel: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_score_normalized: Option<f32>,
+    #[serde(rename = "topScoreNormalized", skip_serializing_if = "Option::is_none")]
+    pub top_score_normalized_camel: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_context: Option<Vec<WebFetchResult>>,
+    #[serde(rename = "webContext", skip_serializing_if = "Option::is_none")]
+    pub web_context_camel: Option<Vec<WebFetchResult>>,
     #[serde(rename = "webDiscovery", skip_serializing_if = "Option::is_none")]
     pub web_discovery: Option<WebDiscoveryStatus>,
     #[serde(rename = "memoryContext", skip_serializing_if = "Option::is_none")]
@@ -1163,10 +1172,15 @@ pub async fn run_query(
 ) -> Result<SearchResponse> {
     let (hits, query_meta) = search_with_optional_libs(indexer, libs_indexer, query, limit)?;
     let top_score = hits.first().map(|hit| hit.score);
+    let top_score_normalized = top_score.map(normalize_score);
     Ok(SearchResponse {
         hits,
         top_score,
         top_score_camel: top_score,
+        top_score_normalized,
+        top_score_normalized_camel: top_score_normalized,
+        web_context: None,
+        web_context_camel: None,
         web_discovery: None,
         memory_context: None,
         meta: Some(build_search_meta(indexer, Some(query_meta), None)?),
@@ -1191,6 +1205,16 @@ fn search_with_optional_libs(
         }
     };
     Ok((merge_hits(repo_hits, libs_hits, limit), query_meta))
+}
+
+fn normalize_score(score: f32) -> f32 {
+    if !score.is_finite() {
+        return 0.0;
+    }
+    if score <= 0.0 {
+        return 0.0;
+    }
+    (score / (score + TOP_SCORE_NORMALIZATION_K)).clamp(0.0, 1.0)
 }
 
 fn merge_hits(repo_hits: Vec<Hit>, libs_hits: Vec<Hit>, limit: usize) -> Vec<Hit> {
@@ -1396,10 +1420,16 @@ async fn search_handler(
                 selected_sources,
             };
             let meta = build_search_meta(&state.indexer, query_meta, Some(context_assembly)).ok();
+            let top_score_normalized = top_score.map(normalize_score);
+            let web_context = web_context_from_status(&waterfall_result.tier2.status);
             Json(SearchResponse {
                 hits,
                 top_score,
                 top_score_camel: top_score,
+                top_score_normalized,
+                top_score_normalized_camel: top_score_normalized,
+                web_context: web_context.clone(),
+                web_context_camel: web_context,
                 web_discovery: Some(waterfall_result.tier2.status),
                 memory_context: waterfall_result.memory_context,
                 meta,

@@ -21,7 +21,7 @@ struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
-enum Command {
+pub(crate) enum Command {
     /// Validate config, state, and local dependencies for readiness.
     Check,
     /// Serve HTTP API for search/snippets.
@@ -290,7 +290,7 @@ enum Command {
     },
     /// Show hardware-aware LLM recommendations.
     LlmList,
-    /// Guide hardware-aware LLM setup and report Ollama availability.
+    /// Install Ollama if missing, pull required models, and update LLM defaults.
     LlmSetup {
         #[arg(
             long,
@@ -574,7 +574,7 @@ enum Command {
 }
 
 #[derive(Subcommand, Debug)]
-enum RepoCommand {
+pub(crate) enum RepoCommand {
     /// Explicitly re-associate a moved/renamed repo path to existing state under a shared `--state-dir`.
     Reassociate {
         #[command(flatten)]
@@ -602,7 +602,7 @@ enum RepoCommand {
 }
 
 #[derive(Subcommand, Debug)]
-enum LibsCommand {
+pub(crate) enum LibsCommand {
     /// Fetch and ingest library docs from a sources file.
     Fetch {
         #[command(flatten)]
@@ -628,7 +628,7 @@ enum LibsCommand {
 }
 
 #[derive(Subcommand, Debug)]
-enum DagCommand {
+pub(crate) enum DagCommand {
     /// Render a session DAG trace.
     View {
         #[command(flatten)]

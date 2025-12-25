@@ -3,7 +3,7 @@ use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use regex::Regex;
 use reqwest::StatusCode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Duration;
 use url::Url;
@@ -26,7 +26,6 @@ static RESULT_LINK_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("valid ddg regex")
 });
 
-#[derive(Clone)]
 pub struct DdgDiscovery {
     config: WebConfig,
     pacer: Mutex<DdgDiscoveryPacer>,
@@ -35,14 +34,14 @@ pub struct DdgDiscovery {
     cache_layout: Option<crate::state_layout::StateLayout>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WebDiscoveryResult {
     pub url: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WebDiscoveryResponse {
-    pub provider: &'static str,
+    pub provider: String,
     pub query: String,
     pub results: Vec<WebDiscoveryResult>,
 }
@@ -140,7 +139,7 @@ impl DdgDiscovery {
                             .collect();
                         self.pacer.lock().record_success();
                         let response = WebDiscoveryResponse {
-                            provider: PROVIDER,
+                            provider: PROVIDER.to_string(),
                             query: query.to_string(),
                             results,
                         };

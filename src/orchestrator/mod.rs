@@ -12,4 +12,5 @@ pub use ddg_policy::*;
 pub use plan::*;
 pub use tier2::*;
 pub use web_config::*;
+pub use web::WebGateConfig;
 pub use waterfall::*;

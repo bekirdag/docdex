@@ -23,7 +23,7 @@ struct ImpactErrorDetail {
 }
 
 #[derive(Deserialize)]
-struct RepoIdQuery {
+pub(crate) struct RepoIdQuery {
     #[serde(default)]
     repo_id: Option<String>,
 }
@@ -181,7 +181,7 @@ fn parse_impact_graph_query(
     Ok((source_trimmed.to_string(), controls))
 }
 
-pub async fn impact_graph_handler(
+pub(crate) async fn impact_graph_handler(
     State(state): State<AppState>,
     RawQuery(raw): RawQuery,
     Query(repo_id): Query<RepoIdQuery>,

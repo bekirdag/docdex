@@ -2,7 +2,7 @@ use crate::config;
 use crate::hardware;
 use crate::llm;
 use crate::util;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command as StdCommand;
@@ -64,12 +64,7 @@ pub fn run_setup(ollama_path: Option<PathBuf>) -> Result<()> {
     } else {
         println!("recommended model: none (hardware does not meet catalog minimums)");
     }
-    let binary = ollama_path.or_else(|| which("ollama").ok());
-    let Some(bin) = binary else {
-        return Err(anyhow::anyhow!(
-            "ollama binary not found; install Ollama (https://ollama.ai) or set --ollama-path"
-        ));
-    };
+    let bin = ensure_ollama_installed(ollama_path)?;
     match StdCommand::new(&bin).arg("--version").output() {
         Ok(output) if output.status.success() => {
             let version = String::from_utf8_lossy(&output.stdout);
@@ -123,24 +118,44 @@ pub fn run_setup(ollama_path: Option<PathBuf>) -> Result<()> {
         );
     }
 
-    let installed = list_installed_models(&bin)?;
+    let installed = match list_installed_models(&bin) {
+        Ok(models) => Some(models),
+        Err(err) => {
+            println!("ollama list failed: {err}");
+            println!("continuing with direct model pulls");
+            None
+        }
+    };
     let chat_model = config_data.llm.default_model.trim();
+    let embed_model = config_data.llm.embedding_model.trim();
+    let mut to_install = HashSet::new();
     if chat_model.is_empty() {
         println!("chat model is not configured; set [llm].default_model in config");
-    } else if installed.contains(chat_model) {
+    } else if installed
+        .as_ref()
+        .is_some_and(|models| models.contains(chat_model))
+    {
         println!("chat model available: {chat_model}");
     } else {
         println!("chat model missing: {chat_model}");
-        println!("to install: ollama pull {chat_model}");
+        to_install.insert(chat_model.to_string());
     }
-    let embed_model = config_data.llm.embedding_model.trim();
     if embed_model.is_empty() {
         println!("embedding model is not configured; set [llm].embedding_model in config");
-    } else if installed.contains(embed_model) {
+    } else if installed
+        .as_ref()
+        .is_some_and(|models| models.contains(embed_model))
+    {
         println!("embedding model available: {embed_model}");
     } else {
         println!("embedding model missing: {embed_model}");
-        println!("to install: ollama pull {embed_model}");
+        to_install.insert(embed_model.to_string());
+    }
+    if !to_install.is_empty() {
+        println!("installing required models via ollama pull...");
+        for model in to_install {
+            pull_model(&bin, &model)?;
+        }
     }
     Ok(())
 }
@@ -168,4 +183,119 @@ fn list_installed_models(bin: &PathBuf) -> Result<HashSet<String>> {
         println!("ollama list returned no models; pull one to get started");
     }
     Ok(models)
+}
+
+fn pull_model(bin: &PathBuf, model: &str) -> Result<()> {
+    let output = StdCommand::new(bin)
+        .arg("pull")
+        .arg(model)
+        .output()
+        .with_context(|| format!("run ollama pull {model}"))?;
+    if output.status.success() {
+        println!("installed model: {model}");
+        return Ok(());
+    }
+    Err(anyhow::anyhow!(
+        "ollama pull {model} failed (stdout: {}, stderr: {})",
+        String::from_utf8_lossy(&output.stdout).trim(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
+}
+
+fn ensure_ollama_installed(ollama_path: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(path) = ollama_path {
+        return Ok(path);
+    }
+    if let Ok(path) = which("ollama") {
+        return Ok(path);
+    }
+    install_ollama()?;
+    which("ollama").map_err(|_| {
+        anyhow::anyhow!(
+            "ollama installed but not found on PATH; restart your shell or pass --ollama-path"
+        )
+    })
+}
+
+fn install_ollama() -> Result<()> {
+    if cfg!(target_os = "macos") {
+        install_ollama_macos()
+    } else if cfg!(target_os = "linux") {
+        install_ollama_linux()
+    } else if cfg!(target_os = "windows") {
+        install_ollama_windows()
+    } else {
+        Err(anyhow::anyhow!(
+            "unsupported platform; install ollama from https://ollama.com/download"
+        ))
+    }
+}
+
+fn install_ollama_macos() -> Result<()> {
+    if which("brew").is_ok() {
+        run_install_command(
+            "brew",
+            &["install", "ollama"],
+            "installing ollama with Homebrew",
+        )?;
+        return Ok(());
+    }
+    Err(anyhow::anyhow!(
+        "ollama not found; install with Homebrew (`brew install ollama`) or download from https://ollama.com/download"
+    ))
+}
+
+fn install_ollama_linux() -> Result<()> {
+    if which("curl").is_ok() {
+        return run_install_command(
+            "sh",
+            &["-c", "curl -fsSL https://ollama.com/install.sh | sh"],
+            "installing ollama via curl",
+        );
+    }
+    if which("wget").is_ok() {
+        return run_install_command(
+            "sh",
+            &["-c", "wget -qO- https://ollama.com/install.sh | sh"],
+            "installing ollama via wget",
+        );
+    }
+    Err(anyhow::anyhow!(
+        "ollama not found; install from https://ollama.com/download (requires curl or wget)"
+    ))
+}
+
+fn install_ollama_windows() -> Result<()> {
+    if which("winget").is_ok() {
+        return run_install_command(
+            "winget",
+            &[
+                "install",
+                "-e",
+                "--id",
+                "Ollama.Ollama",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+            ],
+            "installing ollama with winget",
+        );
+    }
+    Err(anyhow::anyhow!(
+        "ollama not found; install from https://ollama.com/download (or `winget install Ollama.Ollama`)"
+    ))
+}
+
+fn run_install_command(command: &str, args: &[&str], context: &str) -> Result<()> {
+    let output = StdCommand::new(command)
+        .args(args)
+        .output()
+        .with_context(|| format!("{context} ({command} {})", args.join(" ")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(anyhow::anyhow!(
+        "{context} failed (stdout: {}, stderr: {})",
+        String::from_utf8_lossy(&output.stdout).trim(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
 }

@@ -39,7 +39,11 @@ pub fn run(repo: Option<PathBuf>) -> Result<()> {
     let status = cmd.status().with_context(|| format!("launch {TUI_BIN_NAME}"));
     let status = match status {
         Ok(status) => status,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+        Err(err)
+            if err
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+        {
             return Err(AppError::new(
                 ERR_MISSING_DEPENDENCY,
                 format!("{TUI_BIN_NAME} binary not found"),

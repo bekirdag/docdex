@@ -54,14 +54,14 @@ pub struct MemoryContextAssembly {
 
 /// Execute the waterfall (Tier 1 → Tier 2 → Tier 3) for a single query.
 pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallResult> {
-    let search_response =
+    let mut search_response =
         crate::search::run_query(request.indexer, request.libs_indexer, request.query, request.limit)
             .await?;
 
-    let should_run_tier2 = request
-        .plan
-        .web_gate
-        .should_attempt(search_response.top_score, request.force_web);
+    let should_run_tier2 = request.plan.web_gate.should_attempt(
+        search_response.top_score_normalized,
+        request.force_web,
+    );
     let metrics = metrics::global();
     if should_run_tier2 {
         metrics.inc_waterfall_tier2_attempt();
@@ -70,7 +70,12 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
     }
 
     let tier2 = if should_run_tier2 {
-        run_tier2(&request, search_response.top_score).await?
+        run_tier2(
+            &request,
+            search_response.top_score,
+            search_response.top_score_normalized,
+        )
+        .await?
     } else {
         Tier2Outcome {
             response: None,
@@ -78,6 +83,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
                 request.request_id,
                 &request.plan.web_gate,
                 search_response.top_score,
+                search_response.top_score_normalized,
                 request.force_web,
             ),
             tier2_unavailable: None,
@@ -89,6 +95,10 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
     } else {
         None
     };
+
+    let web_context = crate::orchestrator::web::web_context_from_status(&tier2.status);
+    search_response.web_context = web_context.clone();
+    search_response.web_context_camel = web_context;
 
     if let Some(ctx) = &memory_context {
         metrics.record_waterfall_memory_context(
@@ -108,6 +118,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
 async fn run_tier2(
     request: &WaterfallRequest<'_>,
     top_score: Option<f32>,
+    top_score_normalized: Option<f32>,
 ) -> Result<Tier2Outcome> {
     let run_result = tier2::run_with_fallback(
         request.request_id,
@@ -138,6 +149,7 @@ async fn run_tier2(
         build_tier2_unavailable_status(
             &request.plan.web_gate,
             top_score,
+            top_score_normalized,
             request.force_web,
             unavailable,
         )
@@ -146,6 +158,7 @@ async fn run_tier2(
             request.request_id,
             &request.plan.web_gate,
             top_score,
+            top_score_normalized,
             request.force_web,
         )
     };
@@ -160,6 +173,7 @@ async fn run_tier2(
 fn build_tier2_unavailable_status(
     gate: &WebGateConfig,
     top_score: Option<f32>,
+    top_score_normalized: Option<f32>,
     force_web: bool,
     unavailable: &Tier2Unavailable,
 ) -> WebDiscoveryStatus {
@@ -168,7 +182,9 @@ fn build_tier2_unavailable_status(
         reason: Some(format!("tier2_{:?}", unavailable.reason).to_lowercase()),
         message: Some(unavailable.message.clone()),
         unavailable: Some(unavailable.clone()),
-        gate: build_gate_meta(gate, top_score, force_web),
+        discovery: None,
+        fetches: None,
+        gate: build_gate_meta(gate, top_score, top_score_normalized, force_web),
     }
 }
 

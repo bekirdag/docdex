@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
-pub fn run_command(command: super::super::LibsCommand) -> Result<()> {
+pub(crate) fn run_command(command: super::super::LibsCommand) -> Result<()> {
     match command {
         super::super::LibsCommand::Fetch { repo, sources } => run_fetch(repo, sources),
         super::super::LibsCommand::Discover { repo, sources } => run_discover(repo, sources),

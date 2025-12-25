@@ -63,7 +63,7 @@ pub fn normalize_url(raw: &str) -> Option<String> {
         url.set_query(Some(&encoded));
     }
 
-    Some(url.into_string())
+    Some(url.to_string())
 }
 
 pub fn dedupe_urls(urls: Vec<String>) -> Vec<String> {

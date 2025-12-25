@@ -1,6 +1,6 @@
 use std::fmt;
 
-use sysinfo::{GraphicsCardExt, System, SystemExt};
+use sysinfo::System;
 
 const MEMORY_GB: u64 = 1024 * 1024 * 1024;
 
@@ -27,7 +27,7 @@ impl ModelTier {
     pub fn label(self) -> &'static str {
         match self {
             ModelTier::UltraLight => "ultra-light",
-            ModelTier::Llama8b => "llama3.1:8b",
+            ModelTier::Llama8b => "phi3.5:3.8b",
             ModelTier::Llama70b => "llama3.1:70b",
         }
     }
@@ -35,7 +35,7 @@ impl ModelTier {
     pub fn description(self) -> &'static str {
         match self {
             ModelTier::UltraLight => "suitable for <8GB RAM hosts",
-            ModelTier::Llama8b => "recommended default for ≥16GB RAM hosts",
+            ModelTier::Llama8b => "recommended default for ≥16GB RAM hosts (smaller model)",
             ModelTier::Llama70b => "use when ≥32GB RAM and GPU memory are available",
         }
     }
@@ -60,16 +60,8 @@ impl HardwareProfile {
 pub fn detect_hardware() -> HardwareProfile {
     let mut sys = System::new_all();
     sys.refresh_memory();
-    sys.refresh_graphics();
-    let total_memory_bytes = sys.total_memory() * 1024;
-    let graphics = sys
-        .graphics()
-        .iter()
-        .map(|card| GraphicsInfo {
-            name: card.name().to_string(),
-            memory_total_bytes: card.memory() * 1024,
-        })
-        .collect();
+    let total_memory_bytes = sys.total_memory();
+    let graphics = Vec::new();
     HardwareProfile {
         total_memory_bytes,
         graphics,

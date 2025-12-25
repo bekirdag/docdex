@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 
 #[derive(Debug, Clone)]
@@ -134,24 +134,6 @@ pub fn inject_embedding_metadata(
         Value::String(embedding_model.to_string()),
     );
     value
-}
-
-pub(crate) fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
-    if a.len() != b.len() || a.is_empty() {
-        return None;
-    }
-    let mut dot = 0.0f64;
-    let mut norm_a = 0.0f64;
-    let mut norm_b = 0.0f64;
-    for (a_i, b_i) in a.iter().zip(b.iter()) {
-        dot += (*a_i as f64) * (*b_i as f64);
-        norm_a += (*a_i as f64) * (*a_i as f64);
-        norm_b += (*b_i as f64) * (*b_i as f64);
-    }
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return None;
-    }
-    Some((dot / (norm_a.sqrt() * norm_b.sqrt())) as f32)
 }
 
 fn estimate_tokens(text: &str) -> usize {

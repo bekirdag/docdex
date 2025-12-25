@@ -16,6 +16,7 @@ use uuid::Uuid;
 use crate::orchestrator::{
     run_waterfall, MemoryBudget, WaterfallPlan, WaterfallRequest, WebGateConfig,
 };
+use crate::orchestrator::web::web_context_from_status;
 use crate::search::AppState;
 use crate::tier2::Tier2Config;
 
@@ -23,7 +24,7 @@ const DEFAULT_LIMIT: usize = 8;
 const STREAM_CHUNK_CHARS: usize = 320;
 
 #[derive(Debug, Deserialize)]
-struct ChatCompletionRequest {
+pub(crate) struct ChatCompletionRequest {
     model: Option<String>,
     messages: Vec<ChatMessage>,
     #[serde(default)]
@@ -132,12 +133,12 @@ struct OpenAiErrorDetail {
 }
 
 #[derive(Deserialize)]
-struct RepoIdQuery {
+pub(crate) struct RepoIdQuery {
     #[serde(default)]
     repo_id: Option<String>,
 }
 
-pub async fn chat_completions_handler(
+pub(crate) async fn chat_completions_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(repo_id): Query<RepoIdQuery>,
@@ -219,7 +220,8 @@ pub async fn chat_completions_handler(
     .await
     {
         Ok(result) => {
-            let content = build_completion(&query, &result.search_response.hits);
+            let web_context = web_context_from_status(&result.tier2.status);
+            let content = build_completion(&query, &result.search_response.hits, web_context.as_deref());
             let prompt_tokens = estimate_tokens(&query);
             let completion_tokens = estimate_tokens(&content);
             let usage = Usage {
@@ -238,25 +240,32 @@ pub async fn chat_completions_handler(
                 if content_chunks.is_empty() {
                     content_chunks.push(String::new());
                 }
-                let content_iter = content_chunks.into_iter().enumerate().map(|(idx, piece)| {
-                    let role = if idx == 0 { Some("assistant") } else { None };
-                    ChatCompletionChunk {
-                        id: id.clone(),
-                        object: "chat.completion.chunk",
-                        created,
-                        model: model.clone(),
-                        choices: vec![ChatChunkChoice {
-                            index: 0,
-                            delta: ChatChunkDelta {
-                                role,
-                                content: Some(piece),
-                            },
-                            finish_reason: None,
-                        }],
-                    }
-                });
+                let chunk_id = id.clone();
+                let chunk_model = model.clone();
+                let chunk_created = created;
+                let content_iter =
+                    content_chunks
+                        .into_iter()
+                        .enumerate()
+                        .map(move |(idx, piece)| {
+                            let role = if idx == 0 { Some("assistant") } else { None };
+                            ChatCompletionChunk {
+                                id: chunk_id.clone(),
+                                object: "chat.completion.chunk",
+                                created: chunk_created,
+                                model: chunk_model.clone(),
+                                choices: vec![ChatChunkChoice {
+                                    index: 0,
+                                    delta: ChatChunkDelta {
+                                        role,
+                                        content: Some(piece),
+                                    },
+                                    finish_reason: None,
+                                }],
+                            }
+                        });
                 let final_chunk = ChatCompletionChunk {
-                    id: id.clone(),
+                    id,
                     object: "chat.completion.chunk",
                     created,
                     model,
@@ -363,27 +372,67 @@ fn extract_message_text(content: &MessageContent) -> Option<String> {
     }
 }
 
-fn build_completion(query: &str, hits: &[crate::index::Hit]) -> String {
-    if hits.is_empty() {
-        return format!("No local documents matched query: {}", query.trim());
-    }
-
+fn build_completion(
+    query: &str,
+    hits: &[crate::index::Hit],
+    web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
+) -> String {
     let mut lines = Vec::new();
     let trimmed = query.trim();
-    if trimmed.is_empty() {
-        lines.push("Top local matches:".to_string());
+    if hits.is_empty() {
+        lines.push(format!(
+            "No local documents matched query: {}",
+            trimmed
+        ));
     } else {
-        lines.push(format!("Top local matches for query: {}", trimmed));
-    }
-    for hit in hits.iter().take(5) {
-        let summary = hit.summary.trim();
-        if summary.is_empty() {
-            lines.push(format!("- {}", hit.rel_path));
+        if trimmed.is_empty() {
+            lines.push("Top local matches:".to_string());
         } else {
-            lines.push(format!("- {}: {}", hit.rel_path, summary));
+            lines.push(format!("Top local matches for query: {}", trimmed));
+        }
+        for hit in hits.iter().take(5) {
+            let summary = hit.summary.trim();
+            if summary.is_empty() {
+                lines.push(format!("- {}", hit.rel_path));
+            } else {
+                lines.push(format!("- {}: {}", hit.rel_path, summary));
+            }
+        }
+    }
+    if let Some(web_context) = web_context {
+        let web_lines = format_web_context(web_context);
+        if !web_lines.is_empty() {
+            lines.push(String::new());
+            lines.push("Web context:".to_string());
+            lines.extend(web_lines);
         }
     }
     lines.join("\n")
+}
+
+fn format_web_context(
+    web_context: &[crate::orchestrator::web::WebFetchResult],
+) -> Vec<String> {
+    const MAX_CONTEXT_DOCS: usize = 3;
+    const MAX_CONTEXT_CHARS: usize = 800;
+
+    let mut lines = Vec::new();
+    for item in web_context.iter().take(MAX_CONTEXT_DOCS) {
+        let content = item
+            .ai_digested_content
+            .as_ref()
+            .or(item.content.as_ref());
+        let Some(content) = content else {
+            continue;
+        };
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let (snippet, _) = crate::max_size::truncate_utf8_chars(trimmed, MAX_CONTEXT_CHARS);
+        lines.push(format!("- {}: {}", item.url, snippet));
+    }
+    lines
 }
 
 fn estimate_tokens(text: &str) -> u64 {
@@ -416,11 +465,12 @@ fn error_response(
 fn stream_response<I>(chunks: I) -> Response
 where
     I: IntoIterator<Item = ChatCompletionChunk>,
+    I::IntoIter: Send + 'static,
 {
     let frames = chunks
         .into_iter()
         .filter_map(|chunk| serde_json::to_string(&chunk).ok())
-        .map(|json| Ok(Bytes::from(format!("data: {json}\n\n"))))
+        .map(|json| Ok::<Bytes, Infallible>(Bytes::from(format!("data: {json}\n\n"))))
         .chain(std::iter::once(Ok(Bytes::from("data: [DONE]\n\n"))));
     let body = Body::from_stream(stream::iter(frames));
     let mut response = Response::new(body);

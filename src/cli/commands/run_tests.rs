@@ -77,7 +77,7 @@ pub fn run(repo: RepoArgs, target: Option<PathBuf>) -> Result<()> {
     let target_value = target_arg
         .as_ref()
         .map(|path| path.to_string_lossy().replace('\\', "/"));
-    let mut args = apply_target(config.args.clone(), target_value.as_deref());
+    let args = apply_target(config.args.clone(), target_value.as_deref());
 
     let mut cmd = Command::new(&config.command);
     cmd.args(&args);
@@ -121,7 +121,7 @@ pub fn run(repo: RepoArgs, target: Option<PathBuf>) -> Result<()> {
 
     let exit_code = status.code();
     #[cfg(unix)]
-    let signal = output.status.signal();
+    let signal = status.signal();
     #[cfg(not(unix))]
     let signal = None;
 

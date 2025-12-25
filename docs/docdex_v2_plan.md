@@ -54,7 +54,7 @@ Based on the provided SDS and the current file structure of `docdex` v0.1.10, he
 * **Functionality:** Detect system resources to guide configuration.
 * **Key Logic:**
 * Detect total RAM and GPU VRAM.
-* Logic to recommend models (e.g., `<8GB` = ultra-light, `>16GB` = llama3.1:8b).
+* Logic to recommend models (e.g., `<8GB` = ultra-light, `>16GB` = phi3.5:3.8b).
 
 
 * **Location:** Likely inside `src/config.rs` or a utility module.

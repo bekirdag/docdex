@@ -185,10 +185,12 @@ pub async fn run() -> Result<()> {
             }
             match ollama::list_models(base_url, timeout).await {
                 Ok(installed) => {
-                    if !default_model.is_empty() && !installed.contains(default_model) {
+                    if !default_model.is_empty()
+                        && !model_installed(&installed, default_model)
+                    {
                         missing.push(default_model.to_string());
                     }
-                    if !embed_model.is_empty() && !installed.contains(embed_model) {
+                    if !embed_model.is_empty() && !model_installed(&installed, embed_model) {
                         missing.push(embed_model.to_string());
                     }
                     if missing.is_empty() {
@@ -257,11 +259,10 @@ pub async fn run() -> Result<()> {
             } else {
                 checks.push(CheckItem {
                     name: "chrome",
-                    status: "fail",
-                    message: "chrome binary not found".to_string(),
+                    status: "warn",
+                    message: "chrome binary not found (web scraping disabled)".to_string(),
                     details: hint.as_ref().map(|value| json!({ "path": value })),
                 });
-                success = false;
             }
         } else {
             checks.push(CheckItem {
@@ -306,4 +307,24 @@ fn env_non_empty(key: &str) -> Option<String> {
             Some(trimmed)
         }
     })
+}
+
+fn model_installed(installed: &std::collections::HashSet<String>, required: &str) -> bool {
+    let required = required.trim();
+    if required.is_empty() {
+        return true;
+    }
+    if installed.contains(required) {
+        return true;
+    }
+    if let Some((base, tag)) = required.rsplit_once(':') {
+        if tag.eq_ignore_ascii_case("latest") && installed.contains(base) {
+            return true;
+        }
+        return false;
+    }
+    let prefix = format!("{required}:");
+    installed
+        .iter()
+        .any(|name| name == required || name.starts_with(&prefix))
 }

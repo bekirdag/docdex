@@ -7,11 +7,18 @@
     "description": "Fallback tier for machines with very limited RAM (<8GB). Use only when heavier models cannot run."
   },
   {
-    "id": "llama3.1:8b",
-    "displayName": "llama3.1:8b (default)",
+    "id": "phi3.5:3.8b",
+    "displayName": "phi3.5:3.8b (default)",
     "minRamGb": 16,
     "requiresGpu": false,
-    "description": "Balanced model for ≥16GB RAM hosts. Recommended default for most local machines."
+    "description": "Smaller default model (~2.7GB). Recommended for ≥16GB RAM hosts when you want a lighter footprint."
+  },
+  {
+    "id": "llama3.1:8b",
+    "displayName": "llama3.1:8b (alternative)",
+    "minRamGb": 16,
+    "requiresGpu": false,
+    "description": "Balanced model for ≥16GB RAM hosts. Use when you prefer llama3.1 behavior."
   },
   {
     "id": "llama3.1:70b",

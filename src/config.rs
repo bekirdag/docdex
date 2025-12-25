@@ -9,7 +9,7 @@ const DEFAULT_HTTP_BIND_ADDR: &str = "127.0.0.1:3210";
 const DEFAULT_LOG_LEVEL: &str = "info";
 const DEFAULT_LLM_PROVIDER: &str = "ollama";
 const DEFAULT_LLM_BASE_URL: &str = "http://127.0.0.1:11434";
-const DEFAULT_LLM_MODEL: &str = "llama3.1:8b";
+const DEFAULT_LLM_MODEL: &str = "phi3.5:3.8b";
 const DEFAULT_EMBED_MODEL: &str = "nomic-embed-text";
 const DEFAULT_MEMORY_BACKEND: &str = "sqlite";
 const DEFAULT_DISCOVERY_PROVIDER: &str = "duckduckgo_html";
@@ -259,6 +259,13 @@ pub fn load_config_from_path(path: &Path) -> Result<AppConfig> {
     let mut config: AppConfig =
         toml::from_str(&text).with_context(|| format!("parse config {}", path.display()))?;
     config.apply_defaults()?;
+    let mut updated = false;
+    if apply_browser_defaults(&mut config) {
+        updated = true;
+    }
+    if updated {
+        write_config(path, &config)?;
+    }
     Ok(config)
 }
 
@@ -273,6 +280,7 @@ pub fn default_config_path() -> Result<PathBuf> {
 fn default_config_with_paths() -> Result<AppConfig> {
     let mut config = AppConfig::default();
     config.apply_defaults()?;
+    apply_browser_defaults(&mut config);
     Ok(config)
 }
 
@@ -349,6 +357,19 @@ fn default_web_cache_ttl_secs() -> u64 {
 
 fn default_web_engine() -> String {
     DEFAULT_WEB_ENGINE.to_string()
+}
+
+fn apply_browser_defaults(config: &mut AppConfig) -> bool {
+    let engine = config.web.scraper.engine.trim().to_ascii_lowercase();
+    let needs_chrome = matches!(engine.as_str(), "chrome" | "chromium" | "chromium-browser");
+    if !needs_chrome || config.web.scraper.chrome_binary_path.is_some() {
+        return false;
+    }
+    if let Some(path) = crate::util::detect_chrome_binary() {
+        config.web.scraper.chrome_binary_path = Some(path);
+        return true;
+    }
+    false
 }
 
 fn default_web_headless() -> bool {

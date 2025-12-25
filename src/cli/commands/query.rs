@@ -17,12 +17,21 @@ pub async fn run(
     repo: RepoArgs,
     query: String,
     limit: usize,
+    max_web_results: Option<usize>,
     repo_only: bool,
     stream: bool,
 ) -> Result<()> {
     let repo_root = repo.repo_root();
     if stream {
-        return stream_via_http(&repo_root, &query, limit, false, !repo_only).await;
+        return stream_via_http(
+            &repo_root,
+            &query,
+            limit,
+            max_web_results,
+            false,
+            !repo_only,
+        )
+        .await;
     }
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
@@ -45,6 +54,7 @@ pub async fn run(
         request_id: "cli-query",
         query: &query,
         limit,
+        web_limit: max_web_results,
         force_web: false,
         indexer: &server,
         libs_indexer: libs_indexer.as_ref(),
@@ -128,6 +138,8 @@ struct ChatMessage {
 #[derive(Serialize)]
 struct DocdexOptions {
     limit: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_web_results: Option<usize>,
     force_web: Option<bool>,
     include_libs: Option<bool>,
 }
@@ -136,6 +148,7 @@ pub(crate) async fn stream_via_http(
     repo_root: &Path,
     query: &str,
     limit: usize,
+    max_web_results: Option<usize>,
     force_web: bool,
     include_libs: bool,
 ) -> Result<()> {
@@ -161,6 +174,7 @@ pub(crate) async fn stream_via_http(
         repo_id,
         docdex: Some(DocdexOptions {
             limit: Some(limit),
+            max_web_results,
             force_web: Some(force_web),
             include_libs: Some(include_libs),
         }),

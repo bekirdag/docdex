@@ -568,14 +568,50 @@ fn clean_code_text(text: &str) -> String {
         if body.last().map(|line| line.trim()) == Some("```") {
             body.pop();
         }
-        return body.join("\n").trim().to_string();
+        let joined = body.join("\n");
+        return sanitize_code_block_text(&joined);
     }
-    trimmed.to_string()
+    sanitize_code_block_text(trimmed)
+}
+
+fn sanitize_code_block_text(text: &str) -> String {
+    let mut cleaned = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if is_code_marker_line(trimmed) {
+            continue;
+        }
+        let stripped = strip_copy_prefix(trimmed);
+        if stripped.is_empty() {
+            continue;
+        }
+        cleaned.push(stripped.to_string());
+    }
+    cleaned.join("\n").trim().to_string()
+}
+
+fn is_code_marker_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.starts_with("[code ") || lower.starts_with("[/code ") || lower == "```"
+}
+
+fn strip_copy_prefix(line: &str) -> &str {
+    let lower = line.to_ascii_lowercase();
+    let prefixes = ["copy code", "copycode", "javascriptcopy", "textcopy", "copy"];
+    for prefix in prefixes {
+        if lower.starts_with(prefix) {
+            return line[prefix.len()..].trim_start();
+        }
+    }
+    line
 }
 
 fn format_md_output(kind: &str, output: &str) -> String {
     match kind {
-        "code" => format_md_code(output),
+        "code" => format_md_code(&clean_code_text(output)),
         _ => format_md_summary(output),
     }
 }
@@ -677,6 +713,7 @@ pub async fn run_web_research(
     libs_indexer: Option<&LibsIndexer>,
     query: &str,
     limit: usize,
+    web_limit: Option<usize>,
     force_web: bool,
     gate: &WebGateConfig,
 ) -> Result<WebResearchResponse, anyhow::Error> {
@@ -689,6 +726,7 @@ pub async fn run_web_research(
     let top_score_normalized = top_score.map(search::normalize_score);
     let local_match_ratio = local_match_ratio(query, &hits);
     let completion = build_completion(query, &hits);
+    let web_limit = resolve_web_limit(web_limit, limit);
     let web_discovery = if !gate.enabled {
         let unavailable = Tier2Unavailable::new(
             Tier2UnavailableReason::Disabled,
@@ -731,7 +769,7 @@ pub async fn run_web_research(
             request_id,
             gate,
             query,
-            limit,
+            web_limit,
             top_score,
             top_score_normalized,
             local_match_ratio,
@@ -888,7 +926,7 @@ async fn run_web_discovery(
     request_id: &str,
     gate: &WebGateConfig,
     query: &str,
-    limit: usize,
+    web_limit: usize,
     top_score: Option<f32>,
     top_score_normalized: Option<f32>,
     local_match_ratio: Option<f32>,
@@ -969,13 +1007,13 @@ async fn run_web_discovery(
         }
     };
 
-    let discovery_limit = (limit * WEB_MAX_RESULTS_PER_DOMAIN)
-        .max(WEB_BATCH_SIZE * WEB_MAX_BATCHES);
+    let mut discovery_limit = (web_limit * WEB_MAX_RESULTS_PER_DOMAIN).max(web_limit);
+    discovery_limit = discovery_limit.min(config.max_results.max(web_limit));
     match discovery.discover(query, discovery_limit).await {
         Ok(response) => {
             let (discovery_response, urls) =
-                normalize_discovery_response(response, &config, discovery_limit);
-            let fetches = fetch_web_documents(query, &urls, &config, limit).await;
+                normalize_discovery_response(response, &config, web_limit);
+            let fetches = fetch_web_documents(query, &urls, &config, web_limit).await;
             let message = if gate.browser_available {
                 None
             } else {
@@ -1538,13 +1576,7 @@ async fn fetch_web_documents(
                                 filtered
                             };
                             let (content_input, should_chunk) = match intent {
-                                QueryIntent::Code => {
-                                    if code_blocks.is_empty() {
-                                        (readable, true)
-                                    } else {
-                                        (join_code_blocks(&code_blocks), false)
-                                    }
-                                }
+                                QueryIntent::Code => (readable, true),
                                 QueryIntent::Definition => {
                                     match extract_definition_sections(query, &html, boilerplate_phrases) {
                                         Some(value) => (value, false),
@@ -1794,7 +1826,7 @@ async fn fetch_web_documents(
                 .filter(|item| item.error.is_none())
                 .count();
             all_results.extend(batch_results);
-            if best_in_batch >= WEB_MIN_RELEVANCE_SCORE && success_count >= desired_count {
+            if success_count >= desired_count {
                 break;
             }
         }
@@ -1905,15 +1937,19 @@ fn push_code_block(
     if trimmed.is_empty() {
         return;
     }
-    if require_blocklike && !is_probable_code_block(trimmed) {
+    let cleaned = sanitize_code_block_text(trimmed);
+    if cleaned.is_empty() {
         return;
     }
-    let lowered = trimmed.to_ascii_lowercase();
+    if require_blocklike && !is_probable_code_block(&cleaned) {
+        return;
+    }
+    let lowered = cleaned.to_ascii_lowercase();
     let key = normalize_line(&lowered);
     if key.is_empty() || !seen.insert(key) {
         return;
     }
-    let (snippet, _) = truncate_utf8_chars(trimmed, MAX_CODE_BLOCK_CHARS);
+    let (snippet, _) = truncate_utf8_chars(&cleaned, MAX_CODE_BLOCK_CHARS);
     blocks.push(snippet);
 }
 
@@ -2888,6 +2924,15 @@ fn env_f32(key: &str) -> Option<f32> {
     trimmed.parse::<f32>().ok()
 }
 
+fn env_usize(key: &str) -> Option<usize> {
+    let raw = env::var(key).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<usize>().ok()
+}
+
 fn env_string(key: &str) -> Option<String> {
     let raw = env::var(key).ok()?;
     let trimmed = raw.trim();
@@ -2925,6 +2970,15 @@ fn config_local_relevance_threshold() -> Option<f32> {
     Some(config.search.local_relevance_threshold)
 }
 
+fn config_web_max_hits() -> Option<usize> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    Some(config.search.max_web_hits)
+}
+
 fn resolve_local_relevance_threshold() -> f32 {
     env_f32("DOCDEX_LOCAL_RELEVANCE_THRESHOLD")
         .or_else(config_local_relevance_threshold)
@@ -2944,4 +2998,14 @@ pub(crate) fn resolve_browser_available(hint: Option<&str>) -> bool {
     }
 
     util::detect_chrome_binary().is_some()
+}
+
+fn resolve_web_limit(requested: Option<usize>, fallback: usize) -> usize {
+    let mut limit = requested.unwrap_or(fallback);
+    if let Some(max_hits) = env_usize("DOCDEX_WEB_MAX_HITS").or_else(config_web_max_hits) {
+        if max_hits > 0 {
+            limit = limit.min(max_hits);
+        }
+    }
+    limit.max(1)
 }

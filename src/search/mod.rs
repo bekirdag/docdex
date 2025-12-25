@@ -1337,6 +1337,7 @@ async fn search_handler(
         request_id: request_id_str,
         query,
         limit,
+        web_limit: None,
         force_web,
         indexer: state.indexer.as_ref(),
         libs_indexer,

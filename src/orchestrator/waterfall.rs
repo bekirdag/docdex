@@ -24,6 +24,7 @@ pub struct WaterfallRequest<'a> {
     pub request_id: &'a str,
     pub query: &'a str,
     pub limit: usize,
+    pub web_limit: Option<usize>,
     pub force_web: bool,
     pub indexer: &'a Indexer,
     pub libs_indexer: Option<&'a LibsIndexer>,
@@ -149,6 +150,7 @@ async fn run_tier2(
                 request.libs_indexer,
                 request.query,
                 request.limit,
+                request.web_limit,
                 request.force_web,
                 &request.plan.web_gate,
             )

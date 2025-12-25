@@ -329,6 +329,12 @@ pub(crate) enum Command {
         limit: usize,
         #[arg(
             long,
+            value_name = "N",
+            help = "Max web results to fetch per query (Tier 2)"
+        )]
+        max_web_results: Option<usize>,
+        #[arg(
+            long,
             default_value_t = false,
             help = "Only search the repo index (ignore any repo-scoped libs index, if present)"
         )]

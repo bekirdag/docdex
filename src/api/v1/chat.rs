@@ -40,6 +40,7 @@ struct DocdexOptions {
     limit: Option<usize>,
     force_web: Option<bool>,
     include_libs: Option<bool>,
+    max_web_results: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -187,6 +188,7 @@ pub(crate) async fn chat_completions_handler(
         .and_then(|opts| opts.limit)
         .unwrap_or(DEFAULT_LIMIT)
         .min(state.security.max_limit);
+    let max_web_results = docdex.and_then(|opts| opts.max_web_results);
     let force_web = docdex.and_then(|opts| opts.force_web).unwrap_or(false);
     let include_libs = docdex.and_then(|opts| opts.include_libs).unwrap_or(true);
     let libs_indexer = if include_libs {
@@ -210,6 +212,7 @@ pub(crate) async fn chat_completions_handler(
         request_id: &request_id,
         query: &query_with_context,
         limit,
+        web_limit: max_web_results,
         force_web,
         indexer: state.indexer.as_ref(),
         libs_indexer,

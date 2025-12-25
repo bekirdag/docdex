@@ -15,7 +15,6 @@ use crate::web::normalize::{dedupe_urls, unwrap_ddg_redirect};
 use crate::web::readability::extract_readable_text;
 use crate::web::status::fetch_status;
 use crate::web::WebConfig;
-use ammonia::Builder as HtmlCleaner;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -92,6 +91,10 @@ static MATCH_STOPWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 
 static CODE_BLOCK_RE: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r"(?is)<pre[^>]*>(.*?)</pre>").expect("valid code block regex")
+});
+
+static CODE_TAG_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"(?is)<code[^>]*>(.*?)</code>").expect("valid code tag regex")
 });
 
 static TAG_RE: Lazy<regex::Regex> = Lazy::new(|| {
@@ -1753,9 +1756,20 @@ async fn fetch_web_documents(
             }
 
             let match_stats = web_match_stats(query, content_text, &code_blocks);
-            let relevance_score =
+            let mut relevance_score =
                 (blend_relevance_score(evaluation.relevance_score, &match_stats) * quality_scale)
                     .clamp(0.0, 1.0);
+            if matches!(intent, QueryIntent::Code) {
+                let code_score = code_block_score(&code_blocks);
+                if code_score > 0.0 {
+                    relevance_score = (relevance_score + (0.15 * code_score)).clamp(0.0, 1.0);
+                    if ai_kind == "code" {
+                        relevance_score = (relevance_score + 0.05).clamp(0.0, 1.0);
+                    }
+                } else if ai_kind != "code" {
+                    relevance_score = (relevance_score * 0.8).clamp(0.0, 1.0);
+                }
+            }
             if relevance_score > best_in_batch {
                 best_in_batch = relevance_score;
             }
@@ -1800,10 +1814,9 @@ async fn fetch_web_documents(
 
 fn clean_web_text(html: &str) -> String {
     let with_breaks = BLOCK_BREAK_RE.replace_all(html, "\n");
-    let cleaned = HtmlCleaner::default()
-        .tags(std::collections::HashSet::new())
-        .clean(with_breaks.as_ref())
-        .to_string();
+    let stripped_scripts = SCRIPT_STYLE_RE.replace_all(with_breaks.as_ref(), " ");
+    let stripped_tags = TAG_RE.replace_all(stripped_scripts.as_ref(), "\n");
+    let cleaned = html_unescape_text(stripped_tags.as_ref());
     cleaned
         .lines()
         .map(|line| line.trim())
@@ -1859,22 +1872,73 @@ fn extract_structured_html_text(html: &str, phrases: &[String]) -> String {
 
 fn extract_code_blocks(html: &str) -> Vec<String> {
     let mut blocks = Vec::new();
+    let mut seen = HashSet::new();
     for caps in CODE_BLOCK_RE.captures_iter(html) {
         let raw = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
-        let stripped = TAG_RE.replace_all(raw, "");
-        let unescaped = html_unescape_text(stripped.as_ref());
-        let normalized = unescaped.replace("\r\n", "\n");
-        let trimmed = normalized.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let (snippet, _) = truncate_utf8_chars(trimmed, MAX_CODE_BLOCK_CHARS);
-        blocks.push(snippet);
+        push_code_block(&mut blocks, &mut seen, raw, false);
         if blocks.len() >= MAX_CODE_BLOCKS {
             break;
         }
     }
+    if blocks.len() < MAX_CODE_BLOCKS {
+        for caps in CODE_TAG_RE.captures_iter(html) {
+            let raw = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+            push_code_block(&mut blocks, &mut seen, raw, true);
+            if blocks.len() >= MAX_CODE_BLOCKS {
+                break;
+            }
+        }
+    }
     blocks
+}
+
+fn push_code_block(
+    blocks: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    raw: &str,
+    require_blocklike: bool,
+) {
+    let stripped = TAG_RE.replace_all(raw, "");
+    let unescaped = html_unescape_text(stripped.as_ref());
+    let normalized = unescaped.replace("\r\n", "\n");
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if require_blocklike && !is_probable_code_block(trimmed) {
+        return;
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    let key = normalize_line(&lowered);
+    if key.is_empty() || !seen.insert(key) {
+        return;
+    }
+    let (snippet, _) = truncate_utf8_chars(trimmed, MAX_CODE_BLOCK_CHARS);
+    blocks.push(snippet);
+}
+
+fn is_probable_code_block(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.contains('\n') {
+        return true;
+    }
+    if trimmed.len() >= 80 {
+        return true;
+    }
+    let code_symbols = ['{', '}', ';', '=', '>', '<', '(', ')', '[', ']', ':'];
+    let mut symbol_hits = 0usize;
+    for ch in trimmed.chars() {
+        if code_symbols.contains(&ch) {
+            symbol_hits += 1;
+            if symbol_hits >= 2 && trimmed.len() >= 30 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn html_unescape_text(value: &str) -> String {
@@ -2072,6 +2136,21 @@ fn join_code_blocks(blocks: &[String]) -> String {
         output.push_str(trimmed);
     }
     output
+}
+
+fn code_block_score(blocks: &[String]) -> f32 {
+    if blocks.is_empty() {
+        return 0.0;
+    }
+    let mut total_chars = 0usize;
+    let mut total_lines = 0usize;
+    for block in blocks.iter().take(3) {
+        total_chars += block.len();
+        total_lines += block.lines().count();
+    }
+    let char_score = (total_chars as f32 / 800.0).clamp(0.0, 1.0);
+    let line_score = (total_lines as f32 / 20.0).clamp(0.0, 1.0);
+    (0.6 * line_score + 0.4 * char_score).clamp(0.0, 1.0)
 }
 
 fn select_code_blocks_for_query(query: &str, blocks: &[String]) -> Vec<String> {
@@ -2306,12 +2385,23 @@ fn is_cookie_consent_line(line: &str) -> bool {
         || lower.contains("privacy policy")
         || lower.contains("terms of use")
         || lower.contains("data processing");
+    let privacy_banner_hit = lower.contains("we value your privacy")
+        || lower.contains("your privacy is important")
+        || lower.contains("privacy choices")
+        || lower.contains("privacy preferences")
+        || lower.contains("privacy settings")
+        || lower.contains("manage your privacy")
+        || lower.contains("cookie preferences")
+        || lower.contains("cookie settings")
+        || lower.contains("manage cookies")
+        || lower.contains("cookie consent");
     let banner_hit = lower.contains("we use cookies")
         || lower.contains("use of cookies")
         || lower.contains("cookie notice")
         || lower.contains("cookie banner")
-        || lower.contains("your privacy");
-    if cookie_hit && (consent_hit || action_hit || policy_hit || banner_hit) {
+        || lower.contains("your privacy")
+        || privacy_banner_hit;
+    if (cookie_hit || privacy_banner_hit) && (consent_hit || action_hit || policy_hit || banner_hit) {
         return true;
     }
     consent_hit && action_hit && banner_hit

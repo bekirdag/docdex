@@ -51,7 +51,7 @@ pub async fn reindex_repo(
         Some(sources) => {
             let libs_dir = libs::libs_state_dir_from_index_state_dir(indexer.state_dir());
             let libs_indexer = libs::LibsIndexer::open_or_create(libs_dir)?;
-            Some(libs_indexer.ingest_sources(&sources.sources)?)
+            Some(libs_indexer.ingest_sources(indexer.repo_root(), &sources.sources)?)
         }
     };
 

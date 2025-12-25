@@ -1087,7 +1087,7 @@ mod latency_perf_tests {
             path: libs_doc_path,
             title: Some("Serde".to_string()),
         }];
-        let report = libs_writer.ingest_sources(&sources)?;
+        let report = libs_writer.ingest_sources(&repo_root, &sources)?;
         drop(libs_writer);
         assert!(
             report.succeeded_sources >= 1,

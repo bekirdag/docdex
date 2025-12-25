@@ -32,6 +32,7 @@ pub async fn run_fetch(url: String) -> Result<()> {
         .timeout(config.request_timeout)
         .build()
         .context("build web fetch client")?;
+    web::fetch::enforce_domain_delay(&url, config.fetch_delay).await;
     let resp = client.get(url.clone()).send().await?;
     let status = resp.status();
     let body = resp.text().await?;

@@ -43,7 +43,7 @@ pub fn run_ingest(repo: RepoArgs, sources: PathBuf) -> Result<()> {
         fs::read_to_string(&sources).with_context(|| format!("read libs sources file {}", sources.display()))?;
     let sources_file: libs::LibSourcesFile =
         serde_json::from_str(&raw).context("parse libs sources json")?;
-    let report = indexer.ingest_sources(&sources_file.sources)?;
+    let report = indexer.ingest_sources(&repo_root, &sources_file.sources)?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }

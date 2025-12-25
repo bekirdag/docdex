@@ -486,7 +486,7 @@ src
 
 2. **`src/index/libs.rs`**: This module manages the "Library Context" layer.
 * It handles the creation and writing of the **`libs_index`** (a separate Tantivy index inside `state/repos/<fp>/libs_index/`).
-* It provides the logic to read cached docs from `cache/libs` and ingest them into this per-repo index so they can be searched locally.
+* It provides the logic to read cached docs from `cache/libs` and ingest them into this per-repo index so they can be searched locally (no direct cache reads at query time).
 
 
 3. **`src/indexer` (Existing)**: The main indexing loop (likely in `src/indexer/mod.rs` or similar) is updated to call `symbols::extract_and_store` and `libs::ingest` alongside the standard text indexing.

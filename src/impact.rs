@@ -241,7 +241,7 @@ enum ImpactGraphStoreFile {
 impl ImpactGraphStore {
     pub fn new(state_dir: &Path) -> Self {
         Self {
-            path: state_dir.join("impact_graph.json"),
+            path: impact_graph_path(state_dir),
         }
     }
 
@@ -259,6 +259,16 @@ impl ImpactGraphStore {
             ImpactGraphStoreFile::Container { edges } => edges,
         })
     }
+}
+
+fn impact_graph_path(state_dir: &Path) -> PathBuf {
+    if state_dir.file_name().and_then(|name| name.to_str()) == Some("index") {
+        return state_dir
+            .parent()
+            .unwrap_or(state_dir)
+            .join("impact_graph.json");
+    }
+    state_dir.join("impact_graph.json")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -729,10 +739,11 @@ mod tests {
     #[test]
     fn store_accepts_type_alias_for_kind() {
         let dir = TempDir::new().expect("tempdir");
-        let state_dir = dir.path().join(".docdex").join("index");
+        let state_root = dir.path().join(".docdex");
+        let state_dir = state_root.join("index");
         std::fs::create_dir_all(&state_dir).expect("create state dir");
         std::fs::write(
-            state_dir.join("impact_graph.json"),
+            state_root.join("impact_graph.json"),
             r#"{ "edges": [ { "source": "a.ts", "target": "b.ts", "type": "import" } ] }"#,
         )
         .expect("write impact_graph.json");

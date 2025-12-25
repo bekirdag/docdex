@@ -42,7 +42,7 @@
 Docdex v2.0 runs a per-repo local-first daemon (`docdexd serve`) per repo. Run one instance per repo; each instance exposes HTTP APIs and (optionally) an MCP server for that repo. The design aims to keep all inference and retrieval local by default, escalating to gated web enrichment only when confidence drops.
 
 - **Core surfaces**: per-repo HTTP endpoint set (OpenAI-compatible chat) and per-repo MCP server; CLI is a thin client to the daemon. No additional surfaces are introduced in this section.  
-- **Repo Manager**: normalizes repo paths, fingerprints via SHA256, lazily initializes per-repo state (Tantivy indexes, `memory.db`, `symbols.db`, `dag.db`, `libs_index`), and ensures handle closure on shutdown.  
+- **Repo Manager**: normalizes repo paths, fingerprints via SHA256, lazily initializes per-repo state (Tantivy indexes, `memory.db`, `symbols.db`, `dag.db`, `impact_graph.json`, `libs_index`), and ensures handle closure on shutdown.  
 - **Waterfall retrieval** (per repo): Tier 1 local indexes (source \+ libs), Tier 2 zero-cost web discovery/fetch (DuckDuckGo HTML \+ guarded headless Chrome), Tier 3 local cognition/memory (Ollama chat/embeddings, sqlite-vec memory). Cached library docs are treated as local within Tier 1\.  
 - **Context assembly**: fixed priority Memory → Repo Code → Library/Web; token budget roughly 10% system prompt, 20% memory, 50% repo/library/web, 20% generation buffer. Budgeting happens before Ollama calls.  
 - **Isolation model**: per-repo state under `~/.docdex/state/repos/<fingerprint>/`; global caches (`cache/web`, `cache/libs`) are reused but ingested per repo. CLI/MCP require explicit repo id/path; HTTP uses the daemon repo by default and validates any provided repo id/path.  
@@ -159,7 +159,7 @@ Architectural intent: enforce strict per-repo scoping for all state, indexes, me
 Design
 
 - Repo identity: normalized repo path → SHA256 fingerprint; fingerprint is the sole key for on-disk state under `~/.docdex/state/repos/<fingerprint>/`.  
-- Per-repo state dirs: `index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`; all opened lazily on first access.  
+- Per-repo state dirs: `index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`, `impact_graph.json`; all opened lazily on first access.  
 - Global/shared caches: `cache/web/` (HTML \+ cleaned JSON) and `cache/libs/<ecosystem>/<pkg>/`; reused across repos but ingested into per-repo indexes only on demand to avoid bleed.  
 - Repo Manager: maintains registry (path ↔ fingerprint); unknown/unindexed repos return clear errors.  
 - Access contract: CLI/MCP calls must supply `repo_id` or `repo_path`; HTTP defaults to the daemon repo and validates any provided repo id/path. MCP server is per-repo; tools are repo-parameterized.  
@@ -225,7 +225,7 @@ This section defines the daemon’s key subsystems and how they cooperate to sat
 ### Config and State Manager
 
 - Responsibilities: Parse/validate `~/.docdex/config.toml`; ensure RW on `global_state_dir`; materialize defaults when missing; expose typed config to all services; enforce localhost bind unless `--expose` with token.  
-- State layout: Creates/validates `state/repos/<fingerprint>/{index/,libs_index/,memory.db,symbols.db,dag.db}` and shared caches `cache/web`, `cache/libs/<ecosystem>/<pkg>/`, `locks/` for browser/process guards.  
+- State layout: Creates/validates `state/repos/<fingerprint>/{index/,libs_index/,memory.db,symbols.db,dag.db,impact_graph.json}` and shared caches `cache/web`, `cache/libs/<ecosystem>/<pkg>/`, `locks/` for browser/process guards.  
 - Hardware awareness: On startup and `llm-list`, detect RAM/VRAM to suggest models (`llama3.1:8b` default; heavier only if hardware allows).  
 - Data contract: Provides immutable config snapshot to consumers; emits normalized repo fingerprint function.
 
@@ -285,11 +285,14 @@ This section defines the daemon’s key subsystems and how they cooperate to sat
 Config/state layer ensures typed configuration, RW validation, and deterministic state layout that other subsystems rely on for per-repo isolation across per-repo daemons.
 
 - **Intent**: Provide a single source of truth for daemon/runtime configuration and a predictable per-repo/global state directory tree with enforced read/write guarantees and auto-creation of sane defaults.  
-- **Config location & shape**: `~/.docdex/config.toml` auto-created on first run with localhost defaults. Sections per PDR: `[core] global_state_dir, log_level, max_concurrent_fetches`; `[llm] provider=<name> (default `ollama`), base_url, default_model, embedding_model, max_answer_tokens`; `[search] web_trigger_threshold, max_repo_hits, max_web_hits`; `[web] discovery_provider=duckduckgo_html, user_agent, cache_ttl_secs`; `[web.scraper] engine, headless, chrome_binary_path, request_delay_ms, page_load_timeout_secs`; `[memory] enabled, backend=sqlite`; `[server] http_bind_addr=127.0.0.1:3210, enable_mcp=true`. Typed parsing with defaults; warn on unknown providers.  
+- **Config location & shape**: `~/.docdex/config.toml` auto-created on first run with localhost defaults. Sections per PDR: `[core] global_state_dir, log_level, max_concurrent_fetches`; `[llm] provider=<name> (default `ollama`), base_url, default_model, embedding_model, max_answer_tokens`; `[search] web_trigger_threshold, max_repo_hits, max_web_hits`; `[web] discovery_provider=duckduckgo_html, user_agent, min_spacing_ms, cache_ttl_secs, blocklist`; `[web.scraper] engine, headless, chrome_binary_path, request_delay_ms, page_load_timeout_secs`; `[memory] enabled, backend=sqlite`; `[server] http_bind_addr=127.0.0.1:3210, enable_mcp=true`. Typed parsing with defaults; warn on unknown providers.  
+- **Env override**: `DOCDEX_WEB_BLOCKLIST=example.com,docs.example.org` sets the web discovery blocklist as a comma-separated list of domain suffixes.  
+- **Env override**: `DOCDEX_WEB_MIN_SPACING_MS` (DDG spacing, min 2000ms) and `DOCDEX_WEB_REQUEST_DELAY_MS` (per-domain fetch delay, min 1000ms).  
 - **State root & layout**: `~/.docdex/state/` with enforced creation/validation:  
-  - `repos/<fingerprint>/index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`  
+  - `repos/<fingerprint>/index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`, `impact_graph.json`  
   - `cache/web/` (raw HTML \+ cleaned JSON), `cache/libs/<ecosystem>/<pkg>/`  
   - `locks/` for browser/process guards  
+  - `logs/` optional daemon logs when enabled  
   - Repo fingerprint \= SHA256 of normalized repo path; all per-repo paths must use this key to prevent cross-contamination.  
 - **Responsibilities**:  
   - Validate RW on `global_state_dir` at startup and before per-repo init.  
@@ -330,7 +333,7 @@ Repo Manager maintains normalized repo registry mapped to SHA256 fingerprints an
 **Core Functions**
 
 - Path normalization and fingerprinting: compute SHA256 over normalized repo path; fingerprint used for all state paths under `~/.docdex/state/repos/<fingerprint>/`.  
-- Lazy initialization: on first access, create/validate per-repo dirs and handles for `index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`; RW checks on `global_state_dir` before use.  
+- Lazy initialization: on first access, create/validate per-repo dirs and handles for `index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`, `impact_graph.json`; RW checks on `global_state_dir` before use.  
 - Registry & lookup: map from normalized path (and optionally repo id) to fingerprint and live handles; CLI/MCP callers must supply repo id/path, HTTP defaults to the daemon repo.  
 - Max-open-repos: not required for per-repo daemons; reserved if multi-repo mode is reintroduced.  
 - Isolation: no cross-repo data mixing; shared caches (`cache/web`, `cache/libs`) are ingested per repo but never cross-read directly.  
@@ -379,7 +382,7 @@ Architectural intent: deliver fast, repo-scoped retrieval that stays local-first
 
 Components and flows
 
-- Repo Manager: lazily initializes per-repo `state/repos/<fingerprint>/index/` (source), `libs_index/`, `symbols.db`, `dag.db`.  
+- Repo Manager: lazily initializes per-repo `state/repos/<fingerprint>/index/` (source), `libs_index/`, `symbols.db`, `dag.db`, `impact_graph.json`.  
 - Tantivy source index (per repo): indexes files with BM25; scope limited to selected repo fingerprint. Out of scope: cross-repo search.  
 - Libraries index (per repo): ingests cached library docs (Phase 2.1) into `libs_index` so library answers count as Tier 1 local context.  
 - Query path (Tier 1): `docdexd chat --repo` and `/v1/chat/completions` call local BM25 search across source \+ libs index; optional local rerank (model unspecified in PDR—TBD). Waterfall escalation only if top score \< `web_trigger_threshold` or forced.  
@@ -389,7 +392,7 @@ Components and flows
 
 Data contracts (as implied)
 
-- Per-repo state layout: `state/repos/<fingerprint>/index/` (Tantivy), `libs_index/`, `symbols.db`, `dag.db`, `memory.db`.  
+- Per-repo state layout: `state/repos/<fingerprint>/index/` (Tantivy), `libs_index/`, `symbols.db`, `dag.db`, `impact_graph.json`, `memory.db`.  
 - Impact API response: directed deps; exact schema not detailed in PDR (open question).
 
 Scalability, reliability, security, observability
@@ -442,7 +445,7 @@ Routes each query through a tiered pipeline—local → web → cognition—base
 **Components & Contracts**
 
 - WaterfallOrchestrator: owns confidence gate, tier routing, and token budgeting.  
-- RepoContext accessor: supplies per-repo indexes (`index/`, `libs_index`, `memory.db`, `dag.db`) and cache handles; enforces SHA256 fingerprinting.  
+- RepoContext accessor: supplies per-repo indexes (`index/`, `libs_index`, `memory.db`, `dag.db`, `impact_graph.json`) and cache handles; enforces SHA256 fingerprinting.  
 - DiscoveryService & ScraperEngine: respect rate limits, cache TTL, Chrome lifecycle guards; return cleaned documents with source metadata for ingestion.  
 - Memory layer: per-repo sqlite-vec recall, prioritized in assembly.  
 - Token budgeter: counts tokens pre-Ollama call; emits drop logs when pruning low-priority snippets.
@@ -638,7 +641,7 @@ Architectural intent: enforce per-repo isolation while sharing global caches, ke
 ### Directory and Fingerprint Layout
 
 - Repo fingerprint: SHA256 of normalized repo path; all per-repo paths nested under `~/.docdex/state/repos/<fingerprint>/`.  
-- Per-repo subdirs/files: `index/` (Tantivy source), `libs_index/` (ingested library docs), `memory.db`, `symbols.db`, `dag.db`.  
+- Per-repo subdirs/files: `index/` (Tantivy source), `libs_index/` (ingested library docs), `memory.db`, `symbols.db`, `dag.db`, `impact_graph.json`.  
 - Global/shared: `~/.docdex/state/cache/web/` (raw HTML \+ cleaned JSON), `cache/libs/<ecosystem>/<pkg>/` (fetched docs), `locks/` (browser/process guards).  
 - Repo Manager duties: lazily create per-repo dirs on first touch; enforce RW checks before use.
 
@@ -655,7 +658,7 @@ Architectural intent: enforce per-repo isolation while sharing global caches, ke
 ### Caching Strategy
 
 - Web cache: global `cache/web/`; reused across repos; scraper enforces ≥1s per-domain fetch delay and ≥2s DDG discovery gap; guarded lifecycle to avoid zombie Chrome.  
-- Library cache: global `cache/libs/<ecosystem>/<pkg>/`; ingestion into per-repo `libs_index/` to prevent bleed.  
+- Library cache: global `cache/libs/<ecosystem>/<pkg>/`; ingestion into per-repo `libs_index/` only (no direct reads); ingest sources must be under repo root or `cache/libs` to prevent bleed.  
 - Waterfall: Tier 1 (repo index \+ per-repo ingested libs) → Tier 2 (web discovery/fetch using cache; ingested per repo) → Tier 3 (memory/DAG context); escalation only when local score below `web_trigger_threshold` or explicitly forced.  
 - Eviction: not required for per-repo daemons; caches persist until TTL/purge (TTL for web defined in config).
 
@@ -721,12 +724,12 @@ Architectural intent: define per-repo and global storage schemas that support lo
 - `dag.db` (per repo): nodes table with `type ENUM(UserRequest|Thought|ToolCall|Observation|Decision)`, `session_id`, `payload JSON`, `created_at`; edges implied by `session_id` \+ ordering (PDR: DAG logging and view).  
 - `index/` (per repo, Tantivy): source index for repo code; `libs_index/` for ingested library docs; both scoped by repo fingerprint to prevent cross-contamination.  
 - `cache/web` and `cache/libs` (global read-mostly): raw HTML/cleaned JSON and cached library docs; ingestion into per-repo indexes is explicit.  
-- Impact graph (per repo, likely in `dag.db` or adjacent store): directed edges derived from imports; API `GET /v1/graph/impact`
+- Impact graph (per repo, `impact_graph.json` at the repo state root): directed edges derived from imports; API `GET /v1/graph/impact`
   returns schema-tagged inbound/outbound deps keyed by `file` (directed `source -> target`).
 
 **Interactions**
 
-- Repo Manager initializes per-repo `index/, libs_index/, memory.db, symbols.db, dag.db` under `state/repos/<fingerprint>/`.  
+- Repo Manager initializes per-repo `index/, libs_index/, memory.db, symbols.db, dag.db, impact_graph.json` under `state/repos/<fingerprint>/`.  
 - Waterfall: Tier-1 search hits Tantivy indexes (`index/`, `libs_index/`) and can merge with `memory.db` results; confidence gate controls web fetch/caching.  
 - Indexing flow: `docdexd index --repo` populates Tantivy and `symbols.db`; dependency extraction feeds impact graph edges.  
 - Memory ops: `memory_store` writes to `memory.db`; `memory_recall` vector-searches embeddings.  
@@ -749,12 +752,11 @@ Architectural intent: define per-repo and global storage schemas that support lo
 
 **Assumptions**
 
-- Impact graph edges stored alongside DAG or a dedicated table in `dag.db`; exact table layout TBD but must support inbound/outbound queries by file.  
+- Impact graph edges stored in per-repo `impact_graph.json` under the repo state root; schema matches `docdex.impact_graph` response requirements.  
 - No cross-repo memory or DAG aggregation is needed.
 
 **Open Questions & Risks**
 
-- Where to persist impact graph edges (table schema, db choice) while keeping query latency \<50ms?  
 - Do we need migrations/versioning for `memory.db`, `symbols.db`, `dag.db` as schemas evolve?  
 - How to handle symbol kinds/signatures across languages uniformly (Tree-sitter node mapping consistency)?  
 - Resource risk: large repos may push Tantivy index size; need bounds/compaction policy.
@@ -856,7 +858,7 @@ Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper
 
 - **Interactions & Data Flow**  
     
-  - Commands invoke daemon APIs; daemon resolves repo fingerprint → per-repo state dirs (`index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`).  
+- Commands invoke daemon APIs; daemon resolves repo fingerprint → per-repo state dirs (`index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`, `impact_graph.json`).  
   - Waterfall commands share caches: `cache/web` (HTML \+ cleaned JSON) and `cache/libs`; ingestion is repo-scoped.  
   - Token budgeting for chat/web-rag enforced by daemon (not CLI); CLI streams outputs from Ollama via daemon.
 
@@ -936,7 +938,7 @@ Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper
 **Diagrams (textual)**
 
 - Sequence: Client → `/v1/chat/completions` → Repo Manager (resolve repo/fingerprint) → Waterfall Orchestrator (Tier 1 search → optional web discovery/fetch → context merge with memory/libs) → Token Budgeter → Ollama stream → Client.  
-- Component: HTTP Server (OpenAI-compatible adapter) ↔ Repo Manager ↔ Indexes (`index/`, `libs_index`, `memory.db`, `symbols.db`, `dag.db`) ↔ Waterfall services (DiscoveryService, ScraperEngine) ↔ Ollama.
+- Component: HTTP Server (OpenAI-compatible adapter) ↔ Repo Manager ↔ Indexes (`index/`, `libs_index`, `memory.db`, `symbols.db`, `dag.db`, `impact_graph.json`) ↔ Waterfall services (DiscoveryService, ScraperEngine) ↔ Ollama.
 
 Open Questions & Risks
 
@@ -1082,7 +1084,7 @@ Docdex relies solely on locally managed, zero-cost components for LLM/embeddings
 
 - Config at `~/.docdex/config.toml`; auto-created with localhost defaults. Validates RW access to `global_state_dir`.  
 - Key sections enforced: `[core]`, `[llm]`, `[search]`, `[web]`, `[web.scraper]`, `[memory]`, `[server]`. Warn if `provider` is unknown or missing required config.  
-- State layout under `~/.docdex/state/` with repo fingerprints; includes `index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`, `cache/web`, `cache/libs`, `locks/`.  
+- State layout under `~/.docdex/state/` with repo fingerprints; includes `index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`, `impact_graph.json`, `cache/web`, `cache/libs`, `locks/`.  
 - No auto-install of Ollama/Chrome; `llm-setup` provides guidance only.
 
 **Open Questions & Risks**
@@ -1193,10 +1195,10 @@ Docdex enforces local-first, zero-cost operation with explicit controls when the
 - **Network exposure**: `docdexd` binds to `127.0.0.1:3210` by default. Running with `--expose` (or equivalent config) requires a token; HTTP and MCP requests must present it or are rejected. No multi-tenant daemons; one daemon per repo.  
 - **Authentication & authorization**: Single shared bearer-style token validated on all HTTP/MCP endpoints when exposed. No role model or per-repo ACLs in scope; all authorization is coarse-grained (token holder \= allowed). Token configured via env/config; no additional identity providers.  
 - **Data residency & locality**: All inference, embeddings, search, and state are local by default; no telemetry. Only zero-cost/open components (Ollama, Tantivy, DuckDuckGo HTML, headless Chrome, sqlite-vec, Tree-sitter) are permitted. Web access is gated (confidence-based or explicit) and cached locally. No cloud/vector DBs, no paid APIs.  
-- **Repo isolation**: Per-repo state under `~/.docdex/state/repos/<fingerprint>/` (indexes, memory.db, symbols.db, dag.db, libs\_index). Global caches (`cache/web`, `cache/libs`) are shared storage but ingested per repo without cross-contamination.  
+- **Repo isolation**: Per-repo state under `~/.docdex/state/repos/<fingerprint>/` (indexes, memory.db, symbols.db, dag.db, impact_graph.json, libs\_index). Global caches (`cache/web`, `cache/libs`) are shared storage but ingested per repo without cross-contamination.  
 - **Process/browsing safeguards**: Headless Chrome guarded with locks and lifecycle checks to avoid zombie processes; rate limits enforced to reduce abuse risk. Locks directory under state for browser/process guards.  
 - **Configuration defaults**: Auto-created config favors privacy: localhost bind, Ollama provider, MCP enabled locally. Warnings if LLM provider differs from Ollama. No auto-install of dependencies.  
-- **Logging/observability**: PDR does not request telemetry; assume minimal local logs only. No remote log shipping described.  
+- **Logging/observability**: PDR does not request telemetry; assume minimal local logs only. No remote log shipping described. Optional state logs via `DOCDEX_LOG_TO_STATE=1` write to `~/.docdex/state/logs/docdexd-<pid>.log`.  
 - **Dependencies**: Open-source/local-only; no paid keys. DuckDuckGo HTML for discovery; local Chrome for scraping; Ollama for LLM/embeddings.
 
 Open Questions & Risks
@@ -1267,7 +1269,7 @@ Configuration ensures `docdexd` starts with safe, local-first defaults, validate
 Defaults and creation
 
 - Global config `~/.docdex/config.toml` auto-created on first run with localhost bind, Ollama-only LLM settings, and default thresholds (e.g., `web_trigger_threshold=0.45`).  
-- State root `~/.docdex/state/` structured as in PDR (per-repo `index`, `libs_index`, `memory.db`, `symbols.db`, `dag.db`; shared `cache/web`, `cache/libs`, `locks`). Paths derived from SHA256 of normalized repo path; reject any path not under the fingerprinted root.
+- State root `~/.docdex/state/` structured as in PDR (per-repo `index`, `libs_index`, `memory.db`, `symbols.db`, `dag.db`, `impact_graph.json`; shared `cache/web`, `cache/libs`, `locks`). Paths derived from SHA256 of normalized repo path; reject any path not under the fingerprinted root.
 
 Validation and safeguards
 
@@ -1392,7 +1394,7 @@ Docdex v2.0 testing targets risk hot-spots: per-repo daemon isolation under conc
 
 - Scope/Intent: Validate that phase-gated behaviors enforce local sovereignty and repo correctness; focus on concurrency isolation, gated web escalation, and secure surfaces (HTTP/MCP/CLI). No additional components beyond PDR surfaces.  
 - Coverage Priorities:  
-  - Repo isolation: concurrent `docdexd` operations across ≥8 repos; ensure per-repo state (`index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`) stays isolated.  
+- Repo isolation: concurrent `docdexd` operations across ≥8 repos; ensure per-repo state (`index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`, `impact_graph.json`) stays isolated.  
   - Local-first behavior: daemon binds 127.0.0.1 by default; no paid/external APIs; Ollama-only inference; confirm `--expose` path enforces token auth.  
   - Waterfall gating: Tier-1 local search preferred; escalation only when confidence \< `web_trigger_threshold` or explicitly forced; token budget priority (Memory \> Repo \> Library/Web) preserved.  
   - Scraper safety: DuckDuckGo discovery delay ≥2s; fetch delay ≥1s/domain; Chrome lifecycle guarded (no zombies); cache reuse honored.  

@@ -82,3 +82,98 @@ fn file_identity_payload(path: &Path) -> Result<String> {
         Ok(format!("v1|path|{}", normalized))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn normalize_path_resolves_realpath_when_symlinks_available() -> Result<()> {
+        let temp = TempDir::new()?;
+        let repo_root = temp.path().join("RepoRoot");
+        fs::create_dir_all(&repo_root)?;
+        let link_root = temp.path().join("repo-link");
+        if let Err(err) = create_symlink_dir(&repo_root, &link_root) {
+            eprintln!("skipping symlink normalization test: {err}");
+            return Ok(());
+        }
+
+        let normalized_real = normalize_path(&repo_root);
+        let normalized_link = normalize_path(&link_root);
+        assert_eq!(normalized_real, normalized_link);
+        Ok(())
+    }
+
+    #[test]
+    fn normalize_path_case_normalizes_on_case_insensitive_fs() -> Result<()> {
+        let temp = TempDir::new()?;
+        let repo_root = temp.path().join("RepoCase");
+        fs::create_dir_all(&repo_root)?;
+        let alt_case = temp.path().join("repocase");
+
+        let normalized_real = normalize_path(&repo_root);
+        let normalized_alt = normalize_path(&alt_case);
+
+        if alt_case.exists() {
+            assert_eq!(normalized_real, normalized_alt);
+        } else {
+            assert_ne!(normalized_real, normalized_alt);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn repo_fingerprint_stable_across_realpath_when_symlinks_available() -> Result<()> {
+        let temp = TempDir::new()?;
+        let repo_root = temp.path().join("RepoRoot");
+        fs::create_dir_all(repo_root.join(".git"))?;
+        let link_root = temp.path().join("repo-link");
+        if let Err(err) = create_symlink_dir(&repo_root, &link_root) {
+            eprintln!("skipping symlink fingerprint test: {err}");
+            return Ok(());
+        }
+
+        let fingerprint_real = repo_fingerprint_sha256(&repo_root)?;
+        let fingerprint_link = repo_fingerprint_sha256(&link_root)?;
+        assert_eq!(fingerprint_real, fingerprint_link);
+        Ok(())
+    }
+
+    #[test]
+    fn repo_fingerprint_case_normalizes_on_case_insensitive_fs() -> Result<()> {
+        let temp = TempDir::new()?;
+        let repo_root = temp.path().join("RepoCase");
+        fs::create_dir_all(repo_root.join(".git"))?;
+        let alt_case = temp.path().join("repocase");
+
+        if !alt_case.exists() {
+            return Ok(());
+        }
+
+        let fingerprint_real = repo_fingerprint_sha256(&repo_root)?;
+        let fingerprint_alt = repo_fingerprint_sha256(&alt_case)?;
+        assert_eq!(fingerprint_real, fingerprint_alt);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn create_symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn create_symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(target, link)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn create_symlink_dir(_target: &Path, _link: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "symlink creation unavailable",
+        ))
+    }
+}

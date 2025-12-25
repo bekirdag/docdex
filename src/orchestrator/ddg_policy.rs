@@ -183,7 +183,7 @@ mod tests {
         let err = pacer
             .check_or_backoff_at(start + Duration::from_millis(200))
             .expect_err("should enforce spacing");
-        assert_eq!(err.retry_after_ms, 300);
+        assert_eq!(retry_after_ms(&err), 300);
 
         assert!(pacer
             .check_or_backoff_at(start + Duration::from_millis(500))
@@ -203,13 +203,13 @@ mod tests {
         let now = Instant::now();
 
         let err1 = pacer.record_failure_at(now);
-        assert_eq!(err1.retry_after_ms, 1_000);
+        assert_eq!(retry_after_ms(&err1), 1_000);
 
         let err2 = pacer.record_failure_at(now);
-        assert_eq!(err2.retry_after_ms, 2_000);
+        assert_eq!(retry_after_ms(&err2), 2_000);
 
         let err3 = pacer.record_failure_at(now);
-        assert_eq!(err3.retry_after_ms, 10_000);
+        assert_eq!(retry_after_ms(&err3), 10_000);
     }
 
     #[test]
@@ -221,5 +221,13 @@ mod tests {
         assert_eq!(pacer.consecutive_failures(), 1);
         pacer.record_success();
         assert_eq!(pacer.consecutive_failures(), 0);
+    }
+
+    fn retry_after_ms(err: &AppError) -> u64 {
+        err.details
+            .as_ref()
+            .and_then(|value| value.get("retry_after_ms"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
     }
 }

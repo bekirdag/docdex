@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
@@ -21,6 +21,10 @@ use tracing::warn;
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
 const MAX_LIB_DOC_BYTES: u64 = 512 * 1024;
 const MAX_LIB_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
+const LIBS_SOURCE_SCOPE_ERROR: &str =
+    "libs source path must be under repo root or cache/libs";
+const LIBS_SOURCE_TRAVERSAL_ERROR: &str =
+    "libs source path must not contain parent traversal";
 
 pub(crate) fn libs_state_dir_from_index_state_dir(index_state_dir: &Path) -> PathBuf {
     index_state_dir
@@ -469,8 +473,17 @@ impl LibsIndexer {
         }))
     }
 
-    pub fn ingest_sources(&self, sources: &[LibSource]) -> Result<LibsIngestReport> {
+    pub fn ingest_sources(
+        &self,
+        repo_root: &Path,
+        sources: &[LibSource],
+    ) -> Result<LibsIngestReport> {
         let mut warnings: Vec<String> = Vec::new();
+        let repo_root = repo_root
+            .canonicalize()
+            .unwrap_or_else(|_| repo_root.to_path_buf());
+        let cache_libs_dir = cache_libs_dir_from_libs_state_dir(&self.libs_state_dir)
+            .map(|path| path.canonicalize().unwrap_or(path));
         let manifest_path = self.libs_state_dir.join("libs_manifest.json");
         let mut manifest = load_manifest(&manifest_path).unwrap_or_else(|err| {
             warnings.push(format!(
@@ -526,7 +539,15 @@ impl LibsIndexer {
         let mut prepared: Vec<PreparedSource> = Vec::with_capacity(normalized_sources.len());
         for source in normalized_sources.iter().cloned() {
             let key = source_key_for(&source);
-            let read = read_text_limited(&source.path, MAX_LIB_DOC_BYTES);
+            let resolved = resolve_source_path(
+                &repo_root,
+                cache_libs_dir.as_deref(),
+                &source.path,
+            );
+            let read = match resolved {
+                Ok(path) => read_text_limited(&path, MAX_LIB_DOC_BYTES),
+                Err(err) => Err(err),
+            };
             prepared.push(PreparedSource { source, key, read });
         }
 
@@ -687,6 +708,48 @@ fn source_key_for(source: &LibSource) -> String {
     format!("{library}@{version}|{source_label}|{path}")
 }
 
+fn resolve_source_path(
+    repo_root: &Path,
+    cache_libs_dir: Option<&Path>,
+    path: &Path,
+) -> Result<PathBuf> {
+    if has_parent_dir(path) {
+        return Err(anyhow::anyhow!(LIBS_SOURCE_TRAVERSAL_ERROR));
+    }
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        repo_root.join(path)
+    };
+    if resolved.starts_with(repo_root) {
+        return Ok(resolved);
+    }
+    if let Some(cache_dir) = cache_libs_dir {
+        if resolved.starts_with(cache_dir) {
+            return Ok(resolved);
+        }
+    }
+    Err(anyhow::anyhow!(LIBS_SOURCE_SCOPE_ERROR))
+}
+
+fn has_parent_dir(path: &Path) -> bool {
+    path.components()
+        .any(|component| matches!(component, Component::ParentDir))
+}
+
+fn cache_libs_dir_from_libs_state_dir(libs_state_dir: &Path) -> Option<PathBuf> {
+    if libs_state_dir.file_name().and_then(|s| s.to_str())? != "libs_index" {
+        return None;
+    }
+    let repo_dir = libs_state_dir.parent()?;
+    let repos_dir = repo_dir.parent()?;
+    if repos_dir.file_name().and_then(|s| s.to_str())? != "repos" {
+        return None;
+    }
+    let base_dir = repos_dir.parent()?;
+    Some(base_dir.join("cache").join("libs"))
+}
+
 fn normalize_path_for_key(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
@@ -792,7 +855,15 @@ fn ingest_one_source_prepared(
                 Some(err.to_string()),
                 now_epoch_ms,
             );
-            let hint = if err.to_string().contains("No such file") {
+            let err_string = err.to_string();
+            let hint = if err_string.starts_with(LIBS_SOURCE_SCOPE_ERROR)
+                || err_string.starts_with(LIBS_SOURCE_TRAVERSAL_ERROR)
+            {
+                Some(
+                    "Use repo-relative paths or docs cached under `cache/libs` for shared sources."
+                        .to_string(),
+                )
+            } else if err_string.contains("No such file") {
                 Some(
                     "Verify the resolver output path and ensure the library docs are present on disk."
                         .to_string(),
@@ -812,7 +883,7 @@ fn ingest_one_source_prepared(
                 docs_ingested: 0,
                 bytes_ingested: 0,
                 truncated: false,
-                error: Some(err.to_string()),
+                error: Some(err_string),
                 hint,
             };
         }

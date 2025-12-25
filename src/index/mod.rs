@@ -12,7 +12,7 @@ use parking_lot::Mutex;
 use regex::Regex;
 use std::cmp::Ordering;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tantivy::collector::TopDocs;
@@ -27,6 +27,8 @@ use tracing::warn;
 use walkdir::WalkDir;
 
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
+const MAX_BINARY_FILE_BYTES: u64 = 5 * 1024 * 1024;
+const BINARY_SNIFF_BYTES: usize = 8192;
 const DEFAULT_EXTENSIONS: &[&str] = &[".md", ".markdown", ".mdx", ".txt"];
 const DEFAULT_EXCLUDED_DIR_NAMES: &[&str] = &[
     // Core VCS / tooling
@@ -38,6 +40,11 @@ const DEFAULT_EXCLUDED_DIR_NAMES: &[&str] = &[
     "temp",
     ".hg",
     ".svn",
+    ".bzr",
+    ".darcs",
+    ".fossil",
+    ".pijul",
+    "cvs",
     // JS / TS / Node ecosystem
     "node_modules",
     ".pnpm-store",
@@ -1087,6 +1094,7 @@ pub enum FileDecisionReason {
     ExcludedDirName { name: String },
     MissingExtension,
     UnsupportedExtension { extension: String },
+    BinaryTooLarge { bytes: u64 },
     AllowedExtension { extension: String },
 }
 
@@ -1208,11 +1216,32 @@ pub(crate) fn decide_file(path: &Path, repo_root: &Path, config: &IndexConfig) -
         return FileDecision::exclude(FileDecisionReason::UnsupportedExtension { extension });
     }
 
+    if let Ok(meta) = path.metadata() {
+        if meta.len() > MAX_BINARY_FILE_BYTES {
+            if is_probably_binary(path).unwrap_or(true) {
+                return FileDecision::exclude(FileDecisionReason::BinaryTooLarge {
+                    bytes: meta.len(),
+                });
+            }
+        }
+    }
+
     FileDecision::include(FileDecisionReason::AllowedExtension { extension })
 }
 
 pub(crate) fn should_index(path: &Path, repo_root: &Path, config: &IndexConfig) -> bool {
     decide_file(path, repo_root, config).should_index()
+}
+
+fn is_probably_binary(path: &Path) -> io::Result<bool> {
+    let mut file = File::open(path)?;
+    let mut buffer = [0u8; BINARY_SNIFF_BYTES];
+    let read = file.read(&mut buffer)?;
+    let sample = &buffer[..read];
+    if sample.iter().any(|byte| *byte == 0) {
+        return Ok(true);
+    }
+    Ok(std::str::from_utf8(sample).is_err())
 }
 
 #[cfg(test)]
@@ -1296,6 +1325,31 @@ mod file_decision_tests {
         let decision = decide_file(&outside, &repo_root, &config);
         assert_eq!(decision.decision, FileDecisionOutcome::Exclude);
         assert_eq!(decision.reason, FileDecisionReason::OutsideRepo);
+    }
+
+    #[test]
+    fn decide_file_excludes_large_binary() {
+        let repo = TempDir::new().expect("temp repo");
+        let repo_root = repo.path().canonicalize().expect("canonical repo root");
+        let config = IndexConfig::with_overrides(
+            &repo_root,
+            None,
+            Vec::new(),
+            Vec::new(),
+            false,
+        )
+        .expect("config");
+        let binary_path = repo_root.join("large.md");
+        let blob = vec![0u8; (MAX_BINARY_FILE_BYTES as usize) + 1];
+        fs::write(&binary_path, blob).expect("write binary");
+
+        let decision = decide_file(&binary_path, &repo_root, &config);
+        assert_eq!(
+            decision.reason,
+            FileDecisionReason::BinaryTooLarge {
+                bytes: (MAX_BINARY_FILE_BYTES + 1)
+            }
+        );
     }
 
     #[test]

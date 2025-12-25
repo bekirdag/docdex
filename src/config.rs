@@ -160,8 +160,12 @@ pub struct WebConfigSection {
     pub discovery_provider: String,
     #[serde(default = "default_web_user_agent")]
     pub user_agent: String,
+    #[serde(default = "default_web_min_spacing_ms")]
+    pub min_spacing_ms: u64,
     #[serde(default = "default_web_cache_ttl_secs")]
     pub cache_ttl_secs: u64,
+    #[serde(default)]
+    pub blocklist: Vec<String>,
     #[serde(default)]
     pub scraper: WebScraperConfig,
 }
@@ -171,7 +175,9 @@ impl Default for WebConfigSection {
         Self {
             discovery_provider: default_discovery_provider(),
             user_agent: default_web_user_agent(),
+            min_spacing_ms: default_web_min_spacing_ms(),
             cache_ttl_secs: default_web_cache_ttl_secs(),
+            blocklist: Vec::new(),
             scraper: WebScraperConfig::default(),
         }
     }
@@ -331,6 +337,10 @@ fn default_discovery_provider() -> String {
 
 fn default_web_user_agent() -> String {
     format!("docdexd/{}", env!("CARGO_PKG_VERSION"))
+}
+
+fn default_web_min_spacing_ms() -> u64 {
+    2_000
 }
 
 fn default_web_cache_ttl_secs() -> u64 {

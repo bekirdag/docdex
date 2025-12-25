@@ -10,8 +10,9 @@ use crate::memory::{
     prune_and_truncate_memory_context, MemoryContextItem, MemoryContextPruneTrace,
 };
 use crate::orchestrator::web::{
-    build_gate_meta, evaluate_gate_status, run_web_research, WebDiscoveryStatus,
-    WebDiscoveryStatusCode, WebGateConfig, WebResearchResponse,
+    build_gate_meta, evaluate_gate_status, filter_local_hits_with_llm, local_match_ratio,
+    run_web_research,
+    WebDiscoveryStatus, WebDiscoveryStatusCode, WebGateConfig, WebResearchResponse,
 };
 use crate::metrics;
 use crate::search::{MemoryState, SearchResponse};
@@ -58,8 +59,17 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
         crate::search::run_query(request.indexer, request.libs_indexer, request.query, request.limit)
             .await?;
 
+    search_response.hits = filter_local_hits_with_llm(
+        request.query,
+        search_response.hits,
+        search_response.top_score_normalized,
+    )
+    .await;
+
+    let local_match_ratio = local_match_ratio(request.query, &search_response.hits);
     let should_run_tier2 = request.plan.web_gate.should_attempt(
         search_response.top_score_normalized,
+        local_match_ratio,
         request.force_web,
     );
     let metrics = metrics::global();
@@ -74,6 +84,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
             &request,
             search_response.top_score,
             search_response.top_score_normalized,
+            local_match_ratio,
         )
         .await?
     } else {
@@ -84,6 +95,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
                 &request.plan.web_gate,
                 search_response.top_score,
                 search_response.top_score_normalized,
+                local_match_ratio,
                 request.force_web,
             ),
             tier2_unavailable: None,
@@ -119,6 +131,7 @@ async fn run_tier2(
     request: &WaterfallRequest<'_>,
     top_score: Option<f32>,
     top_score_normalized: Option<f32>,
+    local_match_ratio: Option<f32>,
 ) -> Result<Tier2Outcome> {
     let run_result = tier2::run_with_fallback(
         request.request_id,
@@ -150,6 +163,7 @@ async fn run_tier2(
             &request.plan.web_gate,
             top_score,
             top_score_normalized,
+            local_match_ratio,
             request.force_web,
             unavailable,
         )
@@ -159,6 +173,7 @@ async fn run_tier2(
             &request.plan.web_gate,
             top_score,
             top_score_normalized,
+            local_match_ratio,
             request.force_web,
         )
     };
@@ -174,6 +189,7 @@ fn build_tier2_unavailable_status(
     gate: &WebGateConfig,
     top_score: Option<f32>,
     top_score_normalized: Option<f32>,
+    local_match_ratio: Option<f32>,
     force_web: bool,
     unavailable: &Tier2Unavailable,
 ) -> WebDiscoveryStatus {
@@ -184,7 +200,13 @@ fn build_tier2_unavailable_status(
         unavailable: Some(unavailable.clone()),
         discovery: None,
         fetches: None,
-        gate: build_gate_meta(gate, top_score, top_score_normalized, force_web),
+        gate: build_gate_meta(
+            gate,
+            top_score,
+            top_score_normalized,
+            local_match_ratio,
+            force_web,
+        ),
     }
 }
 

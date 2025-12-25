@@ -91,19 +91,19 @@ impl DdgDiscovery {
         let limit = limit.clamp(1, self.config.max_results);
         let attempts = self.config.policy.max_attempts.max(1);
         let url = build_ddg_url(&self.config.ddg_base_url, query)?;
-        let url_key = url.to_string();
+        let cache_key = ddg_cache_key(&self.config.ddg_base_url, query);
 
         if let Some(layout) = self.cache_layout.as_ref() {
             if let Ok(Some(payload)) =
-                cache::read_cache_entry_with_ttl(layout, &url_key, self.config.cache_ttl)
+                cache::read_cache_entry_with_ttl(layout, &cache_key, self.config.cache_ttl)
             {
-                if let Ok(mut cached) =
-                    serde_json::from_slice::<WebDiscoveryResponse>(&payload)
-                {
-                    if cached.results.len() > limit {
-                        cached.results.truncate(limit);
-                    }
-                    return Ok(cached);
+                if let Ok(cached) = serde_json::from_slice::<WebDiscoveryResponse>(&payload) {
+                    let urls = cached.results.into_iter().map(|result| result.url).collect();
+                    return Ok(build_response_for_limit(
+                        query,
+                        filter_blocked_urls(dedupe_urls(urls), &self.blocklist),
+                        limit,
+                    ));
                 }
             }
         }
@@ -132,21 +132,26 @@ impl DdgDiscovery {
                         let links = extract_links(&body);
                         let deduped = dedupe_urls(links);
                         let filtered = filter_blocked_urls(deduped, &self.blocklist);
-                        let results = filtered
-                            .into_iter()
-                            .take(limit)
-                            .map(|url| WebDiscoveryResult { url })
-                            .collect();
+                        let response_for_cache = build_response_for_limit(
+                            query,
+                            filtered,
+                            self.config.max_results,
+                        );
+                        let response = build_response_for_limit(
+                            query,
+                            response_for_cache
+                                .results
+                                .iter()
+                                .map(|result| result.url.clone())
+                                .collect(),
+                            limit,
+                        );
                         self.pacer.lock().record_success();
-                        let response = WebDiscoveryResponse {
-                            provider: PROVIDER.to_string(),
-                            query: query.to_string(),
-                            results,
-                        };
                         if let Some(layout) = self.cache_layout.as_ref() {
                             if self.config.cache_ttl.as_secs() > 0 {
-                                if let Ok(payload) = serde_json::to_vec(&response) {
-                                    let _ = cache::write_cache_entry(layout, &url_key, &payload);
+                                if let Ok(payload) = serde_json::to_vec(&response_for_cache) {
+                                    let _ =
+                                        cache::write_cache_entry(layout, &cache_key, &payload);
                                 }
                             }
                         }
@@ -222,6 +227,29 @@ fn build_ddg_url(base: &Url, query: &str) -> Result<Url> {
     let mut url = base.clone();
     url.query_pairs_mut().append_pair("q", query);
     Ok(url)
+}
+
+fn ddg_cache_key(base: &Url, query: &str) -> String {
+    format!("ddg:{}:{}:{}", PROVIDER, base.as_str(), query)
+}
+
+fn build_response_for_limit(
+    query: &str,
+    urls: Vec<String>,
+    limit: usize,
+) -> WebDiscoveryResponse {
+    let mut results: Vec<WebDiscoveryResult> = urls
+        .into_iter()
+        .map(|url| WebDiscoveryResult { url })
+        .collect();
+    if results.len() > limit {
+        results.truncate(limit);
+    }
+    WebDiscoveryResponse {
+        provider: PROVIDER.to_string(),
+        query: query.to_string(),
+        results,
+    }
 }
 
 fn extract_links(html: &str) -> Vec<String> {

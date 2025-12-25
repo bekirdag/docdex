@@ -138,6 +138,10 @@ impl Default for LlmConfig {
 pub struct SearchConfig {
     #[serde(default = "default_web_trigger_threshold")]
     pub web_trigger_threshold: f32,
+    #[serde(default = "default_web_min_match_ratio")]
+    pub web_min_match_ratio: f32,
+    #[serde(default = "default_local_relevance_threshold")]
+    pub local_relevance_threshold: f32,
     #[serde(default = "default_max_repo_hits")]
     pub max_repo_hits: usize,
     #[serde(default = "default_max_web_hits")]
@@ -148,6 +152,8 @@ impl Default for SearchConfig {
     fn default() -> Self {
         Self {
             web_trigger_threshold: default_web_trigger_threshold(),
+            web_min_match_ratio: default_web_min_match_ratio(),
+            local_relevance_threshold: default_local_relevance_threshold(),
             max_repo_hits: default_max_repo_hits(),
             max_web_hits: default_max_web_hits(),
         }
@@ -337,6 +343,14 @@ fn default_max_repo_hits() -> usize {
 
 fn default_max_web_hits() -> usize {
     8
+}
+
+fn default_web_min_match_ratio() -> f32 {
+    0.2
+}
+
+fn default_local_relevance_threshold() -> f32 {
+    0.6
 }
 
 fn default_discovery_provider() -> String {

@@ -18,6 +18,7 @@ use crate::web::normalize::dedupe_urls;
 use crate::web::WebConfig;
 
 const PROVIDER: &str = "duckduckgo_html";
+const MAX_DDG_RESULTS: usize = 50;
 
 static RESULT_LINK_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
@@ -88,7 +89,12 @@ impl DdgDiscovery {
             );
         }
 
-        let limit = limit.clamp(1, self.config.max_results);
+        let limit = limit.clamp(1, MAX_DDG_RESULTS);
+        let cache_limit = self
+            .config
+            .max_results
+            .max(limit)
+            .min(MAX_DDG_RESULTS);
         let attempts = self.config.policy.max_attempts.max(1);
         let url = build_ddg_url(&self.config.ddg_base_url, query)?;
         let cache_key = ddg_cache_key(&self.config.ddg_base_url, query);
@@ -132,11 +138,8 @@ impl DdgDiscovery {
                         let links = extract_links(&body);
                         let deduped = dedupe_urls(links);
                         let filtered = filter_blocked_urls(deduped, &self.blocklist);
-                        let response_for_cache = build_response_for_limit(
-                            query,
-                            filtered,
-                            self.config.max_results,
-                        );
+                        let response_for_cache =
+                            build_response_for_limit(query, filtered, cache_limit);
                         let response = build_response_for_limit(
                             query,
                             response_for_cache

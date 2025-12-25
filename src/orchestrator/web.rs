@@ -4,6 +4,7 @@ use crate::index::Indexer;
 use crate::libs::LibsIndexer;
 use crate::ollama::OllamaClient;
 use crate::search;
+use crate::state_layout::StateLayout;
 use crate::tier2::{Tier2Unavailable, Tier2UnavailableReason};
 use crate::max_size::truncate_utf8_chars;
 use crate::util;
@@ -17,6 +18,7 @@ use crate::web::WebConfig;
 use ammonia::Builder as HtmlCleaner;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::env;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -40,6 +42,22 @@ const WEB_MAX_BATCHES: usize = 2;
 const MAX_CODE_BLOCKS: usize = 4;
 const MAX_CODE_BLOCK_CHARS: usize = 1800;
 const WEB_MIN_RELEVANCE_SCORE: f32 = 0.4;
+const WEB_CHUNK_MAX_CHARS: usize = 700;
+const WEB_CHUNK_MIN: usize = 2;
+const WEB_CHUNK_MAX: usize = 4;
+const WEB_DEF_SECTION_MAX: usize = 4;
+const WEB_SECTION_MAX_CHARS: usize = 420;
+const WEB_HEADING_MAX_CHARS: usize = 120;
+const WEB_MAX_RESULTS_PER_DOMAIN: usize = 2;
+const WEB_NOISE_RATIO_THRESHOLD: f32 = 0.5;
+const WEB_STRUCTURED_MAX_ITEMS: usize = 24;
+const WEB_STRUCTURED_MAX_LIST_ITEMS: usize = 12;
+const WEB_STRUCTURED_MAX_GLOBAL_PARAS: usize = 2;
+const WEB_QUALITY_FAIL_THRESHOLD: u32 = 3;
+const WEB_QUALITY_BLOCK_THRESHOLD: u32 = 2;
+const WEB_QUALITY_CHALLENGE_THRESHOLD: u32 = 1;
+const WEB_QUALITY_COOLDOWN_SECS: u64 = 600;
+const WEB_QUALITY_TTL_SECS: u64 = 86_400;
 
 static STOPWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
@@ -59,6 +77,28 @@ static CODE_BLOCK_RE: Lazy<regex::Regex> = Lazy::new(|| {
 
 static TAG_RE: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r"(?is)<[^>]+>").expect("valid tag regex")
+});
+
+static BLOCK_BREAK_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"(?is)<br\\s*/?>|</(p|div|li|section|article|h[1-6]|ul|ol)>")
+        .expect("valid block break regex")
+});
+
+static SCRIPT_STYLE_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"(?is)<(script|style)[^>]*>.*?</\\1>").expect("valid script/style regex")
+});
+
+static HEADING_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"(?is)<h([1-6])[^>]*>(.*?)</h\\1>").expect("valid heading regex")
+});
+
+static PARA_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"(?is)<p[^>]*>(.*?)</p>").expect("valid paragraph regex")
+});
+
+static STRUCTURED_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"(?is)<(h[1-6]|p|li)[^>]*>(.*?)</\\1>")
+        .expect("valid structured regex")
 });
 
 #[derive(Clone, Debug)]
@@ -226,6 +266,32 @@ struct WebFetchCacheEntry {
     code_blocks: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WebSummaryCacheEntry {
+    query_hash: String,
+    content_hash: String,
+    relevance_score: f32,
+    kind: String,
+    output: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DomainQualityEntry {
+    host: String,
+    fail_count: u32,
+    blocked_count: u32,
+    challenge_count: u32,
+    last_failure_epoch_ms: u64,
+    cooldown_until_epoch_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DomainFailureKind {
+    Fetch,
+    Blocked,
+    Challenge,
+}
+
 #[derive(Clone)]
 struct WebSummaryClient {
     client: OllamaClient,
@@ -284,9 +350,11 @@ impl WebSummaryClient {
         let score = parsed.score.clamp(0.0, 1.0);
         let kind = parsed.kind.trim().to_ascii_lowercase();
         let output = if kind == "code" {
-            clean_code_text(&parsed.output)
+            let cleaned = clean_code_text(&parsed.output);
+            format_md_code(&cleaned)
         } else {
-            clean_summary_text(&parsed.output)
+            let cleaned = clean_summary_text(&parsed.output);
+            format_md_summary(&cleaned)
         };
         if !relevant || output.is_empty() {
             return None;
@@ -404,7 +472,7 @@ fn build_summary_prompt(query: &str, content: &str, code_blocks: &[String]) -> S
         }
     }
     prompt.push_str(
-        "\nInstructions:\n- Decide if the page is relevant to the query.\n- If relevant and the query asks for code/example, output ONLY the code from the provided code blocks. Do not add or rewrite code.\n- If relevant and not code-focused, output 2-4 bullet points with key facts.\n- If irrelevant or no relevant code exists, set relevant=false and output empty string.\n\nReturn JSON ONLY in this shape:\n{\"relevant\":true|false,\"score\":0..1,\"kind\":\"summary\"|\"code\",\"output\":\"...\"}\n",
+        "\nInstructions:\n- Decide if the page is relevant to the query.\n- If relevant and the query asks for code/example, output ONLY the code from the provided code blocks as Markdown fenced code blocks. Do not add or rewrite code.\n- If relevant and not code-focused, output 2-4 bullet points in Markdown.\n- If irrelevant or no relevant code exists, set relevant=false and output empty string.\n\nReturn JSON ONLY in this shape:\n{\"relevant\":true|false,\"score\":0..1,\"kind\":\"summary\"|\"code\",\"output\":\"...\"}\n",
     );
     prompt
 }
@@ -467,6 +535,55 @@ fn clean_code_text(text: &str) -> String {
         return body.join("\n").trim().to_string();
     }
     trimmed.to_string()
+}
+
+fn format_md_output(kind: &str, output: &str) -> String {
+    match kind {
+        "code" => format_md_code(output),
+        _ => format_md_summary(output),
+    }
+}
+
+fn format_md_summary(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let mut bullet_lines = Vec::new();
+    let mut has_bullets = true;
+    for line in trimmed.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let is_bullet = line.starts_with("- ") || line.starts_with("* ");
+        if !is_bullet {
+            has_bullets = false;
+        }
+        bullet_lines.push(line.to_string());
+    }
+    if bullet_lines.is_empty() {
+        return String::new();
+    }
+    if has_bullets {
+        return bullet_lines.join("\n");
+    }
+    bullet_lines
+        .into_iter()
+        .map(|line| format!("- {}", line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_md_code(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.contains("```") {
+        return trimmed.to_string();
+    }
+    format!("```\n{}\n```", trimmed)
 }
 
 fn parse_json_response<T: serde::de::DeserializeOwned>(text: &str) -> Option<T> {
@@ -784,7 +901,8 @@ async fn run_web_discovery(
         }
     };
 
-    let discovery_limit = limit.max(WEB_BATCH_SIZE * WEB_MAX_BATCHES);
+    let discovery_limit = (limit * WEB_MAX_RESULTS_PER_DOMAIN)
+        .max(WEB_BATCH_SIZE * WEB_MAX_BATCHES);
     match discovery.discover(query, discovery_limit).await {
         Ok(response) => {
             let (discovery_response, urls) =
@@ -850,6 +968,7 @@ fn normalize_discovery_response(
     let mut urls = dedupe_urls(urls);
     urls.retain(|value| is_allowed_url(value, &config.blocklist));
     urls.retain(|value| !is_tracking_url(value));
+    let urls = enforce_domain_diversity(urls, WEB_MAX_RESULTS_PER_DOMAIN);
     let results = urls
         .iter()
         .take(limit)
@@ -863,6 +982,35 @@ fn normalize_discovery_response(
         },
         urls,
     )
+}
+
+fn enforce_domain_diversity(urls: Vec<String>, max_per_domain: usize) -> Vec<String> {
+    if max_per_domain == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut counts = std::collections::HashMap::new();
+    for url in urls {
+        let host = match url::Url::parse(&url) {
+            Ok(parsed) => parsed
+                .host_str()
+                .map(|value| value.trim().to_ascii_lowercase()),
+            Err(_) => None,
+        };
+        let Some(host) = host else {
+            continue;
+        };
+        if host.is_empty() {
+            continue;
+        }
+        let entry = counts.entry(host).or_insert(0usize);
+        if *entry >= max_per_domain {
+            continue;
+        }
+        *entry += 1;
+        out.push(url);
+    }
+    out
 }
 
 fn is_allowed_url(raw: &str, blocklist: &[String]) -> bool {
@@ -905,6 +1053,188 @@ fn is_tracking_url(raw: &str) -> bool {
         }
     }
     false
+}
+
+fn domain_quality_key(host: &str) -> String {
+    format!("quality:{host}")
+}
+
+fn read_domain_quality(layout: &StateLayout, host: &str) -> Option<DomainQualityEntry> {
+    let key = domain_quality_key(host);
+    let ttl = Duration::from_secs(WEB_QUALITY_TTL_SECS);
+    let payload = cache::read_cache_entry_with_ttl(layout, &key, ttl).ok()??;
+    serde_json::from_slice(&payload).ok()
+}
+
+fn write_domain_quality(layout: &StateLayout, entry: &DomainQualityEntry) {
+    if let Ok(payload) = serde_json::to_vec(entry) {
+        let _ = cache::write_cache_entry(layout, &domain_quality_key(&entry.host), &payload);
+    }
+}
+
+fn domain_in_cooldown(layout: &StateLayout, host: &str, now_ms: u64) -> Option<u64> {
+    let entry = read_domain_quality(layout, host)?;
+    if entry.cooldown_until_epoch_ms > now_ms {
+        Some(entry.cooldown_until_epoch_ms)
+    } else {
+        None
+    }
+}
+
+fn record_domain_failure(
+    layout: Option<&StateLayout>,
+    host: &str,
+    kind: DomainFailureKind,
+    now_ms: u64,
+) {
+    let layout = match layout {
+        Some(layout) => layout,
+        None => return,
+    };
+    let mut entry = read_domain_quality(layout, host).unwrap_or(DomainQualityEntry {
+        host: host.to_string(),
+        fail_count: 0,
+        blocked_count: 0,
+        challenge_count: 0,
+        last_failure_epoch_ms: now_ms,
+        cooldown_until_epoch_ms: 0,
+    });
+    match kind {
+        DomainFailureKind::Fetch => {
+            entry.fail_count = entry.fail_count.saturating_add(1);
+        }
+        DomainFailureKind::Blocked => {
+            entry.blocked_count = entry.blocked_count.saturating_add(1);
+        }
+        DomainFailureKind::Challenge => {
+            entry.challenge_count = entry.challenge_count.saturating_add(1);
+        }
+    }
+    entry.last_failure_epoch_ms = now_ms;
+    if entry.fail_count >= WEB_QUALITY_FAIL_THRESHOLD
+        || entry.blocked_count >= WEB_QUALITY_BLOCK_THRESHOLD
+        || entry.challenge_count >= WEB_QUALITY_CHALLENGE_THRESHOLD
+    {
+        entry.cooldown_until_epoch_ms =
+            now_ms.saturating_add(WEB_QUALITY_COOLDOWN_SECS * 1000);
+    }
+    write_domain_quality(layout, &entry);
+}
+
+fn record_domain_success(layout: Option<&StateLayout>, host: &str) {
+    let layout = match layout {
+        Some(layout) => layout,
+        None => return,
+    };
+    let mut entry = read_domain_quality(layout, host).unwrap_or(DomainQualityEntry {
+        host: host.to_string(),
+        fail_count: 0,
+        blocked_count: 0,
+        challenge_count: 0,
+        last_failure_epoch_ms: 0,
+        cooldown_until_epoch_ms: 0,
+    });
+    entry.fail_count = 0;
+    entry.blocked_count = 0;
+    entry.challenge_count = 0;
+    entry.cooldown_until_epoch_ms = 0;
+    write_domain_quality(layout, &entry);
+}
+
+fn classify_status_failure(status: Option<u16>) -> Option<DomainFailureKind> {
+    match status {
+        Some(401 | 403 | 429 | 451) => Some(DomainFailureKind::Blocked),
+        Some(code) if code >= 500 => Some(DomainFailureKind::Fetch),
+        Some(404 | 408) => Some(DomainFailureKind::Fetch),
+        Some(code) if code >= 400 => Some(DomainFailureKind::Blocked),
+        _ => None,
+    }
+}
+
+fn normalize_query_key(query: &str) -> String {
+    let mut parts = Vec::new();
+    let mut buf = String::new();
+    for ch in query.chars() {
+        if ch.is_ascii_alphanumeric() {
+            buf.push(ch.to_ascii_lowercase());
+        } else if !buf.is_empty() {
+            parts.push(buf.clone());
+            buf.clear();
+        }
+    }
+    if !buf.is_empty() {
+        parts.push(buf);
+    }
+    parts.join(" ")
+}
+
+fn hash_text(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+fn summary_cache_key(query_hash: &str, content_hash: &str) -> String {
+    format!("summary:{query_hash}:{content_hash}")
+}
+
+fn summary_cache_entry(
+    query: &str,
+    content_text: &str,
+    code_blocks: &[String],
+) -> (String, String) {
+    let query_hash = hash_text(&normalize_query_key(query));
+    let mut content_input = String::new();
+    content_input.push_str(content_text);
+    if !code_blocks.is_empty() {
+        content_input.push_str("\n\n");
+        content_input.push_str(&code_blocks.join("\n\n"));
+    }
+    let content_hash = hash_text(&content_input);
+    (query_hash, content_hash)
+}
+
+fn read_summary_cache(
+    layout: &StateLayout,
+    query_hash: &str,
+    content_hash: &str,
+    ttl: Duration,
+) -> Option<WebEvalOutput> {
+    if ttl.is_zero() {
+        return None;
+    }
+    let key = summary_cache_key(query_hash, content_hash);
+    let payload = cache::read_cache_entry_with_ttl(layout, &key, ttl).ok()??;
+    let entry: WebSummaryCacheEntry = serde_json::from_slice(&payload).ok()?;
+    if entry.query_hash != query_hash || entry.content_hash != content_hash {
+        return None;
+    }
+    if entry.output.trim().is_empty() {
+        return None;
+    }
+    Some(WebEvalOutput {
+        relevance_score: entry.relevance_score.clamp(0.0, 1.0),
+        kind: entry.kind,
+        output: entry.output,
+    })
+}
+
+fn write_summary_cache(
+    layout: &StateLayout,
+    query_hash: &str,
+    content_hash: &str,
+    evaluation: &WebEvalOutput,
+) {
+    let entry = WebSummaryCacheEntry {
+        query_hash: query_hash.to_string(),
+        content_hash: content_hash.to_string(),
+        relevance_score: evaluation.relevance_score.clamp(0.0, 1.0),
+        kind: evaluation.kind.clone(),
+        output: evaluation.output.clone(),
+    };
+    if let Ok(payload) = serde_json::to_vec(&entry) {
+        let _ = cache::write_cache_entry(layout, &summary_cache_key(query_hash, content_hash), &payload);
+    }
 }
 
 async fn fetch_web_documents(
@@ -955,6 +1285,7 @@ async fn fetch_web_documents(
             }];
         }
     };
+    let boilerplate_phrases = &config.boilerplate_phrases;
 
     let mut all_results = Vec::new();
     let mut success_count = 0usize;
@@ -966,12 +1297,17 @@ async fn fetch_web_documents(
                 Ok(url) => url,
                 Err(_) => continue,
             };
+            let host = match url.host_str() {
+                Some(host) => host.trim().to_ascii_lowercase(),
+                None => continue,
+            };
             let cache_key = url.as_str();
             let mut cached = false;
             let mut fetched_at_epoch_ms = None;
             let mut status: Option<u16> = None;
             let mut content: Option<String> = None;
             let mut code_blocks: Vec<String> = Vec::new();
+            let mut quality_penalty = 1.0f32;
 
             if let Some(layout) = layout.as_ref() {
                 if let Ok(Some(payload)) =
@@ -988,20 +1324,130 @@ async fn fetch_web_documents(
             }
 
             if content.is_none() {
+                let now_ms = now_epoch_ms_u64();
+                if let Some(layout) = layout.as_ref() {
+                    if let Some(until_ms) = domain_in_cooldown(layout, &host, now_ms) {
+                        batch_results.push(WebFetchResult {
+                            url: url.to_string(),
+                            status: None,
+                            fetched_at_epoch_ms: None,
+                            cached: false,
+                            content: None,
+                            ai_digested_content: None,
+                            ai_digested_kind: None,
+                            relevance_score: None,
+                            error: Some(format!(
+                                "web fetch skipped for host cooldown until {until_ms}"
+                            )),
+                        });
+                        continue;
+                    }
+                }
                 crate::web::fetch::enforce_domain_delay(&url, config.fetch_delay).await;
                 fetched_at_epoch_ms = Some(now_epoch_ms());
                 let status_probe =
                     fetch_status(&url, &config.user_agent, config.request_timeout).await;
+                if should_skip_status(status_probe) {
+                    batch_results.push(WebFetchResult {
+                        url: url.to_string(),
+                        status: status_probe,
+                        fetched_at_epoch_ms,
+                        cached: false,
+                        content: None,
+                        ai_digested_content: None,
+                        ai_digested_kind: None,
+                        relevance_score: None,
+                        error: Some("web fetch skipped due to preflight status".to_string()),
+                    });
+                    continue;
+                }
                 match fetch_dom(&url, &chrome_config).await {
-                    Ok(html) => {
-                        status = status_probe;
+                    Ok(fetch_result) => {
+                        status = fetch_result.status.or(status_probe);
+                        let html = fetch_result.html;
                         code_blocks = extract_code_blocks(&html);
-                        let readable = extract_readable_text(&html, &url)
+                        if is_js_challenge(&html) {
+                            record_domain_failure(
+                                layout.as_ref(),
+                                &host,
+                                DomainFailureKind::Challenge,
+                                now_ms,
+                            );
+                            batch_results.push(WebFetchResult {
+                                url: url.to_string(),
+                                status,
+                                fetched_at_epoch_ms,
+                                cached: false,
+                                content: None,
+                                ai_digested_content: None,
+                                ai_digested_kind: None,
+                                relevance_score: None,
+                                error: Some("web fetch blocked by JS challenge".to_string()),
+                            });
+                            continue;
+                        }
+                        let ad_markers = count_ad_markers(&html);
+                        let mut readable = extract_readable_text(&html, &url)
                             .unwrap_or_else(|| clean_web_text(&html));
-                        let (trimmed, _) = truncate_utf8_chars(&readable, MAX_WEB_DOC_CHARS);
+                        let mut boiler_ratio = boilerplate_ratio(&readable, boilerplate_phrases);
+                        if boiler_ratio >= WEB_NOISE_RATIO_THRESHOLD {
+                            let structured = extract_structured_html_text(&html, boilerplate_phrases);
+                            if !structured.trim().is_empty() {
+                                readable = structured;
+                                boiler_ratio = boilerplate_ratio(&readable, boilerplate_phrases);
+                            }
+                        }
+                        let penalty = quality_penalty(boiler_ratio, ad_markers);
+                        if penalty == 0.0 {
+                            batch_results.push(WebFetchResult {
+                                url: url.to_string(),
+                                status: status_probe,
+                                fetched_at_epoch_ms,
+                                cached: false,
+                                content: None,
+                                ai_digested_content: None,
+                                ai_digested_kind: None,
+                                relevance_score: None,
+                                error: Some("web fetch skipped due to boilerplate noise".to_string()),
+                            });
+                            continue;
+                        }
+                        quality_penalty = penalty;
+                        let filtered = filter_boilerplate_text(query, &readable, boilerplate_phrases);
+                        let readable = if filtered.trim().is_empty() {
+                            readable
+                        } else {
+                            filtered
+                        };
+                        let intent = detect_query_intent(query);
+                        let (content_input, should_chunk) = match intent {
+                            QueryIntent::Code => {
+                                if code_blocks.is_empty() {
+                                    (readable, true)
+                                } else {
+                                    (join_code_blocks(&code_blocks), false)
+                                }
+                            }
+                            QueryIntent::Definition => {
+                                match extract_definition_sections(query, &html, boilerplate_phrases) {
+                                    Some(value) => (value, false),
+                                    None => (readable, true),
+                                }
+                            }
+                            QueryIntent::General => (readable, true),
+                        };
+                        let focused = if should_chunk {
+                            select_top_chunks(query, &content_input)
+                        } else {
+                            content_input
+                        };
+                        let (trimmed, _) = truncate_utf8_chars(&focused, MAX_WEB_DOC_CHARS);
                         content = Some(trimmed);
                     }
                     Err(err) => {
+                        let failure_kind =
+                            classify_status_failure(status_probe).unwrap_or(DomainFailureKind::Fetch);
+                        record_domain_failure(layout.as_ref(), &host, failure_kind, now_ms);
                         batch_results.push(WebFetchResult {
                             url: url.to_string(),
                             status: status_probe,
@@ -1022,19 +1468,33 @@ async fn fetch_web_documents(
                 continue;
             };
 
-            let evaluation = if let Some(summary_client) = summary_client.as_ref() {
+            let (query_hash, content_hash) =
+                summary_cache_entry(query, content_text, &code_blocks);
+            let cached_summary = layout
+                .as_ref()
+                .and_then(|layout| {
+                    read_summary_cache(layout, &query_hash, &content_hash, config.cache_ttl)
+                });
+            let used_cached_summary = cached_summary.is_some();
+            let evaluation = if let Some(summary) = cached_summary {
+                Some(summary)
+            } else if let Some(summary_client) = summary_client.as_ref() {
                 summary_client.evaluate(query, content_text, &code_blocks).await
             } else {
                 Some(WebEvalOutput {
                     relevance_score: 0.0,
                     kind: "summary".to_string(),
-                    output: content_text.clone(),
+                    output: format_md_summary(content_text),
                 })
             };
 
             let Some(evaluation) = evaluation else {
                 continue;
             };
+            let formatted_output = format_md_output(&evaluation.kind, &evaluation.output);
+            if formatted_output.trim().is_empty() {
+                continue;
+            }
 
             if !cached {
                 if let Some(layout) = layout.as_ref() {
@@ -1055,18 +1515,29 @@ async fn fetch_web_documents(
                 }
             }
 
+            if !used_cached_summary {
+                if let Some(layout) = layout.as_ref() {
+                    if config.cache_ttl.as_secs() > 0 {
+                        write_summary_cache(layout, &query_hash, &content_hash, &evaluation);
+                    }
+                }
+            }
+
             let match_stats = web_match_stats(query, content_text, &code_blocks);
-            let relevance_score = blend_relevance_score(evaluation.relevance_score, &match_stats);
+            let relevance_score =
+                (blend_relevance_score(evaluation.relevance_score, &match_stats) * quality_penalty)
+                    .clamp(0.0, 1.0);
             if relevance_score > best_in_batch {
                 best_in_batch = relevance_score;
             }
+            record_domain_success(layout.as_ref(), &host);
             batch_results.push(WebFetchResult {
                 url: url.to_string(),
                 status,
                 fetched_at_epoch_ms,
                 cached,
                 content: Some(content_text.clone()),
-                ai_digested_content: Some(evaluation.output),
+                ai_digested_content: Some(formatted_output),
                 ai_digested_kind: Some(evaluation.kind),
                 relevance_score: Some(relevance_score),
                 error: None,
@@ -1098,11 +1569,62 @@ async fn fetch_web_documents(
 }
 
 fn clean_web_text(html: &str) -> String {
+    let with_breaks = BLOCK_BREAK_RE.replace_all(html, "\n");
     let cleaned = HtmlCleaner::default()
         .tags(std::collections::HashSet::new())
-        .clean(html)
+        .clean(with_breaks.as_ref())
         .to_string();
-    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
+    cleaned
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn extract_structured_html_text(html: &str, phrases: &[String]) -> String {
+    let cleaned = SCRIPT_STYLE_RE.replace_all(html, "");
+    let mut out = Vec::new();
+    let mut list_count = 0usize;
+    let mut global_paras = 0usize;
+    let mut need_paragraph = false;
+
+    for caps in STRUCTURED_RE.captures_iter(cleaned.as_ref()) {
+        let tag = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+        let raw = caps.get(2).map(|m| m.as_str()).unwrap_or_default();
+        let text = clean_html_fragment(raw);
+        if text.is_empty() {
+            continue;
+        }
+        let lower = text.to_ascii_lowercase();
+        if is_boilerplate_line(&text, &lower, phrases) {
+            continue;
+        }
+        if tag.starts_with('h') {
+            out.push(text);
+            need_paragraph = true;
+        } else if tag == "p" {
+            if need_paragraph || global_paras < WEB_STRUCTURED_MAX_GLOBAL_PARAS {
+                out.push(text);
+                if need_paragraph {
+                    need_paragraph = false;
+                } else {
+                    global_paras += 1;
+                }
+            }
+        } else if tag == "li" {
+            if list_count >= WEB_STRUCTURED_MAX_LIST_ITEMS {
+                continue;
+            }
+            out.push(format!("- {text}"));
+            list_count += 1;
+        }
+        if out.len() >= WEB_STRUCTURED_MAX_ITEMS {
+            break;
+        }
+    }
+
+    out.join("\n")
 }
 
 fn extract_code_blocks(html: &str) -> Vec<String> {
@@ -1140,6 +1662,10 @@ fn now_epoch_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
+}
+
+fn now_epoch_ms_u64() -> u64 {
+    now_epoch_ms().try_into().unwrap_or(u64::MAX)
 }
 
 fn build_completion(query: &str, hits: &[Hit]) -> String {
@@ -1235,6 +1761,499 @@ fn collect_tokens(text: &str, out: &mut HashSet<String>) {
             out.insert(buf.clone());
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum QueryIntent {
+    Code,
+    Definition,
+    General,
+}
+
+fn detect_query_intent(query: &str) -> QueryIntent {
+    let query_lc = query.trim().to_ascii_lowercase();
+    if query_lc.is_empty() {
+        return QueryIntent::General;
+    }
+    let tokens = tokenize_terms(&query_lc);
+    let code_intent = tokens.iter().any(|token| {
+        matches!(
+            token.as_str(),
+            "code"
+                | "example"
+                | "examples"
+                | "sample"
+                | "snippet"
+                | "snippets"
+                | "implement"
+                | "implementation"
+                | "tutorial"
+                | "demo"
+                | "template"
+                | "boilerplate"
+        )
+    }) || query_lc.contains("how to ");
+    if code_intent {
+        return QueryIntent::Code;
+    }
+    let definition_intent = tokens.iter().any(|token| {
+        matches!(
+            token.as_str(),
+            "define"
+                | "definition"
+                | "meaning"
+                | "explain"
+                | "overview"
+                | "concept"
+                | "what"
+        )
+    }) || query_lc.starts_with("what is ")
+        || query_lc.starts_with("what's ");
+    if definition_intent {
+        return QueryIntent::Definition;
+    }
+    QueryIntent::General
+}
+
+fn join_code_blocks(blocks: &[String]) -> String {
+    let mut output = String::new();
+    for (idx, block) in blocks.iter().enumerate() {
+        let trimmed = block.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if idx > 0 {
+            output.push_str("\n\n");
+        }
+        output.push_str(trimmed);
+    }
+    output
+}
+
+fn extract_definition_sections(query: &str, html: &str, phrases: &[String]) -> Option<String> {
+    let query_tokens = tokenize_terms(query);
+    if query_tokens.is_empty() {
+        return None;
+    }
+    let cleaned = SCRIPT_STYLE_RE.replace_all(html, "");
+    let mut headings = Vec::new();
+    for caps in HEADING_RE.captures_iter(&cleaned) {
+        let mat = caps.get(0)?;
+        let heading_raw = caps.get(2).map(|m| m.as_str()).unwrap_or_default();
+        let heading = clean_html_fragment(heading_raw);
+        if heading.is_empty() {
+            continue;
+        }
+        let (heading_trimmed, _) = truncate_utf8_chars(&heading, WEB_HEADING_MAX_CHARS);
+        headings.push((mat.start(), mat.end(), heading_trimmed));
+    }
+    if headings.is_empty() {
+        return None;
+    }
+    let mut sections: Vec<(f32, usize, String, String)> = Vec::new();
+    for idx in 0..headings.len() {
+        let (_, end, heading_text) = &headings[idx];
+        let slice_end = headings.get(idx + 1).map(|item| item.0).unwrap_or(cleaned.len());
+        if slice_end <= *end {
+            continue;
+        }
+        let slice = &cleaned[*end..slice_end];
+        let para_caps = PARA_RE.captures(slice);
+        let para_raw = match para_caps.and_then(|caps| caps.get(1)) {
+            Some(m) => m.as_str(),
+            None => continue,
+        };
+        let paragraph = clean_html_fragment(para_raw);
+        if paragraph.is_empty() {
+            continue;
+        }
+        let lower = paragraph.to_ascii_lowercase();
+        if is_boilerplate_line(&paragraph, &lower, phrases)
+            && !query_tokens.iter().any(|token| lower.contains(token))
+        {
+            continue;
+        }
+        let score = section_score(&query_tokens, heading_text, &paragraph);
+        if score <= 0.0 {
+            continue;
+        }
+        let (paragraph_trimmed, _) = truncate_utf8_chars(&paragraph, WEB_SECTION_MAX_CHARS);
+        sections.push((score, idx, heading_text.clone(), paragraph_trimmed));
+    }
+    if sections.is_empty() {
+        return None;
+    }
+    sections.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    let keep = sections.len().min(WEB_DEF_SECTION_MAX);
+    let mut selected: Vec<(usize, String, String)> = sections
+        .into_iter()
+        .take(keep)
+        .map(|(_, idx, heading, paragraph)| (idx, heading, paragraph))
+        .collect();
+    selected.sort_by_key(|item| item.0);
+    let mut output = String::new();
+    for (pos, (_, heading, paragraph)) in selected.into_iter().enumerate() {
+        if pos > 0 {
+            output.push_str("\n\n");
+        }
+        output.push_str("## ");
+        output.push_str(&heading);
+        output.push('\n');
+        output.push_str(&paragraph);
+    }
+    if output.trim().is_empty() {
+        None
+    } else {
+        Some(output)
+    }
+}
+
+fn section_score(query_tokens: &[String], heading: &str, paragraph: &str) -> f32 {
+    if query_tokens.is_empty() {
+        return 0.0;
+    }
+    let mut tokens = HashSet::new();
+    collect_tokens(heading, &mut tokens);
+    collect_tokens(paragraph, &mut tokens);
+    if tokens.is_empty() {
+        return 0.0;
+    }
+    let matched = query_tokens
+        .iter()
+        .filter(|token| tokens.contains(*token))
+        .count();
+    matched as f32 / query_tokens.len() as f32
+}
+
+fn clean_html_fragment(value: &str) -> String {
+    let stripped = TAG_RE.replace_all(value, "");
+    let unescaped = html_unescape_text(stripped.as_ref());
+    unescaped.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn filter_boilerplate_text(query: &str, text: &str, phrases: &[String]) -> String {
+    let query_tokens = tokenize_terms(query);
+    let mut seen = HashSet::new();
+    let mut kept = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        let normalized = normalize_line(&lower);
+        if !query_tokens.is_empty()
+            && query_tokens.iter().any(|token| lower.contains(token))
+        {
+            if seen.insert(normalized.clone()) {
+                kept.push(truncate_line(trimmed));
+            }
+            continue;
+        }
+        if is_boilerplate_line(trimmed, &lower, phrases) {
+            continue;
+        }
+        if seen.insert(normalized) {
+            kept.push(truncate_line(trimmed));
+        }
+    }
+    kept.join("\n")
+}
+
+fn normalize_line(line: &str) -> String {
+    let mut out = String::new();
+    let mut last_space = false;
+    for ch in line.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            last_space = false;
+        } else if !last_space {
+            out.push(' ');
+            last_space = true;
+        }
+    }
+    out.trim().to_string()
+}
+
+fn truncate_line(line: &str) -> String {
+    let max_chars = 320usize;
+    if line.chars().count() <= max_chars {
+        return line.to_string();
+    }
+    let mut out = String::new();
+    let mut count = 0usize;
+    for ch in line.chars() {
+        if count >= max_chars {
+            break;
+        }
+        out.push(ch);
+        count += 1;
+    }
+    out.trim_end().to_string()
+}
+
+fn boilerplate_ratio(text: &str, phrases: &[String]) -> f32 {
+    let mut total = 0usize;
+    let mut boiler = 0usize;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        total += 1;
+        let lower = trimmed.to_ascii_lowercase();
+        if is_boilerplate_line(trimmed, &lower, phrases) {
+            boiler += 1;
+        }
+    }
+    if total == 0 {
+        0.0
+    } else {
+        boiler as f32 / total as f32
+    }
+}
+
+fn quality_penalty(boiler_ratio: f32, ad_markers: usize) -> f32 {
+    if boiler_ratio >= 0.6 {
+        return 0.0;
+    }
+    let mut penalty = 1.0;
+    if boiler_ratio >= 0.4 {
+        penalty *= 0.6;
+    } else if boiler_ratio >= 0.25 {
+        penalty *= 0.8;
+    }
+    if ad_markers >= 8 {
+        penalty *= 0.7;
+    } else if ad_markers >= 4 {
+        penalty *= 0.85;
+    }
+    penalty.clamp(0.0, 1.0)
+}
+
+fn should_skip_status(status: Option<u16>) -> bool {
+    matches!(status, Some(404 | 410))
+}
+
+fn is_js_challenge(html: &str) -> bool {
+    let lower = html.to_ascii_lowercase();
+    let patterns = [
+        "just a moment",
+        "enable javascript",
+        "checking your browser",
+        "verify you are human",
+        "cloudflare",
+        "attention required",
+        "captcha",
+        "cf-challenge",
+        "ddos protection",
+        "access denied",
+    ];
+    patterns.iter().any(|pat| lower.contains(pat))
+}
+
+fn count_ad_markers(html: &str) -> usize {
+    let lower = html.to_ascii_lowercase();
+    let markers = [
+        "googlesyndication",
+        "doubleclick",
+        "adsbygoogle",
+        "adservice",
+        "taboola",
+        "outbrain",
+        "advertisement",
+        "sponsored",
+        "adslot",
+        "ad-unit",
+    ];
+    markers.iter().filter(|pat| lower.contains(*pat)).count()
+}
+
+fn is_boilerplate_line(line: &str, lower: &str, phrases: &[String]) -> bool {
+    let len = line.len();
+    if !phrases.is_empty() {
+        for phrase in phrases {
+            if phrase.is_empty() {
+                continue;
+            }
+            if lower.contains(phrase) {
+                return true;
+            }
+        }
+    }
+    if lower.contains("cookie")
+        || lower.contains("gdpr")
+        || lower.contains("consent")
+        || lower.contains("privacy policy")
+        || lower.contains("terms of service")
+        || lower.contains("all rights reserved")
+    {
+        return len < 200;
+    }
+    if lower.contains("subscribe")
+        || lower.contains("sign in")
+        || lower.contains("log in")
+        || lower.contains("sign up")
+        || lower.contains("newsletter")
+    {
+        return len < 160;
+    }
+    if lower.starts_with("share")
+        || lower.contains("facebook")
+        || lower.contains("twitter")
+        || lower.contains("linkedin")
+    {
+        return len < 120;
+    }
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        return len < 200;
+    }
+    let nav_keywords = [
+        "home",
+        "about",
+        "contact",
+        "privacy",
+        "terms",
+        "login",
+        "sign",
+        "menu",
+        "categories",
+        "related",
+        "advertisement",
+    ];
+    let mut nav_hits = 0usize;
+    for word in nav_keywords {
+        if lower.contains(word) {
+            nav_hits += 1;
+        }
+    }
+    if nav_hits >= 2 && len < 140 {
+        return true;
+    }
+    let separators = ['|', '•', '»', '›', '>', '/'];
+    let sep_count = line.chars().filter(|ch| separators.contains(ch)).count();
+    if len < 80 && sep_count >= 2 {
+        return true;
+    }
+    let alpha_count = line.chars().filter(|ch| ch.is_ascii_alphabetic()).count();
+    let ratio = alpha_count as f32 / len.max(1) as f32;
+    if ratio < 0.55 && len < 120 {
+        return true;
+    }
+    let token_count = line.split_whitespace().count();
+    if len < 45 && token_count <= 3 {
+        return true;
+    }
+    false
+}
+
+fn select_top_chunks(query: &str, text: &str) -> String {
+    let query_tokens = tokenize_terms(query);
+    if query_tokens.is_empty() {
+        return text.trim().to_string();
+    }
+    let chunks = split_into_chunks(text, WEB_CHUNK_MAX_CHARS);
+    if chunks.is_empty() {
+        return String::new();
+    }
+    let mut scored: Vec<(usize, f32)> = Vec::new();
+    for (idx, chunk) in chunks.iter().enumerate() {
+        let mut chunk_tokens = HashSet::new();
+        collect_tokens(chunk, &mut chunk_tokens);
+        if chunk_tokens.is_empty() {
+            scored.push((idx, 0.0));
+            continue;
+        }
+        let matched = query_tokens
+            .iter()
+            .filter(|token| chunk_tokens.contains(*token))
+            .count();
+        let score = matched as f32 / query_tokens.len() as f32;
+        scored.push((idx, score));
+    }
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let keep = if chunks.len() <= WEB_CHUNK_MIN {
+        chunks.len()
+    } else {
+        WEB_CHUNK_MAX.min(chunks.len())
+    };
+    let mut selected: Vec<usize> = scored.into_iter().take(keep).map(|pair| pair.0).collect();
+    selected.sort_unstable();
+    let mut output = String::new();
+    for (pos, idx) in selected.into_iter().enumerate() {
+        if let Some(chunk) = chunks.get(idx) {
+            if pos > 0 {
+                output.push_str("\n\n");
+            }
+            output.push_str(chunk.trim());
+        }
+    }
+    output
+}
+
+fn split_into_chunks(text: &str, max_len: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if !current.trim().is_empty() {
+                push_chunk(&mut chunks, &mut current, max_len);
+            }
+            continue;
+        }
+        if !current.is_empty() {
+            current.push('\n');
+        }
+        current.push_str(trimmed);
+        if current.len() >= max_len {
+            push_chunk(&mut chunks, &mut current, max_len);
+        }
+    }
+    if !current.trim().is_empty() {
+        push_chunk(&mut chunks, &mut current, max_len);
+    }
+    chunks
+}
+
+fn push_chunk(chunks: &mut Vec<String>, current: &mut String, max_len: usize) {
+    let trimmed = current.trim();
+    if trimmed.is_empty() {
+        current.clear();
+        return;
+    }
+    let mut start = 0;
+    while start < trimmed.len() {
+        let mut end = start;
+        let mut count = 0usize;
+        let mut last_space = None;
+        for (rel_idx, ch) in trimmed[start..].char_indices() {
+            if count >= max_len {
+                break;
+            }
+            let abs_idx = start + rel_idx;
+            if ch.is_whitespace() {
+                last_space = Some(abs_idx);
+            }
+            count += 1;
+            end = abs_idx + ch.len_utf8();
+        }
+        let split_at = last_space.unwrap_or(end);
+        let chunk = trimmed[start..split_at].trim();
+        if !chunk.is_empty() {
+            chunks.push(chunk.to_string());
+        }
+        start = split_at;
+        while start < trimmed.len() {
+            let ch = trimmed[start..].chars().next().unwrap();
+            if ch.is_whitespace() {
+                start += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+    }
+    current.clear();
 }
 
 struct WebMatchStats {

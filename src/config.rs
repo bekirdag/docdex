@@ -173,6 +173,10 @@ pub struct WebConfigSection {
     #[serde(default)]
     pub blocklist: Vec<String>,
     #[serde(default)]
+    pub boilerplate_phrases: Vec<String>,
+    #[serde(default)]
+    pub boilerplate_phrases_path: Option<PathBuf>,
+    #[serde(default)]
     pub scraper: WebScraperConfig,
 }
 
@@ -184,6 +188,8 @@ impl Default for WebConfigSection {
             min_spacing_ms: default_web_min_spacing_ms(),
             cache_ttl_secs: default_web_cache_ttl_secs(),
             blocklist: Vec::new(),
+            boilerplate_phrases: Vec::new(),
+            boilerplate_phrases_path: None,
             scraper: WebScraperConfig::default(),
         }
     }

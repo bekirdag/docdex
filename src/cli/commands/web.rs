@@ -58,12 +58,13 @@ pub async fn run_fetch(url: String) -> Result<()> {
     let chrome_config = ChromeFetchConfig::from_web_config(&config)
         .context("chrome binary not configured")?;
     web::fetch::enforce_domain_delay(&url, config.fetch_delay).await;
-    let status = fetch_status(&url, &config.user_agent, config.request_timeout).await;
-    let html = fetch_dom(&url, &chrome_config).await?;
-    let body = extract_readable_text(&html, &url).unwrap_or_else(|| {
+    let status_probe = fetch_status(&url, &config.user_agent, config.request_timeout).await;
+    let fetch_result = fetch_dom(&url, &chrome_config).await?;
+    let status = fetch_result.status.or(status_probe);
+    let body = extract_readable_text(&fetch_result.html, &url).unwrap_or_else(|| {
         let cleaned = ammonia::Builder::default()
             .tags(std::collections::HashSet::new())
-            .clean(&html)
+            .clean(&fetch_result.html)
             .to_string();
         cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
     });

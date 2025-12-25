@@ -1,4 +1,5 @@
 use std::env;
+use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -17,6 +18,7 @@ pub struct WebConfig {
     pub policy: SpacingBackoffPolicy,
     pub cache_ttl: Duration,
     pub blocklist: Vec<String>,
+    pub boilerplate_phrases: Vec<String>,
     pub fetch_delay: Duration,
     pub scraper_engine: String,
     pub scraper_headless: bool,
@@ -26,7 +28,7 @@ pub struct WebConfig {
 
 impl WebConfig {
     pub fn from_env() -> Self {
-        let enabled = env_bool("DOCDEX_WEB_ENABLED", true);
+        let enabled = env_bool("DOCDEX_WEB_ENABLED", false);
         let user_agent = env::var("DOCDEX_WEB_USER_AGENT")
             .unwrap_or_else(|_| format!("docdexd/{}", env!("CARGO_PKG_VERSION")));
         let base_url = env::var("DOCDEX_DDG_BASE_URL")
@@ -65,6 +67,11 @@ impl WebConfig {
             .or_else(config_request_delay_ms)
             .unwrap_or(1_000);
         let fetch_delay_ms = fetch_delay_ms.max(1_000);
+        let mut boilerplate_phrases = config_boilerplate_phrases().unwrap_or_default();
+        if let Some(path) = config_boilerplate_phrases_path() {
+            boilerplate_phrases.extend(load_boilerplate_file(&path));
+        }
+        let boilerplate_phrases = normalize_phrases(boilerplate_phrases);
         let scraper_engine = config_scraper_engine().unwrap_or_else(|| "chrome".to_string());
         let scraper_headless = config_scraper_headless().unwrap_or(true);
         let chrome_binary_path = config_scraper_chrome_binary();
@@ -89,6 +96,7 @@ impl WebConfig {
             },
             cache_ttl: Duration::from_secs(cache_ttl_secs),
             blocklist,
+            boilerplate_phrases,
             fetch_delay: Duration::from_millis(fetch_delay_ms),
             scraper_engine,
             scraper_headless,
@@ -195,6 +203,29 @@ fn config_blocklist() -> Option<Vec<String>> {
     Some(split_blocklist_list(&config.web.blocklist))
 }
 
+fn config_boilerplate_phrases() -> Option<Vec<String>> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    Some(config.web.boilerplate_phrases.clone())
+}
+
+fn config_boilerplate_phrases_path() -> Option<PathBuf> {
+    let config_path = config::default_config_path().ok()?;
+    if !config_path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&config_path).ok()?;
+    let path = config.web.boilerplate_phrases_path.clone()?;
+    if path.is_absolute() {
+        return Some(path);
+    }
+    let base = config_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    Some(base.join(path))
+}
+
 fn split_blocklist(raw: &str) -> Vec<String> {
     raw.split(',')
         .map(|value| value.trim().to_string())
@@ -206,5 +237,30 @@ fn split_blocklist_list(values: &[String]) -> Vec<String> {
     values
         .iter()
         .flat_map(|value| split_blocklist(value))
+        .collect()
+}
+
+fn normalize_phrases(values: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        out.push(trimmed.to_ascii_lowercase());
+    }
+    out
+}
+
+fn load_boilerplate_file(path: &PathBuf) -> Vec<String> {
+    let data = match fs::read_to_string(path) {
+        Ok(data) => data,
+        Err(_) => return Vec::new(),
+    };
+    data.lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| line.to_ascii_lowercase())
         .collect()
 }

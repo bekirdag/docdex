@@ -43,10 +43,10 @@ const WEB_BATCH_SIZE: usize = 10;
 const WEB_MAX_BATCHES: usize = 2;
 const MAX_CODE_BLOCKS: usize = 4;
 const MAX_CODE_BLOCK_CHARS: usize = 1800;
-const WEB_MIN_RELEVANCE_SCORE: f32 = 0.4;
 const WEB_CHUNK_MAX_CHARS: usize = 700;
 const WEB_CHUNK_MIN: usize = 2;
 const WEB_CHUNK_MAX: usize = 4;
+const WEB_GOOD_RELEVANCE_SCORE: f32 = 0.7;
 const WEB_DEF_SECTION_MAX: usize = 4;
 const WEB_SECTION_MAX_CHARS: usize = 420;
 const WEB_HEADING_MAX_CHARS: usize = 120;
@@ -70,6 +70,10 @@ const COMMON_STOPWORDS: &[&str] = &[
     "your",
 ];
 
+const MATCH_STOPWORDS_EXTRA: &[&str] = &[
+    "add", "append", "build", "create", "insert", "make",
+];
+
 const DOMAIN_STOPWORDS: &[&str] = &[
     "css", "html", "javascript", "js", "plain", "simple",
     "code", "sample", "samples", "example", "examples", "tutorial", "tutorials",
@@ -86,7 +90,11 @@ static STOPWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 });
 
 static MATCH_STOPWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
-    COMMON_STOPWORDS.iter().copied().collect()
+    COMMON_STOPWORDS
+        .iter()
+        .chain(MATCH_STOPWORDS_EXTRA.iter())
+        .copied()
+        .collect()
 });
 
 static CODE_BLOCK_RE: Lazy<regex::Regex> = Lazy::new(|| {
@@ -121,6 +129,40 @@ static PARA_RE: Lazy<regex::Regex> = Lazy::new(|| {
 static STRUCTURED_RE: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r"(?is)<(h[1-6]|p|li)[^>]*>(.*?)</\\1>")
         .expect("valid structured regex")
+});
+
+static HEADING_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"([a-z0-9])#([A-Za-z])").expect("valid heading join regex")
+});
+
+static TAG_ATTR_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"(<[A-Za-z]+)([a-z]{2,})(=)").expect("valid tag attr join regex")
+});
+
+static TLD_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"\\.(com|org|net|io|dev|co|us|uk|edu|gov)([A-Z])")
+        .expect("valid tld join regex")
+});
+
+static LOWER_UPPER_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"([a-z]{4,})([A-Z][a-z]{2,})").expect("valid lower upper join regex")
+});
+
+static AND_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"([a-z])and([A-Z])").expect("valid and join regex")
+});
+
+static PUNCT_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"([.!?])([A-Z])").expect("valid punctuation join regex")
+});
+
+static ALLCAPS_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"([a-z])([A-Z]{2,})").expect("valid allcaps join regex")
+});
+
+static CAMEL_BREAK_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"([A-Za-z]{6,})([A-Z][a-z]{3,})")
+        .expect("valid camel break regex")
 });
 
 #[derive(Clone, Debug)]
@@ -803,6 +845,8 @@ pub(crate) async fn filter_local_hits_with_llm(
     if query_tokens.is_empty() {
         return hits;
     }
+    let query_len = query_tokens.len();
+    let min_required = min_required_matches(query_len);
     let threshold = resolve_local_relevance_threshold();
     let client = load_local_relevance_client();
     if let (Some(score), None) = (top_score_normalized, client.as_ref()) {
@@ -825,6 +869,12 @@ pub(crate) async fn filter_local_hits_with_llm(
             Some(response) => {
                 llm_responses += 1;
                 if response.relevant {
+                    let matched = hit_match_stats(&query_tokens, query_len, hit)
+                        .map(|(matched, _)| matched)
+                        .unwrap_or(0);
+                    if matched < min_required {
+                        continue;
+                    }
                     filtered.push(hit.clone());
                 }
             }
@@ -1397,10 +1447,9 @@ async fn fetch_web_documents(
     let boilerplate_phrases = &config.boilerplate_phrases;
 
     let mut all_results = Vec::new();
-    let mut success_count = 0usize;
+    let mut good_count = 0usize;
     for batch in urls.chunks(WEB_BATCH_SIZE).take(WEB_MAX_BATCHES) {
         let mut batch_results = Vec::new();
-        let mut best_in_batch = 0.0f32;
         for raw in batch {
             let url = match url::Url::parse(raw) {
                 Ok(url) => url,
@@ -1430,7 +1479,7 @@ async fn fetch_web_documents(
                         cached = true;
                         fetched_at_epoch_ms = Some(entry.fetched_at_epoch_ms);
                         status = entry.status;
-                        content = Some(entry.content);
+                        content = Some(normalize_text_spacing(&entry.content));
                         code_blocks = entry.code_blocks;
                     }
                 }
@@ -1496,11 +1545,12 @@ async fn fetch_web_documents(
                             debug_notes.push("readability failed; used fallback extraction".to_string());
                         }
                         let mut readable = readable_opt.unwrap_or_else(|| clean_web_text(&html));
+                        readable = normalize_text_spacing(&readable);
                         let mut boiler_ratio = boilerplate_ratio(&readable, boilerplate_phrases);
                         if boiler_ratio >= WEB_NOISE_RATIO_THRESHOLD {
                             let structured = extract_structured_html_text(&html, boilerplate_phrases);
                             if !structured.trim().is_empty() {
-                                readable = structured;
+                                readable = normalize_text_spacing(&structured);
                             }
                         }
                         if is_js_challenge(&html, &readable) {
@@ -1725,15 +1775,16 @@ async fn fetch_web_documents(
                 output: format_md_summary(content_text),
             });
             if matches!(intent, QueryIntent::Code) && !code_blocks.is_empty() {
-                if evaluation.kind != "code" {
-                    let selected = select_code_blocks_for_query(query, &code_blocks);
-                    let raw_code = join_code_blocks(&selected);
-                    let (snippet, _) = truncate_utf8_chars(&raw_code, MAX_WEB_SUMMARY_INPUT_CHARS);
-                    if !snippet.trim().is_empty() {
-                        evaluation.kind = "code".to_string();
-                        evaluation.output = snippet;
-                    }
+                let selected = select_code_blocks_for_query(query, &code_blocks);
+                let raw_code = join_code_blocks(&selected);
+                let (snippet, _) = truncate_utf8_chars(&raw_code, MAX_WEB_SUMMARY_INPUT_CHARS);
+                if !snippet.trim().is_empty() {
+                    evaluation.kind = "code".to_string();
+                    evaluation.output = snippet;
                 }
+            }
+            if evaluation.kind == "summary" {
+                evaluation.output = content_text.to_string();
             }
             let mut formatted_output = format_md_output(&evaluation.kind, &evaluation.output);
             let mut ai_kind = evaluation.kind.clone();
@@ -1801,9 +1852,14 @@ async fn fetch_web_documents(
                 } else if ai_kind != "code" {
                     relevance_score = (relevance_score * 0.8).clamp(0.0, 1.0);
                 }
-            }
-            if relevance_score > best_in_batch {
-                best_in_batch = relevance_score;
+            } else if matches!(intent, QueryIntent::Definition) {
+                if ai_kind == "summary" {
+                    relevance_score = (relevance_score + 0.05).clamp(0.0, 1.0);
+                } else {
+                    relevance_score = (relevance_score * 0.8).clamp(0.0, 1.0);
+                }
+            } else if ai_kind == "code" {
+                relevance_score = (relevance_score * 0.9).clamp(0.0, 1.0);
             }
             record_domain_success(layout.as_ref(), &host);
             batch_results.push(WebFetchResult {
@@ -1821,12 +1877,12 @@ async fn fetch_web_documents(
         }
 
         if !batch_results.is_empty() {
-            success_count += batch_results
+            good_count += batch_results
                 .iter()
-                .filter(|item| item.error.is_none())
+                .filter(|item| item.relevance_score.unwrap_or(0.0) >= WEB_GOOD_RELEVANCE_SCORE)
                 .count();
             all_results.extend(batch_results);
-            if success_count >= desired_count {
+            if good_count >= desired_count {
                 break;
             }
         }
@@ -1849,12 +1905,68 @@ fn clean_web_text(html: &str) -> String {
     let stripped_scripts = SCRIPT_STYLE_RE.replace_all(with_breaks.as_ref(), " ");
     let stripped_tags = TAG_RE.replace_all(stripped_scripts.as_ref(), "\n");
     let cleaned = html_unescape_text(stripped_tags.as_ref());
-    cleaned
+    let normalized = normalize_text_spacing(&cleaned);
+    normalized
         .lines()
         .map(|line| line.trim())
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn normalize_text_spacing(text: &str) -> String {
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let trimmed = strip_invisible_chars(line).trim().to_string();
+        let trimmed = trimmed.as_str();
+        if trimmed.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        if is_probable_code_line(trimmed) {
+            lines.push(trimmed.to_string());
+            continue;
+        }
+        let mut updated = trimmed.to_string();
+        updated = TAG_ATTR_JOIN_RE.replace_all(&updated, "$1 $2$3").to_string();
+        updated = HEADING_JOIN_RE.replace_all(&updated, "$1\n#$2").to_string();
+        updated = TLD_JOIN_RE.replace_all(&updated, ".$1 $2").to_string();
+        updated = LOWER_UPPER_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
+        updated = AND_JOIN_RE.replace_all(&updated, "$1 and $2").to_string();
+        updated = PUNCT_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
+        updated = ALLCAPS_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
+        updated = CAMEL_BREAK_RE.replace_all(&updated, "$1 $2").to_string();
+        let normalized = updated
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        lines.push(normalized);
+    }
+    lines.join("\n")
+}
+
+fn strip_invisible_chars(text: &str) -> String {
+    text.replace('\u{200B}', " ")
+        .replace('\u{200C}', " ")
+        .replace('\u{200D}', " ")
+        .replace('\u{FEFF}', " ")
+        .replace('\u{00AD}', "")
+}
+
+fn is_probable_code_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.starts_with("```") {
+        return true;
+    }
+    let symbols = ['{', '}', ';', '=', '<', '>', '[', ']', '(', ')'];
+    let symbol_hits = trimmed.chars().filter(|ch| symbols.contains(ch)).count();
+    if symbol_hits >= 2 {
+        return true;
+    }
+    trimmed.contains("::") || trimmed.contains("->") || trimmed.contains("=>")
 }
 
 fn extract_structured_html_text(html: &str, phrases: &[String]) -> String {
@@ -1983,6 +2095,9 @@ fn html_unescape_text(value: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&#x27;", "'")
+        .replace("&nbsp;", " ")
+        .replace("&#160;", " ")
+        .replace("&#xA0;", " ")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
 }
@@ -2030,25 +2145,16 @@ pub(crate) fn local_match_ratio(query: &str, hits: &[Hit]) -> Option<f32> {
         return None;
     }
     let query_len = query_tokens.len();
-    let min_required = if query_len >= 3 { 2 } else { 1 };
+    let min_required = min_required_matches(query_len);
 
     let mut best_ratio = 0.0f32;
     let mut best_matches = 0usize;
     for hit in hits.iter().take(MAX_MATCH_HITS) {
-        let mut hit_tokens = HashSet::new();
-        collect_match_tokens(&hit.summary, &mut hit_tokens);
-        collect_match_tokens(&hit.snippet, &mut hit_tokens);
-        if hit_tokens.is_empty() {
-            continue;
-        }
-        let matched = query_tokens
-            .iter()
-            .filter(|token| hit_tokens.contains(*token))
-            .count();
-        let ratio = matched as f32 / query_len as f32;
-        if ratio > best_ratio {
-            best_ratio = ratio;
-            best_matches = matched;
+        if let Some((matched, ratio)) = hit_match_stats(&query_tokens, query_len, hit) {
+            if ratio > best_ratio {
+                best_ratio = ratio;
+                best_matches = matched;
+            }
         }
     }
 
@@ -2056,6 +2162,32 @@ pub(crate) fn local_match_ratio(query: &str, hits: &[Hit]) -> Option<f32> {
         return Some(0.0);
     }
     Some(best_ratio)
+}
+
+fn hit_match_stats(
+    query_tokens: &[String],
+    query_len: usize,
+    hit: &Hit,
+) -> Option<(usize, f32)> {
+    if query_tokens.is_empty() {
+        return None;
+    }
+    let mut hit_tokens = HashSet::new();
+    collect_match_tokens(&hit.summary, &mut hit_tokens);
+    collect_match_tokens(&hit.snippet, &mut hit_tokens);
+    if hit_tokens.is_empty() {
+        return None;
+    }
+    let matched = query_tokens
+        .iter()
+        .filter(|token| hit_tokens.contains(*token))
+        .count();
+    let ratio = matched as f32 / query_len as f32;
+    Some((matched, ratio))
+}
+
+fn min_required_matches(query_len: usize) -> usize {
+    if query_len >= 3 { 2 } else { 1 }
 }
 
 fn tokenize_terms(text: &str) -> Vec<String> {
@@ -2139,6 +2271,24 @@ fn detect_query_intent(query: &str) -> QueryIntent {
     }) || query_lc.contains("how to ");
     if code_intent {
         return QueryIntent::Code;
+    }
+    let doc_tokens = tokenize_terms_for_match(&query_lc);
+    let doc_intent = doc_tokens.iter().any(|token| {
+        matches!(
+            token.as_str(),
+            "doc"
+                | "docs"
+                | "documentation"
+                | "reference"
+                | "references"
+                | "manual"
+                | "guide"
+                | "guides"
+                | "api"
+        )
+    });
+    if doc_intent {
+        return QueryIntent::Definition;
     }
     let definition_intent = tokens.iter().any(|token| {
         matches!(
@@ -2817,18 +2967,10 @@ fn local_hit_matches(query_tokens: &[String], hit: &Hit) -> bool {
         return true;
     }
     let query_len = query_tokens.len();
-    let min_required = if query_len >= 3 { 2 } else { 1 };
-    let mut hit_tokens = HashSet::new();
-    collect_match_tokens(&hit.summary, &mut hit_tokens);
-    collect_match_tokens(&hit.snippet, &mut hit_tokens);
-    if hit_tokens.is_empty() {
-        return false;
-    }
-    let matched = query_tokens
-        .iter()
-        .filter(|token| hit_tokens.contains(*token))
-        .count();
-    matched >= min_required
+    let min_required = min_required_matches(query_len);
+    hit_match_stats(query_tokens, query_len, hit)
+        .map(|(matched, _)| matched >= min_required)
+        .unwrap_or(false)
 }
 
 fn push_token_with_filter(tokens: &mut Vec<String>, buf: &mut String, keep: fn(&str) -> bool) {

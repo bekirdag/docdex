@@ -1,4 +1,5 @@
 pub mod help_all;
+pub mod check;
 pub mod dag;
 pub mod index;
 pub mod libs;
@@ -18,10 +19,12 @@ use anyhow::Result;
 
 pub async fn dispatch(command: super::Command) -> Result<()> {
     match command {
+        super::Command::Check => check::run().await,
         super::Command::Serve {
             repo,
             host,
             port,
+            expose,
             log,
             tls_cert,
             tls_key,
@@ -58,6 +61,7 @@ pub async fn dispatch(command: super::Command) -> Result<()> {
                 repo,
                 host,
                 port,
+                expose,
                 log,
                 tls_cert,
                 tls_key,
@@ -108,7 +112,8 @@ pub async fn dispatch(command: super::Command) -> Result<()> {
             query,
             limit,
             repo_only,
-        } => query::run(repo, query, limit, repo_only).await,
+            stream,
+        } => query::run(repo, query, limit, repo_only, stream).await,
         super::Command::Repo { command } => repo::run(command),
         super::Command::LibsIngest { repo, sources } => libs::run_ingest(repo, sources),
         super::Command::LibsDiscover { repo, sources } => libs::run_discover(repo, sources),
@@ -120,7 +125,8 @@ pub async fn dispatch(command: super::Command) -> Result<()> {
             query,
             limit,
             repo_only,
-        } => web::run_rag(repo, query, limit, repo_only).await,
+            stream,
+        } => web::run_rag(repo, query, limit, repo_only, stream).await,
         super::Command::Dag { command } => dag::run(command),
         super::Command::RunTests { repo, target } => run_tests::run(repo, target),
         super::Command::Tui { repo } => tui::run(repo),

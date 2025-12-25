@@ -66,6 +66,8 @@ impl SecurityConfig {
         strip_snippet_html: bool,
         secure_mode: bool,
         disable_snippet_text: bool,
+        default_loopback_only: bool,
+        require_auth_token: bool,
     ) -> Result<Self> {
         let mut allow_nets: Vec<ipnet::IpNet> = Vec::new();
         for raw in allow_ips
@@ -85,22 +87,24 @@ impl SecurityConfig {
                 }
             }
         }
-        if secure_mode && allow_nets.is_empty() {
+        if default_loopback_only && allow_nets.is_empty() {
             allow_nets.push("127.0.0.0/8".parse()?);
             if let Ok(ipv6) = "::1/128".parse() {
                 allow_nets.push(ipv6);
             }
         }
         let auth_token = token.filter(|value| !value.is_empty());
-        if secure_mode && auth_token.is_none() {
+        if require_auth_token && auth_token.is_none() {
             return Err(StartupError::new(
                 "startup_auth_required",
-                "secure mode requires an auth token",
+                "exposed mode requires an auth token",
             )
-            .with_hint("Provide `--auth-token <token>` or disable with `--secure-mode=false` for local-only use.")
+            .with_hint(
+                "Provide `--auth-token <token>` when binding to non-loopback addresses (or bind to 127.0.0.1).",
+            )
             .with_remediation(vec![
-                "docdexd serve --repo . --host 127.0.0.1 --port 46137 --auth-token <token>".to_string(),
-                "docdexd serve --repo . --host 127.0.0.1 --port 46137 --secure-mode=false".to_string(),
+                "docdexd serve --repo . --host 0.0.0.0 --port 3210 --expose --auth-token <token> --require-tls=false".to_string(),
+                "docdexd serve --repo . --host 127.0.0.1 --port 3210".to_string(),
             ])
             .into());
         }
@@ -396,7 +400,7 @@ async fn memory_store_handler(
         repo_id.repo_id.as_deref(),
         req.repo_id.as_deref(),
         state.indexer.as_ref(),
-        true,
+        false,
     ) {
         return json_error(err.status, err.code, err.message);
     }
@@ -509,7 +513,7 @@ async fn memory_recall_handler(
         repo_id.repo_id.as_deref(),
         req.repo_id.as_deref(),
         state.indexer.as_ref(),
-        true,
+        false,
     ) {
         return json_error(err.status, err.code, err.message);
     }
@@ -721,9 +725,9 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 example: "docdexd index --repo /workspace",
             },
             AiHelpCli {
-                command: "docdexd serve --repo <path> [--host 127.0.0.1] [--port 46137]",
+                command: "docdexd serve --repo <path> [--host 127.0.0.1] [--port 3210]",
                 description: "Serve HTTP API with watcher for incremental ingest.",
-                example: "docdexd serve --repo /workspace --host 127.0.0.1 --port 46137",
+                example: "docdexd serve --repo /workspace --host 127.0.0.1 --port 3210",
             },
             AiHelpCli {
                 command: "docdexd query --repo <path> --query \"text\" [--limit 8]",

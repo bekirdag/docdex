@@ -15,6 +15,7 @@ pub async fn run(
     repo: RepoArgs,
     host: String,
     port: u16,
+    expose: bool,
     log: String,
     tls_cert: Option<PathBuf>,
     tls_key: Option<PathBuf>,
@@ -87,6 +88,31 @@ pub async fn run(
             })?,
         )
     };
+    let ip = if host.eq_ignore_ascii_case("localhost") {
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+    } else {
+        host.parse::<std::net::IpAddr>().map_err(|_| {
+            StartupError::new(
+                "startup_config_invalid",
+                format!("invalid --host value `{host}`: expected an IP address"),
+            )
+            .with_hint("Use `127.0.0.1` (default) or a specific interface IP like `0.0.0.0`.")
+        })?
+    };
+    let is_loopback = ip.is_loopback();
+    if !is_loopback && !expose {
+        return Err(StartupError::new(
+            "startup_expose_required",
+            "refusing to bind on non-loopback without --expose",
+        )
+        .with_hint("Pass --expose to allow remote binds; keep --host 127.0.0.1 for local-only use.")
+        .with_remediation(vec![
+            "docdexd serve --repo . --host 0.0.0.0 --port 3210 --expose --auth-token <token> --require-tls=false"
+                .to_string(),
+            "docdexd serve --repo . --host 127.0.0.1 --port 3210".to_string(),
+        ])
+        .into());
+    }
     let security = search::SecurityConfig::from_options(
         auth_token,
         allow_ip.as_slice(),
@@ -98,6 +124,8 @@ pub async fn run(
         strip_snippet_html,
         secure_mode,
         disable_snippet_text,
+        !expose,
+        !is_loopback,
     )?;
     let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);
     let hardware_profile = hardware::detect_hardware();

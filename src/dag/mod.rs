@@ -4,10 +4,12 @@ pub mod view;
 
 use crate::dag::repo as dag_repo;
 use anyhow::{anyhow, Context, Result};
+use fs4::FileExt;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 pub const NO_TRACE_MESSAGE: &str = "No reasoning trace recorded";
@@ -97,7 +99,7 @@ pub fn load_session_dag(
     }
 
     if sqlite_path.exists() {
-        match load_from_sqlite(&sqlite_path, session_id) {
+        match load_from_sqlite(&repo_dir, &sqlite_path, session_id) {
             Ok(Some(nodes)) => {
                 return Ok(DagLoadResult {
                     repo_root: repo_root.display().to_string(),
@@ -203,7 +205,11 @@ pub fn resolve_state_root(global_state_dir: Option<PathBuf>) -> Result<PathBuf> 
     Ok(Path::new(&home).join(".docdex").join("state"))
 }
 
-fn load_from_sqlite(path: &Path, session_id: &str) -> Result<Option<Vec<DagNode>>> {
+fn load_from_sqlite(repo_state_root: &Path, path: &Path, session_id: &str) -> Result<Option<Vec<DagNode>>> {
+    let lock_path = dag_repo::dag_lock_path(repo_state_root);
+    let lock_dir = dag_repo::locks_dir_from_repo_state_root(repo_state_root);
+    crate::state_layout::ensure_state_dir_secure(&lock_dir)?;
+    let _lock = DagReadLock::acquire(&lock_path)?;
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .with_context(|| format!("open {}", path.display()))?;
     let mut stmt = conn
@@ -236,6 +242,30 @@ fn load_from_sqlite(path: &Path, session_id: &str) -> Result<Option<Vec<DagNode>
         return Ok(None);
     }
     Ok(Some(nodes))
+}
+
+struct DagReadLock {
+    file: std::fs::File,
+}
+
+impl DagReadLock {
+    fn acquire(path: &Path) -> Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(path)
+            .with_context(|| format!("open lock file {}", path.display()))?;
+        file.lock_shared()
+            .with_context(|| format!("lock {}", path.display()))?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for DagReadLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 
 fn load_from_json(path: &Path) -> Result<Vec<DagNode>> {

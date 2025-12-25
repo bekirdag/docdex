@@ -1,4 +1,4 @@
-use crate::hardware::HardwareProfile;
+use crate::hardware::{self, HardwareProfile, ModelTier};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::cmp::Ordering;
@@ -51,10 +51,18 @@ pub fn supports(profile: &HardwareProfile, model: &LlmModel) -> bool {
         && (!model.requires_gpu || has_gpu(profile))
 }
 
+pub fn filter_catalog<'a>(profile: &HardwareProfile, catalog: &'a [LlmModel]) -> Vec<&'a LlmModel> {
+    catalog.iter().filter(|model| supports(profile, model)).collect()
+}
+
 pub fn recommended_model<'a>(
     profile: &HardwareProfile,
     catalog: &'a [LlmModel],
 ) -> Option<&'a LlmModel> {
+    let tier = hardware::recommend_model(profile);
+    if let Some(model) = find_by_tier(catalog, tier) {
+        return Some(model);
+    }
     catalog
         .iter()
         .filter(|model| supports(profile, model))
@@ -63,4 +71,9 @@ pub fn recommended_model<'a>(
                 .partial_cmp(&b.min_ram_gb)
                 .unwrap_or(Ordering::Equal)
         })
+}
+
+fn find_by_tier<'a>(catalog: &'a [LlmModel], tier: ModelTier) -> Option<&'a LlmModel> {
+    let id = tier.label();
+    catalog.iter().find(|model| model.id == id)
 }

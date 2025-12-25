@@ -39,41 +39,41 @@
 
 ## Architecture Overview {#architecture-overview}
 
-Docdex v2.0 runs a single local-first daemon (`docdexd`) per machine that serves all repos through one HTTP API and one MCP server. The design aims to keep all inference and retrieval local by default, escalating to gated web enrichment only when confidence drops. Every call is repo-scoped to prevent cross-repo contamination while sharing global caches safely.
+Docdex v2.0 runs a per-repo local-first daemon (`docdexd serve`) per repo. Run one instance per repo; each instance exposes HTTP APIs and (optionally) an MCP server for that repo. The design aims to keep all inference and retrieval local by default, escalating to gated web enrichment only when confidence drops.
 
-- **Core surfaces**: one HTTP endpoint set (OpenAI-compatible chat) and one MCP server; CLI is a thin client to the daemon. No additional surfaces are introduced in this section.  
-- **Repo Manager**: normalizes repo paths, fingerprints via SHA256, lazily initializes per-repo state (Tantivy indexes, `memory.db`, `symbols.db`, `dag.db`, `libs_index`), enforces `max-open-repos` with LRU eviction, and ensures handle closure on eviction.  
+- **Core surfaces**: per-repo HTTP endpoint set (OpenAI-compatible chat) and per-repo MCP server; CLI is a thin client to the daemon. No additional surfaces are introduced in this section.  
+- **Repo Manager**: normalizes repo paths, fingerprints via SHA256, lazily initializes per-repo state (Tantivy indexes, `memory.db`, `symbols.db`, `dag.db`, `libs_index`), and ensures handle closure on shutdown.  
 - **Waterfall retrieval** (per repo): Tier 1 local indexes (source \+ libs), Tier 2 zero-cost web discovery/fetch (DuckDuckGo HTML \+ guarded headless Chrome), Tier 3 local cognition/memory (Ollama chat/embeddings, sqlite-vec memory). Cached library docs are treated as local within Tier 1\.  
 - **Context assembly**: fixed priority Memory → Repo Code → Library/Web; token budget roughly 10% system prompt, 20% memory, 50% repo/library/web, 20% generation buffer. Budgeting happens before Ollama calls.  
-- **Isolation model**: per-repo state under `~/.docdex/state/repos/<fingerprint>/`; global caches (`cache/web`, `cache/libs`) are reused but ingested per repo. All APIs/CLI/MCP require explicit repo id/path; unknown or unindexed repos return clear errors.  
+- **Isolation model**: per-repo state under `~/.docdex/state/repos/<fingerprint>/`; global caches (`cache/web`, `cache/libs`) are reused but ingested per repo. CLI/MCP require explicit repo id/path; HTTP uses the daemon repo by default and validates any provided repo id/path.  
 - **Hardware awareness**: daemon detects RAM/VRAM to recommend or constrain Ollama models (e.g., \<8GB ultra-light; ≥16GB default `llama3.1:8b`; ≥32GB \+ GPU suggests `llama3.1:70b` if present). No auto-install; guidance only.  
 - **Security posture**: binds to `127.0.0.1` by default; `--expose` demands token auth across HTTP/MCP. No telemetry or paid/cloud services.  
-- **Scalability & reliability (per PDR scope)**: targets ≥8 concurrent repos with LRU-managed cap (default 12, 4–16 configurable); local search p95 \< 50ms (\<20ms typical). Browser guard prevents zombie Chrome; web rate limits (≥2s DDG, ≥1s fetch) mitigate bans.  
-- **Out-of-scope (per section)**: new surfaces, cloud/vector backends, cross-repo memory, multi-daemon topologies are explicitly excluded.
+- **Scalability & reliability (per PDR scope)**: targets ≥8 concurrent repos by running separate per-repo daemons; local search p95 \< 50ms (\<20ms typical). Browser guard prevents zombie Chrome; web rate limits (≥2s DDG, ≥1s fetch) mitigate bans.  
+- **Out-of-scope (per section)**: new surfaces, cloud/vector backends, cross-repo memory, clustered/multi-tenant daemon topologies are explicitly excluded.
 
 **Open Questions & Risks**
 
-- Confirm default eviction policy side effects: are active sessions warned when a repo context is evicted?  
+- Confirm shutdown behavior for active sessions: should in-flight requests be drained or rejected?  
 - How to handle simultaneous web-trigger requests across repos within rate limits without head-of-line blocking?  
 - Risk: confidence gating (`web_trigger_threshold` default 0.45) may under-trigger web enrichment for sparse repos.
 
 **Verification Strategy**
 
 - Run `docdexd check` to validate config, state perms, Ollama, Chrome, repo registry, bind configuration.  
-- Concurrency tests for Repo Manager LRU under ≥8 repos; ensure handle closure and no cross-repo leakage.  
+- Concurrency tests across per-repo daemons under ≥8 repos; ensure handle closure and no cross-repo leakage.  
 - Latency benchmarks: local search p95 \< 50ms and typical \<20ms on representative repos.  
 - Waterfall tests: force low-confidence queries and assert escalation order and rate-limit compliance.  
-- Security checks: ensure localhost bind by default and token required when `--expose` is set; reject requests without repo selection.
+- Security checks: ensure localhost bind by default and token required when `--expose` is set; reject invalid repo ids when supplied.
 
 ### Operating Principles {#operating-principles}
 
-Local-first, single-daemon discipline governs all decisions: `docdexd` serves every surface (HTTP and MCP) and every repo, defaulting to offline behavior and zero paid components. Web access is a gated fallback on confidence drop or explicit user demand. All operations are repo-scoped; no cross-repo state or memory. Privacy and cost ceilings drive dependency choices (Ollama, Tantivy, DuckDuckGo HTML, headless Chrome, sqlite-vec, Tree-sitter); any cloud/paid API is out of scope.
+Local-first, per-repo daemon discipline governs all decisions: `docdexd` serves HTTP and MCP for a single repo, defaulting to offline behavior and zero paid components. Web access is a gated fallback on confidence drop or explicit user demand. All operations are repo-scoped; no cross-repo state or memory. Privacy and cost ceilings drive dependency choices (Ollama, Tantivy, DuckDuckGo HTML, headless Chrome, sqlite-vec, Tree-sitter); any cloud/paid API is out of scope.
 
 **Repo scoping and isolation**
 
-- Every CLI/API/MCP call must include repo id/path; requests without it fail fast.  
+- CLI and MCP calls must include repo id/path; HTTP calls default to the daemon repo and validate any provided repo id/path.  
 - Per-repo state lives under fingerprinted directories; caches are global but ingestion is repo-local to prevent bleed.  
-- Max-open-repos cap (default 12, configurable 4–16) enforced via LRU eviction; eviction closes DB/index handles to avoid resource leaks.
+- LRU eviction is not required for per-repo daemons; resource caps apply per repo.
 
 **Waterfall retrieval discipline**
 
@@ -94,19 +94,19 @@ Local-first, single-daemon discipline governs all decisions: `docdexd` serves ev
 
 **Out of scope (per PDR)**
 
-- Cross-repo memory/indexing, multi-daemon deployments, telemetry, paid/cloud APIs.
+- Cross-repo memory/indexing, clustered/multi-tenant daemon deployments, telemetry, paid/cloud APIs.
 
 Open Questions & Risks
 
-- Do we need configurable grace periods before LRU eviction to avoid thrash under rapid repo switches?  
+- Do we need configurable backpressure when multiple per-repo daemons spike web fetches simultaneously?  
 - What is the exact failure mode when `--expose` token is missing or malformed—HTTP status and body contract?  
 - Risk: DDG rate limiting/IP bans despite spacing; may need backoff tuning.  
 - Risk: Model recommendation accuracy on heterogeneous hardware (e.g., eGPU, shared RAM GPUs).
 
 Verification Strategy
 
-- Unit/integration: enforce repo-required flag on CLI/API/MCP; reject missing/unknown repo.  
-- Concurrency tests: max-open-repos cap with LRU eviction under parallel repo access; ensure handle closure.  
+- Unit/integration: enforce repo-required flag on CLI/MCP; HTTP defaults to daemon repo; reject unknown repo ids.  
+- Concurrency tests: parallel per-repo daemon access; ensure handle closure.  
 - Waterfall tests: trigger web only below threshold; verify delays and cache reuse; assert Chrome teardown.  
 - Security tests: localhost bind by default; token required when exposed; no external calls without explicit trigger.  
 - Performance checks: local search p95 \<50ms, typical \<20ms; memory/token budgeting honors priority order.
@@ -118,17 +118,17 @@ Architectural intent: tiered retrieval that stays local by default, escalates to
 Components and flow
 
 - Tier 1 Local: Tantivy source index plus per-repo `libs_index`; cached library docs are treated as local. BM25 search with optional local rerank. Provides score used for gating.  
-- Tier 2 Web (fallback): DuckDuckGo HTML discovery (≥2s between searches, blocklist) → headless Chrome fetch with readability (≥1s per-domain delay, page timeout \~15s) → cache HTML/cleaned JSON under `cache/web` → ingest into repo context as needed. Guarded browser lifecycle to avoid zombies; locks under `cache/locks`.  
+- Tier 2 Web (fallback): DuckDuckGo HTML discovery (≥2s between searches, blocklist) → headless Chrome fetch with readability (≥1s per-domain delay, page timeout \~15s) → cache HTML/cleaned JSON under `cache/web` → ingest into repo context as needed. Guarded browser lifecycle to avoid zombies; locks under `~/.docdex/state/locks`.  
 - Tier 3 Cognition/Memory: Local Ollama for chat/embeddings; per-repo `memory.db` (sqlite-vec) prioritized in context assembly; DAG logging per session.  
 - Gating logic: If top local score ≥ `web_trigger_threshold` (default 0.45), stay in Tier 1; otherwise escalate to Tier 2 or when explicitly forced by user. Context assembly priority: Memory → Repo Code → Library/Web; token budget approx 10% system prompt, 20% memory, 50% repo/library/web, 20% generation buffer.  
-- Surfaces using waterfall: CLI (`chat --repo`, `web-rag --repo`), HTTP `/v1/chat/completions` (requires repo id/path), MCP tools (all require repo). Repo Manager enforces repo selection and isolation throughout.  
+- Surfaces using waterfall: CLI (`chat --repo`, `web-rag --repo`), HTTP `/v1/chat/completions` (defaults to daemon repo; repo id optional), MCP tools (all require repo). Repo Manager enforces repo selection and isolation throughout.  
 - Data contracts (implied from PDR): search results carry score \+ snippet \+ source path; web fetch outputs cleaned text plus metadata (url, fetched\_at, cache key); memory rows carry `id, content, embedding, created_at, metadata`. No additional schemas beyond stated.
 
 Scalability, reliability, security, observability, DevOps
 
-- Scalability: Target local search p95 \<50ms; typical \<20ms. Max-open-repos cap (default 12, configurable 4–16) with LRU eviction to bound memory and descriptor usage.  
+- Scalability: Target local search p95 \<50ms; typical \<20ms. Scale by running per-repo daemons.  
 - Reliability: Browser guard to prevent zombie Chrome; clear errors on missing index/repo/models; fallback only on confidence drop to avoid unnecessary web calls.  
-- Security/Privacy: Offline-by-default; web only on gated escalation or explicit request. All HTTP/MCP calls require repo selection; daemon binds 127.0.0.1 by default; `--expose` requires token auth.  
+- Security/Privacy: Offline-by-default; web only on gated escalation or explicit request. HTTP defaults to daemon repo; MCP requires repo selection; daemon binds 127.0.0.1 by default; `--expose` requires token auth.  
 - Observability: Not requested in PDR; expect logs for gating decisions, web escalations, and token budgeting drops.  
 - DevOps: No paid services; Ollama and Chrome are external dependencies validated via `docdexd check`. Cache reuse reduces repeated web fetches.
 
@@ -154,38 +154,38 @@ Verification Strategy
 
 ### Repo Isolation Model {#repo-isolation-model}
 
-Architectural intent: enforce strict per-repo scoping for all state, indexes, memory, and DAG data so a single `docdexd` can serve multiple repos concurrently without cross-contamination, while respecting max-open-repos limits via LRU eviction.
+Architectural intent: enforce strict per-repo scoping for all state, indexes, memory, and DAG data so multiple per-repo daemons can serve multiple repos without cross-contamination.
 
 Design
 
 - Repo identity: normalized repo path → SHA256 fingerprint; fingerprint is the sole key for on-disk state under `~/.docdex/state/repos/<fingerprint>/`.  
 - Per-repo state dirs: `index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`; all opened lazily on first access.  
 - Global/shared caches: `cache/web/` (HTML \+ cleaned JSON) and `cache/libs/<ecosystem>/<pkg>/`; reused across repos but ingested into per-repo indexes only on demand to avoid bleed.  
-- Repo Manager: maintains registry (path ↔ fingerprint), enforces max-open-repos (default 12, configurable 4–16) via LRU; eviction closes DB/index handles and marks repo inactive without deleting state. Unknown/unindexed repos return clear errors.  
-- Access contract: every CLI/HTTP/MCP call must supply `repo_id` or `repo_path`; server rejects requests lacking repo context. MCP server remains single-instance; tools are repo-parameterized.  
-- Concurrency: multiple repos can be open concurrently up to cap; operations within a repo serialize per underlying DB/index constraints; eviction guards prevent handle reuse after close.  
+- Repo Manager: maintains registry (path ↔ fingerprint); unknown/unindexed repos return clear errors.  
+- Access contract: CLI/MCP calls must supply `repo_id` or `repo_path`; HTTP defaults to the daemon repo and validates any provided repo id/path. MCP server is per-repo; tools are repo-parameterized.  
+- Concurrency: multiple repos are served by running multiple per-repo daemons; operations within a repo serialize per underlying DB/index constraints.  
 - Security/privacy: data never leaves repo scope; no cross-repo memory/DAG queries; bound to 127.0.0.1 by default with optional token when exposed. No telemetry.  
 - Observability: not requested in PDR.  
-- Scalability/reliability: target ≥8 concurrent repos; cap and LRU avoid resource exhaustion; idle daemon memory target \<100MB; clear errors when cap reached.  
-- DevOps: state layout must remain stable across upgrades; `docdexd check` validates RW permissions, registry integrity, and eviction policy behavior.
+- Scalability/reliability: target ≥8 concurrent repos via multiple per-repo daemons; idle daemon memory target \<100MB; clear errors on missing repo/index.  
+- DevOps: state layout must remain stable across upgrades; `docdexd check` validates RW permissions and registry integrity.
 
 Assumptions
 
 - Fingerprint is deterministic on normalized absolute path; moving a repo changes fingerprint (requires re-index) unless a future alias/relocation map is added.  
-- Eviction policy is purely LRU; no pinning in PDR scope.
+- Per-repo daemons do not evict repos in-process.
 
 Open Questions & Risks
 
-- Should pinned/critical repos bypass eviction? (Not specified.)  
+- How should repo path moves/renames be handled without re-index? (Out of current scope.)  
 - Handling repo path moves/renames without re-index? (Out of current scope.)  
-- Race conditions on rapid open/evict/open cycles under load; need tests.
+- Race conditions on rapid open/close cycles under load; need tests.
 
 Verification Strategy
 
-- Unit/integration: Repo Manager LRU eviction under concurrent open/close; handles closed on eviction; errors on unknown/unindexed repo.  
+- Unit/integration: Repo Manager handles concurrent open/close; errors on unknown/unindexed repo.  
 - State isolation tests: ensure no cross-repo reads/writes for indexes, memory, DAG, libs ingestion.  
-- Config validation: `docdexd check` confirms registry, state RW, and cap enforcement.  
-- Load tests: ≥8 concurrent repos operations without bleed; eviction triggers predictable closure and reopen.
+- Config validation: `docdexd check` confirms registry and state RW.  
+- Load tests: ≥8 concurrent repos operations without bleed across per-repo daemons.
 
 ### Hardware Awareness {#hardware-awareness}
 
@@ -220,7 +220,7 @@ Verification Strategy
 
 ## Core Components {#core-components}
 
-This section defines the daemon’s key subsystems and how they cooperate to satisfy the single-daemon, multi-repo, local-first constraints. Components are limited to the PDR-approved stack (Ollama, Tantivy, DuckDuckGo HTML, headless Chrome, sqlite-vec, Tree-sitter); no new surfaces or services are added.
+This section defines the daemon’s key subsystems and how they cooperate to satisfy the per-repo, local-first constraints. Components are limited to the PDR-approved stack (Ollama, Tantivy, DuckDuckGo HTML, headless Chrome, sqlite-vec, Tree-sitter); no new surfaces or services are added.
 
 ### Config and State Manager
 
@@ -231,7 +231,7 @@ This section defines the daemon’s key subsystems and how they cooperate to sat
 
 ### Repo Manager
 
-- Responsibilities: Map normalized repo paths → SHA256 fingerprints; lazy init per-repo state; enforce `max-open-repos` (default 12, configurable 4–16) with LRU eviction (closing indexes/DB handles); prevent cross-repo contamination.  
+- Responsibilities: Map normalized repo paths → SHA256 fingerprints; lazy init per-repo state; prevent cross-repo contamination. LRU eviction is not required for per-repo daemons.  
 - Interactions: Called by CLI/HTTP/MCP entrypoints to resolve repo context before any operation; hands back handles to Tantivy indexes, sqlite DBs, and libs index.
 
 ### Indexing and Search
@@ -254,19 +254,19 @@ This section defines the daemon’s key subsystems and how they cooperate to sat
 
 ### LLM and Embeddings
 
-- Provider: Ollama only; streaming responses; token budgeting enforced pre-call; models filtered by hardware guidance.  
+- Provider: configurable (Ollama default); streaming responses; token budgeting enforced pre-call; models filtered by hardware guidance.  
 - Embeddings: Ollama embeddings used for memory and rerank where applicable; max answer tokens from config.  
-- Interfaces: CLI chat, HTTP `/v1/chat/completions`, MCP tools all go through the same LLM gateway enforcing repo selection.
+- Interfaces: CLI chat, HTTP `/v1/chat/completions`, MCP tools all go through the same LLM gateway; HTTP defaults to the daemon repo and validates any provided repo id.
 
 ### Memory and Reasoning DAG
 
 - Memory: Per-repo `memory.db` (sqlite-vec) with schema `id, content, embedding, created_at, metadata`; ops `memory_store`, `memory_recall` scoped by repo; prioritized in context merge.  
 - DAG: Per-repo `dag.db`; node types UserRequest/Thought/ToolCall/Observation/Decision; logging per session; `dag view --repo <path> <session_id>` renders text/DOT.  
-- Isolation: No cross-repo memory or DAG queries; eviction closes handles.
+- Isolation: No cross-repo memory or DAG queries; per-repo daemons close handles on shutdown.
 
 **Open Questions & Risks**
 
-- How to parameterize eviction heuristics beyond LRU (idle time vs handle count)? Not specified.  
+- How to coordinate limits across multiple per-repo daemons running concurrently? Not specified.  
 - Exact limits for concurrent Chrome instances and fetch queue sizing are unstated; risk of overuse on low-end machines.  
 - Rerank presence/algorithm for local search optional in PDR; decision needed.  
 - Token budgeting percentages fixed in PDR; need confirmation on adaptability per model/context size.
@@ -274,7 +274,7 @@ This section defines the daemon’s key subsystems and how they cooperate to sat
 **Verification Strategy**
 
 - `docdexd check` validates config, state perms, Ollama reachability/models, Chrome availability, repo registry, HTTP bind/MCP toggle.  
-- Repo Manager tests for isolation and LRU eviction under concurrent access.  
+- Repo Manager tests for isolation under concurrent access across multiple per-repo daemons.  
 - Waterfall tests: force low-confidence path to verify DDG spacing, fetch delays, cache use, and Chrome guard; ensure local-only when above threshold.  
 - Memory tests: store/recall per repo; ensure no cross-repo leakage; embedding flow via Ollama.  
 - DAG tests: log and view sessions across node types; ensure per-repo separation.  
@@ -282,10 +282,10 @@ This section defines the daemon’s key subsystems and how they cooperate to sat
 
 ### Config and State Manager
 
-Config/state layer ensures typed configuration, RW validation, and deterministic state layout that other subsystems rely on for multi-repo isolation within the single-daemon constraint.
+Config/state layer ensures typed configuration, RW validation, and deterministic state layout that other subsystems rely on for per-repo isolation across per-repo daemons.
 
 - **Intent**: Provide a single source of truth for daemon/runtime configuration and a predictable per-repo/global state directory tree with enforced read/write guarantees and auto-creation of sane defaults.  
-- **Config location & shape**: `~/.docdex/config.toml` auto-created on first run with localhost defaults. Sections per PDR: `[core] global_state_dir, log_level, max_concurrent_fetches`; `[llm] provider=ollama, base_url, default_model, embedding_model, max_answer_tokens`; `[search] web_trigger_threshold, max_repo_hits, max_web_hits`; `[web] discovery_provider=duckduckgo_html, user_agent, cache_ttl_secs`; `[web.scraper] engine, headless, chrome_binary_path, request_delay_ms, page_load_timeout_secs`; `[memory] enabled, backend=sqlite`; `[server] http_bind_addr=127.0.0.1:3210, enable_mcp=true`. Typed parsing with defaults; warn if `provider != ollama`.  
+- **Config location & shape**: `~/.docdex/config.toml` auto-created on first run with localhost defaults. Sections per PDR: `[core] global_state_dir, log_level, max_concurrent_fetches`; `[llm] provider=<name> (default `ollama`), base_url, default_model, embedding_model, max_answer_tokens`; `[search] web_trigger_threshold, max_repo_hits, max_web_hits`; `[web] discovery_provider=duckduckgo_html, user_agent, cache_ttl_secs`; `[web.scraper] engine, headless, chrome_binary_path, request_delay_ms, page_load_timeout_secs`; `[memory] enabled, backend=sqlite`; `[server] http_bind_addr=127.0.0.1:3210, enable_mcp=true`. Typed parsing with defaults; warn on unknown providers.  
 - **State root & layout**: `~/.docdex/state/` with enforced creation/validation:  
   - `repos/<fingerprint>/index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`  
   - `cache/web/` (raw HTML \+ cleaned JSON), `cache/libs/<ecosystem>/<pkg>/`  
@@ -300,9 +300,9 @@ Config/state layer ensures typed configuration, RW validation, and deterministic
   - On daemon start: Config Loader → parse/validate `config.toml` (defaults) → State Manager → validate/create `global_state_dir`, `cache/*`, `locks/`.  
   - Per repo access: Repo Manager → fingerprint(repo\_path) → State Manager → ensure `repos/<fp>/*` exist → return handles/paths to Indexer, Memory, DAG, Symbols.  
   - Check command: `docdexd check` orchestrates Config Loader \+ State Manager validation \+ Ollama/Chrome reachability.  
-- **Scalability/Reliability**: Bounded by `max-open-repos` (in Repo Manager) and `max_concurrent_fetches`; state layout supports LRU eviction by closing handles under `repos/<fp>/`. RW validation prevents partial init; locks directory guards browser lifecycle.  
+- **Scalability/Reliability**: Bounded by `max_concurrent_fetches` and per-repo resources; state layout supports multiple per-repo daemons without cross-contamination. RW validation prevents partial init; locks directory guards browser lifecycle.  
 - **Security/Isolation**: Enforce localhost defaults; state paths scoped by fingerprint to prevent cross-repo bleed. No telemetry. Token auth handled at server layer; config/state manager just supplies bind info.  
-- **Observability**: Log config warnings (non-ollama provider), RW failures, and auto-create events. Additional metrics not requested in PDR.  
+- **Observability**: Log config warnings (unknown provider), RW failures, and auto-create events. Additional metrics not requested in PDR.  
 - **DevOps**: Persistence across upgrades; do not auto-install Ollama/Chrome. No cloud dependencies.
 
 **Open Questions & Risks**
@@ -314,25 +314,25 @@ Config/state layer ensures typed configuration, RW validation, and deterministic
 
 **Verification Strategy**
 
-- `docdexd check`: parse config, verify RW on `global_state_dir`, presence/creation of required subdirs, warn on non-ollama provider, test Ollama/Chrome reachability.  
-- Unit/integration: fingerprint normalization tests; per-repo init creates expected layout; eviction closes handles without residue in `locks/`.  
+- `docdexd check`: parse config, verify RW on `global_state_dir`, presence/creation of required subdirs, validate provider-specific reachability (Ollama default), test Chrome availability.  
+- Unit/integration: fingerprint normalization tests; per-repo init creates expected layout; locks directory remains clean after guarded Chrome usage.  
 - Negative tests: fail on non-writable state dir; clear error on missing repo index/state when accessed.
 
 ### Repo Manager
 
-Repo Manager maintains normalized repo registry mapped to SHA256 fingerprints, lazily initializes per-repo state, and enforces a configurable `max-open-repos` cap via LRU eviction to keep the single daemon resource-bounded while serving multiple repos.
+Repo Manager maintains normalized repo registry mapped to SHA256 fingerprints and lazily initializes per-repo state. Per-repo daemons do not require max-open-repos LRU eviction.
 
 **Scope & Intent**
 
-- Responsibilities: path normalization → fingerprinting; per-repo state directory creation; lazy init of handles for indexes/DBs; cap enforcement with LRU close/evict; prevention of cross-repo contamination. Everything else (chat, search orchestration, memory ops, web tiers) depends on it but is out-of-scope here.  
+- Responsibilities: path normalization → fingerprinting; per-repo state directory creation; lazy init of handles for indexes/DBs; prevention of cross-repo contamination. Everything else (chat, search orchestration, memory ops, web tiers) depends on it but is out-of-scope here.  
 - Exclusions: no cross-repo memory/index sharing; no additional surfaces beyond those already defined (CLI/HTTP/MCP).
 
 **Core Functions**
 
 - Path normalization and fingerprinting: compute SHA256 over normalized repo path; fingerprint used for all state paths under `~/.docdex/state/repos/<fingerprint>/`.  
 - Lazy initialization: on first access, create/validate per-repo dirs and handles for `index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`; RW checks on `global_state_dir` before use.  
-- Registry & lookup: map from normalized path (and optionally repo id) to fingerprint and live handles; all callers must supply repo id/path.  
-- Max-open-repos: default 12 (configurable 4–16); track active repos with LRU; evict least-recently-used repo handles by closing DB/index handles cleanly.  
+- Registry & lookup: map from normalized path (and optionally repo id) to fingerprint and live handles; CLI/MCP callers must supply repo id/path, HTTP defaults to the daemon repo.  
+- Max-open-repos: not required for per-repo daemons; reserved if multi-repo mode is reintroduced.  
 - Isolation: no cross-repo data mixing; shared caches (`cache/web`, `cache/libs`) are ingested per repo but never cross-read directly.  
 - Lifecycle integration: daemon startup validates repo registry readiness; CLI/API/MCP operations fail with clear error on unknown/unindexed repo.
 
@@ -344,8 +344,8 @@ Repo Manager maintains normalized repo registry mapped to SHA256 fingerprints, l
 
 **Scalability & Reliability**
 
-- Bound resource use via `max-open-repos` \+ LRU eviction; target ≥8 concurrent repos, default cap 12\.  
-- Eviction closes handles to avoid file descriptor leaks; safeguards against cross-contamination by scoping all paths under fingerprinted dirs.  
+- Bound resource use per repo; target ≥8 concurrent repos via multiple per-repo daemons.  
+- Safeguards against cross-contamination by scoping all paths under fingerprinted dirs.  
 - Startup checks (per PDR `docdexd check`) validate RW on state dir and registry.
 
 **Security & Privacy**
@@ -354,40 +354,37 @@ Repo Manager maintains normalized repo registry mapped to SHA256 fingerprints, l
 
 **Observability & DevOps**
 
-- Not explicitly requested in PDR; minimum: log repo open/evict events and errors to aid diagnosing LRU behavior and permission issues.
+- Not explicitly requested in PDR; minimum: log repo open events and errors to aid diagnosing permission issues.
 
 **Assumptions**
 
 - Fingerprint is deterministic SHA256 over normalized absolute path; no secondary IDs needed.  
-- Eviction policy does not delete on-disk state, only closes handles.  
+- Per-repo daemons keep on-disk state; no eviction within a single repo context.  
 - Callers are responsible for ensuring repos are indexed before use; Repo Manager only manages lifecycle/handles.
 
 **Open Questions & Risks**
 
-- Should eviction be blocked when long-running tasks hold handles? If so, need ref-counting/lease model.  
-- What constitutes “recent” for LRU (per-handle access vs. per-request)?  
 - How are repo deletions handled (on-disk cleanup vs. orphaned state)?  
-- Risk: handle leaks if downstream components keep references past eviction; requires disciplined handle ownership.
+- Risk: stale on-disk state if repos move without reindexing; define cleanup guidance.
 
 **Verification Strategy**
 
 - Unit tests: path normalization → fingerprint determinism; registry lookup; lazy init idempotence.  
-- Integration tests: max-open-repos cap with LRU eviction under concurrent access; ensure evicted repos close handles and can reopen.  
-- Isolation tests: concurrent multi-repo access shows no cross-contamination; state paths stay under fingerprinted dirs.  
+- Integration tests: concurrent per-repo daemon access shows no cross-contamination; state paths stay under fingerprinted dirs.  
 - CLI/daemon check: `docdexd check` validates RW perms and reports registry readiness.
 
 ### Indexing and Search
 
-Architectural intent: deliver fast, repo-scoped retrieval that stays local-first, supports multi-repo isolation, and feeds downstream chat/memory/DAG flows. Per PDR, indexing covers repo source, cached library docs, symbols, and impact graph metadata; search uses Tantivy BM25 with optional local rerank and respects waterfall gating to web only on low confidence.
+Architectural intent: deliver fast, repo-scoped retrieval that stays local-first, supports per-repo isolation, and feeds downstream chat/memory/DAG flows. Per PDR, indexing covers repo source, cached library docs, symbols, and impact graph metadata; search uses Tantivy BM25 with optional local rerank and respects waterfall gating to web only on low confidence.
 
 Components and flows
 
-- Repo Manager: lazily initializes per-repo `state/repos/<fingerprint>/index/` (source), `libs_index/`, `symbols.db`, `dag.db`; enforces max-open-repos with LRU eviction and closes handles on eviction.  
+- Repo Manager: lazily initializes per-repo `state/repos/<fingerprint>/index/` (source), `libs_index/`, `symbols.db`, `dag.db`.  
 - Tantivy source index (per repo): indexes files with BM25; scope limited to selected repo fingerprint. Out of scope: cross-repo search.  
 - Libraries index (per repo): ingests cached library docs (Phase 2.1) into `libs_index` so library answers count as Tier 1 local context.  
 - Query path (Tier 1): `docdexd chat --repo` and `/v1/chat/completions` call local BM25 search across source \+ libs index; optional local rerank (model unspecified in PDR—TBD). Waterfall escalation only if top score \< `web_trigger_threshold` or forced.  
 - Symbol extraction (Phase 6): Tree-sitter during `index` populates `symbols.db` with name/kind/file/lines/signature to support code intelligence and impact graph.  
-- Impact graph (Phase 6): dependency edges captured during indexing; served via `GET /v1/graph/impact?repo_id=<id>&file=<path>`
+- Impact graph (Phase 6): dependency edges captured during indexing; served via `GET /v1/graph/impact?file=<path>` (repo id optional for per-repo daemon)
   returning schema-tagged inbound/outbound deps with explicit edge direction semantics.
 
 Data contracts (as implied)
@@ -397,8 +394,8 @@ Data contracts (as implied)
 
 Scalability, reliability, security, observability
 
-- Performance targets: local search p95 \< 50ms, typical \< 20ms; indexing \< 1GB memory. Repo LRU cap default 12 (config 4–16).  
-- Reliability: Repo Manager LRU eviction; clear errors for missing repo/index. Browser guard and rate limits belong to web tier (not primary here).  
+- Performance targets: local search p95 \< 50ms, typical \< 20ms; indexing \< 1GB memory.  
+- Reliability: clear errors for missing repo/index. Browser guard and rate limits belong to web tier (not primary here).  
 - Security: repo scoping mandatory; no cross-repo data bleed; localhost bind unless `--expose` with token.  
 - Observability: not requested in PDR for this section.
 
@@ -412,19 +409,19 @@ Open Questions & Risks
 - Impact API schema specifics and pagination/limits.  
 - Rerank model choice and enable/disable flag default.  
 - Handling of large binaries or generated files in Tantivy index (inclusion/exclusion policy).  
-- Consistency when repo is evicted mid-query (do we fail fast or re-open lazily?).
+- Consistency when a repo is modified mid-query (do we fail fast or retry?).
 
 Verification Strategy
 
 - `docdexd index --repo` builds Tantivy index and symbols without errors; measure memory bound (\<1GB).  
-- Local search latency benchmarks hit p95 \< 50ms under concurrent repo load (up to cap).  
-- Isolation tests: queries never return content from other repos; LRU eviction closes handles cleanly.  
+- Local search latency benchmarks hit p95 \< 50ms under concurrent per-repo daemon load.  
+- Isolation tests: queries never return content from other repos.  
 - Waterfall gate: assert web escalation only when score \< `web_trigger_threshold` or forced flag.  
 - Impact API returns correct inbound/outbound deps for known fixtures.
 
 ### Waterfall Orchestrator
 
-Routes each query through a tiered pipeline—local → web → cognition—based on confidence, assembling context within a fixed token budget while honoring per-repo isolation and single-daemon constraints.
+Routes each query through a tiered pipeline—local → web → cognition—based on confidence, assembling context within a fixed token budget while honoring per-repo isolation and per-repo daemon constraints.
 
 **Scope & Intent**
 
@@ -434,13 +431,13 @@ Routes each query through a tiered pipeline—local → web → cognition—base
 
 **Flow (textual sequence)**
 
-1) Receive query (CLI/HTTP/MCP) with required `repo_id/path`. Resolve RepoContext (paths, indexes, caches) and token budget.  
+1) Receive query (CLI/HTTP/MCP) with repo selection; CLI/MCP require `repo_id/path`, HTTP defaults to the daemon repo and validates any provided repo id. Resolve RepoContext (paths, indexes, caches) and token budget.  
 2) Tier 1 Local: query Tantivy source index \+ repo `libs_index`; optional local rerank. If top score ≥ threshold, proceed to prompt assembly.  
 3) Gate: if score \< threshold or forced web, proceed to Tier 2\.  
 4) Tier 2 Web: DiscoveryService (DuckDuckGo HTML, ≥2s between searches) → ScraperEngine (headless Chrome, readability, ≥1s/domain). Cache raw/cleaned under `cache/web`; ingest snippets per repo.  
 5) Context merge: prioritize memory snippets, then repo code, then libs/web; drop lowest-priority content first on overflow.  
 6) Tier 3 Cognition: local Ollama for chat/embeddings; stream response; log DAG nodes if Phase 4+ enabled.  
-7) Return response; close/evict per Repo Manager LRU if needed.
+7) Return response; no cross-repo eviction within a per-repo daemon.
 
 **Components & Contracts**
 
@@ -452,13 +449,13 @@ Routes each query through a tiered pipeline—local → web → cognition—base
 
 **Scalability & Reliability**
 
-- Scaling via capped max-open-repos (default 12\) with LRU eviction; ensure handles closed on eviction.  
+- Scaling via multiple per-repo daemons; ensure handles close cleanly on shutdown.  
 - Performance target: local search p95 \< 50ms; keep web fetch concurrency bounded (`max_concurrent_fetches`).  
 - Browser guard prevents zombie Chrome; per-domain rate limits backoff on HTTP errors.
 
 **Security & Privacy**
 
-- Localhost-only by default; `--expose` requires token; all calls must include repo identifier.  
+- Localhost-only by default; `--expose` requires token; HTTP uses daemon repo by default and validates any provided repo id.  
 - No paid/cloud APIs; web only on threshold drop/explicit request; cached data stored locally.
 
 **Observability & DevOps**
@@ -481,9 +478,9 @@ Routes each query through a tiered pipeline—local → web → cognition—base
 
 - Unit/integration: confidence gate branches (\>=, \< threshold, forced web); token pruning order and logging.  
 - Performance: local search p95 \< 50ms; web rate-limit compliance (≥2s discovery, ≥1s/domain).  
-- Isolation: multi-repo concurrent queries show no cross-repo cache/index/memory bleed; LRU eviction closes handles.  
+- Isolation: concurrent per-repo daemons show no cross-repo cache/index/memory bleed.  
 - Reliability: simulate scraper/Chrome failure; ensure graceful degradation and error clarity.  
-- End-to-end: `web-search`, `web-fetch`, `web-rag` flows, and `/v1/chat/completions` routing respect repo requirement and gating.
+- End-to-end: `web-search`, `web-fetch`, `web-rag` flows, and `/v1/chat/completions` routing respect repo scoping and gating.
 
 ### Web Discovery and Scraping
 
@@ -506,7 +503,7 @@ The system provides zero-cost web enrichment as Tier 2 of the retrieval waterfal
 **Scalability & Reliability**
 
 - Rate limits per domain and per DDG query as specified; backoff on HTTP errors (from PDR risk section).  
-- Bounded Chrome concurrency and max-open-repos cap prevent resource exhaustion; LRU eviction does not evict global web cache.  
+- Bounded Chrome concurrency prevents resource exhaustion; per-repo daemons do not evict global web cache.  
 - Idle daemon must avoid zombie Chrome; validated in `docdexd check`.
 
 **Security & Privacy**
@@ -538,13 +535,13 @@ The system provides zero-cost web enrichment as Tier 2 of the retrieval waterfal
 
 ### LLM and Embeddings
 
-LLM/embedding layer is Ollama-only for both generation and embeddings, operating locally within the single-daemon constraint. It must respect token budgets, stream responses, and stay repo-scoped by construction.
+LLM/embedding layer is Ollama-only for both generation and embeddings, operating locally within the per-repo daemon constraint. It must respect token budgets, stream responses, and stay repo-scoped by construction.
 
-- **Provider/Models**: `[llm] provider=ollama` with `base_url` local; `default_model` for chat (hardware-guided selection) and `embedding_model` for sqlite-vec memory and search enrichment. No cloud or paid APIs; warn if provider ≠ ollama during config validation.  
-- **Invocation & Surfaces**: One call path shared by CLI/HTTP/MCP. `/v1/chat/completions` (OpenAI-compatible) and `docdexd chat` route to Ollama with required repo identifier. MCP tools reuse the same pipe. Streaming responses required.  
+- **Provider/Models**: `[llm] provider` is configurable (default `ollama`) with `base_url`; `default_model` for chat (hardware-guided selection) and `embedding_model` for sqlite-vec memory and search enrichment. No paid APIs by default; warn if provider is unknown or missing required config.  
+- **Invocation & Surfaces**: One call path shared by CLI/HTTP/MCP. `/v1/chat/completions` (OpenAI-compatible) and `docdexd chat` route to Ollama; HTTP defaults to the daemon repo and validates any provided repo id. MCP tools reuse the same pipe. Streaming responses required.  
 - **Token Budgeting**: Pre-call budgeting per request: \~10% system prompt, 20% memory (if enabled), 50% repo/library/web context, 20% generation buffer. Drop lowest-priority snippets first (library/web before repo before memory) with logging. Enforce `max_answer_tokens` from config.  
 - **Context Assembly**: Priority order Memory → Repo code (Tantivy \+ symbols) → Library/web artifacts. Library docs treated as Tier-1 support. Waterfall orchestrator only escalates to web when confidence \< `web_trigger_threshold` or explicitly forced.  
-- **Repo Isolation**: All LLM/embedding calls require repo id/path; embeddings and memory stored per-repo (`state/repos/<fingerprint>/memory.db`), no cross-repo bleed. Unknown/unindexed repo returns clear error.  
+- **Repo Isolation**: CLI/MCP calls require repo id/path; HTTP defaults to the daemon repo and validates any provided repo id. Embeddings and memory stored per-repo (`state/repos/<fingerprint>/memory.db`), no cross-repo bleed. Unknown/unindexed repo returns clear error.  
 - **Embeddings**: Ollama embedding model only; used for memory\_store/recall, local rerank (optional), and any vector similarity in sqlite-vec. No external vector DB.  
 - **Hardware Awareness**: `llm-list` detects RAM/VRAM and recommends models (e.g., `llama3.1:8b` default, `:70b` if resources and installed; ultra-light if \<8GB RAM). `llm-setup` ensures `ollama` in PATH and guides pulls; no auto-install.  
 - **Reliability & Limits**: Streaming must tolerate backpressure; apply timeouts/retries aligned with daemon defaults. Ensure daemon startup (`check`) validates Ollama reachability/models and budget configuration. Token overflow mitigated by pruning per priorities above.  
@@ -562,15 +559,15 @@ LLM/embedding layer is Ollama-only for both generation and embeddings, operating
 
 **Verification Strategy**
 
-- `docdexd check` validates Ollama reachability, required models present, provider=ollama, token budget config sane.  
-- Unit/integ tests: enforce repo-required parameter; refuse calls without repo; assert memory isolation.  
+- `docdexd check` validates provider reachability, required models present, and token budget config sane.  
+- Unit/integ tests: enforce repo scoping; assert memory isolation across per-repo daemons.  
 - Budgeting tests: construct oversized contexts and verify priority-based truncation and logging.  
 - Streaming tests: ensure chunked output end-to-end via CLI and `/v1/chat/completions`.  
 - Hardware-guidance tests: simulate RAM/VRAM tiers and assert model recommendations/warnings.
 
 ### Memory and Reasoning DAG
 
-This section defines per-repo long-term memory (sqlite-vec) and reasoning DAG logging, aligned to single-daemon, multi-repo isolation. Both live under `~/.docdex/state/repos/<fingerprint>/` and are always scoped by repo selection.
+This section defines per-repo long-term memory (sqlite-vec) and reasoning DAG logging, aligned to per-repo daemon isolation. Both live under `~/.docdex/state/repos/<fingerprint>/` and are always scoped by repo selection.
 
 **Architectural intent**
 
@@ -582,7 +579,7 @@ This section defines per-repo long-term memory (sqlite-vec) and reasoning DAG lo
 
 - `memory.db` (sqlite-vec): table `memory(id UUID, content TEXT, embedding BLOB, created_at INT, metadata JSON)`. Ollama embeddings only.  
 - `dag.db` (sqlite): node types `UserRequest`, `Thought`, `ToolCall`, `Observation`, `Decision`; session-scoped logging.  
-- Repo Manager: ensures per-repo initialization/closing, enforces max-open-repos LRU without cross-repo access.  
+- Repo Manager: ensures per-repo initialization/closing without cross-repo access.  
 - Embedding/model config: uses `[llm]` `embedding_model` via Ollama; no external vector DB.
 
 **Interactions**
@@ -595,7 +592,7 @@ This section defines per-repo long-term memory (sqlite-vec) and reasoning DAG lo
 
 **Scalability and reliability**
 
-- sqlite-vec per repo; rely on max-open-repos LRU to close idle handles. No cross-repo queries.  
+- sqlite-vec per repo; no cross-repo queries.  
 - Embedding calls stay local; no paid/network calls. Performance target aligns with p95 \< 50ms local search; memory recall should stay within that budget (assumes moderate memory set).  
 - DAG writes are lightweight appends; expected to remain small per session.
 
@@ -629,21 +626,21 @@ This section defines per-repo long-term memory (sqlite-vec) and reasoning DAG lo
 
 - **Verification Strategy**  
     
-  - Automated tests: memory\_store/recall correctness per repo; isolation (no cross-repo results); LRU eviction closes memory/dag handles.  
+- Automated tests: memory\_store/recall correctness per repo; isolation (no cross-repo results).  
   - CLI: `docdexd dag view --repo <path> <session_id>` renders expected nodes; memory recall returns stored items.  
   - `docdexd check` confirms `memory.db`/`dag.db` RW and Ollama embedding availability.  
   - Performance checks: recall latency within local search budget on representative dataset.
 
 ## Data Management and Storage {#data-management-and-storage}
 
-Architectural intent: enforce per-repo isolation while sharing global caches, keeping all data local-by-default; guarantee deterministic layout keyed by repo fingerprint so the single daemon can serve multiple repos without cross-contamination, while supporting fast search, memory, symbols, and DAG logging.
+Architectural intent: enforce per-repo isolation while sharing global caches, keeping all data local-by-default; guarantee deterministic layout keyed by repo fingerprint so multiple per-repo daemons can serve multiple repos without cross-contamination, while supporting fast search, memory, symbols, and DAG logging.
 
 ### Directory and Fingerprint Layout
 
 - Repo fingerprint: SHA256 of normalized repo path; all per-repo paths nested under `~/.docdex/state/repos/<fingerprint>/`.  
 - Per-repo subdirs/files: `index/` (Tantivy source), `libs_index/` (ingested library docs), `memory.db`, `symbols.db`, `dag.db`.  
 - Global/shared: `~/.docdex/state/cache/web/` (raw HTML \+ cleaned JSON), `cache/libs/<ecosystem>/<pkg>/` (fetched docs), `locks/` (browser/process guards).  
-- Repo Manager duties: lazily create per-repo dirs on first touch; enforce RW checks and max-open-repos cap with LRU eviction that closes DB/index handles before removal from active set.
+- Repo Manager duties: lazily create per-repo dirs on first touch; enforce RW checks before use.
 
 ### Schemas and Indexes
 
@@ -653,14 +650,14 @@ Architectural intent: enforce per-repo isolation while sharing global caches, ke
 - Symbols (`symbols.db`): Tree-sitter extraction stored with `name, kind, file_path, line_start, line_end, signature`; supports impact graph.  
 - DAG (`dag.db`): node types {UserRequest, Thought, ToolCall, Observation, Decision}; logged per session.  
 - Impact graph (Phase 6): directed edges from imports; served via `GET /v1/graph/impact` scoped by repo fingerprint.  
-- Data contracts: all APIs/CLI/MCP must supply repo id/path; unknown/unindexed repo returns clear error.
+- Data contracts: CLI/MCP require repo id/path; HTTP defaults to the daemon repo and validates any provided repo id. Unknown/unindexed repo returns clear error.
 
 ### Caching Strategy
 
 - Web cache: global `cache/web/`; reused across repos; scraper enforces ≥1s per-domain fetch delay and ≥2s DDG discovery gap; guarded lifecycle to avoid zombie Chrome.  
 - Library cache: global `cache/libs/<ecosystem>/<pkg>/`; ingestion into per-repo `libs_index/` to prevent bleed.  
 - Waterfall: Tier 1 (repo index \+ per-repo ingested libs) → Tier 2 (web discovery/fetch using cache; ingested per repo) → Tier 3 (memory/DAG context); escalation only when local score below `web_trigger_threshold` or explicitly forced.  
-- Eviction: max-open-repos LRU; evicted repos close DB/index handles but keep on-disk state intact; caches persist until TTL/purge (TTL for web defined in config).
+- Eviction: not required for per-repo daemons; caches persist until TTL/purge (TTL for web defined in config).
 
 Open Questions & Risks
 
@@ -673,17 +670,17 @@ Open Questions & Risks
 Verification Strategy
 
 - `docdexd check` validates RW on `~/.docdex/state`, presence of per-repo dirs, and Chrome/Ollama availability.  
-- Unit/integration: repo isolation under concurrent access; LRU eviction closes handles and prevents cross-repo reads.  
+- Unit/integration: repo isolation under concurrent access across per-repo daemons; prevent cross-repo reads.  
 - Rate-limit tests for scraper/discovery honoring delays and cache reuse.  
 - Schema migrations: initialize/upgrade `memory.db`, `symbols.db`, `dag.db` deterministically and reject cross-repo access by fingerprint.  
 - Functional: missing repo/index errors are clear; library ingestion only populates target repo `libs_index`.
 
 ### Directory and Fingerprint Layout
 
-Architectural intent: enforce per-repo isolation while enabling shared, zero-cost caches; deterministic fingerprints prevent path ambiguity and enable LRU-managed lifecycle across concurrently open repos.
+Architectural intent: enforce per-repo isolation while enabling shared, zero-cost caches; deterministic fingerprints prevent path ambiguity across per-repo daemons.
 
 - **Fingerprinting**: SHA256 of normalized repo path; required for all per-repo state resolution and repo\_id references. Normalization definition must be consistent across CLI/HTTP/MCP surfaces (assumption: resolved realpath, lowercase on case-insensitive FS; confirm for Windows/WSL).  
-- **Per-repo state root**: `~/.docdex/state/repos/<fingerprint>/`. Created lazily by Repo Manager after RW validation. Closed/evicted repos must close DB/index handles before directory reuse.  
+- **Per-repo state root**: `~/.docdex/state/repos/<fingerprint>/`. Created lazily by Repo Manager after RW validation. Per-repo daemons close DB/index handles on shutdown.  
 - **Per-repo contents** (all required, no cross-repo mixing):  
   - `index/` (Tantivy source index)  
   - `libs_index/` (Tantivy index of ingested library docs)  
@@ -694,10 +691,10 @@ Architectural intent: enforce per-repo isolation while enabling shared, zero-cos
 - **Shared caches** (global, reused across repos but ingested per repo):  
   - `~/.docdex/state/cache/web/` for raw HTML \+ cleaned JSON from web fetches  
   - `~/.docdex/state/cache/libs/<ecosystem>/<pkg>/` for scraped library docs  
-- **Locks and guards**: `~/.docdex/state/locks/` for browser/process guards; Repo Manager enforces single-daemon invariants and max-open-repos LRU eviction (default 12, range 4–16).  
+- **Locks and guards**: `~/.docdex/state/locks/` for browser/process guards; Repo Manager enforces per-repo invariants.  
 - **Interactions**: Repo Manager maps repo path → fingerprint → per-repo directories; Waterfall uses per-repo index/libs\_index/memory; library/web caches are read-only to non-owner repos until ingested into that repo’s `libs_index`.  
 - **Security/Isolation**: No cross-repo memory/symbol/DAG access; all per-repo paths scoped by fingerprint; default localhost binding applies to any API that references these paths.  
-- **Reliability/cleanup**: On eviction, close Tantivy/sqlite handles before removal from active set; Chrome guard uses `locks/` to avoid zombie processes; directories persist across restarts/upgrades.
+- **Reliability/cleanup**: Close Tantivy/sqlite handles on shutdown; Chrome guard uses `locks/` to avoid zombie processes; directories persist across restarts/upgrades.
 
 Open Questions & Risks
 
@@ -709,8 +706,8 @@ Open Questions & Risks
 Verification Strategy
 
 - Unit: fingerprint derivation idempotence across repeated calls and platforms.  
-- Integration: `docdexd check` validates RW on `state/`, presence/permissions of per-repo subdirs, lock dir, and eviction behavior.  
-- Concurrency tests: parallel repo opens/evictions ensure handles closed and no cross-repo writes.  
+- Integration: `docdexd check` validates RW on `state/`, presence/permissions of per-repo subdirs, and lock dir.  
+- Concurrency tests: parallel repo opens across per-repo daemons ensure handles closed and no cross-repo writes.  
 - Functional: per-repo isolation validated by querying memory/symbols/DAG for one repo and confirming absence in another; shared cache reuse verified via ingestion logs.
 
 ### Schemas and Indexes
@@ -729,7 +726,7 @@ Architectural intent: define per-repo and global storage schemas that support lo
 
 **Interactions**
 
-- Repo Manager initializes per-repo `index/, libs_index/, memory.db, symbols.db, dag.db` under `state/repos/<fingerprint>/`; enforces LRU eviction and handle closure.  
+- Repo Manager initializes per-repo `index/, libs_index/, memory.db, symbols.db, dag.db` under `state/repos/<fingerprint>/`.  
 - Waterfall: Tier-1 search hits Tantivy indexes (`index/`, `libs_index/`) and can merge with `memory.db` results; confidence gate controls web fetch/caching.  
 - Indexing flow: `docdexd index --repo` populates Tantivy and `symbols.db`; dependency extraction feeds impact graph edges.  
 - Memory ops: `memory_store` writes to `memory.db`; `memory_recall` vector-searches embeddings.  
@@ -737,14 +734,14 @@ Architectural intent: define per-repo and global storage schemas that support lo
 
 **Scalability & Reliability**
 
-- Performance targets: local search p95 \< 50ms; use repo-scoped indexes to keep postings bounded; LRU eviction avoids unbounded open handles.  
-- Concurrency: single daemon serves multiple repos; schema design keeps no cross-repo tables to avoid locking contention and bleed.  
+- Performance targets: local search p95 \< 50ms; use repo-scoped indexes to keep postings bounded.  
+- Concurrency: multiple per-repo daemons serve multiple repos; schema design keeps no cross-repo tables to avoid locking contention and bleed.  
 - Caching: global caches reused but ingestion remains repo-scoped; prevents cache stampedes by reuse of fetched artifacts.
 
 **Security & Isolation**
 
 - Repo fingerprinted paths enforce isolation; no cross-repo queries for memory/DAG/symbols/impact.  
-- When `--expose`, HTTP/MCP calls must include repo id/path; token auth enforced (per PDR).
+- When `--expose`, token auth enforced (per PDR); HTTP defaults to daemon repo while MCP requires repo id/path.
 
 **Observability & DevOps**
 
@@ -779,7 +776,7 @@ Docdex v2.0 uses caches to avoid re-fetching external sources while keeping per-
 - **Freshness/TTL**: PDR calls for configurable web cache TTL via `[web] cache_ttl_secs`; reuse is preferred until TTL expiry, then refetch. Library cache TTL not specified; assume long-lived unless invalidated manually or on version change (open question).  
 - **Write paths and guards**: Cache directories live under `~/.docdex/state/cache/...`; Repo Manager must validate RW on startup (`docdexd check`) and ensure no writes occur outside fingerprinted state roots.  
 - **Waterfall interaction**: Waterfall tiering treats cached library docs as Tier-1 (local) once ingested; cached web content is Tier-2 but may bypass live fetch if cache hit is valid. Confidence gate (`web_trigger_threshold`) still applies.  
-- **Concurrency and eviction**: Max-open-repos LRU eviction only closes per-repo handles; cached artifacts persist globally. Cache eviction policy beyond TTL is not specified; default is unbounded within disk limits (risk).  
+- **Concurrency and eviction**: Per-repo daemons only close per-repo handles on shutdown; cached artifacts persist globally. Cache eviction policy beyond TTL is not specified; default is unbounded within disk limits (risk).  
 - **Observability**: Log cache hits/misses and TTL expiry decisions; `docdexd check` should report cache directory health. Metrics beyond this are not requested in PDR.  
 - **Security/privacy**: Caches remain local-only; no upload/telemetry. When `--expose`, token auth protects HTTP/MCP, but caches stay on disk without extra encryption (not requested).
 
@@ -816,13 +813,13 @@ Docdex v2.0 exposes one local-first set of surfaces (CLI, HTTP, MCP) per machine
 
 ### MCP Server
 
-- Single MCP server (`docdexd mcp`) serving all repos; tools require `repo_path` or `repo_id`.  
+- Single MCP server (`docdexd mcp`) serving all repos; tools require `project_root` (repo path).  
 - Tools: `docdex_search`, `docdex_web_research`, `docdex_memory_save`, `docdex_memory_recall`; errors on unknown/unindexed repo.  
 - Lifecycle: runs alongside HTTP within the daemon; no per-repo servers.
 
 ### Local Dependencies
 
-- LLM/embeddings: Ollama only; models recommended via hardware-aware `llm-list`/`llm-setup`.  
+- LLM/embeddings: Provider-configured; models recommended via hardware-aware `llm-list`/`llm-setup`.  
 - Retrieval: Tantivy for source/libs indexes; sqlite-vec for per-repo memory; Tree-sitter for symbols; headless Chrome (guarded) plus DuckDuckGo HTML for discovery/fetch with rate limits and caching.  
 - Caching/state: `~/.docdex/state/` per-repo fingerprints; shared caches for web and libs but ingested per repo.
 
@@ -836,13 +833,13 @@ Docdex v2.0 exposes one local-first set of surfaces (CLI, HTTP, MCP) per machine
 **Verification Strategy**
 
 - CLI: run `docdexd check`, `index`, `chat`, `web-search/fetch/rag`, `libs fetch`, `dag view`, `run-tests` against a known repo; assert repo-required errors on omission.  
-- HTTP: call `/v1/chat/completions` and `/v1/graph/impact` with valid and missing repo ids; verify streaming and token budgeting enforcement.  
-- MCP: invoke each tool with/without valid repo; assert single-server routing and clear errors.  
+- HTTP: call `/v1/chat/completions` and `/v1/graph/impact` with and without repo ids; verify streaming and token budgeting enforcement.  
+- MCP: invoke each tool with/without valid repo; assert per-repo routing and clear errors.  
 - Dependency checks: ensure Ollama reachable/models present; Chrome availability and rate-limit enforcement; cache directories writable.
 
 ### CLI Commands
 
-Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper). All commands require explicit repo selection where applicable to preserve per-repo isolation and align with single-daemon, multi-repo intent.
+Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper). All commands require explicit repo selection where applicable to preserve per-repo isolation and align with per-repo daemon intent.
 
 - **Command Surface & Scope**  
     
@@ -853,7 +850,7 @@ Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper
   - Library docs: `libs fetch --repo <path>` detects deps (Cargo/Node/Python), scrapes docs, caches under `cache/libs`, ingests into repo `libs_index`.  
   - DAG: `dag view --repo <path> <session_id>` renders text/DOT from `dag.db`.  
   - Tests: `run-tests --repo <path> --target <file_or_dir>` executes configured test command; returns structured JSON.  
-  - MCP/TUI: `mcp` starts single MCP server for all repos; `tui` launches local UI bound to daemon.  
+  - MCP/TUI: `mcp` starts a per-repo MCP server; `tui` launches local UI bound to daemon.  
   - HTTP alignment: CLI routes to daemon HTTP/MCP surfaces; enforces repo id/path on every call.
 
 
@@ -867,7 +864,7 @@ Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper
 - **Reliability & Resource Discipline**  
     
   - `check` surfaces readiness/errors (missing index, models, Chrome).  
-  - Repo Manager LRU eviction applies implicitly; commands error clearly if repo unknown/unindexed.  
+  - Commands error clearly if repo unknown/unindexed.  
   - Web commands respect DDG (≥2s) and fetch (≥1s) delays; Chrome guarded to avoid zombies.
 
 
@@ -885,7 +882,7 @@ Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper
 
 - **Scalability**  
     
-  - CLI defers to daemon limits (`max-open-repos` 4–16 default 12); concurrent CLI calls share daemon; performance target p95 local search \<50ms upheld by daemon.
+  - CLI defers to the per-repo daemon; run separate daemons per repo; performance target p95 local search \<50ms upheld by daemon.
 
 
 - **DevOps**  
@@ -920,25 +917,25 @@ Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper
 **Endpoints**
 
 - `POST /v1/chat/completions`: OpenAI-compatible; requires repo identification (body/header/query). Runs RepoContext resolution → Waterfall (Tier 1 local index \+ libs, Tier 2 web on low confidence/explicit, Tier 3 cognition/memory) with token budgeting before calling Ollama; supports streaming responses.  
-- `GET /v1/graph/impact?repo_id=<id>&file=<path>`: returns schema-tagged inbound/outbound dependency edges from per-repo
+- `GET /v1/graph/impact?file=<path>`: returns schema-tagged inbound/outbound dependency edges from per-repo
   `symbols.db`/dependency graph (directed `source -> target`).
 
 **Behavior & Contracts**
 
-- Repo scoping: mandatory repo id/path on every request; reject if missing/unknown/unindexed to avoid cross-repo bleed.  
+- Repo scoping: HTTP defaults to the daemon repo; validate any provided repo id/path and reject unknown/unindexed repos.  
 - Token budgeting: fixed priority (Memory \> Repo \> Library/Web) with \~10% system prompt, 20% memory, 50% repo/library/web, 20% generation buffer; drop lowest-priority snippets first with logging.  
 - Streaming: mirror OpenAI stream semantics for chat responses (chunked events).  
 - Waterfall gating: web escalation only if top local score \< `web_trigger_threshold` (default 0.45) or explicitly requested.  
 - State usage: per-repo dirs under `~/.docdex/state/repos/<fingerprint>/`; shared caches (`cache/web`, `cache/libs`) ingested per repo.  
 - Security: localhost by default; `--expose` requires token auth checked per request; no telemetry; no paid APIs.  
-- Performance targets: local search p95 \<50ms; typical \<20ms; max-open-repos cap (default 12\) with LRU eviction applies to HTTP calls.  
-- Error handling: clear errors for missing repo/index, missing models, offline web, or exceeded repo cap; web rate limits enforced (≥2s DDG discovery, ≥1s fetch delay, 15s page timeout).  
+- Performance targets: local search p95 \<50ms; typical \<20ms.  
+- Error handling: clear errors for missing repo/index, missing models, or offline web; web rate limits enforced (≥2s DDG discovery, ≥1s fetch delay, 15s page timeout).  
 - Observability: not requested in PDR.  
-- DevOps: single daemon; `docdexd check` validates binding, Ollama, Chrome, repo registry before serving.
+- DevOps: per-repo daemon; `docdexd check` validates binding, Ollama, Chrome, repo registry before serving.
 
 **Diagrams (textual)**
 
-- Sequence: Client → `/v1/chat/completions` → Repo Manager (resolve repo/fingerprint, enforce cap) → Waterfall Orchestrator (Tier 1 search → optional web discovery/fetch → context merge with memory/libs) → Token Budgeter → Ollama stream → Client.  
+- Sequence: Client → `/v1/chat/completions` → Repo Manager (resolve repo/fingerprint) → Waterfall Orchestrator (Tier 1 search → optional web discovery/fetch → context merge with memory/libs) → Token Budgeter → Ollama stream → Client.  
 - Component: HTTP Server (OpenAI-compatible adapter) ↔ Repo Manager ↔ Indexes (`index/`, `libs_index`, `memory.db`, `symbols.db`, `dag.db`) ↔ Waterfall services (DiscoveryService, ScraperEngine) ↔ Ollama.
 
 Open Questions & Risks
@@ -951,7 +948,7 @@ Open Questions & Risks
 
 Verification Strategy
 
-- Unit/integration: require repo on every HTTP call; reject missing/unknown repo.  
+- Unit/integration: HTTP defaults to daemon repo; reject unknown repo ids.  
 - Contract tests: OpenAI API compatibility (non-stream/stream), token budgeting enforcement, Waterfall gating at `web_trigger_threshold`.  
 - Performance: measure local search latency p95 and streaming start time under load with ≥8 concurrent repos.  
 - Security: token required when exposed; localhost bind default; no external paid APIs invoked.  
@@ -959,26 +956,26 @@ Verification Strategy
 
 ### MCP Server
 
-Intent: single MCP server surface (`docdexd mcp`) exposing repo-scoped tools for search, web research, and memory; enforces explicit repo selection and clear errors on unknown/unindexed repos to avoid cross-repo bleed.
+Intent: per-repo MCP server surface (`docdexd mcp`) exposing repo-scoped tools for search, web research, and memory; enforces repo selection and clear errors on unknown/unindexed repos to avoid cross-repo bleed.
 
 Scope and components
 
-- Surface: one MCP server per daemon, shared across all repos; no per-repo servers. Enabled via `[server] enable_mcp=true`; inherits daemon bind defaults (127.0.0.1 unless `--expose` with token auth).  
-- Tools (all require `repo_path` or `repo_id`):  
+- Surface: one MCP server per per-repo daemon. Enabled via `[server] enable_mcp=true`; inherits daemon bind defaults (127.0.0.1 unless `--expose` with token auth).  
+- Tools (`project_root` optional for per-repo daemon; validated if provided):  
   - `docdex_search`: Tier-1 local (Tantivy \+ libs\_index) search; returns ranked snippets with source metadata.  
   - `docdex_web_research`: Waterfall gate checks `web_trigger_threshold`; on low confidence or explicit force, performs DDG discovery \+ guarded headless Chrome fetch \+ readability; ingests cache per repo before responding.  
   - `docdex_memory_save`: persists text \+ metadata into per-repo `memory.db` (sqlite-vec).  
   - `docdex_memory_recall`: semantic recall via Ollama embeddings scoped to repo memory.  
 - Error handling: unknown repo path/id → explicit error; missing index/memory → instruct to `index --repo` or enable memory; web disabled/offline → clear message.  
-- Interactions: MCP server delegates to Repo Manager (fingerprint resolution, max-open-repos LRU), Waterfall orchestrator, Memory service, Web cache, and Token budgeter to assemble context before tool responses.
+- Interactions: MCP server delegates to Repo Manager (fingerprint resolution), Waterfall orchestrator, Memory service, Web cache, and Token budgeter to assemble context before tool responses.
 
 Behavior and constraints
 
-- Repo scoping: mandatory repo arg on every tool call; Repo Manager guards isolation and LRU eviction of idle contexts.  
+- Repo scoping: repo arg required unless the daemon default is used; Repo Manager guards isolation.  
 - Local-first: web tier only on confidence drop (\<`web_trigger_threshold`) or explicit request; DDG HTML \+ headless Chrome with rate limits (≥2s search, ≥1s fetch) and browser guard to avoid zombies.  
 - Security: default localhost bind; `--expose` requires token on MCP requests; no telemetry or paid APIs.  
 - Reliability: startup `docdexd check` validates MCP enabled, config perms, Ollama, Chrome, and repo registry; clear failures if dependencies missing.  
-- Performance: must sustain ≥8 concurrent repos within max-open-repos cap (default 12, configurable 4–16); local search p95 \<50ms target; memory and libs treated as Tier-1 support.  
+- Performance: must sustain ≥8 concurrent repos via multiple per-repo daemons; local search p95 \<50ms target; memory and libs treated as Tier-1 support.  
 - Observability: log tool invocations with repo id, tier selection (local/web/memory), and errors; no additional metrics mandated in PDR.  
 - DevOps: no new deployment surface; MCP shipped with daemon; uses same config/state layout (`~/.docdex/state/repos/<fingerprint>/...`).
 
@@ -997,7 +994,7 @@ Verification Strategy
 
 - `docdexd check` confirms MCP enabled, dependencies (Ollama, Chrome), repo registry, and config RW.  
 - Tool-level tests: ensure each tool errors on missing repo/index, respects repo isolation, and enforces confidence gate for web tier.  
-- Concurrency tests: operate against ≥8 repos with LRU eviction; verify no cross-repo data leakage.  
+- Concurrency tests: operate against ≥8 repos across per-repo daemons; verify no cross-repo data leakage.  
 - Web safety tests: validate DDG/search delays, Chrome guard, and cache reuse; confirm clear errors when offline.
 
 ### Local Dependencies
@@ -1006,7 +1003,7 @@ Docdex relies solely on locally managed, zero-cost components for LLM/embeddings
 
 **Components and Roles**
 
-- Ollama: sole provider for chat completions and embeddings; configured via `[llm]` in `config.toml` with hardware-aware model guidance and token budgeting handled upstream.  
+- LLM provider: configured via `[llm]` in `config.toml` (default `ollama`) with hardware-aware model guidance and token budgeting handled upstream.  
 - DuckDuckGo HTML discovery: search-only HTML endpoint used for web queries; enforces ≥2s between queries.  
 - Headless Chrome: fetch and readability extraction for discovered URLs; guarded lifecycle to avoid zombie processes; respects per-domain ≥1s fetch delay and 15s page timeout defaults.  
 - Tree-sitter: language parsers (Rust, TS/JS, Python, Go) for symbol extraction during `index`; outputs stored in per-repo `symbols.db`.
@@ -1016,12 +1013,12 @@ Docdex relies solely on locally managed, zero-cost components for LLM/embeddings
 - Waterfall Tier-2 (web) path: Local search confidence below `web_trigger_threshold` or explicit user request → DuckDuckGo discovery (rate-limited) → headless Chrome fetch with readability → raw HTML \+ cleaned JSON cached under `cache/web/` → ingested per repo when merged into context.  
 - Library docs path: Dependency detectors resolve docs URLs → headless Chrome fetch with same guardrails → cached under `cache/libs/<ecosystem>/<pkg>/` → ingested into per-repo `libs_index`, treated as Tier-1 support content.  
 - Indexing path: `docdexd index --repo` invokes Tree-sitter to emit symbols (name, kind, file\_path, line\_start/line\_end, signature) into `symbols.db`; Repo Manager ensures per-repo isolation via SHA256 fingerprinted paths.  
-- LLM path: All completions and embeddings are Ollama calls made locally; no cloud fallback; `[llm]` config warns if provider ≠ ollama.
+- LLM path: Completions and embeddings use the configured provider; local Ollama is the default. No implicit cloud fallback; `[llm]` warns if provider is unknown or missing required config.
 
 **Operational Guardrails**
 
 - Local-only by default: daemon binds to 127.0.0.1 unless `--expose` is set; when exposed, token auth enforced on HTTP/MCP surfaces.  
-- Resource controls: Chrome lifecycle guarded with locks and teardown; max-open-repos cap with LRU eviction prevents handle leaks across per-repo DBs/indexes.  
+- Resource controls: Chrome lifecycle guarded with locks and teardown; per-repo daemons close DB/index handles on shutdown.  
 - Caching behavior: Web/library caches are global but ingestion is repo-scoped; no cross-repo memory or symbol bleed.  
 - Observability: Dependency readiness surfaced via `docdexd check` (Ollama reachability, Chrome availability, model presence); additional telemetry not requested in PDR.  
 - Security: No paid APIs; no external egress beyond explicit web fetch; blocklist honored during discovery.
@@ -1053,18 +1050,18 @@ Docdex relies solely on locally managed, zero-cost components for LLM/embeddings
 
 ## Runtime, Deployment, and Operations {#runtime,-deployment,-and-operations}
 
-**Intent**: Operate a single `docdexd` daemon per machine that is localhost-bound by default, resource-disciplined, repo-scoped, and observable, while avoiding external costs and preventing browser/process leaks. No multi-daemon or cloud deployment modes are in scope.
+**Intent**: Operate per-repo `docdexd` daemons that are localhost-bound by default, resource-disciplined, repo-scoped, and observable, while avoiding external costs and preventing browser/process leaks. Clustered/multi-tenant deployment modes are out of scope.
 
 ### Daemon Lifecycle and Binding
 
 - Startup runs `docdexd check`: validates config readability/writability, state dirs, Ollama reachability/models, headless Chrome availability, repo registry, HTTP bind, MCP enablement. Fails fast with actionable errors.  
 - Binding: default `127.0.0.1:3210`. `--expose` optional; when set, all HTTP/MCP surfaces require token auth (from env/config). No telemetry.  
-- Single daemon hosts one HTTP API and one MCP server; CLI and TUI connect locally. One daemon manages all repos; no per-repo daemons.  
+- Each per-repo daemon hosts one HTTP API and one MCP server; CLI and TUI connect locally. Run one daemon per repo.  
 - Chrome/browsers: headless lifecycle guarded; cleanup on exit/panic; locks under `state/locks/` to prevent concurrent zombie instances.
 
 ### Resource and Concurrency Controls
 
-- Max open repos: default 12 (configurable 4–16) with LRU eviction; closing DB/index handles on eviction.  
+- Repo lifecycle: per-repo daemon manages a single repo; DB/index handles close on shutdown.  
 - RAM/VRAM-aware LLM guidance; defaults tuned to keep idle daemon \<100MB, indexing \<1GB (configurable).  
 - Web access rate limits: ≥2s between DuckDuckGo searches; ≥1s per-domain fetch delay; page timeout default 15s; bounded Chrome concurrency.  
 - Token budgeting: \~10% system prompt, 20% memory, 50% repo/library/web, 20% generation buffer; lowest-priority snippets dropped first when over budget.
@@ -1078,13 +1075,13 @@ Docdex relies solely on locally managed, zero-cost components for LLM/embeddings
 ### Observability and Health
 
 - Health/readiness via `docdexd check` output; includes Chrome guard status, model availability, repo registry, and bind status.  
-- Logging: honor `log_level` from config; log rate-limit decisions, waterfall escalations, eviction events, and browser lifecycle events.  
+- Logging: honor `log_level` from config; log rate-limit decisions, waterfall escalations, and browser lifecycle events.  
 - DAG and memory are per repo; exposed via CLI/HTTP/MCP only where specified—no additional telemetry channels.
 
 ### Configuration Management
 
 - Config at `~/.docdex/config.toml`; auto-created with localhost defaults. Validates RW access to `global_state_dir`.  
-- Key sections enforced: `[core]`, `[llm]`, `[search]`, `[web]`, `[web.scraper]`, `[memory]`, `[server]`. Warn if `provider` ≠ `ollama`.  
+- Key sections enforced: `[core]`, `[llm]`, `[search]`, `[web]`, `[web.scraper]`, `[memory]`, `[server]`. Warn if `provider` is unknown or missing required config.  
 - State layout under `~/.docdex/state/` with repo fingerprints; includes `index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`, `cache/web`, `cache/libs`, `locks/`.  
 - No auto-install of Ollama/Chrome; `llm-setup` provides guidance only.
 
@@ -1098,22 +1095,22 @@ Docdex relies solely on locally managed, zero-cost components for LLM/embeddings
 **Verification Strategy**
 
 - Run `docdexd check` to validate config/state/Ollama/Chrome/bind/MCP before serving.  
-- Concurrency tests: max-open-repos cap with LRU eviction under load; ensure handles close on eviction.  
+- Concurrency tests: multiple per-repo daemons under load; ensure handles close on shutdown.  
 - Web safety: enforce DDG ≥2s interval and per-domain ≥1s delay; verify Chrome teardown and no zombie processes.  
 - Security: attempt exposed-mode calls without token → expect rejection; verify localhost-only bind by default.  
 - Token budgeting: construct over-budget requests to confirm lower-priority context is dropped first with logging.  
-- Isolation: concurrent multi-repo operations show no cross-repo data or memory bleed.
+- Isolation: concurrent per-repo daemons show no cross-repo data or memory bleed.
 
 ### Daemon Lifecycle and Binding
 
-Single host-local `docdexd` process exposes one HTTP API and one MCP server. Architectural intent: keep the daemon private by default (127.0.0.1:3210), allow optional exposure only with explicit user action and token auth, and ensure lifecycle guards prevent zombie processes or orphaned browser instances.
+Per-repo `docdexd` processes expose one HTTP API and one MCP server each. Architectural intent: keep the daemon private by default (127.0.0.1:3210), allow optional exposure only with explicit user action and token auth, and ensure lifecycle guards prevent zombie processes or orphaned browser instances.
 
-- **Process model**: One `docdexd` per machine; multi-repo handling is in-process. No support for multi-daemon clustering (out of scope per PDR).  
+- **Process model**: One `docdexd` per repo; multi-repo access comes from running multiple daemons. No clustered multi-tenant mode (out of scope per PDR).  
 - **Default binding**: Bind to `127.0.0.1:3210` from `[server] http_bind_addr`. MCP enabled by default (`enable_mcp=true`), sharing the same bind/interface posture.  
 - **Exposed mode**: `--expose` (or equivalent config override) permits non-localhost binding; requires token authentication provided via env/config. Token is enforced on HTTP and MCP requests when exposed; reject unauthenticated requests.  
 - **Startup validation**: `docdexd check` ensures the bind address is free, permissions on `global_state_dir` are valid, Ollama and headless Chrome are reachable, and MCP can start. Fails fast if port unavailable or dependencies missing.  
 - **Shutdown/guard rails**: Browser guard ensures headless Chrome is started/stopped cleanly; lock directories under `~/.docdex/state/locks/` prevent zombie Chrome processes. On panic/exit, ensure teardown routines run to avoid lingering processes.  
-- **Resource limits (relevant here)**: Max-open-repos cap with LRU eviction is enforced by the Repo Manager inside the daemon, so lifecycle includes closing DB/index handles on eviction. Concurrency limits for Chrome fetches are bounded; timeouts apply (page load \~15s).  
+- **Resource limits (relevant here)**: DB/index handles are closed on shutdown; Chrome fetch concurrency is bounded; timeouts apply (page load \~15s).  
 - **Security posture**: Local-only by default; zero telemetry; no paid APIs. When exposed, token auth is mandatory; otherwise reject. No other authentication modes are specified in PDR.  
 - **Observability**: PDR does not request additional logging/tracing specifics here beyond readiness checks and error surfacing on failed binds or missing dependencies.
 
@@ -1129,17 +1126,17 @@ Verification Strategy
 - `docdexd check` confirms bind availability, token presence when `--expose`, MCP readiness, Ollama/Chrome availability, and state directory permissions.  
 - Integration tests: start daemon on default localhost, assert HTTP/MCP reachable only locally; start with `--expose` \+ token, assert remote access works with token and fails without.  
 - Lifecycle tests: start/stop daemon repeatedly with web fetches to ensure Chrome processes are cleaned up; verify locks directory is empty after shutdown.  
-- Resource tests: open \> max-open-repos in sequence, confirm eviction closes resources and daemon remains responsive.
+- Resource tests: repeated start/stop cycles confirm handles close and daemon remains responsive.
 
 ### Resource and Concurrency Controls
 
-Architectural intent: keep a single `docdexd` responsive on commodity machines by bounding repo footprint, browser usage, and external fetch rates while preventing resource bleed across repos.
+Architectural intent: keep a per-repo `docdexd` responsive on commodity machines by bounding repo footprint, browser usage, and external fetch rates while preventing resource bleed across repos.
 
 **Repo lifecycle controls**
 
-- Max-open-repos: default 12 (configurable 4–16) enforced by Repo Manager with LRU eviction; on eviction, close per-repo handles (indexes, DBs) and unload in-memory state; repos lazily reinitialized on next access.  
+- Per-repo daemon manages a single repo; DB/index handles close on shutdown.  
 - Fingerprinted per-repo state under `state/repos/<fingerprint>/` ensures isolation; cross-repo access is rejected early when repo id/path missing.  
-- Daemon must return clear errors when cap reached and before initializing new repo context.
+- Daemon must return clear errors when repo context is missing or invalid.
 
 **Browser and web fetch controls**
 
@@ -1155,12 +1152,12 @@ Architectural intent: keep a single `docdexd` responsive on commodity machines b
 **Concurrency surface interactions**
 
 - Waterfall orchestrator must honor `web_trigger_threshold` gate; web tier only invoked on low-confidence or explicit request, reducing unnecessary Chrome usage.  
-- MCP/HTTP/CLI all require repo selection; prevents accidental cross-repo operations and helps keep eviction effective.
+- MCP/CLI require repo selection; HTTP defaults to the daemon repo; prevents accidental cross-repo operations.
 
 **Observability hooks**
 
-- `docdexd check` validates Chrome availability, repo registry health, max-open-repos enforcement, and config/state RW.  
-- Logging for eviction events, rate-limit throttling, Chrome guard actions, and token-dropping decisions; metrics collection beyond logs not requested in PDR.
+- `docdexd check` validates Chrome availability, repo registry health, and config/state RW.  
+- Logging for rate-limit throttling, Chrome guard actions, and token-dropping decisions; metrics collection beyond logs not requested in PDR.
 
 **Security posture**
 
@@ -1168,35 +1165,35 @@ Architectural intent: keep a single `docdexd` responsive on commodity machines b
 
 **DevOps/scalability**
 
-- No clustering/multi-daemon; single-node scaling by tuning max-open-repos and fetch concurrency. State layout must remain upgrade-safe; no auto-install of Chrome/Ollama.
+- No clustered multi-tenant mode; scale by running per-repo daemons and tuning fetch concurrency. State layout must remain upgrade-safe; no auto-install of Chrome/Ollama.
 
 **Assumptions**
 
-- Config provides knobs for repo cap, fetch concurrency, rate delays, and timeouts; defaults match PDR.  
+- Config provides knobs for fetch concurrency, rate delays, and timeouts; defaults match PDR.  
 - Cache directories are writable and shared across repos but ingestion remains per-repo to avoid cross-contamination.
 
 **Open Questions & Risks**
 
-- Should eviction consider per-repo size/weight in addition to recency? (PDR specifies LRU only.)  
+- Should per-repo daemons expose more detailed resource telemetry for tuning?  
 - How to surface rate-limit/backoff status to clients (HTTP/MCP error codes vs. logs only)?  
 - Risk: misconfigured Chrome path or permissions could bypass guard and leave zombies; mitigation relies on `check` coverage.
 
 **Verification Strategy**
 
-- Unit/integration: Repo Manager LRU eviction under concurrent access; verify handles closed and repos reinit cleanly.  
+- Unit/integration: Repo Manager handles concurrent access across per-repo daemons; verify handles closed cleanly.  
 - Rate-limit tests: enforce ≥2s DDG spacing and ≥1 req/sec per domain; ensure cache hits skip delays.  
 - Browser guard tests: spawn/fetch/timeout cycles without orphaned Chrome processes.  
 - Token budgeting tests: confirm lower-priority snippets are dropped first with logs emitted.  
-- `docdexd check`: validates Chrome, repo registry, max-open-repos enforcement, state RW, and config defaults.
+- `docdexd check`: validates Chrome, repo registry, state RW, and config defaults.
 
 ### Security and Privacy
 
 Docdex enforces local-first, zero-cost operation with explicit controls when the daemon is exposed. Security posture is intentionally minimal: bind to localhost by default, require a token if remote exposure is enabled, and avoid any telemetry or paid/cloud dependencies.
 
-- **Network exposure**: `docdexd` binds to `127.0.0.1:3210` by default. Running with `--expose` (or equivalent config) requires a token; HTTP and MCP requests must present it or are rejected. No multi-tenant daemons; one daemon per machine.  
+- **Network exposure**: `docdexd` binds to `127.0.0.1:3210` by default. Running with `--expose` (or equivalent config) requires a token; HTTP and MCP requests must present it or are rejected. No multi-tenant daemons; one daemon per repo.  
 - **Authentication & authorization**: Single shared bearer-style token validated on all HTTP/MCP endpoints when exposed. No role model or per-repo ACLs in scope; all authorization is coarse-grained (token holder \= allowed). Token configured via env/config; no additional identity providers.  
 - **Data residency & locality**: All inference, embeddings, search, and state are local by default; no telemetry. Only zero-cost/open components (Ollama, Tantivy, DuckDuckGo HTML, headless Chrome, sqlite-vec, Tree-sitter) are permitted. Web access is gated (confidence-based or explicit) and cached locally. No cloud/vector DBs, no paid APIs.  
-- **Repo isolation**: Per-repo state under `~/.docdex/state/repos/<fingerprint>/` (indexes, memory.db, symbols.db, dag.db, libs\_index). Global caches (`cache/web`, `cache/libs`) are shared storage but ingested per repo without cross-contamination. LRU eviction closes per-repo handles cleanly.  
+- **Repo isolation**: Per-repo state under `~/.docdex/state/repos/<fingerprint>/` (indexes, memory.db, symbols.db, dag.db, libs\_index). Global caches (`cache/web`, `cache/libs`) are shared storage but ingested per repo without cross-contamination.  
 - **Process/browsing safeguards**: Headless Chrome guarded with locks and lifecycle checks to avoid zombie processes; rate limits enforced to reduce abuse risk. Locks directory under state for browser/process guards.  
 - **Configuration defaults**: Auto-created config favors privacy: localhost bind, Ollama provider, MCP enabled locally. Warnings if LLM provider differs from Ollama. No auto-install of dependencies.  
 - **Logging/observability**: PDR does not request telemetry; assume minimal local logs only. No remote log shipping described.  
@@ -1215,7 +1212,7 @@ Verification Strategy
 - `docdexd check` confirms localhost bind (unless `--expose`), token requirement when exposed, and absence of telemetry/cloud calls.  
 - Automated tests to assert all API/MCP calls fail without token when exposed and succeed with valid token.  
 - Tests to confirm no network egress occurs for local-only operations; web access only when triggered and cached locally.  
-- Repo isolation tests: ensure per-repo state separation and LRU eviction closes handles without leak.  
+- Repo isolation tests: ensure per-repo state separation without cross-repo leakage.  
 - Chrome guard tests: locks and cleanup prevent zombie processes.
 
 ### Observability and Health
@@ -1225,7 +1222,7 @@ Docdexd must surface readiness and dependency health so operators can trust loca
 **Operational Health Model**
 
 - `docdexd check` runs at install/startup or on demand; validates config/state RW, Ollama reachability/models, Chrome availability, repo registry integrity, HTTP bind, MCP enablement, and enforces local bind unless `--expose` is set. Output: human-readable failures \+ actionable hints; non-zero exit on any failed prerequisite.  
-- Dependency validation: confirms `ollama` in PATH and target models available; confirms Chrome binary present/launchable in headless mode with page timeout guard; warns (not fails) if LLM provider ≠ `ollama`.  
+- Dependency validation: confirms provider-specific dependencies (Ollama binary/models when configured), confirms Chrome binary present/launchable in headless mode with page timeout guard; warns (not fails) if the provider is unknown.  
 - Browser guard: lifecycle locks under `state/locks/`; enforces teardown on exit/panic; caps concurrent Chrome sessions; rejects new sessions when caps hit with clear error; ensures no zombie Chrome processes remain post-operations.  
 - Repo readiness: `check` verifies per-repo state existence and permissions; unknown/unindexed repos return clear errors across CLI/HTTP/MCP.  
 - Waterfall guardrails: confidence gating before web fetch; respects rate limits; logs when escalations occur and when token budget forces snippet dropping (memory \> repo \> libs/web).  
@@ -1240,7 +1237,7 @@ Docdexd must surface readiness and dependency health so operators can trust loca
 **Operations and Reliability**
 
 - Start-up gate: daemon fails fast if `check` prerequisites are not met, preventing partial service.  
-- Resource discipline: max-open-repos cap enforced with LRU eviction; bounded Chrome concurrency with timeouts; rejects work rather than hang.  
+- Resource discipline: bounded Chrome concurrency with timeouts; rejects work rather than hang.  
 - Offline-first: web dependence is optional; failures in web tier degrade gracefully to local responses with logs explaining the fallback.
 
 **Assumptions**
@@ -1269,13 +1266,13 @@ Configuration ensures `docdexd` starts with safe, local-first defaults, validate
 
 Defaults and creation
 
-- Global config `~/.docdex/config.toml` auto-created on first run with localhost bind, Ollama-only LLM settings, default thresholds (e.g., `web_trigger_threshold=0.45`), and reasonable caps (`max-open-repos` default 12).  
+- Global config `~/.docdex/config.toml` auto-created on first run with localhost bind, Ollama-only LLM settings, and default thresholds (e.g., `web_trigger_threshold=0.45`).  
 - State root `~/.docdex/state/` structured as in PDR (per-repo `index`, `libs_index`, `memory.db`, `symbols.db`, `dag.db`; shared `cache/web`, `cache/libs`, `locks`). Paths derived from SHA256 of normalized repo path; reject any path not under the fingerprinted root.
 
 Validation and safeguards
 
 - On startup and via `docdexd check`, validate `global_state_dir` readability/writability, per-repo RW on demand, and that bindings remain on `127.0.0.1` unless explicitly exposed with token auth.  
-- Emit warning if `[llm].provider` is not `ollama`; no non-Ollama providers are supported.  
+- Emit warning if `[llm].provider` is unrecognized or missing required settings; non-Ollama providers are permitted when configured.  
 - Validate HTTP bind address format, MCP enablement flag, and that Ollama base URL is reachable when configured.  
 - Ensure scraper/chrome settings exist but only report availability here; full browser lifecycle is covered elsewhere.
 
@@ -1292,7 +1289,7 @@ Scope boundaries
 Open Questions & Risks
 
 - How to surface granular permission errors on `global_state_dir` vs per-repo dirs without leaking host paths?  
-- What is the precise failure mode if Ollama is unreachable but provider remains `ollama` (block startup vs warn)?  
+- What is the precise failure mode if the configured provider is unreachable (block startup vs warn)?  
 - Risk: misconfigured `--expose` without token enforcement; ensure config validation blocks this.
 
 Verification Strategy
@@ -1303,28 +1300,28 @@ Verification Strategy
 
 ## Quality, Testing, and Risks {#quality,-testing,-and-risks}
 
-Docdex v2.0 quality is enforced through phase-gated validation tied to local-first, zero-cost constraints and multi-repo isolation. Each gate proves the daemon can safely serve multiple repos with correct scoping, guarded web escalation, and required local dependencies (Ollama, headless Chrome) before advancing.
+Docdex v2.0 quality is enforced through phase-gated validation tied to local-first, zero-cost constraints and per-repo daemon isolation. Each gate proves the daemon can safely serve a repo with correct scoping, guarded web escalation, and required local dependencies (Ollama, headless Chrome) before advancing.
 
 **Phase Gates**
 
-- Phase 0: `docdexd check` validates config RW, state layout, Ollama/Chrome presence, repo registry, localhost bind, MCP enabled; Repo Manager enforces max-open-repos \+ LRU eviction.  
+- Phase 0: `docdexd check` validates config RW, state layout, Ollama/Chrome presence, repo registry, localhost bind, MCP enabled.  
 - Phase 1: `index --repo` builds per-repo source index; `chat --repo` answers from local snippets; `llm-list`/`llm-setup` functional with hardware-aware model guidance.  
 - Phase 2: Waterfall uses `web_trigger_threshold`; `web-search`, `web-fetch`, `web-rag` operate with DDG ≥2s spacing, ≥1s fetch delay, Chrome guarded/cleaned.  
 - Phase 2.1: `libs fetch --repo` detects Rust/Node/Python deps, caches, ingests into repo `libs_index`; chat grounded on ingested docs.  
-- Phase 3/3.5: `/v1/chat/completions` requires repo, budgets tokens, streams; `memory_store/recall` isolated per repo.  
+- Phase 3/3.5: `/v1/chat/completions` defaults to daemon repo, budgets tokens, streams; `memory_store/recall` isolated per repo.  
 - Phase 4: DAG nodes logged per session; `dag view --repo` renders text/DOT.  
-- Phase 5: Single MCP server exposes repo-aware tools; errors clearly on unknown/unindexed repo.  
+- Phase 5: Per-repo MCP server exposes repo-aware tools; errors clearly on unknown/unindexed repo.  
 - Phase 6: Symbols populated; impact API returns deps; `run-tests --repo` emits structured JSON; diff-aware summary produced.  
 - Phase 7: TUI repo switch, dashboard tabs, VSCode extension always passes `repo_path`.
 
 **Test Coverage Focus**
 
-- Isolation: per-repo state dirs, LRU eviction correctness under concurrency; reject missing/unknown repo; no cross-repo memory/index bleed.  
+- Isolation: per-repo state dirs under concurrency; reject missing/unknown repo; no cross-repo memory/index bleed.  
 - Local-first/no cost: no paid/external APIs beyond gated web; default localhost bind; token auth required when exposed.  
 - Waterfall correctness: confidence gate honored; source priority Memory \> Repo \> Library/Web; token budgeting enforces drop order with logging.  
 - Scraper safety: DDG spacing/backoff, fetch delay, cache TTL, readability cleanup, Chrome lifecycle guards, zero zombie processes.  
 - Library ingestion: dependency detection for Rust/Node/Python; cache reuse; libs treated as Tier-1.  
-- Performance: local search p95 \<50ms (\<20ms typical); resource caps respected (max-open-repos, Chrome concurrency).  
+- Performance: local search p95 \<50ms (\<20ms typical); resource caps respected (Chrome concurrency).  
 - Security: token required when `--expose`; reject unauthenticated HTTP/MCP calls; clear errors for missing models/Chrome.
 
 **Open Questions & Risks**
@@ -1338,9 +1335,9 @@ Docdex v2.0 quality is enforced through phase-gated validation tied to local-fir
 **Verification Strategy**
 
 - Gate-by-gate acceptance using the Phase list above; block progression on failure.  
-- Automated integration tests per repo for: isolation/LRU eviction, waterfall gate behavior, token auth when exposed, dependency detection and libs ingestion, Chrome lifecycle under stress.  
+- Automated integration tests per repo for: isolation, waterfall gate behavior, token auth when exposed, dependency detection and libs ingestion, Chrome lifecycle under stress.  
 - Performance benchmarks for local search latency and resource usage across 8+ concurrent repos.  
-- Fault injection: simulate missing Ollama/model, missing Chrome, slow/banned DDG responses, repo cap exceedance.  
+- Fault injection: simulate missing Ollama/model, missing Chrome, slow/banned DDG responses.  
 - Security checks: enforce repo selection on all surfaces; ensure no paid API calls; localhost bind by default; token required when exposed.
 
 ### Phase Gates {#phase-gates}
@@ -1349,21 +1346,21 @@ Docdex advances through gated phases; each gate requires the preceding functiona
 
 **Gate Criteria by Phase**
 
-- Phase 0 (Foundation): `docdexd check` passes; config/state RW validated; Repo Manager enforces max-open-repos with LRU eviction; Ollama and headless Chrome availability confirmed.  
+- Phase 0 (Foundation): `docdexd check` passes; config/state RW validated; Ollama and headless Chrome availability confirmed.  
 - Phase 1 (Local RAG/Chat): `index --repo` builds per-repo Tantivy index; `chat --repo` serves answers from local snippets; `llm-list` hardware detection and `llm-setup` guidance functional.  
 - Phase 2 (Web Intelligence): Waterfall only triggers web when local confidence \< `web_trigger_threshold` or forced; `web-search`, `web-fetch`, `web-rag --repo` operate with DuckDuckGo HTML, headless Chrome, readability cleanup, enforced rate limits, and Chrome guard (no zombies).  
 - Phase 2.1 (Library Context): `libs fetch --repo` detects Rust/Node/Python deps, resolves docs URLs, scrapes, caches under `cache/libs`, ingests into per-repo `libs_index`; chat answers grounded in cached library docs.  
-- Phase 3/3.5 (Unified API \+ Memory): `/v1/chat/completions` routes by repo (body/header/query), budgets tokens, streams via Ollama; per-repo `memory_store/recall` on `memory.db` with sqlite-vec embeddings; memory prioritized in context merge.  
+- Phase 3/3.5 (Unified API \+ Memory): `/v1/chat/completions` defaults to the daemon repo (body/header/query optional), budgets tokens, streams via Ollama; per-repo `memory_store/recall` on `memory.db` with sqlite-vec embeddings; memory prioritized in context merge.  
 - Phase 4 (Reasoning DAG): Per-repo `dag.db` logging UserRequest/Thought/ToolCall/Observation/Decision; `dag view --repo <session_id>` renders text/DOT.  
-- Phase 5 (MCP): Single MCP server exposes repo-aware tools (`docdex_search`, `docdex_web_research`, `docdex_memory_save/recall`); unknown/unindexed repo yields clear error; no per-repo MCP instances.  
+- Phase 5 (MCP): Per-repo MCP server exposes repo-aware tools (`docdex_search`, `docdex_web_research`, `docdex_memory_save/recall`); unknown/unindexed repo yields clear error.  
 - Phase 6 (Code Intelligence): Tree-sitter symbols for Rust/TS-JS/Python/Go stored in `symbols.db`; import graph impact API
-  `GET /v1/graph/impact?repo_id=&file=` returns schema-tagged inbound/outbound deps with explicit edge direction semantics;
+  `GET /v1/graph/impact?file=` returns schema-tagged inbound/outbound deps with explicit edge direction semantics;
   `run-tests --repo --target` returns structured JSON; diff-aware RAG uses git diff \+ impact graph \+ memory.  
 - Phase 7 (UI Surfaces): TUI repo switcher; web dashboard (chat to `/v1/chat/completions`, memory explorer, library shelf, DAG viewer, repo selector); VSCode extension always passes `repo_path` and uses HTTP/MCP.
 
 **Scalability/Reliability/Security Notes**
 
-- Scalability: Max-open-repos cap with LRU eviction must be honored before enabling parallel repo operations in later phases; web tier rate limits and cache reuse guard against DDG/Chrome overload.  
+- Scalability: Parallel repo operations come from multiple per-repo daemons; web tier rate limits and cache reuse guard against DDG/Chrome overload.  
 - Reliability: Browser guard lifecycle verified before web gate; token budgeting must prevent context overflow before unified API gate.  
 - Security: Default localhost bind enforced at each gate; `--expose` requires token; repo selection required on every surface; no paid/cloud calls.
 
@@ -1380,7 +1377,7 @@ Docdex advances through gated phases; each gate requires the preceding functiona
 
 - What is the precise policy for handling partial gate failures (e.g., Chrome unavailable but local RAG passes)? Promote with warnings or block?  
 - How to surface rate-limit/backoff state to operators during web gate validation?  
-- Risk: repo LRU eviction could race with active requests if not guarded; needs test coverage.  
+- Risk: multiple per-repo daemons could contend for shared caches or Chrome resources; needs test coverage.  
 - Risk: VSCode extension must reliably pass `repo_path`; missing arg could bypass repo scoping.
 
 **Verification Strategy**
@@ -1391,28 +1388,28 @@ Docdex advances through gated phases; each gate requires the preceding functiona
 
 ### Test Coverage Focus {#test-coverage-focus}
 
-Docdex v2.0 testing targets risk hot-spots: multi-repo isolation under concurrency, strict local-first behavior, waterfall gating correctness, scraper safety, and security posture tied to mandatory repo selection.
+Docdex v2.0 testing targets risk hot-spots: per-repo daemon isolation under concurrency, strict local-first behavior, waterfall gating correctness, scraper safety, and security posture tied to repo selection.
 
 - Scope/Intent: Validate that phase-gated behaviors enforce local sovereignty and repo correctness; focus on concurrency isolation, gated web escalation, and secure surfaces (HTTP/MCP/CLI). No additional components beyond PDR surfaces.  
 - Coverage Priorities:  
-  - Repo isolation & LRU eviction: concurrent `docdexd` operations across ≥8 repos; ensure per-repo state (`index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`) stays isolated; LRU closes/evicts idle contexts without bleed.  
+  - Repo isolation: concurrent `docdexd` operations across ≥8 repos; ensure per-repo state (`index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`) stays isolated.  
   - Local-first behavior: daemon binds 127.0.0.1 by default; no paid/external APIs; Ollama-only inference; confirm `--expose` path enforces token auth.  
   - Waterfall gating: Tier-1 local search preferred; escalation only when confidence \< `web_trigger_threshold` or explicitly forced; token budget priority (Memory \> Repo \> Library/Web) preserved.  
   - Scraper safety: DuckDuckGo discovery delay ≥2s; fetch delay ≥1s/domain; Chrome lifecycle guarded (no zombies); cache reuse honored.  
-  - Security with repo-required parameters: All CLI/HTTP/MCP calls require repo id/path; unknown/unindexed repos return clear errors; `--expose` requires token on HTTP/MCP.  
+  - Security with repo-required parameters: CLI/MCP require repo id/path; HTTP defaults to daemon repo; unknown/unindexed repos return clear errors; `--expose` requires token on HTTP/MCP.  
   - Phase gates: Phase 0–7 readiness checks per PDR; each gate blocks progression until preceding behaviors validated.  
 - Out of Scope: New surfaces/tech not in PDR; cloud telemetry/tests.
 
 Open Questions & Risks
 
-- How to simulate prolonged multi-repo churn to stress LRU without exceeding resource caps? (needs harness definition)  
+- How to simulate prolonged multi-repo churn across per-repo daemons without exceeding resource caps? (needs harness definition)  
 - Token auth test vectors for `--expose` not specified (strength/format).  
 - Headless Chrome availability in CI and deterministic timing for rate-limit tests.  
 - Confidence scoring fixtures for waterfall gate (ground truth/threshold tuning).
 
 Verification Strategy
 
-- Concurrency isolation: parallel `index`, `chat`, `libs fetch` across \>max-open-repos; assert per-repo fingerprints and DB/index handles close on eviction.  
+- Concurrency isolation: parallel `index`, `chat`, `libs fetch` across per-repo daemons; assert per-repo fingerprints and DB/index handles close cleanly.  
 - Local-first/security: `docdexd check` under `--expose` with/without token; assert bind address defaults; ensure no external paid calls (mock/deny outbound).  
 - Waterfall gating: instrument confidence scores; assert no web tier when score ≥ threshold; forced escalation path validated; token budget ordering via trace logs.  
 - Scraper safety: timed DDG/search/fetch calls with enforced delays; Chrome lifecycle hooks verified for teardown; cache hit/miss cases covered.  
@@ -1420,15 +1417,15 @@ Verification Strategy
 
 ### Risks and Mitigations {#risks-and-mitigations}
 
-Architectural intent: enforce local-first, single-daemon invariants while preventing runaway processes, web throttling issues, context mis-budgeting, resource exhaustion, missing dependencies, hallucinated outputs, and unintended exposure. Controls attach to the Repo Manager, Waterfall orchestrator, ScraperEngine, config validator (`docdexd check`), and auth/binding logic; no new surfaces beyond PDR.
+Architectural intent: enforce local-first, per-repo daemon invariants while preventing runaway processes, web throttling issues, context mis-budgeting, resource exhaustion, missing dependencies, hallucinated outputs, and unintended exposure. Controls attach to the Repo Manager, Waterfall orchestrator, ScraperEngine, config validator (`docdexd check`), and auth/binding logic; no new surfaces beyond PDR.
 
 - **Zombie Chrome**: ScraperEngine runs headless Chrome under a guarded lifecycle with lockfiles in `~/.docdex/state/locks/`; start/stop wrapped to ensure teardown on exit/panic; `docdexd check` asserts Chrome availability and stale process absence.  
 - **DuckDuckGo throttling**: DiscoveryService enforces ≥2s between DDG searches and ≥1s fetch delay per domain; blocklist applied; caches reused (`cache/web`); HTTP error backoff before retry.  
 - **Context overflow**: Waterfall prompt assembler performs token budgeting (10% system, 20% memory, 50% repo/libs/web, 20% generation buffer). Fixed priority ordering (Memory \> Repo \> Library/Web); lowest-priority snippets dropped first with logging for traceability.  
-- **Resource exhaustion (multi-repo & browser)**: Repo Manager caps open repos (default 12, configurable 4–16) with LRU eviction and handle closure. ScraperEngine bounds concurrent Chrome sessions; clear errors when caps reached instead of silent degradation.  
+- **Resource exhaustion (browser)**: ScraperEngine bounds concurrent Chrome sessions; clear errors when caps reached instead of silent degradation.  
 - **Missing dependencies (Ollama/Chrome/models)**: `docdexd check` validates `ollama` availability, model presence, Chrome binary/path, and RW on `global_state_dir`. `llm-setup` offers guided install/pull instructions; no cloud fallback permitted.  
 - **Hallucinated APIs**: Library docs must be ingested via `libs fetch --repo`; prompts instruct model to rely on indexed repo/libs; Waterfall only escalates to web when below `web_trigger_threshold` or explicitly forced.  
-- **Security exposure**: HTTP/MCP bind to `127.0.0.1` by default; `--expose` requires token in config/env and is checked per request. No telemetry or paid APIs; rejects calls lacking repo selection to avoid cross-repo leakage.
+- **Security exposure**: HTTP/MCP bind to `127.0.0.1` by default; `--expose` requires token in config/env and is checked per request. No telemetry or paid APIs; reject unknown repo ids to avoid cross-repo leakage.
 
 Open Questions & Risks
 
@@ -1442,166 +1439,5 @@ Verification Strategy
 - `docdexd check`: validate Chrome process guard, lock directory health, RW perms, Ollama reachability/models, and config correctness.  
 - Rate-limit tests: simulate rapid DDG queries and assert delays/backoff and cache hits.  
 - Token budgeting tests: crafted large context ensuring Memory \> Repo \> Library/Web ordering and logged drops.  
-- Resource cap tests: open \>max repos to confirm LRU eviction and handle closure; exceed Chrome concurrency to ensure bounded queue/error.  
-- Security tests: bind exposure requires token; reject requests without repo selection; verify no telemetry or paid API calls.
-
-✦ wodo@sukunahikona \~/apps/docdex dev ❯ cat .gpt-creator/staging/plan/sds/sds.md
-
-# System Design Specification (Docdex v2.0)
-
-## 1 Scope and Operating Principles
-
-- Single local-first daemon `docdexd` per machine; one HTTP API and one MCP server; CLI/TUI/VSCode use this daemon.  
-- Repo-scoped by default: every CLI/HTTP/MCP call must include `repo_path` or `repo_id` (fingerprint). Unknown or unindexed repos return explicit errors.  
-- Waterfall retrieval: Tier 1 local (repo index \+ ingested libs) → Tier 2 web (DDG HTML \+ headless Chrome) → Tier 3 cognition/memory. Web only on confidence drop below `web_trigger_threshold` (default 0.45) or when explicitly forced.  
-- Local sovereignty and zero cost: Ollama for LLM/embeddings; Tantivy; DuckDuckGo HTML; headless Chrome; sqlite/sqlite-vec; Tree-sitter. No paid/cloud APIs, no telemetry.  
-- Privacy/security: bind `127.0.0.1:3210` by default; `--expose` requires token on HTTP/MCP. No cross-repo memory/index/DAG access.  
-- Resource discipline: max-open-repos default 12 (configurable 4–16) with LRU eviction; bounded Chrome concurrency; per-domain rate limits (DDG ≥2s, fetch ≥1s).  
-- Performance targets: local search p95 \<50ms (typical \<20ms); idle daemon \<100MB; indexing \<1GB (configurable).
-
-## 2 Architecture Overview
-
-- Entry surfaces: HTTP OpenAI-compatible `/v1/chat/completions` and `GET /v1/graph/impact`; MCP server with repo-aware tools; CLI/TUI/VSCode clients call daemon.  
-- Core services: Config/State Manager → Repo Manager → Indexer/Search → Waterfall Orchestrator → LLM Gateway → Memory Service → DAG Logger → Impact Graph → Web Discovery/Scraper guard.  
-- Data isolation: per-repo state under `~/.docdex/state/repos/<fingerprint>/`; shared caches `cache/web`, `cache/libs` reused but ingested per repo.  
-- Context assembly: priority Memory → Repo Code → Library/Web; token budget 10% system prompt, 20% memory, 50% repo/libs/web, 20% generation buffer; drop lowest priority first with logs.
-
-## 3 Components and Responsibilities
-
-### 3.1 Config and State Manager
-
-- Config at `~/.docdex/config.toml`; auto-created with safe defaults. Sections: `[core] global_state_dir, log_level, max_concurrent_fetches`; `[llm] provider=ollama, base_url, default_model, embedding_model, max_answer_tokens`; `[search] web_trigger_threshold (0.45), max_repo_hits, max_web_hits`; `[web] discovery_provider=duckduckgo_html, user_agent, cache_ttl_secs`; `[web.scraper] engine, headless=true, chrome_binary_path, request_delay_ms (≥1000), page_load_timeout_secs (15)`; `[memory] enabled, backend=sqlite`; `[server] http_bind_addr=127.0.0.1:3210, enable_mcp=true`.  
-- Validates RW on `global_state_dir`; warns if `[llm].provider != ollama`; normalizes repo paths; exposes fingerprint function (SHA256 of normalized absolute path).  
-- Hardware detection (RAM/VRAM) for recommendations only; no auto-install.
-
-### 3.2 Repo Manager
-
-- Maps normalized repo path ↔ fingerprint; lazily initializes per-repo dirs/files: `index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`.  
-- Enforces `max-open-repos` via LRU. Eviction defers while in-flight ops hold refcounts; after completion, closes Tantivy/sqlite handles. On eviction, state remains on disk.  
-- Errors: missing repo/index → `RepoNotIndexed`; cap exceeded → `RepoCapacityExceeded`; permission errors propagate with repo path redacted.  
-- Registry persisted under state; moving a repo yields new fingerprint (requires re-index).
-
-### 3.3 Indexing and Search
-
-- `docdexd index --repo <path>` builds Tantivy BM25 index over repo source; excludes binaries \>5MB and VCS dirs; language detection via extension mapping. Tree-sitter symbols emitted for Rust/TS/JS/Python/Go into `symbols.db`.  
-- Libraries: `libs_index/` ingests cached library docs; treated as Tier 1\.  
-- Queries return hits `{path, snippet, score, source=repo|lib}`; top score used for gate. Optional local rerank using Ollama embeddings can be toggled per config (`[search].rerank_enabled` default false).
-
-### 3.4 Waterfall Orchestrator
-
-- Flow: resolve repo → Tier 1 search (source \+ libs) → if top score \< threshold or `force_web`, run Tier 2 (DDG discovery \+ Chrome fetch \+ readability \+ cache) → ingest snippets per repo → assemble context per budget → stream via Ollama (Tier 3 cognition/memory).  
-- Honors `[search].max_repo_hits`/`max_web_hits`; respects cache TTL before refetch; token pruning order: web → libs → repo → memory → system (system never dropped).  
-- Offline mode (`--offline` flag or config) skips Tier 2 regardless of score and returns local answer with warning.
-
-### 3.5 Web Discovery and Scraper
-
-- Discovery: DuckDuckGo HTML only; ≥2s between searches; blocklist support; cached results keyed by normalized query hash in `cache/web/`.  
-- Scraper: headless Chrome with readability; per-domain delay ≥1s; page timeout 15s; bounded concurrency (default 2); uses lockfiles under `locks/` to avoid zombies. On failure/backoff (HTTP 429/5xx), exponential backoff up to 3 attempts then surface error.  
-- Cache: raw HTML \+ cleaned JSON stored globally; reuse until `cache_ttl_secs` (default 86400\) expires, then refetch.
-
-### 3.6 LLM Gateway and Embeddings
-
-- Ollama-only. `default_model` chosen via hardware guidance: \<8GB RAM → ultra-light; 16–31GB → `llama3.1:8b` default; ≥32GB \+ GPU → recommend `llama3.1:70b` if present. Embedding model default `llama3.1:8b-embed` (or smallest available).  
-- Streaming responses; enforce `max_answer_tokens`. Timeouts: connect 5s, read 60s; 2 retries on transient errors.  
-- Budgeting/pruning handled before invocation; logs truncation events (counts only, not content).
-
-### 3.7 Memory Service
-
-- Per-repo `memory.db` sqlite-vec table `memories(id UUID, content TEXT, embedding BLOB, created_at INT, metadata JSON)`.  
-- Ops: `memory_store(text, metadata, repo_id)`; `memory_recall(query, repo_id, top_k)` returning `{content, score, metadata}`. Uses Ollama embeddings; rejects when memory disabled.  
-- Memory context pruning/truncation (deterministic): order by `score` desc, then `created_at` desc, then `id` asc; apply `max_items`, then consume the memory token budget greedily; when the next item doesn’t fit, truncate it to the remaining token budget at whitespace-token boundaries (append `…` without adding a new token), then drop remaining items as `budget_exhausted`.  
-- Compaction: optional pragma `auto_vacuum=INCREMENTAL`; manual `memory_compact --repo` command planned; warn when rows exceed 50k (configurable).
-
-### 3.8 Reasoning DAG
-
-- Per-repo `dag.db`: `nodes(id UUID PK, session_id UUID, type ENUM(UserRequest|Thought|ToolCall|Observation|Decision), payload JSON, created_at INT)`; edges implicit by insertion order per session. Index on `(session_id, created_at)`.  
-- Logging per chat/session; `dag view --repo <path> <session_id> [--format text|dot]` renders.
-
-### 3.9 Impact Graph and Tests
-
-- Impact graph stored per repo in `symbols.db` tables:  
-  - `files(path TEXT PK, lang TEXT)`  
-  - `deps(src_path TEXT, dst_path TEXT, kind TEXT)` (indexes on src/dst).  
-  - Edge direction semantics: `src_path -> dst_path` where `src_path` depends on/imports/references `dst_path`.  
-- API `GET /v1/graph/impact?repo_id=<id>&file=<path>` returns a JSON payload with an explicit `schema`
-  compatibility signal and directed edge semantics (see `docs/contracts/code_intelligence_schema_v1.md`).  
-- `run-tests --repo <path> --target <file|dir>` executes configured command (from repo-local config or env)
-  and returns JSON `{status: pass|fail|error, exit_code, stdout, stderr, duration_ms}`.
-
-### 3.10 Library Context
-
-- Dependency detectors: Rust (Cargo.toml), Node (package.json), Python (requirements.txt). Resolves docs URLs (docs.rs/npm homepage/PyPI docs) → fetch via scraper → cache under `cache/libs/<ecosystem>/<pkg>/` → ingest into `libs_index/`.  
-- Versioning: cache keyed by package@version; on version change, refetch and reingest.
-
-### 3.11 Interfaces
-
-- CLI: `check`, `index --repo`, `chat --repo [query]`, `llm-list`, `llm-setup`, `web-search`, `web-fetch`, `web-rag --repo`, `libs fetch --repo`, `dag view --repo`, `run-tests --repo`, `mcp`, `tui`.  
-- HTTP: `POST /v1/chat/completions` (repo via header `x-docdex-repo-id`, body field `repo_id`, or query `repo_id`), `GET /v1/graph/impact`.  
-- MCP: single server, tools require `repo_path` or `repo_id`: `docdex_search`, `docdex_web_research`, `docdex_memory_save`, `docdex_memory_recall`.  
-- VSCode/TUI/Web: thin clients; always pass repo path/id; use HTTP/MCP.
-
-## 4 Data Management
-
-- Fingerprinting: SHA256 of normalized absolute repo path (symlinks resolved; case preserved). Repo\_id \= fingerprint; required on all calls.  
-- Per-repo layout under `~/.docdex/state/repos/<fp>/`: `index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`.  
-- Shared: `~/.docdex/state/cache/web/`, `cache/libs/<ecosystem>/<pkg>/`, `locks/`.  
-- No cross-repo queries; caches are read-mostly and ingested per repo explicitly.  
-- Backup/migration: state layout stable across upgrades; no automatic cleanup. `cache/web` TTL controlled by config; library cache invalidated on version change.
-
-## 5 Runtime, Deployment, and Operations
-
-- Daemon start: run `docdexd check`; fail fast on missing RW perms, Ollama unreachable, Chrome unavailable, or bind conflict. Warn (not fail) on oversized model vs hardware or provider \!= ollama.  
-- Binding: default `127.0.0.1:3210`; `--expose` allows custom bind but requires token; refuse start if exposed without token.  
-- Concurrency: `max-open-repos` LRU; `max_concurrent_fetches` bounds Chrome sessions; repo eviction logs include repo\_id and reason.  
-- Offline flag disables Tier 2 web; CLI/HTTP/MCP propagate warning.  
-- Shutdown: graceful stop closes repo handles, terminates Chrome, clears lockfiles. Crash guard cleans orphaned Chrome on next start if PID missing.
-
-## 6 Security and Compliance
-
-- Auth: bearer token required on HTTP/MCP when exposed; header `Authorization: Bearer <token>`. Missing/invalid token → 401\. Localhost mode skips auth.  
-- Authorization: coarse-grained (token grants full access); no per-repo ACLs in scope.  
-- Data locality: no telemetry; no paid/cloud services; inference, embeddings, caches stored locally. Web fetch only via DDG/Chrome with local caching.  
-- Repo isolation: enforced via fingerprinted paths and repo-required parameters; cross-repo memory/index/DAG access is rejected.  
-- Hardening: lock down `global_state_dir` permissions (0700 recommended); scrub secrets from logs; do not log prompt content.
-
-## 7 Observability and Health
-
-- `docdexd check` outputs readiness: config parse, state RW, repo registry, Ollama reachability/models, Chrome availability, bind and MCP status.  
-- Logging: levels from config; emit events for repo open/evict, gate decisions (scores vs threshold), token drops (counts), cache hits/misses, rate-limit waits, Chrome lifecycle, auth failures.  
-- No external telemetry. Optional local log files under `~/.docdex/state/logs/` (if enabled).  
-- Health endpoint not added; rely on `check` and process status.
-
-## 8 Reliability and Performance
-
-- Targets: local search p95 \<50ms; typical \<20ms; idle \<100MB; indexing \<1GB.  
-- Gate behavior: do not invoke web when above threshold unless forced; offline mode respected; backoff on web errors.  
-- Chrome guard: bounded concurrency, lockfiles, teardown on exit/panic; `check` fails if zombies detected.  
-- Repo eviction: LRU with in-flight protection; reopen is lazy. Cap errors surfaced promptly.  
-- Memory growth: warn \>50k rows; compaction command planned.
-
-## 9 Rollout, Testing, and Validation
-
-- Phase gates (must pass sequentially):  
-  - P0: `docdexd check`; Repo Manager cap/eviction; RW validated.  
-  - P1: `index --repo`; `chat --repo`; `llm-list`/`llm-setup`.  
-  - P2: Waterfall gate obeyed; `web-search`/`web-fetch`/`web-rag` with DDG/Chrome rate limits and cleanup.  
-  - P2.1: `libs fetch --repo` for Rust/Node/Python; ingest into `libs_index`.  
-  - P3/3.5: `/v1/chat/completions` repo routing, token budgeting, streaming; `memory_store/recall`.  
-  - P4: DAG logging/view.  
-  - P5: MCP tools require repo; single server.  
-  - P6: Symbols \+ impact API; `run-tests` structured JSON; diff-aware RAG uses git diff \+ impact graph \+ memory.  
-  - P7: TUI/web dashboard/VSCode repo selection works.  
-- Test focus:  
-  - Repo isolation and LRU under concurrency (\>8 repos).  
-  - Local-first: no paid/external calls; localhost bind; auth required when exposed.  
-  - Waterfall gate correctness; token budgeting drop order.  
-  - Scraper safety: DDG ≥2s, fetch ≥1s, cache reuse, Chrome guard.  
-  - Library ingestion correctness/versioning.  
-  - Security: missing repo → 400; missing token when exposed → 401\.  
-- Fault injection: disable network to validate local fallback; kill Chrome to ensure guard cleanup; simulate 429 to test backoff; exceed repo cap to observe eviction.
-
-## 10 Configuration Defaults and Overrides
-
-- Defaults: `http_bind_addr=127.0.0.1:3210`, `max-open-repos=12`, `web_trigger_threshold=0.45`, `max_concurrent_fetches=2`, `cache_ttl_secs=86400`, `page_load_timeout_secs=15`, `request_delay_ms=1000`, DDG spacing 2000ms.  
-- Required overrides for exposure: `--expose` or config override must include non-empty token.  
-- All thresholds configurable via `config.toml`; changes require daemon restart or config reload (if implemented later).
+- Resource cap tests: repeated start/stop cycles confirm handle closure; exceed Chrome concurrency to ensure bounded queue/error.  
+- Security tests: bind exposure requires token; reject unknown repo ids; verify no telemetry or paid API calls.

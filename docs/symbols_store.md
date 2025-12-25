@@ -70,7 +70,7 @@ Tool name aliases: `docdex_symbols` and `docdex.symbols`.
 Arguments:
 
 ```json
-{ "path": "path/relative/to/repo.ext", "project_root": "/path/to/repo (optional)" }
+{ "path": "path/relative/to/repo.ext", "project_root": "/path/to/repo" }
 ```
 
 Return value:

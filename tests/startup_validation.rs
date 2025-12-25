@@ -222,20 +222,29 @@ fn startup_failure_emits_single_error_envelope_for_auth() -> Result<(), Box<dyn 
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
     let repo_arg = repo.path().to_string_lossy().to_string();
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let port_str = port.to_string();
     let output = Command::new(docdex_bin())
         .env("DOCDEX_STATE_DIR", state_root.path())
         .args([
             "serve",
             "--repo",
             repo_arg.as_str(),
+            "--host",
+            "0.0.0.0",
+            "--port",
+            port_str.as_str(),
+            "--expose",
             "--log",
             "warn",
-            // secure mode defaults true; omit --auth-token to force startup failure
+            // exposed binds require an auth token; omit --auth-token to force startup failure
         ])
         .output()?;
     assert!(
         !output.status.success(),
-        "expected non-zero exit when secure mode has no auth token"
+        "expected non-zero exit when exposed bind has no auth token"
     );
     let payload = parse_single_error_envelope(&output.stderr)?;
     assert_eq!(

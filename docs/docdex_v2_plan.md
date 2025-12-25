@@ -109,7 +109,7 @@ Based on the provided SDS and the current file structure of `docdex` v0.1.10, he
 
 * **LLM Gateway**
 * **Required Changes:**
-* Enforce **Ollama-only** provider (remove OpenAI/others if present, or hide them).
+* Allow multiple LLM providers (Ollama default), keeping local-first guidance while permitting explicit alternate provider config.
 * Ensure all calls are streamed.
 * Implement the hardware-aware model selection logic during setup.
 
@@ -136,7 +136,7 @@ Based on the provided SDS and the current file structure of `docdex` v0.1.10, he
 
 * **HTTP API (`src/api/http`)**
 * **Updates:**
-* **OpenAI Compatibility:** Ensure `POST /v1/chat/completions` matches OpenAI spec exactly, but *requires* a repo ID (header/body). Implemented in `src/api/v1/chat.rs`, routed from `src/search/mod.rs`.
+* **OpenAI Compatibility:** Ensure `POST /v1/chat/completions` matches OpenAI spec exactly. Repo ID is optional for per-repo daemons (header/body/query), and if supplied must match the daemon repo. Implemented in `src/api/v1/chat.rs`, routed from `src/search/mod.rs`.
 * **New Endpoint:** `GET /v1/graph/impact` for the dependency graph (currently routed from `src/search/mod.rs`).
 * **Auth:** Middleware to check Bearer token if `--expose` is active (currently in `src/search/mod.rs`; `src/api/http` re-exports the router).
 
@@ -145,8 +145,8 @@ Based on the provided SDS and the current file structure of `docdex` v0.1.10, he
 
 * **MCP Server (`src/api/mcp`, `crates/mcp-server`)**
 * **Updates:**
-* **Single Server:** Ensure one server instance serves all repos.
-* **Tool Params:** Update all tools (`docdex_search`, etc.) to require `repo_path` as a mandatory argument.
+* **Per-Repo Server:** Run one MCP server per repo; `project_root` is optional to use the daemon default, and if supplied must match the daemon repo.
+* **Tool Params:** Update all tools (`docdex_search`, etc.) to require `project_root` as a mandatory argument.
 * **New Tools:** `docdex_web_research`, `docdex_memory_save`, `docdex_memory_recall`.
 
 
@@ -179,7 +179,7 @@ C. Memory Schema (src/memory)
 Strict Schema: The plan mentions memory.db, but the SDS dictates the exact schema: id UUID, content TEXT, embedding BLOB, created_at INT, metadata JSON. The implementation must match this exactly for future compatibility.
 
 D. API & Middleware (src/api)
-Repo ID Headers: The SDS allows the repo ID to be passed via header (x-docdex-repo-id), body (repo_id), or query parameter. The middleware in Step 8 must support all three lookup methods.
+Repo ID Headers: The SDS allows the repo ID to be passed via header (x-docdex-repo-id), body (repo_id), or query parameter. For per-repo daemons it is optional; if provided, it must match the daemon repo. The middleware in Step 8 must support all three lookup methods.
 
 
 Based on the first step of the plan, you are establishing the module structure for the new core components. In Rust projects, this typically involves creating a directory for the component and adding a `mod.rs` file inside it to define the module's public interface.
@@ -288,7 +288,7 @@ src
 
 ### Key Changes in this Step
 
-1. **`src/config.rs`**: This file is updated to define the new configuration structs (`Config`, `CoreConfig`, `LlmConfig`, `WebConfig`, etc.) that match the v2.0 SDS. It will also include logic to load `~/.docdex/config.toml` and apply defaults (like `127.0.0.1` binding and `ollama` provider).
+1. **`src/config.rs`**: This file is updated to define the new configuration structs (`Config`, `CoreConfig`, `LlmConfig`, `WebConfig`, etc.) that match the v2.0 SDS. It will also include logic to load `~/.docdex/config.toml` and apply defaults (like `127.0.0.1` binding and `ollama` provider as the default).
 2. **`src/hardware.rs` (New)**: This file is created to handle the "Hardware Awareness" requirement. It will likely use a crate like `sysinfo` to detect:
 * Total System RAM (to guide `<8GB` vs `>16GB` logic).
 * GPU Presence/VRAM (to suggest `llama3.1:70b` vs `8b`).
@@ -558,7 +558,7 @@ src
 
 
 2. **`src/memory/ops.rs`**: This module implements the high-level operations.
-* **`memory_store`**: Accepts text, requests an embedding from the LLM provider (Ollama), and writes the row to SQLite.
+* **`memory_store`**: Accepts text, requests an embedding from the configured LLM provider (Ollama default), and writes the row to SQLite.
 * **`memory_recall`**: Accepts a query, generates an embedding, and performs the vector similarity search in `memory.db`.
 
 Based on **Step 7** ("Orchestrator: Rewrite flow for Waterfall (Local -> Web -> Memory) and Token Budgeting"), the `src/orchestrator` directory will be restructured to handle the complex tiered retrieval and context assembly logic.
@@ -654,7 +654,7 @@ src
 
 Based on **Step 8** ("API: Update HTTP to OpenAI spec and enforce Auth/Repo headers"), the `src/api` directory will undergo significant updates to align with the "Single-Daemon" and "Repo-Scoped" architecture.
 
-At this stage, you are standardizing the communication layer. You will implement the OpenAI-compatible request/response structures, add the new Impact Graph endpoint, and strictly enforce security via middleware that checks for the `repo_id` and (if exposed) the Authorization token.
+At this stage, you are standardizing the communication layer. You will implement the OpenAI-compatible request/response structures, add the new Impact Graph endpoint, and enforce security via middleware that checks Authorization (if exposed) and validates any optional `repo_id` against the daemon repo.
 
 Here is the updated `src` tree:
 
@@ -828,7 +828,7 @@ src
 
 5. **`src/cli/commands/llm.rs`**: This command implements **Hardware Awareness**.
 * `llm-list`: Calls `hardware::detect()` (from Step 2) to recommend models based on RAM/VRAM.
-* `llm-setup`: Validates the `ollama` binary path and guides the user to pull the recommended models.
+* `llm-setup`: Validates the Ollama binary path when provider=ollama and guides the user to pull the recommended models (other providers report their configured base URL).
 
 
 Based on the consolidated plan across all 9 steps, here is the **Final Folder Tree** for `docdex` v2.0. This structure supports the new **Waterfall Architecture**, **Repo Isolation**, **Hardware Awareness**, and the expanded **CLI/API** surfaces defined in the SDS.

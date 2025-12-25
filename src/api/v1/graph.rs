@@ -205,7 +205,7 @@ pub async fn impact_graph_handler(
         repo_id.repo_id.as_deref(),
         None,
         state.indexer.as_ref(),
-        true,
+        false,
     ) {
         return json_error(err.status, err.code, err.message);
     }

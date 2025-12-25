@@ -131,17 +131,29 @@ fn pick_free_port() -> Option<u16> {
     }
 }
 
-fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
+fn wait_for_health_with_token(
+    host: &str,
+    port: u16,
+    token: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
     let client = Client::builder().timeout(Duration::from_secs(1)).build()?;
     let url = format!("http://{host}:{port}/healthz");
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
-        match client.get(&url).send() {
+        let mut request = client.get(&url);
+        if let Some(token) = token {
+            request = request.header("Authorization", format!("Bearer {token}"));
+        }
+        match request.send() {
             Ok(resp) if resp.status().is_success() => return Ok(()),
             _ => thread::sleep(Duration::from_millis(200)),
         }
     }
     Err("docdexd healthz endpoint did not respond in time".into())
+}
+
+fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
+    wait_for_health_with_token(host, port, None)
 }
 
 #[test]
@@ -428,7 +440,7 @@ fn spawn_server(
     host: &str,
     port: u16,
 ) -> Result<Child, Box<dyn Error>> {
-    spawn_server_with_args(state_root, repo_root, host, port, &["--secure-mode=false"])
+    spawn_server_with_args(state_root, repo_root, host, port, &["--secure-mode=false"], None)
 }
 
 fn spawn_server_with_args(
@@ -437,6 +449,7 @@ fn spawn_server_with_args(
     host: &str,
     port: u16,
     extra_args: &[&str],
+    health_token: Option<&str>,
 ) -> Result<Child, Box<dyn Error>> {
     let repo_arg = repo_root.to_string_lossy().to_string();
     let port_string = port.to_string();
@@ -458,7 +471,7 @@ fn spawn_server_with_args(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
-    wait_for_health(host, port)?;
+    wait_for_health_with_token(host, port, health_token)?;
     Ok(child)
 }
 
@@ -469,7 +482,14 @@ fn spawn_server_with_auth(
     port: u16,
     token: &str,
 ) -> Result<Child, Box<dyn Error>> {
-    spawn_server_with_args(state_root, repo_root, host, port, &["--auth-token", token])
+    spawn_server_with_args(
+        state_root,
+        repo_root,
+        host,
+        port,
+        &["--auth-token", token],
+        Some(token),
+    )
 }
 
 #[test]
@@ -769,6 +789,7 @@ fn non_loopback_plain_http_requires_tls_or_opt_out() -> Result<(), Box<dyn Error
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
+    let token = "secret-token";
     let failure = Command::new(docdex_bin())
         .env("DOCDEX_STATE_DIR", state_root.path())
         .args([
@@ -782,6 +803,9 @@ fn non_loopback_plain_http_requires_tls_or_opt_out() -> Result<(), Box<dyn Error
             "--log",
             "warn",
             "--secure-mode=false",
+            "--expose",
+            "--auth-token",
+            token,
         ])
         .output()?;
     assert!(
@@ -839,11 +863,14 @@ fn non_loopback_plain_http_requires_tls_or_opt_out() -> Result<(), Box<dyn Error
             "warn",
             "--require-tls=false",
             "--secure-mode=false",
+            "--expose",
+            "--auth-token",
+            token,
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
-    wait_for_health("127.0.0.1", opt_out_port)?;
+    wait_for_health_with_token("127.0.0.1", opt_out_port, Some(token))?;
     child.kill().ok();
     child.wait().ok();
     Ok(())
@@ -874,6 +901,7 @@ fn rate_limit_and_request_size_limits_apply() -> Result<(), Box<dyn Error>> {
             "32",
             "--secure-mode=false",
         ],
+        None,
     )?;
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let clamp_url = format!("http://{host}:{clamp_port}/search");
@@ -925,6 +953,7 @@ fn rate_limit_and_request_size_limits_apply() -> Result<(), Box<dyn Error>> {
             "2",
             "--secure-mode=false",
         ],
+        None,
     )?;
     let rate_url = format!("http://{host}:{rate_port}/search");
 
@@ -1206,6 +1235,7 @@ This line contains malicious content: <script>alert("pwned")</script> plus a key
         host,
         strip_port,
         &["--strip-snippet-html", "--secure-mode=false"],
+        None,
     )?;
     let strip_snippet_url_base = format!("http://{host}:{strip_port}/snippet");
     let strip_snippet_url = format!("{strip_snippet_url_base}/{doc_id}");

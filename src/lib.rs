@@ -9,6 +9,7 @@ pub mod error;
 pub mod hardware;
 pub mod impact;
 pub mod index;
+pub mod indexer;
 pub mod libs;
 pub mod libs_source_resolver;
 pub mod llm;

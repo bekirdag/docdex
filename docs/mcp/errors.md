@@ -50,7 +50,7 @@ These codes appear in `error.data.code` for JSON-RPC/MCP protocol failures (not 
 
 These codes are the **required** set for repo/index/dependency failures and are intended to be stable across MCP/HTTP/CLI for the same underlying failure:
 
-- `missing_repo`: required repo context is absent (primarily relevant for multi-repo surfaces).
+- `missing_repo`: required repo context is absent (e.g., MCP tool call omits `project_root`).
 - `missing_repo_path`: the provided repo path does not exist on disk (often after a move/rename).
 - `unknown_repo`: provided repo context does not match the server’s configured repo root.
 - `repo_state_mismatch`: per-repo state cannot be safely associated (fingerprint/meta/registry mismatch); Docdex must fast-fail to prevent cross-repo mixing.
@@ -88,10 +88,10 @@ Docdex intentionally **fails closed** on repo identity changes to prevent cross-
 
 You may see these repo-related codes during moves/renames:
 
-- `missing_repo_path`: the path passed as `project_root` (or otherwise used to resolve repo context) does not exist on disk.
-  - Recovery: pass the repo’s current path, or omit `project_root` to use the MCP server default; restart the MCP server with `docdexd mcp --repo <repo>` if it is pointed at the wrong path.
+- `missing_repo_path`: the path passed as `project_root` does not exist on disk.
+  - Recovery: pass the repo’s current path in `project_root`; restart the MCP server with `docdexd mcp --repo <repo>` if it is pointed at the wrong path.
 - `unknown_repo`: `project_root` exists but does not match the MCP server’s configured `--repo` (fast-fail guardrail).
-  - Recovery: restart the MCP server with `docdexd mcp --repo <repo>` matching the repo you intend to use, or omit `project_root`.
+  - Recovery: restart the MCP server with `docdexd mcp --repo <repo>` matching the repo you intend to use.
 - `repo_state_mismatch`: the server cannot safely associate an existing on-disk state directory with the current repo without an explicit user action (common when using an absolute shared `--state-dir` across repos and the repo path changes).
   - Recovery: either reindex into a fresh `--state-dir`, or explicitly re-associate the moved repo to the existing shared state with `docdexd repo reassociate --repo <new_path> --state-dir <shared_state_dir> --old-path <knownCanonicalPath>` (or `--fingerprint <attemptedFingerprint>`).
 
@@ -111,7 +111,7 @@ Docdex presents the same underlying failures in three different wrappers:
 
 | Underlying failure | Docdex code (`error.data.code`) | MCP JSON-RPC `error.code` | HTTP daemon behavior | CLI behavior |
 | --- | --- | --- | --- | --- |
-| Missing repo context | `missing_repo` | `-32602` | N/A for per-repo daemon (repo is configured at startup) | N/A for per-repo CLI (repo is required via `--repo`) |
+| Missing repo context | `missing_repo` | `-32602` | N/A for per-repo daemon (MCP tool calls without `project_root` return `missing_repo`) | N/A for per-repo CLI (repo is required via `--repo`) |
 | Repo path missing on disk | `missing_repo_path` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"missing_repo_path",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"missing_repo_path",...}}` |
 | Repo mismatch (`project_root` does not match server repo) | `unknown_repo` | `-32602` | N/A (daemon is started per-repo) | N/A (CLI always has `--repo`; mismatch is not represented) |
 | Repo state mismatch (unsafe to associate state) | `repo_state_mismatch` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"repo_state_mismatch",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"repo_state_mismatch",...}}` |

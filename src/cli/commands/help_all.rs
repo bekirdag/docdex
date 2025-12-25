@@ -8,6 +8,7 @@ pub fn run() -> Result<()> {
     root.print_long_help()?;
     println!();
     for name in [
+        "check",
         "serve",
         "self-check",
         "index",

@@ -1,6 +1,9 @@
 use std::time::{Duration, Instant};
 
-use crate::error::BackoffRequired;
+use chrono::{Duration as ChronoDuration, Utc};
+use serde_json::json;
+
+use crate::error::{AppError, ERR_BACKOFF_REQUIRED};
 
 pub const DDG_DISCOVERY_LIMIT_KEY: &str = "ddg_discovery";
 pub const DDG_DISCOVERY_SCOPE: &str = "global";
@@ -64,11 +67,11 @@ impl DdgDiscoveryPacer {
         self.consecutive_failures
     }
 
-    pub fn check_or_backoff(&mut self) -> Result<(), BackoffRequired> {
+    pub fn check_or_backoff(&mut self) -> Result<(), AppError> {
         self.check_or_backoff_at(Instant::now())
     }
 
-    pub fn check_or_backoff_at(&mut self, now: Instant) -> Result<(), BackoffRequired> {
+    pub fn check_or_backoff_at(&mut self, now: Instant) -> Result<(), AppError> {
         if let Some(next) = self.next_allowed_at() {
             if now < next {
                 return Err(self.backoff_error(next.duration_since(now)));
@@ -83,11 +86,11 @@ impl DdgDiscoveryPacer {
         self.backoff_until = None;
     }
 
-    pub fn record_failure(&mut self) -> BackoffRequired {
+    pub fn record_failure(&mut self) -> AppError {
         self.record_failure_at(Instant::now())
     }
 
-    pub fn record_failure_at(&mut self, now: Instant) -> BackoffRequired {
+    pub fn record_failure_at(&mut self, now: Instant) -> AppError {
         self.consecutive_failures = self.consecutive_failures.saturating_add(1);
         let capped_failures = self
             .consecutive_failures
@@ -139,12 +142,23 @@ impl DdgDiscoveryPacer {
         Duration::from_millis(delay_ms)
     }
 
-    fn backoff_error(&self, retry_after: Duration) -> BackoffRequired {
-        BackoffRequired::new(
-            retry_after,
-            DDG_DISCOVERY_LIMIT_KEY.to_string(),
-            DDG_DISCOVERY_SCOPE.to_string(),
-        )
+    fn backoff_error(&self, retry_after: Duration) -> AppError {
+        let retry_after_ms = retry_after.as_millis().min(u128::from(u64::MAX)) as u64;
+        let retry_at = ChronoDuration::from_std(retry_after)
+            .ok()
+            .map(|delta| (Utc::now() + delta).to_rfc3339());
+        let mut details = json!({
+            "retry_after_ms": retry_after_ms,
+            "limit_key": DDG_DISCOVERY_LIMIT_KEY,
+            "scope": DDG_DISCOVERY_SCOPE,
+        });
+        if let Some(retry_at) = retry_at {
+            if let Some(obj) = details.as_object_mut() {
+                obj.insert("retry_at".to_string(), json!(retry_at));
+            }
+        }
+        AppError::new(ERR_BACKOFF_REQUIRED, "ddg discovery backoff required")
+            .with_details(details)
     }
 }
 

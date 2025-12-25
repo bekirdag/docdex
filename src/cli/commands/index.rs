@@ -1,5 +1,6 @@
 use crate::config::RepoArgs;
 use crate::index;
+use crate::indexer;
 use crate::util;
 use anyhow::Result;
 use std::path::PathBuf;
@@ -16,8 +17,7 @@ pub async fn run_index(repo: RepoArgs) -> Result<()> {
     )?;
     util::init_logging("info")?;
     info!("Rebuilding index for {}", repo_root.display());
-    index::Indexer::with_config(repo_root, index_config)?
-        .reindex_all()
+    let _ = indexer::reindex_repo(repo_root, index_config, indexer::IndexingOptions::none())
         .await?;
     Ok(())
 }
@@ -32,8 +32,6 @@ pub async fn run_ingest(repo: RepoArgs, file: PathBuf) -> Result<()> {
         repo.symbols_enabled(),
     )?;
     util::init_logging("warn")?;
-    let _ = index::Indexer::with_config(repo_root, index_config)?
-        .ingest_file(file)
-        .await?;
+    let _ = indexer::ingest_file(repo_root, index_config, file).await?;
     Ok(())
 }

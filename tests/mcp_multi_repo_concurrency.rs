@@ -130,6 +130,7 @@ fn parse_tool_result(resp: &Value) -> Result<Value, BoxError> {
 
 fn run_search_and_open(
     mut harness: McpHarness,
+    project_root: &str,
     expected_path: &str,
     expected_token: &str,
 ) -> Result<(), BoxError> {
@@ -142,7 +143,7 @@ fn run_search_and_open(
                 "method": "tools/call",
                 "params": {
                     "name": "docdex_search",
-                    "arguments": { "query": "shared_term", "limit": 5 }
+                    "arguments": { "query": "shared_term", "limit": 5, "project_root": project_root }
                 }
             }),
         )?;
@@ -178,7 +179,7 @@ fn run_search_and_open(
                 "method": "tools/call",
                 "params": {
                     "name": "docdex_open",
-                    "arguments": { "path": expected_path }
+                    "arguments": { "path": expected_path, "project_root": project_root }
                 }
             }),
         )?;
@@ -204,10 +205,10 @@ fn mcp_multi_repo_concurrency_is_isolated() -> Result<(), BoxError> {
     let repo_a = setup_repo("a-only.md", "REPO_A_TOKEN")?;
     let repo_b = setup_repo("b-only.md", "REPO_B_TOKEN")?;
 
-    let repo_a_str = repo_a.path().to_string_lossy().to_string();
-    let repo_b_str = repo_b.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_a_str.as_str()])?;
-    run_docdex(["index", "--repo", repo_b_str.as_str()])?;
+    let repo_a_root = repo_a.path().to_string_lossy().to_string();
+    let repo_b_root = repo_b.path().to_string_lossy().to_string();
+    run_docdex(["index", "--repo", repo_a_root.as_str()])?;
+    run_docdex(["index", "--repo", repo_b_root.as_str()])?;
 
     let harness_a = McpHarness::spawn(repo_a.path())?;
     let harness_b = McpHarness::spawn(repo_b.path())?;
@@ -216,13 +217,25 @@ fn mcp_multi_repo_concurrency_is_isolated() -> Result<(), BoxError> {
     let barrier_a = barrier.clone();
     let barrier_b = barrier.clone();
 
+    let repo_a_project_root = repo_a_root.clone();
     let handle_a = thread::spawn(move || -> Result<(), BoxError> {
         barrier_a.wait();
-        run_search_and_open(harness_a, "docs/a-only.md", "REPO_A_TOKEN")
+        run_search_and_open(
+            harness_a,
+            repo_a_project_root.as_str(),
+            "docs/a-only.md",
+            "REPO_A_TOKEN",
+        )
     });
+    let repo_b_project_root = repo_b_root.clone();
     let handle_b = thread::spawn(move || -> Result<(), BoxError> {
         barrier_b.wait();
-        run_search_and_open(harness_b, "docs/b-only.md", "REPO_B_TOKEN")
+        run_search_and_open(
+            harness_b,
+            repo_b_project_root.as_str(),
+            "docs/b-only.md",
+            "REPO_B_TOKEN",
+        )
     });
 
     barrier.wait();

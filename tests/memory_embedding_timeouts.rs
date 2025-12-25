@@ -271,6 +271,7 @@ fn http_memory_store_timeout_returns_stable_code() -> Result<(), Box<dyn Error>>
 fn mcp_memory_store_timeout_returns_stable_code() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
+    let project_root = repo.path().to_string_lossy().to_string();
     let Some(slow) = MockOllama::spawn(post(|| async move {
         tokio::time::sleep(Duration::from_millis(200)).await;
         (
@@ -297,7 +298,7 @@ fn mcp_memory_store_timeout_returns_stable_code() -> Result<(), Box<dyn Error>> 
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
-            "params": { "name": "docdex_memory_store", "arguments": { "text": "hello" } }
+            "params": { "name": "docdex_memory_store", "arguments": { "text": "hello", "project_root": project_root.as_str() } }
         }),
     )?;
     let resp = read_line(&mut mcp.reader)?;

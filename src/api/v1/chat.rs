@@ -1,8 +1,16 @@
+use axum::body::{Body, Bytes};
 use axum::extract::Query;
-use axum::{extract::State, http::header::CONTENT_TYPE, http::HeaderMap, http::HeaderValue};
+use axum::{
+    extract::State,
+    http::header::{CACHE_CONTROL, CONTENT_TYPE},
+    http::HeaderMap,
+    http::HeaderValue,
+};
 use axum::{http::StatusCode, Json};
 use axum::{response::IntoResponse, response::Response};
+use futures::stream;
 use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
 use uuid::Uuid;
 
 use crate::orchestrator::{run_waterfall, MemoryBudget, WaterfallRequest, WebGateConfig};
@@ -137,7 +145,7 @@ pub async fn chat_completions_handler(
         repo_id.repo_id.as_deref(),
         payload.repo_id.as_deref(),
         state.indexer.as_ref(),
-        true,
+        false,
     ) {
         return error_response(err.status, err.code, &err.message);
     }
@@ -352,21 +360,23 @@ fn error_response(status: StatusCode, code: &'static str, message: &str) -> Resp
 }
 
 fn stream_response(chunks: &[ChatCompletionChunk]) -> Response {
-    let mut body = String::new();
+    let mut frames: Vec<Result<Bytes, Infallible>> = Vec::new();
     for chunk in chunks {
         if let Ok(json) = serde_json::to_string(chunk) {
-            body.push_str("data: ");
-            body.push_str(&json);
-            body.push_str("\n\n");
+            frames.push(Ok(Bytes::from(format!("data: {json}\n\n"))));
         }
     }
-    body.push_str("data: [DONE]\n\n");
+    frames.push(Ok(Bytes::from("data: [DONE]\n\n")));
 
-    let mut response = Response::new(body.into());
+    let body = Body::from_stream(stream::iter(frames));
+    let mut response = Response::new(body);
     response.headers_mut().insert(
         CONTENT_TYPE,
         HeaderValue::from_static("text/event-stream"),
     );
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     *response.status_mut() = StatusCode::OK;
     response
 }

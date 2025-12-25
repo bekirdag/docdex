@@ -22,14 +22,24 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Validate config, state, and local dependencies for readiness.
+    Check,
     /// Serve HTTP API for search/snippets.
     Serve {
         #[command(flatten)]
         repo: RepoArgs,
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
-        #[arg(long, default_value_t = 46137)]
+        #[arg(long, default_value_t = 3210)]
         port: u16,
+        #[arg(
+            long,
+            env = "DOCDEX_EXPOSE",
+            default_value_t = false,
+            action = ArgAction::Set,
+            help = "Allow binding to non-loopback interfaces (requires --auth-token)"
+        )]
+        expose: bool,
         #[arg(long, default_value = "info")]
         log: String,
         #[arg(
@@ -130,7 +140,7 @@ enum Command {
             env = "DOCDEX_SECURE_MODE",
             default_value_t = true,
             action = ArgAction::Set,
-            help = "Secure defaults: require auth token, default rate limits, loopback allow-list when none provided"
+            help = "Secure defaults: enable default rate limits (loopback-only access is enforced unless --expose)"
         )]
         secure_mode: bool,
         #[arg(
@@ -243,14 +253,13 @@ enum Command {
             env = "DOCDEX_ALLOW_IPS",
             value_delimiter = ',',
             value_parser = config::non_empty_string,
-            help = "Optional comma-separated IPs/CIDRs allowed to access the HTTP API (default: loopback-only in secure mode; allow all when secure mode is disabled)"
+            help = "Optional comma-separated IPs/CIDRs allowed to access the HTTP API (default: loopback-only unless --expose; allow all when list is empty in exposed mode)"
         )]
         allow_ip: Vec<String>,
     },
     /// Print help for all commands and flags.
     HelpAll,
     /// Scan the index for sensitive terms before enabling access.
-    #[command(visible_alias = "check")]
     SelfCheck {
         #[command(flatten)]
         repo: RepoArgs,
@@ -314,6 +323,12 @@ enum Command {
             help = "Only search the repo index (ignore any repo-scoped libs index, if present)"
         )]
         repo_only: bool,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Stream a text summary to stdout instead of printing JSON"
+        )]
+        stream: bool,
     },
     /// Ingest library documentation sources into the repo-scoped libs index.
     LibsIngest {
@@ -368,6 +383,12 @@ enum Command {
             help = "Only search the repo index (ignore any repo-scoped libs index, if present)"
         )]
         repo_only: bool,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Stream a text summary to stdout instead of printing JSON"
+        )]
+        stream: bool,
     },
     /// View DAG traces.
     Dag {
@@ -609,6 +630,12 @@ pub async fn run() -> Result<()> {
         StartupError::new("startup_config_invalid", err.to_string())
             .with_hint("Run `docdexd help-all` for full usage.")
     })?;
+    if !matches!(cli.command, Command::Check) {
+        config::AppConfig::load_default().map_err(|err| {
+            StartupError::new("startup_config_invalid", format!("failed to load config: {err}"))
+                .with_hint("Ensure ~/.docdex is writable and HOME is set correctly.")
+        })?;
+    }
     commands::dispatch(cli.command).await
 }
 

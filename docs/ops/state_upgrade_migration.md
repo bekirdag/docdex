@@ -73,7 +73,7 @@ Docdex uses the same underlying error codes for CLI/HTTP/MCP; see
 | Docdex code | Common surfaces | Typical cause | Recovery |
 | --- | --- | --- | --- |
 | `missing_repo_path` | CLI/HTTP/MCP | repo path missing on disk | Use the current repo path; restart `docdexd serve`/MCP if needed. Reindex if the state dir was not moved. |
-| `unknown_repo` | MCP only | `project_root` does not match MCP server `--repo` | Omit `project_root` or restart MCP with the correct `--repo`. |
+| `unknown_repo` | MCP only | `project_root` does not match MCP server `--repo` | Pass `project_root` matching the MCP server repo or restart MCP with the correct `--repo`. |
 | `repo_state_mismatch` | CLI/MCP; `docdexd serve` reports `startup_state_invalid` | shared `--state-dir` identity mismatch, moved repo | Run `docdexd repo inspect`; re-associate or reindex to a new state dir. |
 | `missing_index` | CLI/MCP | query/open before indexing | Run `docdexd index --repo <repo>`. |
 | `backoff_required` | CLI/MCP | index writer locked or in use | Retry after the lock clears. |

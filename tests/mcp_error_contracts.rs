@@ -153,6 +153,7 @@ fn mcp_error_data_code(resp: &Value) -> Option<&str> {
 fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let repo_str = repo.path().to_string_lossy().to_string();
+    let project_root = repo.path().to_string_lossy().to_string();
     run_docdex(["index", "--repo", repo_str.as_str()])?;
 
     let mut mcp = McpHarness::spawn_with_env(
@@ -171,7 +172,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
-            "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1 } }
+            "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1, "project_root": project_root.as_str() } }
         }),
     )?;
     let ok = read_line(&mut mcp.reader)?;
@@ -183,7 +184,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
-            "params": { "name": "docdex_files", "arguments": {} }
+            "params": { "name": "docdex_files", "arguments": { "project_root": project_root.as_str() } }
         }),
     )?;
     let limited_files = read_line(&mut mcp.reader)?;
@@ -229,7 +230,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 3,
             "method": "tools/call",
-            "params": { "name": "docdex_files", "arguments": {} }
+            "params": { "name": "docdex_files", "arguments": { "project_root": project_root.as_str() } }
         }),
     )?;
     let ok_files = read_line(&mut mcp.reader)?;
@@ -244,7 +245,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 4,
             "method": "tools/call",
-            "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1 } }
+            "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1, "project_root": project_root.as_str() } }
         }),
     )?;
     let limited_search = read_line(&mut mcp.reader)?;
@@ -334,6 +335,7 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
 fn mcp_error_codes_match_http_invalid_query() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let repo_str = repo.path().to_string_lossy().to_string();
+    let project_root = repo.path().to_string_lossy().to_string();
     run_docdex(["index", "--repo", repo_str.as_str()])?;
 
     let Some(port) = pick_free_port() else {
@@ -366,7 +368,7 @@ fn mcp_error_codes_match_http_invalid_query() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
-            "params": { "name": "docdex_search", "arguments": { "query": "" } }
+            "params": { "name": "docdex_search", "arguments": { "query": "", "project_root": project_root.as_str() } }
         }),
     )?;
     let resp = read_line(&mut mcp.reader)?;
@@ -387,6 +389,7 @@ fn mcp_error_codes_match_http_invalid_query() -> Result<(), Box<dyn Error>> {
 fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let mut mcp = McpHarness::spawn(repo.path())?;
+    let project_root = repo.path().to_string_lossy().to_string();
 
     send_line(
         &mut mcp.stdin,
@@ -394,7 +397,7 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
             "jsonrpc": "2.0",
             "id": 10,
             "method": "tools/call",
-            "params": { "name": "docdex_files", "arguments": { "limit": "not-a-number" } }
+            "params": { "name": "docdex_files", "arguments": { "limit": "not-a-number", "project_root": project_root.as_str() } }
         }),
     )?;
     let resp = read_line(&mut mcp.reader)?;
@@ -520,6 +523,7 @@ fn mcp_missing_project_root_path_is_missing_repo_path() -> Result<(), Box<dyn Er
 fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let repo_str = repo.path().to_string_lossy().to_string();
+    let project_root = repo.path().to_string_lossy().to_string();
     run_docdex(["index", "--repo", repo_str.as_str()])?;
 
     let mut mcp = McpHarness::spawn(repo.path())?;
@@ -533,7 +537,7 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
             "method": "tools/call",
             "params": {
                 "name": "docdex_search",
-                "arguments": { "query": "MCP_ROADMAP", "limit": 999 }
+                "arguments": { "query": "MCP_ROADMAP", "limit": 999, "project_root": project_root.as_str() }
             }
         }),
     )?;
@@ -563,7 +567,7 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
             "method": "tools/call",
             "params": {
                 "name": "docdex_files",
-                "arguments": { "limit": 5000, "offset": 0 }
+                "arguments": { "limit": 5000, "offset": 0, "project_root": project_root.as_str() }
             }
         }),
     )?;
@@ -584,7 +588,7 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
             "jsonrpc": "2.0",
             "id": 22,
             "method": "tools/call",
-            "params": { "name": "docdex_open", "arguments": { "path": "docs/big.md" } }
+            "params": { "name": "docdex_open", "arguments": { "path": "docs/big.md", "project_root": project_root.as_str() } }
         }),
     )?;
     let open_err = read_line(&mut mcp.reader)?;

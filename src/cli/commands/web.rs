@@ -2,6 +2,7 @@ use crate::config::RepoArgs;
 use crate::error::{AppError, ERR_INVALID_ARGUMENT};
 use crate::index;
 use crate::libs;
+use crate::cli::commands::query;
 use crate::orchestrator::{run_waterfall, MemoryBudget, WaterfallRequest, WebGateConfig};
 use crate::tier2::Tier2Config;
 use crate::util;
@@ -43,7 +44,13 @@ pub async fn run_fetch(url: String) -> Result<()> {
     Ok(())
 }
 
-pub async fn run_rag(repo: RepoArgs, query: String, limit: usize, repo_only: bool) -> Result<()> {
+pub async fn run_rag(
+    repo: RepoArgs,
+    query: String,
+    limit: usize,
+    repo_only: bool,
+    stream: bool,
+) -> Result<()> {
     let repo_root = repo.repo_root();
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
@@ -75,6 +82,10 @@ pub async fn run_rag(repo: RepoArgs, query: String, limit: usize, repo_only: boo
         memory_budget: MemoryBudget::default(),
     };
     let waterfall = run_waterfall(request).await?;
+    if stream {
+        query::stream_completion(&query, &waterfall.search_response.hits)?;
+        return Ok(());
+    }
     let tier2_status = waterfall.tier2.status;
     let memory_context = waterfall.memory_context;
     let mut response = waterfall.search_response;

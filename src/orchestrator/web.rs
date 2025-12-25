@@ -1,3 +1,4 @@
+use crate::config;
 use crate::index::Hit;
 use crate::index::Indexer;
 use crate::libs::LibsIndexer;
@@ -21,8 +22,9 @@ pub struct WebGateConfig {
 impl WebGateConfig {
     pub fn from_env() -> Self {
         let enabled = env_boolish("DOCDEX_WEB_ENABLED").unwrap_or(false);
-        let trigger_threshold =
-            env_f32("DOCDEX_WEB_TRIGGER_THRESHOLD").unwrap_or(DEFAULT_WEB_TRIGGER_THRESHOLD);
+        let trigger_threshold = env_f32("DOCDEX_WEB_TRIGGER_THRESHOLD")
+            .or_else(config_web_trigger_threshold)
+            .unwrap_or(DEFAULT_WEB_TRIGGER_THRESHOLD);
         let trigger_threshold = trigger_threshold.clamp(0.0, 1.0);
         let browser_hint = env_string("DOCDEX_WEB_BROWSER");
         let browser_available = resolve_browser_available(browser_hint.as_deref());
@@ -286,7 +288,16 @@ fn env_string(key: &str) -> Option<String> {
     }
 }
 
-fn resolve_browser_available(hint: Option<&str>) -> bool {
+fn config_web_trigger_threshold() -> Option<f32> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    Some(config.search.web_trigger_threshold)
+}
+
+pub(crate) fn resolve_browser_available(hint: Option<&str>) -> bool {
     if let Some(path) = hint {
         if Path::new(path).is_file() {
             return true;

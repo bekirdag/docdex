@@ -1183,9 +1183,9 @@ impl McpServer {
                         "query": { "type": "string", "minLength": 1, "description": "Concise search query (will be rejected if empty)" },
                         "limit": { "type": "integer", "minimum": 1, "maximum": self.max_results as i64, "default": self.max_results, "description": "Max results to return (clamped to server max)" },
                         "force_web": { "type": "boolean", "description": "When true, bypasses the Tier 2 gate and runs web research" },
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo" }
                     },
-                    "required": ["query"]
+                    "required": ["query", "project_root"]
                 }),
             },
             ToolDefinition {
@@ -1200,8 +1200,9 @@ impl McpServer {
                             "items": { "type": "string" },
                             "description": "Optional list of files to ingest; empty => full reindex"
                         },
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
-                    }
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo" }
+                    },
+                    "required": ["project_root"]
                 }),
             },
             ToolDefinition {
@@ -1211,10 +1212,11 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo" },
                         "limit": { "type": "integer", "minimum": 1, "maximum": FILES_MAX_LIMIT as i64, "default": FILES_DEFAULT_LIMIT, "description": "Max documents to return (clamped)" },
                         "offset": { "type": "integer", "minimum": 0, "maximum": FILES_MAX_OFFSET as i64, "default": 0, "description": "Number of docs to skip before listing (clamped)" }
-                    }
+                    },
+                    "required": ["project_root"]
                 }),
             },
             ToolDefinition {
@@ -1225,11 +1227,11 @@ impl McpServer {
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "minLength": 1, "description": "Relative path under the repo" },
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo" },
                         "start_line": { "type": "integer", "minimum": 1, "description": "Optional start line (1-based, inclusive)" },
                         "end_line": { "type": "integer", "minimum": 1, "description": "Optional end line (1-based, inclusive)" }
                     },
-                    "required": ["path"]
+                    "required": ["path", "project_root"]
                 }),
             },
             ToolDefinition {
@@ -1239,8 +1241,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
-                    }
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo" }
+                    },
+                    "required": ["project_root"]
                 }),
             },
             ToolDefinition {
@@ -1250,8 +1253,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
-                    }
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo" }
+                    },
+                    "required": ["project_root"]
                 }),
             },
             ToolDefinition {
@@ -1261,9 +1265,9 @@ impl McpServer {
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "minLength": 1, "description": "Relative path under the repo" },
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo" }
                     },
-                    "required": ["path"]
+                    "required": ["path", "project_root"]
                 }),
             },
             ToolDefinition {
@@ -1274,9 +1278,9 @@ impl McpServer {
                     "properties": {
                         "text": { "type": "string", "minLength": 1, "description": "Memory text to store" },
                         "metadata": { "type": "object", "description": "Optional metadata object", "additionalProperties": true },
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo" }
                     },
-                    "required": ["text"]
+                    "required": ["text", "project_root"]
                 }),
             },
             ToolDefinition {
@@ -1287,9 +1291,9 @@ impl McpServer {
                     "properties": {
                         "query": { "type": "string", "minLength": 1, "description": "Query text to embed" },
                         "top_k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 5, "description": "Max results to return" },
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo" }
                     },
-                    "required": ["query"]
+                    "required": ["query", "project_root"]
                 }),
             },
         ]
@@ -1647,7 +1651,7 @@ impl McpServer {
         };
         let open_args = OpenArgs {
             path: rel.to_string(),
-            project_root: None,
+            project_root: self.default_project_root.clone(),
             start_line: None,
             end_line: None,
         };
@@ -1663,8 +1667,7 @@ impl McpServer {
                 Some(self.repo_root.to_string_lossy().replace('\\', "/")),
                 vec![
                     "Repo may have moved or been renamed.".to_string(),
-                    "Pass the current repo path (or omit `project_root` to use the MCP server default)."
-                        .to_string(),
+                    "Pass the current repo path in `project_root`.".to_string(),
                     "If the MCP server is pointed at the wrong path, restart it with `docdexd mcp --repo <repo>`."
                         .to_string(),
                 ],
@@ -1688,8 +1691,7 @@ impl McpServer {
                     "Repo may have moved or been renamed.".to_string(),
                     "Restart the MCP server with `docdexd mcp --repo <repo>` matching the repo you want to use."
                         .to_string(),
-                    "Alternatively, omit `project_root` in tool arguments to use the MCP server default."
-                        .to_string(),
+                    "Pass `project_root` matching the repo the MCP server was started with.".to_string(),
                 ],
             );
             return Err(AppError::new(ERR_UNKNOWN_REPO, "unknown repo")
@@ -1701,13 +1703,18 @@ impl McpServer {
     }
 
     fn ensure_project_root(&self, candidate: Option<&Path>) -> Result<()> {
-        if let Some(path) = candidate {
-            return self.ensure_same_repo(path);
-        }
-        if let Some(default_root) = self.default_project_root.as_ref() {
-            return self.ensure_same_repo(default_root);
-        }
-        Ok(())
+        let Some(path) = candidate else {
+            let details = json!({
+                "recoverySteps": [
+                    "Pass the repo path as `project_root` in tool arguments.",
+                    "Restart the MCP server with `docdexd mcp --repo <repo>` if it is pointed at the wrong repo."
+                ]
+            });
+            return Err(AppError::new(ERR_MISSING_REPO, "missing repo")
+                .with_details(details)
+                .into());
+        };
+        self.ensure_same_repo(path)
     }
 }
 

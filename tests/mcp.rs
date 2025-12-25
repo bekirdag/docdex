@@ -180,6 +180,7 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
     let mut harness = McpHarness::spawn(state_root.path(), repo.path())?;
+    let project_root = repo.path().to_string_lossy().to_string();
 
     // initialize
     send_line(
@@ -252,7 +253,7 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
             "method": "tools/call",
             "params": {
                 "name": "docdex_index",
-                "arguments": { "paths": [] }
+                "arguments": { "paths": [], "project_root": project_root.as_str() }
             }
         }),
     )?;
@@ -280,7 +281,8 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
                 "name": "docdex_search",
                 "arguments": {
                     "query": "MCP_ROADMAP",
-                    "limit": 5
+                    "limit": 5,
+                    "project_root": project_root.as_str()
                 }
             }
         }),
@@ -348,7 +350,8 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
                 "name": "docdex_search",
                 "arguments": {
                     "query": "NO_MATCH_TERM_123456",
-                    "limit": 5
+                    "limit": 5,
+                    "project_root": project_root.as_str()
                 }
             }
         }),
@@ -395,7 +398,7 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
             "method": "tools/call",
             "params": {
                 "name": "docdex_stats",
-                "arguments": {}
+                "arguments": { "project_root": project_root.as_str() }
             }
         }),
     )?;
@@ -421,7 +424,7 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
             "method": "tools/call",
             "params": {
                 "name": "docdex_files",
-                "arguments": { "limit": 10, "offset": 0 }
+                "arguments": { "limit": 10, "offset": 0, "project_root": project_root.as_str() }
             }
         }),
     )?;
@@ -458,6 +461,7 @@ fn mcp_symbols_returns_outcome_and_symbols_when_enabled() -> Result<(), Box<dyn 
         "# Title\n\nIntro text.\n\n## Subsection\nMore.\n",
     )?;
     let mut harness = McpHarness::spawn_with_symbols(state_root.path(), repo_root, true)?;
+    let project_root = repo_root.to_string_lossy().to_string();
 
     send_line(
         &mut harness.stdin,
@@ -479,7 +483,7 @@ fn mcp_symbols_returns_outcome_and_symbols_when_enabled() -> Result<(), Box<dyn 
             "method": "tools/call",
             "params": {
                 "name": "docdex_index",
-                "arguments": { "paths": [] }
+                "arguments": { "paths": [], "project_root": project_root.as_str() }
             }
         }),
     )?;
@@ -494,7 +498,7 @@ fn mcp_symbols_returns_outcome_and_symbols_when_enabled() -> Result<(), Box<dyn 
             "method": "tools/call",
             "params": {
                 "name": "docdex_symbols",
-                "arguments": { "path": "docs/symbols.md" }
+                "arguments": { "path": "docs/symbols.md", "project_root": project_root.as_str() }
             }
         }),
     )?;
@@ -561,6 +565,7 @@ fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<
         "# Title\n\nIntro text.\n\n## Subsection\nMore.\n",
     )?;
     let mut harness = McpHarness::spawn_with_symbols(state_root.path(), repo_root, true)?;
+    let project_root = repo_root.to_string_lossy().to_string();
 
     send_line(
         &mut harness.stdin,
@@ -574,7 +579,7 @@ fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<
             "jsonrpc": "2.0",
             "id": 201,
             "method": "tools/call",
-            "params": { "name": "docdex_index", "arguments": { "paths": [] } }
+            "params": { "name": "docdex_index", "arguments": { "paths": [], "project_root": project_root.as_str() } }
         }),
     )?;
     let _ = read_line(&mut harness.reader)?;
@@ -599,7 +604,7 @@ fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<
             "jsonrpc": "2.0",
             "id": 202,
             "method": "tools/call",
-            "params": { "name": "docdex_symbols", "arguments": { "path": rel_path } }
+            "params": { "name": "docdex_symbols", "arguments": { "path": rel_path, "project_root": project_root.as_str() } }
         }),
     )?;
     let first_resp = read_line(&mut harness.reader)?;
@@ -630,7 +635,7 @@ fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<
             "jsonrpc": "2.0",
             "id": 203,
             "method": "tools/call",
-            "params": { "name": "docdex_index", "arguments": { "paths": [] } }
+            "params": { "name": "docdex_index", "arguments": { "paths": [], "project_root": project_root.as_str() } }
         }),
     )?;
     let _ = read_line(&mut harness.reader)?;
@@ -641,7 +646,7 @@ fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<
             "jsonrpc": "2.0",
             "id": 204,
             "method": "tools/call",
-            "params": { "name": "docdex_symbols", "arguments": { "path": rel_path } }
+            "params": { "name": "docdex_symbols", "arguments": { "path": rel_path, "project_root": project_root.as_str() } }
         }),
     )?;
     let second_resp = read_line(&mut harness.reader)?;
@@ -729,6 +734,7 @@ fn mcp_search_empty_query_errors() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
     let mut harness = McpHarness::spawn(state_root.path(), repo.path())?;
+    let project_root = repo.path().to_string_lossy().to_string();
 
     // index first
     send_line(
@@ -737,7 +743,7 @@ fn mcp_search_empty_query_errors() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 12,
             "method": "tools/call",
-            "params": { "name": "docdex_index", "arguments": { "paths": [] } }
+            "params": { "name": "docdex_index", "arguments": { "paths": [], "project_root": project_root.as_str() } }
         }),
     )?;
     let _ = read_line(&mut harness.reader)?;
@@ -749,7 +755,7 @@ fn mcp_search_empty_query_errors() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 13,
             "method": "tools/call",
-            "params": { "name": "docdex_search", "arguments": { "query": "" } }
+            "params": { "name": "docdex_search", "arguments": { "query": "", "project_root": project_root.as_str() } }
         }),
     )?;
     let resp = read_line(&mut harness.reader)?;
@@ -771,6 +777,7 @@ fn mcp_files_pagination_and_invalid_params() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
     let mut harness = McpHarness::spawn(state_root.path(), repo.path())?;
+    let project_root = repo.path().to_string_lossy().to_string();
 
     // index first
     send_line(
@@ -779,7 +786,7 @@ fn mcp_files_pagination_and_invalid_params() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 20,
             "method": "tools/call",
-            "params": { "name": "docdex_index", "arguments": { "paths": [] } }
+            "params": { "name": "docdex_index", "arguments": { "paths": [], "project_root": project_root.as_str() } }
         }),
     )?;
     let _ = read_line(&mut harness.reader)?;
@@ -791,7 +798,7 @@ fn mcp_files_pagination_and_invalid_params() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 21,
             "method": "tools/call",
-            "params": { "name": "docdex_files", "arguments": { "limit": 5, "offset": 10_000 } }
+            "params": { "name": "docdex_files", "arguments": { "limit": 5, "offset": 10_000, "project_root": project_root.as_str() } }
         }),
     )?;
     let paged_resp = read_line(&mut harness.reader)?;
@@ -821,7 +828,7 @@ fn mcp_files_pagination_and_invalid_params() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 22,
             "method": "tools/call",
-            "params": { "name": "docdex_files", "arguments": { "limit": "not-a-number" } }
+            "params": { "name": "docdex_files", "arguments": { "limit": "not-a-number", "project_root": project_root.as_str() } }
         }),
     )?;
     let invalid_resp = read_line(&mut harness.reader)?;
@@ -853,6 +860,7 @@ Line5
 ";
     std::fs::write(repo_root.join("docs").join("open.md"), content)?;
     let mut harness = McpHarness::spawn(state_root.path(), repo_root)?;
+    let project_root = repo_root.to_string_lossy().to_string();
 
     // Full file
     send_line(
@@ -863,7 +871,7 @@ Line5
             "method": "tools/call",
             "params": {
                 "name": "docdex_open",
-                "arguments": { "path": "docs/open.md" }
+                "arguments": { "path": "docs/open.md", "project_root": project_root.as_str() }
             }
         }),
     )?;
@@ -884,7 +892,7 @@ Line5
             "method": "tools/call",
             "params": {
                 "name": "docdex_open",
-                "arguments": { "path": "docs/open.md", "start_line": 2, "end_line": 3 }
+                "arguments": { "path": "docs/open.md", "start_line": 2, "end_line": 3, "project_root": project_root.as_str() }
             }
         }),
     )?;
@@ -908,7 +916,7 @@ Line5
             "method": "tools/call",
             "params": {
                 "name": "docdex_open",
-                "arguments": { "path": "../open.md" }
+                "arguments": { "path": "../open.md", "project_root": project_root.as_str() }
             }
         }),
     )?;
@@ -928,6 +936,18 @@ fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
     let mut harness = McpHarness::spawn(state_root.path(), repo.path())?;
+    let project_root = repo.path().to_string_lossy().to_string();
+
+    send_line(
+        &mut harness.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 49,
+            "method": "initialize",
+            "params": { "workspace_root": project_root.as_str() }
+        }),
+    )?;
+    let _ = read_line(&mut harness.reader)?;
 
     // search with missing query
     send_line(
@@ -936,7 +956,7 @@ fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 50,
             "method": "tools/call",
-            "params": { "name": "docdex_search", "arguments": { "limit": 2 } }
+            "params": { "name": "docdex_search", "arguments": { "limit": 2, "project_root": project_root.as_str() } }
         }),
     )?;
     let resp = read_line(&mut harness.reader)?;
@@ -957,7 +977,7 @@ fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 51,
             "method": "tools/call",
-            "params": { "name": "docdex_open", "arguments": { "path": "/etc/passwd" } }
+            "params": { "name": "docdex_open", "arguments": { "path": "/etc/passwd", "project_root": project_root.as_str() } }
         }),
     )?;
     let resp = read_line(&mut harness.reader)?;
@@ -978,7 +998,7 @@ fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 52,
             "method": "tools/call",
-            "params": { "name": "docdex_open", "arguments": { "path": "docs/overview.md", "start_line": 10, "end_line": 1 } }
+            "params": { "name": "docdex_open", "arguments": { "path": "docs/overview.md", "start_line": 10, "end_line": 1, "project_root": project_root.as_str() } }
         }),
     )?;
     let resp = read_line(&mut harness.reader)?;
@@ -999,7 +1019,7 @@ fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 53,
             "method": "tools/call",
-            "params": { "name": "docdex_open", "arguments": { "path": "docs/overview.md", "start_line": 10_000 } }
+            "params": { "name": "docdex_open", "arguments": { "path": "docs/overview.md", "start_line": 10_000, "project_root": project_root.as_str() } }
         }),
     )?;
     let resp = read_line(&mut harness.reader)?;
@@ -1023,7 +1043,7 @@ fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
             "jsonrpc": "2.0",
             "id": 54,
             "method": "tools/call",
-            "params": { "name": "docdex_open", "arguments": { "path": "docs/big.md" } }
+            "params": { "name": "docdex_open", "arguments": { "path": "docs/big.md", "project_root": project_root.as_str() } }
         }),
     )?;
     let resp = read_line(&mut harness.reader)?;

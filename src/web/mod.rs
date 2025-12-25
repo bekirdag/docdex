@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use url::Url;
 
+use crate::config;
 use crate::web::policy::SpacingBackoffPolicy;
 
 #[derive(Clone, Debug)]
@@ -22,6 +23,7 @@ pub struct WebConfig {
     pub request_timeout: Duration,
     pub max_results: usize,
     pub policy: SpacingBackoffPolicy,
+    pub cache_ttl: Duration,
 }
 
 impl WebConfig {
@@ -44,6 +46,11 @@ impl WebConfig {
         let max_backoff_ms = env_u64("DOCDEX_WEB_BACKOFF_MAX_MS", 8000).max(base_backoff_ms);
         let max_consecutive_failures = env_u64("DOCDEX_WEB_MAX_CONSEC_FAIL", 3) as usize;
         let cooldown_ms = env_u64("DOCDEX_WEB_COOLDOWN_MS", 60_000);
+        let cache_ttl_secs = env::var("DOCDEX_WEB_CACHE_TTL_SECS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .or_else(config_cache_ttl_secs)
+            .unwrap_or(86_400);
 
         Self {
             enabled,
@@ -61,6 +68,7 @@ impl WebConfig {
                 max_consecutive_failures,
                 cooldown: Duration::from_millis(cooldown_ms),
             },
+            cache_ttl: Duration::from_secs(cache_ttl_secs),
         }
     }
 }
@@ -88,4 +96,13 @@ fn env_f64(key: &str, default: f64) -> f64 {
         .ok()
         .and_then(|value| value.trim().parse::<f64>().ok())
         .unwrap_or(default)
+}
+
+fn config_cache_ttl_secs() -> Option<u64> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    Some(config.web.cache_ttl_secs)
 }

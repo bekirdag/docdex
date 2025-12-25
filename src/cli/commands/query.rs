@@ -1,12 +1,20 @@
 use crate::config::RepoArgs;
 use crate::index;
 use crate::libs;
+use crate::index::Hit;
 use crate::orchestrator::{run_waterfall, MemoryBudget, WaterfallRequest, WebGateConfig};
 use crate::tier2::Tier2Config;
 use crate::util;
 use anyhow::Result;
+use std::io::{self, Write};
 
-pub async fn run(repo: RepoArgs, query: String, limit: usize, repo_only: bool) -> Result<()> {
+pub async fn run(
+    repo: RepoArgs,
+    query: String,
+    limit: usize,
+    repo_only: bool,
+    stream: bool,
+) -> Result<()> {
     let repo_root = repo.repo_root();
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
@@ -38,11 +46,57 @@ pub async fn run(repo: RepoArgs, query: String, limit: usize, repo_only: bool) -
         memory_budget: MemoryBudget::default(),
     };
     let waterfall = run_waterfall(request).await?;
+    if stream {
+        let completion = build_completion(&query, &waterfall.search_response.hits);
+        stream_text(&completion)?;
+        return Ok(());
+    }
     let tier2_status = waterfall.tier2.status;
     let memory_context = waterfall.memory_context;
     let mut response = waterfall.search_response;
     response.web_discovery = Some(tier2_status);
     response.memory_context = memory_context;
     println!("{}", serde_json::to_string_pretty(&response)?);
+    Ok(())
+}
+
+pub(crate) fn stream_completion(query: &str, hits: &[Hit]) -> Result<()> {
+    let completion = build_completion(query, hits);
+    stream_text(&completion)
+}
+
+fn build_completion(query: &str, hits: &[Hit]) -> String {
+    if hits.is_empty() {
+        return format!("No local documents matched query: {}", query.trim());
+    }
+
+    let mut lines = Vec::new();
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        lines.push("Top local matches:".to_string());
+    } else {
+        lines.push(format!("Top local matches for query: {}", trimmed));
+    }
+    for hit in hits.iter().take(5) {
+        let summary = hit.summary.trim();
+        if summary.is_empty() {
+            lines.push(format!("- {}", hit.rel_path));
+        } else {
+            lines.push(format!("- {}: {}", hit.rel_path, summary));
+        }
+    }
+    lines.join("\n")
+}
+
+fn stream_text(text: &str) -> Result<()> {
+    let mut stdout = io::stdout();
+    for (idx, line) in text.lines().enumerate() {
+        if idx > 0 {
+            writeln!(stdout)?;
+        }
+        write!(stdout, "{line}")?;
+        stdout.flush()?;
+    }
+    writeln!(stdout)?;
     Ok(())
 }

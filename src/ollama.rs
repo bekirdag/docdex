@@ -179,6 +179,21 @@ impl OllamaClient {
     }
 }
 
+pub async fn check_reachable(base_url: &str, timeout: Duration) -> Result<(), anyhow::Error> {
+    let client = OllamaClient::new(base_url.to_string())?;
+    let connect_addr = client.connect_addr.clone();
+    let result = tokio::time::timeout(timeout, TcpStream::connect(&connect_addr)).await;
+    match result {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(err)) => Err(err)
+            .with_context(|| format!("connect to ollama at {base_url} (resolved {connect_addr})")),
+        Err(_) => Err(anyhow!(
+            "connect to ollama timed out after {}ms (base_url {base_url})",
+            timeout.as_millis()
+        )),
+    }
+}
+
 impl OllamaEmbedder {
     pub fn new(base_url: String, model: String, timeout: Duration) -> Result<Self, anyhow::Error> {
         let model = model.trim().to_string();

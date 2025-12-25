@@ -25,9 +25,18 @@ pub struct BrowserSessionOptions {
 impl Default for BrowserSessionOptions {
     fn default() -> Self {
         Self {
-            lock_file: None,
+            lock_file: default_lock_file_path(),
             graceful_shutdown_timeout: Duration::from_secs(2),
             kill_timeout: Duration::from_secs(2),
+        }
+    }
+}
+
+impl BrowserSessionOptions {
+    pub fn without_lock() -> Self {
+        Self {
+            lock_file: None,
+            ..Self::default()
         }
     }
 }
@@ -77,7 +86,7 @@ impl BrowserSession {
         opts: BrowserSessionOptions,
     ) -> Result<Self, BrowserSessionError> {
         let lock_path = opts.lock_file.clone();
-        let lock = match opts.lock_file {
+        let mut lock = match opts.lock_file {
             Some(path) => Some(create_lock_file(&path).map_err(|err| {
                 metrics::global().inc_browser_session_launch_failure();
                 tracing::warn!(
@@ -106,17 +115,26 @@ impl BrowserSession {
             }
         }
 
-        let child = command.spawn().map_err(|err| {
-            metrics::global().inc_browser_session_launch_failure();
-            tracing::warn!(
-                target: "docdexd_browser_guard",
-                event = "browser_session_launch_failed",
-                lock_file = ?lock_path.as_ref().map(|p| p.display().to_string()),
-                error = %err,
-                "browser session launch failed"
-            );
-            BrowserSessionError::LaunchFailed(err.to_string())
-        })?;
+        let child = match command.spawn() {
+            Ok(child) => child,
+            Err(err) => {
+                if let Some(lock) = lock.take() {
+                    drop(lock);
+                    if let Some(path) = lock_path.as_ref() {
+                        let _ = fs::remove_file(path);
+                    }
+                }
+                metrics::global().inc_browser_session_launch_failure();
+                tracing::warn!(
+                    target: "docdexd_browser_guard",
+                    event = "browser_session_launch_failed",
+                    lock_file = ?lock_path.as_ref().map(|p| p.display().to_string()),
+                    error = %err,
+                    "browser session launch failed"
+                );
+                return Err(BrowserSessionError::LaunchFailed(err.to_string()));
+            }
+        };
         let pid = child.id().ok_or_else(|| {
             metrics::global().inc_browser_session_launch_failure();
             BrowserSessionError::LaunchFailed("spawned process did not expose a PID".to_string())
@@ -276,6 +294,11 @@ fn create_lock_file(path: &PathBuf) -> Result<LockFile, BrowserSessionError> {
         path: path.clone(),
         _file: file,
     })
+}
+
+fn default_lock_file_path() -> Option<PathBuf> {
+    let base_dir = crate::state_paths::default_state_base_dir().ok()?;
+    Some(base_dir.join("locks").join("browser.lock"))
 }
 
 async fn cleanup_inner(inner: &Inner, force_kill: bool) -> Result<(), BrowserSessionError> {
@@ -744,7 +767,8 @@ mod tests {
             None,
             || async {
                 let cmd = Command::new("docdexd-definitely-not-a-real-command");
-                let _session = BrowserSession::spawn(cmd, BrowserSessionOptions::default()).await?;
+                let _session =
+                    BrowserSession::spawn(cmd, BrowserSessionOptions::without_lock()).await?;
                 Ok::<_, anyhow::Error>("tier2".to_string())
             },
             Tier2UnavailableReason::StartupFailed,
@@ -786,7 +810,7 @@ mod tests {
             prometheus_counter(&before, "docdex_browser_session_launch_failures_total");
 
         let cmd = Command::new("docdexd-definitely-not-a-real-command");
-        let err = BrowserSession::spawn(cmd, BrowserSessionOptions::default())
+        let err = BrowserSession::spawn(cmd, BrowserSessionOptions::without_lock())
             .await
             .expect_err("expected launch failure");
         assert!(matches!(err, BrowserSessionError::LaunchFailed(_)));
@@ -866,7 +890,7 @@ mod tests {
             rt.block_on(async {
                 let mut cmd = Command::new("sh");
                 cmd.arg("-c").arg("sleep 1000");
-                let session = BrowserSession::spawn(cmd, BrowserSessionOptions::default())
+                let session = BrowserSession::spawn(cmd, BrowserSessionOptions::without_lock())
                     .await
                     .expect("spawn");
                 session.close().await.expect("close");

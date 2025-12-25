@@ -210,8 +210,24 @@ pub async fn impact_graph_handler(
         return json_error(err.status, err.code, err.message);
     }
 
-    let repo_id = crate::symbols::repo_id_for_root(state.indexer.repo_root())
-        .unwrap_or_else(|_| String::new());
+    let repo_id = match crate::symbols::repo_id_for_root(state.indexer.repo_root()) {
+        Ok(value) => value,
+        Err(err) => {
+            state.metrics.inc_error();
+            warn!(target: "docdexd", error = ?err, "impact graph repo id unavailable");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ImpactErrorResponse {
+                    error: ImpactErrorDetail {
+                        code: "internal_error",
+                        message: "repo identity unavailable".to_string(),
+                        details: None,
+                    },
+                }),
+            )
+                .into_response();
+        }
+    };
     let store = crate::impact::ImpactGraphStore::new(state.indexer.state_dir());
     let all_edges = match store.read_edges() {
         Ok(edges) => edges,

@@ -1,4 +1,4 @@
-use crate::config::RepoArgs;
+use crate::config::{self, RepoArgs};
 use crate::error;
 use crate::index;
 use crate::memory;
@@ -15,6 +15,16 @@ pub async fn run_store(
     embedding_model: String,
     embedding_timeout_ms: u64,
 ) -> Result<()> {
+    let config = config::AppConfig::load_default()?;
+    let provider = config.llm.provider.trim();
+    if !provider.eq_ignore_ascii_case("ollama") {
+        return Err(error::StartupError::new(
+            "startup_config_invalid",
+            format!("unsupported llm provider `{provider}`; only ollama is supported"),
+        )
+        .with_hint("Set [llm].provider = \"ollama\" in ~/.docdex/config.toml.")
+        .into());
+    }
     let repo_root = repo.repo_root();
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
@@ -70,6 +80,16 @@ pub async fn run_recall(
     embedding_model: String,
     embedding_timeout_ms: u64,
 ) -> Result<()> {
+    let config = config::AppConfig::load_default()?;
+    let provider = config.llm.provider.trim();
+    if !provider.eq_ignore_ascii_case("ollama") {
+        return Err(error::StartupError::new(
+            "startup_config_invalid",
+            format!("unsupported llm provider `{provider}`; only ollama is supported"),
+        )
+        .with_hint("Set [llm].provider = \"ollama\" in ~/.docdex/config.toml.")
+        .into());
+    }
     let repo_root = repo.repo_root();
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,

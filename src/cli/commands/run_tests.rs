@@ -5,8 +5,10 @@ use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::env;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
 use std::time::Instant;
 
 const RUN_TESTS_CONFIG_PATH: &str = ".docdex/run-tests.json";
@@ -90,21 +92,40 @@ pub fn run(repo: RepoArgs, target: Option<PathBuf>) -> Result<()> {
     }
 
     let started = Instant::now();
-    let output = cmd
-        .output()
+    let mut child = cmd
+        .spawn()
         .with_context(|| format!("run test command `{}`", config.command))?;
+    let stdout_reader = child
+        .stdout
+        .take()
+        .context("capture run-tests stdout")?;
+    let stderr_reader = child
+        .stderr
+        .take()
+        .context("capture run-tests stderr")?;
+
+    let stdout_handle =
+        thread::spawn(move || read_limited(stdout_reader, MAX_CAPTURE_BYTES));
+    let stderr_handle =
+        thread::spawn(move || read_limited(stderr_reader, MAX_CAPTURE_BYTES));
+
+    let status = child.wait().context("wait for run-tests command")?;
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
 
-    let (stdout, stdout_truncated) = truncate_bytes(&output.stdout, MAX_CAPTURE_BYTES);
-    let (stderr, stderr_truncated) = truncate_bytes(&output.stderr, MAX_CAPTURE_BYTES);
+    let (stdout, stdout_truncated) = stdout_handle
+        .join()
+        .unwrap_or_else(|_| (String::new(), false));
+    let (stderr, stderr_truncated) = stderr_handle
+        .join()
+        .unwrap_or_else(|_| (String::new(), false));
 
-    let exit_code = output.status.code();
+    let exit_code = status.code();
     #[cfg(unix)]
     let signal = output.status.signal();
     #[cfg(not(unix))]
     let signal = None;
 
-    let success = output.status.success();
+    let success = status.success();
     let status = if success { "ok" } else { "failed" };
     let report = RunTestsReport {
         status,
@@ -260,12 +281,31 @@ fn apply_target(mut args: Vec<String>, target: Option<&str>) -> Vec<String> {
     args
 }
 
-fn truncate_bytes(data: &[u8], max_bytes: usize) -> (String, bool) {
-    if data.len() <= max_bytes {
-        return (String::from_utf8_lossy(data).to_string(), false);
+fn read_limited<R: Read>(mut reader: R, max_bytes: usize) -> (String, bool) {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut truncated = false;
+    let mut chunk = [0u8; 8192];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                if buf.len() < max_bytes {
+                    let remaining = max_bytes - buf.len();
+                    let take = remaining.min(n);
+                    buf.extend_from_slice(&chunk[..take]);
+                    if take < n {
+                        truncated = true;
+                    }
+                } else {
+                    truncated = true;
+                }
+            }
+            Err(_) => break,
+        }
     }
-    let truncated = &data[..max_bytes];
-    let mut out = String::from_utf8_lossy(truncated).to_string();
-    out.push_str("...");
-    (out, true)
+    let mut out = String::from_utf8_lossy(&buf).to_string();
+    if truncated {
+        out.push_str("...");
+    }
+    (out, truncated)
 }

@@ -13,7 +13,7 @@ You are interacting with Docdex, a local documentation indexer/search daemon. It
 - Install via npm: `npm i -g docdex` (or `npx docdex --version`).
 - Build an index: `docdexd index --repo /path/to/repo`.
 - Serve API: `docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 46137 --log info --auth-token <token>` (or add `--secure-mode=false` for token-free local use).
-- Query via CLI: `docdexd query --repo /path/to/repo --query "term" --limit 5`.
+- Query via CLI: `docdexd chat --repo /path/to/repo --query "term" --limit 5`.
 - Health: `GET /healthz` should return `ok`.
 
 ## Security/constraints

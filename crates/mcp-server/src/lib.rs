@@ -9,7 +9,9 @@ use docdexd::index::{IndexConfig, Indexer};
 use docdexd::libs;
 use docdexd::memory::{inject_embedding_metadata, MemoryStore};
 use docdexd::ollama::OllamaEmbedder;
-use docdexd::orchestrator::{run_waterfall, MemoryBudget, WaterfallRequest, WebGateConfig};
+use docdexd::orchestrator::{
+    run_waterfall, MemoryBudget, WaterfallPlan, WaterfallRequest, WebGateConfig,
+};
 use docdexd::ratelimit::RateLimiter;
 use docdexd::search;
 use docdexd::symbols::SymbolsStore;
@@ -354,6 +356,8 @@ struct SearchArgs {
     force_web: Option<bool>,
     #[serde(default)]
     project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -362,24 +366,32 @@ struct IndexArgs {
     paths: Vec<PathBuf>,
     #[serde(default)]
     project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
 struct StatsArgs {
     #[serde(default)]
     project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
 struct RepoInspectArgs {
     #[serde(default)]
     project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
 struct FilesArgs {
     #[serde(default)]
     project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
     #[serde(default)]
     limit: Option<usize>,
     #[serde(default)]
@@ -391,6 +403,8 @@ struct OpenArgs {
     path: String,
     #[serde(default)]
     project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
     #[serde(default)]
     start_line: Option<usize>,
     #[serde(default)]
@@ -402,6 +416,8 @@ struct SymbolsArgs {
     path: String,
     #[serde(default)]
     project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -411,6 +427,8 @@ struct MemoryStoreArgs {
     metadata: Option<serde_json::Value>,
     #[serde(default)]
     project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -420,6 +438,8 @@ struct MemoryRecallArgs {
     top_k: Option<usize>,
     #[serde(default)]
     project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -1183,9 +1203,10 @@ impl McpServer {
                         "query": { "type": "string", "minLength": 1, "description": "Concise search query (will be rejected if empty)" },
                         "limit": { "type": "integer", "minimum": 1, "maximum": self.max_results as i64, "default": self.max_results, "description": "Max results to return (clamped to server max)" },
                         "force_web": { "type": "boolean", "description": "When true, bypasses the Tier 2 gate and runs web research" },
-                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo" }
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
                     },
-                    "required": ["query", "project_root"]
+                    "required": ["query"]
                 }),
             },
             ToolDefinition {
@@ -1200,9 +1221,9 @@ impl McpServer {
                             "items": { "type": "string" },
                             "description": "Optional list of files to ingest; empty => full reindex"
                         },
-                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo" }
-                    },
-                    "required": ["project_root"]
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
+                    }
                 }),
             },
             ToolDefinition {
@@ -1212,11 +1233,11 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
                         "limit": { "type": "integer", "minimum": 1, "maximum": FILES_MAX_LIMIT as i64, "default": FILES_DEFAULT_LIMIT, "description": "Max documents to return (clamped)" },
                         "offset": { "type": "integer", "minimum": 0, "maximum": FILES_MAX_OFFSET as i64, "default": 0, "description": "Number of docs to skip before listing (clamped)" }
-                    },
-                    "required": ["project_root"]
+                    }
                 }),
             },
             ToolDefinition {
@@ -1227,11 +1248,12 @@ impl McpServer {
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "minLength": 1, "description": "Relative path under the repo" },
-                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
                         "start_line": { "type": "integer", "minimum": 1, "description": "Optional start line (1-based, inclusive)" },
                         "end_line": { "type": "integer", "minimum": 1, "description": "Optional end line (1-based, inclusive)" }
                     },
-                    "required": ["path", "project_root"]
+                    "required": ["path"]
                 }),
             },
             ToolDefinition {
@@ -1241,9 +1263,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo" }
-                    },
-                    "required": ["project_root"]
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
+                    }
                 }),
             },
             ToolDefinition {
@@ -1253,9 +1275,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo" }
-                    },
-                    "required": ["project_root"]
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
+                    }
                 }),
             },
             ToolDefinition {
@@ -1265,9 +1287,10 @@ impl McpServer {
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "minLength": 1, "description": "Relative path under the repo" },
-                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo" }
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
                     },
-                    "required": ["path", "project_root"]
+                    "required": ["path"]
                 }),
             },
             ToolDefinition {
@@ -1278,9 +1301,10 @@ impl McpServer {
                     "properties": {
                         "text": { "type": "string", "minLength": 1, "description": "Memory text to store" },
                         "metadata": { "type": "object", "description": "Optional metadata object", "additionalProperties": true },
-                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo" }
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
                     },
-                    "required": ["text", "project_root"]
+                    "required": ["text"]
                 }),
             },
             ToolDefinition {
@@ -1291,9 +1315,10 @@ impl McpServer {
                     "properties": {
                         "query": { "type": "string", "minLength": 1, "description": "Query text to embed" },
                         "top_k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 5, "description": "Max results to return" },
-                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo" }
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
                     },
-                    "required": ["query", "project_root"]
+                    "required": ["query"]
                 }),
             },
         ]
@@ -1319,7 +1344,9 @@ impl McpServer {
             limit,
             force_web: force_web_arg,
             project_root,
+            repo_path,
         } = args;
+        let project_root = self.resolve_project_root_arg(project_root, repo_path)?;
         self.ensure_project_root(project_root.as_deref())?;
         let query_owned = query;
         let query = query_owned.trim();
@@ -1330,7 +1357,11 @@ impl McpServer {
             .unwrap_or(&self.repo_root)
             .display()
             .to_string();
-        let web_gate = WebGateConfig::from_env();
+        let plan = WaterfallPlan::new(
+            WebGateConfig::from_env(),
+            Tier2Config::enabled(),
+            MemoryBudget::default(),
+        );
         let force_web = force_web_arg.unwrap_or(false);
         let mut memory_state = self.memory.as_ref().map(|state| search::MemoryState {
             store: state.store.clone(),
@@ -1344,11 +1375,9 @@ impl McpServer {
             force_web,
             indexer: &self.indexer,
             libs_indexer: self.libs_indexer.as_ref(),
-            web_gate: &web_gate,
-            tier2_config: Tier2Config::enabled(),
+            plan,
             tier2_limiter: None,
             memory: memory_state.as_ref(),
-            memory_budget: MemoryBudget::default(),
         })
         .await?;
         let mut response = waterfall.search_response;
@@ -1388,7 +1417,8 @@ impl McpServer {
     }
 
     async fn handle_index(&mut self, args: IndexArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
+        let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
+        self.ensure_project_root(project_root.as_deref())?;
         if args.paths.is_empty() {
             self.indexer.reindex_all().await?;
             return Ok(json!({
@@ -1436,7 +1466,8 @@ impl McpServer {
     }
 
     async fn handle_files(&self, args: FilesArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
+        let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
+        self.ensure_project_root(project_root.as_deref())?;
         let limit = args
             .limit
             .unwrap_or(FILES_DEFAULT_LIMIT)
@@ -1459,7 +1490,8 @@ impl McpServer {
     }
 
     async fn handle_stats(&self, args: StatsArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
+        let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
+        self.ensure_project_root(project_root.as_deref())?;
         let stats = self.indexer.stats()?;
         Ok(json!({
             "num_docs": stats.num_docs,
@@ -1480,7 +1512,8 @@ impl McpServer {
     }
 
     async fn handle_repo_inspect(&self, args: RepoInspectArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
+        let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
+        self.ensure_project_root(project_root.as_deref())?;
         let report = docdexd::repo_manager::inspect_repo(
             &self.repo_root,
             Some(self.indexer.config().state_dir()),
@@ -1489,7 +1522,8 @@ impl McpServer {
     }
 
     async fn handle_open(&self, args: OpenArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
+        let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
+        self.ensure_project_root(project_root.as_deref())?;
         let rel_path = normalize_rel_path(&args.path).ok_or(InvalidPathError)?;
         let abs_path = self.repo_root.join(&rel_path);
         let canonical = abs_path
@@ -1555,7 +1589,8 @@ impl McpServer {
     }
 
     async fn handle_symbols(&self, args: SymbolsArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
+        let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
+        self.ensure_project_root(project_root.as_deref())?;
         if !self.indexer.config().symbols_enabled() {
             return Err(MissingSymbolsDependencyError.into());
         }
@@ -1572,7 +1607,8 @@ impl McpServer {
     }
 
     async fn handle_memory_store(&self, args: MemoryStoreArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
+        let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
+        self.ensure_project_root(project_root.as_deref())?;
         let Some(memory) = self.memory.clone() else {
             return Err(AppError::new(
                 ERR_MEMORY_DISABLED,
@@ -1608,7 +1644,8 @@ impl McpServer {
     }
 
     async fn handle_memory_recall(&self, args: MemoryRecallArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
+        let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
+        self.ensure_project_root(project_root.as_deref())?;
         let Some(memory) = self.memory.clone() else {
             return Err(AppError::new(
                 ERR_MEMORY_DISABLED,
@@ -1652,6 +1689,7 @@ impl McpServer {
         let open_args = OpenArgs {
             path: rel.to_string(),
             project_root: self.default_project_root.clone(),
+            repo_path: None,
             start_line: None,
             end_line: None,
         };
@@ -1667,7 +1705,7 @@ impl McpServer {
                 Some(self.repo_root.to_string_lossy().replace('\\', "/")),
                 vec![
                     "Repo may have moved or been renamed.".to_string(),
-                    "Pass the current repo path in `project_root`.".to_string(),
+                    "Pass the current repo path in `project_root` (or `repo_path`).".to_string(),
                     "If the MCP server is pointed at the wrong path, restart it with `docdexd mcp --repo <repo>`."
                         .to_string(),
                 ],
@@ -1691,7 +1729,7 @@ impl McpServer {
                     "Repo may have moved or been renamed.".to_string(),
                     "Restart the MCP server with `docdexd mcp --repo <repo>` matching the repo you want to use."
                         .to_string(),
-                    "Pass `project_root` matching the repo the MCP server was started with.".to_string(),
+                    "Pass `project_root` (or `repo_path`) matching the repo the MCP server was started with.".to_string(),
                 ],
             );
             return Err(AppError::new(ERR_UNKNOWN_REPO, "unknown repo")
@@ -1702,17 +1740,55 @@ impl McpServer {
         Ok(())
     }
 
+    fn resolve_project_root_arg(
+        &self,
+        project_root: Option<PathBuf>,
+        repo_path: Option<PathBuf>,
+    ) -> Result<Option<PathBuf>> {
+        match (project_root, repo_path) {
+            (Some(project_root), Some(repo_path)) => {
+                let normalized_project =
+                    project_root.canonicalize().unwrap_or_else(|_| project_root.clone());
+                let normalized_repo =
+                    repo_path.canonicalize().unwrap_or_else(|_| repo_path.clone());
+                if normalized_project != normalized_repo {
+                    let details = json!({
+                        "project_root": project_root.to_string_lossy().replace('\\', "/"),
+                        "repo_path": repo_path.to_string_lossy().replace('\\', "/"),
+                    });
+                    return Err(AppError::new(
+                        ERR_INVALID_ARGUMENT,
+                        "project_root and repo_path must match",
+                    )
+                    .with_details(details)
+                    .into());
+                }
+                Ok(Some(project_root))
+            }
+            (Some(project_root), None) => Ok(Some(project_root)),
+            (None, Some(repo_path)) => Ok(Some(repo_path)),
+            (None, None) => Ok(None),
+        }
+    }
+
     fn ensure_project_root(&self, candidate: Option<&Path>) -> Result<()> {
-        let Some(path) = candidate else {
-            let details = json!({
-                "recoverySteps": [
-                    "Pass the repo path as `project_root` in tool arguments.",
-                    "Restart the MCP server with `docdexd mcp --repo <repo>` if it is pointed at the wrong repo."
-                ]
-            });
-            return Err(AppError::new(ERR_MISSING_REPO, "missing repo")
-                .with_details(details)
-                .into());
+        let path = match candidate {
+            Some(path) => path,
+            None => {
+                let Some(default_root) = self.default_project_root.as_deref() else {
+                    let details = json!({
+                        "recoverySteps": [
+                            "Pass the repo path as `project_root` (or `repo_path`) in tool arguments.",
+                            "Call initialize with `workspace_root` to set a default project_root.",
+                            "Restart the MCP server with `docdexd mcp --repo <repo>` if it is pointed at the wrong repo."
+                        ]
+                    });
+                    return Err(AppError::new(ERR_MISSING_REPO, "missing repo")
+                        .with_details(details)
+                        .into());
+                };
+                default_root
+            }
         };
         self.ensure_same_repo(path)
     }

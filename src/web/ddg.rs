@@ -8,7 +8,11 @@ use serde_json::json;
 use std::time::Duration;
 use url::Url;
 
-use crate::error::{AppError, ERR_BACKOFF_REQUIRED, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY};
+use crate::error::{
+    AppError, ERR_BACKOFF_REQUIRED, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
+    ERR_MISSING_DEPENDENCY,
+};
+use crate::web::cache;
 use crate::web::ddg_policy::{DdgDiscoveryPacer, DdgDiscoveryPolicyConfig};
 use crate::web::normalize::dedupe_urls;
 use crate::web::WebConfig;
@@ -28,6 +32,7 @@ pub struct DdgDiscovery {
     pacer: Mutex<DdgDiscoveryPacer>,
     client: reqwest::Client,
     blocklist: Vec<String>,
+    cache_layout: Option<crate::state_layout::StateLayout>,
 }
 
 #[derive(Debug, Serialize)]
@@ -57,11 +62,13 @@ impl DdgDiscovery {
             stop_backoff: config.policy.cooldown,
         };
         let blocklist = normalize_blocklist(&config.blocklist);
+        let cache_layout = cache::cache_layout_from_config();
         Ok(Self {
             pacer: Mutex::new(DdgDiscoveryPacer::new(pacer_config)),
             config,
             client,
             blocklist,
+            cache_layout,
         })
     }
 
@@ -85,6 +92,22 @@ impl DdgDiscovery {
         let limit = limit.clamp(1, self.config.max_results);
         let attempts = self.config.policy.max_attempts.max(1);
         let url = build_ddg_url(&self.config.ddg_base_url, query)?;
+        let url_key = url.to_string();
+
+        if let Some(layout) = self.cache_layout.as_ref() {
+            if let Ok(Some(payload)) =
+                cache::read_cache_entry_with_ttl(layout, &url_key, self.config.cache_ttl)
+            {
+                if let Ok(mut cached) =
+                    serde_json::from_slice::<WebDiscoveryResponse>(&payload)
+                {
+                    if cached.results.len() > limit {
+                        cached.results.truncate(limit);
+                    }
+                    return Ok(cached);
+                }
+            }
+        }
         let mut last_error: Option<anyhow::Error> = None;
 
         for attempt in 0..attempts {
@@ -116,11 +139,19 @@ impl DdgDiscovery {
                             .map(|url| WebDiscoveryResult { url })
                             .collect();
                         self.pacer.lock().record_success();
-                        return Ok(WebDiscoveryResponse {
+                        let response = WebDiscoveryResponse {
                             provider: PROVIDER,
                             query: query.to_string(),
                             results,
-                        });
+                        };
+                        if let Some(layout) = self.cache_layout.as_ref() {
+                            if self.config.cache_ttl.as_secs() > 0 {
+                                if let Ok(payload) = serde_json::to_vec(&response) {
+                                    let _ = cache::write_cache_entry(layout, &url_key, &payload);
+                                }
+                            }
+                        }
+                        return Ok(response);
                     }
 
                     let (backoff_error, failures, max_failures, stop_backoff) = {

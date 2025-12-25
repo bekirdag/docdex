@@ -14,6 +14,7 @@ use tokio::process::Command;
 use tokio::sync::Notify;
 
 use crate::metrics;
+use crate::state_layout::{self, StateLayout};
 
 #[derive(Debug, Clone)]
 pub struct BrowserSessionOptions {
@@ -275,7 +276,7 @@ enum Outcome<T> {
 
 fn create_lock_file(path: &PathBuf) -> Result<LockFile, BrowserSessionError> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
+        state_layout::ensure_state_dir_secure(parent)
             .map_err(|err| BrowserSessionError::LaunchFailed(err.to_string()))?;
     }
     let file = OpenOptions::new()
@@ -297,8 +298,11 @@ fn create_lock_file(path: &PathBuf) -> Result<LockFile, BrowserSessionError> {
 }
 
 fn default_lock_file_path() -> Option<PathBuf> {
-    let base_dir = crate::state_paths::default_state_base_dir().ok()?;
-    Some(base_dir.join("locks").join("browser.lock"))
+    let config = crate::config::AppConfig::load_default().ok()?;
+    let base_dir = config.core.global_state_dir?;
+    let layout = StateLayout::new(base_dir);
+    layout.ensure_global_dirs().ok()?;
+    Some(layout.locks_dir().join("browser.lock"))
 }
 
 async fn cleanup_inner(inner: &Inner, force_kill: bool) -> Result<(), BrowserSessionError> {

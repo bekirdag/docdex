@@ -1,4 +1,5 @@
 use crate::config;
+use crate::hardware;
 use crate::ollama;
 use crate::orchestrator::web;
 use crate::state_layout::StateLayout;
@@ -27,6 +28,18 @@ struct CheckReport {
 pub async fn run() -> Result<()> {
     let mut checks = Vec::new();
     let mut success = true;
+
+    let profile = hardware::detect_hardware();
+    checks.push(CheckItem {
+        name: "hardware",
+        status: "ok",
+        message: format!(
+            "hardware summary: {}; recommended model: {}",
+            hardware::format_hardware_summary(&profile),
+            hardware::recommend_model(&profile)
+        ),
+        details: None,
+    });
 
     let config_path = config::default_config_path().ok();
     let config = match config::AppConfig::load_default() {
@@ -124,21 +137,88 @@ pub async fn run() -> Result<()> {
         }
 
         let provider = config.llm.provider.trim();
-        if provider.eq_ignore_ascii_case("ollama") {
-            let base_url = config.llm.base_url.trim();
-            let timeout = Duration::from_secs(2);
-            match ollama::check_reachable(base_url, timeout).await {
-                Ok(()) => checks.push(CheckItem {
+        let provider_is_ollama = provider.eq_ignore_ascii_case("ollama");
+        checks.push(CheckItem {
+            name: "llm_provider",
+            status: if provider_is_ollama { "ok" } else { "fail" },
+            message: if provider_is_ollama {
+                "llm provider is ollama".to_string()
+            } else {
+                format!("unsupported llm provider `{provider}`; only ollama is supported")
+            },
+            details: Some(json!({ "provider": provider })),
+        });
+        if !provider_is_ollama {
+            success = false;
+        }
+        let base_url = config.llm.base_url.trim();
+        let timeout = Duration::from_secs(2);
+        let mut ollama_ok = true;
+        match ollama::check_reachable(base_url, timeout).await {
+            Ok(()) => checks.push(CheckItem {
+                name: "ollama",
+                status: "ok",
+                message: "ollama reachable".to_string(),
+                details: Some(json!({ "base_url": base_url })),
+            }),
+            Err(err) => {
+                checks.push(CheckItem {
                     name: "ollama",
-                    status: "ok",
-                    message: "ollama reachable".to_string(),
+                    status: "fail",
+                    message: format!("ollama unreachable: {err}"),
                     details: Some(json!({ "base_url": base_url })),
-                }),
+                });
+                success = false;
+                ollama_ok = false;
+            }
+        }
+
+        if ollama_ok {
+            let default_model = config.llm.default_model.trim();
+            let embed_model = config.llm.embedding_model.trim();
+            let mut missing = Vec::new();
+            if default_model.is_empty() {
+                missing.push("<default_model not set>".to_string());
+            }
+            if embed_model.is_empty() {
+                missing.push("<embedding_model not set>".to_string());
+            }
+            match ollama::list_models(base_url, timeout).await {
+                Ok(installed) => {
+                    if !default_model.is_empty() && !installed.contains(default_model) {
+                        missing.push(default_model.to_string());
+                    }
+                    if !embed_model.is_empty() && !installed.contains(embed_model) {
+                        missing.push(embed_model.to_string());
+                    }
+                    if missing.is_empty() {
+                        checks.push(CheckItem {
+                            name: "ollama_models",
+                            status: "ok",
+                            message: "ollama models available".to_string(),
+                            details: Some(json!({
+                                "default_model": default_model,
+                                "embedding_model": embed_model,
+                            })),
+                        });
+                    } else {
+                        checks.push(CheckItem {
+                            name: "ollama_models",
+                            status: "fail",
+                            message: "ollama models missing or not configured".to_string(),
+                            details: Some(json!({
+                                "missing": missing,
+                                "hint": "pull missing models with `ollama pull <model>`",
+                            })),
+                        });
+                        success = false;
+                    }
+                }
                 Err(err) => {
                     checks.push(CheckItem {
-                        name: "ollama",
+                        name: "ollama_models",
                         status: "fail",
-                        message: format!("ollama unreachable: {err}"),
+                        message: format!("ollama model list failed: {err}"),
                         details: Some(json!({ "base_url": base_url })),
                     });
                     success = false;
@@ -146,9 +226,9 @@ pub async fn run() -> Result<()> {
             }
         } else {
             checks.push(CheckItem {
-                name: "ollama",
-                status: "warn",
-                message: format!("llm provider is {provider}; skipping ollama check"),
+                name: "ollama_models",
+                status: "skipped",
+                message: "skipped due to ollama unreachable".to_string(),
                 details: None,
             });
         }
@@ -192,7 +272,7 @@ pub async fn run() -> Result<()> {
             });
         }
     } else {
-        for name in ["state", "bind", "ollama", "chrome"] {
+        for name in ["state", "bind", "llm_provider", "ollama", "ollama_models", "chrome"] {
             checks.push(CheckItem {
                 name,
                 status: "skipped",

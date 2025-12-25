@@ -11,7 +11,8 @@ use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::orchestrator::web::WebDiscoveryStatus;
 use crate::orchestrator::{
-    run_waterfall, MemoryBudget, MemoryContextAssembly, WaterfallRequest, WebGateConfig,
+    run_waterfall, MemoryBudget, MemoryContextAssembly, WaterfallPlan, WaterfallRequest,
+    WebGateConfig,
 };
 use crate::repo_manager;
 use crate::ratelimit::RateLimiter;
@@ -93,7 +94,14 @@ impl SecurityConfig {
                 allow_nets.push(ipv6);
             }
         }
-        let auth_token = token.filter(|value| !value.is_empty());
+        let auth_token = token.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
         if require_auth_token && auth_token.is_none() {
             return Err(StartupError::new(
                 "startup_auth_required",
@@ -1297,7 +1305,11 @@ async fn search_handler(
 
     let request_id_value = request_id.0;
     let request_id_str = request_id_value.as_str();
-    let web_gate = WebGateConfig::from_env();
+    let plan = WaterfallPlan::new(
+        WebGateConfig::from_env(),
+        Tier2Config::enabled(),
+        MemoryBudget::default(),
+    );
     let force_web = params.force_web.unwrap_or(false);
 
     match run_waterfall(WaterfallRequest {
@@ -1307,11 +1319,9 @@ async fn search_handler(
         force_web,
         indexer: state.indexer.as_ref(),
         libs_indexer,
-        web_gate: &web_gate,
-        tier2_config: Tier2Config::enabled(),
+        plan,
         tier2_limiter: None,
         memory: state.memory.as_ref(),
-        memory_budget: MemoryBudget::default(),
     })
     .await
     {

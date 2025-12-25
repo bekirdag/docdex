@@ -4,7 +4,6 @@ use tracing::warn;
 
 const REPOS_DIRNAME: &str = "repos";
 const REPO_REGISTRY_FILENAME: &str = "repo_registry.json";
-const REPO_META_FILENAME: &str = "repo_meta.json";
 
 #[derive(Clone, Debug)]
 pub struct StatePaths {
@@ -26,10 +25,6 @@ impl StatePaths {
 
     pub fn repo_index_dir(&self, state_key: &str) -> PathBuf {
         self.repo_root(state_key).join("index")
-    }
-
-    pub fn repo_meta_path(&self, state_key: &str) -> PathBuf {
-        self.repo_root(state_key).join(REPO_META_FILENAME)
     }
 
     pub fn repo_registry_path(&self) -> PathBuf {

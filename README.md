@@ -18,7 +18,7 @@ Docdex is a lightweight, local documentation indexer/search daemon. It runs per-
 
 ## Features at a glance
 - Per-repo, local indexing of Markdown/text files (tantivy-backed; no network calls).
-- HTTP API (`/search`, `/snippet`, `/healthz`) and CLI (`query`, `ingest`, `self-check`) share the same index.
+- HTTP API (`/search`, `/snippet`, `/healthz`) and CLI (`chat`, `ingest`, `self-check`) share the same index.
 - Live file watching while serving for incremental updates.
 - Security knobs: TLS (manual certs or Certbot), auth token required by default (disable with `--secure-mode=false`), loopback-only allowlist by default, default rate limiting, request-size limits, strict state-dir perms, audit log, chroot/privilege drop/unshare net (Unix).
 - Output ready for coding assistants: summaries, snippets, and doc metadata.
@@ -26,14 +26,14 @@ Docdex is a lightweight, local documentation indexer/search daemon. It runs per-
 
 ## What it does
 - Indexes Markdown/text docs inside a repo and stores them locally (tantivy-based index under `<repo>/.docdex/index` by default).
-- Serves the same index over HTTP (`/search`, `/snippet`, `/healthz`) and via CLI (`query`, `ingest`, `self-check`), so automation and interactive use share one dataset.
+- Serves the same index over HTTP (`/search`, `/snippet`, `/healthz`) and via CLI (`chat`, `ingest`, `self-check`), so automation and interactive use share one dataset.
 - Watches files while serving to incrementally ingest changes.
 - Hardened defaults: loopback binding, TLS enforcement on non-loopback, auth token required by default (disable with `--secure-mode=false`), loopback-only allowlist and default rate limit (60 req/min) in secure mode, audit log enabled, and strict state-dir perms.
 
 ## How it works
 1) `docdexd index` builds the on-disk index for your repo (or reuses a legacy `.gpt-creator/docdex/index` if present).  
 2) `docdexd serve` loads that index, starts a file watcher for incremental updates, and exposes the HTTP API.  
-3) HTTP clients or the CLI (`docdexd query`) read from the same index; `ingest` can update a single file without full reindexing.  
+3) HTTP clients or the CLI (`docdexd chat`) read from the same index; `ingest` can update a single file without full reindexing.  
 4) Optional TLS/auth/rate-limit settings secure remote access; audit logging can record access actions.
 
 ## Quick start
@@ -52,7 +52,7 @@ docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 46137 --log info --au
 # docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 46137 --log info --secure-mode=false
 
 # ad-hoc search via CLI (JSON)
-docdexd query --repo /path/to/repo --query "otp flow" --limit 5
+docdexd chat --repo /path/to/repo --query "otp flow" --limit 5
 ```
 
 ## TL;DR for agents
@@ -89,7 +89,7 @@ State is fingerprinted and isolated under `~/.docdex/state/repos/<fingerprint>` 
 - Serve with watcher: `docdexd serve --repo <path> --host 127.0.0.1 --port 46137 --log warn --auth-token <token>` (secure mode also allowlists loopback and rate-limits by default; add `--allow-ip`/`--secure-mode=false`/`--rate-limit-per-min` as needed for remote use).
 - Secure serving: add `--auth-token <token>` (required by default); use TLS with `--tls-cert/--tls-key` or `--certbot-domain <domain>`.
 - Single-file ingest: `docdexd ingest --repo <path> --file docs/new.md` (honors excludes).
-- Query via CLI: `docdexd query --repo <path> --query "term" --limit 4` (add `--repo-only` to ignore libs index hits).
+- Query via CLI: `docdexd chat --repo <path> --query "term" --limit 4` (add `--repo-only` to ignore libs index hits).
 - Git hygiene: add `.docdex/` (and especially `.docdex/index/`) to your repo's `.gitignore` so index artifacts never get committed.
 - Health check: `curl http://127.0.0.1:46137/healthz`.
 - Summary-only search responses: `curl "http://127.0.0.1:46137/search?q=foo&snippets=false"`; fetch snippets only for top hits.
@@ -156,6 +156,7 @@ State is fingerprinted and isolated under `~/.docdex/state/repos/<fingerprint>` 
 - `GET /healthz` — returns `ok`; this endpoint is unauthenticated and not rate-limited (IP allowlist still applies).
 - `GET /search?q=<text>&limit=<n>&snippets=<bool>&max_tokens=<u64>&include_libs=<bool>` — returns `{ hits: [...] }` with doc id, rel path, summary, snippet, score, token estimate. Set `snippets=false` for summary-only responses; set `max_tokens` to drop hits above your budget. `include_libs` defaults to `true` when a libs index exists; set `include_libs=false` to search repo-only.
 - `GET /snippet/:doc_id?window=<lines>&q=<query>&text_only=<bool>&max_tokens=<u64>` — returns `{ doc, snippet }` with optional highlighted snippet; falls back to preview when query highlighting is empty (default window: 40 lines). Set `text_only=true` to drop HTML and shrink payloads; set `max_tokens` to omit the snippet if the doc exceeds your budget.
+- `GET /v1/graph/impact?file=<path>&repo_id=<id>` — returns inbound/outbound dependency edges; `file` is required, `repo_id` is optional (must match the daemon repo if provided). Optional controls: `maxEdges=<int>`, `maxDepth=<int>`, `edgeTypes=<comma-separated>`. Implemented in `src/api/v1/graph.rs` and routed from `src/search/mod.rs`.
 - `GET /ai-help` — returns a JSON quickstart for agents (endpoints, CLI commands, limits, best practices).
 - `GET /metrics` — returns Prometheus-style counters/gauges for rate-limit/auth/error and browser guard metrics (see `docs/ops/browser_guard.md`).
 - If `--auth-token` is set, include `Authorization: Bearer <token>` on HTTP calls (including `/ai-help`).
@@ -164,7 +165,7 @@ State is fingerprinted and isolated under `~/.docdex/state/repos/<fingerprint>` 
 - `serve --repo <path> [--host 127.0.0.1] [--port 46137] [--log info]` — start HTTP API with file watching for incremental updates.
 - `index --repo <path>` — rebuild the entire index.
 - `ingest --repo <path> --file <file>` — reindex a single file.
-- `query --repo <path> --query "<text>" [--limit 8] [--repo-only]` — run a search and print JSON hits.
+- `chat --repo <path> --query "<text>" [--limit 8] [--repo-only]` — run a search and print JSON hits.
 - `repo inspect --repo <path> [--state-dir <state_dir>]` — show normalized path, computed fingerprint, and any shared-state mapping (canonical + aliases + lastSeen) for move/rename recovery.
 - `repo reassociate --repo <new_path> --state-dir <shared_state_dir> (--old-path <old_path> | --fingerprint <sha256>)` — explicitly re-associate a moved/renamed repo path to existing state under a shared base state directory.
 - `self-check --repo <path> --terms "foo,bar" [--limit 5]` — scan the index for sensitive terms before enabling access (fails with non-zero exit if any are found; reports sample hits and if more exist). Includes built-in token/password patterns by default; disable with `--include-default-patterns=false` if you only want your provided terms.
@@ -177,7 +178,7 @@ State is fingerprinted and isolated under `~/.docdex/state/repos/<fingerprint>` 
 - Dump help for every subcommand: `docdexd help-all`.
 - See `serve` options (TLS, auth, rate limits, watcher): `docdexd serve --help`.
 - Indexing options: `docdexd index --help` (exclude paths, custom state dir).
-- Ad-hoc queries: `docdexd query --help`.
+- Ad-hoc queries: `docdexd chat --help`.
 - Self-check scanner options: `docdexd self-check --help`.
 - Hardware guidance: `docdexd llm-list` outputs model recommendations based on detected RAM/VRAM; `docdexd llm-setup` repeats that guidance and reports Ollama availability.
 - Agent help endpoint: `curl http://127.0.0.1:46137/ai-help` (include `Authorization: Bearer <token>` if `--auth-token` is set) for a JSON listing of endpoints, limits, and best practices.
@@ -200,21 +201,21 @@ State is fingerprinted and isolated under `~/.docdex/state/repos/<fingerprint>` 
   - Generic JSON config (Cursor, Continue, Windsurf, Cline, Claude Desktop devtools): add the `mcpServers.docdex` block above to your MCP config file (paths vary by client; most accept the `command`/`args` schema shown).
   - Manual/stdio-only clients: start `docdexd mcp --repo /path/to/repo --log warn --max-results 8` yourself and point the client at that command/binary.
 - Tools exposed (CallToolResult content: result.content[0].text contains JSON):
-  - `docdex_search` — args: `{ "query": "<text>", "limit": <int optional>, "project_root": "<path optional>" }`. Returns `{ "hits": [...], "results": [...], "top_score": <float|null>, "topScore": <float|null>, "repo_root": "...", "state_dir": "...", "limit": <int>, "project_root": "...", "meta": {...} }`.
-  - `docdex_index` — args: `{ "paths": ["relative/or/absolute"], "project_root": "<path optional>" }`. Empty `paths` reindexes everything; otherwise ingests the listed files.
-  - `docdex_files` — args: `{ "limit": <int optional, default 200, max 1000>, "offset": <int optional, default 0>, "project_root": "<path optional>" }`. Returns `{ "results": [{ "doc_id", "rel_path", "summary", "token_estimate" }], "total", "limit", "offset", "repo_root", "project_root" }`.
-  - `docdex_open` — args: `{ "path": "<relative file>", "start_line": <int optional>, "end_line": <int optional>, "project_root": "<path optional>" }`. Returns `{ "path", "start_line", "end_line", "total_lines", "content", "repo_root", "project_root" }` (rejects paths outside repo and large files).
-  - `docdex_stats` — args: `{ "project_root": "<path optional>" }`. Returns `{ "num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "repo_root", "project_root" }`.
-  - `docdex_symbols` — args: `{ "path": "<relative file>", "project_root": "<path optional>" }`. Returns a `docdex.symbols` payload for that file including `outcome.status` (`ok`/`skipped`/`failed`).
+  - `docdex_search` — args: `{ "query": "<text>", "limit": <int optional>, "project_root": "<path required unless initialize set default>", "repo_path": "<path optional alias>" }`. Returns `{ "hits": [...], "results": [...], "top_score": <float|null>, "topScore": <float|null>, "repo_root": "...", "state_dir": "...", "limit": <int>, "project_root": "...", "meta": {...} }`.
+  - `docdex_index` — args: `{ "paths": ["relative/or/absolute"], "project_root": "<path required unless initialize set default>", "repo_path": "<path optional alias>" }`. Empty `paths` reindexes everything; otherwise ingests the listed files.
+  - `docdex_files` — args: `{ "limit": <int optional, default 200, max 1000>, "offset": <int optional, default 0>, "project_root": "<path required unless initialize set default>", "repo_path": "<path optional alias>" }`. Returns `{ "results": [{ "doc_id", "rel_path", "summary", "token_estimate" }], "total", "limit", "offset", "repo_root", "project_root" }`.
+  - `docdex_open` — args: `{ "path": "<relative file>", "start_line": <int optional>, "end_line": <int optional>, "project_root": "<path required unless initialize set default>", "repo_path": "<path optional alias>" }`. Returns `{ "path", "start_line", "end_line", "total_lines", "content", "repo_root", "project_root" }` (rejects paths outside repo and large files).
+  - `docdex_stats` — args: `{ "project_root": "<path required unless initialize set default>", "repo_path": "<path optional alias>" }`. Returns `{ "num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "repo_root", "project_root" }`.
+  - `docdex_symbols` — args: `{ "path": "<relative file>", "project_root": "<path required unless initialize set default>", "repo_path": "<path optional alias>" }`. Returns a `docdex.symbols` payload for that file including `outcome.status` (`ok`/`skipped`/`failed`).
 - Example calls:
   - Initialize: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
   - Initialize with workspace root: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"workspace_root":"/path/to/repo"}}` (must match the server repo; sets default project_root for later calls)
   - List tools: `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`
-  - Reindex: `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"docdex_index","arguments":{"paths":[]}}}`
+  - Reindex: `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"docdex_index","arguments":{"paths":[],"project_root":"/repo"}}}`
   - Search: `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"docdex_search","arguments":{"query":"payment auth flow","limit":3,"project_root":"/repo"}}}`
-  - List files: `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"docdex_files","arguments":{"limit":10,"offset":0}}}`
-  - Open file: `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"docdex_open","arguments":{"path":"docs/readme.md","start_line":1,"end_line":20}}}`
-  - Stats: `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"docdex_stats","arguments":{}}}`
+  - List files: `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"docdex_files","arguments":{"limit":10,"offset":0,"project_root":"/repo"}}}`
+  - Open file: `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"docdex_open","arguments":{"path":"docs/readme.md","start_line":1,"end_line":20,"project_root":"/repo"}}}`
+  - Stats: `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"docdex_stats","arguments":{"project_root":"/repo"}}}`
 - Errors: invalid JSON → code -32700; unsupported/missing `jsonrpc` → -32600; unknown tool/method → -32601; invalid params (empty query, bad args, project_root mismatch) → -32602; internal errors include a `reason` string in `error.data`.
 - Rate limits (MCP tool calls): when `DOCDEX_MCP_RATE_LIMIT_PER_MIN` is enabled and exceeded, tool calls return JSON-RPC code `-32029` with `error.data` containing stable retry hints: `{ code: \"rate_limited\", retry_after_ms: <int>, retry_at?: <RFC3339>, limit_key: <string>, scope: <string> }`.
 - Agent guidance: call `docdex_search` with concise queries before coding; fetch only a few hits; if results look stale, call `docdex_index`; keep using HTTP/CLI if your stack isn't MCP-aware.
@@ -222,6 +223,7 @@ State is fingerprinted and isolated under `~/.docdex/state/repos/<fingerprint>` 
 
 ## Troubleshooting
 - Stale index: re-run `docdexd index --repo <path>`.
+- Optional libs ingestion during index: `docdexd index --repo <path> --libs-sources /path/to/libs_sources.json` (expects `{ "sources": [...] }`).
 - Port conflicts: change `--host/--port`.
 - Installer failures (`npm i -g docdex`): use the printed `DOCDEX_*` error code; see `docs/ops/installer_error_codes.md`.
 
@@ -233,11 +235,11 @@ If you use the default in-repo state dir (`<repo>/.docdex/index`), moves/renames
 
 Deterministic failures and what they mean:
 
-- `missing_repo_path` (`"repo path not found"`): the `--repo` path (or MCP `project_root`) does not exist on disk (common after a move/rename, or when a client is still pointing at the old location).
-  - Recovery: re-run with the repo’s current path; for HTTP, restart `docdexd serve --repo <repo>` with the correct path; for MCP, either omit `project_root` to use the MCP server’s default or restart `docdexd mcp --repo <repo>` with the correct path.
+- `missing_repo_path` (`"repo path not found"`): the `--repo` path (or MCP `project_root`/`repo_path`) does not exist on disk (common after a move/rename, or when a client is still pointing at the old location).
+  - Recovery: re-run with the repo’s current path; for HTTP, restart `docdexd serve --repo <repo>` with the correct path; for MCP, restart `docdexd mcp --repo <repo>` with the correct path and pass `project_root`/`repo_path`.
   - If the repo moved but you did not move its state with it, reindex: `docdexd index --repo <repo>`.
-- `unknown_repo` (`"unknown repo"`): MCP-only — `project_root` does not match the MCP server’s configured `--repo`. This is a fast-fail guardrail to prevent accidental cross-repo access.
-  - Recovery: restart the MCP server with `docdexd mcp --repo <repo>` matching the repo you want, or omit `project_root` in tool arguments to use the MCP server default.
+- `unknown_repo` (`"unknown repo"`): MCP-only — `project_root`/`repo_path` does not match the MCP server’s configured `--repo`. This is a fast-fail guardrail to prevent accidental cross-repo access.
+  - Recovery: restart the MCP server with `docdexd mcp --repo <repo>` matching the repo you want, and pass `project_root`/`repo_path` in tool arguments.
 - `repo_state_mismatch` (`"repo state mismatch; refusing to associate this repo with the existing state directory"`): Docdex detected that an existing *shared* `--state-dir` cannot be safely associated with the current `--repo` without an explicit user action (common when a repo moved/renamed while using an absolute shared `--state-dir` outside the repo root).
   - Why it fast-fails: reusing shared state across repos is a data-mixing risk; Docdex fails closed by default.
   - Recovery: either explicitly re-associate the moved repo to the existing shared state, or choose a different (empty) `--state-dir` and reindex.
@@ -274,7 +276,7 @@ Step-by-step recovery (shared `--state-dir` scenario):
 - Trim the corpus: prefer a curated staging directory, or use `--exclude-dir` / `--exclude-prefix` to keep secrets/private paths out before indexing; the watcher will ingest any in-scope file change under `repo`.
 - Mind logs: avoid verbose logging in production if snippets/paths are sensitive; reverse-proxy access logs can also capture query terms and paths.
 - Least privilege: run docdex under a low-privilege user/container and keep the state dir on a path with restricted permissions.
-- Validate before publish: run `docdexd query` for sensitive keywords to confirm no hits; store indexes on encrypted disks if required.
+- Validate before publish: run `docdexd chat` for sensitive keywords to confirm no hits; store indexes on encrypted disks if required.
 - Optional hardening: require an auth token on the HTTP API (or proxy); enforce TLS when not on localhost (default) or explicitly opt out with `--require-tls=false`/`--insecure` only behind a trusted proxy; enable rate limiting (`--rate-limit-per-min`) and clamp `limit`/request sizes (`--max-limit`, `--max-query-bytes`, `--max-request-bytes`); escape/sanitize snippet HTML if embedding or disable snippets entirely with `--disable-snippet-text`; state dir is created `0700` by default—keep it under an unprivileged user, optionally `--run-as-uid/--run-as-gid`, `--chroot`, or containerize; keep access logging minimal/redacted (`--access-log`), and run `self-check` for sensitive terms before exposing the service; for at-rest confidentiality, place the state dir on encrypted storage or use host-level disk encryption.
 
 ## Integrating with LLM tools
@@ -282,7 +284,7 @@ Docdex is tool-agnostic. Drop-in recipe for agents/codegen tools:
 - Start once per repo: `docdexd index --repo <repo>` then `docdexd serve --repo <repo> --host 127.0.0.1 --port 46137 --log warn` (or use the CLI directly without serving).
 - Configure via env: `DOCDEX_STATE_DIR` (index location), `DOCDEX_EXCLUDE_PREFIXES`, `DOCDEX_EXCLUDE_DIRS`, `RUST_LOG=docdexd=debug` (optional verbose logs).
 - Query over HTTP: `GET /search?q=<text>&limit=<n>` returns `{"hits":[{"path","rel_path","doc_id","score","summary","snippet","token_estimate"}...],"top_score":<float|null>,"topScore":<float|null>,"meta":{...}}`; `GET /snippet/:doc_id` fetches a focused snippet plus doc metadata.
-- Or query via CLI: `docdexd query --repo <repo> --query "<text>" --limit 8` (JSON to stdout).
+- Or query via CLI: `docdexd chat --repo <repo> --query "<text>" --limit 8` (JSON to stdout).
 - Health check: `GET /healthz` should return `ok` before issuing search requests.
 - Inject snippets into prompts:
 ```
@@ -293,7 +295,8 @@ Docdex is tool-agnostic. Drop-in recipe for agents/codegen tools:
 Docdex can run as an MCP tool provider over stdio; it does not replace the HTTP daemon—pick whichever fits your agent/editor. If your MCP client supports resource templates, Docdex advertises a `docdex_file` template (`docdex://{path}`) which delegates to `docdex_open`.
 - Run: `docdexd mcp --repo /path/to/repo --log warn --max-results 8` (alias: `--mcp-max-results 8`).
 - Env override: `DOCDEX_MCP_MAX_RESULTS` clamps `docdex_search` results (min 1).
-- Packaging: MCP server is built into the main `docdexd` binary (invoked via `docdexd mcp` or `docdex mcp` from the npm bin); no separate `docdex-mcp` download required.
+- Default repo: call `initialize` with `workspace_root` to set a default `project_root`; after that, tools may omit `project_root`/`repo_path`.
+- Packaging: `docdexd mcp` launches the companion `docdex-mcp-server` binary; build/install it with `cargo build -p docdex-mcp-server` or set `DOCDEX_MCP_SERVER_BIN` to the binary path.
 - Registering with MCP clients: add a server named `docdex` that runs `docdexd mcp --repo <repo> --log warn`. Example Codex config snippet:
   ```json
   {
@@ -312,20 +315,20 @@ Docdex can run as an MCP tool provider over stdio; it does not replace the HTTP 
   - Generic JSON config (Cursor, Continue, Windsurf, Cline, Claude Desktop devtools): add the `mcpServers.docdex` block above to your MCP config file (paths vary by client; most accept the `command`/`args` schema shown).
   - Manual/stdio-only clients: start `docdexd mcp --repo /path/to/repo --log warn --max-results 8` yourself and point the client at that command/binary.
 - Tools exposed (CallToolResult content: result.content[0].text contains JSON):
-  - `docdex_search` — args: `{ "query": "<text>", "limit": <int optional>, "project_root": "<path optional>" }`. Returns `{ "hits": [...], "results": [...], "top_score": <float|null>, "topScore": <float|null>, "repo_root": "...", "state_dir": "...", "limit": <int>, "project_root": "...", "meta": {...} }`.
-  - `docdex_index` — args: `{ "paths": ["relative/or/absolute"], "project_root": "<path optional>" }`. Empty `paths` reindexes everything; otherwise ingests the listed files.
-  - `docdex_files` — args: `{ "limit": <int optional, default 200, max 1000>, "offset": <int optional, default 0>, "project_root": "<path optional>" }`. Returns `{ "results": [{ "doc_id", "rel_path", "summary", "token_estimate" }], "total", "limit", "offset", "repo_root", "project_root" }`.
-  - `docdex_open` — args: `{ "path": "<relative file>", "start_line": <int optional>, "end_line": <int optional>, "project_root": "<path optional>" }`. Returns `{ "path", "start_line", "end_line", "total_lines", "content", "repo_root", "project_root" }` (rejects paths outside repo and large files).
-  - `docdex_stats` — args: `{ "project_root": "<path optional>" }`. Returns `{ "num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "repo_root", "project_root" }`.
+  - `docdex_search` — args: `{ "query": "<text>", "limit": <int optional>, "project_root": "<path required unless initialize set default>", "repo_path": "<path optional alias>" }`. Returns `{ "hits": [...], "results": [...], "top_score": <float|null>, "topScore": <float|null>, "repo_root": "...", "state_dir": "...", "limit": <int>, "project_root": "...", "meta": {...} }`.
+  - `docdex_index` — args: `{ "paths": ["relative/or/absolute"], "project_root": "<path required unless initialize set default>", "repo_path": "<path optional alias>" }`. Empty `paths` reindexes everything; otherwise ingests the listed files.
+  - `docdex_files` — args: `{ "limit": <int optional, default 200, max 1000>, "offset": <int optional, default 0>, "project_root": "<path required unless initialize set default>", "repo_path": "<path optional alias>" }`. Returns `{ "results": [{ "doc_id", "rel_path", "summary", "token_estimate" }], "total", "limit", "offset", "repo_root", "project_root" }`.
+  - `docdex_open` — args: `{ "path": "<relative file>", "start_line": <int optional>, "end_line": <int optional>, "project_root": "<path required unless initialize set default>", "repo_path": "<path optional alias>" }`. Returns `{ "path", "start_line", "end_line", "total_lines", "content", "repo_root", "project_root" }` (rejects paths outside repo and large files).
+  - `docdex_stats` — args: `{ "project_root": "<path required unless initialize set default>", "repo_path": "<path optional alias>" }`. Returns `{ "num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "repo_root", "project_root" }`.
 - Example calls:
   - Initialize: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
   - Initialize with workspace root: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"workspace_root":"/path/to/repo"}}` (must match the server repo; sets default project_root for later calls)
   - List tools: `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`
-  - Reindex: `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"docdex_index","arguments":{"paths":[]}}}`
+  - Reindex: `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"docdex_index","arguments":{"paths":[],"project_root":"/repo"}}}`
   - Search: `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"docdex_search","arguments":{"query":"payment auth flow","limit":3,"project_root":"/repo"}}}`
-  - List files: `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"docdex_files","arguments":{"limit":10,"offset":0}}}`
-  - Open file: `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"docdex_open","arguments":{"path":"docs/readme.md","start_line":1,"end_line":20}}}`
-  - Stats: `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"docdex_stats","arguments":{}}}`
+  - List files: `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"docdex_files","arguments":{"limit":10,"offset":0,"project_root":"/repo"}}}`
+  - Open file: `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"docdex_open","arguments":{"path":"docs/readme.md","start_line":1,"end_line":20,"project_root":"/repo"}}}`
+  - Stats: `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"docdex_stats","arguments":{"project_root":"/repo"}}}`
 - Errors: invalid JSON → code -32700; unsupported/missing `jsonrpc` → -32600; unknown tool/method → -32601; invalid params (empty query, bad args, project_root mismatch) → -32602; internal errors include a `reason` string in `error.data`.
 - Agent guidance: call `docdex_search` with concise queries before coding; fetch only a few hits; if results look stale, call `docdex_index`; keep using HTTP/CLI if your stack isn't MCP-aware.
 - Help: `docdexd mcp --help` shows MCP flags and defaults; `docdexd help-all` includes an MCP section listing tools and usage.

@@ -220,6 +220,7 @@ pub async fn serve(
     run_as_gid: Option<u32>,
     unshare_net: bool,
     enable_memory: bool,
+    llm_provider: String,
     ollama_base_url: String,
     embedding_model: String,
     embedding_timeout_ms: u64,
@@ -236,6 +237,15 @@ pub async fn serve(
         }
     }
     let repo_display = repo.display().to_string();
+    let provider = llm_provider.trim();
+    if !provider.eq_ignore_ascii_case("ollama") {
+        return Err(StartupError::new(
+            "startup_config_invalid",
+            format!("unsupported llm provider `{provider}`; only ollama is supported"),
+        )
+        .with_hint("Set [llm].provider = \"ollama\" in ~/.docdex/config.toml.")
+        .into());
+    }
 
     let tls_config = match tls {
         Some(tls) => Some(Arc::new(tls.to_rustls().map_err(|err| {

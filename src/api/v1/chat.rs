@@ -13,11 +13,14 @@ use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use uuid::Uuid;
 
-use crate::orchestrator::{run_waterfall, MemoryBudget, WaterfallRequest, WebGateConfig};
+use crate::orchestrator::{
+    run_waterfall, MemoryBudget, WaterfallPlan, WaterfallRequest, WebGateConfig,
+};
 use crate::search::AppState;
 use crate::tier2::Tier2Config;
 
 const DEFAULT_LIMIT: usize = 8;
+const STREAM_CHUNK_CHARS: usize = 320;
 
 #[derive(Debug, Deserialize)]
 struct ChatCompletionRequest {
@@ -147,21 +150,24 @@ pub async fn chat_completions_handler(
         state.indexer.as_ref(),
         false,
     ) {
-        return error_response(err.status, err.code, &err.message);
+        return error_response(err.status, "invalid_request_error", err.code, &err.message);
     }
-    let query = match extract_user_query(&payload.messages) {
+    let extracted = match extract_query_and_context(&payload.messages) {
         Some(value) => value,
         None => {
             return error_response(
                 StatusCode::BAD_REQUEST,
+                "invalid_request_error",
                 "missing_query",
                 "messages must include a user message",
             );
         }
     };
+    let query = extracted.query;
     if query.trim().is_empty() {
         return error_response(
             StatusCode::BAD_REQUEST,
+            "invalid_request_error",
             "invalid_query",
             "user message content must not be empty",
         );
@@ -169,6 +175,7 @@ pub async fn chat_completions_handler(
     if state.security.max_query_bytes > 0 && query.len() > state.security.max_query_bytes {
         return error_response(
             StatusCode::PAYLOAD_TOO_LARGE,
+            "invalid_request_error",
             "query_too_large",
             "user message exceeds max_query_bytes",
         );
@@ -187,20 +194,27 @@ pub async fn chat_completions_handler(
         None
     };
 
-    let web_gate = WebGateConfig::from_env();
+    let plan = WaterfallPlan::new(
+        WebGateConfig::from_env(),
+        Tier2Config::enabled(),
+        MemoryBudget::default(),
+    );
     let request_id = Uuid::new_v4().to_string();
+    let query_with_context = if extracted.context.trim().is_empty() {
+        query.clone()
+    } else {
+        format!("{}\n\nUser:\n{}", extracted.context, query)
+    };
     let response = match run_waterfall(WaterfallRequest {
         request_id: &request_id,
-        query: &query,
+        query: &query_with_context,
         limit,
         force_web,
         indexer: state.indexer.as_ref(),
         libs_indexer,
-        web_gate: &web_gate,
-        tier2_config: Tier2Config::enabled(),
+        plan,
         tier2_limiter: None,
         memory: state.memory.as_ref(),
-        memory_budget: MemoryBudget::default(),
     })
     .await
     {
@@ -220,20 +234,27 @@ pub async fn chat_completions_handler(
             let created = now_epoch_seconds();
             if payload.stream {
                 let id = format!("chatcmpl-{}", request_id);
-                let chunk = ChatCompletionChunk {
-                    id: id.clone(),
-                    object: "chat.completion.chunk",
-                    created,
-                    model: model.clone(),
-                    choices: vec![ChatChunkChoice {
-                        index: 0,
-                        delta: ChatChunkDelta {
-                            role: Some("assistant"),
-                            content: Some(content.clone()),
-                        },
-                        finish_reason: None,
-                    }],
-                };
+                let mut content_chunks = chunk_text(&content, STREAM_CHUNK_CHARS);
+                if content_chunks.is_empty() {
+                    content_chunks.push(String::new());
+                }
+                let content_iter = content_chunks.into_iter().enumerate().map(|(idx, piece)| {
+                    let role = if idx == 0 { Some("assistant") } else { None };
+                    ChatCompletionChunk {
+                        id: id.clone(),
+                        object: "chat.completion.chunk",
+                        created,
+                        model: model.clone(),
+                        choices: vec![ChatChunkChoice {
+                            index: 0,
+                            delta: ChatChunkDelta {
+                                role,
+                                content: Some(piece),
+                            },
+                            finish_reason: None,
+                        }],
+                    }
+                });
                 let final_chunk = ChatCompletionChunk {
                     id: id.clone(),
                     object: "chat.completion.chunk",
@@ -248,7 +269,7 @@ pub async fn chat_completions_handler(
                         finish_reason: Some("stop"),
                     }],
                 };
-                return stream_response(&[chunk, final_chunk]);
+                return stream_response(content_iter.chain(std::iter::once(final_chunk)));
             }
 
             ChatCompletionResponse {
@@ -270,6 +291,7 @@ pub async fn chat_completions_handler(
         Err(err) => {
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
                 "internal_error",
                 &err.to_string(),
             );
@@ -279,39 +301,66 @@ pub async fn chat_completions_handler(
     (StatusCode::OK, Json(response)).into_response()
 }
 
-fn extract_user_query(messages: &[ChatMessage]) -> Option<String> {
-    messages.iter().rev().find_map(|message| {
-        if message.role.to_ascii_lowercase() != "user" {
-            return None;
+struct ChatQueryContext {
+    query: String,
+    context: String,
+}
+
+fn extract_query_and_context(messages: &[ChatMessage]) -> Option<ChatQueryContext> {
+    let mut context_parts: Vec<String> = Vec::new();
+    let mut last_user: Option<String> = None;
+
+    for message in messages {
+        let role = message.role.to_ascii_lowercase();
+        if role != "system" && role != "assistant" && role != "user" {
+            continue;
         }
-        match &message.content {
-            MessageContent::Text(text) => Some(text.trim().to_string()),
-            MessageContent::Parts(parts) => {
-                let mut out = Vec::new();
-                for part in parts {
-                    let kind = part
-                        .part_type
-                        .as_deref()
-                        .unwrap_or("text")
-                        .to_ascii_lowercase();
-                    if kind != "text" && kind != "input_text" {
-                        continue;
-                    }
-                    if let Some(text) = part.text.as_ref() {
-                        if !text.trim().is_empty() {
-                            out.push(text.trim().to_string());
-                        }
-                    }
+        let Some(text) = extract_message_text(&message.content) else {
+            continue;
+        };
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        context_parts.push(trimmed.to_string());
+        if role == "user" {
+            last_user = Some(trimmed.to_string());
+        }
+    }
+
+    let query = last_user?;
+    let context = context_parts.join("\n\n");
+    Some(ChatQueryContext { query, context })
+}
+
+fn extract_message_text(content: &MessageContent) -> Option<String> {
+    match content {
+        MessageContent::Text(text) => Some(text.trim().to_string()),
+        MessageContent::Parts(parts) => {
+            let mut out = Vec::new();
+            for part in parts {
+                let kind = part
+                    .part_type
+                    .as_deref()
+                    .unwrap_or("text")
+                    .to_ascii_lowercase();
+                if kind != "text" && kind != "input_text" {
+                    continue;
                 }
-                if out.is_empty() {
-                    None
-                } else {
-                    Some(out.join("\n"))
+                if let Some(text) = part.text.as_ref() {
+                    if !text.trim().is_empty() {
+                        out.push(text.trim().to_string());
+                    }
                 }
             }
-            MessageContent::Other(value) => value.as_str().map(|text| text.trim().to_string()),
+            if out.is_empty() {
+                None
+            } else {
+                Some(out.join("\n"))
+            }
         }
-    })
+        MessageContent::Other(value) => value.as_str().map(|text| text.trim().to_string()),
+    }
 }
 
 fn build_completion(query: &str, hits: &[crate::index::Hit]) -> String {
@@ -348,26 +397,31 @@ fn now_epoch_seconds() -> u64 {
         .unwrap_or(0)
 }
 
-fn error_response(status: StatusCode, code: &'static str, message: &str) -> Response {
+fn error_response(
+    status: StatusCode,
+    error_type: &'static str,
+    code: &'static str,
+    message: &str,
+) -> Response {
     let body = OpenAiErrorResponse {
         error: OpenAiErrorDetail {
             message: message.to_string(),
-            error_type: "invalid_request_error",
+            error_type,
             code: Some(code),
         },
     };
     (status, Json(body)).into_response()
 }
 
-fn stream_response(chunks: &[ChatCompletionChunk]) -> Response {
-    let mut frames: Vec<Result<Bytes, Infallible>> = Vec::new();
-    for chunk in chunks {
-        if let Ok(json) = serde_json::to_string(chunk) {
-            frames.push(Ok(Bytes::from(format!("data: {json}\n\n"))));
-        }
-    }
-    frames.push(Ok(Bytes::from("data: [DONE]\n\n")));
-
+fn stream_response<I>(chunks: I) -> Response
+where
+    I: IntoIterator<Item = ChatCompletionChunk>,
+{
+    let frames = chunks
+        .into_iter()
+        .filter_map(|chunk| serde_json::to_string(&chunk).ok())
+        .map(|json| Ok(Bytes::from(format!("data: {json}\n\n"))))
+        .chain(std::iter::once(Ok(Bytes::from("data: [DONE]\n\n"))));
     let body = Body::from_stream(stream::iter(frames));
     let mut response = Response::new(body);
     response.headers_mut().insert(
@@ -379,4 +433,26 @@ fn stream_response(chunks: &[ChatCompletionChunk]) -> Response {
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     *response.status_mut() = StatusCode::OK;
     response
+}
+
+fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
+    if max_chars == 0 {
+        return vec![text.to_string()];
+    }
+    let mut chunks = Vec::new();
+    let mut buf = String::new();
+    let mut count = 0usize;
+    for ch in text.chars() {
+        buf.push(ch);
+        count += 1;
+        if count >= max_chars {
+            chunks.push(buf);
+            buf = String::new();
+            count = 0;
+        }
+    }
+    if !buf.is_empty() {
+        chunks.push(buf);
+    }
+    chunks
 }

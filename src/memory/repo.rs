@@ -4,8 +4,12 @@ use std::path::{Path, PathBuf};
 
 /// Ensure the repo-scoped state directory exists and is writable.
 pub fn ensure_repo_state_dir(repo_state_root: &Path) -> Result<()> {
-    fs::create_dir_all(repo_state_root)
-        .with_context(|| format!("create repo state dir at {}", repo_state_root.display()))?;
+    crate::state_layout::ensure_state_dir_secure(repo_state_root).with_context(|| {
+        format!(
+            "create repo state dir at {}",
+            repo_state_root.display()
+        )
+    })?;
     Ok(())
 }
 

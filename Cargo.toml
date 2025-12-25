@@ -39,6 +39,7 @@ hex = "0.4"
 which = "6"
 sysinfo = { version = "0.30", features = ["graphics"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
+sqlite-vec = "0.1"
 
 [dev-dependencies]
 assert_cmd = "2.0"

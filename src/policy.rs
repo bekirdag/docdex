@@ -178,12 +178,12 @@ impl WebGateDecision {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct WebGateConfig {
+pub struct WebAvailabilityConfig {
     pub enabled: bool,
     pub offline: bool,
 }
 
-impl Default for WebGateConfig {
+impl Default for WebAvailabilityConfig {
     fn default() -> Self {
         Self {
             enabled: true,
@@ -192,7 +192,7 @@ impl Default for WebGateConfig {
     }
 }
 
-impl WebGateConfig {
+impl WebAvailabilityConfig {
     pub fn from_env() -> Self {
         let mut config = Self::default();
         if let Some(enabled) = env_boolish("DOCDEX_WEB_ENABLED") {
@@ -217,7 +217,7 @@ fn env_boolish(name: &str) -> Option<bool> {
 }
 
 pub fn web_gate_from_env() -> WebGateDecision {
-    let config = WebGateConfig::from_env();
+    let config = WebAvailabilityConfig::from_env();
     if !config.enabled {
         return WebGateDecision::denied(WebGateReason::Disabled);
     }

@@ -1,12 +1,17 @@
-use crate::config::RepoArgs;
+use crate::config::{self, RepoArgs};
 use crate::index;
 use crate::libs;
 use crate::index::Hit;
-use crate::orchestrator::{run_waterfall, MemoryBudget, WaterfallRequest, WebGateConfig};
+use crate::orchestrator::{run_waterfall, MemoryBudget, WaterfallPlan, WaterfallRequest, WebGateConfig};
+use crate::repo_manager;
 use crate::tier2::Tier2Config;
 use crate::util;
 use anyhow::Result;
+use futures::StreamExt;
+use reqwest::header::{ACCEPT, AUTHORIZATION};
+use serde::Serialize;
 use std::io::{self, Write};
+use std::path::Path;
 
 pub async fn run(
     repo: RepoArgs,
@@ -16,6 +21,9 @@ pub async fn run(
     stream: bool,
 ) -> Result<()> {
     let repo_root = repo.repo_root();
+    if stream {
+        return stream_via_http(&repo_root, &query, limit, false, !repo_only).await;
+    }
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
         repo.state_dir_override(),
@@ -32,6 +40,7 @@ pub async fn run(
         libs::LibsIndexer::open_read_only(libs_dir).ok().flatten()
     };
     let web_gate = WebGateConfig::from_env();
+    let plan = WaterfallPlan::new(web_gate, Tier2Config::enabled(), MemoryBudget::default());
     let request = WaterfallRequest {
         request_id: "cli-query",
         query: &query,
@@ -39,11 +48,9 @@ pub async fn run(
         force_web: false,
         indexer: &server,
         libs_indexer: libs_indexer.as_ref(),
-        web_gate: &web_gate,
-        tier2_config: Tier2Config::enabled(),
+        plan,
         tier2_limiter: None,
         memory: None,
-        memory_budget: MemoryBudget::default(),
     };
     let waterfall = run_waterfall(request).await?;
     if stream {
@@ -99,4 +106,133 @@ fn stream_text(text: &str) -> Result<()> {
     }
     writeln!(stdout)?;
     Ok(())
+}
+
+#[derive(Serialize)]
+struct ChatCompletionRequest {
+    model: Option<String>,
+    messages: Vec<ChatMessage>,
+    stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repo_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    docdex: Option<DocdexOptions>,
+}
+
+#[derive(Serialize)]
+struct ChatMessage {
+    role: &'static str,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct DocdexOptions {
+    limit: Option<usize>,
+    force_web: Option<bool>,
+    include_libs: Option<bool>,
+}
+
+pub(crate) async fn stream_via_http(
+    repo_root: &Path,
+    query: &str,
+    limit: usize,
+    force_web: bool,
+    include_libs: bool,
+) -> Result<()> {
+    let config = config::AppConfig::load_default()?;
+    let bind_addr = config.server.http_bind_addr.trim();
+    if bind_addr.is_empty() {
+        anyhow::bail!("server.http_bind_addr is empty; set it in ~/.docdex/config.toml");
+    }
+    let base = if bind_addr.contains("://") {
+        bind_addr.to_string()
+    } else {
+        format!("http://{bind_addr}")
+    };
+    let url = format!("{}/v1/chat/completions", base.trim_end_matches('/'));
+    let repo_id = repo_manager::repo_fingerprint_sha256(repo_root).ok();
+    let payload = ChatCompletionRequest {
+        model: None,
+        messages: vec![ChatMessage {
+            role: "user",
+            content: query.to_string(),
+        }],
+        stream: true,
+        repo_id,
+        docdex: Some(DocdexOptions {
+            limit: Some(limit),
+            force_web: Some(force_web),
+            include_libs: Some(include_libs),
+        }),
+    };
+
+    let client = reqwest::Client::new();
+    let mut request = client.post(url).header(ACCEPT, "text/event-stream").json(&payload);
+    if let Ok(token) = std::env::var("DOCDEX_AUTH_TOKEN") {
+        let trimmed = token.trim();
+        if !trimmed.is_empty() {
+            request = request.header(AUTHORIZATION, format!("Bearer {trimmed}"));
+        }
+    }
+    let response = request.send().await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "docdexd chat stream failed ({status}): {body}; ensure `docdexd serve --repo {}` is running",
+            repo_root.display()
+        );
+    }
+
+    let mut buffer = String::new();
+    let mut stdout = io::stdout();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        for event in drain_sse_events(&mut buffer) {
+            for data in extract_sse_data(&event) {
+                let trimmed = data.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if trimmed == "[DONE]" {
+                    writeln!(stdout)?;
+                    stdout.flush()?;
+                    return Ok(());
+                }
+                let value: serde_json::Value = serde_json::from_str(trimmed)?;
+                if let Some(content) = value.pointer("/choices/0/delta/content").and_then(|v| v.as_str()) {
+                    write!(stdout, "{content}")?;
+                    stdout.flush()?;
+                }
+            }
+        }
+    }
+    writeln!(stdout)?;
+    Ok(())
+}
+
+fn drain_sse_events(buffer: &mut String) -> Vec<String> {
+    let mut events = Vec::new();
+    loop {
+        let Some(pos) = buffer.find("\n\n") else {
+            break;
+        };
+        let event = buffer[..pos].to_string();
+        buffer.drain(..pos + 2);
+        events.push(event);
+    }
+    events
+}
+
+fn extract_sse_data(event: &str) -> Vec<String> {
+    let mut data = Vec::new();
+    for line in event.lines() {
+        let trimmed = line.trim_end();
+        if let Some(payload) = trimmed.strip_prefix("data:") {
+            data.push(payload.trim_start().to_string());
+        }
+    }
+    data
 }

@@ -6,6 +6,7 @@ use anyhow::{anyhow, Context};
 use serde::Deserialize;
 use serde_json::json;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -189,6 +190,77 @@ pub async fn check_reachable(base_url: &str, timeout: Duration) -> Result<(), an
             .with_context(|| format!("connect to ollama at {base_url} (resolved {connect_addr})")),
         Err(_) => Err(anyhow!(
             "connect to ollama timed out after {}ms (base_url {base_url})",
+            timeout.as_millis()
+        )),
+    }
+}
+
+pub async fn list_models(
+    base_url: &str,
+    timeout: Duration,
+) -> Result<HashSet<String>, anyhow::Error> {
+    let client = OllamaClient::new(base_url.to_string())?;
+    let path = if client.path_prefix.is_empty() {
+        "/api/tags".to_string()
+    } else {
+        format!("{}/api/tags", client.path_prefix)
+    };
+    let host_header = client.host_header.clone();
+    let connect_addr = client.connect_addr.clone();
+    let result: Result<Result<HashSet<String>, anyhow::Error>, tokio::time::error::Elapsed> =
+        tokio::time::timeout(timeout, async move {
+            let mut stream = TcpStream::connect(&connect_addr)
+                .await
+                .context("connect to ollama")?;
+            let headers = format!(
+                "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n",
+                host = host_header
+            );
+            stream
+                .write_all(headers.as_bytes())
+                .await
+                .context("write request headers")?;
+            stream.flush().await.ok();
+            let mut raw = Vec::new();
+            stream.read_to_end(&mut raw).await.context("read response")?;
+            let (status_code, response_body) = parse_http_response(&raw)?;
+            if let Some(error_message) = ollama_error_message(&response_body) {
+                return Err(anyhow!("ollama tags request failed: {error_message}"));
+            }
+            if !(200..300).contains(&status_code) {
+                return Err(anyhow!(
+                    "ollama tags request failed (status {status_code})"
+                ));
+            }
+
+            #[derive(Deserialize)]
+            struct TagsResponse {
+                models: Vec<TagsModel>,
+            }
+
+            #[derive(Deserialize)]
+            struct TagsModel {
+                name: String,
+            }
+
+            let parsed: TagsResponse =
+                serde_json::from_slice(&response_body).context("parse ollama tags response")?;
+            let mut models = HashSet::new();
+            for model in parsed.models {
+                let name = model.name.trim();
+                if !name.is_empty() {
+                    models.insert(name.to_string());
+                }
+            }
+            Ok(models)
+        })
+        .await;
+
+    match result {
+        Ok(Ok(models)) => Ok(models),
+        Ok(Err(err)) => Err(err),
+        Err(_) => Err(anyhow!(
+            "ollama tags request timed out after {}ms",
             timeout.as_millis()
         )),
     }

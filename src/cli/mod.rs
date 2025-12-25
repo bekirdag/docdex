@@ -28,10 +28,14 @@ enum Command {
     Serve {
         #[command(flatten)]
         repo: RepoArgs,
-        #[arg(long, default_value = "127.0.0.1")]
-        host: String,
-        #[arg(long, default_value_t = 3210)]
-        port: u16,
+        #[arg(
+            long,
+            value_parser = config::non_empty_string,
+            help = "Bind host (defaults to server.http_bind_addr in config)"
+        )]
+        host: Option<String>,
+        #[arg(long, help = "Bind port (defaults to server.http_bind_addr in config)")]
+        port: Option<u16>,
         #[arg(
             long,
             env = "DOCDEX_EXPOSE",
@@ -300,6 +304,12 @@ enum Command {
     Index {
         #[command(flatten)]
         repo: RepoArgs,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Optional JSON file of libs sources to ingest during indexing"
+        )]
+        libs_sources: Option<PathBuf>,
     },
     /// Ingest a single document file (incremental update).
     Ingest {
@@ -308,9 +318,9 @@ enum Command {
         #[arg(long)]
         file: PathBuf,
     },
-    /// Run an ad-hoc query via CLI (JSON output).
-    #[command(visible_alias = "chat")]
-    Query {
+    /// Run an ad-hoc chat query via CLI (JSON output).
+    #[command(visible_alias = "query")]
+    Chat {
         #[command(flatten)]
         repo: RepoArgs,
         #[arg(short, long)]
@@ -489,6 +499,9 @@ enum Command {
         command: RepoCommand,
     },
     /// Run an MCP (Model Context Protocol) server over stdio.
+    #[command(
+        long_about = "Run an MCP server over stdio. This command launches the companion `docdex-mcp-server` binary; if it is missing, build it with `cargo build -p docdex-mcp-server` or set DOCDEX_MCP_SERVER_BIN to the binary path."
+    )]
     Mcp {
         #[command(flatten)]
         repo: RepoArgs,

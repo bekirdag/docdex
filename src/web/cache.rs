@@ -75,6 +75,15 @@ pub fn write_cache_entry(layout: &StateLayout, url: &str, payload: &[u8]) -> Res
     Ok(entry)
 }
 
+/// Best-effort load of the global state layout for web caching.
+pub fn cache_layout_from_config() -> Option<StateLayout> {
+    let config = config::AppConfig::load_default().ok()?;
+    let base_dir = config.core.global_state_dir?;
+    let layout = StateLayout::new(base_dir);
+    layout.ensure_global_dirs().ok()?;
+    Some(layout)
+}
+
 fn cache_entry_is_fresh(path: &Path, ttl: Duration) -> Result<bool> {
     let metadata = std::fs::metadata(path)
         .with_context(|| format!("stat web cache entry {}", path.display()))?;

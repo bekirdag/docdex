@@ -3,7 +3,7 @@ use crate::error::{AppError, ERR_INVALID_ARGUMENT};
 use crate::index;
 use crate::libs;
 use crate::cli::commands::query;
-use crate::orchestrator::{run_waterfall, MemoryBudget, WaterfallRequest, WebGateConfig};
+use crate::orchestrator::{run_waterfall, MemoryBudget, WaterfallPlan, WaterfallRequest, WebGateConfig};
 use crate::tier2::Tier2Config;
 use crate::util;
 use crate::web;
@@ -27,6 +27,17 @@ pub async fn run_fetch(url: String) -> Result<()> {
     let url = Url::parse(url.trim()).map_err(|err| {
         AppError::new(ERR_INVALID_ARGUMENT, format!("invalid url: {err}"))
     })?;
+    let layout = web::cache::cache_layout_from_config();
+    if let Some(layout) = layout.as_ref() {
+        if let Ok(Some(payload)) =
+            web::cache::read_cache_entry_with_ttl(layout, url.as_str(), config.cache_ttl)
+        {
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                println!("{}", serde_json::to_string_pretty(&value)?);
+                return Ok(());
+            }
+        }
+    }
     let client = reqwest::Client::builder()
         .user_agent(config.user_agent)
         .timeout(config.request_timeout)
@@ -41,6 +52,13 @@ pub async fn run_fetch(url: String) -> Result<()> {
         "status": status.as_u16(),
         "body": body,
     });
+    if let Some(layout) = layout.as_ref() {
+        if config.cache_ttl.as_secs() > 0 {
+            if let Ok(serialized) = serde_json::to_vec(&payload) {
+                let _ = web::cache::write_cache_entry(layout, url.as_str(), &serialized);
+            }
+        }
+    }
     println!("{}", serde_json::to_string_pretty(&payload)?);
     Ok(())
 }
@@ -53,6 +71,9 @@ pub async fn run_rag(
     stream: bool,
 ) -> Result<()> {
     let repo_root = repo.repo_root();
+    if stream {
+        return query::stream_via_http(&repo_root, &query, limit, true, !repo_only).await;
+    }
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
         repo.state_dir_override(),
@@ -69,6 +90,7 @@ pub async fn run_rag(
         libs::LibsIndexer::open_read_only(libs_dir).ok().flatten()
     };
     let web_gate = WebGateConfig::from_env();
+    let plan = WaterfallPlan::new(web_gate, Tier2Config::enabled(), MemoryBudget::default());
     let request = WaterfallRequest {
         request_id: "cli-web-rag",
         query: &query,
@@ -76,11 +98,9 @@ pub async fn run_rag(
         force_web: true,
         indexer: &server,
         libs_indexer: libs_indexer.as_ref(),
-        web_gate: &web_gate,
-        tier2_config: Tier2Config::enabled(),
+        plan,
         tier2_limiter: None,
         memory: None,
-        memory_budget: MemoryBudget::default(),
     };
     let waterfall = run_waterfall(request).await?;
     if stream {

@@ -1,4 +1,4 @@
-use crate::libs::LibSourcesFile;
+use crate::libs::{LibSource, LibSourcesFile};
 use anyhow::Result;
 use regex::Regex;
 use serde::Serialize;
@@ -505,6 +505,58 @@ impl LibsSourceResolver {
                 );
             }
         }
+    }
+}
+
+pub fn resolution_to_sources(
+    resolution: &LibsSourceResolution,
+    include_configured: bool,
+) -> LibSourcesFile {
+    let mut sources: Vec<LibSource> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for entry in &resolution.sources {
+        if entry.eligibility != LibDocSourceEligibility::Eligible {
+            continue;
+        }
+        if !include_configured && entry.source_type == LibDocSourceType::ConfiguredLocalFile {
+            continue;
+        }
+        let source_label = source_label_for(entry.source_type);
+        for path in &entry.paths {
+            let path = path.trim();
+            if path.is_empty() {
+                continue;
+            }
+            let key = format!(
+                "{}|{}|{}|{}",
+                entry.library.trim(),
+                entry.version.as_deref().unwrap_or(""),
+                source_label,
+                path
+            );
+            if !seen.insert(key) {
+                continue;
+            }
+            sources.push(LibSource {
+                library: entry.library.clone(),
+                version: entry.version.clone(),
+                source: source_label.to_string(),
+                path: PathBuf::from(path),
+                title: None,
+            });
+        }
+    }
+    LibSourcesFile { sources }
+}
+
+fn source_label_for(source_type: LibDocSourceType) -> &'static str {
+    match source_type {
+        LibDocSourceType::NodePackageJson => "package.json",
+        LibDocSourceType::PythonRequirementsTxt => "requirements.txt",
+        LibDocSourceType::PythonPyprojectToml => "pyproject.toml",
+        LibDocSourceType::RustCargoToml => "cargo.toml",
+        LibDocSourceType::GoMod => "go.mod",
+        LibDocSourceType::ConfiguredLocalFile => "configured",
     }
 }
 

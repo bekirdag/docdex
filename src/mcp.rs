@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
+use which::which;
 
 const MCP_SERVER_BIN_ENV: &str = "DOCDEX_MCP_SERVER_BIN";
 const MCP_SERVER_BIN_NAME: &str = "docdex-mcp-server";
@@ -55,7 +56,20 @@ pub async fn serve(
 fn resolve_mcp_server_binary() -> Result<PathBuf> {
     if let Ok(path) = std::env::var(MCP_SERVER_BIN_ENV) {
         if !path.trim().is_empty() {
-            return Ok(PathBuf::from(path));
+            let candidate = PathBuf::from(path);
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+            #[cfg(windows)]
+            {
+                let exe = candidate.with_extension("exe");
+                if exe.is_file() {
+                    return Ok(exe);
+                }
+            }
+            return Err(anyhow!(
+                "{MCP_SERVER_BIN_ENV} points to missing MCP server binary; set it to the docdex-mcp-server path"
+            ));
         }
     }
 
@@ -67,7 +81,13 @@ fn resolve_mcp_server_binary() -> Result<PathBuf> {
         }
     }
 
-    Ok(PathBuf::from(MCP_SERVER_BIN_NAME))
+    if let Ok(found) = which(MCP_SERVER_BIN_NAME) {
+        return Ok(found);
+    }
+
+    Err(anyhow!(
+        "docdex-mcp-server not found; build it with `cargo build -p docdex-mcp-server` or set {MCP_SERVER_BIN_ENV} to the binary path"
+    ))
 }
 
 fn sibling_binary(dir: &Path, name: &str) -> Option<PathBuf> {

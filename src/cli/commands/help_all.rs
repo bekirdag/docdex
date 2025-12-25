@@ -13,7 +13,7 @@ pub fn run() -> Result<()> {
         "self-check",
         "index",
         "ingest",
-        "query",
+        "chat",
         "web-search",
         "web-fetch",
         "web-rag",

@@ -162,7 +162,7 @@ Design
 - Per-repo state dirs: `index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`, `impact_graph.json`; all opened lazily on first access.  
 - Global/shared caches: `cache/web/` (HTML \+ cleaned JSON) and `cache/libs/<ecosystem>/<pkg>/`; reused across repos but ingested into per-repo indexes only on demand to avoid bleed.  
 - Repo Manager: maintains registry (path ↔ fingerprint); unknown/unindexed repos return clear errors.  
-- Access contract: CLI/MCP calls must supply `repo_id` or `repo_path`; HTTP defaults to the daemon repo and validates any provided repo id/path. MCP server is per-repo; tools are repo-parameterized.  
+- Access contract: CLI uses `--repo`; MCP tools require `project_root`/`repo_path` (unless `initialize` sets a default) and enforce it matches the MCP server repo; HTTP defaults to the daemon repo and validates any provided repo id/path. MCP server is per-repo; tools are repo-parameterized.  
 - Concurrency: multiple repos are served by running multiple per-repo daemons; operations within a repo serialize per underlying DB/index constraints.  
 - Security/privacy: data never leaves repo scope; no cross-repo memory/DAG queries; bound to 127.0.0.1 by default with optional token when exposed. No telemetry.  
 - Observability: not requested in PDR.  
@@ -434,7 +434,7 @@ Routes each query through a tiered pipeline—local → web → cognition—base
 
 **Flow (textual sequence)**
 
-1) Receive query (CLI/HTTP/MCP) with repo selection; CLI/MCP require `repo_id/path`, HTTP defaults to the daemon repo and validates any provided repo id. Resolve RepoContext (paths, indexes, caches) and token budget.  
+1) Receive query (CLI/HTTP/MCP) with repo selection; CLI uses `--repo`, MCP tools require `project_root`/`repo_path` unless `initialize` sets a default, HTTP defaults to the daemon repo and validates any provided repo id. Resolve RepoContext (paths, indexes, caches) and token budget.  
 2) Tier 1 Local: query Tantivy source index \+ repo `libs_index`; optional local rerank. If top score ≥ threshold, proceed to prompt assembly.  
 3) Gate: if score \< threshold or forced web, proceed to Tier 2\.  
 4) Tier 2 Web: DiscoveryService (DuckDuckGo HTML, ≥2s between searches) → ScraperEngine (headless Chrome, readability, ≥1s/domain). Cache raw/cleaned under `cache/web`; ingest snippets per repo.  
@@ -809,13 +809,13 @@ Docdex v2.0 exposes one local-first set of surfaces (CLI, HTTP, MCP) per machine
 
 ### HTTP API
 
-- Endpoints: `POST /v1/chat/completions` (OpenAI-compatible) and `GET /v1/graph/impact?repo_id=<id>&file=<path>`.  
+- Endpoints: `POST /v1/chat/completions` (OpenAI-compatible) and `GET /v1/graph/impact?repo_id=<id>&file=<path>` (handler in `src/api/v1/graph.rs`, routed from `src/search/mod.rs`).  
 - Repo routing: repo provided via body/header/query; missing/unknown repo is an error. Waterfall and token budgeting mirror CLI behavior; responses stream.  
 - Security: local bind by default; token required when exposed; no telemetry or paid API usage.
 
 ### MCP Server
 
-- Single MCP server (`docdexd mcp`) serving all repos; tools require `project_root` (repo path).  
+- Single MCP server (`docdexd mcp`) serving all repos; tools require `project_root`/`repo_path` unless `initialize` sets a default.  
 - Tools: `docdex_search`, `docdex_web_research`, `docdex_memory_save`, `docdex_memory_recall`; errors on unknown/unindexed repo.  
 - Lifecycle: runs alongside HTTP within the daemon; no per-repo servers.
 
@@ -963,7 +963,7 @@ Intent: per-repo MCP server surface (`docdexd mcp`) exposing repo-scoped tools f
 Scope and components
 
 - Surface: one MCP server per per-repo daemon. Enabled via `[server] enable_mcp=true`; inherits daemon bind defaults (127.0.0.1 unless `--expose` with token auth).  
-- Tools (`project_root` optional for per-repo daemon; validated if provided):  
+- Tools (`project_root`/`repo_path` required for MCP calls unless `initialize` sets a default; validated to match the server repo):  
   - `docdex_search`: Tier-1 local (Tantivy \+ libs\_index) search; returns ranked snippets with source metadata.  
   - `docdex_web_research`: Waterfall gate checks `web_trigger_threshold`; on low confidence or explicit force, performs DDG discovery \+ guarded headless Chrome fetch \+ readability; ingests cache per repo before responding.  
   - `docdex_memory_save`: persists text \+ metadata into per-repo `memory.db` (sqlite-vec).  
@@ -973,7 +973,7 @@ Scope and components
 
 Behavior and constraints
 
-- Repo scoping: repo arg required unless the daemon default is used; Repo Manager guards isolation.  
+- Repo scoping: MCP tools require `project_root`/`repo_path` unless `initialize` sets a default; Repo Manager guards isolation.  
 - Local-first: web tier only on confidence drop (\<`web_trigger_threshold`) or explicit request; DDG HTML \+ headless Chrome with rate limits (≥2s search, ≥1s fetch) and browser guard to avoid zombies.  
 - Security: default localhost bind; `--expose` requires token on MCP requests; no telemetry or paid APIs.  
 - Reliability: startup `docdexd check` validates MCP enabled, config perms, Ollama, Chrome, and repo registry; clear failures if dependencies missing.  

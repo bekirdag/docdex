@@ -1,5 +1,5 @@
 use crate::audit;
-use crate::config::RepoArgs;
+use crate::config::{self, RepoArgs};
 use crate::daemon;
 use crate::error::StartupError;
 use crate::hardware;
@@ -8,13 +8,14 @@ use crate::search;
 use crate::web;
 use anyhow::Result;
 use std::path::PathBuf;
+use std::net::SocketAddr;
 use tracing::info;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     repo: RepoArgs,
-    host: String,
-    port: u16,
+    host: Option<String>,
+    port: Option<u16>,
     expose: bool,
     log: String,
     tls_cert: Option<PathBuf>,
@@ -48,6 +49,11 @@ pub async fn run(
     unshare_net: bool,
     allow_ip: Vec<String>,
 ) -> Result<()> {
+    let config = config::AppConfig::load_default().map_err(|err| {
+        StartupError::new("startup_config_invalid", format!("failed to load config: {err}"))
+            .with_hint("Ensure ~/.docdex is writable and config.toml is valid.")
+    })?;
+    let (host, port) = resolve_bind_addr(host, port, &config)?;
     if let Some(ref dir) = chroot_dir {
         daemon::enter_chroot(dir).map_err(|err| {
             StartupError::new("startup_state_invalid", err.to_string())
@@ -151,9 +157,31 @@ pub async fn run(
         run_as_gid,
         unshare_net,
         enable_memory,
+        config.llm.provider.clone(),
         embedding_base_url,
         embedding_model,
         embedding_timeout_ms,
     )
     .await
+}
+
+fn resolve_bind_addr(
+    host: Option<String>,
+    port: Option<u16>,
+    config: &config::AppConfig,
+) -> Result<(String, u16)> {
+    if let (Some(host), Some(port)) = (host, port) {
+        return Ok((host, port));
+    }
+    let bind_addr = config.server.http_bind_addr.trim();
+    let addr: SocketAddr = bind_addr.parse().map_err(|err| {
+        StartupError::new(
+            "startup_config_invalid",
+            format!("invalid server.http_bind_addr `{bind_addr}`: {err}"),
+        )
+        .with_hint("Use <ip>:<port> (e.g., 127.0.0.1:3210) or override with --host/--port.")
+    })?;
+    let default_host = addr.ip().to_string();
+    let default_port = addr.port();
+    Ok((host.unwrap_or(default_host), port.unwrap_or(default_port)))
 }

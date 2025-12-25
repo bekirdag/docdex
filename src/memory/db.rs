@@ -1,17 +1,21 @@
-use crate::memory::ops::{cosine_similarity, MemoryCandidate, MemoryItem};
+use crate::memory::ops::{MemoryCandidate, MemoryItem};
 use anyhow::{Context, Result};
 use fs4::FileExt;
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::Once;
 use tracing::warn;
 use uuid::Uuid;
 
 const MEMORY_WARN_ROWS: i64 = 50_000;
+const MEMORY_PRUNE_TARGET_ROWS: i64 = 45_000;
+const MEMORY_META_EMBED_DIM: &str = "embedding_dim";
 static MEMORY_WARNED: AtomicBool = AtomicBool::new(false);
+static SQLITE_VEC_INIT: Once = Once::new();
 
 #[derive(Clone)]
 pub struct MemoryStore {
@@ -34,7 +38,8 @@ impl MemoryStore {
         }
     }
 
-    fn open_connection(&self) -> Result<Connection> {
+    fn open_connection(&self, embedding_dim: Option<usize>) -> Result<(Connection, Option<usize>)> {
+        ensure_vec_extension_loaded()?;
         let conn = Connection::open_with_flags(
             &self.path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -42,17 +47,8 @@ impl MemoryStore {
                 | OpenFlags::SQLITE_OPEN_FULL_MUTEX,
         )
         .with_context(|| format!("open {}", self.path.display()))?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS memories(
-                id TEXT PRIMARY KEY,
-                content TEXT NOT NULL,
-                embedding BLOB NOT NULL,
-                created_at INTEGER NOT NULL,
-                metadata TEXT NOT NULL
-            )",
-        )
-        .context("ensure memory schema")?;
-        Ok(conn)
+        let stored_dim = ensure_schema(&conn, embedding_dim)?;
+        Ok((conn, stored_dim))
     }
 
     pub fn store(
@@ -67,7 +63,7 @@ impl MemoryStore {
         let id = Uuid::new_v4();
         let embedding_blob = encode_embedding(embedding);
         let metadata_json = serde_json::to_string(&metadata).context("serialize metadata")?;
-        let conn = self.open_connection()?;
+        let (conn, _) = self.open_connection(Some(embedding.len()))?;
         conn.execute(
             "INSERT INTO memories (id, content, embedding, created_at, metadata)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -80,7 +76,14 @@ impl MemoryStore {
             ],
         )
         .context("insert memory record")?;
-        self.warn_if_large(&conn)?;
+        let rowid = conn.last_insert_rowid();
+        let embedding_json = embedding_to_json(embedding).context("serialize embedding")?;
+        conn.execute(
+            "INSERT INTO memory_vec (rowid, embedding) VALUES (?1, ?2)",
+            params![rowid, embedding_json],
+        )
+        .context("insert memory vector")?;
+        self.enforce_guardrails(&conn)?;
         Ok((id, created_at_ms))
     }
 
@@ -91,35 +94,44 @@ impl MemoryStore {
     ) -> Result<Vec<MemoryCandidate>> {
         let _guard = self.lock.lock();
         let _file_lock = self.lock_shared()?;
-        let conn = self.open_connection()?;
+        let (conn, stored_dim) = self.open_connection(None)?;
+        let Some(expected_dim) = stored_dim else {
+            return Ok(Vec::new());
+        };
+        if expected_dim != query_embedding.len() {
+            return Err(anyhow::anyhow!(
+                "embedding dimension mismatch: expected {expected_dim}, got {}",
+                query_embedding.len()
+            ));
+        }
+        let query_json = embedding_to_json(query_embedding).context("serialize query embedding")?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, content, embedding, created_at, metadata
-                 FROM memories",
+                "SELECT m.id, m.content, m.created_at, m.metadata, v.distance
+                 FROM memory_vec v
+                 JOIN memories m ON m.rowid = v.rowid
+                 WHERE v.embedding MATCH ?1
+                 ORDER BY v.distance ASC, m.created_at DESC, m.id ASC
+                 LIMIT ?2",
             )
             .context("prepare memory recall")?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map(params![query_json, top_k as i64], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, Vec<u8>>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, String>(4)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, f64>(4)?,
             ))
         })?;
         let mut scored: Vec<MemoryCandidate> = Vec::new();
 
         for row in rows {
-            let (id, content, embedding_blob, created_at_ms, metadata_raw) = match row {
+            let (id, content, created_at_ms, metadata_raw, distance) = match row {
                 Ok(row) => row,
                 Err(_) => continue,
             };
-            let Some(embedding) = decode_embedding(&embedding_blob) else {
-                continue;
-            };
-            let Some(score) = cosine_similarity(query_embedding, &embedding) else {
-                continue;
-            };
+            let score = distance_to_score(distance);
             let metadata_value =
                 serde_json::from_str::<Value>(&metadata_raw).unwrap_or_else(|_| json!({}));
             let metadata = match metadata_value {
@@ -135,12 +147,6 @@ impl MemoryStore {
             });
         }
 
-        scored.sort_by(|a, b| {
-            b.score
-                .total_cmp(&a.score)
-                .then_with(|| b.created_at_ms.cmp(&a.created_at_ms))
-                .then_with(|| a.id.cmp(&b.id))
-        });
         scored.truncate(top_k.max(1));
         Ok(scored)
     }
@@ -165,24 +171,197 @@ impl MemoryStore {
         FileLock::acquire(&self.lock_path, false)
     }
 
-    fn warn_if_large(&self, conn: &Connection) -> Result<()> {
-        if MEMORY_WARNED.load(Ordering::Relaxed) {
-            return Ok(());
-        }
+    fn enforce_guardrails(&self, conn: &Connection) -> Result<()> {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
             .unwrap_or(0);
-        if count >= MEMORY_WARN_ROWS {
-            if !MEMORY_WARNED.swap(true, Ordering::Relaxed) {
-                warn!(
-                    target: "docdexd",
-                    count,
-                    "memory.db exceeds {MEMORY_WARN_ROWS} rows; consider pruning or compaction"
-                );
-            }
+        if count >= MEMORY_WARN_ROWS && !MEMORY_WARNED.swap(true, Ordering::Relaxed) {
+            warn!(
+                target: "docdexd",
+                count,
+                "memory.db exceeds {MEMORY_WARN_ROWS} rows; pruning/compaction guardrail enabled"
+            );
+        }
+        if count > MEMORY_WARN_ROWS {
+            let target_rows = MEMORY_PRUNE_TARGET_ROWS
+                .min(MEMORY_WARN_ROWS)
+                .max(1);
+            let to_delete = count.saturating_sub(target_rows).max(1);
+            let tx = conn.transaction().context("start memory prune transaction")?;
+            tx.execute(
+                "DELETE FROM memories
+                 WHERE rowid IN (
+                    SELECT rowid FROM memories
+                    ORDER BY created_at ASC, rowid ASC
+                    LIMIT ?1
+                 )",
+                params![to_delete],
+            )
+            .context("prune memory rows")?;
+            tx.execute(
+                "DELETE FROM memory_vec WHERE rowid NOT IN (SELECT rowid FROM memories)",
+                [],
+            )
+            .context("prune memory vector rows")?;
+            tx.commit().context("commit memory prune")?;
+            let _ = conn.execute_batch("PRAGMA optimize;");
+            warn!(
+                target: "docdexd",
+                count,
+                pruned = to_delete,
+                remaining = target_rows,
+                "memory.db pruned to enforce guardrail"
+            );
         }
         Ok(())
     }
+}
+
+fn ensure_vec_extension_loaded() -> Result<()> {
+    SQLITE_VEC_INIT.call_once(|| unsafe {
+        rusqlite::ffi::sqlite3_auto_extension(Some(sqlite_vec::sqlite3_vec_init));
+    });
+    Ok(())
+}
+
+fn ensure_schema(conn: &Connection, embedding_dim: Option<usize>) -> Result<Option<usize>> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS memories(
+            id TEXT PRIMARY KEY,
+            content TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            created_at INTEGER NOT NULL,
+            metadata TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS memory_meta(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );",
+    )
+    .context("ensure memory schema")?;
+
+    let stored_dim = load_embedding_dim(conn)?;
+    if let (Some(stored), Some(requested)) = (stored_dim, embedding_dim) {
+        if stored != requested {
+            return Err(anyhow::anyhow!(
+                "embedding dimension mismatch: stored {stored}, requested {requested}"
+            ));
+        }
+    }
+
+    let inferred = if stored_dim.is_some() {
+        stored_dim
+    } else if embedding_dim.is_some() {
+        embedding_dim
+    } else {
+        infer_embedding_dim(conn)?
+    };
+
+    if let Some(dim) = inferred {
+        ensure_vec_table(conn, dim)?;
+        if stored_dim.is_none() {
+            conn.execute(
+                "INSERT OR REPLACE INTO memory_meta (key, value) VALUES (?1, ?2)",
+                params![MEMORY_META_EMBED_DIM, dim.to_string()],
+            )
+            .context("store embedding dimension")?;
+        }
+        backfill_vec_table(conn, dim)?;
+    }
+
+    Ok(inferred)
+}
+
+fn load_embedding_dim(conn: &Connection) -> Result<Option<usize>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT value FROM memory_meta WHERE key = ?1",
+            params![MEMORY_META_EMBED_DIM],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("read embedding dimension")?;
+    match raw {
+        None => Ok(None),
+        Some(value) => value
+            .trim()
+            .parse::<usize>()
+            .map(Some)
+            .context("parse embedding dimension"),
+    }
+}
+
+fn infer_embedding_dim(conn: &Connection) -> Result<Option<usize>> {
+    let maybe_blob: Option<Vec<u8>> = conn
+        .query_row("SELECT embedding FROM memories LIMIT 1", [], |row| row.get(0))
+        .optional()
+        .context("inspect existing embeddings")?;
+    let Some(blob) = maybe_blob else {
+        return Ok(None);
+    };
+    Ok(decode_embedding(&blob).map(|embedding| embedding.len()))
+}
+
+fn ensure_vec_table(conn: &Connection, embedding_dim: usize) -> Result<()> {
+    let statement = format!(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS memory_vec USING vec0(embedding float[{embedding_dim}])"
+    );
+    conn.execute_batch(&statement)
+        .context("ensure memory vector table")?;
+    Ok(())
+}
+
+fn backfill_vec_table(conn: &Connection, embedding_dim: usize) -> Result<()> {
+    let mem_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
+        .unwrap_or(0);
+    if mem_count == 0 {
+        return Ok(());
+    }
+    let vec_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM memory_vec", [], |row| row.get(0))
+        .unwrap_or(0);
+    if vec_count >= mem_count {
+        return Ok(());
+    }
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT rowid, embedding FROM memories
+             WHERE rowid NOT IN (SELECT rowid FROM memory_vec)",
+        )
+        .context("prepare memory vec backfill")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+    })?;
+    for row in rows {
+        let (rowid, blob) = match row {
+            Ok(row) => row,
+            Err(_) => continue,
+        };
+        let Some(embedding) = decode_embedding(&blob) else {
+            continue;
+        };
+        if embedding.len() != embedding_dim {
+            continue;
+        }
+        let embedding_json = embedding_to_json(&embedding).context("serialize embedding")?;
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_vec (rowid, embedding) VALUES (?1, ?2)",
+            params![rowid, embedding_json],
+        )
+        .context("backfill memory vector")?;
+    }
+    Ok(())
+}
+
+fn embedding_to_json(embedding: &[f32]) -> Result<String> {
+    serde_json::to_string(embedding).context("serialize embedding")
+}
+
+fn distance_to_score(distance: f64) -> f32 {
+    let score = 1.0 / (1.0 + distance.max(0.0));
+    score as f32
 }
 
 struct FileLock {

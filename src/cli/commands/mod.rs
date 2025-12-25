@@ -105,9 +105,9 @@ pub async fn dispatch(command: super::Command) -> Result<()> {
         } => self_check::run(repo, terms, limit, include_default_patterns).await,
         super::Command::LlmList => llm::run_list(),
         super::Command::LlmSetup { ollama_path } => llm::run_setup(ollama_path),
-        super::Command::Index { repo } => index::run_index(repo).await,
+        super::Command::Index { repo, libs_sources } => index::run_index(repo, libs_sources).await,
         super::Command::Ingest { repo, file } => index::run_ingest(repo, file).await,
-        super::Command::Query {
+        super::Command::Chat {
             repo,
             query,
             limit,

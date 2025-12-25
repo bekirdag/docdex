@@ -137,7 +137,7 @@ Based on the provided SDS and the current file structure of `docdex` v0.1.10, he
 * **HTTP API (`src/api/http`)**
 * **Updates:**
 * **OpenAI Compatibility:** Ensure `POST /v1/chat/completions` matches OpenAI spec exactly. Repo ID is optional for per-repo daemons (header/body/query), and if supplied must match the daemon repo. Implemented in `src/api/v1/chat.rs`, routed from `src/search/mod.rs`.
-* **New Endpoint:** `GET /v1/graph/impact` for the dependency graph (currently routed from `src/search/mod.rs`).
+* **New Endpoint:** `GET /v1/graph/impact` for the dependency graph (implemented in `src/api/v1/graph.rs`, routed from `src/search/mod.rs`).
 * **Auth:** Middleware to check Bearer token if `--expose` is active (currently in `src/search/mod.rs`; `src/api/http` re-exports the router).
 
 
@@ -145,8 +145,8 @@ Based on the provided SDS and the current file structure of `docdex` v0.1.10, he
 
 * **MCP Server (`src/api/mcp`, `crates/mcp-server`)**
 * **Updates:**
-* **Per-Repo Server:** Run one MCP server per repo; `project_root` is optional to use the daemon default, and if supplied must match the daemon repo.
-* **Tool Params:** Update all tools (`docdex_search`, etc.) to require `project_root` as a mandatory argument.
+* **Per-Repo Server:** Run one MCP server per repo; tools require `project_root`/`repo_path` unless `initialize` sets a default, and it must match the daemon repo.
+* **Tool Params:** Update all tools (`docdex_search`, etc.) to accept `project_root` or `repo_path` as the repo selector (default from `initialize` allowed).
 * **New Tools:** `docdex_web_research`, `docdex_memory_save`, `docdex_memory_recall`.
 
 
@@ -669,7 +669,7 @@ src
 │   ├── mod.rs
 │   └── v1
 │       ├── chat.rs         <-- UPDATED: OpenAI-compatible `/chat/completions` handler
-│       ├── graph.rs        <-- NEW: Impact graph endpoint (`/v1/graph/impact`)
+│       ├── graph.rs        <-- Impact graph endpoint (`/v1/graph/impact`)
 │       ├── mod.rs
 │       └── models.rs       <-- NEW: Request/Response structs (OpenAI Spec)
 ├── audit.rs
@@ -729,10 +729,10 @@ src
 2. **`src/api/v1/chat.rs`**: This file defines the OpenAI-compatible request/response structs inline and wires chat completions to the Waterfall.
 
 
-3. **`src/search/mod.rs`**: The router still owns most HTTP handlers, including `GET /v1/graph/impact` and the middleware pipeline.
+3. **`src/search/mod.rs`**: The router owns the HTTP handlers and middleware pipeline; `GET /v1/graph/impact` is routed from here.
 
 
-4. **`src/api/v1/graph.rs`**: Not yet split out; `GET /v1/graph/impact` remains in `src/search/mod.rs`.
+4. **`src/api/v1/graph.rs`**: Impact graph handler implementation for `GET /v1/graph/impact`.
 
 Based on **Step 9** ("CLI: Add `check`, `libs`, `dag`, `web-*` commands"), the `src/cli/commands` directory will expand significantly. This step exposes the new daemon capabilities directly to the user through the command line.
 
@@ -845,7 +845,7 @@ src
 │   │   └── mod.rs
 │   └── v1
 │       ├── chat.rs         <-- UPDATED: OpenAI-compatible `/chat/completions` handler
-│       ├── graph.rs        <-- NEW: Impact graph endpoint (`/v1/graph/impact`)
+│       ├── graph.rs        <-- Impact graph endpoint (`/v1/graph/impact`)
 │       ├── mod.rs
 │       └── models.rs       <-- NEW: Request/Response structs (OpenAI Spec)
 ├── audit.rs

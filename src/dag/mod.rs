@@ -3,12 +3,11 @@ pub mod repo;
 pub mod view;
 
 use crate::dag::repo as dag_repo;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use fs4::FileExt;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::fs;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
@@ -26,7 +25,6 @@ pub enum DagStatus {
 #[serde(rename_all = "snake_case")]
 pub enum DagDataSource {
     Sqlite,
-    JsonFile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,8 +86,6 @@ pub fn load_session_dag(
     }
 
     let sqlite_path = state_paths.dag_path().to_path_buf();
-    let json_path = repo_dir.join("dag").join(format!("{session_id}.json"));
-
     if !repo_dir.exists() {
         warnings.push(format!(
             "No cached DAG directory for repo fingerprint {} (searched {}).",
@@ -136,49 +132,11 @@ pub fn load_session_dag(
         }
     }
 
-    if json_path.exists() {
-        match load_from_json(&json_path) {
-            Ok(nodes) if !nodes.is_empty() => {
-                return Ok(DagLoadResult {
-                    repo_root: repo_root.display().to_string(),
-                    repo_fingerprint,
-                    session_id: session_id.to_string(),
-                    status: DagStatus::Found,
-                    nodes,
-                    source: Some(DagDataSource::JsonFile),
-                    message: None,
-                    warnings,
-                })
-            }
-            Ok(_) => {
-                warnings.push(format!(
-                    "Found JSON trace at {} but it contained no nodes.",
-                    json_path.display()
-                ));
-            }
-            Err(err) => {
-                let message = format_error(&json_path, &err);
-                warnings.push(message.clone());
-                return Ok(DagLoadResult {
-                    repo_root: repo_root.display().to_string(),
-                    repo_fingerprint,
-                    session_id: session_id.to_string(),
-                    status: DagStatus::Error,
-                    nodes: vec![],
-                    source: Some(DagDataSource::JsonFile),
-                    message: Some(message),
-                    warnings,
-                });
-            }
-        }
-    }
-
     if warnings.is_empty() {
         warnings.push(format!(
-            "No cached DAG found for session {} (looked for {} and {}).",
+            "No cached DAG found for session {} (looked for {}).",
             session_id,
-            sqlite_path.display(),
-            json_path.display()
+            sqlite_path.display()
         ));
     }
 
@@ -268,40 +226,6 @@ impl Drop for DagReadLock {
     }
 }
 
-fn load_from_json(path: &Path) -> Result<Vec<DagNode>> {
-    let data = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    let value: Value =
-        serde_json::from_str(&data).with_context(|| format!("parse {}", path.display()))?;
-    let nodes = if let Some(array) = value.as_array() {
-        array.clone()
-    } else {
-        value
-            .get("nodes")
-            .and_then(|v| v.as_array().cloned())
-            .ok_or_else(|| anyhow!("JSON DAG is missing nodes array"))?
-    };
-    let mut result = Vec::new();
-    for (idx, node) in nodes.into_iter().enumerate() {
-        let node_type = node
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        let payload = node.get("payload").cloned().unwrap_or(Value::Null);
-        let created_at = node.get("created_at").and_then(|v| v.as_i64());
-        let id = node
-            .get("id")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(idx as i64);
-        result.push(DagNode {
-            id,
-            node_type: node_type.to_string(),
-            payload,
-            created_at,
-        });
-    }
-    Ok(result)
-}
-
 fn format_error(path: &Path, err: impl std::fmt::Display) -> String {
     format!("Failed to load DAG from {}: {err}", path.display())
 }
@@ -309,6 +233,7 @@ fn format_error(path: &Path, err: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn sqlite_trace_loaded() -> Result<()> {
@@ -346,35 +271,6 @@ mod tests {
     }
 
     #[test]
-    fn json_trace_loaded_without_cross_repo_leak() -> Result<()> {
-        let temp = tempfile::TempDir::new()?;
-        let repo_a = temp.path().join("repo_a");
-        let repo_b = temp.path().join("repo_b");
-        fs::create_dir_all(&repo_a)?;
-        fs::create_dir_all(&repo_b)?;
-        let state_root = temp.path().join("state");
-
-        let fp_a = fingerprint_repo(&repo_a)?;
-        let dag_dir = state_root.join("repos").join(fp_a).join("dag");
-        fs::create_dir_all(&dag_dir)?;
-        fs::write(
-            dag_dir.join("session-1.json"),
-            r#"{ "nodes": [ { "id": 7, "type": "Thought", "payload": {"note": "draft"} } ] }"#,
-        )?;
-
-        let found = load_session_dag(&repo_a, "session-1", Some(state_root.clone()))?;
-        assert_eq!(found.status, DagStatus::Found);
-        assert_eq!(found.source, Some(DagDataSource::JsonFile));
-        assert_eq!(found.nodes.len(), 1);
-        assert_eq!(found.nodes[0].id, 7);
-
-        let missing = load_session_dag(&repo_b, "session-1", Some(state_root))?;
-        assert_eq!(missing.status, DagStatus::Missing);
-        assert_eq!(missing.message.as_deref(), Some(NO_TRACE_MESSAGE));
-        Ok(())
-    }
-
-    #[test]
     fn missing_trace_reports_canonical_message() -> Result<()> {
         let temp = tempfile::TempDir::new()?;
         let repo = temp.path().join("repo_missing");
@@ -382,26 +278,6 @@ mod tests {
         let result = load_session_dag(&repo, "unknown", Some(temp.path().join("state")))?;
         assert_eq!(result.status, DagStatus::Missing);
         assert_eq!(result.message.as_deref(), Some(NO_TRACE_MESSAGE));
-        Ok(())
-    }
-
-    #[test]
-    fn invalid_json_sets_error_status() -> Result<()> {
-        let temp = tempfile::TempDir::new()?;
-        let repo = temp.path().join("repo_invalid");
-        fs::create_dir_all(&repo)?;
-        let state_root = temp.path().join("state");
-        let fp = fingerprint_repo(&repo)?;
-        let dag_dir = state_root.join("repos").join(fp).join("dag");
-        fs::create_dir_all(&dag_dir)?;
-        fs::write(dag_dir.join("broken.json"), "not-json")?;
-
-        let result = load_session_dag(&repo, "broken", Some(state_root))?;
-        assert_eq!(result.status, DagStatus::Error);
-        assert!(result
-            .message
-            .unwrap_or_default()
-            .contains("Failed to load DAG"));
         Ok(())
     }
 
@@ -418,23 +294,4 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn empty_json_trace_reports_warning() -> Result<()> {
-        let temp = tempfile::TempDir::new()?;
-        let repo = temp.path().join("repo_empty");
-        fs::create_dir_all(&repo)?;
-        let state_root = temp.path().join("state");
-        let fp = fingerprint_repo(&repo)?;
-        let dag_dir = state_root.join("repos").join(fp).join("dag");
-        fs::create_dir_all(&dag_dir)?;
-        fs::write(dag_dir.join("empty.json"), r#"{ "nodes": [] }"#)?;
-        let result = load_session_dag(&repo, "empty", Some(state_root))?;
-        assert_eq!(result.status, DagStatus::Missing);
-        assert_eq!(result.message.as_deref(), Some(NO_TRACE_MESSAGE));
-        assert!(result
-            .warnings
-            .iter()
-            .any(|w| w.contains("contained no nodes") || w.contains("No cached DAG")));
-        Ok(())
-    }
 }

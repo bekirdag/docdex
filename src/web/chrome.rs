@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Context, Result};
 use futures::{SinkExt, StreamExt};
-use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -58,6 +57,7 @@ pub async fn fetch_dom(url: &Url, config: &ChromeFetchConfig) -> Result<ChromeFe
     command.arg("--no-first-run");
     command.arg("--no-default-browser-check");
     command.arg("--incognito");
+    command.arg("--remote-allow-origins=*");
     command.arg(format!(
         "--user-data-dir={}",
         user_data_dir.path().display()
@@ -82,7 +82,7 @@ pub async fn fetch_dom(url: &Url, config: &ChromeFetchConfig) -> Result<ChromeFe
         .await
         .map_err(|err| anyhow!("chrome launch failed: {err}"))?;
     let target_url = url.clone();
-    let fetch_result = session
+    let cdp_result = session
         .run_scoped(
             timeout,
             std::future::pending::<()>(),
@@ -90,20 +90,70 @@ pub async fn fetch_dom(url: &Url, config: &ChromeFetchConfig) -> Result<ChromeFe
                 let _guard = user_data_dir;
                 let deadline = Instant::now() + timeout;
                 let port = wait_for_devtools_port(_guard.path(), remaining(deadline)).await?;
-                let ws_url = create_cdp_target(port).await?;
+                let ws_url = create_cdp_target(port, remaining(deadline)).await?;
                 let result = fetch_dom_via_cdp(&ws_url, &target_url, remaining(deadline)).await?;
                 Ok(result)
             },
         )
-        .await
-        .map_err(|err| anyhow!("chrome fetch failed: {err}"))?;
-    Ok(fetch_result)
+        .await;
+    match cdp_result {
+        Ok(result) => Ok(result),
+        Err(err) => {
+            let fallback = fetch_dom_dump_dom(url, config).await;
+            if let Ok(result) = fallback {
+                return Ok(result);
+            }
+            Err(anyhow!("chrome fetch failed: {err}"))
+        }
+    }
 }
 
-#[derive(Debug, Deserialize)]
-struct DevtoolsTarget {
-    #[serde(rename = "webSocketDebuggerUrl")]
-    web_socket_debugger_url: String,
+async fn fetch_dom_dump_dom(url: &Url, config: &ChromeFetchConfig) -> Result<ChromeFetchResult> {
+    let mut command = Command::new(&config.chrome_binary);
+    let user_data_dir = TempDir::new().context("create chrome user data directory")?;
+    if config.headless {
+        command.arg("--headless=new");
+    }
+    command.arg("--disable-gpu");
+    command.arg("--disable-extensions");
+    command.arg("--disable-dev-shm-usage");
+    command.arg("--no-sandbox");
+    command.arg("--no-first-run");
+    command.arg("--no-default-browser-check");
+    command.arg("--incognito");
+    command.arg("--remote-allow-origins=*");
+    command.arg(format!(
+        "--user-data-dir={}",
+        user_data_dir.path().display()
+    ));
+    command.arg(format!("--user-agent={}", config.user_agent));
+    command.arg("--virtual-time-budget=15000");
+    command.arg("--dump-dom");
+    command.arg(url.as_str());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::null());
+
+    let timeout = if config.timeout.is_zero() {
+        Duration::from_secs(15)
+    } else {
+        config.timeout
+    };
+    let session = BrowserSession::spawn(command, BrowserSessionOptions::default())
+        .await
+        .map_err(|err| anyhow!("chrome launch failed: {err}"))?;
+    let output = session
+        .wait_for_output(timeout)
+        .await
+        .map_err(|err| anyhow!("chrome dump-dom failed: {err}"))?;
+    let html = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if html.is_empty() {
+        return Err(anyhow!("chrome dump-dom returned empty HTML"));
+    }
+    Ok(ChromeFetchResult {
+        html,
+        status: None,
+        final_url: Some(url.to_string()),
+    })
 }
 
 async fn wait_for_devtools_port(dir: &Path, timeout: Duration) -> Result<u16> {
@@ -131,15 +181,84 @@ fn remaining(deadline: Instant) -> Duration {
         .unwrap_or_else(|| Duration::from_millis(0))
 }
 
-async fn create_cdp_target(port: u16) -> Result<String> {
-    let endpoint = format!("http://127.0.0.1:{port}/json/new");
-    let target: DevtoolsTarget = reqwest::get(endpoint)
+async fn create_cdp_target(port: u16, timeout: Duration) -> Result<String> {
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .context("build devtools client")?;
+    let endpoint_new = format!("http://127.0.0.1:{port}/json/new");
+    let endpoint_list = format!("http://127.0.0.1:{port}/json/list");
+    let start = Instant::now();
+    let mut last_err: Option<anyhow::Error> = None;
+    loop {
+        match fetch_devtools_ws_url(&client, &endpoint_new).await {
+            Ok(Some(url)) => return Ok(url),
+            Ok(None) => {}
+            Err(err) => last_err = Some(err),
+        }
+        match fetch_devtools_ws_url(&client, &endpoint_list).await {
+            Ok(Some(url)) => return Ok(url),
+            Ok(None) => {}
+            Err(err) => last_err = Some(err),
+        }
+        if start.elapsed() >= timeout {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if start.elapsed() >= timeout {
+            break;
+        }
+    }
+    if let Some(err) = last_err.take() {
+        return Err(err);
+    }
+    Err(anyhow!("devtools websocket not available within {timeout:?}"))
+}
+
+async fn fetch_devtools_ws_url(
+    client: &reqwest::Client,
+    endpoint: &str,
+) -> Result<Option<String>> {
+    let resp = client
+        .get(endpoint)
+        .send()
         .await
-        .context("create devtools target")?
-        .json()
+        .with_context(|| format!("fetch devtools endpoint {endpoint}"))?;
+    let status = resp.status();
+    let body = resp
+        .text()
         .await
-        .context("parse devtools target response")?;
-    Ok(target.web_socket_debugger_url)
+        .with_context(|| format!("read devtools endpoint {endpoint}"))?;
+    if !status.is_success() {
+        return Err(anyhow!(
+            "devtools endpoint {endpoint} failed with status {status}"
+        ));
+    }
+    let value: Value = match serde_json::from_str(&body) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    Ok(extract_ws_url(&value))
+}
+
+fn extract_ws_url(value: &Value) -> Option<String> {
+    if let Some(url) = value
+        .get("webSocketDebuggerUrl")
+        .and_then(Value::as_str)
+    {
+        return Some(url.to_string());
+    }
+    if let Some(items) = value.as_array() {
+        for item in items {
+            if let Some(url) = item
+                .get("webSocketDebuggerUrl")
+                .and_then(Value::as_str)
+            {
+                return Some(url.to_string());
+            }
+        }
+    }
+    None
 }
 
 struct CdpClient {
@@ -161,7 +280,7 @@ impl CdpClient {
         &mut self,
         method: &str,
         params: Value,
-        tracker: Option<&mut NetworkIdleTracker>,
+        mut tracker: Option<&mut NetworkIdleTracker>,
     ) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
@@ -200,7 +319,7 @@ impl CdpClient {
                 }
             }
             if let Some(method) = value.get("method").and_then(Value::as_str) {
-                if let Some(tracker) = tracker {
+                if let Some(tracker) = tracker.as_deref_mut() {
                     tracker.handle(method, value.get("params"));
                 }
             }
@@ -331,38 +450,97 @@ async fn fetch_dom_via_cdp(
         .await?;
 
     let mut tracker = NetworkIdleTracker::new();
-    client
+    let nav_result = client
         .call(
             "Page.navigate",
             json!({ "url": url.as_str() }),
             Some(&mut tracker),
         )
         .await?;
+    if let Some(error_text) = nav_result
+        .get("errorText")
+        .and_then(Value::as_str)
+    {
+        return Err(anyhow!("navigation failed: {error_text}"));
+    }
     client
         .wait_for_network_idle(&mut tracker, timeout)
         .await?;
 
+    let mut html = String::new();
+    let mut final_url = tracker.document_url.clone();
+    let min_text_len = 80usize;
+    let poll_interval = Duration::from_millis(200);
+    let start = Instant::now();
+    loop {
+        let href = eval_string(&mut client, "document.location.href").await?;
+        if final_url.is_none() && !href.trim().is_empty() {
+            final_url = Some(href.clone());
+        }
+        let ready_state = eval_string(&mut client, "document.readyState").await?;
+        let text_len = eval_number(
+            &mut client,
+            "document.body ? document.body.innerText.length : 0",
+        )
+        .await?;
+        let html_value =
+            eval_string(&mut client, "document.documentElement.outerHTML").await?;
+        if !html_value.trim().is_empty() {
+            html = html_value;
+        }
+        let has_text = text_len >= min_text_len;
+        let ready_complete = ready_state == "complete" && href != "about:blank";
+        if has_text || ready_complete {
+            break;
+        }
+        if start.elapsed() >= timeout {
+            break;
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
+    if html.trim().is_empty() {
+        return Err(anyhow!("devtools returned empty HTML"));
+    }
+    Ok(ChromeFetchResult {
+        html,
+        status: tracker.document_status,
+        final_url,
+    })
+}
+
+async fn eval_string(client: &mut CdpClient, expression: &str) -> Result<String> {
     let eval = client
         .call(
             "Runtime.evaluate",
             json!({
-                "expression": "document.documentElement.outerHTML",
+                "expression": expression,
                 "returnByValue": true,
             }),
             None,
         )
         .await?;
-    let value = eval
+    Ok(eval
         .get("result")
         .and_then(|value| value.get("value"))
         .and_then(Value::as_str)
-        .unwrap_or_default();
-    if value.is_empty() {
-        return Err(anyhow!("devtools returned empty HTML"));
-    }
-    Ok(ChromeFetchResult {
-        html: value.to_string(),
-        status: tracker.document_status,
-        final_url: tracker.document_url,
-    })
+        .unwrap_or_default()
+        .to_string())
+}
+
+async fn eval_number(client: &mut CdpClient, expression: &str) -> Result<usize> {
+    let eval = client
+        .call(
+            "Runtime.evaluate",
+            json!({
+                "expression": expression,
+                "returnByValue": true,
+            }),
+            None,
+        )
+        .await?;
+    Ok(eval
+        .get("result")
+        .and_then(|value| value.get("value"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0) as usize)
 }

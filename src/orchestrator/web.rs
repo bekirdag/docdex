@@ -32,6 +32,8 @@ const MAX_WEB_DOC_CHARS: usize = 2000;
 const MAX_WEB_SUMMARY_INPUT_CHARS: usize = 1600;
 const MAX_WEB_SUMMARY_TOKENS: u32 = 256;
 const WEB_SUMMARY_TIMEOUT_MS: u64 = 15_000;
+const MAX_WEB_FALLBACK_EXCERPT_CHARS: usize = 480;
+const MAX_WEB_FALLBACK_EXCERPT_LINES: usize = 4;
 
 const MAX_MATCH_HITS: usize = 3;
 const LOCAL_RELEVANCE_TIMEOUT_MS: u64 = 8_000;
@@ -66,6 +68,9 @@ static STOPWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "using", "was", "we", "what", "when", "where", "who", "why", "with", "you",
         "your",
         "css", "html", "javascript", "js", "plain", "simple",
+        "code", "sample", "samples", "example", "examples", "tutorial", "tutorials",
+        "guide", "guides", "docs", "documentation", "reference", "references",
+        "overview", "intro", "introduction", "getting", "started", "learn", "learning",
     ]
     .into_iter()
     .collect()
@@ -227,6 +232,7 @@ pub fn web_context_from_status(status: &WebDiscoveryStatus) -> Option<Vec<WebFet
         }
         let mut cloned = item.clone();
         cloned.error = None;
+        cloned.debug = None;
         items.push(cloned);
     }
     if items.is_empty() {
@@ -254,6 +260,8 @@ pub struct WebFetchResult {
     pub relevance_score: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -472,7 +480,7 @@ fn build_summary_prompt(query: &str, content: &str, code_blocks: &[String]) -> S
         }
     }
     prompt.push_str(
-        "\nInstructions:\n- Decide if the page is relevant to the query.\n- If relevant and the query asks for code/example, output ONLY the code from the provided code blocks as Markdown fenced code blocks. Do not add or rewrite code.\n- If relevant and not code-focused, output 2-4 bullet points in Markdown.\n- If irrelevant or no relevant code exists, set relevant=false and output empty string.\n\nReturn JSON ONLY in this shape:\n{\"relevant\":true|false,\"score\":0..1,\"kind\":\"summary\"|\"code\",\"output\":\"...\"}\n",
+        "\nInstructions:\n- Decide if the page is relevant to the query.\n- If relevant and the query asks for code/example, output ONLY the code from the provided code blocks as Markdown fenced code blocks. Do not add or rewrite code.\n- If relevant, code-focused, and there are no code blocks, output a short 2-4 bullet summary instead.\n- If relevant and not code-focused, output 2-4 bullet points in Markdown.\n- If irrelevant, set relevant=false and output empty string.\n\nReturn JSON ONLY in this shape:\n{\"relevant\":true|false,\"score\":0..1,\"kind\":\"summary\"|\"code\",\"output\":\"...\"}\n",
     );
     prompt
 }
@@ -573,6 +581,26 @@ fn format_md_summary(text: &str) -> String {
         .map(|line| format!("- {}", line))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn fallback_excerpt_md(text: &str) -> String {
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        lines.push(trimmed.to_string());
+        if lines.len() >= MAX_WEB_FALLBACK_EXCERPT_LINES {
+            break;
+        }
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    let joined = lines.join("\n");
+    let (snippet, _) = truncate_utf8_chars(&joined, MAX_WEB_FALLBACK_EXCERPT_CHARS);
+    format_md_summary(&snippet)
 }
 
 fn format_md_code(text: &str) -> String {
@@ -704,18 +732,18 @@ pub(crate) async fn filter_local_hits_with_llm(
     if query.trim().is_empty() {
         return hits;
     }
-    let threshold = resolve_local_relevance_threshold();
-    let Some(score) = top_score_normalized else {
-        return hits;
-    };
-    if score >= threshold {
-        return hits;
-    }
     let query_tokens = tokenize_terms(query);
     if query_tokens.is_empty() {
         return hits;
     }
-    let Some(client) = load_local_relevance_client() else {
+    let threshold = resolve_local_relevance_threshold();
+    let client = load_local_relevance_client();
+    if let (Some(score), None) = (top_score_normalized, client.as_ref()) {
+        if score >= threshold {
+            return hits;
+        }
+    }
+    let Some(client) = client else {
         return hits
             .into_iter()
             .filter(|hit| local_hit_matches(&query_tokens, hit))
@@ -1249,6 +1277,7 @@ async fn fetch_web_documents(
     let desired_count = target_count.max(1);
     let layout = cache::cache_layout_from_config();
     let summary_client = load_web_summary_client();
+    let debug_enabled = env_boolish("DOCDEX_WEB_DEBUG").unwrap_or(false);
     if !config
         .scraper_engine
         .trim()
@@ -1267,6 +1296,7 @@ async fn fetch_web_documents(
                 "web fetch engine is {}; only chrome is supported",
                 config.scraper_engine
             )),
+            debug: None,
         }];
     }
     let chrome_config = match ChromeFetchConfig::from_web_config(config) {
@@ -1282,6 +1312,7 @@ async fn fetch_web_documents(
                 ai_digested_kind: None,
                 relevance_score: None,
                 error: Some("web fetch chrome binary not configured".to_string()),
+                debug: None,
             }];
         }
     };
@@ -1307,7 +1338,8 @@ async fn fetch_web_documents(
             let mut status: Option<u16> = None;
             let mut content: Option<String> = None;
             let mut code_blocks: Vec<String> = Vec::new();
-            let mut quality_penalty = 1.0f32;
+            let mut quality_scale = 1.0f32;
+            let mut debug_notes: Vec<String> = Vec::new();
 
             if let Some(layout) = layout.as_ref() {
                 if let Ok(Some(payload)) =
@@ -1339,6 +1371,7 @@ async fn fetch_web_documents(
                             error: Some(format!(
                                 "web fetch skipped for host cooldown until {until_ms}"
                             )),
+                            debug: None,
                         });
                         continue;
                     }
@@ -1358,6 +1391,7 @@ async fn fetch_web_documents(
                         ai_digested_kind: None,
                         relevance_score: None,
                         error: Some("web fetch skipped due to preflight status".to_string()),
+                        debug: None,
                     });
                     continue;
                 }
@@ -1365,6 +1399,15 @@ async fn fetch_web_documents(
                     Ok(fetch_result) => {
                         status = fetch_result.status.or(status_probe);
                         let html = fetch_result.html;
+                        if debug_enabled {
+                            if let Some(final_url) = fetch_result.final_url.as_ref() {
+                                if final_url == "about:blank" {
+                                    debug_notes.push("chrome navigation stayed on about:blank".to_string());
+                                }
+                            } else {
+                                debug_notes.push("chrome final_url missing".to_string());
+                            }
+                        }
                         code_blocks = extract_code_blocks(&html);
                         if is_js_challenge(&html) {
                             record_domain_failure(
@@ -1383,12 +1426,16 @@ async fn fetch_web_documents(
                                 ai_digested_kind: None,
                                 relevance_score: None,
                                 error: Some("web fetch blocked by JS challenge".to_string()),
+                                debug: None,
                             });
                             continue;
                         }
                         let ad_markers = count_ad_markers(&html);
-                        let mut readable = extract_readable_text(&html, &url)
-                            .unwrap_or_else(|| clean_web_text(&html));
+                        let readable_opt = extract_readable_text(&html, &url);
+                        if debug_enabled && readable_opt.is_none() {
+                            debug_notes.push("readability failed; used fallback extraction".to_string());
+                        }
+                        let mut readable = readable_opt.unwrap_or_else(|| clean_web_text(&html));
                         let mut boiler_ratio = boilerplate_ratio(&readable, boilerplate_phrases);
                         if boiler_ratio >= WEB_NOISE_RATIO_THRESHOLD {
                             let structured = extract_structured_html_text(&html, boilerplate_phrases);
@@ -1396,6 +1443,9 @@ async fn fetch_web_documents(
                                 readable = structured;
                                 boiler_ratio = boilerplate_ratio(&readable, boilerplate_phrases);
                             }
+                        }
+                        if debug_enabled && readable.trim().is_empty() {
+                            debug_notes.push("text extraction empty after fallback".to_string());
                         }
                         let penalty = quality_penalty(boiler_ratio, ad_markers);
                         if penalty == 0.0 {
@@ -1409,10 +1459,11 @@ async fn fetch_web_documents(
                                 ai_digested_kind: None,
                                 relevance_score: None,
                                 error: Some("web fetch skipped due to boilerplate noise".to_string()),
+                                debug: None,
                             });
                             continue;
                         }
-                        quality_penalty = penalty;
+                        quality_scale = penalty;
                         let filtered = filter_boilerplate_text(query, &readable, boilerplate_phrases);
                         let readable = if filtered.trim().is_empty() {
                             readable
@@ -1442,7 +1493,14 @@ async fn fetch_web_documents(
                             content_input
                         };
                         let (trimmed, _) = truncate_utf8_chars(&focused, MAX_WEB_DOC_CHARS);
-                        content = Some(trimmed);
+                        if trimmed.trim().is_empty() {
+                            if debug_enabled {
+                                debug_notes.push("extracted text empty after chunking".to_string());
+                            }
+                            content = None;
+                        } else {
+                            content = Some(trimmed);
+                        }
                     }
                     Err(err) => {
                         let failure_kind =
@@ -1458,6 +1516,7 @@ async fn fetch_web_documents(
                             ai_digested_kind: None,
                             relevance_score: None,
                             error: Some(format!("web fetch failed: {err}")),
+                            debug: None,
                         });
                         continue;
                     }
@@ -1465,6 +1524,22 @@ async fn fetch_web_documents(
             }
 
             let Some(content_text) = content.as_ref() else {
+                batch_results.push(WebFetchResult {
+                    url: url.to_string(),
+                    status,
+                    fetched_at_epoch_ms,
+                    cached,
+                    content: Some(String::new()),
+                    ai_digested_content: None,
+                    ai_digested_kind: None,
+                    relevance_score: Some(0.0),
+                    error: Some("content empty".to_string()),
+                    debug: if debug_enabled && !debug_notes.is_empty() {
+                        Some(debug_notes.clone())
+                    } else {
+                        None
+                    },
+                });
                 continue;
             };
 
@@ -1488,13 +1563,35 @@ async fn fetch_web_documents(
                 })
             };
 
-            let Some(evaluation) = evaluation else {
-                continue;
-            };
-            let formatted_output = format_md_output(&evaluation.kind, &evaluation.output);
+            let evaluation = evaluation.unwrap_or_else(|| WebEvalOutput {
+                relevance_score: 0.0,
+                kind: "summary".to_string(),
+                output: format_md_summary(content_text),
+            });
+            let mut formatted_output = format_md_output(&evaluation.kind, &evaluation.output);
+            let mut ai_kind = evaluation.kind.clone();
+            let mut summary_error = None;
             if formatted_output.trim().is_empty() {
-                continue;
+                let fallback = fallback_excerpt_md(content_text);
+                if fallback.trim().is_empty() {
+                    summary_error = Some("summary empty".to_string());
+                } else {
+                    formatted_output = fallback;
+                    ai_kind = "summary".to_string();
+                    summary_error = Some("summary empty; using excerpt".to_string());
+                }
             }
+            let ai_digested_content = if formatted_output.trim().is_empty() {
+                None
+            } else {
+                Some(formatted_output)
+            };
+            let ai_digested_kind = ai_digested_content.as_ref().map(|_| ai_kind.clone());
+            let debug = if debug_enabled && !debug_notes.is_empty() {
+                Some(debug_notes.clone())
+            } else {
+                None
+            };
 
             if !cached {
                 if let Some(layout) = layout.as_ref() {
@@ -1525,7 +1622,7 @@ async fn fetch_web_documents(
 
             let match_stats = web_match_stats(query, content_text, &code_blocks);
             let relevance_score =
-                (blend_relevance_score(evaluation.relevance_score, &match_stats) * quality_penalty)
+                (blend_relevance_score(evaluation.relevance_score, &match_stats) * quality_scale)
                     .clamp(0.0, 1.0);
             if relevance_score > best_in_batch {
                 best_in_batch = relevance_score;
@@ -1537,10 +1634,11 @@ async fn fetch_web_documents(
                 fetched_at_epoch_ms,
                 cached,
                 content: Some(content_text.clone()),
-                ai_digested_content: Some(formatted_output),
-                ai_digested_kind: Some(evaluation.kind),
+                ai_digested_content,
+                ai_digested_kind,
                 relevance_score: Some(relevance_score),
-                error: None,
+                error: summary_error,
+                debug,
             });
         }
 
@@ -2017,7 +2115,7 @@ fn quality_penalty(boiler_ratio: f32, ad_markers: usize) -> f32 {
     if boiler_ratio >= 0.6 {
         return 0.0;
     }
-    let mut penalty = 1.0;
+    let mut penalty: f32 = 1.0;
     if boiler_ratio >= 0.4 {
         penalty *= 0.6;
     } else if boiler_ratio >= 0.25 {

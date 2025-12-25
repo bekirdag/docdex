@@ -8,8 +8,11 @@ use crate::tier2::{Tier2Unavailable, Tier2UnavailableReason};
 use crate::max_size::truncate_utf8_chars;
 use crate::util;
 use crate::web::cache;
+use crate::web::chrome::{fetch_dom, ChromeFetchConfig};
 use crate::web::ddg::{DdgDiscovery, WebDiscoveryResponse, WebDiscoveryResult};
 use crate::web::normalize::{dedupe_urls, unwrap_ddg_redirect};
+use crate::web::readability::extract_readable_text;
+use crate::web::status::fetch_status;
 use crate::web::WebConfig;
 use ammonia::Builder as HtmlCleaner;
 use once_cell::sync::Lazy;
@@ -215,7 +218,7 @@ pub struct WebFetchResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WebFetchCacheEntry {
     url: String,
-    status: u16,
+    status: Option<u16>,
     fetched_at_epoch_ms: u128,
     content: String,
     #[serde(default)]
@@ -718,6 +721,31 @@ async fn run_web_discovery(
         };
     }
 
+    if !gate.browser_available {
+        let message = match gate.browser_hint.as_deref() {
+            Some(hint) => format!("web browser not available: {hint}"),
+            None => "web browser not available".to_string(),
+        };
+        let unavailable =
+            Tier2Unavailable::new(Tier2UnavailableReason::StartupFailed, message.clone())
+                .with_correlation_id(request_id);
+        return WebDiscoveryStatus {
+            status: WebDiscoveryStatusCode::Unavailable,
+            reason: Some("missing_dependency".to_string()),
+            message: Some(message),
+            unavailable: Some(unavailable),
+            discovery: None,
+            fetches: None,
+            gate: build_gate_meta(
+                gate,
+                top_score,
+                top_score_normalized,
+                local_match_ratio,
+                force_web,
+            ),
+        };
+    }
+
     let discovery = match DdgDiscovery::new(config.clone()) {
         Ok(discovery) => discovery,
         Err(err) => {
@@ -748,7 +776,7 @@ async fn run_web_discovery(
     match discovery.discover(query, discovery_limit).await {
         Ok(response) => {
             let (discovery_response, urls) =
-                normalize_discovery_response(response, &config, limit);
+                normalize_discovery_response(response, &config, discovery_limit);
             let fetches = fetch_web_documents(query, &urls, &config).await;
             let message = if gate.browser_available {
                 None
@@ -854,13 +882,29 @@ async fn fetch_web_documents(query: &str, urls: &[String], config: &WebConfig) -
     }
     let layout = cache::cache_layout_from_config();
     let summary_client = load_web_summary_client();
-    let client = match reqwest::Client::builder()
-        .user_agent(config.user_agent.clone())
-        .timeout(config.request_timeout)
-        .build()
+    if !config
+        .scraper_engine
+        .trim()
+        .eq_ignore_ascii_case("chrome")
     {
-        Ok(client) => client,
-        Err(err) => {
+        return vec![WebFetchResult {
+            url: String::new(),
+            status: None,
+            fetched_at_epoch_ms: None,
+            cached: false,
+            content: None,
+            ai_digested_content: None,
+            ai_digested_kind: None,
+            relevance_score: None,
+            error: Some(format!(
+                "web fetch engine is {}; only chrome is supported",
+                config.scraper_engine
+            )),
+        }];
+    }
+    let chrome_config = match ChromeFetchConfig::from_web_config(config) {
+        Some(config) => config,
+        None => {
             return vec![WebFetchResult {
                 url: String::new(),
                 status: None,
@@ -870,7 +914,7 @@ async fn fetch_web_documents(query: &str, urls: &[String], config: &WebConfig) -
                 ai_digested_content: None,
                 ai_digested_kind: None,
                 relevance_score: None,
-                error: Some(format!("web fetch client init failed: {err}")),
+                error: Some("web fetch chrome binary not configured".to_string()),
             }];
         }
     };
@@ -885,7 +929,7 @@ async fn fetch_web_documents(query: &str, urls: &[String], config: &WebConfig) -
             let cache_key = url.as_str();
             let mut cached = false;
             let mut fetched_at_epoch_ms = None;
-            let mut status = None;
+            let mut status: Option<u16> = None;
             let mut content: Option<String> = None;
             let mut code_blocks: Vec<String> = Vec::new();
 
@@ -896,7 +940,7 @@ async fn fetch_web_documents(query: &str, urls: &[String], config: &WebConfig) -
                     if let Ok(entry) = serde_json::from_slice::<WebFetchCacheEntry>(&payload) {
                         cached = true;
                         fetched_at_epoch_ms = Some(entry.fetched_at_epoch_ms);
-                        status = Some(entry.status);
+                        status = entry.status;
                         content = Some(entry.content);
                         code_blocks = entry.code_blocks;
                     }
@@ -906,21 +950,32 @@ async fn fetch_web_documents(query: &str, urls: &[String], config: &WebConfig) -
             if content.is_none() {
                 crate::web::fetch::enforce_domain_delay(&url, config.fetch_delay).await;
                 fetched_at_epoch_ms = Some(now_epoch_ms());
-                match client.get(url.clone()).send().await {
-                    Ok(resp) => {
-                        status = Some(resp.status().as_u16());
-                        match resp.text().await {
-                            Ok(body) => {
-                                code_blocks = extract_code_blocks(&body);
-                                let cleaned = clean_web_text(&body);
-                                let (trimmed, _) = truncate_utf8_chars(&cleaned, MAX_WEB_DOC_CHARS);
-                                content = Some(trimmed);
-                            }
-                            Err(_) => continue,
-                        }
+                let status_probe =
+                    fetch_status(&url, &config.user_agent, config.request_timeout).await;
+                match fetch_dom(&url, &chrome_config).await {
+                    Ok(html) => {
+                        status = status_probe;
+                        code_blocks = extract_code_blocks(&html);
+                        let readable = extract_readable_text(&html, &url)
+                            .unwrap_or_else(|| clean_web_text(&html));
+                        let (trimmed, _) = truncate_utf8_chars(&readable, MAX_WEB_DOC_CHARS);
+                        content = Some(trimmed);
                     }
-                    Err(_) => continue,
-                }
+                    Err(err) => {
+                        batch_results.push(WebFetchResult {
+                            url: url.to_string(),
+                            status: status_probe,
+                            fetched_at_epoch_ms,
+                            cached: false,
+                            content: None,
+                            ai_digested_content: None,
+                            ai_digested_kind: None,
+                            relevance_score: None,
+                            error: Some(format!("web fetch failed: {err}")),
+                        });
+                        continue;
+                    }
+                };
             }
 
             let Some(content_text) = content.as_ref() else {
@@ -944,18 +999,16 @@ async fn fetch_web_documents(query: &str, urls: &[String], config: &WebConfig) -
             if !cached {
                 if let Some(layout) = layout.as_ref() {
                     if config.cache_ttl.as_secs() > 0 {
-                        if let Some(status) = status {
-                            if let Some(fetched_at_epoch_ms) = fetched_at_epoch_ms {
-                                let entry = WebFetchCacheEntry {
-                                    url: url.to_string(),
-                                    status,
-                                    fetched_at_epoch_ms,
-                                    content: content_text.clone(),
-                                    code_blocks: code_blocks.clone(),
-                                };
-                                if let Ok(payload) = serde_json::to_vec(&entry) {
-                                    let _ = cache::write_cache_entry(layout, cache_key, &payload);
-                                }
+                        if let Some(fetched_at_epoch_ms) = fetched_at_epoch_ms {
+                            let entry = WebFetchCacheEntry {
+                                url: url.to_string(),
+                                status,
+                                fetched_at_epoch_ms,
+                                content: content_text.clone(),
+                                code_blocks: code_blocks.clone(),
+                            };
+                            if let Ok(payload) = serde_json::to_vec(&entry) {
+                                let _ = cache::write_cache_entry(layout, cache_key, &payload);
                             }
                         }
                     }

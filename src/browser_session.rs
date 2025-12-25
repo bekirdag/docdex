@@ -3,13 +3,17 @@
 use std::fs::{self, File, OpenOptions};
 use std::future::Future;
 use std::io;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::process::Output;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::Notify;
 
@@ -60,6 +64,39 @@ pub enum BrowserSessionError {
 struct LockFile {
     path: PathBuf,
     _file: File,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BrowserLockMetadata {
+    pid: Option<u32>,
+    created_at_epoch_ms: u64,
+}
+
+const LOCK_STARTUP_GRACE: Duration = Duration::from_secs(30);
+const LOCK_STALE_AGE: Duration = Duration::from_secs(300);
+
+impl LockFile {
+    fn write_metadata(&mut self, pid: Option<u32>) -> Result<(), BrowserSessionError> {
+        let metadata = BrowserLockMetadata {
+            pid,
+            created_at_epoch_ms: now_epoch_ms(),
+        };
+        let data = serde_json::to_vec(&metadata)
+            .map_err(|err| BrowserSessionError::LaunchFailed(err.to_string()))?;
+        if let Err(err) = self._file.set_len(0) {
+            return Err(BrowserSessionError::LaunchFailed(err.to_string()));
+        }
+        if let Err(err) = self._file.seek(SeekFrom::Start(0)) {
+            return Err(BrowserSessionError::LaunchFailed(err.to_string()));
+        }
+        self._file
+            .write_all(&data)
+            .map_err(|err| BrowserSessionError::LaunchFailed(err.to_string()))?;
+        self._file
+            .flush()
+            .map_err(|err| BrowserSessionError::LaunchFailed(err.to_string()))?;
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -141,6 +178,18 @@ impl BrowserSession {
             BrowserSessionError::LaunchFailed("spawned process did not expose a PID".to_string())
         })?;
 
+        if let Some(lock) = lock.as_mut() {
+            if let Err(err) = lock.write_metadata(Some(pid)) {
+                tracing::warn!(
+                    target: "docdexd_browser_guard",
+                    event = "browser_session_lock_metadata_failed",
+                    lock_file = ?lock_path.as_ref().map(|p| p.display().to_string()),
+                    error = %err,
+                    "browser session lock metadata update failed"
+                );
+            }
+        }
+
         metrics::global().inc_browser_session_active();
         #[cfg(unix)]
         tracing::info!(
@@ -191,6 +240,55 @@ impl BrowserSession {
 
     pub async fn abort(&self) -> Result<(), BrowserSessionError> {
         self.cleanup(true).await
+    }
+
+    pub async fn wait_for_output(self, timeout: Duration) -> Result<Output, BrowserSessionError> {
+        let _ = self.inner.cleanup_started.swap(true, Ordering::AcqRel);
+        let mut child = self
+            .inner
+            .child
+            .lock()
+            .take()
+            .ok_or_else(|| BrowserSessionError::CleanupFailed("child already taken".to_string()))?;
+        let mut stdout_task = None;
+        let mut stderr_task = None;
+        if let Some(stdout) = child.stdout.take() {
+            stdout_task = Some(tokio::spawn(read_all(stdout)));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            stderr_task = Some(tokio::spawn(read_all(stderr)));
+        }
+
+        let status = match tokio::time::timeout(timeout, child.wait()).await {
+            Ok(Ok(status)) => Ok(status),
+            Ok(Err(err)) => Err(BrowserSessionError::WorkFailed(err.to_string())),
+            Err(_) => {
+                #[cfg(unix)]
+                signal_process_group(self.inner.pgid, nix::libc::SIGKILL);
+                #[cfg(not(unix))]
+                {
+                    let _ = child.start_kill();
+                }
+                let _ = wait_with_timeout(&mut child, self.inner.kill_timeout).await;
+                Err(BrowserSessionError::TimedOut(timeout))
+            }
+        };
+
+        let output = match status {
+            Ok(status) => {
+                let stdout = join_bytes(stdout_task).await;
+                let stderr = join_bytes(stderr_task).await;
+                Ok(Output {
+                    status,
+                    stdout,
+                    stderr,
+                })
+            }
+            Err(err) => Err(err),
+        };
+        metrics::global().dec_browser_session_active();
+        cleanup_lock(&self.inner);
+        output
     }
 
     pub async fn run_scoped<T, Cancel, Work>(
@@ -244,6 +342,23 @@ impl BrowserSession {
     }
 }
 
+async fn read_all<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
+    mut reader: R,
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let _ = reader.read_to_end(&mut buf).await;
+    buf
+}
+
+async fn join_bytes(
+    handle: Option<tokio::task::JoinHandle<Vec<u8>>>,
+) -> Vec<u8> {
+    match handle {
+        Some(handle) => handle.await.unwrap_or_default(),
+        None => Vec::new(),
+    }
+}
+
 impl Drop for BrowserSession {
     fn drop(&mut self) {
         if Arc::strong_count(&self.inner) != 1 {
@@ -279,22 +394,127 @@ fn create_lock_file(path: &PathBuf) -> Result<LockFile, BrowserSessionError> {
         state_layout::ensure_state_dir_secure(parent)
             .map_err(|err| BrowserSessionError::LaunchFailed(err.to_string()))?;
     }
-    let file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(path)
-        .map_err(|err| {
-            let message = if err.kind() == io::ErrorKind::AlreadyExists {
-                format!("lock already held: {}", path.display())
-            } else {
-                err.to_string()
-            };
-            BrowserSessionError::LaunchFailed(message)
-        })?;
-    Ok(LockFile {
-        path: path.clone(),
-        _file: file,
-    })
+    for _ in 0..2 {
+        match OpenOptions::new().create_new(true).write(true).open(path) {
+            Ok(file) => {
+                let mut lock = LockFile {
+                    path: path.clone(),
+                    _file: file,
+                };
+                lock.write_metadata(None)?;
+                return Ok(lock);
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                if try_remove_stale_lock(path)? {
+                    continue;
+                }
+                return Err(BrowserSessionError::LaunchFailed(format!(
+                    "lock already held: {}",
+                    path.display()
+                )));
+            }
+            Err(err) => {
+                return Err(BrowserSessionError::LaunchFailed(err.to_string()));
+            }
+        }
+    }
+    Err(BrowserSessionError::LaunchFailed(format!(
+        "lock already held: {}",
+        path.display()
+    )))
+}
+
+fn try_remove_stale_lock(path: &PathBuf) -> Result<bool, BrowserSessionError> {
+    let metadata = read_lock_metadata(path);
+    let age = metadata
+        .as_ref()
+        .and_then(|meta| age_from_epoch_ms(meta.created_at_epoch_ms))
+        .or_else(|| lock_age(path));
+    let stale = match metadata {
+        Some(meta) => match meta.pid {
+            Some(pid) => !pid_is_alive(pid),
+            None => age.map(|age| age > LOCK_STARTUP_GRACE).unwrap_or(false),
+        },
+        None => age.map(|age| age > LOCK_STALE_AGE).unwrap_or(false),
+    };
+
+    if !stale {
+        return Ok(false);
+    }
+
+    fs::remove_file(path).map_err(|err| {
+        BrowserSessionError::LaunchFailed(format!(
+            "failed to remove stale lock {}: {}",
+            path.display(),
+            err
+        ))
+    })?;
+    tracing::warn!(
+        target: "docdexd_browser_guard",
+        event = "browser_session_lock_stale_removed",
+        lock_file = %path.display(),
+        "stale browser session lock removed"
+    );
+    Ok(true)
+}
+
+fn read_lock_metadata(path: &PathBuf) -> Option<BrowserLockMetadata> {
+    let bytes = fs::read(path).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    match serde_json::from_slice::<BrowserLockMetadata>(&bytes) {
+        Ok(metadata) => Some(metadata),
+        Err(err) => {
+            tracing::warn!(
+                target: "docdexd_browser_guard",
+                event = "browser_session_lock_metadata_invalid",
+                lock_file = %path.display(),
+                error = %err,
+                "browser session lock metadata invalid"
+            );
+            None
+        }
+    }
+}
+
+fn lock_age(path: &PathBuf) -> Option<Duration> {
+    let metadata = fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let now = SystemTime::now();
+    now.duration_since(modified).ok()
+}
+
+fn age_from_epoch_ms(epoch_ms: u64) -> Option<Duration> {
+    let now = now_epoch_ms();
+    now.checked_sub(epoch_ms).map(Duration::from_millis)
+}
+
+fn now_epoch_ms() -> u64 {
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    now.as_millis() as u64
+}
+
+#[cfg(unix)]
+fn pid_is_alive(pid: u32) -> bool {
+    let rc = unsafe { nix::libc::kill(pid as i32, 0) };
+    if rc == 0 {
+        return true;
+    }
+    let err = io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(code) if code == nix::libc::ESRCH => false,
+        _ => true,
+    }
+}
+
+#[cfg(not(unix))]
+fn pid_is_alive(pid: u32) -> bool {
+    let mut system = sysinfo::System::new();
+    system.refresh_processes();
+    system.process(sysinfo::Pid::from_u32(pid)).is_some()
 }
 
 fn default_lock_file_path() -> Option<PathBuf> {

@@ -1,4 +1,5 @@
 use std::env;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use url::Url;
@@ -17,6 +18,10 @@ pub struct WebConfig {
     pub cache_ttl: Duration,
     pub blocklist: Vec<String>,
     pub fetch_delay: Duration,
+    pub scraper_engine: String,
+    pub scraper_headless: bool,
+    pub chrome_binary_path: Option<PathBuf>,
+    pub page_load_timeout: Duration,
 }
 
 impl WebConfig {
@@ -29,7 +34,7 @@ impl WebConfig {
         let ddg_base_url = Url::parse(&base_url).unwrap_or_else(|_| {
             Url::parse("https://html.duckduckgo.com/html/").expect("default url is valid")
         });
-        let max_results = env_u64("DOCDEX_WEB_MAX_RESULTS", 8).max(1) as usize;
+        let max_results = env_u64("DOCDEX_WEB_MAX_RESULTS", 20).max(1) as usize;
         let request_timeout_ms = env_u64("DOCDEX_WEB_REQUEST_TIMEOUT_MS", 10_000).max(1);
         let min_spacing_ms = env::var("DOCDEX_WEB_MIN_SPACING_MS")
             .ok()
@@ -60,6 +65,11 @@ impl WebConfig {
             .or_else(config_request_delay_ms)
             .unwrap_or(1_000);
         let fetch_delay_ms = fetch_delay_ms.max(1_000);
+        let scraper_engine = config_scraper_engine().unwrap_or_else(|| "chrome".to_string());
+        let scraper_headless = config_scraper_headless().unwrap_or(true);
+        let chrome_binary_path = config_scraper_chrome_binary();
+        let page_load_timeout_secs = config_page_load_timeout_secs().unwrap_or(15);
+        let page_load_timeout = Duration::from_secs(page_load_timeout_secs.max(1));
 
         Self {
             enabled,
@@ -80,6 +90,10 @@ impl WebConfig {
             cache_ttl: Duration::from_secs(cache_ttl_secs),
             blocklist,
             fetch_delay: Duration::from_millis(fetch_delay_ms),
+            scraper_engine,
+            scraper_headless,
+            chrome_binary_path,
+            page_load_timeout,
         }
     }
 }
@@ -134,6 +148,42 @@ fn config_request_delay_ms() -> Option<u64> {
     }
     let config = config::load_config_from_path(&path).ok()?;
     Some(config.web.scraper.request_delay_ms)
+}
+
+fn config_page_load_timeout_secs() -> Option<u64> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    Some(config.web.scraper.page_load_timeout_secs)
+}
+
+fn config_scraper_engine() -> Option<String> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    Some(config.web.scraper.engine.clone())
+}
+
+fn config_scraper_headless() -> Option<bool> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    Some(config.web.scraper.headless)
+}
+
+fn config_scraper_chrome_binary() -> Option<PathBuf> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    config.web.scraper.chrome_binary_path
 }
 
 fn config_blocklist() -> Option<Vec<String>> {

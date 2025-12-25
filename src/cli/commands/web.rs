@@ -7,9 +7,12 @@ use crate::orchestrator::{run_waterfall, MemoryBudget, WaterfallPlan, WaterfallR
 use crate::tier2::Tier2Config;
 use crate::util;
 use crate::web;
+use crate::web::chrome::{fetch_dom, ChromeFetchConfig};
+use crate::web::readability::extract_readable_text;
+use crate::web::status::fetch_status;
 use anyhow::Context;
 use anyhow::Result;
-use serde_json::json;
+use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
 
 pub async fn run_search(query: String, limit: usize) -> Result<()> {
@@ -32,35 +35,71 @@ pub async fn run_fetch(url: String) -> Result<()> {
         if let Ok(Some(payload)) =
             web::cache::read_cache_entry_with_ttl(layout, url.as_str(), config.cache_ttl)
         {
+            if let Ok(entry) = serde_json::from_slice::<WebFetchCacheEntry>(&payload) {
+                println!("{}", serde_json::to_string_pretty(&entry)?);
+                return Ok(());
+            }
             if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
                 println!("{}", serde_json::to_string_pretty(&value)?);
                 return Ok(());
             }
         }
     }
-    let client = reqwest::Client::builder()
-        .user_agent(config.user_agent)
-        .timeout(config.request_timeout)
-        .build()
-        .context("build web fetch client")?;
+    if !config
+        .scraper_engine
+        .trim()
+        .eq_ignore_ascii_case("chrome")
+    {
+        anyhow::bail!(
+            "web fetch engine is {}; only chrome is supported",
+            config.scraper_engine
+        );
+    }
+    let chrome_config = ChromeFetchConfig::from_web_config(&config)
+        .context("chrome binary not configured")?;
     web::fetch::enforce_domain_delay(&url, config.fetch_delay).await;
-    let resp = client.get(url.clone()).send().await?;
-    let status = resp.status();
-    let body = resp.text().await?;
-    let payload = json!({
-        "url": url.as_str(),
-        "status": status.as_u16(),
-        "body": body,
+    let status = fetch_status(&url, &config.user_agent, config.request_timeout).await;
+    let html = fetch_dom(&url, &chrome_config).await?;
+    let body = extract_readable_text(&html, &url).unwrap_or_else(|| {
+        let cleaned = ammonia::Builder::default()
+            .tags(std::collections::HashSet::new())
+            .clean(&html)
+            .to_string();
+        cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
     });
+    let entry = WebFetchCacheEntry {
+        url: url.as_str().to_string(),
+        status,
+        fetched_at_epoch_ms: now_epoch_ms(),
+        content: body,
+        code_blocks: Vec::new(),
+    };
     if let Some(layout) = layout.as_ref() {
         if config.cache_ttl.as_secs() > 0 {
-            if let Ok(serialized) = serde_json::to_vec(&payload) {
+            if let Ok(serialized) = serde_json::to_vec(&entry) {
                 let _ = web::cache::write_cache_entry(layout, url.as_str(), &serialized);
             }
         }
     }
-    println!("{}", serde_json::to_string_pretty(&payload)?);
+    println!("{}", serde_json::to_string_pretty(&entry)?);
     Ok(())
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct WebFetchCacheEntry {
+    url: String,
+    status: Option<u16>,
+    fetched_at_epoch_ms: u128,
+    content: String,
+    #[serde(default)]
+    code_blocks: Vec<String>,
+}
+
+fn now_epoch_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
 }
 
 pub async fn run_rag(

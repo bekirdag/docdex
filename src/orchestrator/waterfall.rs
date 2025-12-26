@@ -29,6 +29,7 @@ pub struct WaterfallRequest<'a> {
     pub skip_local_search: bool,
     pub disable_web_cache: bool,
     pub llm_filter_local_results: bool,
+    pub llm_model: Option<&'a str>,
     pub indexer: &'a Indexer,
     pub libs_indexer: Option<&'a LibsIndexer>,
     pub plan: WaterfallPlan,
@@ -86,6 +87,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
             search_response.hits,
             search_response.top_score_normalized,
             request.llm_filter_local_results,
+            request.llm_model,
         )
         .await;
         let mut top_score = search_response.hits.first().map(|hit| hit.score);
@@ -190,6 +192,7 @@ async fn run_tier2(
                 request.llm_filter_local_results,
                 request.skip_local_search,
                 request.disable_web_cache,
+                request.llm_model,
             )
             .await?;
             Ok::<_, anyhow::Error>(Some(response))

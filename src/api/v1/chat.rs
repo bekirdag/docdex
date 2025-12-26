@@ -226,6 +226,7 @@ pub(crate) async fn chat_completions_handler(
         skip_local_search,
         disable_web_cache,
         llm_filter_local_results,
+        llm_model: payload.model.as_deref(),
         indexer: state.indexer.as_ref(),
         libs_indexer,
         plan,

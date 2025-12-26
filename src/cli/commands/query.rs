@@ -18,6 +18,7 @@ use std::path::Path;
 pub async fn run(
     repo: RepoArgs,
     query: String,
+    model: Option<String>,
     limit: usize,
     max_web_results: Option<usize>,
     repo_only: bool,
@@ -32,6 +33,7 @@ pub async fn run(
         return stream_via_http(
             &repo_root,
             &query,
+            model.as_deref(),
             limit,
             max_web_results,
             false,
@@ -69,6 +71,7 @@ pub async fn run(
         skip_local_search,
         disable_web_cache: no_cache,
         llm_filter_local_results,
+        llm_model: model.as_deref(),
         indexer: &server,
         libs_indexer: libs_indexer.as_ref(),
         plan,
@@ -278,6 +281,7 @@ struct CompressedWeb {
 pub(crate) async fn stream_via_http(
     repo_root: &Path,
     query: &str,
+    model: Option<&str>,
     limit: usize,
     max_web_results: Option<usize>,
     force_web: bool,
@@ -300,7 +304,7 @@ pub(crate) async fn stream_via_http(
     let url = format!("{}/v1/chat/completions", base.trim_end_matches('/'));
     let repo_id = repo_manager::repo_fingerprint_sha256(repo_root).ok();
     let payload = ChatCompletionRequest {
-        model: None,
+        model: model.map(|value| value.to_string()),
         messages: vec![ChatMessage {
             role: "user",
             content: query.to_string(),

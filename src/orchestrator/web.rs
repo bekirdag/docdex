@@ -585,8 +585,8 @@ impl QueryCategoryClient {
     }
 }
 
-fn load_query_category_client() -> Option<QueryCategoryClient> {
-    let config = load_llm_config()?;
+fn load_query_category_client(model_override: Option<&str>) -> Option<QueryCategoryClient> {
+    let config = load_llm_config(model_override)?;
     if !config.provider.trim().eq_ignore_ascii_case("ollama") {
         return None;
     }
@@ -605,8 +605,8 @@ fn load_query_category_client() -> Option<QueryCategoryClient> {
     })
 }
 
-fn load_web_summary_client() -> Option<WebSummaryClient> {
-    let config = load_llm_config()?;
+fn load_web_summary_client(model_override: Option<&str>) -> Option<WebSummaryClient> {
+    let config = load_llm_config(model_override)?;
     if !config.provider.trim().eq_ignore_ascii_case("ollama") {
         return None;
     }
@@ -625,8 +625,8 @@ fn load_web_summary_client() -> Option<WebSummaryClient> {
     })
 }
 
-fn load_local_relevance_client() -> Option<LocalRelevanceClient> {
-    let config = load_llm_config()?;
+fn load_local_relevance_client(model_override: Option<&str>) -> Option<LocalRelevanceClient> {
+    let config = load_llm_config(model_override)?;
     if !config.provider.trim().eq_ignore_ascii_case("ollama") {
         return None;
     }
@@ -645,7 +645,7 @@ fn load_local_relevance_client() -> Option<LocalRelevanceClient> {
     })
 }
 
-fn load_llm_config() -> Option<config::LlmConfig> {
+fn load_llm_config(model_override: Option<&str>) -> Option<config::LlmConfig> {
     let path = config::default_config_path().ok();
     let mut config = if let Some(path) = path {
         if path.exists() {
@@ -661,6 +661,12 @@ fn load_llm_config() -> Option<config::LlmConfig> {
         config
     };
     config.apply_defaults().ok()?;
+    if let Some(model_override) = model_override {
+        let trimmed = model_override.trim();
+        if !trimmed.is_empty() {
+            config.llm.default_model = trimmed.to_string();
+        }
+    }
     Some(config.llm)
 }
 
@@ -1073,6 +1079,7 @@ pub async fn run_web_research(
     llm_filter_local_results: bool,
     skip_local_search: bool,
     disable_web_cache: bool,
+    llm_model: Option<&str>,
 ) -> Result<WebResearchResponse, anyhow::Error> {
     let query = query.trim();
     let intent = detect_query_intent(query);
@@ -1087,6 +1094,7 @@ pub async fn run_web_research(
             search_response.hits,
             original_top_score_normalized,
             llm_filter_local_results,
+            llm_model,
         )
         .await;
         let mut top_score = hits.first().map(|hit| hit.score);
@@ -1157,6 +1165,7 @@ pub async fn run_web_research(
             local_match_ratio,
             force_web,
             disable_web_cache,
+            llm_model,
         )
         .await
     };
@@ -1177,6 +1186,7 @@ pub(crate) async fn filter_local_hits_with_llm(
     hits: Vec<Hit>,
     top_score_normalized: Option<f32>,
     use_llm: bool,
+    llm_model: Option<&str>,
 ) -> Vec<Hit> {
     if hits.is_empty() {
         return hits;
@@ -1197,7 +1207,7 @@ pub(crate) async fn filter_local_hits_with_llm(
     let code_intent = matches!(intent, QueryIntent::Code);
     let threshold = resolve_local_relevance_threshold();
     let client = if use_llm {
-        load_local_relevance_client()
+        load_local_relevance_client(llm_model)
     } else {
         None
     };
@@ -1428,6 +1438,7 @@ async fn run_web_discovery(
     local_match_ratio: Option<f32>,
     force_web: bool,
     disable_web_cache: bool,
+    llm_model: Option<&str>,
 ) -> WebDiscoveryStatus {
     let config = WebConfig::from_env();
     let mut config = config;
@@ -1551,7 +1562,7 @@ async fn run_web_discovery(
     };
 
     let debug_enabled = env_boolish("DOCDEX_WEB_DEBUG").unwrap_or(false);
-    let (query_category, category_source) = classify_query_category(query).await;
+    let (query_category, category_source) = classify_query_category(query, llm_model).await;
 
     let mut discovery_limit = (web_limit * WEB_DISCOVERY_MULTIPLIER)
         .max(web_limit)
@@ -1636,6 +1647,7 @@ async fn run_web_discovery(
                 web_limit,
                 query_category,
                 gate.trigger_threshold,
+                llm_model,
             )
             .await;
             let message = if gate.browser_available {
@@ -2172,13 +2184,14 @@ async fn fetch_web_documents(
     target_count: usize,
     query_category: QueryCategory,
     early_stop_score: f32,
+    llm_model: Option<&str>,
 ) -> Vec<WebFetchResult> {
     if urls.is_empty() {
         return Vec::new();
     }
     let desired_count = target_count.max(1);
     let layout = cache::cache_layout_from_config();
-    let summary_client = load_web_summary_client();
+    let summary_client = load_web_summary_client(llm_model);
     let debug_enabled = env_boolish("DOCDEX_WEB_DEBUG").unwrap_or(false);
     let early_stop_score = early_stop_score.clamp(0.0, 1.0);
     if !config
@@ -3715,7 +3728,10 @@ fn detect_query_category_heuristic(query: &str) -> QueryCategory {
     QueryCategory::General
 }
 
-async fn classify_query_category(query: &str) -> (QueryCategory, QueryCategorySource) {
+async fn classify_query_category(
+    query: &str,
+    llm_model: Option<&str>,
+) -> (QueryCategory, QueryCategorySource) {
     let query_key = query.trim().to_ascii_lowercase();
     if query_key.is_empty() {
         return (QueryCategory::General, QueryCategorySource::Heuristic);
@@ -3726,7 +3742,7 @@ async fn classify_query_category(query: &str) -> (QueryCategory, QueryCategorySo
         }
     }
     let heuristic = detect_query_category_heuristic(query);
-    let Some(client) = load_query_category_client() else {
+    let Some(client) = load_query_category_client(llm_model) else {
         let source = QueryCategorySource::Heuristic;
         if let Ok(mut cache) = QUERY_CATEGORY_CACHE.lock() {
             cache.insert(

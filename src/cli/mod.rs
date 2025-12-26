@@ -325,6 +325,12 @@ pub(crate) enum Command {
         repo: RepoArgs,
         #[arg(short, long)]
         query: String,
+        #[arg(
+            long,
+            value_parser = config::non_empty_string,
+            help = "Override the Ollama model for this chat query"
+        )]
+        model: Option<String>,
         #[arg(long, default_value_t = 8)]
         limit: usize,
         #[arg(

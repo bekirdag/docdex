@@ -1342,6 +1342,7 @@ async fn search_handler(
         skip_local_search: false,
         disable_web_cache: false,
         llm_filter_local_results: false,
+        llm_model: None,
         indexer: state.indexer.as_ref(),
         libs_indexer,
         plan,

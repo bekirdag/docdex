@@ -110,6 +110,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
         super::Command::Chat {
             repo,
             query,
+            model,
             limit,
             max_web_results,
             repo_only,
@@ -122,6 +123,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             query::run(
                 repo,
                 query,
+                model,
                 limit,
                 max_web_results,
                 repo_only,

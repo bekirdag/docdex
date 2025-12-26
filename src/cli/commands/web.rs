@@ -115,6 +115,7 @@ pub async fn run_rag(
         return query::stream_via_http(
             &repo_root,
             &query,
+            None,
             limit,
             None,
             true,
@@ -152,6 +153,7 @@ pub async fn run_rag(
         skip_local_search: false,
         disable_web_cache: false,
         llm_filter_local_results: false,
+        llm_model: None,
         indexer: &server,
         libs_indexer: libs_indexer.as_ref(),
         plan,

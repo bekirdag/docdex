@@ -41,6 +41,8 @@ struct DocdexOptions {
     force_web: Option<bool>,
     include_libs: Option<bool>,
     max_web_results: Option<usize>,
+    llm_filter_local_results: Option<bool>,
+    compress_results: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -191,6 +193,9 @@ pub(crate) async fn chat_completions_handler(
     let max_web_results = docdex.and_then(|opts| opts.max_web_results);
     let force_web = docdex.and_then(|opts| opts.force_web).unwrap_or(false);
     let include_libs = docdex.and_then(|opts| opts.include_libs).unwrap_or(true);
+    let llm_filter_local_results =
+        docdex.and_then(|opts| opts.llm_filter_local_results).unwrap_or(false);
+    let compress_results = docdex.and_then(|opts| opts.compress_results).unwrap_or(false);
     let libs_indexer = if include_libs {
         state.libs_indexer.as_deref()
     } else {
@@ -214,6 +219,7 @@ pub(crate) async fn chat_completions_handler(
         limit,
         web_limit: max_web_results,
         force_web,
+        llm_filter_local_results,
         indexer: state.indexer.as_ref(),
         libs_indexer,
         plan,
@@ -224,7 +230,12 @@ pub(crate) async fn chat_completions_handler(
     {
         Ok(result) => {
             let web_context = web_context_from_status(&result.tier2.status);
-            let content = build_completion(&query, &result.search_response.hits, web_context.as_deref());
+            let content = build_completion(
+                &query,
+                &result.search_response.hits,
+                web_context.as_deref(),
+                compress_results,
+            );
             let prompt_tokens = estimate_tokens(&query);
             let completion_tokens = estimate_tokens(&content);
             let usage = Usage {
@@ -379,7 +390,11 @@ fn build_completion(
     query: &str,
     hits: &[crate::index::Hit],
     web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
+    compress_results: bool,
 ) -> String {
+    if compress_results {
+        return format_compressed_results(hits, web_context);
+    }
     let mut lines = Vec::new();
     let trimmed = query.trim();
     if hits.is_empty() {
@@ -436,6 +451,72 @@ fn format_web_context(
         lines.push(format!("- {}: {}", item.url, snippet));
     }
     lines
+}
+
+fn format_compressed_results(
+    hits: &[crate::index::Hit],
+    web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
+) -> String {
+    let local_score = hits
+        .first()
+        .map(|hit| crate::search::normalize_score(hit.score));
+    let web_best = best_web_summary(web_context);
+    let mut out = String::from("{\"results\":{");
+    if let Some(score) = local_score {
+        out.push_str(&format!("\"local\":{{\"score\":{score:.4}}}"));
+        if web_best.is_some() {
+            out.push(',');
+        }
+    }
+    if let Some((score, content)) = web_best {
+        out.push_str("\"web\":{");
+        out.push_str(&format!("\"score\":{score:.4}"));
+        if let Some(text) = content {
+            let escaped = escape_json_string(&text);
+            out.push_str(",\"ai_digested_content\":\"");
+            out.push_str(&escaped);
+            out.push('"');
+        }
+        out.push('}');
+    }
+    out.push_str("}}");
+    out
+}
+
+fn escape_json_string(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
+fn best_web_summary(
+    web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
+) -> Option<(f32, Option<String>)> {
+    let items = web_context?;
+    let mut best: Option<&crate::orchestrator::web::WebFetchResult> = None;
+    for item in items {
+        if item.relevance_score.is_none() && item.ai_digested_content.is_none() {
+            continue;
+        }
+        match best {
+            Some(current) => {
+                if item.relevance_score.unwrap_or(0.0)
+                    > current.relevance_score.unwrap_or(0.0)
+                {
+                    best = Some(item);
+                }
+            }
+            None => best = Some(item),
+        }
+    }
+    let best = best?;
+    Some((
+        best.relevance_score.unwrap_or(0.0),
+        best.ai_digested_content.clone(),
+    ))
 }
 
 fn estimate_tokens(text: &str) -> u64 {

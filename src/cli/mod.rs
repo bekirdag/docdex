@@ -342,6 +342,18 @@ pub(crate) enum Command {
         #[arg(
             long,
             default_value_t = false,
+            help = "Use the LLM to filter local search results before scoring"
+        )]
+        llm_filter_local_results: bool,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Emit a minimal JSON response with only scores and web summary"
+        )]
+        compress_results: bool,
+        #[arg(
+            long,
+            default_value_t = false,
             help = "Stream a text summary to stdout instead of printing JSON"
         )]
         stream: bool,

@@ -113,8 +113,22 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             limit,
             max_web_results,
             repo_only,
+            llm_filter_local_results,
+            compress_results,
             stream,
-        } => query::run(repo, query, limit, max_web_results, repo_only, stream).await,
+        } => {
+            query::run(
+                repo,
+                query,
+                limit,
+                max_web_results,
+                repo_only,
+                llm_filter_local_results,
+                compress_results,
+                stream,
+            )
+            .await
+        }
         super::Command::Repo { command } => repo::run(command),
         super::Command::LibsIngest { repo, sources } => libs::run_ingest(repo, sources),
         super::Command::LibsDiscover { repo, sources } => libs::run_discover(repo, sources),

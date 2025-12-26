@@ -2,7 +2,9 @@ use crate::config::{self, RepoArgs};
 use crate::index;
 use crate::libs;
 use crate::index::Hit;
-use crate::orchestrator::{run_waterfall, MemoryBudget, WaterfallPlan, WaterfallRequest, WebGateConfig};
+use crate::orchestrator::{
+    run_waterfall, MemoryBudget, WaterfallPlan, WaterfallRequest, WaterfallResult, WebGateConfig,
+};
 use crate::repo_manager;
 use crate::tier2::Tier2Config;
 use crate::util;
@@ -19,6 +21,8 @@ pub async fn run(
     limit: usize,
     max_web_results: Option<usize>,
     repo_only: bool,
+    llm_filter_local_results: bool,
+    compress_results: bool,
     stream: bool,
 ) -> Result<()> {
     let repo_root = repo.repo_root();
@@ -30,6 +34,8 @@ pub async fn run(
             max_web_results,
             false,
             !repo_only,
+            llm_filter_local_results,
+            compress_results,
         )
         .await;
     }
@@ -56,6 +62,7 @@ pub async fn run(
         limit,
         web_limit: max_web_results,
         force_web: false,
+        llm_filter_local_results,
         indexer: &server,
         libs_indexer: libs_indexer.as_ref(),
         plan,
@@ -68,12 +75,19 @@ pub async fn run(
         stream_text(&completion)?;
         return Ok(());
     }
-    let tier2_status = waterfall.tier2.status;
-    let memory_context = waterfall.memory_context;
-    let mut response = waterfall.search_response;
-    response.web_discovery = Some(tier2_status);
-    response.memory_context = memory_context;
-    println!("{}", serde_json::to_string_pretty(&response)?);
+    if compress_results {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&build_compressed_response(&waterfall))?
+        );
+    } else {
+        let tier2_status = waterfall.tier2.status;
+        let memory_context = waterfall.memory_context;
+        let mut response = waterfall.search_response;
+        response.web_discovery = Some(tier2_status);
+        response.memory_context = memory_context;
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    }
     Ok(())
 }
 
@@ -118,6 +132,47 @@ fn stream_text(text: &str) -> Result<()> {
     Ok(())
 }
 
+fn build_compressed_response(waterfall: &WaterfallResult) -> CompressedResponse {
+    let search = &waterfall.search_response;
+    let local_score = search
+        .top_score_normalized
+        .or_else(|| search.hits.first().map(|hit| crate::search::normalize_score(hit.score)));
+    let local = local_score.map(|score| CompressedLocal { score });
+    let web = best_web_summary(search.web_context.as_deref());
+    CompressedResponse {
+        results: CompressedResults { local, web },
+    }
+}
+
+fn best_web_summary(
+    web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
+) -> Option<CompressedWeb> {
+    let items = web_context?;
+    let mut best: Option<&crate::orchestrator::web::WebFetchResult> = None;
+    for item in items {
+        if item.relevance_score.is_none() && item.ai_digested_content.is_none() {
+            continue;
+        }
+        match best {
+            Some(current) => {
+                if item.relevance_score.unwrap_or(0.0)
+                    > current.relevance_score.unwrap_or(0.0)
+                {
+                    best = Some(item);
+                }
+            }
+            None => best = Some(item),
+        }
+    }
+    let best = best?;
+    let score = best.relevance_score.unwrap_or(0.0);
+    let ai_digested_content = best.ai_digested_content.clone();
+    Some(CompressedWeb {
+        score,
+        ai_digested_content,
+    })
+}
+
 #[derive(Serialize)]
 struct ChatCompletionRequest {
     model: Option<String>,
@@ -142,6 +197,35 @@ struct DocdexOptions {
     max_web_results: Option<usize>,
     force_web: Option<bool>,
     include_libs: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    llm_filter_local_results: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compress_results: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct CompressedResponse {
+    results: CompressedResults,
+}
+
+#[derive(Serialize)]
+struct CompressedResults {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local: Option<CompressedLocal>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web: Option<CompressedWeb>,
+}
+
+#[derive(Serialize)]
+struct CompressedLocal {
+    score: f32,
+}
+
+#[derive(Serialize)]
+struct CompressedWeb {
+    score: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ai_digested_content: Option<String>,
 }
 
 pub(crate) async fn stream_via_http(
@@ -151,6 +235,8 @@ pub(crate) async fn stream_via_http(
     max_web_results: Option<usize>,
     force_web: bool,
     include_libs: bool,
+    llm_filter_local_results: bool,
+    compress_results: bool,
 ) -> Result<()> {
     let config = config::AppConfig::load_default()?;
     let bind_addr = config.server.http_bind_addr.trim();
@@ -177,6 +263,8 @@ pub(crate) async fn stream_via_http(
             max_web_results,
             force_web: Some(force_web),
             include_libs: Some(include_libs),
+            llm_filter_local_results: Some(llm_filter_local_results),
+            compress_results: Some(compress_results),
         }),
     };
 

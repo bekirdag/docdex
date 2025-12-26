@@ -26,6 +26,7 @@ pub struct WaterfallRequest<'a> {
     pub limit: usize,
     pub web_limit: Option<usize>,
     pub force_web: bool,
+    pub llm_filter_local_results: bool,
     pub indexer: &'a Indexer,
     pub libs_indexer: Option<&'a LibsIndexer>,
     pub plan: WaterfallPlan,
@@ -66,6 +67,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
         intent,
         search_response.hits,
         search_response.top_score_normalized,
+        request.llm_filter_local_results,
     )
     .await;
     let mut top_score = search_response.hits.first().map(|hit| hit.score);
@@ -85,6 +87,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
         search_response.top_score_normalized,
         local_match_ratio,
         request.force_web,
+        request.llm_filter_local_results,
     );
     let metrics = metrics::global();
     if should_run_tier2 {
@@ -111,6 +114,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
                 search_response.top_score_normalized,
                 local_match_ratio,
                 request.force_web,
+                request.llm_filter_local_results,
             ),
             tier2_unavailable: None,
         }
@@ -160,6 +164,7 @@ async fn run_tier2(
                 request.web_limit,
                 request.force_web,
                 &request.plan.web_gate,
+                request.llm_filter_local_results,
             )
             .await?;
             Ok::<_, anyhow::Error>(Some(response))
@@ -189,6 +194,7 @@ async fn run_tier2(
             top_score_normalized,
             local_match_ratio,
             request.force_web,
+            request.llm_filter_local_results,
         )
     };
 

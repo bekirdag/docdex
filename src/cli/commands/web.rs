@@ -112,7 +112,17 @@ pub async fn run_rag(
 ) -> Result<()> {
     let repo_root = repo.repo_root();
     if stream {
-        return query::stream_via_http(&repo_root, &query, limit, None, true, !repo_only).await;
+        return query::stream_via_http(
+            &repo_root,
+            &query,
+            limit,
+            None,
+            true,
+            !repo_only,
+            false,
+            false,
+        )
+        .await;
     }
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
@@ -137,6 +147,7 @@ pub async fn run_rag(
         limit,
         web_limit: None,
         force_web: true,
+        llm_filter_local_results: false,
         indexer: &server,
         libs_indexer: libs_indexer.as_ref(),
         plan,

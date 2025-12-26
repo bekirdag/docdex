@@ -28,7 +28,7 @@ use which::which;
 
 const DEFAULT_WEB_TRIGGER_THRESHOLD: f32 = 0.45;
 const DEFAULT_WEB_MIN_MATCH_RATIO: f32 = 0.2;
-const DEFAULT_LOCAL_RELEVANCE_THRESHOLD: f32 = 0.6;
+const DEFAULT_LOCAL_RELEVANCE_THRESHOLD: f32 = 0.7;
 const MAX_WEB_SUMMARY_TOKENS: u32 = 256;
 const WEB_SUMMARY_TIMEOUT_MS: u64 = 15_000;
 const MAX_QUERY_CATEGORY_TOKENS: u32 = 48;
@@ -45,7 +45,6 @@ const WEB_MAX_BATCHES: usize = 2;
 const MAX_CODE_BLOCKS: usize = 4;
 const MAX_CODE_BLOCK_CHARS: usize = 1800;
 const WEB_GOOD_RELEVANCE_SCORE: f32 = 0.7;
-const WEB_EARLY_STOP_SCORE: f32 = 0.5;
 const WEB_DISCOVERY_MULTIPLIER: usize = 4;
 const WEB_DISCOVERY_MIN_RESULTS: usize = 4;
 const WEB_DISCOVERY_MAX_QUERY_TOKENS: usize = 6;
@@ -76,7 +75,6 @@ const MATCH_STOPWORDS_GENERIC: &[&str] = &[
 ];
 
 const DOMAIN_STOPWORDS: &[&str] = &[
-    "css", "html", "javascript", "js", "plain", "simple",
     "code", "sample", "samples", "example", "examples", "tutorial", "tutorials",
     "guide", "guides", "docs", "documentation", "reference", "references",
     "overview", "intro", "introduction", "getting", "started", "learn", "learning",
@@ -107,27 +105,6 @@ struct CachedQueryCategory {
 
 static QUERY_CATEGORY_CACHE: Lazy<Mutex<HashMap<String, CachedQueryCategory>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
-
-static CODE_BLOCK_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"(?is)<pre[^>]*>(.*?)</pre>").expect("valid code block regex")
-});
-
-static CODE_TAG_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"(?is)<code[^>]*>(.*?)</code>").expect("valid code tag regex")
-});
-
-static TAG_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"(?is)<[^>]+>").expect("valid tag regex")
-});
-
-static BLOCK_BREAK_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"(?is)<br\\s*/?>|</(p|div|li|section|article|h[1-6]|ul|ol)>")
-        .expect("valid block break regex")
-});
-
-static SCRIPT_STYLE_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"(?is)<(script|style)[^>]*>.*?</\\1>").expect("valid script/style regex")
-});
 
 static ANSI_ESCAPE_RE: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").expect("valid ansi escape regex")
@@ -428,6 +405,14 @@ struct WebSummaryCacheEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct WebPhraseCacheEntry {
+    query_hash: String,
+    fetched_at_epoch_ms: u128,
+    ai_digested_kind: String,
+    ai_digested_content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct DomainQualityEntry {
     host: String,
     fail_count: u32,
@@ -506,19 +491,49 @@ impl WebSummaryClient {
             return None;
         }
         let intent = detect_query_intent(query);
+        let allow_code = (matches!(intent, QueryIntent::Code)
+            || matches!(category, QueryCategory::CodeExample))
+            && !code_blocks.is_empty();
         let prompt = build_summary_prompt(query, category, trimmed, code_blocks);
         let result = self
             .client
             .generate(&self.model, &prompt, self.max_tokens, self.timeout)
             .await
             .ok()?;
-        let parsed: WebEvalResponse = parse_json_response(&result)?;
+        let parsed: WebEvalResponse = match parse_json_response(&result) {
+            Some(parsed) => parsed,
+            None => {
+                if let Some(parsed) = parse_web_eval_response_lenient(&result) {
+                    parsed
+                } else {
+                    let raw = result.trim();
+                    if raw.is_empty() {
+                        return None;
+                    }
+                    let kind = if allow_code && looks_like_code_output(raw) {
+                        "code"
+                    } else {
+                        "summary"
+                    };
+                    let output = if kind == "code" {
+                        clean_code_text(raw)
+                    } else {
+                        clean_summary_text(raw)
+                    };
+                    if output.is_empty() {
+                        return None;
+                    }
+                    return Some(WebEvalOutput {
+                        relevance_score: 0.4,
+                        kind: kind.to_string(),
+                        output,
+                    });
+                }
+            }
+        };
         let relevant = parsed.relevant;
         let score = parsed.score.clamp(0.0, 1.0);
         let mut kind = parsed.kind.trim().to_ascii_lowercase();
-        let allow_code = (matches!(intent, QueryIntent::Code)
-            || matches!(category, QueryCategory::CodeExample))
-            && !code_blocks.is_empty();
         if kind == "code" && !allow_code {
             kind = "summary".to_string();
         }
@@ -683,7 +698,7 @@ fn build_summary_prompt(
         }
     }
     prompt.push_str(
-        "\nInstructions:\n- Decide if the page is relevant to the query.\n- If relevant and the query/category asks for code/example, output ONLY the code from the provided code blocks as Markdown fenced code blocks. Do not add or rewrite code.\n- If relevant and not code-focused, output the best and shortest direct answer possible in plain text. No bullet points, no preface.\n- If irrelevant, set relevant=false and output empty string.\n\nReturn JSON ONLY in this shape:\n{\"relevant\":true|false,\"score\":0..1,\"kind\":\"summary\"|\"code\",\"output\":\"...\"}\n",
+        "\nInstructions:\n- Decide if the page is relevant to the query.\n- If relevant and the query/category asks for code/example, output ONLY the code from the provided code blocks as Markdown fenced code blocks. Do not add or rewrite code.\n- If relevant and the query/category asks for code/example but no code blocks were extracted, output the best and shortest direct answer possible in plain text.\n- If relevant and not code-focused, output the best and shortest direct answer possible in plain text. No bullet points, no preface.\n- If irrelevant, set relevant=false and output empty string.\n\nReturn JSON ONLY in this shape:\n{\"relevant\":true|false,\"score\":0..1,\"kind\":\"summary\"|\"code\",\"output\":\"...\"}\n",
     );
     prompt
 }
@@ -817,7 +832,7 @@ fn is_code_marker_line(line: &str) -> bool {
 
 fn strip_copy_prefix(line: &str) -> &str {
     let lower = line.to_ascii_lowercase();
-    let prefixes = ["copy code", "copycode", "javascriptcopy", "textcopy", "copy"];
+    let prefixes = ["copy code", "copycode", "textcopy", "copy"];
     for prefix in prefixes {
         if lower.starts_with(prefix) {
             return line[prefix.len()..].trim_start();
@@ -854,7 +869,180 @@ fn parse_json_response<T: serde::de::DeserializeOwned>(text: &str) -> Option<T> 
     if end <= start {
         return None;
     }
-    serde_json::from_str::<T>(&trimmed[start..=end]).ok()
+    let slice = &trimmed[start..=end];
+    if let Ok(parsed) = serde_json::from_str::<T>(slice) {
+        return Some(parsed);
+    }
+    let fixed = escape_unescaped_json_newlines(slice);
+    serde_json::from_str::<T>(&fixed).ok()
+}
+
+fn parse_web_eval_response_lenient(raw: &str) -> Option<WebEvalResponse> {
+    let output = extract_loose_output_field(raw)?;
+    let kind = extract_loose_string_field(raw, "kind")
+        .unwrap_or_else(|| "summary".to_string())
+        .to_ascii_lowercase();
+    let relevant = extract_loose_bool_field(raw, "relevant").unwrap_or(true);
+    let score = extract_loose_float_field(raw, "score").unwrap_or(0.5);
+    Some(WebEvalResponse {
+        relevant,
+        score,
+        kind,
+        output,
+    })
+}
+
+fn extract_loose_output_field(raw: &str) -> Option<String> {
+    let lower = raw.to_ascii_lowercase();
+    let key = "\"output\"";
+    let key_pos = lower.find(key)?;
+    let after_key = &raw[key_pos + key.len()..];
+    let colon_pos = after_key.find(':')?;
+    let mut idx = key_pos + key.len() + colon_pos + 1;
+    let bytes = raw.as_bytes();
+    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+        idx += 1;
+    }
+    if idx >= bytes.len() {
+        return None;
+    }
+    if bytes[idx] == b'"' {
+        idx += 1;
+        let end = raw.rfind('"')?;
+        if end <= idx {
+            return None;
+        }
+        return Some(raw[idx..end].to_string());
+    }
+    let trimmed = raw[idx..].trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn extract_loose_string_field(raw: &str, field: &str) -> Option<String> {
+    let lower = raw.to_ascii_lowercase();
+    let key = format!("\"{}\"", field);
+    let key_pos = lower.find(&key)?;
+    let after_key = &raw[key_pos + key.len()..];
+    let colon_pos = after_key.find(':')?;
+    let mut idx = key_pos + key.len() + colon_pos + 1;
+    let bytes = raw.as_bytes();
+    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+        idx += 1;
+    }
+    if idx >= bytes.len() {
+        return None;
+    }
+    if bytes[idx] == b'"' {
+        idx += 1;
+        let rest = &raw[idx..];
+        if let Some(end) = rest.find('"') {
+            return Some(rest[..end].to_string());
+        }
+    }
+    None
+}
+
+fn extract_loose_bool_field(raw: &str, field: &str) -> Option<bool> {
+    let lower = raw.to_ascii_lowercase();
+    let key = format!("\"{}\"", field);
+    let key_pos = lower.find(&key)?;
+    let after_key = &lower[key_pos + key.len()..];
+    let colon_pos = after_key.find(':')?;
+    let mut idx = key_pos + key.len() + colon_pos + 1;
+    let bytes = lower.as_bytes();
+    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+        idx += 1;
+    }
+    if lower[idx..].starts_with("true") {
+        return Some(true);
+    }
+    if lower[idx..].starts_with("false") {
+        return Some(false);
+    }
+    None
+}
+
+fn extract_loose_float_field(raw: &str, field: &str) -> Option<f32> {
+    let lower = raw.to_ascii_lowercase();
+    let key = format!("\"{}\"", field);
+    let key_pos = lower.find(&key)?;
+    let after_key = &lower[key_pos + key.len()..];
+    let colon_pos = after_key.find(':')?;
+    let mut idx = key_pos + key.len() + colon_pos + 1;
+    let bytes = lower.as_bytes();
+    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+        idx += 1;
+    }
+    let rest = &lower[idx..];
+    let mut end = 0usize;
+    for (i, ch) in rest.char_indices() {
+        if ch.is_ascii_digit() || ch == '.' {
+            end = i + ch.len_utf8();
+        } else if end > 0 {
+            break;
+        } else if ch == '-' {
+            end = i + ch.len_utf8();
+        } else if ch.is_ascii_whitespace() {
+            continue;
+        } else {
+            break;
+        }
+    }
+    if end == 0 {
+        return None;
+    }
+    rest[..end].trim().parse::<f32>().ok()
+}
+
+fn escape_unescaped_json_newlines(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    for ch in text.chars() {
+        if in_string {
+            if escaped {
+                out.push(ch);
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                out.push(ch);
+                escaped = true;
+                continue;
+            }
+            if ch == '"' {
+                out.push(ch);
+                in_string = false;
+                continue;
+            }
+            match ch {
+                '\n' => {
+                    out.push_str("\\n");
+                    continue;
+                }
+                '\r' => {
+                    out.push_str("\\r");
+                    continue;
+                }
+                '\t' => {
+                    out.push_str("\\t");
+                    continue;
+                }
+                _ => {}
+            }
+            out.push(ch);
+        } else {
+            if ch == '"' {
+                in_string = true;
+            }
+            out.push(ch);
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -883,28 +1071,35 @@ pub async fn run_web_research(
     force_web: bool,
     gate: &WebGateConfig,
     llm_filter_local_results: bool,
+    skip_local_search: bool,
+    disable_web_cache: bool,
 ) -> Result<WebResearchResponse, anyhow::Error> {
     let query = query.trim();
     let intent = detect_query_intent(query);
-    let search_response = search::run_query(indexer, libs_indexer, query, limit).await?;
-    let original_top_score_normalized = search_response.top_score_normalized;
-    let mut hits = filter_local_hits_with_llm(
-        query,
-        intent,
-        search_response.hits,
-        original_top_score_normalized,
-        llm_filter_local_results,
-    )
-    .await;
-    let mut top_score = hits.first().map(|hit| hit.score);
-    let mut top_score_normalized = top_score.map(search::normalize_score);
-    let mut local_match_ratio = local_match_ratio(query, &hits);
-    if matches!(intent, QueryIntent::Code) && local_match_ratio == Some(0.0) {
-        hits.clear();
-        top_score = None;
-        top_score_normalized = None;
-        local_match_ratio = Some(0.0);
-    }
+    let (hits, top_score, top_score_normalized, local_match_ratio) = if skip_local_search {
+        (Vec::new(), None, None, None)
+    } else {
+        let search_response = search::run_query(indexer, libs_indexer, query, limit).await?;
+        let original_top_score_normalized = search_response.top_score_normalized;
+        let mut hits = filter_local_hits_with_llm(
+            query,
+            intent,
+            search_response.hits,
+            original_top_score_normalized,
+            llm_filter_local_results,
+        )
+        .await;
+        let mut top_score = hits.first().map(|hit| hit.score);
+        let mut top_score_normalized = top_score.map(search::normalize_score);
+        let mut local_match_ratio = local_match_ratio(query, &hits);
+        if matches!(intent, QueryIntent::Code) && local_match_ratio == Some(0.0) {
+            hits.clear();
+            top_score = None;
+            top_score_normalized = None;
+            local_match_ratio = Some(0.0);
+        }
+        (hits, top_score, top_score_normalized, local_match_ratio)
+    };
     let completion = build_completion(query, &hits);
     let web_limit = resolve_web_limit(web_limit, limit);
     let web_discovery = if !gate.enabled {
@@ -961,6 +1156,7 @@ pub async fn run_web_research(
             top_score_normalized,
             local_match_ratio,
             force_web,
+            disable_web_cache,
         )
         .await
     };
@@ -1098,7 +1294,38 @@ pub(crate) async fn filter_local_hits_with_llm(
         return fallback;
     }
     filtered.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-    filtered
+    if !filtered.is_empty() {
+        return filtered;
+    }
+    let mut fallback = Vec::new();
+    for hit in &all_hits {
+        let Some((matched, ratio)) = hit_match_stats(&query_tokens, query_len, hit) else {
+            continue;
+        };
+        let overlap_ok = matched >= min_required && min_ratio.map_or(true, |min| ratio >= min);
+        let has_code = hit_has_code_markers(hit);
+        let specific_match = hit_matches_specific_token(&query_tokens, hit);
+        if code_intent {
+            if !overlap_ok || !has_code || !specific_match {
+                continue;
+            }
+        } else if !overlap_ok {
+            continue;
+        }
+        let mut adjusted = hit.clone();
+        if code_intent {
+            apply_code_intent_penalty(&mut adjusted, has_code);
+        }
+        fallback.push(adjusted);
+    }
+    fallback.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    if !fallback.is_empty() {
+        return fallback;
+    }
+    if code_intent {
+        return Vec::new();
+    }
+    all_hits
 }
 
 pub(crate) fn evaluate_gate_status(
@@ -1200,8 +1427,14 @@ async fn run_web_discovery(
     top_score_normalized: Option<f32>,
     local_match_ratio: Option<f32>,
     force_web: bool,
+    disable_web_cache: bool,
 ) -> WebDiscoveryStatus {
     let config = WebConfig::from_env();
+    let mut config = config;
+    let cache_enabled = !disable_web_cache && !config.cache_ttl.is_zero();
+    if !cache_enabled {
+        config.cache_ttl = Duration::ZERO;
+    }
     if !config.enabled {
         let unavailable = Tier2Unavailable::new(
             Tier2UnavailableReason::Disabled,
@@ -1224,6 +1457,44 @@ async fn run_web_discovery(
                 force_web,
             ),
         };
+    }
+
+    if cache_enabled && !query.trim().is_empty() {
+        if let Some(layout) = cache::cache_layout_from_config() {
+            let query_hash = phrase_cache_hash(query);
+            if let Some(entry) = read_phrase_cache(&layout, &query_hash, config.cache_ttl) {
+                let result = WebFetchResult {
+                    url: String::new(),
+                    status: None,
+                    fetched_at_epoch_ms: Some(entry.fetched_at_epoch_ms),
+                    cached: true,
+                    content: None,
+                    ai_digested_content: Some(entry.ai_digested_content),
+                    ai_digested_kind: Some(entry.ai_digested_kind),
+                    relevance_score: Some(1.0),
+                    debug_html: None,
+                    debug_dom_text: None,
+                    error: None,
+                    debug: None,
+                };
+                return WebDiscoveryStatus {
+                    status: WebDiscoveryStatusCode::Served,
+                    reason: Some("phrase_cache".to_string()),
+                    message: Some("web discovery served from exact phrase cache".to_string()),
+                    unavailable: None,
+                    discovery: None,
+                    fetches: Some(vec![result]),
+                    debug: None,
+                    gate: build_gate_meta(
+                        gate,
+                        top_score,
+                        top_score_normalized,
+                        local_match_ratio,
+                        force_web,
+                    ),
+                };
+            }
+        }
     }
 
     if !gate.browser_available {
@@ -1358,7 +1629,15 @@ async fn run_web_discovery(
                 .take(web_limit)
                 .map(|url| WebDiscoveryResult { url: url.clone() })
                 .collect();
-            let fetches = fetch_web_documents(query, &urls, &config, web_limit, query_category).await;
+            let fetches = fetch_web_documents(
+                query,
+                &urls,
+                &config,
+                web_limit,
+                query_category,
+                gate.trigger_threshold,
+            )
+            .await;
             let message = if gate.browser_available {
                 None
             } else {
@@ -1655,10 +1934,22 @@ fn is_tracking_url(raw: &str) -> bool {
     if host.is_empty() {
         return true;
     }
-    if host.ends_with("duckduckgo.com") {
-        let path = url.path();
-        if path.starts_with("/y.js") || path.starts_with("/l/") || path.starts_with("/u/") {
-            return true;
+    if let Some(query) = url.query() {
+        if query.len() > 4 {
+            for (_, value) in url.query_pairs() {
+                let val = value.trim();
+                if val.is_empty() {
+                    continue;
+                }
+                let val_lc = val.to_ascii_lowercase();
+                if val_lc.starts_with("http://")
+                    || val_lc.starts_with("https://")
+                    || val_lc.contains("http%3a")
+                    || val_lc.contains("https%3a")
+                {
+                    return true;
+                }
+            }
         }
     }
     false
@@ -1783,6 +2074,14 @@ fn hash_text(text: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
+fn phrase_cache_key(query_hash: &str) -> String {
+    format!("phrase:{query_hash}")
+}
+
+fn phrase_cache_hash(query: &str) -> String {
+    hash_text(&query.trim().to_ascii_lowercase())
+}
+
 fn summary_cache_key(query_hash: &str, content_hash: &str) -> String {
     format!("summary:{query_hash}:{content_hash}")
 }
@@ -1801,6 +2100,26 @@ fn summary_cache_entry(
     }
     let content_hash = hash_text(&content_input);
     (query_hash, content_hash)
+}
+
+fn read_phrase_cache(
+    layout: &StateLayout,
+    query_hash: &str,
+    ttl: Duration,
+) -> Option<WebPhraseCacheEntry> {
+    let key = phrase_cache_key(query_hash);
+    let payload = cache::read_cache_entry_with_ttl(layout, &key, ttl).ok()??;
+    serde_json::from_slice::<WebPhraseCacheEntry>(&payload).ok()
+}
+
+fn write_phrase_cache(
+    layout: &StateLayout,
+    query_hash: &str,
+    entry: &WebPhraseCacheEntry,
+) {
+    if let Ok(payload) = serde_json::to_vec(entry) {
+        let _ = cache::write_cache_entry(layout, &phrase_cache_key(query_hash), &payload);
+    }
 }
 
 fn read_summary_cache(
@@ -1852,6 +2171,7 @@ async fn fetch_web_documents(
     config: &WebConfig,
     target_count: usize,
     query_category: QueryCategory,
+    early_stop_score: f32,
 ) -> Vec<WebFetchResult> {
     if urls.is_empty() {
         return Vec::new();
@@ -1860,7 +2180,7 @@ async fn fetch_web_documents(
     let layout = cache::cache_layout_from_config();
     let summary_client = load_web_summary_client();
     let debug_enabled = env_boolish("DOCDEX_WEB_DEBUG").unwrap_or(false);
-    let early_stop_score = resolve_early_stop_score();
+    let early_stop_score = early_stop_score.clamp(0.0, 1.0);
     if !config
         .scraper_engine
         .trim()
@@ -2118,20 +2438,20 @@ async fn fetch_web_documents(
                             });
                             continue;
                         }
-                        let cookie_result = strip_cookie_consent_lines(&readable);
-                        if cookie_result.removed_lines > 0 && debug_enabled {
+                        let banner_result = strip_banner_lines(&readable);
+                        if banner_result.removed_lines > 0 && debug_enabled {
                             debug_notes.push(format!(
-                                "cookie/consent lines removed: {}/{}",
-                                cookie_result.removed_lines, cookie_result.total_lines
+                                "banner lines removed: {}/{}",
+                                banner_result.removed_lines, banner_result.total_lines
                             ));
                         }
-                        let cookie_only = is_cookie_only(&cookie_result);
-                        let mut readable = cookie_result.filtered;
-                        if cookie_only {
+                        let banner_only = is_banner_only(&banner_result);
+                        let mut readable = banner_result.filtered;
+                        if banner_only {
                             if debug_enabled {
-                                debug_notes.push("content appears to be cookie/consent only".to_string());
+                                debug_notes.push("content appears to be banner-only".to_string());
                             }
-                            content_error = Some("cookie/consent only".to_string());
+                            content_error = Some("banner-only".to_string());
                             content = None;
                         } else {
                             if debug_enabled && readable.trim().is_empty() {
@@ -2303,8 +2623,15 @@ async fn fetch_web_documents(
                 continue;
             }
 
+            let allow_code_summary = matches!(intent, QueryIntent::Code)
+                || matches!(query_category, QueryCategory::CodeExample);
+            let summary_blocks: Vec<String> = if allow_code_summary {
+                code_blocks.clone()
+            } else {
+                Vec::new()
+            };
             let (query_hash, content_hash) =
-                summary_cache_entry(query, content_text, &code_blocks);
+                summary_cache_entry(query, content_text, &summary_blocks);
             let cached_summary = layout
                 .as_ref()
                 .and_then(|layout| {
@@ -2316,7 +2643,7 @@ async fn fetch_web_documents(
                 Some(summary)
             } else if let Some(summary_client) = summary_client.as_ref() {
                 summary_client
-                    .evaluate(query, query_category, content_text, &code_blocks)
+                    .evaluate(query, query_category, content_text, &summary_blocks)
                     .await
             } else {
                 None
@@ -2324,27 +2651,67 @@ async fn fetch_web_documents(
 
             let evaluation = match evaluation {
                 Some(value) => value,
-                None => WebEvalOutput {
-                    relevance_score: 0.0,
-                    kind: "summary".to_string(),
-                    output: if llm_available {
-                        String::new()
-                    } else {
-                        clean_summary_text(content_text)
-                    },
-                },
+                None => {
+                    let wants_code = matches!(intent, QueryIntent::Code)
+                        || matches!(query_category, QueryCategory::CodeExample);
+                if wants_code && !code_blocks.is_empty() {
+                    let selected = select_best_code_block(query, &code_blocks)
+                        .unwrap_or_else(|| code_blocks.join("\n\n"));
+                    WebEvalOutput {
+                        relevance_score: 0.5,
+                        kind: "code".to_string(),
+                        output: selected,
+                    }
+                } else {
+                    WebEvalOutput {
+                        relevance_score: 0.0,
+                        kind: "summary".to_string(),
+                            output: if llm_available {
+                                String::new()
+                            } else {
+                                clean_summary_text(content_text)
+                            },
+                        }
+                    }
+                }
             };
             let formatted_output = format_md_output(&evaluation.kind, &evaluation.output);
-            let ai_kind = evaluation.kind.clone();
+            let mut ai_kind = evaluation.kind.clone();
             let mut summary_error = None;
-            if formatted_output.trim().is_empty() {
-                summary_error = Some("summary empty".to_string());
-            }
-            let ai_digested_content = if formatted_output.trim().is_empty() {
+            let mut ai_digested_content = if formatted_output.trim().is_empty() {
                 None
             } else {
                 Some(formatted_output)
             };
+            if ai_kind == "code" {
+                if let Some(output) = ai_digested_content.as_ref() {
+                    if !looks_like_code_output(output) {
+                        ai_digested_content = None;
+                    }
+                } else {
+                    ai_digested_content = None;
+                }
+            }
+            if ai_digested_content.is_none() {
+                if matches!(intent, QueryIntent::Code) && !code_blocks.is_empty() {
+                    let selected = select_best_code_block(query, &code_blocks)
+                        .unwrap_or_else(|| code_blocks.join("\n\n"));
+                    let fallback_code = format_md_output("code", &selected);
+                    if !fallback_code.trim().is_empty() {
+                        ai_kind = "code".to_string();
+                        ai_digested_content = Some(fallback_code);
+                    }
+                }
+            }
+            if ai_digested_content.is_none() {
+                let fallback = clean_summary_text(content_text);
+                if !fallback.trim().is_empty() {
+                    ai_kind = "summary".to_string();
+                    ai_digested_content = Some(fallback);
+                } else {
+                    summary_error = Some("summary empty".to_string());
+                }
+            }
             let ai_digested_kind = ai_digested_content.as_ref().map(|_| ai_kind.clone());
             let debug = if debug_enabled && !debug_notes.is_empty() {
                 Some(debug_notes.clone())
@@ -2469,16 +2836,32 @@ async fn fetch_web_documents(
     if all_results.len() > desired_count {
         all_results.truncate(desired_count);
     }
+    if !config.cache_ttl.is_zero() && !query.trim().is_empty() {
+        if let Some(best) = all_results.first() {
+            if let (Some(content), Some(kind)) =
+                (best.ai_digested_content.as_ref(), best.ai_digested_kind.as_ref())
+            {
+                if let Some(layout) = cache::cache_layout_from_config() {
+                    let query_hash = phrase_cache_hash(query);
+                    let fetched_at_epoch_ms =
+                        best.fetched_at_epoch_ms.unwrap_or_else(now_epoch_ms);
+                    let entry = WebPhraseCacheEntry {
+                        query_hash: query_hash.clone(),
+                        fetched_at_epoch_ms,
+                        ai_digested_kind: kind.clone(),
+                        ai_digested_content: content.clone(),
+                    };
+                    write_phrase_cache(&layout, &query_hash, &entry);
+                }
+            }
+        }
+    }
     all_results
 }
 
 fn clean_web_text(html: &str) -> String {
-    let with_breaks = BLOCK_BREAK_RE.replace_all(html, "\n");
-    let stripped_scripts = SCRIPT_STYLE_RE.replace_all(with_breaks.as_ref(), " ");
-    let stripped_tags = TAG_RE.replace_all(stripped_scripts.as_ref(), "\n");
-    let cleaned = html_unescape_text(stripped_tags.as_ref());
-    let normalized = normalize_text_spacing(&cleaned);
-    normalized
+    let cleaned = format_html_text(html);
+    normalize_text_spacing(&cleaned)
         .lines()
         .map(|line| line.trim())
         .filter(|line| !line.is_empty())
@@ -2500,15 +2883,7 @@ fn truncate_debug_html(html: &str) -> String {
     if limit == 0 {
         return html.to_string();
     }
-    let lower = html.to_ascii_lowercase();
-    let start = lower
-        .find("<body")
-        .or_else(|| lower.find("<main"))
-        .or_else(|| lower.find("<article"))
-        .or_else(|| lower.find("<div id=\"content\""))
-        .unwrap_or(0);
-    let slice = &html[start..];
-    let (snippet, _) = truncate_utf8_chars(slice, limit.max(1));
+    let (snippet, _) = truncate_utf8_chars(html, limit.max(1));
     snippet
 }
 
@@ -2581,18 +2956,105 @@ fn normalize_text_spacing(text: &str) -> String {
         if is_strict_code_line(trimmed) {
             lines.push(trimmed.to_string());
         } else {
-            lines.push(normalized);
+            let fixed = if looks_codeish(&updated) {
+                normalized
+            } else {
+                rejoin_split_words(&normalized)
+            };
+            lines.push(fixed);
         }
     }
     lines.join("\n")
 }
 
 fn strip_invisible_chars(text: &str) -> String {
-    text.replace('\u{200B}', " ")
-        .replace('\u{200C}', " ")
-        .replace('\u{200D}', " ")
-        .replace('\u{FEFF}', " ")
+    text.replace('\u{200B}', "")
+        .replace('\u{200C}', "")
+        .replace('\u{200D}', "")
+        .replace('\u{FEFF}', "")
         .replace('\u{00AD}', "")
+}
+
+fn rejoin_split_words(line: &str) -> String {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    if tokens.len() < 3 {
+        return line.to_string();
+    }
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut i = 0usize;
+    while i < tokens.len() {
+        if i + 2 < tokens.len() {
+            let prev = tokens[i];
+            let mid = tokens[i + 1];
+            let next = tokens[i + 2];
+            if should_rejoin_split(prev, mid, next) {
+                out.push(format!("{prev}{mid}{next}"));
+                i += 3;
+                continue;
+            }
+        }
+        out.push(tokens[i].to_string());
+        i += 1;
+    }
+    out.join(" ")
+}
+
+fn should_rejoin_split(prev: &str, mid: &str, next: &str) -> bool {
+    if prev.len() < 3 || next.len() < 3 || mid.len() > 2 {
+        return false;
+    }
+    if !(is_lower_word_token(prev) && is_lower_word_token(mid) && is_lower_word_token(next)) {
+        return false;
+    }
+    if is_common_stopword(prev) || is_common_stopword(next) {
+        return false;
+    }
+    let combined_len = prev.len() + mid.len() + next.len();
+    combined_len >= 8
+}
+
+fn is_lower_word_token(token: &str) -> bool {
+    !token.is_empty() && token.chars().all(|ch| ch.is_ascii_lowercase())
+}
+
+fn is_common_stopword(token: &str) -> bool {
+    matches!(
+        token,
+        "the"
+            | "and"
+            | "of"
+            | "in"
+            | "to"
+            | "for"
+            | "by"
+            | "with"
+            | "as"
+            | "on"
+            | "at"
+            | "from"
+            | "is"
+            | "are"
+            | "was"
+            | "were"
+            | "be"
+            | "been"
+            | "it"
+            | "its"
+            | "this"
+            | "that"
+            | "these"
+            | "those"
+            | "a"
+            | "an"
+            | "or"
+            | "but"
+            | "if"
+            | "than"
+            | "then"
+            | "so"
+            | "while"
+            | "when"
+    )
 }
 
 fn looks_codeish(text: &str) -> bool {
@@ -2613,27 +3075,22 @@ fn is_probable_code_line(line: &str) -> bool {
     if trimmed.starts_with("```") {
         return true;
     }
-    if trimmed.starts_with("/**") || trimmed.starts_with("///") || trimmed.starts_with("/*") {
+    if trimmed.starts_with("//") {
         return true;
     }
-    if trimmed.contains("@param")
-        || trimmed.contains("@var")
-        || trimmed.contains("@return")
-        || trimmed.contains("#[")
-        || trimmed.contains("<?php")
-    {
+    if trimmed.starts_with("/**") || trimmed.starts_with("///") || trimmed.starts_with("/*") {
         return true;
     }
     let symbols = ['{', '}', ';', '=', '<', '>', '[', ']', '(', ')'];
     let symbol_hits = trimmed.chars().filter(|ch| symbols.contains(ch)).count();
+    let leading_ws = line.len().saturating_sub(line.trim_start().len());
     if symbol_hits >= 2 {
         return true;
     }
-    trimmed.contains("::")
-        || trimmed.contains("->")
-        || trimmed.contains("=>")
-        || trimmed.contains("$")
-        || trimmed.contains("new ")
+    if leading_ws >= 2 && symbol_hits >= 1 {
+        return true;
+    }
+    trimmed.contains("::") || trimmed.contains("->") || trimmed.contains("=>")
 }
 
 fn is_strict_code_line(line: &str) -> bool {
@@ -2655,38 +3112,12 @@ fn is_strict_code_line(line: &str) -> bool {
     if (symbol_hits >= 6 && len <= 120) || (symbol_hits >= 4 && len <= 60) {
         return true;
     }
-    if trimmed.contains("::") || trimmed.contains("->") || trimmed.contains("=>") {
-        return true;
-    }
-    if trimmed.contains("<?php") {
-        return true;
-    }
-    if trimmed.contains('$') && (trimmed.contains("->") || trimmed.contains("::")) {
-        return true;
-    }
-    false
+    trimmed.contains("::") || trimmed.contains("->") || trimmed.contains("=>")
 }
 
 fn extract_code_blocks(html: &str) -> Vec<String> {
-    let mut blocks = Vec::new();
-    let mut seen = HashSet::new();
-    for caps in CODE_BLOCK_RE.captures_iter(html) {
-        let raw = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
-        push_code_block(&mut blocks, &mut seen, raw, false);
-        if blocks.len() >= MAX_CODE_BLOCKS {
-            break;
-        }
-    }
-    if blocks.len() < MAX_CODE_BLOCKS {
-        for caps in CODE_TAG_RE.captures_iter(html) {
-            let raw = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
-            push_code_block(&mut blocks, &mut seen, raw, true);
-            if blocks.len() >= MAX_CODE_BLOCKS {
-                break;
-            }
-        }
-    }
-    blocks
+    let formatted = format_html_text(html);
+    extract_probable_code_blocks(&formatted)
 }
 
 fn extract_probable_code_blocks(text: &str) -> Vec<String> {
@@ -2698,7 +3129,7 @@ fn extract_probable_code_blocks(text: &str) -> Vec<String> {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             if !current.is_empty() {
-                if code_lines >= 2 || block_has_annotation_markers(&current) {
+                if code_lines >= 2 || block_has_code_shape(&current) {
                     let joined = current.join("\n");
                     push_code_block(&mut blocks, &mut seen, &joined, true);
                     if blocks.len() >= MAX_CODE_BLOCKS {
@@ -2714,7 +3145,7 @@ fn extract_probable_code_blocks(text: &str) -> Vec<String> {
             code_lines += 1;
             current.push(trimmed.to_string());
         } else if !current.is_empty() {
-            if code_lines >= 2 || block_has_annotation_markers(&current) {
+            if code_lines >= 2 || block_has_code_shape(&current) {
                 let joined = current.join("\n");
                 push_code_block(&mut blocks, &mut seen, &joined, true);
                 if blocks.len() >= MAX_CODE_BLOCKS {
@@ -2725,7 +3156,7 @@ fn extract_probable_code_blocks(text: &str) -> Vec<String> {
             code_lines = 0;
         }
     }
-    if !current.is_empty() && (code_lines >= 2 || block_has_annotation_markers(&current)) {
+    if !current.is_empty() && (code_lines >= 2 || block_has_code_shape(&current)) {
         let joined = current.join("\n");
         push_code_block(&mut blocks, &mut seen, &joined, true);
         if blocks.len() >= MAX_CODE_BLOCKS {
@@ -2735,16 +3166,34 @@ fn extract_probable_code_blocks(text: &str) -> Vec<String> {
     blocks
 }
 
-fn block_has_annotation_markers(lines: &[String]) -> bool {
-    lines.iter().any(|line| {
-        let trimmed = line.trim();
-        trimmed.contains("@param")
-            || trimmed.contains("@var")
-            || trimmed.contains("@return")
-            || trimmed.contains("#[")
-            || trimmed.starts_with("/**")
-            || trimmed.contains("<?php")
-    })
+fn block_has_code_shape(lines: &[String]) -> bool {
+    let mut symbol_hits = 0usize;
+    let mut total_chars = 0usize;
+    let mut indented = 0usize;
+    for line in lines {
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            continue;
+        }
+        total_chars += trimmed.len();
+        if line.len() > trimmed.len() + 1 {
+            indented += 1;
+        }
+        for ch in trimmed.chars() {
+            if matches!(ch, '{' | '}' | ';' | '=' | '<' | '>' | '[' | ']' | '(' | ')' | ':' | ',')
+            {
+                symbol_hits += 1;
+            }
+        }
+    }
+    if total_chars == 0 {
+        return false;
+    }
+    let symbol_ratio = symbol_hits as f32 / total_chars as f32;
+    if indented >= 2 && symbol_hits >= 3 {
+        return true;
+    }
+    symbol_ratio >= 0.06 && total_chars >= 80
 }
 
 fn push_code_block(
@@ -2753,8 +3202,7 @@ fn push_code_block(
     raw: &str,
     require_blocklike: bool,
 ) {
-    let stripped = TAG_RE.replace_all(raw, "");
-    let unescaped = html_unescape_text(stripped.as_ref());
+    let unescaped = html_unescape_text(raw);
     let normalized = unescaped.replace("\r\n", "\n");
     let trimmed = normalized.trim();
     if trimmed.is_empty() {
@@ -2833,34 +3281,12 @@ fn is_tiny_code_fragment(text: &str) -> bool {
     if len < 12 {
         return true;
     }
-    let lowered = trimmed.to_ascii_lowercase();
     let has_statement_markers = trimmed.contains(';')
         || trimmed.contains('=')
         || trimmed.contains('{')
         || trimmed.contains('}')
         || trimmed.contains("=>")
-        || trimmed.contains("->")
-        || lowered.starts_with("return ")
-        || lowered.starts_with("if ")
-        || lowered.starts_with("for ")
-        || lowered.starts_with("while ")
-        || lowered.starts_with("match ")
-        || lowered.starts_with("switch ")
-        || lowered.starts_with("case ")
-        || lowered.starts_with("func ")
-        || lowered.starts_with("fn ")
-        || lowered.starts_with("def ")
-        || lowered.starts_with("class ")
-        || lowered.starts_with("struct ")
-        || lowered.starts_with("enum ")
-        || lowered.starts_with("const ")
-        || lowered.starts_with("let ")
-        || lowered.starts_with("var ")
-        || lowered.starts_with("public ")
-        || lowered.starts_with("private ")
-        || lowered.starts_with("protected ")
-        || lowered.starts_with("import ")
-        || lowered.starts_with("export ");
+        || trimmed.contains("->");
     if has_statement_markers {
         return false;
     }
@@ -2913,26 +3339,6 @@ fn is_strong_code_sample(text: &str) -> bool {
     }
     if trimmed.len() < 18 {
         return false;
-    }
-    let lowered = trimmed.to_ascii_lowercase();
-    let keywords = [
-        "return ",
-        "const ",
-        "let ",
-        "var ",
-        "function ",
-        "class ",
-        "struct ",
-        "enum ",
-        "fn ",
-        "def ",
-        "import ",
-        "from ",
-        "package ",
-        "use ",
-    ];
-    if keywords.iter().any(|kw| lowered.contains(kw)) {
-        return true;
     }
     if trimmed.contains("=>") || trimmed.contains("->") {
         return true;
@@ -3333,10 +3739,18 @@ async fn classify_query_category(query: &str) -> (QueryCategory, QueryCategorySo
         }
         return (heuristic, source);
     };
-    let (category, source) = match client.evaluate(query).await {
+    let intent = detect_query_intent(query);
+    let (mut category, mut source) = match client.evaluate(query).await {
         Some(category) => (category, QueryCategorySource::Llm),
         None => (heuristic, QueryCategorySource::Heuristic),
     };
+    if matches!(category, QueryCategory::CodeExample)
+        && !matches!(intent, QueryIntent::Code)
+        && !matches!(heuristic, QueryCategory::CodeExample)
+    {
+        category = heuristic;
+        source = QueryCategorySource::Heuristic;
+    }
     if let Ok(mut cache) = QUERY_CATEGORY_CACHE.lock() {
         cache.insert(
             query_key,
@@ -3364,8 +3778,202 @@ fn code_block_score(blocks: &[String]) -> f32 {
     (0.6 * line_score + 0.4 * char_score).clamp(0.0, 1.0)
 }
 
+fn score_code_block(block: &str) -> f32 {
+    let total_chars = block.len();
+    let total_lines = block.lines().count();
+    let char_score = (total_chars as f32 / 800.0).clamp(0.0, 1.0);
+    let line_score = (total_lines as f32 / 24.0).clamp(0.0, 1.0);
+    (0.6 * line_score + 0.4 * char_score).clamp(0.0, 1.0)
+}
+
+fn select_best_code_block(query: &str, blocks: &[String]) -> Option<String> {
+    if blocks.is_empty() {
+        return None;
+    }
+    let mut candidates: Vec<&str> = Vec::new();
+    for block in blocks {
+        if is_viable_code_block(block) {
+            candidates.push(block.as_str());
+        }
+    }
+    let source: Vec<&str> = if candidates.is_empty() {
+        blocks.iter().map(|b| b.as_str()).collect()
+    } else {
+        candidates
+    };
+    let tokens = tokenize_terms(&query.to_ascii_lowercase());
+    let token_count = tokens.len();
+    let mut best_score = -1.0f32;
+    let mut best_block: Option<&str> = None;
+    for block in source {
+        let lowered = block.to_ascii_lowercase();
+        let mut matched = 0usize;
+        if token_count > 0 {
+            for token in &tokens {
+                if token.len() < 3 {
+                    continue;
+                }
+                if lowered.contains(token) {
+                    matched += 1;
+                }
+            }
+        }
+        let overlap = if token_count == 0 {
+            0.0
+        } else {
+            matched as f32 / token_count as f32
+        };
+        let base = score_code_block(block);
+        let line_count = block.lines().count();
+        let length_factor = if line_count > 140 {
+            0.8
+        } else if line_count > 80 {
+            0.9
+        } else {
+            1.0
+        };
+        let mut symbol_hits = 0usize;
+        let mut total_chars = 0usize;
+        let mut indented = 0usize;
+        for line in block.lines() {
+            let trimmed = line.trim_end();
+            if trimmed.is_empty() {
+                continue;
+            }
+            total_chars += trimmed.len();
+            if line.len() > trimmed.len() + 1 {
+                indented += 1;
+            }
+            for ch in trimmed.chars() {
+                if matches!(
+                    ch,
+                    '{' | '}' | ';' | '=' | '<' | '>' | '[' | ']' | '(' | ')' | ':' | ','
+                ) {
+                    symbol_hits += 1;
+                }
+            }
+        }
+        let symbol_ratio = if total_chars == 0 {
+            0.0
+        } else {
+            symbol_hits as f32 / total_chars as f32
+        };
+        let indent_ratio = if line_count == 0 {
+            0.0
+        } else {
+            indented as f32 / line_count as f32
+        };
+        let structure_bonus = ((symbol_ratio * 1.4) + (indent_ratio * 0.6)).clamp(0.0, 1.0) * 0.2;
+        let score = if token_count == 0 {
+            base * length_factor + structure_bonus
+        } else {
+            (0.6 * overlap + 0.4 * base) * length_factor + structure_bonus
+        };
+        if score > best_score {
+            best_score = score;
+            best_block = Some(block);
+        }
+    }
+    best_block.map(|value| value.to_string())
+}
+
+fn looks_like_code_output(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if is_probable_code_block(trimmed) {
+        return true;
+    }
+    let mut symbol_hits = 0usize;
+    let mut total = 0usize;
+    let mut indented = 0usize;
+    for line in trimmed.lines().take(60) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        total += line.len();
+        if line.len() > line.trim_start().len() + 1 {
+            indented += 1;
+        }
+        for ch in line.chars() {
+            if matches!(
+                ch,
+                '{' | '}' | ';' | '=' | '<' | '>' | '[' | ']' | '(' | ')' | ':' | ','
+            ) {
+                symbol_hits += 1;
+            }
+        }
+    }
+    if total > 0 {
+        let ratio = symbol_hits as f32 / total as f32;
+        if ratio >= 0.08 && total >= 40 {
+            return true;
+        }
+        if indented >= 3 {
+            return true;
+        }
+    }
+    let mut code_lines = 0usize;
+    let mut total_lines = 0usize;
+    for line in trimmed.lines().take(20) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        total_lines += 1;
+        if is_probable_code_line(line) {
+            code_lines += 1;
+        }
+    }
+    total_lines > 0 && (code_lines * 2 >= total_lines)
+}
+
+fn is_viable_code_block(block: &str) -> bool {
+    let line_count = block.lines().count();
+    if line_count < 4 {
+        return false;
+    }
+    let mut code_lines = 0usize;
+    let mut symbol_hits = 0usize;
+    let mut total_chars = 0usize;
+    let mut indented = 0usize;
+    for line in block.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            continue;
+        }
+        total_chars += trimmed.len();
+        if line.len() > trimmed.len() + 1 {
+            indented += 1;
+        }
+        if is_probable_code_line(trimmed) {
+            code_lines += 1;
+        }
+        for ch in trimmed.chars() {
+            if matches!(
+                ch,
+                '{' | '}' | ';' | '=' | '<' | '>' | '[' | ']' | '(' | ')' | ':' | ','
+            ) {
+                symbol_hits += 1;
+            }
+        }
+    }
+    if code_lines * 2 >= line_count {
+        return true;
+    }
+    if total_chars == 0 {
+        return false;
+    }
+    let symbol_ratio = symbol_hits as f32 / total_chars as f32;
+    if indented >= 2 && symbol_hits >= 3 {
+        return true;
+    }
+    symbol_ratio >= 0.06 && total_chars >= 120
+}
+
 fn filter_boilerplate_text(_query: &str, text: &str, phrases: &[String]) -> String {
     let mut kept = Vec::new();
+    let mut seen = HashSet::new();
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -3375,19 +3983,23 @@ fn filter_boilerplate_text(_query: &str, text: &str, phrases: &[String]) -> Stri
         if is_boilerplate_line(trimmed, &lower, phrases) {
             continue;
         }
+        let key = normalize_text_key(trimmed);
+        if !key.is_empty() && !seen.insert(key) {
+            continue;
+        }
         kept.push(trimmed.to_string());
     }
     kept.join("\n")
 }
 
 #[derive(Debug, Clone)]
-struct CookieFilterResult {
+struct BannerFilterResult {
     filtered: String,
     removed_lines: usize,
     total_lines: usize,
 }
 
-fn strip_cookie_consent_lines(text: &str) -> CookieFilterResult {
+fn strip_banner_lines(text: &str) -> BannerFilterResult {
     let mut kept = Vec::new();
     let mut removed = 0usize;
     let mut total = 0usize;
@@ -3397,20 +4009,20 @@ fn strip_cookie_consent_lines(text: &str) -> CookieFilterResult {
             continue;
         }
         total += 1;
-        if is_cookie_consent_line(trimmed) {
+        if is_banner_line(trimmed) {
             removed += 1;
             continue;
         }
         kept.push(trimmed);
     }
-    CookieFilterResult {
+    BannerFilterResult {
         filtered: kept.join("\n"),
         removed_lines: removed,
         total_lines: total,
     }
 }
 
-fn is_cookie_only(result: &CookieFilterResult) -> bool {
+fn is_banner_only(result: &BannerFilterResult) -> bool {
     if result.total_lines == 0 {
         return false;
     }
@@ -3427,45 +4039,23 @@ fn is_cookie_only(result: &CookieFilterResult) -> bool {
     removed_ratio >= 0.6 && remaining.len() < 200 && remaining_words < 40
 }
 
-fn is_cookie_consent_line(line: &str) -> bool {
-    let lower = line.to_ascii_lowercase();
-    let cookie_hit = lower.contains("cookie");
-    let consent_hit = lower.contains("consent")
-        || lower.contains("privacy")
-        || lower.contains("preferences")
-        || lower.contains("personalized")
-        || lower.contains("analytics")
-        || lower.contains("marketing")
-        || lower.contains("tracking");
-    let action_hit = lower.contains("accept")
-        || lower.contains("reject")
-        || lower.contains("manage")
-        || lower.contains("settings")
-        || lower.contains("agree");
-    let policy_hit = lower.contains("cookie policy")
-        || lower.contains("privacy policy")
-        || lower.contains("terms of use")
-        || lower.contains("data processing");
-    let privacy_banner_hit = lower.contains("we value your privacy")
-        || lower.contains("your privacy is important")
-        || lower.contains("privacy choices")
-        || lower.contains("privacy preferences")
-        || lower.contains("privacy settings")
-        || lower.contains("manage your privacy")
-        || lower.contains("cookie preferences")
-        || lower.contains("cookie settings")
-        || lower.contains("manage cookies")
-        || lower.contains("cookie consent");
-    let banner_hit = lower.contains("we use cookies")
-        || lower.contains("use of cookies")
-        || lower.contains("cookie notice")
-        || lower.contains("cookie banner")
-        || lower.contains("your privacy")
-        || privacy_banner_hit;
-    if (cookie_hit || privacy_banner_hit) && (consent_hit || action_hit || policy_hit || banner_hit) {
+fn is_banner_line(line: &str) -> bool {
+    let len = line.len();
+    if len == 0 {
+        return false;
+    }
+    let token_count = line.split_whitespace().count();
+    let separators = ['|', '•', '»', '›', '>', '/'];
+    let sep_count = line.chars().filter(|ch| separators.contains(ch)).count();
+    let alpha_count = line.chars().filter(|ch| ch.is_ascii_alphabetic()).count();
+    let non_alpha_ratio = 1.0 - (alpha_count as f32 / len.max(1) as f32);
+    if len < 80 && sep_count >= 2 {
         return true;
     }
-    consent_hit && action_hit && banner_hit
+    if len < 120 && non_alpha_ratio > 0.45 && token_count <= 8 {
+        return true;
+    }
+    len < 100 && token_count <= 4 && non_alpha_ratio > 0.35
 }
 
 fn boilerplate_ratio(text: &str, phrases: &[String]) -> f32 {
@@ -3512,53 +4102,36 @@ fn should_skip_status(status: Option<u16>) -> bool {
 }
 
 fn is_js_challenge(html: &str, readable_text: &str) -> bool {
-    let lower = html.to_ascii_lowercase();
-    let patterns = [
-        "just a moment",
-        "enable javascript",
-        "checking your browser",
-        "verify you are human",
-        "cloudflare",
-        "attention required",
-        "captcha",
-        "cf-challenge",
-        "ddos protection",
-        "access denied",
-    ];
-    let mut hits = 0usize;
-    for pat in patterns {
-        if lower.contains(pat) {
-            hits += 1;
-        }
-    }
-    if hits < 2 {
+    let trimmed = readable_text.trim();
+    let text_len = trimmed.chars().count();
+    let html_len = html.chars().count();
+    if html_len < 500 {
         return false;
     }
-    let trimmed = readable_text.trim();
-    if trimmed.is_empty() {
+    let density = text_len as f32 / html_len.max(1) as f32;
+    let lower = html.to_ascii_lowercase();
+    let script_count = lower.matches("<script").count();
+    let noscript_count = lower.matches("<noscript").count();
+    let form_count = lower.matches("<form").count() + lower.matches("<input").count();
+    if density < 0.015 && text_len < 400 && (script_count + noscript_count + form_count) >= 3 {
         return true;
     }
-    let text_len = trimmed.len();
-    let word_count = trimmed.split_whitespace().count();
-    let short_text = text_len < 500 || word_count < 80;
-    short_text
+    text_len < 120 && html_len > 5000 && (script_count + noscript_count) >= 2
 }
 
 fn count_ad_markers(html: &str) -> usize {
     let lower = html.to_ascii_lowercase();
-    let markers = [
-        "googlesyndication",
-        "doubleclick",
-        "adsbygoogle",
-        "adservice",
-        "taboola",
-        "outbrain",
-        "advertisement",
-        "sponsored",
-        "adslot",
-        "ad-unit",
-    ];
-    markers.iter().filter(|pat| lower.contains(*pat)).count()
+    let iframe_count = lower.matches("<iframe").count();
+    let embed_count = lower.matches("<embed").count();
+    let object_count = lower.matches("<object").count();
+    let aside_count = lower.matches("<aside").count();
+    let script_count = lower.matches("<script").count();
+    iframe_count
+        .saturating_mul(2)
+        .saturating_add(embed_count)
+        .saturating_add(object_count)
+        .saturating_add(aside_count)
+        .saturating_add(script_count / 10)
 }
 
 fn is_boilerplate_line(line: &str, lower: &str, phrases: &[String]) -> bool {
@@ -3573,54 +4146,8 @@ fn is_boilerplate_line(line: &str, lower: &str, phrases: &[String]) -> bool {
             }
         }
     }
-    if lower.contains("cookie")
-        || lower.contains("gdpr")
-        || lower.contains("consent")
-        || lower.contains("privacy policy")
-        || lower.contains("terms of service")
-        || lower.contains("all rights reserved")
-    {
-        return len < 200;
-    }
-    if lower.contains("subscribe")
-        || lower.contains("sign in")
-        || lower.contains("log in")
-        || lower.contains("sign up")
-        || lower.contains("newsletter")
-    {
-        return len < 160;
-    }
-    if lower.starts_with("share")
-        || lower.contains("facebook")
-        || lower.contains("twitter")
-        || lower.contains("linkedin")
-    {
-        return len < 120;
-    }
     if lower.starts_with("http://") || lower.starts_with("https://") {
         return len < 200;
-    }
-    let nav_keywords = [
-        "home",
-        "about",
-        "contact",
-        "privacy",
-        "terms",
-        "login",
-        "sign",
-        "menu",
-        "categories",
-        "related",
-        "advertisement",
-    ];
-    let mut nav_hits = 0usize;
-    for word in nav_keywords {
-        if lower.contains(word) {
-            nav_hits += 1;
-        }
-    }
-    if nav_hits >= 2 && len < 140 {
-        return true;
     }
     let separators = ['|', '•', '»', '›', '>', '/'];
     let sep_count = line.chars().filter(|ch| separators.contains(ch)).count();
@@ -3628,13 +4155,28 @@ fn is_boilerplate_line(line: &str, lower: &str, phrases: &[String]) -> bool {
         return true;
     }
     let alpha_count = line.chars().filter(|ch| ch.is_ascii_alphabetic()).count();
+    let digit_count = line.chars().filter(|ch| ch.is_ascii_digit()).count();
     let ratio = alpha_count as f32 / len.max(1) as f32;
-    if ratio < 0.55 && len < 120 {
+    if ratio < 0.5 && len < 140 {
         return true;
     }
-    let token_count = line.split_whitespace().count();
-    if len < 45 && token_count <= 3 {
+    if digit_count > alpha_count && len < 120 {
         return true;
+    }
+    let mut token_count = 0usize;
+    let mut token_len_sum = 0usize;
+    for token in line.split_whitespace() {
+        token_count += 1;
+        token_len_sum += token.len();
+    }
+    if token_count > 0 {
+        let avg_token = token_len_sum as f32 / token_count as f32;
+        if avg_token <= 2.3 && len < 90 {
+            return true;
+        }
+        if token_count <= 3 && len < 50 {
+            return true;
+        }
     }
     false
 }
@@ -3801,11 +4343,14 @@ fn should_stop_early(
     has_content: bool,
     early_stop_score: f32,
 ) -> bool {
-    if desired_count != 1 || !has_content {
+    if !has_content {
         return false;
     }
     if score >= early_stop_score {
         return true;
+    }
+    if desired_count != 1 {
+        return false;
     }
     if matches!(
         query_category,
@@ -3878,25 +4423,8 @@ fn is_markdown_path(path: &str) -> bool {
 }
 
 fn is_code_path(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    lower.ends_with(".rs")
-        || lower.ends_with(".py")
-        || lower.ends_with(".ts")
-        || lower.ends_with(".tsx")
-        || lower.ends_with(".js")
-        || lower.ends_with(".jsx")
-        || lower.ends_with(".go")
-        || lower.ends_with(".java")
-        || lower.ends_with(".kt")
-        || lower.ends_with(".kts")
-        || lower.ends_with(".swift")
-        || lower.ends_with(".cs")
-        || lower.ends_with(".cpp")
-        || lower.ends_with(".c")
-        || lower.ends_with(".hpp")
-        || lower.ends_with(".h")
-        || lower.ends_with(".rb")
-        || lower.ends_with(".php")
+    let _ = path;
+    false
 }
 
 fn push_token_with_filter(tokens: &mut Vec<String>, buf: &mut String, keep: fn(&str) -> bool) {
@@ -3975,13 +4503,13 @@ mod tests {
 
     #[test]
     fn detect_query_category_heuristic_code_example() {
-        let category = detect_query_category_heuristic("smart contract user approval code sample");
+        let category = detect_query_category_heuristic("user approval code sample");
         assert_eq!(category, QueryCategory::CodeExample);
     }
 
     #[test]
     fn detect_query_category_heuristic_troubleshooting() {
-        let category = detect_query_category_heuristic("rust tokio timeout error fix");
+        let category = detect_query_category_heuristic("timeout error fix");
         assert_eq!(category, QueryCategory::Troubleshooting);
     }
 }
@@ -4022,12 +4550,6 @@ fn env_string(key: &str) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
-}
-
-fn resolve_early_stop_score() -> f32 {
-    env_f32("DOCDEX_WEB_EARLY_STOP_SCORE")
-        .unwrap_or(WEB_EARLY_STOP_SCORE)
-        .clamp(0.0, 1.0)
 }
 
 fn config_web_trigger_threshold() -> Option<f32> {

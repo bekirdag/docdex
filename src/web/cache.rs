@@ -30,7 +30,7 @@ pub fn cache_ttl() -> Duration {
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .or_else(config_cache_ttl_secs)
-        .unwrap_or(86_400);
+        .unwrap_or(2_592_000);
     Duration::from_secs(ttl_secs)
 }
 

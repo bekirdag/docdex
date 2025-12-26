@@ -21,6 +21,8 @@ pub async fn run(
     limit: usize,
     max_web_results: Option<usize>,
     repo_only: bool,
+    skip_local_search: bool,
+    no_cache: bool,
     llm_filter_local_results: bool,
     compress_results: bool,
     stream: bool,
@@ -34,6 +36,8 @@ pub async fn run(
             max_web_results,
             false,
             !repo_only,
+            skip_local_search,
+            no_cache,
             llm_filter_local_results,
             compress_results,
         )
@@ -62,6 +66,8 @@ pub async fn run(
         limit,
         web_limit: max_web_results,
         force_web: false,
+        skip_local_search,
+        disable_web_cache: no_cache,
         llm_filter_local_results,
         indexer: &server,
         libs_indexer: libs_indexer.as_ref(),
@@ -134,14 +140,30 @@ fn stream_text(text: &str) -> Result<()> {
 
 fn build_compressed_response(waterfall: &WaterfallResult) -> CompressedResponse {
     let search = &waterfall.search_response;
-    let local_score = search
-        .top_score_normalized
-        .or_else(|| search.hits.first().map(|hit| crate::search::normalize_score(hit.score)));
-    let local = local_score.map(|score| CompressedLocal { score });
+    let local = build_compressed_local(search);
     let web = best_web_summary(search.web_context.as_deref());
     CompressedResponse {
         results: CompressedResults { local, web },
     }
+}
+
+fn build_compressed_local(search: &crate::search::SearchResponse) -> Option<CompressedLocal> {
+    let hit = search.hits.first()?;
+    let score = search
+        .top_score_normalized
+        .unwrap_or_else(|| crate::search::normalize_score(hit.score));
+    let summary = if !hit.summary.trim().is_empty() {
+        Some(truncate_compressed_text(hit.summary.trim()))
+    } else if !hit.snippet.trim().is_empty() {
+        Some(truncate_compressed_text(hit.snippet.trim()))
+    } else {
+        None
+    };
+    Some(CompressedLocal {
+        score,
+        path: hit.rel_path.clone(),
+        summary,
+    })
 }
 
 fn best_web_summary(
@@ -167,10 +189,25 @@ fn best_web_summary(
     let best = best?;
     let score = best.relevance_score.unwrap_or(0.0);
     let ai_digested_content = best.ai_digested_content.clone();
+    let content_snippet = if ai_digested_content.is_none() {
+        best.content
+            .as_ref()
+            .map(|content| truncate_compressed_text(content.trim()))
+    } else {
+        None
+    };
     Some(CompressedWeb {
         score,
+        url: best.url.clone(),
         ai_digested_content,
+        content_snippet,
     })
+}
+
+fn truncate_compressed_text(text: &str) -> String {
+    const MAX_COMPRESS_CHARS: usize = 280;
+    let (snippet, _) = crate::max_size::truncate_utf8_chars(text, MAX_COMPRESS_CHARS);
+    snippet
 }
 
 #[derive(Serialize)]
@@ -196,6 +233,10 @@ struct DocdexOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_web_results: Option<usize>,
     force_web: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    skip_local_search: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    no_cache: Option<bool>,
     include_libs: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     llm_filter_local_results: Option<bool>,
@@ -219,13 +260,19 @@ struct CompressedResults {
 #[derive(Serialize)]
 struct CompressedLocal {
     score: f32,
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
 }
 
 #[derive(Serialize)]
 struct CompressedWeb {
     score: f32,
+    url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     ai_digested_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_snippet: Option<String>,
 }
 
 pub(crate) async fn stream_via_http(
@@ -235,6 +282,8 @@ pub(crate) async fn stream_via_http(
     max_web_results: Option<usize>,
     force_web: bool,
     include_libs: bool,
+    skip_local_search: bool,
+    no_cache: bool,
     llm_filter_local_results: bool,
     compress_results: bool,
 ) -> Result<()> {
@@ -262,6 +311,8 @@ pub(crate) async fn stream_via_http(
             limit: Some(limit),
             max_web_results,
             force_web: Some(force_web),
+            skip_local_search: Some(skip_local_search),
+            no_cache: Some(no_cache),
             include_libs: Some(include_libs),
             llm_filter_local_results: Some(llm_filter_local_results),
             compress_results: Some(compress_results),

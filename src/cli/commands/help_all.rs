@@ -17,6 +17,7 @@ pub fn run() -> Result<()> {
         "web-search",
         "web-fetch",
         "web-rag",
+        "web-cache-flush",
         "libs",
         "dag",
         "run-tests",

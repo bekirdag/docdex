@@ -356,7 +356,7 @@ fn default_web_min_match_ratio() -> f32 {
 }
 
 fn default_local_relevance_threshold() -> f32 {
-    0.6
+    0.7
 }
 
 fn default_discovery_provider() -> String {
@@ -372,7 +372,7 @@ fn default_web_min_spacing_ms() -> u64 {
 }
 
 fn default_web_cache_ttl_secs() -> u64 {
-    86_400
+    2_592_000
 }
 
 fn default_web_engine() -> String {

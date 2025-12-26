@@ -341,6 +341,20 @@ pub(crate) enum Command {
         repo_only: bool,
         #[arg(
             long,
+            alias = "skip-local-search",
+            default_value_t = false,
+            help = "Skip local index search and only use web results"
+        )]
+        web_only: bool,
+        #[arg(
+            long,
+            alias = "no-web-cache",
+            default_value_t = false,
+            help = "Disable web cache reads/writes for this query"
+        )]
+        no_cache: bool,
+        #[arg(
+            long,
             default_value_t = false,
             help = "Use the LLM to filter local search results before scoring"
         )]
@@ -358,6 +372,8 @@ pub(crate) enum Command {
         )]
         stream: bool,
     },
+    /// Clear all cached web discovery/fetch entries.
+    WebCacheFlush,
     /// Ingest library documentation sources into the repo-scoped libs index.
     LibsIngest {
         #[command(flatten)]

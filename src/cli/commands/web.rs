@@ -121,6 +121,8 @@ pub async fn run_rag(
             !repo_only,
             false,
             false,
+            false,
+            false,
         )
         .await;
     }
@@ -147,6 +149,8 @@ pub async fn run_rag(
         limit,
         web_limit: None,
         force_web: true,
+        skip_local_search: false,
+        disable_web_cache: false,
         llm_filter_local_results: false,
         indexer: &server,
         libs_indexer: libs_indexer.as_ref(),
@@ -165,5 +169,19 @@ pub async fn run_rag(
     response.web_discovery = Some(tier2_status);
     response.memory_context = memory_context;
     println!("{}", serde_json::to_string_pretty(&response)?);
+    Ok(())
+}
+
+pub fn run_cache_flush() -> Result<()> {
+    let Some(layout) = web::cache::cache_layout_from_config() else {
+        println!("web cache is not configured");
+        return Ok(());
+    };
+    let dir = web::cache::web_cache_dir(&layout);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)?;
+    }
+    std::fs::create_dir_all(&dir)?;
+    println!("web cache cleared: {}", dir.display());
     Ok(())
 }

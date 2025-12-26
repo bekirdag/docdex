@@ -39,6 +39,8 @@ pub(crate) struct ChatCompletionRequest {
 struct DocdexOptions {
     limit: Option<usize>,
     force_web: Option<bool>,
+    skip_local_search: Option<bool>,
+    no_cache: Option<bool>,
     include_libs: Option<bool>,
     max_web_results: Option<usize>,
     llm_filter_local_results: Option<bool>,
@@ -192,6 +194,8 @@ pub(crate) async fn chat_completions_handler(
         .min(state.security.max_limit);
     let max_web_results = docdex.and_then(|opts| opts.max_web_results);
     let force_web = docdex.and_then(|opts| opts.force_web).unwrap_or(false);
+    let skip_local_search = docdex.and_then(|opts| opts.skip_local_search).unwrap_or(false);
+    let disable_web_cache = docdex.and_then(|opts| opts.no_cache).unwrap_or(false);
     let include_libs = docdex.and_then(|opts| opts.include_libs).unwrap_or(true);
     let llm_filter_local_results =
         docdex.and_then(|opts| opts.llm_filter_local_results).unwrap_or(false);
@@ -219,6 +223,8 @@ pub(crate) async fn chat_completions_handler(
         limit,
         web_limit: max_web_results,
         force_web,
+        skip_local_search,
+        disable_web_cache,
         llm_filter_local_results,
         indexer: state.indexer.as_ref(),
         libs_indexer,
@@ -457,44 +463,65 @@ fn format_compressed_results(
     hits: &[crate::index::Hit],
     web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
 ) -> String {
-    let local_score = hits
-        .first()
-        .map(|hit| crate::search::normalize_score(hit.score));
-    let web_best = best_web_summary(web_context);
-    let mut out = String::from("{\"results\":{");
-    if let Some(score) = local_score {
-        out.push_str(&format!("\"local\":{{\"score\":{score:.4}}}"));
-        if web_best.is_some() {
-            out.push(',');
-        }
-    }
-    if let Some((score, content)) = web_best {
-        out.push_str("\"web\":{");
-        out.push_str(&format!("\"score\":{score:.4}"));
-        if let Some(text) = content {
-            let escaped = escape_json_string(&text);
-            out.push_str(",\"ai_digested_content\":\"");
-            out.push_str(&escaped);
-            out.push('"');
-        }
-        out.push('}');
-    }
-    out.push_str("}}");
-    out
+    let local = build_compressed_local(hits);
+    let web = best_web_summary(web_context);
+    let payload = CompressedEnvelope {
+        results: CompressedResults { local, web },
+    };
+    serde_json::to_string(&payload).unwrap_or_else(|_| "{\"results\":{}}".to_string())
 }
 
-fn escape_json_string(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
+#[derive(Serialize)]
+struct CompressedEnvelope {
+    results: CompressedResults,
+}
+
+#[derive(Serialize)]
+struct CompressedResults {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local: Option<CompressedLocal>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web: Option<CompressedWeb>,
+}
+
+#[derive(Serialize)]
+struct CompressedLocal {
+    score: f32,
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CompressedWeb {
+    score: f32,
+    url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ai_digested_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_snippet: Option<String>,
+}
+
+fn build_compressed_local(hits: &[crate::index::Hit]) -> Option<CompressedLocal> {
+    let hit = hits.first()?;
+    let score = crate::search::normalize_score(hit.score);
+    let summary = if !hit.summary.trim().is_empty() {
+        Some(truncate_compressed_text(hit.summary.trim()))
+    } else if !hit.snippet.trim().is_empty() {
+        Some(truncate_compressed_text(hit.snippet.trim()))
+    } else {
+        None
+    };
+    Some(CompressedLocal {
+        score,
+        path: hit.rel_path.clone(),
+        summary,
+    })
 }
 
 fn best_web_summary(
     web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
-) -> Option<(f32, Option<String>)> {
+) -> Option<CompressedWeb> {
     let items = web_context?;
     let mut best: Option<&crate::orchestrator::web::WebFetchResult> = None;
     for item in items {
@@ -513,10 +540,26 @@ fn best_web_summary(
         }
     }
     let best = best?;
-    Some((
-        best.relevance_score.unwrap_or(0.0),
-        best.ai_digested_content.clone(),
-    ))
+    let ai_digested_content = best.ai_digested_content.clone();
+    let content_snippet = if ai_digested_content.is_none() {
+        best.content
+            .as_ref()
+            .map(|content| truncate_compressed_text(content.trim()))
+    } else {
+        None
+    };
+    Some(CompressedWeb {
+        score: best.relevance_score.unwrap_or(0.0),
+        url: best.url.clone(),
+        ai_digested_content,
+        content_snippet,
+    })
+}
+
+fn truncate_compressed_text(text: &str) -> String {
+    const MAX_COMPRESS_CHARS: usize = 280;
+    let (snippet, _) = crate::max_size::truncate_utf8_chars(text, MAX_COMPRESS_CHARS);
+    snippet
 }
 
 fn estimate_tokens(text: &str) -> u64 {

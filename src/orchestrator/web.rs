@@ -1,7 +1,10 @@
 use crate::config;
+use anyhow::Context;
 use crate::index::Hit;
 use crate::index::Indexer;
 use crate::libs::LibsIndexer;
+use crate::llm::adapter::{resolve_agent_adapter, LlmClient, LlmCompletion, LlmFuture};
+use crate::mcoda::registry::McodaRegistry;
 use crate::ollama::OllamaClient;
 use crate::search;
 use crate::state_layout::StateLayout;
@@ -20,10 +23,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::path::Path;
-use std::sync::Mutex;
-use tracing::info;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::{info, warn};
 use which::which;
 
 const DEFAULT_WEB_TRIGGER_THRESHOLD: f32 = 0.45;
@@ -429,18 +432,45 @@ enum DomainFailureKind {
     Challenge,
 }
 
-#[derive(Clone)]
-struct QueryCategoryClient {
+struct OllamaPromptClient {
     client: OllamaClient,
     model: String,
+    adapter: String,
+}
+
+impl LlmClient for OllamaPromptClient {
+    fn generate<'a>(
+        &'a self,
+        prompt: &'a str,
+        max_tokens: u32,
+        timeout: Duration,
+    ) -> LlmFuture<'a> {
+        Box::pin(async move {
+            let output = self
+                .client
+                .generate(&self.model, prompt, max_tokens, timeout)
+                .await
+                .context("ollama generate")?;
+            Ok(LlmCompletion {
+                output,
+                adapter: self.adapter.clone(),
+                model: Some(self.model.clone()),
+                metadata: None,
+            })
+        })
+    }
+}
+
+#[derive(Clone)]
+struct QueryCategoryClient {
+    client: Arc<dyn LlmClient>,
     max_tokens: u32,
     timeout: Duration,
 }
 
 #[derive(Clone)]
 struct WebSummaryClient {
-    client: OllamaClient,
-    model: String,
+    client: Arc<dyn LlmClient>,
     max_tokens: u32,
     timeout: Duration,
 }
@@ -466,8 +496,7 @@ struct WebEvalOutput {
 
 #[derive(Clone)]
 struct LocalRelevanceClient {
-    client: OllamaClient,
-    model: String,
+    client: Arc<dyn LlmClient>,
     max_tokens: u32,
     timeout: Duration,
 }
@@ -497,16 +526,17 @@ impl WebSummaryClient {
         let prompt = build_summary_prompt(query, category, trimmed, code_blocks);
         let result = self
             .client
-            .generate(&self.model, &prompt, self.max_tokens, self.timeout)
+            .generate(&prompt, self.max_tokens, self.timeout)
             .await
             .ok()?;
-        let parsed: WebEvalResponse = match parse_json_response(&result) {
+        let output = result.output;
+        let parsed: WebEvalResponse = match parse_json_response(&output) {
             Some(parsed) => parsed,
             None => {
-                if let Some(parsed) = parse_web_eval_response_lenient(&result) {
+                if let Some(parsed) = parse_web_eval_response_lenient(&output) {
                     parsed
                 } else {
-                    let raw = result.trim();
+                    let raw = output.trim();
                     if raw.is_empty() {
                         return None;
                     }
@@ -560,10 +590,10 @@ impl LocalRelevanceClient {
         let prompt = build_local_relevance_prompt(query, hit);
         let result = self
             .client
-            .generate(&self.model, &prompt, self.max_tokens, self.timeout)
+            .generate(&prompt, self.max_tokens, self.timeout)
             .await
             .ok()?;
-        let parsed: LocalRelevanceResponse = parse_json_response(&result)?;
+        let parsed: LocalRelevanceResponse = parse_json_response(&result.output)?;
         let score = parsed.score.clamp(0.0, 1.0);
         Some(LocalRelevanceResponse {
             relevant: parsed.relevant,
@@ -577,69 +607,54 @@ impl QueryCategoryClient {
         let prompt = build_query_category_prompt(query);
         let result = self
             .client
-            .generate(&self.model, &prompt, self.max_tokens, self.timeout)
+            .generate(&prompt, self.max_tokens, self.timeout)
             .await
             .ok()?;
-        let parsed: QueryCategoryResponse = parse_json_response(&result)?;
+        let parsed: QueryCategoryResponse = parse_json_response(&result.output)?;
         parse_query_category(&parsed.category)
     }
 }
 
-fn load_query_category_client(model_override: Option<&str>) -> Option<QueryCategoryClient> {
-    let config = load_llm_config(model_override)?;
-    if !config.provider.trim().eq_ignore_ascii_case("ollama") {
-        return None;
-    }
-    let base_url = config.base_url.trim();
-    let model = config.default_model.trim();
-    if base_url.is_empty() || model.is_empty() {
-        return None;
-    }
-    let max_tokens = config.max_answer_tokens.min(MAX_QUERY_CATEGORY_TOKENS);
-    let client = OllamaClient::new(base_url.to_string()).ok()?;
+fn load_query_category_client(
+    model_override: Option<&str>,
+    llm_agent: Option<&str>,
+) -> Option<QueryCategoryClient> {
+    let client = load_llm_client(model_override, llm_agent)?;
+    let max_tokens = load_llm_config(model_override)
+        .map(|config| config.max_answer_tokens.min(MAX_QUERY_CATEGORY_TOKENS))
+        .unwrap_or(MAX_QUERY_CATEGORY_TOKENS);
     Some(QueryCategoryClient {
         client,
-        model: model.to_string(),
         max_tokens,
         timeout: Duration::from_millis(QUERY_CATEGORY_TIMEOUT_MS),
     })
 }
 
-fn load_web_summary_client(model_override: Option<&str>) -> Option<WebSummaryClient> {
-    let config = load_llm_config(model_override)?;
-    if !config.provider.trim().eq_ignore_ascii_case("ollama") {
-        return None;
-    }
-    let base_url = config.base_url.trim();
-    let model = config.default_model.trim();
-    if base_url.is_empty() || model.is_empty() {
-        return None;
-    }
-    let max_tokens = config.max_answer_tokens.min(MAX_WEB_SUMMARY_TOKENS);
-    let client = OllamaClient::new(base_url.to_string()).ok()?;
+fn load_web_summary_client(
+    model_override: Option<&str>,
+    llm_agent: Option<&str>,
+) -> Option<WebSummaryClient> {
+    let client = load_llm_client(model_override, llm_agent)?;
+    let max_tokens = load_llm_config(model_override)
+        .map(|config| config.max_answer_tokens.min(MAX_WEB_SUMMARY_TOKENS))
+        .unwrap_or(MAX_WEB_SUMMARY_TOKENS);
     Some(WebSummaryClient {
         client,
-        model: model.to_string(),
         max_tokens,
         timeout: Duration::from_millis(WEB_SUMMARY_TIMEOUT_MS),
     })
 }
 
-fn load_local_relevance_client(model_override: Option<&str>) -> Option<LocalRelevanceClient> {
-    let config = load_llm_config(model_override)?;
-    if !config.provider.trim().eq_ignore_ascii_case("ollama") {
-        return None;
-    }
-    let base_url = config.base_url.trim();
-    let model = config.default_model.trim();
-    if base_url.is_empty() || model.is_empty() {
-        return None;
-    }
-    let max_tokens = config.max_answer_tokens.min(LOCAL_RELEVANCE_MAX_TOKENS);
-    let client = OllamaClient::new(base_url.to_string()).ok()?;
+fn load_local_relevance_client(
+    model_override: Option<&str>,
+    llm_agent: Option<&str>,
+) -> Option<LocalRelevanceClient> {
+    let client = load_llm_client(model_override, llm_agent)?;
+    let max_tokens = load_llm_config(model_override)
+        .map(|config| config.max_answer_tokens.min(LOCAL_RELEVANCE_MAX_TOKENS))
+        .unwrap_or(LOCAL_RELEVANCE_MAX_TOKENS);
     Some(LocalRelevanceClient {
         client,
-        model: model.to_string(),
         max_tokens,
         timeout: Duration::from_millis(LOCAL_RELEVANCE_TIMEOUT_MS),
     })
@@ -668,6 +683,59 @@ fn load_llm_config(model_override: Option<&str>) -> Option<config::LlmConfig> {
         }
     }
     Some(config.llm)
+}
+
+fn load_llm_client(
+    model_override: Option<&str>,
+    llm_agent: Option<&str>,
+) -> Option<Arc<dyn LlmClient>> {
+    if let Some(agent_id) = llm_agent {
+        let registry = match McodaRegistry::load_default() {
+            Ok(Some(registry)) => registry,
+            Ok(None) => {
+                warn!("mcoda registry not found; skipping agent {agent_id}");
+                return None;
+            }
+            Err(err) => {
+                warn!("failed to load mcoda registry: {err}");
+                return None;
+            }
+        };
+        let agent = registry
+            .agent_by_id(agent_id)
+            .or_else(|| registry.agent_by_slug(agent_id));
+        let agent = match agent {
+            Some(agent) => agent,
+            None => {
+                warn!("mcoda agent not found: {agent_id}");
+                return None;
+            }
+        };
+        match resolve_agent_adapter(agent) {
+            Ok(adapter) => return Some(Arc::new(adapter)),
+            Err(err) => {
+                warn!("failed to resolve mcoda agent {agent_id}: {err}");
+                return None;
+            }
+        }
+    }
+
+    let config = load_llm_config(model_override)?;
+    if !config.provider.trim().eq_ignore_ascii_case("ollama") {
+        return None;
+    }
+    let base_url = config.base_url.trim();
+    let model = config.default_model.trim();
+    if base_url.is_empty() || model.is_empty() {
+        return None;
+    }
+    let client = OllamaClient::new(base_url.to_string()).ok()?;
+    let adapter = OllamaPromptClient {
+        client,
+        model: model.to_string(),
+        adapter: "ollama".to_string(),
+    };
+    Some(Arc::new(adapter))
 }
 
 fn build_summary_prompt(
@@ -1080,6 +1148,7 @@ pub async fn run_web_research(
     skip_local_search: bool,
     disable_web_cache: bool,
     llm_model: Option<&str>,
+    llm_agent: Option<&str>,
 ) -> Result<WebResearchResponse, anyhow::Error> {
     let query = query.trim();
     let intent = detect_query_intent(query);
@@ -1095,6 +1164,7 @@ pub async fn run_web_research(
             original_top_score_normalized,
             llm_filter_local_results,
             llm_model,
+            llm_agent,
         )
         .await;
         let mut top_score = hits.first().map(|hit| hit.score);
@@ -1166,6 +1236,7 @@ pub async fn run_web_research(
             force_web,
             disable_web_cache,
             llm_model,
+            llm_agent,
         )
         .await
     };
@@ -1187,6 +1258,7 @@ pub(crate) async fn filter_local_hits_with_llm(
     top_score_normalized: Option<f32>,
     use_llm: bool,
     llm_model: Option<&str>,
+    llm_agent: Option<&str>,
 ) -> Vec<Hit> {
     if hits.is_empty() {
         return hits;
@@ -1207,7 +1279,7 @@ pub(crate) async fn filter_local_hits_with_llm(
     let code_intent = matches!(intent, QueryIntent::Code);
     let threshold = resolve_local_relevance_threshold();
     let client = if use_llm {
-        load_local_relevance_client(llm_model)
+        load_local_relevance_client(llm_model, llm_agent)
     } else {
         None
     };
@@ -1439,6 +1511,7 @@ async fn run_web_discovery(
     force_web: bool,
     disable_web_cache: bool,
     llm_model: Option<&str>,
+    llm_agent: Option<&str>,
 ) -> WebDiscoveryStatus {
     let config = WebConfig::from_env();
     let mut config = config;
@@ -1446,6 +1519,14 @@ async fn run_web_discovery(
     if !cache_enabled {
         config.cache_ttl = Duration::ZERO;
     }
+    let cache_key = WebCacheKey {
+        query,
+        web_limit,
+        force_web,
+        llm_model: normalize_cache_opt(llm_model),
+        llm_agent: normalize_cache_opt(llm_agent),
+    };
+    let query_hash = phrase_cache_hash(&cache_key);
     if !config.enabled {
         let unavailable = Tier2Unavailable::new(
             Tier2UnavailableReason::Disabled,
@@ -1472,7 +1553,6 @@ async fn run_web_discovery(
 
     if cache_enabled && !query.trim().is_empty() {
         if let Some(layout) = cache::cache_layout_from_config() {
-            let query_hash = phrase_cache_hash(query);
             if let Some(entry) = read_phrase_cache(&layout, &query_hash, config.cache_ttl) {
                 let result = WebFetchResult {
                     url: String::new(),
@@ -1562,7 +1642,7 @@ async fn run_web_discovery(
     };
 
     let debug_enabled = env_boolish("DOCDEX_WEB_DEBUG").unwrap_or(false);
-    let (query_category, category_source) = classify_query_category(query, llm_model).await;
+    let (query_category, category_source) = classify_query_category(query, llm_model, llm_agent).await;
 
     let mut discovery_limit = (web_limit * WEB_DISCOVERY_MULTIPLIER)
         .max(web_limit)
@@ -1642,12 +1722,14 @@ async fn run_web_discovery(
                 .collect();
             let fetches = fetch_web_documents(
                 query,
+                &query_hash,
                 &urls,
                 &config,
                 web_limit,
                 query_category,
                 gate.trigger_threshold,
                 llm_model,
+                llm_agent,
             )
             .await;
             let message = if gate.browser_available {
@@ -2063,35 +2145,39 @@ fn classify_status_failure(status: Option<u16>) -> Option<DomainFailureKind> {
     }
 }
 
-fn normalize_query_key(query: &str) -> String {
-    let mut parts = Vec::new();
-    let mut buf = String::new();
-    for ch in query.chars() {
-        if ch.is_ascii_alphanumeric() {
-            buf.push(ch.to_ascii_lowercase());
-        } else if !buf.is_empty() {
-            parts.push(buf.clone());
-            buf.clear();
-        }
-    }
-    if !buf.is_empty() {
-        parts.push(buf);
-    }
-    parts.join(" ")
-}
-
 fn hash_text(text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(text.as_bytes());
     hex::encode(hasher.finalize())
 }
 
+#[derive(Serialize)]
+struct WebCacheKey<'a> {
+    query: &'a str,
+    web_limit: usize,
+    force_web: bool,
+    llm_model: Option<&'a str>,
+    llm_agent: Option<&'a str>,
+}
+
+fn normalize_cache_opt(value: Option<&str>) -> Option<&str> {
+    value.and_then(|raw| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
 fn phrase_cache_key(query_hash: &str) -> String {
     format!("phrase:{query_hash}")
 }
 
-fn phrase_cache_hash(query: &str) -> String {
-    hash_text(&query.trim().to_ascii_lowercase())
+fn phrase_cache_hash(key: &WebCacheKey<'_>) -> String {
+    let payload = serde_json::to_string(key).unwrap_or_default();
+    hash_text(&payload)
 }
 
 fn summary_cache_key(query_hash: &str, content_hash: &str) -> String {
@@ -2099,11 +2185,10 @@ fn summary_cache_key(query_hash: &str, content_hash: &str) -> String {
 }
 
 fn summary_cache_entry(
-    query: &str,
+    query_hash: &str,
     content_text: &str,
     code_blocks: &[String],
 ) -> (String, String) {
-    let query_hash = hash_text(&normalize_query_key(query));
     let mut content_input = String::new();
     content_input.push_str(content_text);
     if !code_blocks.is_empty() {
@@ -2111,7 +2196,7 @@ fn summary_cache_entry(
         content_input.push_str(&code_blocks.join("\n\n"));
     }
     let content_hash = hash_text(&content_input);
-    (query_hash, content_hash)
+    (query_hash.to_string(), content_hash)
 }
 
 fn read_phrase_cache(
@@ -2179,19 +2264,21 @@ fn write_summary_cache(
 
 async fn fetch_web_documents(
     query: &str,
+    query_hash: &str,
     urls: &[String],
     config: &WebConfig,
     target_count: usize,
     query_category: QueryCategory,
     early_stop_score: f32,
     llm_model: Option<&str>,
+    llm_agent: Option<&str>,
 ) -> Vec<WebFetchResult> {
     if urls.is_empty() {
         return Vec::new();
     }
     let desired_count = target_count.max(1);
     let layout = cache::cache_layout_from_config();
-    let summary_client = load_web_summary_client(llm_model);
+    let summary_client = load_web_summary_client(llm_model, llm_agent);
     let debug_enabled = env_boolish("DOCDEX_WEB_DEBUG").unwrap_or(false);
     let early_stop_score = early_stop_score.clamp(0.0, 1.0);
     if !config
@@ -2643,12 +2730,17 @@ async fn fetch_web_documents(
             } else {
                 Vec::new()
             };
-            let (query_hash, content_hash) =
-                summary_cache_entry(query, content_text, &summary_blocks);
+            let (summary_query_hash, content_hash) =
+                summary_cache_entry(query_hash, content_text, &summary_blocks);
             let cached_summary = layout
                 .as_ref()
                 .and_then(|layout| {
-                    read_summary_cache(layout, &query_hash, &content_hash, config.cache_ttl)
+                    read_summary_cache(
+                        layout,
+                        &summary_query_hash,
+                        &content_hash,
+                        config.cache_ttl,
+                    )
                 });
             let used_cached_summary = cached_summary.is_some();
             let llm_available = summary_client.is_some();
@@ -2754,7 +2846,7 @@ async fn fetch_web_documents(
             if !used_cached_summary {
                 if let Some(layout) = layout.as_ref() {
                     if config.cache_ttl.as_secs() > 0 {
-                        write_summary_cache(layout, &query_hash, &content_hash, &evaluation);
+                        write_summary_cache(layout, &summary_query_hash, &content_hash, &evaluation);
                     }
                 }
             }
@@ -2841,6 +2933,23 @@ async fn fetch_web_documents(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     if let Some(best) = all_results.first() {
+        if !config.cache_ttl.is_zero() && !query.trim().is_empty() {
+            if let (Some(content), Some(kind)) =
+                (best.ai_digested_content.as_ref(), best.ai_digested_kind.as_ref())
+            {
+                if let Some(layout) = cache::cache_layout_from_config() {
+                    let fetched_at_epoch_ms =
+                        best.fetched_at_epoch_ms.unwrap_or_else(now_epoch_ms);
+                    let entry = WebPhraseCacheEntry {
+                        query_hash: query_hash.to_string(),
+                        fetched_at_epoch_ms,
+                        ai_digested_kind: kind.clone(),
+                        ai_digested_content: content.clone(),
+                    };
+                    write_phrase_cache(&layout, query_hash, &entry);
+                }
+            }
+        }
         if best.relevance_score.unwrap_or(0.0) >= early_stop_score {
             all_results.truncate(1);
             return all_results;
@@ -2848,26 +2957,6 @@ async fn fetch_web_documents(
     }
     if all_results.len() > desired_count {
         all_results.truncate(desired_count);
-    }
-    if !config.cache_ttl.is_zero() && !query.trim().is_empty() {
-        if let Some(best) = all_results.first() {
-            if let (Some(content), Some(kind)) =
-                (best.ai_digested_content.as_ref(), best.ai_digested_kind.as_ref())
-            {
-                if let Some(layout) = cache::cache_layout_from_config() {
-                    let query_hash = phrase_cache_hash(query);
-                    let fetched_at_epoch_ms =
-                        best.fetched_at_epoch_ms.unwrap_or_else(now_epoch_ms);
-                    let entry = WebPhraseCacheEntry {
-                        query_hash: query_hash.clone(),
-                        fetched_at_epoch_ms,
-                        ai_digested_kind: kind.clone(),
-                        ai_digested_content: content.clone(),
-                    };
-                    write_phrase_cache(&layout, &query_hash, &entry);
-                }
-            }
-        }
     }
     all_results
 }
@@ -3731,6 +3820,7 @@ fn detect_query_category_heuristic(query: &str) -> QueryCategory {
 async fn classify_query_category(
     query: &str,
     llm_model: Option<&str>,
+    llm_agent: Option<&str>,
 ) -> (QueryCategory, QueryCategorySource) {
     let query_key = query.trim().to_ascii_lowercase();
     if query_key.is_empty() {
@@ -3742,7 +3832,7 @@ async fn classify_query_category(
         }
     }
     let heuristic = detect_query_category_heuristic(query);
-    let Some(client) = load_query_category_client(llm_model) else {
+    let Some(client) = load_query_category_client(llm_model, llm_agent) else {
         let source = QueryCategorySource::Heuristic;
         if let Ok(mut cache) = QUERY_CATEGORY_CACHE.lock() {
             cache.insert(

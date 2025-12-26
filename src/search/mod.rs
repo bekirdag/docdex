@@ -1343,6 +1343,7 @@ async fn search_handler(
         disable_web_cache: false,
         llm_filter_local_results: false,
         llm_model: None,
+        llm_agent: None,
         indexer: state.indexer.as_ref(),
         libs_indexer,
         plan,

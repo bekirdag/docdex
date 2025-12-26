@@ -331,6 +331,12 @@ pub(crate) enum Command {
             help = "Override the Ollama model for this chat query"
         )]
         model: Option<String>,
+        #[arg(
+            long,
+            value_parser = config::non_empty_string,
+            help = "Use a mcoda agent slug or id for LLM calls"
+        )]
+        agent: Option<String>,
         #[arg(long, default_value_t = 8)]
         limit: usize,
         #[arg(

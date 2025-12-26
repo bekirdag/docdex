@@ -204,6 +204,29 @@ pub fn apply_privilege_drop(
     }
 }
 
+fn env_agent_override() -> Option<String> {
+    env::var("DOCDEX_LLM_AGENT")
+        .ok()
+        .and_then(|value| {
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        })
+        .or_else(|| {
+            env::var("DOCDEX_AGENT").ok().and_then(|value| {
+                let trimmed = value.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            })
+        })
+}
+
 pub async fn serve(
     repo: PathBuf,
     host: String,
@@ -238,13 +261,21 @@ pub async fn serve(
     }
     let repo_display = repo.display().to_string();
     let provider = llm_provider.trim();
-    if !provider.eq_ignore_ascii_case("ollama") {
+    let agent_override = env_agent_override();
+    if !provider.eq_ignore_ascii_case("ollama") && agent_override.is_none() {
         return Err(StartupError::new(
             "startup_config_invalid",
             format!("unsupported llm provider `{provider}`; only ollama is supported"),
         )
         .with_hint("Set [llm].provider = \"ollama\" in ~/.docdex/config.toml.")
         .into());
+    }
+    if !provider.eq_ignore_ascii_case("ollama") {
+        if let Some(agent) = agent_override.as_deref() {
+            warn!("llm provider `{provider}` allowed via agent override `{agent}`");
+        } else {
+            warn!("llm provider `{provider}` may disable LLM features without an agent override");
+        }
     }
 
     let tls_config = match tls {

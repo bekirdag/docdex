@@ -17,6 +17,7 @@ pub mod mcp;
 pub mod memory;
 pub mod metrics;
 pub mod max_size;
+pub mod mcoda;
 pub mod ollama;
 pub mod orchestrator;
 pub mod ratelimit;

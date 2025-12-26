@@ -26,6 +26,8 @@ const STREAM_CHUNK_CHARS: usize = 320;
 #[derive(Debug, Deserialize)]
 pub(crate) struct ChatCompletionRequest {
     model: Option<String>,
+    #[serde(default)]
+    agent: Option<String>,
     messages: Vec<ChatMessage>,
     #[serde(default)]
     stream: bool,
@@ -227,6 +229,7 @@ pub(crate) async fn chat_completions_handler(
         disable_web_cache,
         llm_filter_local_results,
         llm_model: payload.model.as_deref(),
+        llm_agent: payload.agent.as_deref(),
         indexer: state.indexer.as_ref(),
         libs_indexer,
         plan,

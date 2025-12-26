@@ -19,6 +19,7 @@ pub async fn run(
     repo: RepoArgs,
     query: String,
     model: Option<String>,
+    agent: Option<String>,
     limit: usize,
     max_web_results: Option<usize>,
     repo_only: bool,
@@ -34,6 +35,7 @@ pub async fn run(
             &repo_root,
             &query,
             model.as_deref(),
+            agent.as_deref(),
             limit,
             max_web_results,
             false,
@@ -72,6 +74,7 @@ pub async fn run(
         disable_web_cache: no_cache,
         llm_filter_local_results,
         llm_model: model.as_deref(),
+        llm_agent: agent.as_deref(),
         indexer: &server,
         libs_indexer: libs_indexer.as_ref(),
         plan,
@@ -216,6 +219,8 @@ fn truncate_compressed_text(text: &str) -> String {
 #[derive(Serialize)]
 struct ChatCompletionRequest {
     model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent: Option<String>,
     messages: Vec<ChatMessage>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -282,6 +287,7 @@ pub(crate) async fn stream_via_http(
     repo_root: &Path,
     query: &str,
     model: Option<&str>,
+    agent: Option<&str>,
     limit: usize,
     max_web_results: Option<usize>,
     force_web: bool,
@@ -305,6 +311,7 @@ pub(crate) async fn stream_via_http(
     let repo_id = repo_manager::repo_fingerprint_sha256(repo_root).ok();
     let payload = ChatCompletionRequest {
         model: model.map(|value| value.to_string()),
+        agent: agent.map(|value| value.to_string()),
         messages: vec![ChatMessage {
             role: "user",
             content: query.to_string(),

@@ -138,99 +138,129 @@ pub async fn run() -> Result<()> {
 
         let provider = config.llm.provider.trim();
         let provider_is_ollama = provider.eq_ignore_ascii_case("ollama");
+        let agent_override = env_agent_override();
+        let memory_enabled =
+            env_boolish("DOCDEX_ENABLE_MEMORY").unwrap_or(config.memory.enabled);
+        let allow_non_ollama = agent_override.is_some();
         checks.push(CheckItem {
             name: "llm_provider",
-            status: if provider_is_ollama { "ok" } else { "fail" },
+            status: if provider_is_ollama || allow_non_ollama {
+                "ok"
+            } else {
+                "fail"
+            },
             message: if provider_is_ollama {
                 "llm provider is ollama".to_string()
+            } else if let Some(agent) = agent_override.as_deref() {
+                format!("llm provider `{provider}` allowed via agent override `{agent}`")
             } else {
                 format!("unsupported llm provider `{provider}`; only ollama is supported")
             },
-            details: Some(json!({ "provider": provider })),
+            details: Some(json!({
+                "provider": provider,
+                "agent_override": agent_override,
+            })),
         });
-        if !provider_is_ollama {
+        if !provider_is_ollama && !allow_non_ollama {
             success = false;
         }
-        let base_url = config.llm.base_url.trim();
-        let timeout = Duration::from_secs(2);
-        let mut ollama_ok = true;
-        match ollama::check_reachable(base_url, timeout).await {
-            Ok(()) => checks.push(CheckItem {
-                name: "ollama",
-                status: "ok",
-                message: "ollama reachable".to_string(),
-                details: Some(json!({ "base_url": base_url })),
-            }),
-            Err(err) => {
-                checks.push(CheckItem {
+        if provider_is_ollama || memory_enabled {
+            let base_url = config.llm.base_url.trim();
+            let timeout = Duration::from_secs(2);
+            let mut ollama_ok = true;
+            match ollama::check_reachable(base_url, timeout).await {
+                Ok(()) => checks.push(CheckItem {
                     name: "ollama",
-                    status: "fail",
-                    message: format!("ollama unreachable: {err}"),
+                    status: "ok",
+                    message: "ollama reachable".to_string(),
                     details: Some(json!({ "base_url": base_url })),
-                });
-                success = false;
-                ollama_ok = false;
+                }),
+                Err(err) => {
+                    checks.push(CheckItem {
+                        name: "ollama",
+                        status: "fail",
+                        message: format!("ollama unreachable: {err}"),
+                        details: Some(json!({ "base_url": base_url })),
+                    });
+                    success = false;
+                    ollama_ok = false;
+                }
             }
-        }
 
-        if ollama_ok {
-            let default_model = config.llm.default_model.trim();
-            let embed_model = config.llm.embedding_model.trim();
-            let mut missing = Vec::new();
-            if default_model.is_empty() {
-                missing.push("<default_model not set>".to_string());
-            }
-            if embed_model.is_empty() {
-                missing.push("<embedding_model not set>".to_string());
-            }
-            match ollama::list_models(base_url, timeout).await {
-                Ok(installed) => {
-                    if !default_model.is_empty()
-                        && !model_installed(&installed, default_model)
-                    {
-                        missing.push(default_model.to_string());
+            if ollama_ok {
+                let default_model = config.llm.default_model.trim();
+                let embed_model = config.llm.embedding_model.trim();
+                let mut missing = Vec::new();
+                if default_model.is_empty() {
+                    missing.push("<default_model not set>".to_string());
+                }
+                if embed_model.is_empty() {
+                    missing.push("<embedding_model not set>".to_string());
+                }
+                match ollama::list_models(base_url, timeout).await {
+                    Ok(installed) => {
+                        if !default_model.is_empty()
+                            && !model_installed(&installed, default_model)
+                        {
+                            missing.push(default_model.to_string());
+                        }
+                        if !embed_model.is_empty()
+                            && !model_installed(&installed, embed_model)
+                        {
+                            missing.push(embed_model.to_string());
+                        }
+                        if missing.is_empty() {
+                            checks.push(CheckItem {
+                                name: "ollama_models",
+                                status: "ok",
+                                message: "ollama models available".to_string(),
+                                details: Some(json!({
+                                    "default_model": default_model,
+                                    "embedding_model": embed_model,
+                                })),
+                            });
+                        } else {
+                            checks.push(CheckItem {
+                                name: "ollama_models",
+                                status: "fail",
+                                message: "ollama models missing or not configured".to_string(),
+                                details: Some(json!({
+                                    "missing": missing,
+                                    "hint": "pull missing models with `ollama pull <model>`",
+                                })),
+                            });
+                            success = false;
+                        }
                     }
-                    if !embed_model.is_empty() && !model_installed(&installed, embed_model) {
-                        missing.push(embed_model.to_string());
-                    }
-                    if missing.is_empty() {
-                        checks.push(CheckItem {
-                            name: "ollama_models",
-                            status: "ok",
-                            message: "ollama models available".to_string(),
-                            details: Some(json!({
-                                "default_model": default_model,
-                                "embedding_model": embed_model,
-                            })),
-                        });
-                    } else {
+                    Err(err) => {
                         checks.push(CheckItem {
                             name: "ollama_models",
                             status: "fail",
-                            message: "ollama models missing or not configured".to_string(),
-                            details: Some(json!({
-                                "missing": missing,
-                                "hint": "pull missing models with `ollama pull <model>`",
-                            })),
+                            message: format!("ollama model list failed: {err}"),
+                            details: Some(json!({ "base_url": base_url })),
                         });
                         success = false;
                     }
                 }
-                Err(err) => {
-                    checks.push(CheckItem {
-                        name: "ollama_models",
-                        status: "fail",
-                        message: format!("ollama model list failed: {err}"),
-                        details: Some(json!({ "base_url": base_url })),
-                    });
-                    success = false;
-                }
+            } else {
+                checks.push(CheckItem {
+                    name: "ollama_models",
+                    status: "skipped",
+                    message: "skipped due to ollama unreachable".to_string(),
+                    details: None,
+                });
             }
         } else {
             checks.push(CheckItem {
+                name: "ollama",
+                status: "skipped",
+                message: "skipped; mcoda agent override in use and memory disabled".to_string(),
+                details: None,
+            });
+            checks.push(CheckItem {
                 name: "ollama_models",
                 status: "skipped",
-                message: "skipped due to ollama unreachable".to_string(),
+                message: "skipped; mcoda agent override in use and memory disabled".to_string(),
                 details: None,
             });
         }
@@ -307,6 +337,20 @@ fn env_non_empty(key: &str) -> Option<String> {
             Some(trimmed)
         }
     })
+}
+
+fn env_boolish(key: &str) -> Option<bool> {
+    let raw = std::env::var(key).ok()?;
+    let trimmed = raw.trim().to_ascii_lowercase();
+    match trimmed.as_str() {
+        "1" | "true" | "t" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "f" | "no" | "n" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn env_agent_override() -> Option<String> {
+    env_non_empty("DOCDEX_LLM_AGENT").or_else(|| env_non_empty("DOCDEX_AGENT"))
 }
 
 fn model_installed(installed: &std::collections::HashSet<String>, required: &str) -> bool {

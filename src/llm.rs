@@ -5,6 +5,8 @@ use std::cmp::Ordering;
 use std::fs;
 use std::path::PathBuf;
 
+pub mod adapter;
+
 const LLMLIST_JSON: &str = "docs/llm_list.json";
 
 #[derive(Clone, Deserialize)]

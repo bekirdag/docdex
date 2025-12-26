@@ -18,10 +18,11 @@ use crate::web::WebConfig;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::path::Path;
+use std::sync::Mutex;
 use which::which;
 
 const DEFAULT_WEB_TRIGGER_THRESHOLD: f32 = 0.45;
@@ -31,6 +32,8 @@ const MAX_WEB_DOC_CHARS: usize = 2000;
 const MAX_WEB_SUMMARY_INPUT_CHARS: usize = 1600;
 const MAX_WEB_SUMMARY_TOKENS: u32 = 256;
 const WEB_SUMMARY_TIMEOUT_MS: u64 = 15_000;
+const MAX_QUERY_CATEGORY_TOKENS: u32 = 48;
+const QUERY_CATEGORY_TIMEOUT_MS: u64 = 4_000;
 const MAX_WEB_FALLBACK_EXCERPT_CHARS: usize = 480;
 const MAX_WEB_FALLBACK_EXCERPT_LINES: usize = 4;
 const WEB_CONTEXT_MIN_RELEVANCE_SCORE: f32 = 0.2;
@@ -77,6 +80,12 @@ const MATCH_STOPWORDS_EXTRA: &[&str] = &[
     "add", "append", "build", "create", "insert", "make",
 ];
 
+const MATCH_STOPWORDS_GENERIC: &[&str] = &[
+    "code", "sample", "samples", "example", "examples", "snippet", "snippets",
+    "tutorial", "tutorials", "guide", "guides", "docs", "documentation",
+    "reference", "references",
+];
+
 const DOMAIN_STOPWORDS: &[&str] = &[
     "css", "html", "javascript", "js", "plain", "simple",
     "code", "sample", "samples", "example", "examples", "tutorial", "tutorials",
@@ -96,9 +105,19 @@ static MATCH_STOPWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     COMMON_STOPWORDS
         .iter()
         .chain(MATCH_STOPWORDS_EXTRA.iter())
+        .chain(MATCH_STOPWORDS_GENERIC.iter())
         .copied()
         .collect()
 });
+
+#[derive(Clone, Copy)]
+struct CachedQueryCategory {
+    category: QueryCategory,
+    source: QueryCategorySource,
+}
+
+static QUERY_CATEGORY_CACHE: Lazy<Mutex<HashMap<String, CachedQueryCategory>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 static CODE_BLOCK_RE: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r"(?is)<pre[^>]*>(.*?)</pre>").expect("valid code block regex")
@@ -119,6 +138,10 @@ static BLOCK_BREAK_RE: Lazy<regex::Regex> = Lazy::new(|| {
 
 static SCRIPT_STYLE_RE: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r"(?is)<(script|style)[^>]*>.*?</\\1>").expect("valid script/style regex")
+});
+
+static ANSI_ESCAPE_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").expect("valid ansi escape regex")
 });
 
 static HEADING_RE: Lazy<regex::Regex> = Lazy::new(|| {
@@ -371,6 +394,14 @@ enum DomainFailureKind {
 }
 
 #[derive(Clone)]
+struct QueryCategoryClient {
+    client: OllamaClient,
+    model: String,
+    max_tokens: u32,
+    timeout: Duration,
+}
+
+#[derive(Clone)]
 struct WebSummaryClient {
     client: OllamaClient,
     model: String,
@@ -384,6 +415,11 @@ struct WebEvalResponse {
     score: f32,
     kind: String,
     output: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueryCategoryResponse {
+    category: String,
 }
 
 struct WebEvalOutput {
@@ -410,6 +446,7 @@ impl WebSummaryClient {
     async fn evaluate(
         &self,
         query: &str,
+        category: QueryCategory,
         content: &str,
         code_blocks: &[String],
     ) -> Option<WebEvalOutput> {
@@ -418,7 +455,7 @@ impl WebSummaryClient {
             return None;
         }
         let intent = detect_query_intent(query);
-        let prompt = build_summary_prompt(query, trimmed, code_blocks);
+        let prompt = build_summary_prompt(query, category, trimmed, code_blocks);
         let result = self
             .client
             .generate(&self.model, &prompt, self.max_tokens, self.timeout)
@@ -428,7 +465,9 @@ impl WebSummaryClient {
         let relevant = parsed.relevant;
         let score = parsed.score.clamp(0.0, 1.0);
         let mut kind = parsed.kind.trim().to_ascii_lowercase();
-        let allow_code = matches!(intent, QueryIntent::Code) && !code_blocks.is_empty();
+        let allow_code = (matches!(intent, QueryIntent::Code)
+            || matches!(category, QueryCategory::CodeExample))
+            && !code_blocks.is_empty();
         if kind == "code" && !allow_code {
             kind = "summary".to_string();
         }
@@ -466,6 +505,39 @@ impl LocalRelevanceClient {
             score,
         })
     }
+}
+
+impl QueryCategoryClient {
+    async fn evaluate(&self, query: &str) -> Option<QueryCategory> {
+        let prompt = build_query_category_prompt(query);
+        let result = self
+            .client
+            .generate(&self.model, &prompt, self.max_tokens, self.timeout)
+            .await
+            .ok()?;
+        let parsed: QueryCategoryResponse = parse_json_response(&result)?;
+        parse_query_category(&parsed.category)
+    }
+}
+
+fn load_query_category_client() -> Option<QueryCategoryClient> {
+    let config = load_llm_config()?;
+    if !config.provider.trim().eq_ignore_ascii_case("ollama") {
+        return None;
+    }
+    let base_url = config.base_url.trim();
+    let model = config.default_model.trim();
+    if base_url.is_empty() || model.is_empty() {
+        return None;
+    }
+    let max_tokens = config.max_answer_tokens.min(MAX_QUERY_CATEGORY_TOKENS);
+    let client = OllamaClient::new(base_url.to_string()).ok()?;
+    Some(QueryCategoryClient {
+        client,
+        model: model.to_string(),
+        max_tokens,
+        timeout: Duration::from_millis(QUERY_CATEGORY_TIMEOUT_MS),
+    })
 }
 
 fn load_web_summary_client() -> Option<WebSummaryClient> {
@@ -527,7 +599,12 @@ fn load_llm_config() -> Option<config::LlmConfig> {
     Some(config.llm)
 }
 
-fn build_summary_prompt(query: &str, content: &str, code_blocks: &[String]) -> String {
+fn build_summary_prompt(
+    query: &str,
+    category: QueryCategory,
+    content: &str,
+    code_blocks: &[String],
+) -> String {
     let (snippet, _) = truncate_utf8_chars(content, MAX_WEB_SUMMARY_INPUT_CHARS);
     let query = query.trim();
     let mut prompt = String::new();
@@ -546,6 +623,9 @@ fn build_summary_prompt(query: &str, content: &str, code_blocks: &[String]) -> S
     prompt.push_str("\nPage text (cleaned):\n");
     prompt.push_str(&snippet);
     prompt.push_str("\n\n");
+    prompt.push_str("Query category: ");
+    prompt.push_str(category.as_str());
+    prompt.push_str("\n");
     if code_blocks.is_empty() {
         prompt.push_str("Code blocks (verbatim): <none>\n");
     } else {
@@ -555,7 +635,37 @@ fn build_summary_prompt(query: &str, content: &str, code_blocks: &[String]) -> S
         }
     }
     prompt.push_str(
-        "\nInstructions:\n- Decide if the page is relevant to the query.\n- If relevant and the query asks for code/example, output ONLY the code from the provided code blocks as Markdown fenced code blocks. Do not add or rewrite code.\n- If relevant, code-focused, and there are no code blocks, output a short 2-4 bullet summary instead.\n- If relevant and not code-focused, output 2-4 bullet points in Markdown.\n- If irrelevant, set relevant=false and output empty string.\n\nReturn JSON ONLY in this shape:\n{\"relevant\":true|false,\"score\":0..1,\"kind\":\"summary\"|\"code\",\"output\":\"...\"}\n",
+        "\nInstructions:\n- Decide if the page is relevant to the query.\n- If relevant and the query/category asks for code/example, output ONLY the code from the provided code blocks as Markdown fenced code blocks. Do not add or rewrite code.\n- If relevant, code-focused, and there are no code blocks, output a short 2-4 bullet summary instead.\n- If relevant and not code-focused, output 2-4 bullet points in Markdown.\n- If irrelevant, set relevant=false and output empty string.\n\nReturn JSON ONLY in this shape:\n{\"relevant\":true|false,\"score\":0..1,\"kind\":\"summary\"|\"code\",\"output\":\"...\"}\n",
+    );
+    prompt
+}
+
+fn build_query_category_prompt(query: &str) -> String {
+    let query = query.trim();
+    let mut prompt = String::new();
+    if query.is_empty() {
+        prompt.push_str("User query: <empty>\n\n");
+    } else {
+        prompt.push_str("User query:\n");
+        prompt.push_str(query);
+        prompt.push_str("\n\n");
+    }
+    prompt.push_str(
+        "Classify the user query into exactly one category from this list:\n\
+- code_example\n\
+- api_reference\n\
+- how_to_guide\n\
+- concept_definition\n\
+- troubleshooting\n\
+- spec_standard\n\
+- comparison_opinion\n\
+- news_release\n\
+- general\n\n\
+Instructions:\n\
+- Choose the category that best matches what the user wants to see in the answer.\n\
+- If unsure, choose general.\n\n\
+Return JSON ONLY in this shape:\n\
+{\"category\":\"...\"}\n",
     );
     prompt
 }
@@ -875,6 +985,9 @@ pub(crate) async fn filter_local_hits_with_llm(
     }
     let query_tokens = tokenize_terms_for_match(query);
     if query_tokens.is_empty() {
+        if matches!(intent, QueryIntent::Code) {
+            return Vec::new();
+        }
         return hits;
     }
     let query_len = query_tokens.len();
@@ -898,8 +1011,9 @@ pub(crate) async fn filter_local_hits_with_llm(
             };
             let overlap_ok = matched >= min_required && min_ratio.map_or(true, |min| ratio >= min);
             let has_code = hit_has_code_markers(&hit);
+            let specific_match = hit_matches_specific_token(&query_tokens, &hit);
             if code_intent {
-                if !overlap_ok || !has_code {
+                if !overlap_ok || !has_code || !specific_match {
                     continue;
                 }
             } else if !overlap_ok {
@@ -930,8 +1044,9 @@ pub(crate) async fn filter_local_hits_with_llm(
                 };
                 let overlap_ok = matched >= min_required && min_ratio.map_or(true, |min| ratio >= min);
                 let has_code = hit_has_code_markers(hit);
+                let specific_match = hit_matches_specific_token(&query_tokens, hit);
                 if code_intent {
-                    if !overlap_ok || !has_code {
+                    if !overlap_ok || !has_code || !specific_match {
                         continue;
                     }
                 } else if !overlap_ok {
@@ -956,8 +1071,9 @@ pub(crate) async fn filter_local_hits_with_llm(
             };
             let overlap_ok = matched >= min_required && min_ratio.map_or(true, |min| ratio >= min);
             let has_code = hit_has_code_markers(&hit);
+            let specific_match = hit_matches_specific_token(&query_tokens, &hit);
             if code_intent {
-                if !overlap_ok || !has_code {
+                if !overlap_ok || !has_code || !specific_match {
                     continue;
                 }
             } else if !overlap_ok {
@@ -1148,6 +1264,9 @@ async fn run_web_discovery(
         }
     };
 
+    let debug_enabled = env_boolish("DOCDEX_WEB_DEBUG").unwrap_or(false);
+    let (query_category, category_source) = classify_query_category(query).await;
+
     let mut discovery_limit = (web_limit * WEB_DISCOVERY_MULTIPLIER)
         .max(web_limit)
         .max(WEB_DISCOVERY_MIN_RESULTS);
@@ -1155,8 +1274,15 @@ async fn run_web_discovery(
     match discovery.discover(query, discovery_limit).await {
         Ok(response) => {
             let mut debug = Vec::new();
+            if debug_enabled {
+                debug.push(format!(
+                    "query_category: {} ({})",
+                    query_category.as_str(),
+                    category_source.as_str()
+                ));
+            }
             let (mut discovery_response, mut urls) =
-                normalize_discovery_response(response, &config, web_limit);
+                normalize_discovery_response(response, &config, web_limit, query_category);
             if urls.is_empty() {
                 debug.push(format!(
                     "discovery returned empty results for query: {}",
@@ -1167,7 +1293,12 @@ async fn run_web_discovery(
                         match discovery.discover(&fallback_query, discovery_limit).await {
                             Ok(fallback_response) => {
                                 let normalized =
-                                    normalize_discovery_response(fallback_response, &config, web_limit);
+                                    normalize_discovery_response(
+                                        fallback_response,
+                                        &config,
+                                        web_limit,
+                                        query_category,
+                                    );
                                 discovery_response = normalized.0;
                                 urls = normalized.1;
                                 debug.push(format!(
@@ -1207,7 +1338,11 @@ async fn run_web_discovery(
                     ),
                 };
             }
-            let fetches = fetch_web_documents(query, &urls, &config, web_limit).await;
+            discovery_response.results = urls
+                .iter()
+                .map(|url| WebDiscoveryResult { url: url.clone() })
+                .collect();
+            let fetches = fetch_web_documents(query, &urls, &config, web_limit, query_category).await;
             let message = if gate.browser_available {
                 None
             } else {
@@ -1260,6 +1395,7 @@ fn normalize_discovery_response(
     response: WebDiscoveryResponse,
     config: &WebConfig,
     limit: usize,
+    query_category: QueryCategory,
 ) -> (WebDiscoveryResponse, Vec<String>) {
     let mut urls = Vec::with_capacity(response.results.len());
     for result in response.results {
@@ -1270,6 +1406,7 @@ fn normalize_discovery_response(
     let mut urls = dedupe_urls(urls);
     urls.retain(|value| is_allowed_url(value, &config.blocklist));
     urls.retain(|value| !is_tracking_url(value));
+    sort_urls_for_category(&mut urls, query_category);
     let urls = enforce_domain_diversity(urls, WEB_MAX_RESULTS_PER_DOMAIN);
     let results = urls
         .iter()
@@ -1341,6 +1478,130 @@ fn enforce_domain_diversity(urls: Vec<String>, max_per_domain: usize) -> Vec<Str
     out
 }
 
+fn sort_urls_for_category(urls: &mut Vec<String>, category: QueryCategory) {
+    if urls.len() < 2 || matches!(category, QueryCategory::General) {
+        return;
+    }
+    let mut scored = Vec::with_capacity(urls.len());
+    for (idx, url) in urls.iter().enumerate() {
+        let score = score_url_for_category(url, category);
+        scored.push((score, idx, url.clone()));
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    *urls = scored.into_iter().map(|(_, _, url)| url).collect();
+}
+
+fn score_url_for_category(url: &str, category: QueryCategory) -> i32 {
+    let url_lc = url.trim().to_ascii_lowercase();
+    let parsed = url::Url::parse(&url_lc).ok();
+    let host = parsed.as_ref().and_then(|item| item.host_str()).unwrap_or("");
+    let mut score = 0;
+    match category {
+        QueryCategory::CodeExample => {
+            if url_contains_any(
+                host,
+                &["github.com", "gitlab.com", "bitbucket.org", "gist.github.com"],
+            ) {
+                score += 6;
+            }
+            if url_contains_any(
+                &url_lc,
+                &["example", "examples", "sample", "snippet", "code", "repository", "repo"],
+            ) {
+                score += 3;
+            }
+            if url_contains_any(&url_lc, &["docs", "reference"]) {
+                score -= 1;
+            }
+            if url_contains_any(&url_lc, &["blog", "news"]) {
+                score -= 1;
+            }
+        }
+        QueryCategory::ApiReference => {
+            if url_contains_any(host, &["docs.", "developer.", "api."]) {
+                score += 3;
+            }
+            if url_contains_any(&url_lc, &["/docs", "/reference", "/api", "sdk"]) {
+                score += 2;
+            }
+            if url_contains_any(host, &["github.com", "gitlab.com"]) {
+                score -= 1;
+            }
+        }
+        QueryCategory::HowToGuide => {
+            if url_contains_any(
+                &url_lc,
+                &["how-to", "howto", "tutorial", "guide", "walkthrough", "getting-started"],
+            ) {
+                score += 3;
+            }
+            if url_contains_any(&url_lc, &["blog", "learn", "academy"]) {
+                score += 1;
+            }
+        }
+        QueryCategory::ConceptDefinition => {
+            if url_contains_any(
+                &url_lc,
+                &["overview", "introduction", "what-is", "concept", "glossary"],
+            ) {
+                score += 3;
+            }
+            if url_contains_any(&url_lc, &["docs", "reference"]) {
+                score += 1;
+            }
+        }
+        QueryCategory::Troubleshooting => {
+            if url_contains_any(
+                host,
+                &["stackoverflow.com", "serverfault.com", "superuser.com"],
+            ) {
+                score += 4;
+            }
+            if url_contains_any(&url_lc, &["issue", "issues", "error", "fix", "debug"]) {
+                score += 2;
+            }
+            if url_contains_any(&url_lc, &["github.com/issues", "gitlab.com/issues"]) {
+                score += 2;
+            }
+        }
+        QueryCategory::SpecStandard => {
+            if url_contains_any(
+                host,
+                &["eips.ethereum.org", "rfc-editor.org", "ietf.org", "w3.org"],
+            ) {
+                score += 5;
+            }
+            if url_contains_any(&url_lc, &["spec", "standard", "eip-", "erc-", "rfc"]) {
+                score += 2;
+            }
+        }
+        QueryCategory::ComparisonOpinion => {
+            if url_contains_any(
+                &url_lc,
+                &["compare", "comparison", "-vs-", "/vs/", "versus", "best", "top"],
+            ) {
+                score += 3;
+            }
+            if url_contains_any(&url_lc, &["review", "pros", "cons", "alternatives"]) {
+                score += 2;
+            }
+        }
+        QueryCategory::NewsRelease => {
+            if url_contains_any(
+                &url_lc,
+                &["blog", "news", "release", "changelog", "announcement", "press"],
+            ) {
+                score += 3;
+            }
+            if url_contains_any(&url_lc, &["/blog", "/news"]) {
+                score += 1;
+            }
+        }
+        QueryCategory::General => {}
+    }
+    score
+}
+
 fn is_allowed_url(raw: &str, blocklist: &[String]) -> bool {
     let url = match url::Url::parse(raw) {
         Ok(url) => url,
@@ -1363,6 +1624,10 @@ fn is_allowed_url(raw: &str, blocklist: &[String]) -> bool {
         }
     }
     true
+}
+
+fn url_contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
 }
 
 fn is_tracking_url(raw: &str) -> bool {
@@ -1570,6 +1835,7 @@ async fn fetch_web_documents(
     urls: &[String],
     config: &WebConfig,
     target_count: usize,
+    query_category: QueryCategory,
 ) -> Vec<WebFetchResult> {
     if urls.is_empty() {
         return Vec::new();
@@ -1620,8 +1886,26 @@ async fn fetch_web_documents(
 
     let mut all_results = Vec::new();
     let mut good_count = 0usize;
-    for batch in urls.chunks(WEB_BATCH_SIZE).take(WEB_MAX_BATCHES) {
+    'batch_loop: for batch in urls.chunks(WEB_BATCH_SIZE).take(WEB_MAX_BATCHES) {
         let mut batch_results = Vec::new();
+        macro_rules! push_result {
+            ($result:expr) => {{
+                batch_results.push($result);
+                if let Some(item) = batch_results.last() {
+                    if item
+                        .relevance_score
+                        .unwrap_or(0.0)
+                        >= WEB_GOOD_RELEVANCE_SCORE
+                    {
+                        good_count += 1;
+                    }
+                }
+                if good_count >= desired_count {
+                    all_results.extend(batch_results);
+                    break 'batch_loop;
+                }
+            }};
+        }
         for raw in batch {
             let url = match url::Url::parse(raw) {
                 Ok(url) => url,
@@ -1641,7 +1925,7 @@ async fn fetch_web_documents(
             let mut code_blocks: Vec<String> = Vec::new();
             let mut quality_scale = 1.0f32;
             let mut debug_notes: Vec<String> = Vec::new();
-            let intent = detect_query_intent(query);
+            let intent = resolve_query_intent(query, query_category);
 
             if let Some(layout) = layout.as_ref() {
                 if let Ok(Some(payload)) =
@@ -1661,7 +1945,7 @@ async fn fetch_web_documents(
                 let now_ms = now_epoch_ms_u64();
                 if let Some(layout) = layout.as_ref() {
                     if let Some(until_ms) = domain_in_cooldown(layout, &host, now_ms) {
-                        batch_results.push(WebFetchResult {
+                        push_result!(WebFetchResult {
                             url: url.to_string(),
                             status: None,
                             fetched_at_epoch_ms: None,
@@ -1683,7 +1967,7 @@ async fn fetch_web_documents(
                 let status_probe =
                     fetch_status(&url, &config.user_agent, config.request_timeout).await;
                 if should_skip_status(status_probe) {
-                    batch_results.push(WebFetchResult {
+                    push_result!(WebFetchResult {
                         url: url.to_string(),
                         status: status_probe,
                         fetched_at_epoch_ms,
@@ -1735,7 +2019,7 @@ async fn fetch_web_documents(
                             if debug_enabled {
                                 debug_notes.push("js challenge detected (multiple signals + short text)".to_string());
                             }
-                            batch_results.push(WebFetchResult {
+                            push_result!(WebFetchResult {
                                 url: url.to_string(),
                                 status,
                                 fetched_at_epoch_ms,
@@ -1775,7 +2059,7 @@ async fn fetch_web_documents(
                             boiler_ratio = boilerplate_ratio(&readable, boilerplate_phrases);
                             let penalty = quality_penalty(boiler_ratio, ad_markers);
                             if penalty == 0.0 {
-                                batch_results.push(WebFetchResult {
+                                push_result!(WebFetchResult {
                                     url: url.to_string(),
                                     status: status_probe,
                                     fetched_at_epoch_ms,
@@ -1797,6 +2081,18 @@ async fn fetch_web_documents(
                             } else {
                                 filtered
                             };
+                            if matches!(intent, QueryIntent::Code) && code_blocks.is_empty() {
+                                let fallback_blocks = extract_probable_code_blocks(&readable);
+                                if !fallback_blocks.is_empty() {
+                                    if debug_enabled {
+                                        debug_notes.push(format!(
+                                            "code fallback extracted {} block(s)",
+                                            fallback_blocks.len()
+                                        ));
+                                    }
+                                    code_blocks = fallback_blocks;
+                                }
+                            }
                             let (content_input, should_chunk) = match intent {
                                 QueryIntent::Code => (readable, true),
                                 QueryIntent::Definition => {
@@ -1843,7 +2139,7 @@ async fn fetch_web_documents(
                         let failure_kind =
                             classify_status_failure(status_probe).unwrap_or(DomainFailureKind::Fetch);
                         record_domain_failure(layout.as_ref(), &host, failure_kind, now_ms);
-                        batch_results.push(WebFetchResult {
+                        push_result!(WebFetchResult {
                             url: url.to_string(),
                             status: status_probe,
                             fetched_at_epoch_ms,
@@ -1862,7 +2158,7 @@ async fn fetch_web_documents(
 
             let Some(content_text) = content.as_ref() else {
                 let empty_error = content_error.clone().unwrap_or_else(|| "content empty".to_string());
-                batch_results.push(WebFetchResult {
+                push_result!(WebFetchResult {
                     url: url.to_string(),
                     status,
                     fetched_at_epoch_ms,
@@ -1902,7 +2198,7 @@ async fn fetch_web_documents(
 
             if skip_summary {
                 let error = content_error.clone().unwrap_or_else(|| "low_content".to_string());
-                batch_results.push(WebFetchResult {
+                push_result!(WebFetchResult {
                     url: url.to_string(),
                     status,
                     fetched_at_epoch_ms,
@@ -1932,7 +2228,9 @@ async fn fetch_web_documents(
             let evaluation = if let Some(summary) = cached_summary {
                 Some(summary)
             } else if let Some(summary_client) = summary_client.as_ref() {
-                summary_client.evaluate(query, content_text, &code_blocks).await
+                summary_client
+                    .evaluate(query, query_category, content_text, &code_blocks)
+                    .await
             } else {
                 Some(WebEvalOutput {
                     relevance_score: 0.0,
@@ -2033,8 +2331,11 @@ async fn fetch_web_documents(
             } else if ai_kind == "code" {
                 relevance_score = (relevance_score * 0.9).clamp(0.0, 1.0);
             }
+            let category_multiplier =
+                category_relevance_multiplier(query_category, &url, &code_blocks, &ai_kind);
+            relevance_score = (relevance_score * category_multiplier).clamp(0.0, 1.0);
             record_domain_success(layout.as_ref(), &host);
-            batch_results.push(WebFetchResult {
+            push_result!(WebFetchResult {
                 url: url.to_string(),
                 status,
                 fetched_at_epoch_ms,
@@ -2049,10 +2350,6 @@ async fn fetch_web_documents(
         }
 
         if !batch_results.is_empty() {
-            good_count += batch_results
-                .iter()
-                .filter(|item| item.relevance_score.unwrap_or(0.0) >= WEB_GOOD_RELEVANCE_SCORE)
-                .count();
             all_results.extend(batch_results);
             if good_count >= desired_count {
                 break;
@@ -2089,14 +2386,11 @@ fn clean_web_text(html: &str) -> String {
 fn normalize_text_spacing(text: &str) -> String {
     let mut lines = Vec::new();
     for line in text.lines() {
-        let trimmed = strip_invisible_chars(line).trim().to_string();
+        let stripped = ANSI_ESCAPE_RE.replace_all(line, "");
+        let trimmed = strip_invisible_chars(stripped.as_ref()).trim().to_string();
         let trimmed = trimmed.as_str();
         if trimmed.is_empty() {
             lines.push(String::new());
-            continue;
-        }
-        if is_probable_code_line(trimmed) {
-            lines.push(trimmed.to_string());
             continue;
         }
         let mut updated = trimmed.to_string();
@@ -2112,7 +2406,11 @@ fn normalize_text_spacing(text: &str) -> String {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
-        lines.push(normalized);
+        if is_strict_code_line(trimmed) {
+            lines.push(trimmed.to_string());
+        } else {
+            lines.push(normalized);
+        }
     }
     lines.join("\n")
 }
@@ -2133,12 +2431,52 @@ fn is_probable_code_line(line: &str) -> bool {
     if trimmed.starts_with("```") {
         return true;
     }
+    if trimmed.starts_with("/**") || trimmed.starts_with("///") || trimmed.starts_with("/*") {
+        return true;
+    }
+    if trimmed.contains("@param")
+        || trimmed.contains("@var")
+        || trimmed.contains("@return")
+        || trimmed.contains("#[")
+        || trimmed.contains("<?php")
+    {
+        return true;
+    }
     let symbols = ['{', '}', ';', '=', '<', '>', '[', ']', '(', ')'];
     let symbol_hits = trimmed.chars().filter(|ch| symbols.contains(ch)).count();
     if symbol_hits >= 2 {
         return true;
     }
-    trimmed.contains("::") || trimmed.contains("->") || trimmed.contains("=>")
+    trimmed.contains("::")
+        || trimmed.contains("->")
+        || trimmed.contains("=>")
+        || trimmed.contains("$")
+        || trimmed.contains("new ")
+}
+
+fn is_strict_code_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.starts_with("```") || trimmed.starts_with("#!") {
+        return true;
+    }
+    let symbols = ['{', '}', ';', '=', '<', '>', '[', ']', '(', ')'];
+    let symbol_hits = trimmed.chars().filter(|ch| symbols.contains(ch)).count();
+    if symbol_hits >= 4 {
+        return true;
+    }
+    if trimmed.contains("::") || trimmed.contains("->") || trimmed.contains("=>") {
+        return true;
+    }
+    if trimmed.contains("<?php") {
+        return true;
+    }
+    if trimmed.contains('$') && (trimmed.contains("->") || trimmed.contains("::")) {
+        return true;
+    }
+    false
 }
 
 fn extract_structured_html_text(html: &str, phrases: &[String]) -> String {
@@ -2206,6 +2544,64 @@ fn extract_code_blocks(html: &str) -> Vec<String> {
         }
     }
     blocks
+}
+
+fn extract_probable_code_blocks(text: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut seen = HashSet::new();
+    let mut current = Vec::new();
+    let mut code_lines = 0usize;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if !current.is_empty() {
+                if code_lines >= 2 || block_has_annotation_markers(&current) {
+                    let joined = current.join("\n");
+                    push_code_block(&mut blocks, &mut seen, &joined, true);
+                    if blocks.len() >= MAX_CODE_BLOCKS {
+                        return blocks;
+                    }
+                }
+                current.clear();
+                code_lines = 0;
+            }
+            continue;
+        }
+        if is_probable_code_line(trimmed) {
+            code_lines += 1;
+            current.push(trimmed.to_string());
+        } else if !current.is_empty() {
+            if code_lines >= 2 || block_has_annotation_markers(&current) {
+                let joined = current.join("\n");
+                push_code_block(&mut blocks, &mut seen, &joined, true);
+                if blocks.len() >= MAX_CODE_BLOCKS {
+                    return blocks;
+                }
+            }
+            current.clear();
+            code_lines = 0;
+        }
+    }
+    if !current.is_empty() && (code_lines >= 2 || block_has_annotation_markers(&current)) {
+        let joined = current.join("\n");
+        push_code_block(&mut blocks, &mut seen, &joined, true);
+        if blocks.len() >= MAX_CODE_BLOCKS {
+            return blocks;
+        }
+    }
+    blocks
+}
+
+fn block_has_annotation_markers(lines: &[String]) -> bool {
+    lines.iter().any(|line| {
+        let trimmed = line.trim();
+        trimmed.contains("@param")
+            || trimmed.contains("@var")
+            || trimmed.contains("@return")
+            || trimmed.contains("#[")
+            || trimmed.starts_with("/**")
+            || trimmed.contains("<?php")
+    })
 }
 
 fn push_code_block(
@@ -2418,6 +2814,50 @@ pub(crate) enum QueryIntent {
     General,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueryCategory {
+    CodeExample,
+    ApiReference,
+    HowToGuide,
+    ConceptDefinition,
+    Troubleshooting,
+    SpecStandard,
+    ComparisonOpinion,
+    NewsRelease,
+    General,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum QueryCategorySource {
+    Llm,
+    Heuristic,
+}
+
+impl QueryCategory {
+    fn as_str(self) -> &'static str {
+        match self {
+            QueryCategory::CodeExample => "code_example",
+            QueryCategory::ApiReference => "api_reference",
+            QueryCategory::HowToGuide => "how_to_guide",
+            QueryCategory::ConceptDefinition => "concept_definition",
+            QueryCategory::Troubleshooting => "troubleshooting",
+            QueryCategory::SpecStandard => "spec_standard",
+            QueryCategory::ComparisonOpinion => "comparison_opinion",
+            QueryCategory::NewsRelease => "news_release",
+            QueryCategory::General => "general",
+        }
+    }
+}
+
+impl QueryCategorySource {
+    fn as_str(self) -> &'static str {
+        match self {
+            QueryCategorySource::Llm => "llm",
+            QueryCategorySource::Heuristic => "heuristic",
+        }
+    }
+}
+
 pub(crate) fn detect_query_intent(query: &str) -> QueryIntent {
     let query_lc = query.trim().to_ascii_lowercase();
     if query_lc.is_empty() {
@@ -2479,6 +2919,141 @@ pub(crate) fn detect_query_intent(query: &str) -> QueryIntent {
         return QueryIntent::Definition;
     }
     QueryIntent::General
+}
+
+fn resolve_query_intent(query: &str, category: QueryCategory) -> QueryIntent {
+    match category {
+        QueryCategory::CodeExample => QueryIntent::Code,
+        QueryCategory::ApiReference
+        | QueryCategory::ConceptDefinition
+        | QueryCategory::SpecStandard => QueryIntent::Definition,
+        _ => detect_query_intent(query),
+    }
+}
+
+fn parse_query_category(value: &str) -> Option<QueryCategory> {
+    let normalized = value.trim().to_ascii_lowercase();
+    let category = match normalized.as_str() {
+        "code_example" | "code" | "example" | "code-sample" | "code_sample" => {
+            QueryCategory::CodeExample
+        }
+        "api_reference" | "api" | "reference" | "documentation" => QueryCategory::ApiReference,
+        "how_to_guide" | "how-to" | "how_to" | "guide" | "tutorial" => QueryCategory::HowToGuide,
+        "concept_definition" | "definition" | "concept" | "overview" => {
+            QueryCategory::ConceptDefinition
+        }
+        "troubleshooting" | "debugging" | "error" | "issue" => QueryCategory::Troubleshooting,
+        "spec_standard" | "spec" | "standard" | "rfc" => QueryCategory::SpecStandard,
+        "comparison_opinion" | "comparison" | "compare" | "opinion" => {
+            QueryCategory::ComparisonOpinion
+        }
+        "news_release" | "news" | "release" | "announcement" => QueryCategory::NewsRelease,
+        "general" | "other" | "unknown" => QueryCategory::General,
+        _ => return None,
+    };
+    Some(category)
+}
+
+fn detect_query_category_heuristic(query: &str) -> QueryCategory {
+    let query_lc = query.trim().to_ascii_lowercase();
+    if query_lc.is_empty() {
+        return QueryCategory::General;
+    }
+    let tokens = tokenize_terms(&query_lc);
+    let has_token = |values: &[&str]| tokens.iter().any(|token| values.contains(&token.as_str()));
+    let has_phrase = |phrase: &str| query_lc.contains(phrase);
+
+    if has_token(&[
+        "error", "issue", "issues", "bug", "bugs", "debug", "debugging", "fix", "fixed", "failure",
+        "failed", "panic", "exception", "stacktrace", "stack", "trace",
+    ]) {
+        return QueryCategory::Troubleshooting;
+    }
+
+    if has_token(&[
+        "spec", "specs", "standard", "standards", "rfc", "eip", "eips", "erc", "ercs", "draft",
+    ]) {
+        return QueryCategory::SpecStandard;
+    }
+
+    if has_token(&[
+        "code", "example", "examples", "sample", "samples", "snippet", "snippets", "implementation",
+        "template", "boilerplate",
+    ]) {
+        return QueryCategory::CodeExample;
+    }
+
+    if has_phrase("how to ") || has_phrase("how-to") || has_phrase("getting started") {
+        return QueryCategory::HowToGuide;
+    }
+    if has_token(&["how", "guide", "guides", "tutorial", "tutorials", "walkthrough"]) {
+        return QueryCategory::HowToGuide;
+    }
+
+    if has_token(&["api", "reference", "docs", "documentation", "sdk", "endpoint", "schema"]) {
+        return QueryCategory::ApiReference;
+    }
+
+    if has_token(&[
+        "vs", "versus", "compare", "comparison", "best", "top", "pros", "cons", "alternatives",
+    ]) {
+        return QueryCategory::ComparisonOpinion;
+    }
+
+    if has_token(&[
+        "release", "releases", "changelog", "announcement", "news", "roadmap", "version",
+    ]) {
+        return QueryCategory::NewsRelease;
+    }
+
+    if has_phrase("what is ")
+        || has_phrase("what's ")
+        || has_token(&["define", "definition", "meaning", "overview", "concept", "intro"])
+    {
+        return QueryCategory::ConceptDefinition;
+    }
+
+    QueryCategory::General
+}
+
+async fn classify_query_category(query: &str) -> (QueryCategory, QueryCategorySource) {
+    let query_key = query.trim().to_ascii_lowercase();
+    if query_key.is_empty() {
+        return (QueryCategory::General, QueryCategorySource::Heuristic);
+    }
+    if let Ok(cache) = QUERY_CATEGORY_CACHE.lock() {
+        if let Some(cached) = cache.get(&query_key).copied() {
+            return (cached.category, cached.source);
+        }
+    }
+    let heuristic = detect_query_category_heuristic(query);
+    let Some(client) = load_query_category_client() else {
+        let source = QueryCategorySource::Heuristic;
+        if let Ok(mut cache) = QUERY_CATEGORY_CACHE.lock() {
+            cache.insert(
+                query_key,
+                CachedQueryCategory {
+                    category: heuristic,
+                    source,
+                },
+            );
+        }
+        return (heuristic, source);
+    };
+    let (category, source) = match client.evaluate(query).await {
+        Some(category) => (category, QueryCategorySource::Llm),
+        None => (heuristic, QueryCategorySource::Heuristic),
+    };
+    if let Ok(mut cache) = QUERY_CATEGORY_CACHE.lock() {
+        cache.insert(
+            query_key,
+            CachedQueryCategory {
+                category,
+                source,
+            },
+        );
+    }
+    (category, source)
 }
 
 fn join_code_blocks(blocks: &[String]) -> String {
@@ -3134,6 +3709,102 @@ fn blend_relevance_score(model_score: f32, stats: &WebMatchStats) -> f32 {
     (blended * penalty).clamp(0.0, 1.0)
 }
 
+fn category_relevance_multiplier(
+    category: QueryCategory,
+    url: &url::Url,
+    code_blocks: &[String],
+    ai_kind: &str,
+) -> f32 {
+    let url_lc = url.as_str().to_ascii_lowercase();
+    let host = url.host_str().unwrap_or("").to_ascii_lowercase();
+    let has_code = !code_blocks.is_empty();
+    match category {
+        QueryCategory::CodeExample => {
+            if ai_kind == "code" && has_code {
+                1.15
+            } else if !has_code {
+                0.7
+            } else {
+                0.85
+            }
+        }
+        QueryCategory::ApiReference => {
+            if url_contains_any(&url_lc, &["/api", "/reference", "api", "reference", "sdk"])
+                || url_contains_any(&host, &["docs.", "developer.", "api."])
+            {
+                1.1
+            } else {
+                0.95
+            }
+        }
+        QueryCategory::HowToGuide => {
+            if url_contains_any(
+                &url_lc,
+                &["how-to", "howto", "tutorial", "guide", "walkthrough", "getting-started"],
+            ) {
+                1.1
+            } else {
+                0.97
+            }
+        }
+        QueryCategory::ConceptDefinition => {
+            if url_contains_any(
+                &url_lc,
+                &["overview", "introduction", "what-is", "concept", "glossary"],
+            ) {
+                1.1
+            } else {
+                0.97
+            }
+        }
+        QueryCategory::Troubleshooting => {
+            if url_contains_any(&url_lc, &["error", "issues", "issue", "fix", "debug"])
+                || url_contains_any(
+                    &host,
+                    &["stackoverflow.com", "serverfault.com", "superuser.com"],
+                )
+            {
+                1.1
+            } else {
+                0.97
+            }
+        }
+        QueryCategory::SpecStandard => {
+            if url_contains_any(&url_lc, &["spec", "standard", "eip-", "erc-", "rfc"])
+                || url_contains_any(
+                    &host,
+                    &["eips.ethereum.org", "rfc-editor.org", "ietf.org", "w3.org"],
+                )
+            {
+                1.15
+            } else {
+                0.95
+            }
+        }
+        QueryCategory::ComparisonOpinion => {
+            if url_contains_any(
+                &url_lc,
+                &["compare", "comparison", "-vs-", "/vs/", "versus", "best", "top"],
+            ) {
+                1.1
+            } else {
+                0.95
+            }
+        }
+        QueryCategory::NewsRelease => {
+            if url_contains_any(
+                &url_lc,
+                &["blog", "news", "release", "changelog", "announcement", "press"],
+            ) {
+                1.1
+            } else {
+                0.95
+            }
+        }
+        QueryCategory::General => 1.0,
+    }
+}
+
 fn min_overlap_ratio_for_intent(intent: QueryIntent, query_len: usize) -> Option<f32> {
     if matches!(intent, QueryIntent::Code) && query_len >= 4 {
         return Some(0.5);
@@ -3164,6 +3835,15 @@ fn hit_has_code_markers(hit: &Hit) -> bool {
         }
     }
     false
+}
+
+fn hit_matches_specific_token(query_tokens: &[String], hit: &Hit) -> bool {
+    if query_tokens.is_empty() {
+        return false;
+    }
+    hit_match_stats(query_tokens, query_tokens.len(), hit)
+        .map(|(matched, _)| matched > 0)
+        .unwrap_or(false)
 }
 
 fn is_markdown_path(path: &str) -> bool {
@@ -3264,6 +3944,18 @@ mod tests {
         assert_eq!(status.status, WebDiscoveryStatusCode::Unavailable);
         assert_eq!(status.reason.as_deref(), Some("missing_dependency"));
         assert!(status.message.as_deref().unwrap().contains("chrome"));
+    }
+
+    #[test]
+    fn detect_query_category_heuristic_code_example() {
+        let category = detect_query_category_heuristic("smart contract user approval code sample");
+        assert_eq!(category, QueryCategory::CodeExample);
+    }
+
+    #[test]
+    fn detect_query_category_heuristic_troubleshooting() {
+        let category = detect_query_category_heuristic("rust tokio timeout error fix");
+        assert_eq!(category, QueryCategory::Troubleshooting);
     }
 }
 

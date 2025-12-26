@@ -47,6 +47,9 @@ const WEB_CHUNK_MAX_CHARS: usize = 700;
 const WEB_CHUNK_MIN: usize = 2;
 const WEB_CHUNK_MAX: usize = 4;
 const WEB_GOOD_RELEVANCE_SCORE: f32 = 0.7;
+const WEB_DISCOVERY_MULTIPLIER: usize = 4;
+const WEB_DISCOVERY_MIN_RESULTS: usize = 4;
+const WEB_DISCOVERY_MAX_QUERY_TOKENS: usize = 6;
 const WEB_DEF_SECTION_MAX: usize = 4;
 const WEB_SECTION_MAX_CHARS: usize = 420;
 const WEB_HEADING_MAX_CHARS: usize = 120;
@@ -272,6 +275,8 @@ pub struct WebDiscoveryStatus {
     pub discovery: Option<WebDiscoveryResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fetches: Option<Vec<WebFetchResult>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug: Option<Vec<String>>,
     pub gate: WebGateMeta,
 }
 
@@ -557,6 +562,7 @@ fn build_summary_prompt(query: &str, content: &str, code_blocks: &[String]) -> S
 
 fn build_local_relevance_prompt(query: &str, hit: &Hit) -> String {
     let query = query.trim();
+    let intent = detect_query_intent(query);
     let summary = hit.summary.trim();
     let snippet = hit.snippet.trim();
     let (summary_trimmed, _) = truncate_utf8_chars(summary, MAX_LOCAL_RELEVANCE_INPUT_CHARS);
@@ -583,8 +589,19 @@ fn build_local_relevance_prompt(query: &str, hit: &Hit) -> String {
         prompt.push_str(&snippet_trimmed);
         prompt.push('\n');
     }
+    match intent {
+        QueryIntent::Code => {
+            prompt.push_str("Query intent: code example/snippet\n");
+        }
+        QueryIntent::Definition => {
+            prompt.push_str("Query intent: documentation/summary\n");
+        }
+        QueryIntent::General => {
+            prompt.push_str("Query intent: general\n");
+        }
+    }
     prompt.push_str(
-        "\nInstructions:\n- Decide if the local result is relevant to the query.\n- Ignore matches that only share generic terms like language names or common words.\n- If unsure, mark irrelevant.\n\nReturn JSON ONLY in this shape:\n{\"relevant\":true|false,\"score\":0..1}\n",
+        "\nInstructions:\n- Decide if the local result is relevant to the query.\n- Ignore matches that only share generic terms like language names or common words.\n- If the query asks for code, only mark relevant if the local result contains code or a code snippet.\n- If unsure, mark irrelevant.\n\nReturn JSON ONLY in this shape:\n{\"relevant\":true|false,\"score\":0..1}\n",
     );
     prompt
 }
@@ -760,13 +777,25 @@ pub async fn run_web_research(
     gate: &WebGateConfig,
 ) -> Result<WebResearchResponse, anyhow::Error> {
     let query = query.trim();
+    let intent = detect_query_intent(query);
     let search_response = search::run_query(indexer, libs_indexer, query, limit).await?;
     let original_top_score_normalized = search_response.top_score_normalized;
-    let hits =
-        filter_local_hits_with_llm(query, search_response.hits, original_top_score_normalized).await;
-    let top_score = hits.first().map(|hit| hit.score);
-    let top_score_normalized = top_score.map(search::normalize_score);
-    let local_match_ratio = local_match_ratio(query, &hits);
+    let mut hits = filter_local_hits_with_llm(
+        query,
+        intent,
+        search_response.hits,
+        original_top_score_normalized,
+    )
+    .await;
+    let mut top_score = hits.first().map(|hit| hit.score);
+    let mut top_score_normalized = top_score.map(search::normalize_score);
+    let mut local_match_ratio = local_match_ratio(query, &hits);
+    if matches!(intent, QueryIntent::Code) && local_match_ratio == Some(0.0) {
+        hits.clear();
+        top_score = None;
+        top_score_normalized = None;
+        local_match_ratio = Some(0.0);
+    }
     let completion = build_completion(query, &hits);
     let web_limit = resolve_web_limit(web_limit, limit);
     let web_discovery = if !gate.enabled {
@@ -782,6 +811,7 @@ pub async fn run_web_research(
             unavailable: Some(unavailable),
             discovery: None,
             fetches: None,
+            debug: None,
             gate: build_gate_meta(
                 gate,
                 top_score,
@@ -798,6 +828,7 @@ pub async fn run_web_research(
             unavailable: None,
             discovery: None,
             fetches: None,
+            debug: None,
             gate: build_gate_meta(
                 gate,
                 top_score,
@@ -832,6 +863,7 @@ pub async fn run_web_research(
 
 pub(crate) async fn filter_local_hits_with_llm(
     query: &str,
+    intent: QueryIntent,
     hits: Vec<Hit>,
     top_score_normalized: Option<f32>,
 ) -> Vec<Hit> {
@@ -847,18 +879,40 @@ pub(crate) async fn filter_local_hits_with_llm(
     }
     let query_len = query_tokens.len();
     let min_required = min_required_matches(query_len);
+    let min_ratio = min_overlap_ratio_for_intent(intent, query_len);
+    let code_intent = matches!(intent, QueryIntent::Code);
     let threshold = resolve_local_relevance_threshold();
     let client = load_local_relevance_client();
-    if let (Some(score), None) = (top_score_normalized, client.as_ref()) {
-        if score >= threshold {
-            return hits;
+    if !code_intent {
+        if let (Some(score), None) = (top_score_normalized, client.as_ref()) {
+            if score >= threshold {
+                return hits;
+            }
         }
     }
     let Some(client) = client else {
-        return hits
-            .into_iter()
-            .filter(|hit| local_hit_matches(&query_tokens, hit))
-            .collect();
+        let mut filtered = Vec::new();
+        for hit in hits {
+            let Some((matched, ratio)) = hit_match_stats(&query_tokens, query_len, &hit) else {
+                continue;
+            };
+            let overlap_ok = matched >= min_required && min_ratio.map_or(true, |min| ratio >= min);
+            let has_code = hit_has_code_markers(&hit);
+            if code_intent {
+                if !overlap_ok || !has_code {
+                    continue;
+                }
+            } else if !overlap_ok {
+                continue;
+            }
+            let mut adjusted = hit;
+            if code_intent {
+                apply_code_intent_penalty(&mut adjusted, has_code);
+            }
+            filtered.push(adjusted);
+        }
+        filtered.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        return filtered;
     };
     let all_hits = hits;
     let mut filtered = Vec::new();
@@ -868,15 +922,26 @@ pub(crate) async fn filter_local_hits_with_llm(
         match client.evaluate(query, hit).await {
             Some(response) => {
                 llm_responses += 1;
-                if response.relevant {
-                    let matched = hit_match_stats(&query_tokens, query_len, hit)
-                        .map(|(matched, _)| matched)
-                        .unwrap_or(0);
-                    if matched < min_required {
+                if !response.relevant {
+                    continue;
+                }
+                let Some((matched, ratio)) = hit_match_stats(&query_tokens, query_len, hit) else {
+                    continue;
+                };
+                let overlap_ok = matched >= min_required && min_ratio.map_or(true, |min| ratio >= min);
+                let has_code = hit_has_code_markers(hit);
+                if code_intent {
+                    if !overlap_ok || !has_code {
                         continue;
                     }
-                    filtered.push(hit.clone());
+                } else if !overlap_ok {
+                    continue;
                 }
+                let mut adjusted = hit.clone();
+                if code_intent {
+                    apply_code_intent_penalty(&mut adjusted, has_code);
+                }
+                filtered.push(adjusted);
             }
             None => {
                 llm_failures += 1;
@@ -884,11 +949,30 @@ pub(crate) async fn filter_local_hits_with_llm(
         }
     }
     if llm_responses == 0 && llm_failures > 0 {
-        return all_hits
-            .into_iter()
-            .filter(|hit| local_hit_matches(&query_tokens, hit))
-            .collect();
+        let mut fallback = Vec::new();
+        for hit in all_hits {
+            let Some((matched, ratio)) = hit_match_stats(&query_tokens, query_len, &hit) else {
+                continue;
+            };
+            let overlap_ok = matched >= min_required && min_ratio.map_or(true, |min| ratio >= min);
+            let has_code = hit_has_code_markers(&hit);
+            if code_intent {
+                if !overlap_ok || !has_code {
+                    continue;
+                }
+            } else if !overlap_ok {
+                continue;
+            }
+            let mut adjusted = hit;
+            if code_intent {
+                apply_code_intent_penalty(&mut adjusted, has_code);
+            }
+            fallback.push(adjusted);
+        }
+        fallback.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        return fallback;
     }
+    filtered.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     filtered
 }
 
@@ -921,6 +1005,7 @@ pub(crate) fn evaluate_gate_status(
             unavailable: Some(unavailable),
             discovery: None,
             fetches: None,
+            debug: None,
             gate: gate_meta,
         };
     }
@@ -933,6 +1018,7 @@ pub(crate) fn evaluate_gate_status(
             unavailable: None,
             discovery: None,
             fetches: None,
+            debug: None,
             gate: gate_meta,
         };
     }
@@ -952,6 +1038,7 @@ pub(crate) fn evaluate_gate_status(
             unavailable: Some(unavailable),
             discovery: None,
             fetches: None,
+            debug: None,
             gate: gate_meta,
         };
     }
@@ -968,6 +1055,7 @@ pub(crate) fn evaluate_gate_status(
         unavailable: Some(unavailable),
         discovery: None,
         fetches: None,
+        debug: None,
         gate: gate_meta,
     }
 }
@@ -996,6 +1084,7 @@ async fn run_web_discovery(
             unavailable: Some(unavailable),
             discovery: None,
             fetches: None,
+            debug: None,
             gate: build_gate_meta(
                 gate,
                 top_score,
@@ -1021,6 +1110,7 @@ async fn run_web_discovery(
             unavailable: Some(unavailable),
             discovery: None,
             fetches: None,
+            debug: None,
             gate: build_gate_meta(
                 gate,
                 top_score,
@@ -1046,6 +1136,7 @@ async fn run_web_discovery(
                 unavailable: Some(unavailable),
                 discovery: None,
                 fetches: None,
+                debug: None,
                 gate: build_gate_meta(
                     gate,
                     top_score,
@@ -1057,12 +1148,65 @@ async fn run_web_discovery(
         }
     };
 
-    let mut discovery_limit = (web_limit * WEB_MAX_RESULTS_PER_DOMAIN).max(web_limit);
+    let mut discovery_limit = (web_limit * WEB_DISCOVERY_MULTIPLIER)
+        .max(web_limit)
+        .max(WEB_DISCOVERY_MIN_RESULTS);
     discovery_limit = discovery_limit.min(config.max_results.max(web_limit));
     match discovery.discover(query, discovery_limit).await {
         Ok(response) => {
-            let (discovery_response, urls) =
+            let mut debug = Vec::new();
+            let (mut discovery_response, mut urls) =
                 normalize_discovery_response(response, &config, web_limit);
+            if urls.is_empty() {
+                debug.push(format!(
+                    "discovery returned empty results for query: {}",
+                    query
+                ));
+                if let Some(fallback_query) = simplify_discovery_query(query) {
+                    if !fallback_query.eq_ignore_ascii_case(query) {
+                        match discovery.discover(&fallback_query, discovery_limit).await {
+                            Ok(fallback_response) => {
+                                let normalized =
+                                    normalize_discovery_response(fallback_response, &config, web_limit);
+                                discovery_response = normalized.0;
+                                urls = normalized.1;
+                                debug.push(format!(
+                                    "fallback discovery query: {}",
+                                    fallback_query
+                                ));
+                                if urls.is_empty() {
+                                    debug.push("fallback discovery returned empty results".to_string());
+                                }
+                            }
+                            Err(err) => {
+                                debug.push(format!("fallback discovery failed: {err}"));
+                            }
+                        }
+                    }
+                }
+            }
+            if urls.is_empty() {
+                debug.push(format!(
+                    "discovery query used: {}",
+                    discovery_response.query
+                ));
+                return WebDiscoveryStatus {
+                    status: WebDiscoveryStatusCode::Unavailable,
+                    reason: Some("discovery_empty".to_string()),
+                    message: Some("web discovery returned empty results".to_string()),
+                    unavailable: None,
+                    discovery: Some(discovery_response),
+                    fetches: None,
+                    debug: Some(debug),
+                    gate: build_gate_meta(
+                        gate,
+                        top_score,
+                        top_score_normalized,
+                        local_match_ratio,
+                        force_web,
+                    ),
+                };
+            }
             let fetches = fetch_web_documents(query, &urls, &config, web_limit).await;
             let message = if gate.browser_available {
                 None
@@ -1076,6 +1220,7 @@ async fn run_web_discovery(
                 unavailable: None,
                 discovery: Some(discovery_response),
                 fetches: if fetches.is_empty() { None } else { Some(fetches) },
+                debug: if debug.is_empty() { None } else { Some(debug) },
                 gate: build_gate_meta(
                     gate,
                     top_score,
@@ -1098,6 +1243,7 @@ async fn run_web_discovery(
                 unavailable: Some(unavailable),
                 discovery: None,
                 fetches: None,
+                debug: None,
                 gate: build_gate_meta(
                     gate,
                     top_score,
@@ -1138,6 +1284,32 @@ fn normalize_discovery_response(
         },
         urls,
     )
+}
+
+fn simplify_discovery_query(query: &str) -> Option<String> {
+    let tokens = tokenize_terms(query);
+    if tokens.is_empty() {
+        return None;
+    }
+    let mut seen = HashSet::new();
+    let mut kept = Vec::new();
+    for token in tokens {
+        if seen.insert(token.clone()) {
+            kept.push(token);
+        }
+        if kept.len() >= WEB_DISCOVERY_MAX_QUERY_TOKENS {
+            break;
+        }
+    }
+    let simplified = kept.join(" ");
+    let simplified = simplified.trim();
+    if simplified.is_empty() {
+        return None;
+    }
+    if simplified.eq_ignore_ascii_case(query.trim()) {
+        return None;
+    }
+    Some(simplified.to_string())
 }
 
 fn enforce_domain_diversity(urls: Vec<String>, max_per_domain: usize) -> Vec<String> {
@@ -2240,13 +2412,13 @@ fn collect_tokens_with_filter(text: &str, out: &mut HashSet<String>, keep: fn(&s
 }
 
 #[derive(Debug, Clone, Copy)]
-enum QueryIntent {
+pub(crate) enum QueryIntent {
     Code,
     Definition,
     General,
 }
 
-fn detect_query_intent(query: &str) -> QueryIntent {
+pub(crate) fn detect_query_intent(query: &str) -> QueryIntent {
     let query_lc = query.trim().to_ascii_lowercase();
     if query_lc.is_empty() {
         return QueryIntent::General;
@@ -2962,15 +3134,63 @@ fn blend_relevance_score(model_score: f32, stats: &WebMatchStats) -> f32 {
     (blended * penalty).clamp(0.0, 1.0)
 }
 
-fn local_hit_matches(query_tokens: &[String], hit: &Hit) -> bool {
-    if query_tokens.is_empty() {
+fn min_overlap_ratio_for_intent(intent: QueryIntent, query_len: usize) -> Option<f32> {
+    if matches!(intent, QueryIntent::Code) && query_len >= 4 {
+        return Some(0.5);
+    }
+    None
+}
+
+fn apply_code_intent_penalty(hit: &mut Hit, has_code: bool) {
+    if !has_code {
+        hit.score *= 0.6;
+        return;
+    }
+    if is_markdown_path(&hit.rel_path) {
+        hit.score *= 0.85;
+    }
+}
+
+fn hit_has_code_markers(hit: &Hit) -> bool {
+    if is_code_path(&hit.rel_path) {
         return true;
     }
-    let query_len = query_tokens.len();
-    let min_required = min_required_matches(query_len);
-    hit_match_stats(query_tokens, query_len, hit)
-        .map(|(matched, _)| matched >= min_required)
-        .unwrap_or(false)
+    if hit.summary.contains("```") || hit.snippet.contains("```") {
+        return true;
+    }
+    for line in hit.summary.lines().chain(hit.snippet.lines()) {
+        if is_probable_code_line(line) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_markdown_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".mdx")
+}
+
+fn is_code_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".rs")
+        || lower.ends_with(".py")
+        || lower.ends_with(".ts")
+        || lower.ends_with(".tsx")
+        || lower.ends_with(".js")
+        || lower.ends_with(".jsx")
+        || lower.ends_with(".go")
+        || lower.ends_with(".java")
+        || lower.ends_with(".kt")
+        || lower.ends_with(".kts")
+        || lower.ends_with(".swift")
+        || lower.ends_with(".cs")
+        || lower.ends_with(".cpp")
+        || lower.ends_with(".c")
+        || lower.ends_with(".hpp")
+        || lower.ends_with(".h")
+        || lower.ends_with(".rb")
+        || lower.ends_with(".php")
 }
 
 fn push_token_with_filter(tokens: &mut Vec<String>, buf: &mut String, keep: fn(&str) -> bool) {

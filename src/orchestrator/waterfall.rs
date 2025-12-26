@@ -10,8 +10,8 @@ use crate::memory::{
     prune_and_truncate_memory_context, MemoryContextItem, MemoryContextPruneTrace,
 };
 use crate::orchestrator::web::{
-    build_gate_meta, evaluate_gate_status, filter_local_hits_with_llm, local_match_ratio,
-    run_web_research,
+    build_gate_meta, detect_query_intent, evaluate_gate_status, filter_local_hits_with_llm,
+    local_match_ratio, run_web_research, QueryIntent,
     WebDiscoveryStatus, WebDiscoveryStatusCode, WebGateConfig, WebResearchResponse,
 };
 use crate::metrics;
@@ -60,20 +60,27 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
         crate::search::run_query(request.indexer, request.libs_indexer, request.query, request.limit)
             .await?;
 
+    let intent = detect_query_intent(request.query);
     search_response.hits = filter_local_hits_with_llm(
         request.query,
+        intent,
         search_response.hits,
         search_response.top_score_normalized,
     )
     .await;
-    let top_score = search_response.hits.first().map(|hit| hit.score);
-    let top_score_normalized = top_score.map(crate::search::normalize_score);
+    let mut top_score = search_response.hits.first().map(|hit| hit.score);
+    let mut top_score_normalized = top_score.map(crate::search::normalize_score);
+    let mut local_match_ratio = local_match_ratio(request.query, &search_response.hits);
+    if matches!(intent, QueryIntent::Code) && local_match_ratio == Some(0.0) {
+        search_response.hits.clear();
+        top_score = None;
+        top_score_normalized = None;
+        local_match_ratio = Some(0.0);
+    }
     search_response.top_score = top_score;
     search_response.top_score_camel = top_score;
     search_response.top_score_normalized = top_score_normalized;
     search_response.top_score_normalized_camel = top_score_normalized;
-
-    let local_match_ratio = local_match_ratio(request.query, &search_response.hits);
     let should_run_tier2 = request.plan.web_gate.should_attempt(
         search_response.top_score_normalized,
         local_match_ratio,
@@ -207,6 +214,7 @@ fn build_tier2_unavailable_status(
         unavailable: Some(unavailable.clone()),
         discovery: None,
         fetches: None,
+        debug: None,
         gate: build_gate_meta(
             gate,
             top_score,

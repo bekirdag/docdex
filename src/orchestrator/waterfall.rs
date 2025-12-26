@@ -1,13 +1,18 @@
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
+use serde_json::json;
+use std::path::Path;
+use std::time::Instant;
 use tokio::task;
+use tracing::{info, warn};
 
 use super::budget::MemoryBudget;
 use super::plan::WaterfallPlan;
 use crate::index::Indexer;
 use crate::libs::LibsIndexer;
 use crate::memory::{
-    prune_and_truncate_memory_context, MemoryContextItem, MemoryContextPruneTrace,
+    prune_and_truncate_memory_context, repo_state_root_from_state_dir, MemoryContextItem,
+    MemoryContextPruneTrace,
 };
 use crate::orchestrator::web::{
     build_gate_meta, detect_query_intent, evaluate_gate_status, filter_local_hits_with_llm,
@@ -17,6 +22,7 @@ use crate::orchestrator::web::{
 use crate::metrics;
 use crate::search::{MemoryState, SearchResponse};
 use crate::tier2::{self, Tier2Limiter, Tier2Unavailable};
+use crate::dag::logging as dag_logging;
 
 /// Description of the waterfall request.
 #[derive(Clone)]
@@ -78,6 +84,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
         crate::search::run_query(request.indexer, request.libs_indexer, request.query, request.limit)
             .await?
     };
+    let repo_state_root = repo_state_root_from_state_dir(request.indexer.state_dir());
 
     let (top_score, top_score_normalized, local_match_ratio) = if request.skip_local_search {
         (None, None, None)
@@ -114,6 +121,19 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
         effective_force_web,
         request.llm_filter_local_results,
     );
+    queue_dag_log(
+        &repo_state_root,
+        request.request_id,
+        "Thought",
+        json!({
+            "intent": format!("{intent:?}"),
+            "top_score": top_score,
+            "top_score_normalized": top_score_normalized,
+            "local_match_ratio": local_match_ratio,
+            "force_web": effective_force_web,
+            "should_run_tier2": should_run_tier2,
+        }),
+    );
     let metrics = metrics::global();
     if should_run_tier2 {
         metrics.inc_waterfall_tier2_attempt();
@@ -147,7 +167,71 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
     };
 
     let memory_context = if let Some(memory) = request.memory {
-        collect_memory_context(memory, request.query, &request.plan.memory_budget).await?
+        queue_dag_log(
+            &repo_state_root,
+            request.request_id,
+            "ToolCall",
+            json!({
+                "tool": "memory_recall",
+                "recall_candidates": request.plan.memory_budget.recall_candidates,
+                "max_items": request.plan.memory_budget.max_items,
+                "budget_tokens": request.plan.memory_budget.token_budget,
+            }),
+        );
+        let started = Instant::now();
+        let context =
+            collect_memory_context(memory, request.query, &request.plan.memory_budget).await?;
+        if let Some(ctx) = &context {
+            info!(
+                target: "docdexd",
+                request_id = %request.request_id,
+                repo_root = %request.indexer.repo_root().display(),
+                candidates = ctx.prune_trace.candidates,
+                kept = ctx.prune_trace.kept,
+                dropped = ctx.prune_trace.dropped.len(),
+                latency_ms = started.elapsed().as_millis(),
+                "memory_recall waterfall"
+            );
+            let truncated = ctx.items.iter().filter(|item| item.truncated).count();
+            let dropped_total = ctx.prune_trace.dropped.len();
+            if dropped_total > 0 || truncated > 0 {
+                let mut dropped_max_items = 0usize;
+                let mut dropped_budget = 0usize;
+                for dropped in &ctx.prune_trace.dropped {
+                    match dropped.reason {
+                        "max_items" => dropped_max_items += 1,
+                        "budget_exhausted" => dropped_budget += 1,
+                        _ => {}
+                    }
+                }
+                info!(
+                    target: "docdexd",
+                    request_id = %request.request_id,
+                    repo_root = %request.indexer.repo_root().display(),
+                    budget_tokens = ctx.prune_trace.budget_tokens,
+                    max_items = ctx.prune_trace.max_items,
+                    dropped_total,
+                    dropped_max_items,
+                    dropped_budget,
+                    truncated,
+                    "memory_context pruned to fit token budget"
+                );
+            }
+            queue_dag_log(
+                &repo_state_root,
+                request.request_id,
+                "Observation",
+                json!({
+                    "tool": "memory_recall",
+                    "candidates": ctx.prune_trace.candidates,
+                    "kept": ctx.prune_trace.kept,
+                    "dropped": ctx.prune_trace.dropped.len(),
+                    "truncated": truncated,
+                    "latency_ms": started.elapsed().as_millis(),
+                }),
+            );
+        }
+        context
     } else {
         None
     };
@@ -177,6 +261,20 @@ async fn run_tier2(
     local_match_ratio: Option<f32>,
     force_web: bool,
 ) -> Result<Tier2Outcome> {
+    let repo_state_root = repo_state_root_from_state_dir(request.indexer.state_dir());
+    queue_dag_log(
+        &repo_state_root,
+        request.request_id,
+        "ToolCall",
+        json!({
+            "tool": "web_research",
+            "limit": request.limit,
+            "web_limit": request.web_limit,
+            "force_web": force_web,
+            "skip_local_search": request.skip_local_search,
+            "disable_web_cache": request.disable_web_cache,
+        }),
+    );
     let run_result = tier2::run_with_fallback(
         request.request_id,
         request.plan.tier2_config.clone(),
@@ -229,6 +327,18 @@ async fn run_tier2(
         )
     };
 
+    queue_dag_log(
+        &repo_state_root,
+        request.request_id,
+        "Observation",
+        json!({
+            "tool": "web_research",
+            "status": status,
+            "hits": run_result.value.as_ref().map(|value| value.hits.len()),
+            "top_score": run_result.value.as_ref().and_then(|value| value.top_score),
+        }),
+    );
+
     Ok(Tier2Outcome {
         response: run_result.value,
         status,
@@ -260,6 +370,37 @@ fn build_tier2_unavailable_status(
             force_web,
         ),
     }
+}
+
+fn queue_dag_log(
+    repo_state_root: &Path,
+    session_id: &str,
+    node_type: &'static str,
+    payload: serde_json::Value,
+) {
+    let repo_state_root = repo_state_root.to_path_buf();
+    let session_id = session_id.to_string();
+    tokio::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            dag_logging::log_node(&repo_state_root, &session_id, node_type, &payload)
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => warn!(
+                target: "docdexd",
+                session_id = %session_id,
+                error = ?err,
+                "dag log failed"
+            ),
+            Err(err) => warn!(
+                target: "docdexd",
+                session_id = %session_id,
+                error = ?err,
+                "dag log task failed"
+            ),
+        }
+    });
 }
 
 async fn collect_memory_context(

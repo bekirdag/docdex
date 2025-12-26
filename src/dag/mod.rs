@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 pub const NO_TRACE_MESSAGE: &str = "No reasoning trace recorded";
@@ -24,11 +25,13 @@ pub enum DagStatus {
 #[serde(rename_all = "snake_case")]
 pub enum DagDataSource {
     Sqlite,
+    Jsonl,
+    Json,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DagNode {
-    pub id: i64,
+    pub id: String,
     #[serde(rename = "type")]
     pub node_type: String,
     pub payload: Value,
@@ -131,6 +134,62 @@ pub fn load_session_dag(
         }
     }
 
+    let jsonl_paths = [
+        repo_dir.join("dag.jsonl"),
+        state_paths.index_dir().join("dag.jsonl"),
+    ];
+    for jsonl_path in jsonl_paths {
+        if !jsonl_path.exists() {
+            continue;
+        }
+        match load_from_jsonl(&jsonl_path, session_id) {
+            Ok(Some(nodes)) => {
+                return Ok(DagLoadResult {
+                    repo_root: repo_root.display().to_string(),
+                    repo_fingerprint,
+                    session_id: session_id.to_string(),
+                    status: DagStatus::Found,
+                    nodes,
+                    source: Some(DagDataSource::Jsonl),
+                    message: None,
+                    warnings,
+                })
+            }
+            Ok(None) => {
+                warnings.push(format!(
+                    "Found JSONL DAG at {} but no rows for session {}.",
+                    jsonl_path.display(),
+                    session_id
+                ));
+            }
+            Err(err) => {
+                warnings.push(format!(
+                    "Failed to read JSONL DAG at {}: {err}",
+                    jsonl_path.display()
+                ));
+            }
+        }
+    }
+
+    match load_from_json_trace(&repo_dir, session_id) {
+        Ok(Some(nodes)) => {
+            return Ok(DagLoadResult {
+                repo_root: repo_root.display().to_string(),
+                repo_fingerprint,
+                session_id: session_id.to_string(),
+                status: DagStatus::Found,
+                nodes,
+                source: Some(DagDataSource::Json),
+                message: None,
+                warnings,
+            })
+        }
+        Ok(None) => {}
+        Err(err) => {
+            warnings.push(format!("Failed to read JSON DAG trace: {err}"));
+        }
+    }
+
     if warnings.is_empty() {
         warnings.push(format!(
             "No cached DAG found for session {} (looked for {}).",
@@ -184,7 +243,7 @@ fn load_from_sqlite(repo_state_root: &Path, path: &Path, session_id: &str) -> Re
                 Some(_) | None => Value::Null,
             };
             Ok(DagNode {
-                id: row.get(0)?,
+                id: row.get::<_, i64>(0)?.to_string(),
                 node_type: row.get(1)?,
                 payload,
                 created_at: row.get(3)?,
@@ -199,6 +258,115 @@ fn load_from_sqlite(repo_state_root: &Path, path: &Path, session_id: &str) -> Re
         return Ok(None);
     }
     Ok(Some(nodes))
+}
+
+fn load_from_jsonl(path: &Path, session_id: &str) -> Result<Option<Vec<DagNode>>> {
+    let file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut nodes = Vec::new();
+    for (idx, line) in reader.lines().enumerate() {
+        let line = line.with_context(|| format!("read {}", path.display()))?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value: Value = match serde_json::from_str(trimmed) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if let Some(node) = parse_node_value(&value, Some(session_id), idx) {
+            nodes.push(node);
+        }
+    }
+    if nodes.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(nodes))
+    }
+}
+
+fn load_from_json_trace(repo_state_root: &Path, session_id: &str) -> Result<Option<Vec<DagNode>>> {
+    let Some(value) = crate::dag::logging::load_json_trace(repo_state_root, session_id)? else {
+        return Ok(None);
+    };
+    let nodes = parse_nodes_from_value(&value, None);
+    if nodes.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(nodes))
+    }
+}
+
+fn parse_nodes_from_value(value: &Value, session_id: Option<&str>) -> Vec<DagNode> {
+    let nodes_value = if let Some(array) = value.as_array() {
+        Some(array)
+    } else if let Some(nodes) = value.get("nodes").and_then(|nodes| nodes.as_array()) {
+        Some(nodes)
+    } else {
+        None
+    };
+    let Some(nodes_value) = nodes_value else {
+        return Vec::new();
+    };
+    nodes_value
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, value)| parse_node_value(value, session_id, idx))
+        .collect()
+}
+
+fn parse_node_value(value: &Value, session_id: Option<&str>, fallback_idx: usize) -> Option<DagNode> {
+    let obj = value.as_object()?;
+    if let Some(filter) = session_id {
+        let session_value = obj
+            .get("session_id")
+            .or_else(|| obj.get("sessionId"));
+        let Some(session_value) = session_value.and_then(value_as_string) else {
+            return None;
+        };
+        if session_value != filter {
+            return None;
+        }
+    }
+
+    let id_value = obj.get("id").or_else(|| obj.get("node_id"));
+    let id = id_value
+        .and_then(value_as_string)
+        .unwrap_or_else(|| format!("n{}", fallback_idx + 1));
+    let node_type = obj
+        .get("type")
+        .or_else(|| obj.get("node_type"))
+        .and_then(value_as_string)
+        .unwrap_or_else(|| "Unknown".to_string());
+    let payload = obj.get("payload").cloned().unwrap_or(Value::Null);
+    let created_at = obj
+        .get("created_at")
+        .or_else(|| obj.get("createdAt"))
+        .and_then(value_as_i64);
+
+    Some(DagNode {
+        id,
+        node_type,
+        payload,
+        created_at,
+    })
+}
+
+fn value_as_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn value_as_i64(value: &Value) -> Option<i64> {
+    if let Some(raw) = value.as_i64() {
+        return Some(raw);
+    }
+    value
+        .as_str()
+        .and_then(|raw| raw.trim().parse::<i64>().ok())
 }
 
 struct DagReadLock {

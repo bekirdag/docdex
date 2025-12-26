@@ -11,8 +11,8 @@ use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::orchestrator::web::{web_context_from_status, WebDiscoveryStatus, WebFetchResult};
 use crate::orchestrator::{
-    run_waterfall, MemoryBudget, MemoryContextAssembly, WaterfallPlan, WaterfallRequest,
-    WebGateConfig,
+    memory_budget_from_max_answer_tokens, run_waterfall, MemoryContextAssembly, WaterfallPlan,
+    WaterfallRequest, WebGateConfig,
 };
 use crate::repo_manager;
 use crate::ratelimit::RateLimiter;
@@ -32,7 +32,7 @@ use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::warn;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 const DEFAULT_SNIPPET_WINDOW: usize = 40;
@@ -185,6 +185,9 @@ pub struct AppState {
     pub audit: Option<crate::audit::AuditLogger>,
     pub metrics: Arc<crate::metrics::Metrics>,
     pub memory: Option<MemoryState>,
+    pub max_answer_tokens: u32,
+    pub llm_base_url: String,
+    pub llm_default_model: String,
 }
 
 #[derive(Clone)]
@@ -208,6 +211,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/graph/impact",
             get(crate::api::v1::graph::impact_graph_handler),
+        )
+        .route(
+            "/v1/dag/export",
+            get(crate::api::v1::dag::dag_export_handler),
         )
         .route("/v1/memory/store", post(memory_store_handler))
         .route("/v1/memory/recall", post(memory_recall_handler))
@@ -423,6 +430,8 @@ async fn memory_store_handler(
         );
     }
 
+    let started = Instant::now();
+    let repo_root = state.indexer.repo_root().display().to_string();
     let embedding = match memory.embedder.embed(text).await {
         Ok(value) => value,
         Err(err) => {
@@ -467,11 +476,20 @@ async fn memory_store_handler(
     })
     .await;
     match write {
-        Ok(Ok((id, created_at))) => Json(MemoryStoreResponse {
-            id: id.to_string(),
-            created_at,
-        })
-        .into_response(),
+        Ok(Ok((id, created_at))) => {
+            info!(
+                target: "docdexd",
+                request_id = %request_id.0,
+                repo_root = %repo_root,
+                latency_ms = started.elapsed().as_millis(),
+                "memory_store succeeded"
+            );
+            Json(MemoryStoreResponse {
+                id: id.to_string(),
+                created_at,
+            })
+            .into_response()
+        }
         Ok(Err(err)) => {
             state.metrics.inc_error();
             warn!(
@@ -537,6 +555,8 @@ async fn memory_recall_handler(
     }
     let top_k = req.top_k.unwrap_or(5).max(1).min(50);
 
+    let started = Instant::now();
+    let repo_root = state.indexer.repo_root().display().to_string();
     let query_embedding = match memory.embedder.embed(query).await {
         Ok(value) => value,
         Err(err) => {
@@ -568,6 +588,7 @@ async fn memory_recall_handler(
     let read = tokio::task::spawn_blocking(move || store.recall(&query_embedding, top_k)).await;
     match read {
         Ok(Ok(items)) => {
+            let results_len = items.len();
             let results = items
                 .into_iter()
                 .map(|item| MemoryRecallItem {
@@ -576,6 +597,15 @@ async fn memory_recall_handler(
                     metadata: item.metadata,
                 })
                 .collect();
+            info!(
+                target: "docdexd",
+                request_id = %request_id.0,
+                repo_root = %repo_root,
+                top_k,
+                results = results_len,
+                latency_ms = started.elapsed().as_millis(),
+                "memory_recall succeeded"
+            );
             Json(MemoryRecallResponse { results }).into_response()
         }
         Ok(Err(err)) => {
@@ -786,8 +816,14 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 returns: &["num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "repo_root"],
             },
             AiHelpMcpTool {
-                name: "docdex_memory_store",
+                name: "docdex_memory_save",
                 description: "Store a memory item (requires DOCDEX_ENABLE_MEMORY=1).",
+                args: &["text (string, required)", "metadata (object, optional)", "project_root (string, optional)"],
+                returns: &["id", "created_at"],
+            },
+            AiHelpMcpTool {
+                name: "docdex_memory_store",
+                description: "Alias for docdex_memory_save (requires DOCDEX_ENABLE_MEMORY=1).",
                 args: &["text (string, required)", "metadata (object, optional)", "project_root (string, optional)"],
                 returns: &["id", "created_at"],
             },
@@ -1329,7 +1365,7 @@ async fn search_handler(
     let plan = WaterfallPlan::new(
         WebGateConfig::from_env(),
         Tier2Config::enabled(),
-        MemoryBudget::default(),
+        memory_budget_from_max_answer_tokens(state.max_answer_tokens),
     );
     let force_web = params.force_web.unwrap_or(false);
 

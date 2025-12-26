@@ -507,3 +507,107 @@ fn cli_timeout_error_is_machine_readable() -> Result<(), Box<dyn Error>> {
     );
     Ok(())
 }
+
+#[test]
+fn memory_isolation_between_repos() -> Result<(), Box<dyn Error>> {
+    let repo_a = setup_repo()?;
+    let repo_b = setup_repo()?;
+    let Some(mock) = MockOllama::spawn(post(|| async move {
+        (
+            axum::http::StatusCode::OK,
+            Json(json!({ "embedding": [0.5, 0.1] })),
+        )
+    }))?
+    else {
+        return Ok(());
+    };
+    let Some(port_a) = pick_free_port() else {
+        return Ok(());
+    };
+    let Some(port_b) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let state_root = TempDir::new()?;
+    let mut server_a = spawn_server(
+        state_root.path(),
+        repo_a.path(),
+        host,
+        port_a,
+        mock.base_url.as_str(),
+        "test-embed-model",
+        200,
+    )?;
+    let mut server_b = spawn_server(
+        state_root.path(),
+        repo_b.path(),
+        host,
+        port_b,
+        mock.base_url.as_str(),
+        "test-embed-model",
+        200,
+    )?;
+    wait_for_health(host, port_a)?;
+    wait_for_health(host, port_b)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let store_a = format!("http://{host}:{port_a}/v1/memory/store");
+    let store_b = format!("http://{host}:{port_b}/v1/memory/store");
+    let recall_a = format!("http://{host}:{port_a}/v1/memory/recall");
+    let recall_b = format!("http://{host}:{port_b}/v1/memory/recall");
+
+    let resp_a = client
+        .post(&store_a)
+        .json(&json!({ "text": "alpha memory" }))
+        .send()?;
+    assert!(resp_a.status().is_success());
+    let resp_b = client
+        .post(&store_b)
+        .json(&json!({ "text": "beta memory" }))
+        .send()?;
+    assert!(resp_b.status().is_success());
+
+    let recall_a: Value = client
+        .post(&recall_a)
+        .json(&json!({ "query": "alpha", "top_k": 5 }))
+        .send()?
+        .json()?;
+    let results_a = recall_a
+        .get("results")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        results_a.iter().any(|item| item.get("content") == Some(&json!("alpha memory"))),
+        "repo A recall missing expected content: {recall_a}"
+    );
+    assert!(
+        results_a.iter().all(|item| item.get("content") != Some(&json!("beta memory"))),
+        "repo A recall leaked repo B content: {recall_a}"
+    );
+
+    let recall_b: Value = client
+        .post(&recall_b)
+        .json(&json!({ "query": "beta", "top_k": 5 }))
+        .send()?
+        .json()?;
+    let results_b = recall_b
+        .get("results")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        results_b.iter().any(|item| item.get("content") == Some(&json!("beta memory"))),
+        "repo B recall missing expected content: {recall_b}"
+    );
+    assert!(
+        results_b.iter().all(|item| item.get("content") != Some(&json!("alpha memory"))),
+        "repo B recall leaked repo A content: {recall_b}"
+    );
+
+    server_a.kill().ok();
+    server_a.wait().ok();
+    server_b.kill().ok();
+    server_b.wait().ok();
+    Ok(())
+}

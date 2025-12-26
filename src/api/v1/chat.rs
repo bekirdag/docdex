@@ -10,18 +10,28 @@ use axum::{http::StatusCode, Json};
 use axum::{response::IntoResponse, response::Response};
 use futures::stream;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::convert::Infallible;
+use std::path::Path;
+use std::time::Duration;
 use uuid::Uuid;
 
+use crate::dag::logging as dag_logging;
+use crate::memory::repo_state_root_from_state_dir;
 use crate::orchestrator::{
-    run_waterfall, MemoryBudget, WaterfallPlan, WaterfallRequest, WebGateConfig,
+    memory_budget_from_max_answer_tokens, run_waterfall, WaterfallPlan, WaterfallRequest,
+    WebGateConfig,
 };
 use crate::orchestrator::web::web_context_from_status;
+use crate::ollama::OllamaClient;
 use crate::search::AppState;
 use crate::tier2::Tier2Config;
+use tracing::{info, warn};
 
 const DEFAULT_LIMIT: usize = 8;
 const STREAM_CHUNK_CHARS: usize = 320;
+const CHAT_GENERATION_TIMEOUT_SECS: u64 = 30;
+const CHAT_SYSTEM_PROMPT: &str = "You are Docdex, a local-first assistant. Use the provided context when relevant. If the answer is not in the context, say so.";
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct ChatCompletionRequest {
@@ -211,9 +221,23 @@ pub(crate) async fn chat_completions_handler(
     let plan = WaterfallPlan::new(
         WebGateConfig::from_env(),
         Tier2Config::enabled(),
-        MemoryBudget::default(),
+        memory_budget_from_max_answer_tokens(state.max_answer_tokens),
     );
     let request_id = Uuid::new_v4().to_string();
+    let repo_state_root = repo_state_root_from_state_dir(state.indexer.state_dir());
+    queue_dag_log(
+        repo_state_root.clone(),
+        request_id.clone(),
+        "UserRequest",
+        json!({
+            "query": query.clone(),
+            "context": extracted.context.clone(),
+            "force_web": force_web,
+            "skip_local_search": skip_local_search,
+            "max_web_results": max_web_results,
+            "limit": limit,
+        }),
+    );
     let query_with_context = if extracted.context.trim().is_empty() {
         query.clone()
     } else {
@@ -239,86 +263,234 @@ pub(crate) async fn chat_completions_handler(
     .await
     {
         Ok(result) => {
+            let budgets = chat_context_budgets(state.max_answer_tokens);
             let web_context = web_context_from_status(&result.tier2.status);
-            let content = build_completion(
-                &query,
-                &result.search_response.hits,
-                web_context.as_deref(),
-                compress_results,
-            );
-            let prompt_tokens = estimate_tokens(&query);
-            let completion_tokens = estimate_tokens(&content);
-            let usage = Usage {
-                prompt_tokens,
-                completion_tokens,
-                total_tokens: prompt_tokens + completion_tokens,
-            };
-            let model = payload
+            let created = now_epoch_seconds();
+            let mut model = payload
                 .model
                 .clone()
-                .unwrap_or_else(|| "docdex".to_string());
-            let created = now_epoch_seconds();
-            if payload.stream {
-                let id = format!("chatcmpl-{}", request_id);
-                let mut content_chunks = chunk_text(&content, STREAM_CHUNK_CHARS);
-                if content_chunks.is_empty() {
-                    content_chunks.push(String::new());
+                .unwrap_or_else(|| state.llm_default_model.clone());
+
+            if compress_results {
+                if model.trim().is_empty() {
+                    model = "docdex".to_string();
                 }
-                let chunk_id = id.clone();
-                let chunk_model = model.clone();
-                let chunk_created = created;
-                let content_iter =
-                    content_chunks
-                        .into_iter()
-                        .enumerate()
-                        .map(move |(idx, piece)| {
-                            let role = if idx == 0 { Some("assistant") } else { None };
-                            ChatCompletionChunk {
-                                id: chunk_id.clone(),
-                                object: "chat.completion.chunk",
-                                created: chunk_created,
-                                model: chunk_model.clone(),
-                                choices: vec![ChatChunkChoice {
-                                    index: 0,
-                                    delta: ChatChunkDelta {
-                                        role,
-                                        content: Some(piece),
-                                    },
-                                    finish_reason: None,
-                                }],
-                            }
-                        });
-                let final_chunk = ChatCompletionChunk {
-                    id,
-                    object: "chat.completion.chunk",
+                let content = format_compressed_results(
+                    &result.search_response.hits,
+                    web_context.as_deref(),
+                    result.memory_context.as_ref(),
+                    &budgets,
+                );
+                let prompt_tokens = estimate_tokens(&query);
+                let completion_tokens = estimate_tokens(&content);
+                let usage = Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens: prompt_tokens + completion_tokens,
+                };
+                queue_dag_log(
+                    repo_state_root.clone(),
+                    request_id.clone(),
+                    "Decision",
+                    json!({
+                        "model": model.clone(),
+                        "compressed": true,
+                        "response_chars": content.len(),
+                    }),
+                );
+                if payload.stream {
+                    let id = format!("chatcmpl-{}", request_id);
+                    let mut content_chunks = chunk_text(&content, STREAM_CHUNK_CHARS);
+                    if content_chunks.is_empty() {
+                        content_chunks.push(String::new());
+                    }
+                    let chunk_id = id.clone();
+                    let chunk_model = model.clone();
+                    let chunk_created = created;
+                    let content_iter =
+                        content_chunks
+                            .into_iter()
+                            .enumerate()
+                            .map(move |(idx, piece)| {
+                                let role = if idx == 0 { Some("assistant") } else { None };
+                                ChatCompletionChunk {
+                                    id: chunk_id.clone(),
+                                    object: "chat.completion.chunk",
+                                    created: chunk_created,
+                                    model: chunk_model.clone(),
+                                    choices: vec![ChatChunkChoice {
+                                        index: 0,
+                                        delta: ChatChunkDelta {
+                                            role,
+                                            content: Some(piece),
+                                        },
+                                        finish_reason: None,
+                                    }],
+                                }
+                            });
+                    let final_chunk = ChatCompletionChunk {
+                        id,
+                        object: "chat.completion.chunk",
+                        created,
+                        model,
+                        choices: vec![ChatChunkChoice {
+                            index: 0,
+                            delta: ChatChunkDelta {
+                                role: None,
+                                content: None,
+                            },
+                            finish_reason: Some("stop"),
+                        }],
+                    };
+                    return stream_response(content_iter.chain(std::iter::once(final_chunk)));
+                }
+
+                ChatCompletionResponse {
+                    id: format!("chatcmpl-{}", request_id),
+                    object: "chat.completion",
                     created,
                     model,
-                    choices: vec![ChatChunkChoice {
+                    choices: vec![ChatChoice {
                         index: 0,
-                        delta: ChatChunkDelta {
-                            role: None,
-                            content: None,
+                        message: ChatMessageResponse {
+                            role: "assistant",
+                            content,
                         },
-                        finish_reason: Some("stop"),
+                        finish_reason: "stop",
                     }],
+                    usage,
+                }
+            } else {
+                if model.trim().is_empty() {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request_error",
+                        "missing_model",
+                        "model must be specified when no default_model is configured",
+                    );
+                }
+                let (context, context_trace) = build_context_summary(
+                    &query,
+                    &result.search_response.hits,
+                    web_context.as_deref(),
+                    result.memory_context.as_ref(),
+                    &budgets,
+                );
+                log_budget_drops(
+                    &request_id,
+                    state.indexer.repo_root(),
+                    &context_trace,
+                );
+                let prompt = build_prompt(&query, &context, &budgets);
+                let client = match OllamaClient::new(state.llm_base_url.clone()) {
+                    Ok(client) => client,
+                    Err(err) => {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "server_error",
+                            "ollama_config_error",
+                            &err.to_string(),
+                        );
+                    }
                 };
-                return stream_response(content_iter.chain(std::iter::once(final_chunk)));
-            }
+                let completion = match client
+                    .generate(
+                        &model,
+                        &prompt,
+                        state.max_answer_tokens,
+                        Duration::from_secs(CHAT_GENERATION_TIMEOUT_SECS),
+                    )
+                    .await
+                {
+                    Ok(output) => output,
+                    Err(err) => {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "server_error",
+                            "llm_generate_failed",
+                            &err.to_string(),
+                        );
+                    }
+                };
+                let prompt_tokens = estimate_tokens(&prompt);
+                let completion_tokens = estimate_tokens(&completion);
+                let usage = Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens: prompt_tokens + completion_tokens,
+                };
+                queue_dag_log(
+                    repo_state_root.clone(),
+                    request_id.clone(),
+                    "Decision",
+                    json!({
+                        "model": model.clone(),
+                        "compressed": false,
+                        "response_chars": completion.len(),
+                    }),
+                );
+                if payload.stream {
+                    let id = format!("chatcmpl-{}", request_id);
+                    let mut content_chunks = chunk_text(&completion, STREAM_CHUNK_CHARS);
+                    if content_chunks.is_empty() {
+                        content_chunks.push(String::new());
+                    }
+                    let chunk_id = id.clone();
+                    let chunk_model = model.clone();
+                    let chunk_created = created;
+                    let content_iter =
+                        content_chunks
+                            .into_iter()
+                            .enumerate()
+                            .map(move |(idx, piece)| {
+                                let role = if idx == 0 { Some("assistant") } else { None };
+                                ChatCompletionChunk {
+                                    id: chunk_id.clone(),
+                                    object: "chat.completion.chunk",
+                                    created: chunk_created,
+                                    model: chunk_model.clone(),
+                                    choices: vec![ChatChunkChoice {
+                                        index: 0,
+                                        delta: ChatChunkDelta {
+                                            role,
+                                            content: Some(piece),
+                                        },
+                                        finish_reason: None,
+                                    }],
+                                }
+                            });
+                    let final_chunk = ChatCompletionChunk {
+                        id,
+                        object: "chat.completion.chunk",
+                        created,
+                        model,
+                        choices: vec![ChatChunkChoice {
+                            index: 0,
+                            delta: ChatChunkDelta {
+                                role: None,
+                                content: None,
+                            },
+                            finish_reason: Some("stop"),
+                        }],
+                    };
+                    return stream_response(content_iter.chain(std::iter::once(final_chunk)));
+                }
 
-            ChatCompletionResponse {
-                id: format!("chatcmpl-{}", request_id),
-                object: "chat.completion",
-                created,
-                model,
-                choices: vec![ChatChoice {
-                    index: 0,
-                    message: ChatMessageResponse {
-                        role: "assistant",
-                        content,
-                    },
-                    finish_reason: "stop",
-                }],
-                usage,
+                ChatCompletionResponse {
+                    id: format!("chatcmpl-{}", request_id),
+                    object: "chat.completion",
+                    created,
+                    model,
+                    choices: vec![ChatChoice {
+                        index: 0,
+                        message: ChatMessageResponse {
+                            role: "assistant",
+                            content: completion,
+                        },
+                        finish_reason: "stop",
+                    }],
+                    usage,
+                }
             }
         }
         Err(err) => {
@@ -396,56 +568,322 @@ fn extract_message_text(content: &MessageContent) -> Option<String> {
     }
 }
 
-fn build_completion(
+struct ChatContextBudgets {
+    system_tokens: usize,
+    memory_tokens: usize,
+    repo_tokens: usize,
+    generation_tokens: usize,
+    total_tokens: usize,
+}
+
+struct MemorySnippet {
+    content: String,
+    score: f32,
+    truncated: bool,
+}
+
+struct MemorySnippetTrace {
+    available: usize,
+    selected: usize,
+    truncated: usize,
+    budget_tokens: usize,
+}
+
+struct RepoContextTrace {
+    candidates: usize,
+    selected: usize,
+    budget_tokens: usize,
+    budget_exhausted: bool,
+}
+
+struct WebContextTrace {
+    candidates: usize,
+    selected: usize,
+    budget_tokens: usize,
+    budget_exhausted: bool,
+}
+
+struct ChatContextTrace {
+    memory: MemorySnippetTrace,
+    repo: RepoContextTrace,
+    web: WebContextTrace,
+}
+
+fn chat_context_budgets(max_answer_tokens: u32) -> ChatContextBudgets {
+    let generation_tokens = max_answer_tokens.max(1) as usize;
+    let total_tokens = generation_tokens.saturating_mul(5);
+    let system_tokens = total_tokens / 10;
+    let memory_tokens = total_tokens / 5;
+    let mut repo_tokens = total_tokens / 2;
+    let used = system_tokens + memory_tokens + repo_tokens + generation_tokens;
+    if total_tokens > used {
+        repo_tokens = repo_tokens.saturating_add(total_tokens - used);
+    }
+    ChatContextBudgets {
+        system_tokens,
+        memory_tokens,
+        repo_tokens,
+        generation_tokens,
+        total_tokens,
+    }
+}
+
+fn select_memory_snippets(
+    memory_context: Option<&crate::orchestrator::MemoryContextAssembly>,
+    budget_tokens: usize,
+) -> (Vec<MemorySnippet>, MemorySnippetTrace) {
+    let Some(context) = memory_context else {
+        return (
+            Vec::new(),
+            MemorySnippetTrace {
+                available: 0,
+                selected: 0,
+                truncated: 0,
+                budget_tokens,
+            },
+        );
+    };
+    let available = context.items.len();
+    let mut remaining = budget_tokens;
+    let mut snippets = Vec::new();
+    let mut truncated_count = 0usize;
+    for item in &context.items {
+        if remaining == 0 {
+            break;
+        }
+        let item_tokens = item.token_estimate;
+        if item_tokens <= remaining {
+            snippets.push(MemorySnippet {
+                content: item.content.clone(),
+                score: item.score,
+                truncated: false,
+            });
+            remaining = remaining.saturating_sub(item_tokens);
+        } else {
+            let (truncated_content, used_tokens) = truncate_to_tokens(&item.content, remaining);
+            if truncated_content.is_empty() {
+                break;
+            }
+            snippets.push(MemorySnippet {
+                content: truncated_content,
+                score: item.score,
+                truncated: true,
+            });
+            truncated_count += 1;
+            remaining = remaining.saturating_sub(used_tokens);
+            break;
+        }
+    }
+    (
+        snippets,
+        MemorySnippetTrace {
+            available,
+            selected: snippets.len(),
+            truncated: truncated_count,
+            budget_tokens,
+        },
+    )
+}
+
+fn build_context_summary(
     query: &str,
     hits: &[crate::index::Hit],
     web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
-    compress_results: bool,
-) -> String {
-    if compress_results {
-        return format_compressed_results(hits, web_context);
-    }
+    memory_context: Option<&crate::orchestrator::MemoryContextAssembly>,
+    budgets: &ChatContextBudgets,
+) -> (String, ChatContextTrace) {
     let mut lines = Vec::new();
     let trimmed = query.trim();
-    if hits.is_empty() {
-        lines.push(format!(
-            "No local documents matched query: {}",
-            trimmed
-        ));
-    } else {
-        if trimmed.is_empty() {
-            lines.push("Top local matches:".to_string());
-        } else {
-            lines.push(format!("Top local matches for query: {}", trimmed));
+
+    let (memory_snippets, memory_trace) =
+        select_memory_snippets(memory_context, budgets.memory_tokens);
+    if !memory_snippets.is_empty() {
+        lines.push("Memory context:".to_string());
+        for snippet in memory_snippets {
+            lines.push(format!("- {}", snippet.content));
         }
-        for hit in hits.iter().take(5) {
-            let summary = hit.summary.trim();
-            if summary.is_empty() {
-                lines.push(format!("- {}", hit.rel_path));
+    }
+
+    let mut repo_remaining = budgets.repo_tokens;
+    let repo_candidates = hits.iter().take(5).count();
+    let mut repo_selected = 0usize;
+    let mut repo_budget_exhausted = false;
+    if repo_remaining > 0 {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        if hits.is_empty() {
+            let line = format!("No local documents matched query: {}", trimmed);
+            let line_tokens = estimate_tokens(&line) as usize;
+            if line_tokens <= repo_remaining {
+                lines.push(line);
+                repo_remaining = repo_remaining.saturating_sub(line_tokens);
             } else {
-                lines.push(format!("- {}: {}", hit.rel_path, summary));
+                repo_budget_exhausted = true;
+            }
+        } else {
+            let header = if trimmed.is_empty() {
+                "Top local matches:".to_string()
+            } else {
+                format!("Top local matches for query: {}", trimmed)
+            };
+            let header_tokens = estimate_tokens(&header) as usize;
+            if header_tokens <= repo_remaining {
+                lines.push(header);
+                repo_remaining = repo_remaining.saturating_sub(header_tokens);
+            } else {
+                repo_remaining = 0;
+                repo_budget_exhausted = true;
+            }
+            for hit in hits.iter().take(5) {
+                if repo_remaining == 0 {
+                    repo_budget_exhausted = true;
+                    break;
+                }
+                let summary = hit.summary.trim();
+                if summary.is_empty() {
+                    let line = format!("- {}", hit.rel_path);
+                    let line_tokens = estimate_tokens(&line) as usize;
+                    if line_tokens > repo_remaining {
+                        repo_budget_exhausted = true;
+                        break;
+                    }
+                    lines.push(line);
+                    repo_selected += 1;
+                    repo_remaining = repo_remaining.saturating_sub(line_tokens);
+                    continue;
+                }
+                let prefix = format!("- {}: ", hit.rel_path);
+                let prefix_tokens = estimate_tokens(&prefix) as usize;
+                if prefix_tokens >= repo_remaining {
+                    repo_budget_exhausted = true;
+                    break;
+                }
+                let available = repo_remaining - prefix_tokens;
+                let (snippet, used_tokens) = truncate_to_tokens(summary, available);
+                if snippet.is_empty() {
+                    repo_budget_exhausted = true;
+                    break;
+                }
+                lines.push(format!("{prefix}{snippet}"));
+                repo_selected += 1;
+                repo_remaining = repo_remaining.saturating_sub(prefix_tokens + used_tokens);
             }
         }
     }
-    if let Some(web_context) = web_context {
-        let web_lines = format_web_context(web_context);
-        if !web_lines.is_empty() {
+
+    let (web_lines, web_trace) = if let Some(web_context) = web_context {
+        format_web_context_with_budget(web_context, repo_remaining)
+    } else {
+        (
+            Vec::new(),
+            WebContextTrace {
+                candidates: 0,
+                selected: 0,
+                budget_tokens: repo_remaining,
+                budget_exhausted: false,
+            },
+        )
+    };
+    if !web_lines.is_empty() {
+        if !lines.is_empty() {
             lines.push(String::new());
-            lines.push("Web context:".to_string());
-            lines.extend(web_lines);
         }
+        lines.push("Web context:".to_string());
+        lines.extend(web_lines);
     }
-    lines.join("\n")
+    (
+        lines.join("\n"),
+        ChatContextTrace {
+            memory: memory_trace,
+            repo: RepoContextTrace {
+                candidates: repo_candidates,
+                selected: repo_selected,
+                budget_tokens: budgets.repo_tokens,
+                budget_exhausted: repo_budget_exhausted,
+            },
+            web: web_trace,
+        },
+    )
 }
 
-fn format_web_context(
+fn build_prompt(query: &str, context: &str, budgets: &ChatContextBudgets) -> String {
+    let (system, _) = truncate_to_tokens(CHAT_SYSTEM_PROMPT, budgets.system_tokens.max(1));
+    let mut prompt = String::new();
+    if !system.trim().is_empty() {
+        prompt.push_str(system.trim());
+        prompt.push_str("\n\n");
+    }
+    if context.trim().is_empty() {
+        prompt.push_str("Context: <none>\n\n");
+    } else {
+        prompt.push_str("Context:\n");
+        prompt.push_str(context.trim());
+        prompt.push_str("\n\n");
+    }
+    prompt.push_str("User question:\n");
+    prompt.push_str(query.trim());
+    prompt.push_str("\n\nAnswer:");
+    prompt
+}
+
+fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace) {
+    let memory_dropped = trace
+        .memory
+        .available
+        .saturating_sub(trace.memory.selected);
+    let memory_truncated = trace.memory.truncated;
+    let repo_dropped = if trace.repo.budget_exhausted {
+        trace
+            .repo
+            .candidates
+            .saturating_sub(trace.repo.selected)
+    } else {
+        0
+    };
+    let web_dropped = if trace.web.budget_exhausted {
+        trace
+            .web
+            .candidates
+            .saturating_sub(trace.web.selected)
+    } else {
+        0
+    };
+
+    if memory_dropped > 0 || memory_truncated > 0 || repo_dropped > 0 || web_dropped > 0 {
+        info!(
+            target: "docdexd",
+            request_id = %request_id,
+            repo_root = %repo_root.display(),
+            memory_dropped,
+            memory_truncated,
+            memory_budget_tokens = trace.memory.budget_tokens,
+            repo_dropped,
+            repo_budget_tokens = trace.repo.budget_tokens,
+            web_dropped,
+            web_budget_tokens = trace.web.budget_tokens,
+            "context pruned to fit token budget"
+        );
+    }
+}
+
+fn format_web_context_with_budget(
     web_context: &[crate::orchestrator::web::WebFetchResult],
-) -> Vec<String> {
+    budget_tokens: usize,
+) -> (Vec<String>, WebContextTrace) {
     const MAX_CONTEXT_DOCS: usize = 3;
     const MAX_CONTEXT_CHARS: usize = 800;
 
     let mut lines = Vec::new();
+    let mut remaining = budget_tokens;
+    let candidates = web_context.iter().take(MAX_CONTEXT_DOCS).count();
+    let mut selected = 0usize;
+    let mut budget_exhausted = false;
     for item in web_context.iter().take(MAX_CONTEXT_DOCS) {
+        if remaining == 0 {
+            budget_exhausted = true;
+            break;
+        }
         let content = item
             .ai_digested_content
             .as_ref()
@@ -458,19 +896,60 @@ fn format_web_context(
             continue;
         }
         let (snippet, _) = crate::max_size::truncate_utf8_chars(trimmed, MAX_CONTEXT_CHARS);
-        lines.push(format!("- {}: {}", item.url, snippet));
+        let prefix = format!("- {}: ", item.url);
+        let prefix_tokens = estimate_tokens(&prefix) as usize;
+        if prefix_tokens >= remaining {
+            budget_exhausted = true;
+            break;
+        }
+        let available = remaining - prefix_tokens;
+        let (trimmed_snippet, used_tokens) = truncate_to_tokens(&snippet, available);
+        if trimmed_snippet.is_empty() {
+            budget_exhausted = true;
+            break;
+        }
+        lines.push(format!("{prefix}{trimmed_snippet}"));
+        selected += 1;
+        remaining = remaining.saturating_sub(prefix_tokens + used_tokens);
     }
-    lines
+    (
+        lines,
+        WebContextTrace {
+            candidates,
+            selected,
+            budget_tokens,
+            budget_exhausted,
+        },
+    )
 }
 
 fn format_compressed_results(
     hits: &[crate::index::Hit],
     web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
+    memory_context: Option<&crate::orchestrator::MemoryContextAssembly>,
+    budgets: &ChatContextBudgets,
 ) -> String {
+    const MAX_COMPRESSED_MEMORY_ITEMS: usize = 3;
+
     let local = build_compressed_local(hits);
     let web = best_web_summary(web_context);
+    let (memory_snippets, _) = select_memory_snippets(memory_context, budgets.memory_tokens);
+    let memory = if memory_snippets.is_empty() {
+        None
+    } else {
+        Some(
+            memory_snippets
+                .into_iter()
+                .take(MAX_COMPRESSED_MEMORY_ITEMS)
+                .map(|snippet| CompressedMemoryItem {
+                    score: snippet.score,
+                    content: truncate_compressed_text(snippet.content.trim()),
+                })
+                .collect(),
+        )
+    };
     let payload = CompressedEnvelope {
-        results: CompressedResults { local, web },
+        results: CompressedResults { local, web, memory },
     };
     serde_json::to_string(&payload).unwrap_or_else(|_| "{\"results\":{}}".to_string())
 }
@@ -486,6 +965,8 @@ struct CompressedResults {
     local: Option<CompressedLocal>,
     #[serde(skip_serializing_if = "Option::is_none")]
     web: Option<CompressedWeb>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory: Option<Vec<CompressedMemoryItem>>,
 }
 
 #[derive(Serialize)]
@@ -504,6 +985,12 @@ struct CompressedWeb {
     ai_digested_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     content_snippet: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CompressedMemoryItem {
+    score: f32,
+    content: String,
 }
 
 fn build_compressed_local(hits: &[crate::index::Hit]) -> Option<CompressedLocal> {
@@ -564,6 +1051,31 @@ fn truncate_compressed_text(text: &str) -> String {
     const MAX_COMPRESS_CHARS: usize = 280;
     let (snippet, _) = crate::max_size::truncate_utf8_chars(text, MAX_COMPRESS_CHARS);
     snippet
+}
+
+fn truncate_to_tokens(text: &str, max_tokens: usize) -> (String, usize) {
+    if max_tokens == 0 {
+        return (String::new(), 0);
+    }
+    let mut out = String::new();
+    let mut count = 0usize;
+    let mut iter = text.split_whitespace();
+    while count < max_tokens {
+        let Some(token) = iter.next() else {
+            break;
+        };
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(token);
+        count += 1;
+    }
+    let truncated = iter.next().is_some();
+    if truncated && !out.is_empty() {
+        out.push('…');
+    }
+    let used = estimate_tokens(&out) as usize;
+    (out, used)
 }
 
 fn estimate_tokens(text: &str) -> u64 {
@@ -636,4 +1148,33 @@ fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
         chunks.push(buf);
     }
     chunks
+}
+
+fn queue_dag_log(
+    repo_state_root: std::path::PathBuf,
+    session_id: String,
+    node_type: &'static str,
+    payload: serde_json::Value,
+) {
+    tokio::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            dag_logging::log_node(&repo_state_root, &session_id, node_type, &payload)
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => warn!(
+                target: "docdexd",
+                session_id = %session_id,
+                error = ?err,
+                "dag log failed"
+            ),
+            Err(err) => warn!(
+                target: "docdexd",
+                session_id = %session_id,
+                error = ?err,
+                "dag log task failed"
+            ),
+        }
+    });
 }

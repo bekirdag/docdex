@@ -1,10 +1,13 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+const SYMBOLS_SCHEMA_VERSION: u32 = 1;
+const SYMBOLS_META_FILENAME: &str = "metadata.json";
 
 fn default_symbols_schema() -> SchemaInfo {
     SchemaInfo {
@@ -138,12 +141,19 @@ pub struct SymbolsStore {
     base_dir: PathBuf,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SymbolsStoreMeta {
+    schema_version: u32,
+}
+
 impl SymbolsStore {
     pub fn new(repo_root: &Path, state_dir: &Path) -> Result<Self> {
-        Ok(Self {
+        let store = Self {
             repo_id: repo_id_for_root(repo_root)?,
             base_dir: state_dir.join("symbols.db"),
-        })
+        };
+        store.ensure_schema_version()?;
+        Ok(store)
     }
 
     pub fn repo_id(&self) -> &str {
@@ -155,6 +165,7 @@ impl SymbolsStore {
             fs::remove_dir_all(&self.base_dir)
                 .with_context(|| format!("remove {}", self.base_dir.display()))?;
         }
+        self.ensure_schema_version()?;
         fs::create_dir_all(self.files_dir())
             .with_context(|| format!("create {}", self.files_dir().display()))?;
         Ok(())
@@ -217,6 +228,62 @@ impl SymbolsStore {
     fn file_record_path(&self, rel_path: &str) -> PathBuf {
         self.files_dir()
             .join(format!("{}.json", file_key(rel_path)))
+    }
+
+    fn meta_path(&self) -> PathBuf {
+        self.base_dir.join(SYMBOLS_META_FILENAME)
+    }
+
+    fn ensure_schema_version(&self) -> Result<()> {
+        if !self.base_dir.exists() {
+            fs::create_dir_all(&self.base_dir)
+                .with_context(|| format!("create {}", self.base_dir.display()))?;
+        }
+        let path = self.meta_path();
+        if !path.exists() {
+            self.store_schema_version(SYMBOLS_SCHEMA_VERSION)?;
+            return Ok(());
+        }
+        let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        let meta: SymbolsStoreMeta =
+            serde_json::from_str(&raw).context("parse symbols metadata")?;
+        match meta.schema_version {
+            version if version == SYMBOLS_SCHEMA_VERSION => Ok(()),
+            version if version > SYMBOLS_SCHEMA_VERSION => Err(anyhow!(
+                "symbols schema version {version} is newer than supported {SYMBOLS_SCHEMA_VERSION}"
+            )),
+            version => {
+                self.migrate_schema(version, SYMBOLS_SCHEMA_VERSION)?;
+                self.store_schema_version(SYMBOLS_SCHEMA_VERSION)?;
+                Ok(())
+            }
+        }
+    }
+
+    fn store_schema_version(&self, version: u32) -> Result<()> {
+        let meta = SymbolsStoreMeta {
+            schema_version: version,
+        };
+        let raw = serde_json::to_string(&meta).context("serialize symbols metadata")?;
+        fs::write(self.meta_path(), raw).context("write symbols metadata")?;
+        Ok(())
+    }
+
+    fn migrate_schema(&self, from: u32, to: u32) -> Result<()> {
+        let mut current = from;
+        while current < to {
+            let next = current + 1;
+            match next {
+                1 => {}
+                _ => {
+                    return Err(anyhow!(
+                        "unsupported symbols schema migration {current}->{next}"
+                    ));
+                }
+            }
+            current = next;
+        }
+        Ok(())
     }
 }
 

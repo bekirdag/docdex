@@ -34,7 +34,8 @@ stable JSON schemas across all clients.
 | `docdex_stats` | N/A | N/A | Fixed shape only. |
 | `docdex_repo_inspect` | N/A | N/A | Fixed shape only. |
 | `docdex_symbols` | Single file record | Schema-defined payload (`docs/contracts/code_intelligence_schema_v1.md`) | No multi-file aggregation; errors per `docs/mcp/errors.md`. |
-| `docdex_memory_store` | Single record | N/A | Rejects empty text (`invalid_argument`). |
+| `docdex_memory_save` | Single record | N/A | Rejects empty text (`invalid_argument`). |
+| `docdex_memory_store` | Alias for `docdex_memory_save` | N/A | Same limits/errors as `docdex_memory_save`. |
 | `docdex_memory_recall` | `top_k` clamped to `[1, 50]` | Returns stored text as-is | Clamp `top_k`; errors per `docs/mcp/errors.md`. |
 
 ## Schema compatibility guarantees

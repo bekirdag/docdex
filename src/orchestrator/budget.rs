@@ -5,12 +5,21 @@ pub struct MemoryBudget {
     pub recall_candidates: usize,
 }
 
+const DEFAULT_MAX_ANSWER_TOKENS: u32 = 1024;
+
+pub fn memory_budget_from_max_answer_tokens(max_answer_tokens: u32) -> MemoryBudget {
+    let generation_tokens = max_answer_tokens.max(1) as usize;
+    let total_tokens = generation_tokens.saturating_mul(5);
+    let memory_tokens = (total_tokens / 5).max(1);
+    MemoryBudget {
+        max_items: 5,
+        token_budget: memory_tokens,
+        recall_candidates: 20,
+    }
+}
+
 impl Default for MemoryBudget {
     fn default() -> Self {
-        Self {
-            max_items: 5,
-            token_budget: 350,
-            recall_candidates: 20,
-        }
+        memory_budget_from_max_answer_tokens(DEFAULT_MAX_ANSWER_TOKENS)
     }
 }

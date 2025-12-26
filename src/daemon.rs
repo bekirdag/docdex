@@ -246,6 +246,9 @@ pub async fn serve(
     llm_provider: String,
     ollama_base_url: String,
     embedding_model: String,
+    max_answer_tokens: u32,
+    llm_base_url: String,
+    llm_default_model: String,
     embedding_timeout_ms: u64,
 ) -> Result<()> {
     #[cfg(unix)]
@@ -351,6 +354,9 @@ pub async fn serve(
         audit,
         metrics: metrics.clone(),
         memory,
+        max_answer_tokens,
+        llm_base_url,
+        llm_default_model,
     };
     watcher::spawn(indexer.clone()).map_err(|err| {
         StartupError::new(

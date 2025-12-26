@@ -136,6 +136,18 @@ fn write_dag_records(state_dir: &Path, records: &[DagRecord]) -> Result<(), Box<
     Ok(())
 }
 
+fn write_legacy_trace(
+    repo_state_root: &Path,
+    session_id: &str,
+    payload: Value,
+) -> Result<(), Box<dyn Error>> {
+    let dag_dir = repo_state_root.join("dag");
+    fs::create_dir_all(&dag_dir)?;
+    let path = dag_dir.join(format!("{session_id}.json"));
+    fs::write(path, serde_json::to_vec(&payload)?)?;
+    Ok(())
+}
+
 fn cli_export(
     state_root: &Path,
     repo_root: &Path,
@@ -252,6 +264,57 @@ fn dag_export_cli_matches_http_json() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn dag_export_reads_legacy_json_trace() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
+
+    let index_dir = resolve_index_dir(state_root.path(), repo.path())?;
+    let repo_state_root = index_dir
+        .parent()
+        .ok_or("index dir missing parent")?
+        .to_path_buf();
+    write_legacy_trace(
+        &repo_state_root,
+        "sess-legacy",
+        serde_json::json!({
+            "nodes": [
+                {
+                    "id": "n2",
+                    "session_id": "sess-legacy",
+                    "type": "Observation",
+                    "payload": {},
+                    "created_at": 200
+                },
+                {
+                    "id": "n1",
+                    "session_id": "sess-legacy",
+                    "type": "UserRequest",
+                    "payload": {"text": "hi"},
+                    "created_at": 100
+                }
+            ]
+        }),
+    )?;
+
+    let payload = cli_export(state_root.path(), repo.path(), "sess-legacy", None)?;
+    let nodes = payload
+        .get("nodes")
+        .and_then(|v| v.as_array())
+        .ok_or("nodes missing")?;
+    assert_eq!(nodes.len(), 2);
+    assert_eq!(
+        nodes
+            .first()
+            .and_then(|v| v.get("id"))
+            .and_then(|v| v.as_str()),
+        Some("n1")
+    );
+    Ok(())
+}
+
+#[test]
 fn dag_export_respects_max_nodes() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
@@ -292,7 +355,7 @@ fn dag_export_respects_max_nodes() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = spawn_server(repo.path(), host, port)?;
+    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
     wait_for_health(host, port)?;
     let http_payload = http_export(host, port, "sess-3", Some(2))?;
     server.kill().ok();

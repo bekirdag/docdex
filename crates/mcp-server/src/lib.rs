@@ -5,12 +5,15 @@ use docdexd::error::{
     ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
     ERR_UNKNOWN_REPO,
 };
+use docdexd::config;
+use docdexd::dag::logging as dag_logging;
 use docdexd::index::{IndexConfig, Indexer};
 use docdexd::libs;
-use docdexd::memory::{inject_embedding_metadata, MemoryStore};
+use docdexd::memory::{inject_embedding_metadata, repo_state_root_from_state_dir, MemoryStore};
 use docdexd::ollama::OllamaEmbedder;
 use docdexd::orchestrator::{
-    run_waterfall, MemoryBudget, WaterfallPlan, WaterfallRequest, WebGateConfig,
+    memory_budget_from_max_answer_tokens, run_waterfall, WaterfallPlan, WaterfallRequest,
+    WebGateConfig,
 };
 use docdexd::ratelimit::RateLimiter;
 use docdexd::search;
@@ -21,11 +24,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tantivy::directory::error::LockError;
 use tantivy::TantivyError;
 use thiserror::Error;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use uuid::Uuid;
 
 const JSONRPC_VERSION: &str = "2.0";
 const ERR_PARSE: i32 = -32700;
@@ -504,6 +508,9 @@ pub async fn serve(
     } else {
         None
     };
+    let max_answer_tokens = config::AppConfig::load_default()
+        .map(|cfg| cfg.llm.max_answer_tokens)
+        .unwrap_or(1024);
     let effective_burst = if rate_limit_per_min > 0 && rate_limit_burst == 0 {
         rate_limit_per_min
     } else {
@@ -526,6 +533,7 @@ pub async fn serve(
         max_results: max_results.max(1),
         default_project_root: None,
         memory,
+        max_answer_tokens,
         tool_rate_limit,
     };
     server.run().await
@@ -544,6 +552,7 @@ struct McpServer {
     max_results: usize,
     default_project_root: Option<PathBuf>,
     memory: Option<McpMemoryState>,
+    max_answer_tokens: u32,
     tool_rate_limit: Option<RateLimiter<()>>,
 }
 
@@ -1063,7 +1072,11 @@ impl McpServer {
                             }
                         }
                     }
-                    "docdex_memory_store" | "docdex.memory_store" => {
+                    "docdex_memory_store"
+                    | "docdex.memory_store"
+                    | "docdex_memory_save"
+                    | "docdex.memory_save" => {
+                        let tool_name = params.name.as_str();
                         let args_res: Result<MemoryStoreArgs, _> =
                             serde_json::from_value(params.arguments.clone());
                         let args = match args_res {
@@ -1078,9 +1091,9 @@ impl McpServer {
                                         default_message_for_code("invalid_params"),
                                         "invalid_params",
                                         Some(err.to_string()),
-                                        Some("docdex_memory_store"),
+                                        Some(tool_name),
                                         Some(
-                                            json!({ "validation": "serde", "tool": "docdex_memory_store" }),
+                                            json!({ "validation": "serde", "tool": tool_name }),
                                         ),
                                     )),
                                 }))
@@ -1093,7 +1106,7 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_tool_error(&err, Some("docdex_memory_store"))),
+                                    error: Some(rpc_tool_error(&err, Some(tool_name))),
                                 }))
                             }
                         }
@@ -1151,10 +1164,11 @@ impl McpServer {
                                         "docdex_files",
                                     "docdex_open",
                                     "docdex_stats",
-                                    "docdex_repo_inspect",
-                                    "docdex_symbols",
-                                    "docdex_memory_store",
-                                    "docdex_memory_recall"
+                                        "docdex_repo_inspect",
+                                        "docdex_symbols",
+                                        "docdex_memory_save",
+                                        "docdex_memory_store",
+                                        "docdex_memory_recall"
                                     ]
                                 })),
                             )),
@@ -1294,6 +1308,20 @@ impl McpServer {
                 }),
             },
             ToolDefinition {
+                name: "docdex_memory_save",
+                description: "Store a memory item (requires DOCDEX_ENABLE_MEMORY=1).",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "text": { "type": "string", "minLength": 1, "description": "Memory text to store" },
+                        "metadata": { "type": "object", "description": "Optional metadata object", "additionalProperties": true },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
+                    },
+                    "required": ["text"]
+                }),
+            },
+            ToolDefinition {
                 name: "docdex_memory_store",
                 description: "Store a memory item (requires DOCDEX_ENABLE_MEMORY=1).",
                 input_schema: json!({
@@ -1357,10 +1385,22 @@ impl McpServer {
             .unwrap_or(&self.repo_root)
             .display()
             .to_string();
+        let repo_state_root = repo_state_root_from_state_dir(self.indexer.state_dir());
+        queue_dag_log(
+            &repo_state_root,
+            &request_id,
+            "UserRequest",
+            json!({
+                "query": query,
+                "limit": limit,
+                "force_web": force_web,
+                "project_root": project_root_path.clone(),
+            }),
+        );
         let plan = WaterfallPlan::new(
             WebGateConfig::from_env(),
             Tier2Config::enabled(),
-            MemoryBudget::default(),
+            memory_budget_from_max_answer_tokens(self.max_answer_tokens),
         );
         let force_web = force_web_arg.unwrap_or(false);
         let mut memory_state = self.memory.as_ref().map(|state| search::MemoryState {
@@ -1380,6 +1420,16 @@ impl McpServer {
             memory: memory_state.as_ref(),
         })
         .await?;
+        queue_dag_log(
+            &repo_state_root,
+            &request_id,
+            "Decision",
+            json!({
+                "hits": waterfall.search_response.hits.len(),
+                "top_score": waterfall.search_response.top_score,
+                "web_status": waterfall.tier2.status.status,
+            }),
+        );
         let mut response = waterfall.search_response;
         response.web_discovery = Some(waterfall.tier2.status.clone());
         response.memory_context = waterfall.memory_context;
@@ -1621,6 +1671,18 @@ impl McpServer {
             return Err(AppError::new(ERR_INVALID_ARGUMENT, "text must not be empty").into());
         }
 
+        let repo_state_root = repo_state_root_from_state_dir(self.indexer.state_dir());
+        let session_id = format!("mcp-{}", Uuid::new_v4());
+        queue_dag_log(
+            &repo_state_root,
+            &session_id,
+            "ToolCall",
+            json!({
+                "tool": "memory_store",
+                "text_len": text.len(),
+            }),
+        );
+        let started = Instant::now();
         let embedding = memory.embedder.embed(text).await?;
 
         let created_at = std::time::SystemTime::now()
@@ -1637,6 +1699,22 @@ impl McpServer {
             store.store(&text_owned, &embedding, metadata, created_at)
         })
         .await??;
+        queue_dag_log(
+            &repo_state_root,
+            &session_id,
+            "Observation",
+            json!({
+                "tool": "memory_store",
+                "id": stored.0.to_string(),
+                "latency_ms": started.elapsed().as_millis(),
+            }),
+        );
+        eprintln!(
+            "docdex mcp: memory_store repo={} latency_ms={} id={}",
+            self.repo_root.display(),
+            started.elapsed().as_millis(),
+            stored.0
+        );
         Ok(json!({
             "id": stored.0.to_string(),
             "created_at": stored.1
@@ -1659,10 +1737,40 @@ impl McpServer {
         }
 
         let top_k = args.top_k.unwrap_or(5).max(1).min(50);
+        let repo_state_root = repo_state_root_from_state_dir(self.indexer.state_dir());
+        let session_id = format!("mcp-{}", Uuid::new_v4());
+        queue_dag_log(
+            &repo_state_root,
+            &session_id,
+            "ToolCall",
+            json!({
+                "tool": "memory_recall",
+                "top_k": top_k,
+                "query_len": query.len(),
+            }),
+        );
+        let started = Instant::now();
         let embedding = memory.embedder.embed(query).await?;
 
         let store = memory.store.clone();
         let items = tokio::task::spawn_blocking(move || store.recall(&embedding, top_k)).await??;
+        queue_dag_log(
+            &repo_state_root,
+            &session_id,
+            "Observation",
+            json!({
+                "tool": "memory_recall",
+                "results": items.len(),
+                "latency_ms": started.elapsed().as_millis(),
+            }),
+        );
+        eprintln!(
+            "docdex mcp: memory_recall repo={} top_k={} results={} latency_ms={}",
+            self.repo_root.display(),
+            top_k,
+            items.len(),
+            started.elapsed().as_millis()
+        );
         Ok(json!({
             "top_k": top_k,
             "results": items.into_iter().map(|item| json!({
@@ -1833,6 +1941,27 @@ fn normalize_rel_path(input: &str) -> Option<PathBuf> {
     } else {
         Some(clean)
     }
+}
+
+fn queue_dag_log(
+    repo_state_root: &Path,
+    session_id: &str,
+    node_type: &'static str,
+    payload: serde_json::Value,
+) {
+    let repo_state_root = repo_state_root.to_path_buf();
+    let session_id = session_id.to_string();
+    tokio::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            dag_logging::log_node(&repo_state_root, &session_id, node_type, &payload)
+        })
+        .await;
+        if let Err(err) = result {
+            eprintln!("docdex mcp: dag log task failed for {session_id}: {err}");
+        } else if let Ok(Err(err)) = result {
+            eprintln!("docdex mcp: dag log failed for {session_id}: {err}");
+        }
+    });
 }
 
 #[cfg(test)]

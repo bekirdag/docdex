@@ -260,7 +260,7 @@ This section defines the daemon’s key subsystems and how they cooperate to sat
 
 ### Memory and Reasoning DAG
 
-- Memory: Per-repo `memory.db` (sqlite-vec) with schema `id, content, embedding, created_at, metadata`; ops `memory_store`, `memory_recall` scoped by repo; prioritized in context merge.  
+- Memory: Per-repo `memory.db` (sqlite-vec) with tables `memories` (id UUID, content TEXT, embedding BLOB, created_at INT, metadata JSON), `memory_vec` (vec0 embeddings), and `memory_meta` (key/value embedding_dim, schema_version); ops `memory_store`, `memory_recall` scoped by repo; prioritized in context merge.  
 - DAG: Per-repo `dag.db`; node types UserRequest/Thought/ToolCall/Observation/Decision; logging per session; `dag view --repo <path> <session_id>` renders text/DOT.  
 - Isolation: No cross-repo memory or DAG queries; per-repo daemons close handles on shutdown.
 
@@ -580,7 +580,7 @@ This section defines per-repo long-term memory (sqlite-vec) and reasoning DAG lo
 
 **Components and data**
 
-- `memory.db` (sqlite-vec): table `memory(id UUID, content TEXT, embedding BLOB, created_at INT, metadata JSON)`. Ollama embeddings only.  
+- `memory.db` (sqlite-vec): tables `memories` (id UUID, content TEXT, embedding BLOB, created_at INT, metadata JSON), `memory_vec` (vec0 embedding table), and `memory_meta` (embedding_dim, schema_version key/value). Ollama embeddings only.  
 - `dag.db` (sqlite): node types `UserRequest`, `Thought`, `ToolCall`, `Observation`, `Decision`; session-scoped logging.  
 - Repo Manager: ensures per-repo initialization/closing without cross-repo access.  
 - Embedding/model config: uses `[llm]` `embedding_model` via Ollama; no external vector DB.
@@ -649,7 +649,7 @@ Architectural intent: enforce per-repo isolation while sharing global caches, ke
 
 - Source index (Tantivy): BM25 primary; fields include path, content, lang, offsets; optional local rerank later (still Tantivy-based per PDR).  
 - Library index: Tantivy index under per-repo `libs_index/`, ingesting documents from global cache; treated as Tier-1 alongside source.  
-- Memory (`memory.db`): sqlite-vec table `id UUID, content TEXT, embedding BLOB, created_at INT, metadata JSON`; per-repo only, no cross-repo queries.  
+- Memory (`memory.db`): sqlite-vec tables `memories` (id UUID, content TEXT, embedding BLOB, created_at INT, metadata JSON), `memory_vec` (vec0 embedding table), and `memory_meta` (embedding_dim, schema_version key/value); per-repo only, no cross-repo queries.  
 - Symbols (`symbols.db`): Tree-sitter extraction stored with `name, kind, file_path, line_start, line_end, signature`; supports impact graph.  
 - DAG (`dag.db`): node types {UserRequest, Thought, ToolCall, Observation, Decision}; logged per session.  
 - Impact graph (Phase 6): directed edges from imports; served via `GET /v1/graph/impact` scoped by repo fingerprint.  
@@ -719,7 +719,7 @@ Architectural intent: define per-repo and global storage schemas that support lo
 
 **Components & Data Contracts**
 
-- `memory.db` (per repo, sqlite-vec): table `memories(id UUID, content TEXT, embedding BLOB, created_at INT, metadata JSON)`; embeddings from Ollama; queried via vector search; prioritized in context assembly.  
+- `memory.db` (per repo, sqlite-vec): `memories` table plus `memory_vec` (vec0) and `memory_meta` (embedding_dim, schema_version); embeddings from Ollama; queried via vector search; prioritized in context assembly.  
 - `symbols.db` (per repo): Tree-sitter extracted symbols for Rust/TS/JS/Python/Go with columns `{name, kind, file_path, line_start, line_end, signature}`; enables symbol search and impact analysis inputs.  
 - `dag.db` (per repo): nodes table with `type ENUM(UserRequest|Thought|ToolCall|Observation|Decision)`, `session_id`, `payload JSON`, `created_at`; edges implied by `session_id` \+ ordering (PDR: DAG logging and view).  
 - `index/` (per repo, Tantivy): source index for repo code; `libs_index/` for ingested library docs; both scoped by repo fingerprint to prevent cross-contamination.  

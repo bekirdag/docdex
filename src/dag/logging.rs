@@ -1,12 +1,16 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use fs4::FileExt;
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::info;
 
 use crate::dag::repo as dag_repo;
+
+const DAG_META_SCHEMA_VERSION: &str = "schema_version";
+const DAG_SCHEMA_VERSION: u32 = 1;
 
 /// Append a node to the repo-scoped DAG. Creates the database if needed.
 pub fn log_node(
@@ -29,21 +33,7 @@ pub fn log_node(
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
     )
     .with_context(|| format!("open {}", db_path.display()))?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS nodes (
-            session_id TEXT NOT NULL,
-            type TEXT NOT NULL,
-            payload TEXT NOT NULL,
-            created_at INTEGER NOT NULL
-        )",
-        [],
-    )
-    .context("prepare dag schema")?;
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_nodes_session_id ON nodes(session_id)",
-        [],
-    )
-    .context("prepare dag schema index")?;
+    ensure_schema(&conn)?;
     conn.execute(
         "INSERT INTO nodes (session_id, type, payload, created_at) VALUES (?1, ?2, ?3, ?4)",
         params![
@@ -54,6 +44,33 @@ pub fn log_node(
         ],
     )
     .context("insert dag node")?;
+    if node_type.eq_ignore_ascii_case("UserRequest") {
+        info!(
+            target: "docdexd",
+            repo_state_dir = %repo_state_dir.display(),
+            session_id = %session_id,
+            "dag session created"
+        );
+    }
+    Ok(())
+}
+
+pub fn check_access(repo_state_dir: &Path) -> Result<()> {
+    dag_repo::ensure_repo_state_dir(repo_state_dir)?;
+    let lock_path = dag_repo::dag_lock_path(repo_state_dir);
+    let lock_dir = lock_path
+        .parent()
+        .map(|dir| dir.to_path_buf())
+        .unwrap_or_else(|| repo_state_dir.join("locks"));
+    crate::state_layout::ensure_state_dir_secure(&lock_dir)?;
+    let _lock = DagLock::acquire(&lock_path)?;
+    let db_path = dag_repo::dag_db_path(repo_state_dir);
+    let conn = Connection::open_with_flags(
+        &db_path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+    )
+    .with_context(|| format!("open {}", db_path.display()))?;
+    ensure_schema(&conn)?;
     Ok(())
 }
 
@@ -81,6 +98,99 @@ pub fn load_json_trace(repo_state_dir: &Path, session_id: &str) -> Result<Option
 
 pub fn repo_state_dir_for_root(state_root: &Path, state_key: &str) -> PathBuf {
     state_root.join("repos").join(state_key)
+}
+
+fn ensure_schema(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS nodes (
+            session_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )",
+        [],
+    )
+    .context("prepare dag schema")?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_nodes_session_id ON nodes(session_id)",
+        [],
+    )
+    .context("prepare dag schema index")?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS dag_meta(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )",
+        [],
+    )
+    .context("prepare dag meta table")?;
+    ensure_schema_version(conn)?;
+    Ok(())
+}
+
+fn ensure_schema_version(conn: &Connection) -> Result<()> {
+    let stored = load_schema_version(conn)?;
+    match stored {
+        None | Some(0) => {
+            store_schema_version(conn, DAG_SCHEMA_VERSION)?;
+        }
+        Some(version) if version == DAG_SCHEMA_VERSION => {}
+        Some(version) if version > DAG_SCHEMA_VERSION => {
+            return Err(anyhow::anyhow!(
+                "dag schema version {version} is newer than supported {DAG_SCHEMA_VERSION}"
+            ));
+        }
+        Some(version) => {
+            migrate_schema(conn, version, DAG_SCHEMA_VERSION)?;
+            store_schema_version(conn, DAG_SCHEMA_VERSION)?;
+        }
+    }
+    Ok(())
+}
+
+fn load_schema_version(conn: &Connection) -> Result<Option<u32>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT value FROM dag_meta WHERE key = ?1",
+            params![DAG_META_SCHEMA_VERSION],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("read dag schema version")?;
+    match raw {
+        None => Ok(None),
+        Some(value) => value
+            .trim()
+            .parse::<u32>()
+            .map(Some)
+            .context("parse dag schema version"),
+    }
+}
+
+fn store_schema_version(conn: &Connection, version: u32) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO dag_meta (key, value) VALUES (?1, ?2)",
+        params![DAG_META_SCHEMA_VERSION, version.to_string()],
+    )
+    .context("store dag schema version")?;
+    Ok(())
+}
+
+fn migrate_schema(_conn: &Connection, from: u32, to: u32) -> Result<()> {
+    let mut current = from;
+    while current < to {
+        let next = current + 1;
+        match next {
+            1 => {}
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "unsupported dag schema migration {current}->{next}"
+                ));
+            }
+        }
+        current = next;
+    }
+    Ok(())
 }
 
 struct DagLock {

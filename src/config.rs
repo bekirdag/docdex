@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, Args};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 const DEFAULT_CONFIG_FILE: &str = "config.toml";
 const DEFAULT_HTTP_BIND_ADDR: &str = "127.0.0.1:3210";
@@ -79,6 +80,13 @@ impl AppConfig {
             self.web.scraper.engine = DEFAULT_WEB_ENGINE.to_string();
         }
         if self.memory.backend.trim().is_empty() {
+            self.memory.backend = DEFAULT_MEMORY_BACKEND.to_string();
+        } else if !self.memory.backend.eq_ignore_ascii_case(DEFAULT_MEMORY_BACKEND) {
+            warn!(
+                target: "docdexd",
+                backend = %self.memory.backend,
+                "unknown memory backend; falling back to sqlite"
+            );
             self.memory.backend = DEFAULT_MEMORY_BACKEND.to_string();
         }
         if self.server.http_bind_addr.trim().is_empty() {

@@ -1,9 +1,11 @@
 pub mod help_all;
+pub mod agent;
 pub mod check;
 pub mod dag;
 pub mod index;
 pub mod libs;
 pub mod llm;
+pub mod mcoda_eval;
 pub mod mcp;
 pub mod mcp_add;
 pub mod memory;
@@ -137,6 +139,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             )
             .await
         }
+        super::Command::Agent { command } => agent::run(command).await,
         super::Command::Repo { command } => repo::run(command),
         super::Command::LibsIngest { repo, sources } => libs::run_ingest(repo, sources),
         super::Command::LibsDiscover { repo, sources } => libs::run_discover(repo, sources),

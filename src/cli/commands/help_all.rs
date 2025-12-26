@@ -14,6 +14,7 @@ pub fn run() -> Result<()> {
         "index",
         "ingest",
         "chat",
+        "agent",
         "web-search",
         "web-fetch",
         "web-rag",

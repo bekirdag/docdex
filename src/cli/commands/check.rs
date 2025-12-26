@@ -1,13 +1,19 @@
 use crate::config;
+use crate::dag::logging as dag_logging;
 use crate::hardware;
+use crate::memory::MemoryStore;
 use crate::ollama;
 use crate::orchestrator::web;
 use crate::state_layout::StateLayout;
-use anyhow::Result;
-use serde::Serialize;
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::BTreeMap;
+use std::fs;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::time::Duration;
+use uuid::Uuid;
 
 #[derive(Serialize)]
 struct CheckItem {
@@ -23,6 +29,17 @@ struct CheckReport {
     status: &'static str,
     success: bool,
     checks: Vec<CheckItem>,
+}
+
+#[derive(Deserialize)]
+struct RepoRegistryFile {
+    #[serde(default)]
+    repos: BTreeMap<String, RepoRegistryEntry>,
+}
+
+#[derive(Deserialize)]
+struct RepoRegistryEntry {
+    state_key: String,
 }
 
 pub async fn run() -> Result<()> {
@@ -69,7 +86,8 @@ pub async fn run() -> Result<()> {
     };
 
     if let Some(config) = config {
-        if let Some(state_dir) = config.core.global_state_dir.clone() {
+        let state_dir = config.core.global_state_dir.clone();
+        if let Some(state_dir) = state_dir.clone() {
             let layout = StateLayout::new(state_dir.clone());
             match layout.ensure_global_dirs() {
                 Ok(()) => checks.push(CheckItem {
@@ -142,6 +160,23 @@ pub async fn run() -> Result<()> {
         let memory_enabled =
             env_boolish("DOCDEX_ENABLE_MEMORY").unwrap_or(config.memory.enabled);
         let allow_non_ollama = agent_override.is_some();
+        let max_answer_tokens = config.llm.max_answer_tokens;
+        if max_answer_tokens == 0 {
+            checks.push(CheckItem {
+                name: "llm_budget",
+                status: "fail",
+                message: "max_answer_tokens must be >= 1".to_string(),
+                details: Some(json!({ "max_answer_tokens": max_answer_tokens })),
+            });
+            success = false;
+        } else {
+            checks.push(CheckItem {
+                name: "llm_budget",
+                status: "ok",
+                message: "token budget configuration validated".to_string(),
+                details: Some(json!({ "max_answer_tokens": max_answer_tokens })),
+            });
+        }
         checks.push(CheckItem {
             name: "llm_provider",
             status: if provider_is_ollama || allow_non_ollama {
@@ -265,6 +300,235 @@ pub async fn run() -> Result<()> {
             });
         }
 
+        let (repo_state_keys, repo_state_error) = match state_dir.as_ref() {
+            Some(state_dir) => match load_repo_state_keys(state_dir) {
+                Ok(keys) => (keys, None),
+                Err(err) => (Vec::new(), Some(err.to_string())),
+            },
+            None => (Vec::new(), None),
+        };
+
+        if memory_enabled {
+            match state_dir.as_ref() {
+                Some(state_dir) => {
+                    if let Some(err) = repo_state_error.as_deref() {
+                        let registry_path = StateLayout::new(state_dir.clone())
+                            .repos_dir()
+                            .join("repo_registry.json");
+                        checks.push(CheckItem {
+                            name: "memory_db",
+                            status: "fail",
+                            message: format!("memory.db check failed: {err}"),
+                            details: Some(json!({ "path": registry_path.to_string_lossy() })),
+                        });
+                        success = false;
+                    } else if repo_state_keys.is_empty() {
+                        let scratch = state_dir
+                            .join("checks")
+                            .join(format!("memory-{}", Uuid::new_v4()));
+                        let store = MemoryStore::new(&scratch);
+                        match store.check_access() {
+                            Ok(()) => checks.push(CheckItem {
+                                name: "memory_db",
+                                status: "ok",
+                                message: "memory.db is writable (scratch)".to_string(),
+                                details: Some(json!({
+                                    "path": scratch.join("memory.db").to_string_lossy()
+                                })),
+                            }),
+                            Err(err) => {
+                                checks.push(CheckItem {
+                                    name: "memory_db",
+                                    status: "fail",
+                                    message: format!("memory.db not writable: {err}"),
+                                    details: Some(json!({
+                                        "path": scratch.join("memory.db").to_string_lossy()
+                                    })),
+                                });
+                                success = false;
+                            }
+                        }
+                        let _ = std::fs::remove_dir_all(&scratch);
+                    } else {
+                        let repos_dir = StateLayout::new(state_dir.clone()).repos_dir();
+                        let mut ok_count = 0usize;
+                        let mut fail_count = 0usize;
+                        let mut failures = Vec::new();
+                        for state_key in &repo_state_keys {
+                            let repo_state_root = repos_dir.join(state_key);
+                            if !repo_state_root.exists() {
+                                fail_count += 1;
+                                if failures.len() < 5 {
+                                    failures.push(format!(
+                                        "{}: repo state dir missing",
+                                        repo_state_root.display()
+                                    ));
+                                }
+                                continue;
+                            }
+                            let store = MemoryStore::new(&repo_state_root);
+                            match store.check_access() {
+                                Ok(()) => ok_count += 1,
+                                Err(err) => {
+                                    fail_count += 1;
+                                    if failures.len() < 5 {
+                                        failures.push(format!(
+                                            "{}: {err}",
+                                            repo_state_root.display()
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        let total = repo_state_keys.len();
+                        let status = if fail_count == 0 { "ok" } else { "fail" };
+                        let message = if fail_count == 0 {
+                            format!("memory.db writable for {ok_count}/{total} repos")
+                        } else {
+                            format!(
+                                "memory.db check failed for {fail_count}/{total} repos"
+                            )
+                        };
+                        checks.push(CheckItem {
+                            name: "memory_db",
+                            status,
+                            message,
+                            details: Some(json!({
+                                "checked": total,
+                                "ok": ok_count,
+                                "failed": fail_count,
+                                "failures": failures,
+                            })),
+                        });
+                        if fail_count > 0 {
+                            success = false;
+                        }
+                    }
+                }
+                None => {
+                    checks.push(CheckItem {
+                        name: "memory_db",
+                        status: "fail",
+                        message: "memory.db check failed: global_state_dir is not configured"
+                            .to_string(),
+                        details: None,
+                    });
+                    success = false;
+                }
+            }
+        } else {
+            checks.push(CheckItem {
+                name: "memory_db",
+                status: "skipped",
+                message: "skipped; memory disabled".to_string(),
+                details: None,
+            });
+        }
+
+        match state_dir.as_ref() {
+            Some(state_dir) => {
+                if let Some(err) = repo_state_error.as_deref() {
+                    let registry_path = StateLayout::new(state_dir.clone())
+                        .repos_dir()
+                        .join("repo_registry.json");
+                    checks.push(CheckItem {
+                        name: "dag_db",
+                        status: "fail",
+                        message: format!("dag.db check failed: {err}"),
+                        details: Some(json!({ "path": registry_path.to_string_lossy() })),
+                    });
+                    success = false;
+                } else if repo_state_keys.is_empty() {
+                    let scratch = state_dir
+                        .join("checks")
+                        .join(format!("dag-{}", Uuid::new_v4()));
+                    match dag_logging::check_access(&scratch) {
+                        Ok(()) => checks.push(CheckItem {
+                            name: "dag_db",
+                            status: "ok",
+                            message: "dag.db is writable (scratch)".to_string(),
+                            details: Some(json!({
+                                "path": scratch.join("dag.db").to_string_lossy()
+                            })),
+                        }),
+                        Err(err) => {
+                            checks.push(CheckItem {
+                                name: "dag_db",
+                                status: "fail",
+                                message: format!("dag.db not writable: {err}"),
+                                details: Some(json!({
+                                    "path": scratch.join("dag.db").to_string_lossy()
+                                })),
+                            });
+                            success = false;
+                        }
+                    }
+                    let _ = std::fs::remove_dir_all(&scratch);
+                } else {
+                    let repos_dir = StateLayout::new(state_dir.clone()).repos_dir();
+                    let mut ok_count = 0usize;
+                    let mut fail_count = 0usize;
+                    let mut failures = Vec::new();
+                    for state_key in &repo_state_keys {
+                        let repo_state_root = repos_dir.join(state_key);
+                        if !repo_state_root.exists() {
+                            fail_count += 1;
+                            if failures.len() < 5 {
+                                failures.push(format!(
+                                    "{}: repo state dir missing",
+                                    repo_state_root.display()
+                                ));
+                            }
+                            continue;
+                        }
+                        match dag_logging::check_access(&repo_state_root) {
+                            Ok(()) => ok_count += 1,
+                            Err(err) => {
+                                fail_count += 1;
+                                if failures.len() < 5 {
+                                    failures.push(format!(
+                                        "{}: {err}",
+                                        repo_state_root.display()
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    let total = repo_state_keys.len();
+                    let status = if fail_count == 0 { "ok" } else { "fail" };
+                    let message = if fail_count == 0 {
+                        format!("dag.db writable for {ok_count}/{total} repos")
+                    } else {
+                        format!("dag.db check failed for {fail_count}/{total} repos")
+                    };
+                    checks.push(CheckItem {
+                        name: "dag_db",
+                        status,
+                        message,
+                        details: Some(json!({
+                            "checked": total,
+                            "ok": ok_count,
+                            "failed": fail_count,
+                            "failures": failures,
+                        })),
+                    });
+                    if fail_count > 0 {
+                        success = false;
+                    }
+                }
+            }
+            None => {
+                checks.push(CheckItem {
+                    name: "dag_db",
+                    status: "fail",
+                    message: "dag.db check failed: global_state_dir is not configured"
+                        .to_string(),
+                    details: None,
+                });
+                success = false;
+            }
+        }
+
         let engine = config.web.scraper.engine.trim();
         let engine_lower = engine.to_ascii_lowercase();
         let needs_chrome = matches!(
@@ -303,7 +567,17 @@ pub async fn run() -> Result<()> {
             });
         }
     } else {
-        for name in ["state", "bind", "llm_provider", "ollama", "ollama_models", "chrome"] {
+        for name in [
+            "state",
+            "bind",
+            "llm_budget",
+            "llm_provider",
+            "ollama",
+            "ollama_models",
+            "memory_db",
+            "dag_db",
+            "chrome",
+        ] {
             checks.push(CheckItem {
                 name,
                 status: "skipped",
@@ -326,6 +600,49 @@ pub async fn run() -> Result<()> {
     } else {
         std::process::exit(1);
     }
+}
+
+fn load_repo_state_keys(state_dir: &Path) -> Result<Vec<String>> {
+    let layout = StateLayout::new(state_dir.to_path_buf());
+    let registry_path = layout.repos_dir().join("repo_registry.json");
+    let mut keys = Vec::new();
+    match fs::read_to_string(&registry_path) {
+        Ok(raw) => {
+            let parsed: RepoRegistryFile =
+                serde_json::from_str(&raw).with_context(|| format!("parse {}", registry_path.display()))?;
+            for entry in parsed.repos.values() {
+                let trimmed = entry.state_key.trim();
+                if !trimmed.is_empty() {
+                    keys.push(trimmed.to_string());
+                }
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err).with_context(|| format!("read {}", registry_path.display()));
+        }
+    }
+
+    if keys.is_empty() {
+        if let Ok(entries) = fs::read_dir(layout.repos_dir()) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                if let Some(name) = path.file_name().and_then(|value| value.to_str()) {
+                    let trimmed = name.trim();
+                    if !trimmed.is_empty() {
+                        keys.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    keys.sort();
+    keys.dedup();
+    Ok(keys)
 }
 
 fn env_non_empty(key: &str) -> Option<String> {

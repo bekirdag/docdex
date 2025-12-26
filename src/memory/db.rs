@@ -14,6 +14,8 @@ use uuid::Uuid;
 const MEMORY_WARN_ROWS: i64 = 50_000;
 const MEMORY_PRUNE_TARGET_ROWS: i64 = 45_000;
 const MEMORY_META_EMBED_DIM: &str = "embedding_dim";
+const MEMORY_META_SCHEMA_VERSION: &str = "schema_version";
+const MEMORY_SCHEMA_VERSION: u32 = 1;
 static MEMORY_WARNED: AtomicBool = AtomicBool::new(false);
 static SQLITE_VEC_INIT: Once = Once::new();
 
@@ -49,6 +51,13 @@ impl MemoryStore {
         .with_context(|| format!("open {}", self.path.display()))?;
         let stored_dim = ensure_schema(&conn, embedding_dim)?;
         Ok((conn, stored_dim))
+    }
+
+    pub fn check_access(&self) -> Result<()> {
+        let _guard = self.lock.lock();
+        let _file_lock = self.lock_exclusive()?;
+        let _ = self.open_connection(None)?;
+        Ok(())
     }
 
     pub fn store(
@@ -242,6 +251,8 @@ fn ensure_schema(conn: &Connection, embedding_dim: Option<usize>) -> Result<Opti
     )
     .context("ensure memory schema")?;
 
+    ensure_schema_version(conn)?;
+
     let stored_dim = load_embedding_dim(conn)?;
     if let (Some(stored), Some(requested)) = (stored_dim, embedding_dim) {
         if stored != requested {
@@ -272,6 +283,71 @@ fn ensure_schema(conn: &Connection, embedding_dim: Option<usize>) -> Result<Opti
     }
 
     Ok(inferred)
+}
+
+fn ensure_schema_version(conn: &Connection) -> Result<()> {
+    let stored = load_schema_version(conn)?;
+    match stored {
+        None | Some(0) => {
+            store_schema_version(conn, MEMORY_SCHEMA_VERSION)?;
+        }
+        Some(version) if version == MEMORY_SCHEMA_VERSION => {}
+        Some(version) if version > MEMORY_SCHEMA_VERSION => {
+            return Err(anyhow::anyhow!(
+                "memory schema version {version} is newer than supported {MEMORY_SCHEMA_VERSION}"
+            ));
+        }
+        Some(version) => {
+            migrate_schema(conn, version, MEMORY_SCHEMA_VERSION)?;
+            store_schema_version(conn, MEMORY_SCHEMA_VERSION)?;
+        }
+    }
+    Ok(())
+}
+
+fn load_schema_version(conn: &Connection) -> Result<Option<u32>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT value FROM memory_meta WHERE key = ?1",
+            params![MEMORY_META_SCHEMA_VERSION],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("read schema version")?;
+    match raw {
+        None => Ok(None),
+        Some(value) => value
+            .trim()
+            .parse::<u32>()
+            .map(Some)
+            .context("parse schema version"),
+    }
+}
+
+fn store_schema_version(conn: &Connection, version: u32) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO memory_meta (key, value) VALUES (?1, ?2)",
+        params![MEMORY_META_SCHEMA_VERSION, version.to_string()],
+    )
+    .context("store schema version")?;
+    Ok(())
+}
+
+fn migrate_schema(_conn: &Connection, from: u32, to: u32) -> Result<()> {
+    let mut current = from;
+    while current < to {
+        let next = current + 1;
+        match next {
+            1 => {}
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "unsupported memory schema migration {current}->{next}"
+                ));
+            }
+        }
+        current = next;
+    }
+    Ok(())
 }
 
 fn load_embedding_dim(conn: &Connection) -> Result<Option<usize>> {

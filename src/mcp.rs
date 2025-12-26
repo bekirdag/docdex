@@ -16,6 +16,13 @@ pub async fn serve(
 ) -> Result<()> {
     let bin = resolve_mcp_server_binary()?;
     let mut cmd = Command::new(&bin);
+    if std::env::var_os("DOCDEX_ENABLE_MEMORY").is_none() {
+        let config = crate::config::AppConfig::load_default()
+            .context("load config for MCP memory enablement")?;
+        if config.memory.enabled {
+            cmd.env("DOCDEX_ENABLE_MEMORY", "1");
+        }
+    }
     cmd.arg("--repo").arg(repo.repo);
     if let Some(state_dir) = repo.state_dir {
         cmd.arg("--state-dir").arg(state_dir);

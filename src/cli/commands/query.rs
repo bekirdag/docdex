@@ -1,9 +1,12 @@
 use crate::config::{self, RepoArgs};
+use crate::dag::logging as dag_logging;
 use crate::index;
 use crate::libs;
 use crate::index::Hit;
+use crate::memory::repo_state_root_from_state_dir;
 use crate::orchestrator::{
-    run_waterfall, MemoryBudget, WaterfallPlan, WaterfallRequest, WaterfallResult, WebGateConfig,
+    memory_budget_from_max_answer_tokens, run_waterfall, WaterfallPlan, WaterfallRequest,
+    WaterfallResult, WebGateConfig,
 };
 use crate::repo_manager;
 use crate::tier2::Tier2Config;
@@ -12,8 +15,10 @@ use anyhow::Result;
 use futures::StreamExt;
 use reqwest::header::{ACCEPT, AUTHORIZATION};
 use serde::Serialize;
+use serde_json::json;
 use std::io::{self, Write};
 use std::path::Path;
+use uuid::Uuid;
 
 pub async fn run(
     repo: RepoArgs,
@@ -63,9 +68,32 @@ pub async fn run(
         libs::LibsIndexer::open_read_only(libs_dir).ok().flatten()
     };
     let web_gate = WebGateConfig::from_env();
-    let plan = WaterfallPlan::new(web_gate, Tier2Config::enabled(), MemoryBudget::default());
+    let config = config::AppConfig::load_default().ok();
+    let max_answer_tokens = config
+        .as_ref()
+        .map(|cfg| cfg.llm.max_answer_tokens)
+        .unwrap_or(1024);
+    let plan = WaterfallPlan::new(
+        web_gate,
+        Tier2Config::enabled(),
+        memory_budget_from_max_answer_tokens(max_answer_tokens),
+    );
+    let request_id = format!("cli-query-{}", Uuid::new_v4());
+    let repo_state_root = repo_state_root_from_state_dir(server.state_dir());
+    let _ = dag_logging::log_node(
+        &repo_state_root,
+        &request_id,
+        "UserRequest",
+        &json!({
+            "query": query.as_str(),
+            "limit": limit,
+            "force_web": false,
+            "skip_local_search": skip_local_search,
+            "repo_only": repo_only,
+        }),
+    );
     let request = WaterfallRequest {
-        request_id: "cli-query",
+        request_id: &request_id,
         query: &query,
         limit,
         web_limit: max_web_results,
@@ -82,6 +110,16 @@ pub async fn run(
         memory: None,
     };
     let waterfall = run_waterfall(request).await?;
+    let _ = dag_logging::log_node(
+        &repo_state_root,
+        &request_id,
+        "Decision",
+        &json!({
+            "hits": waterfall.search_response.hits.len(),
+            "top_score": waterfall.search_response.top_score,
+            "web_status": waterfall.tier2.status.status,
+        }),
+    );
     if stream {
         let completion = build_completion(&query, &waterfall.search_response.hits);
         stream_text(&completion)?;

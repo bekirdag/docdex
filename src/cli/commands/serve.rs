@@ -135,6 +135,11 @@ pub async fn run(
         !is_loopback,
     )?;
     let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);
+    let enable_memory = if std::env::var_os("DOCDEX_ENABLE_MEMORY").is_some() {
+        enable_memory
+    } else {
+        enable_memory || config.memory.enabled
+    };
     let hardware_profile = hardware::detect_hardware();
     info!(
         "hardware profile: {}; recommended model: {}",
@@ -161,6 +166,9 @@ pub async fn run(
         config.llm.provider.clone(),
         embedding_base_url,
         embedding_model,
+        config.llm.max_answer_tokens,
+        config.llm.base_url.clone(),
+        config.llm.default_model.clone(),
         embedding_timeout_ms,
     )
     .await

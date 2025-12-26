@@ -384,6 +384,11 @@ pub(crate) enum Command {
         )]
         stream: bool,
     },
+    /// Agent-related workflows.
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
     /// Clear all cached web discovery/fetch entries.
     WebCacheFlush,
     /// Ingest library documentation sources into the repo-scoped libs index.
@@ -648,6 +653,55 @@ pub(crate) enum RepoCommand {
 }
 
 #[derive(Subcommand, Debug)]
+pub(crate) enum AgentCommand {
+    /// Evaluate all mcoda agents with a fixed query set (writes results to ./tmp).
+    Eval {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+        #[arg(
+            long,
+            value_name = "N",
+            help = "Max web results to fetch per query (Tier 2)"
+        )]
+        max_web_results: Option<usize>,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Only search the repo index (ignore any repo-scoped libs index, if present)"
+        )]
+        repo_only: bool,
+        #[arg(
+            long,
+            alias = "skip-local-search",
+            default_value_t = false,
+            help = "Skip local index search and only use web results"
+        )]
+        web_only: bool,
+        #[arg(
+            long,
+            alias = "no-web-cache",
+            default_value_t = false,
+            help = "Disable web cache reads/writes for these queries"
+        )]
+        no_cache: bool,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Use the LLM to filter local search results before scoring"
+        )]
+        llm_filter_local_results: bool,
+        #[arg(
+            long,
+            value_name = "N",
+            help = "Limit the number of eval queries to run"
+        )]
+        max_queries: Option<usize>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub(crate) enum LibsCommand {
     /// Fetch and ingest library docs from a sources file.
     Fetch {
@@ -679,8 +733,12 @@ pub(crate) enum DagCommand {
     View {
         #[command(flatten)]
         repo: RepoArgs,
-        #[arg(long, value_parser = config::non_empty_string)]
+        #[arg(value_name = "SESSION_ID", value_parser = config::non_empty_string)]
         session_id: String,
+        #[arg(long, default_value = "text", value_parser = ["text", "dot", "json"])]
+        format: String,
+        #[arg(long, value_name = "N")]
+        max_nodes: Option<usize>,
     },
 }
 

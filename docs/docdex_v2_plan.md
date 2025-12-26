@@ -176,7 +176,7 @@ Blocklist: The SDS mentions "blocklist support" for the DuckDuckGo DiscoveryServ
 Cache Ingestion: While the cache/web directory is global, the SDS stresses that ingestion must be repo-scoped. The orchestrator must copy/ingest cached content into the current repo's context, never linking directly to the global cache to prevent bleed.
 
 C. Memory Schema (src/memory)
-Strict Schema: The plan mentions memory.db, but the SDS dictates the exact schema: id UUID, content TEXT, embedding BLOB, created_at INT, metadata JSON. The implementation must match this exactly for future compatibility.
+Strict Schema: The plan mentions memory.db, but the SDS dictates the exact schema: `memories(id UUID, content TEXT, embedding BLOB, created_at INT, metadata JSON)` plus `memory_vec` (vec0 embeddings) and `memory_meta` (embedding_dim, schema_version). The implementation must match this exactly for future compatibility.
 
 D. API & Middleware (src/api)
 Repo ID Headers: The SDS allows the repo ID to be passed via header (x-docdex-repo-id), body (repo_id), or query parameter. For per-repo daemons it is optional; if provided, it must match the daemon repo. The middleware in Step 8 must support all three lookup methods.
@@ -554,7 +554,7 @@ src
 1. **`src/memory/db.rs`**: This module handles the raw database interactions.
 * It manages the connection to the per-repo `state/repos/<fp>/memory.db`.
 * It ensures the **`sqlite-vec`** extension is loaded.
-* It creates the specific schema defined in the SDS: `memories(id UUID, content TEXT, embedding BLOB, created_at INT, metadata JSON)`.
+* It creates the specific schema defined in the SDS: `memories(id UUID, content TEXT, embedding BLOB, created_at INT, metadata JSON)` plus `memory_vec` (vec0 embeddings) and `memory_meta` (embedding_dim, schema_version).
 
 
 2. **`src/memory/ops.rs`**: This module implements the high-level operations.

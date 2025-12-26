@@ -2,14 +2,17 @@ use crate::error::{
     AppError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT,
     ERR_INVALID_ARGUMENT,
 };
+use crate::max_size::truncate_utf8_chars;
 use anyhow::{anyhow, Context};
 use serde::Deserialize;
 use serde_json::json;
 use serde_json::Value;
 use std::collections::HashSet;
+use std::env;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tracing::debug;
 
 #[derive(Clone)]
 pub struct OllamaClient {
@@ -61,6 +64,15 @@ impl OllamaClient {
         }
         if prompt.trim().is_empty() {
             return Err(AppError::new(ERR_INVALID_ARGUMENT, "prompt must not be empty").into());
+        }
+        if llm_debug_enabled() {
+            let (snippet, _) = truncate_utf8_chars(prompt, llm_debug_max_chars());
+            debug!(
+                "ollama embed request model={} prompt_len={} prompt_snippet={}",
+                model,
+                prompt.len(),
+                snippet
+            );
         }
 
         let payload = json!({
@@ -193,6 +205,16 @@ impl OllamaClient {
         let prompt = prompt.trim();
         if prompt.is_empty() {
             anyhow::bail!("ollama prompt must not be empty");
+        }
+        if llm_debug_enabled() {
+            let (snippet, _) = truncate_utf8_chars(prompt, llm_debug_max_chars());
+            debug!(
+                "ollama generate request model={} max_tokens={} prompt_len={} prompt_snippet={}",
+                model,
+                max_tokens,
+                prompt.len(),
+                snippet
+            );
         }
 
         let num_predict = max_tokens.max(1) as i64;
@@ -356,6 +378,34 @@ pub async fn list_models(
             timeout.as_millis()
         )),
     }
+}
+
+fn llm_debug_enabled() -> bool {
+    env_boolish("DOCDEX_LLM_DEBUG").unwrap_or(false)
+        || env_boolish("DOCDEX_WEB_DEBUG").unwrap_or(false)
+}
+
+fn llm_debug_max_chars() -> usize {
+    env_usize("DOCDEX_LLM_DEBUG_MAX_CHARS").unwrap_or(2000).max(1)
+}
+
+fn env_boolish(key: &str) -> Option<bool> {
+    let raw = env::var(key).ok()?;
+    let trimmed = raw.trim().to_ascii_lowercase();
+    match trimmed.as_str() {
+        "1" | "true" | "t" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "f" | "no" | "n" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn env_usize(key: &str) -> Option<usize> {
+    let raw = env::var(key).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<usize>().ok()
 }
 
 impl OllamaEmbedder {

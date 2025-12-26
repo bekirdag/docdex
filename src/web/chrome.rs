@@ -25,6 +25,8 @@ pub struct ChromeFetchConfig {
 #[derive(Clone, Debug)]
 pub struct ChromeFetchResult {
     pub html: String,
+    pub inner_text: Option<String>,
+    pub text_content: Option<String>,
     pub status: Option<u16>,
     pub final_url: Option<String>,
 }
@@ -151,6 +153,8 @@ async fn fetch_dom_dump_dom(url: &Url, config: &ChromeFetchConfig) -> Result<Chr
     }
     Ok(ChromeFetchResult {
         html,
+        inner_text: None,
+        text_content: None,
         status: None,
         final_url: Some(url.to_string()),
     })
@@ -501,8 +505,22 @@ async fn fetch_dom_via_cdp(
     if html.trim().is_empty() {
         return Err(anyhow!("devtools returned empty HTML"));
     }
+    let inner_text =
+        capture_dom_text(&mut client, timeout, poll_interval, true).await?;
+    let text_content =
+        capture_dom_text(&mut client, timeout, poll_interval, false).await?;
     Ok(ChromeFetchResult {
         html,
+        inner_text: if inner_text.is_empty() {
+            None
+        } else {
+            Some(inner_text)
+        },
+        text_content: if text_content.is_empty() {
+            None
+        } else {
+            Some(text_content)
+        },
         status: tracker.document_status,
         final_url,
     })
@@ -543,4 +561,30 @@ async fn eval_number(client: &mut CdpClient, expression: &str) -> Result<usize> 
         .and_then(|value| value.get("value"))
         .and_then(Value::as_f64)
         .unwrap_or(0.0) as usize)
+}
+
+async fn capture_dom_text(
+    client: &mut CdpClient,
+    timeout: Duration,
+    poll_interval: Duration,
+    use_inner_text: bool,
+) -> Result<String> {
+    let start = Instant::now();
+    let expression = if use_inner_text {
+        "document.body ? document.body.innerText : \"\""
+    } else {
+        "document.body ? document.body.textContent : \"\""
+    };
+    let mut last_value = String::new();
+    loop {
+        let value = eval_string(client, expression).await.unwrap_or_default();
+        if !value.trim().is_empty() {
+            return Ok(value.trim().to_string());
+        }
+        if start.elapsed() >= timeout {
+            return Ok(last_value.trim().to_string());
+        }
+        last_value = value;
+        tokio::time::sleep(poll_interval).await;
+    }
 }

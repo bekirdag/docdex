@@ -23,6 +23,7 @@ use std::env;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::path::Path;
 use std::sync::Mutex;
+use tracing::info;
 use which::which;
 
 const DEFAULT_WEB_TRIGGER_THRESHOLD: f32 = 0.45;
@@ -37,6 +38,7 @@ const QUERY_CATEGORY_TIMEOUT_MS: u64 = 4_000;
 const MAX_WEB_FALLBACK_EXCERPT_CHARS: usize = 480;
 const MAX_WEB_FALLBACK_EXCERPT_LINES: usize = 4;
 const WEB_CONTEXT_MIN_RELEVANCE_SCORE: f32 = 0.2;
+const WEB_HTML2TEXT_WRAP_COLS: usize = 120;
 
 const MAX_MATCH_HITS: usize = 3;
 const LOCAL_RELEVANCE_TIMEOUT_MS: u64 = 8_000;
@@ -50,6 +52,7 @@ const WEB_CHUNK_MAX_CHARS: usize = 700;
 const WEB_CHUNK_MIN: usize = 2;
 const WEB_CHUNK_MAX: usize = 4;
 const WEB_GOOD_RELEVANCE_SCORE: f32 = 0.7;
+const WEB_EARLY_STOP_SCORE: f32 = 0.5;
 const WEB_DISCOVERY_MULTIPLIER: usize = 4;
 const WEB_DISCOVERY_MIN_RESULTS: usize = 4;
 const WEB_DISCOVERY_MAX_QUERY_TOKENS: usize = 6;
@@ -166,20 +169,86 @@ static TAG_ATTR_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
 });
 
 static TLD_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"\\.(com|org|net|io|dev|co|us|uk|edu|gov)([A-Z])")
+    regex::Regex::new(r"\.(com|org|net|io|dev|co|us|uk|edu|gov)([A-Z])")
         .expect("valid tld join regex")
 });
 
 static LOWER_UPPER_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"([a-z]{4,})([A-Z][a-z]{2,})").expect("valid lower upper join regex")
+    regex::Regex::new(r"([a-z])([A-Z])").expect("valid lower upper join regex")
 });
 
 static AND_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r"([a-z])and([A-Z])").expect("valid and join regex")
 });
 
+static AND_LOWER_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"([a-z]{3,})and([a-z]{3,})").expect("valid and lower join regex")
+});
+
+static CAPITAL_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"([A-Z][a-z]{2,})([A-Z][a-z]{2,})").expect("valid capital join regex")
+});
+
+static BRACKET_LEFT_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"([A-Za-z])\[").expect("valid bracket left join regex")
+});
+
+static BRACKET_RIGHT_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"\]([A-Za-z])").expect("valid bracket right join regex")
+});
+
+static LOWER_JOIN_STOPWORD_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"([A-Za-z]{3,})(and|of|in|to|with|by|as|for|from|its|is)([A-Za-z]{3,})")
+        .expect("valid lower join stopword regex")
+});
+
+static TITLE_AND_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"([A-Z][a-z]{2,})and(\s+[a-z]{3,})")
+        .expect("valid title and join regex")
+});
+
+static PREFIX_COMMON_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(
+        r"(?i)\b(the|a|an|of|in|to|with|by|as|its|is)(capital|largest|city|population|area|state|country|province|district|region|union|metropolitan|inhabitants|limit|limits|river|county|kingdom|republic)",
+    )
+    .expect("valid prefix common join regex")
+});
+
+static LONG_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"([a-z]{5,})(within|into|over|under|between|across)([a-z]{3,})")
+        .expect("valid long join regex")
+});
+
 static PUNCT_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r"([.!?])([A-Z])").expect("valid punctuation join regex")
+});
+
+static COMMA_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"([,])([A-Za-z])").expect("valid comma join regex")
+});
+
+static COLON_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"([:;])([A-Za-z])").expect("valid colon join regex")
+});
+
+static WORD_METHOD_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"([A-Za-z]{2,})([a-z]{2,}\()").expect("valid word method join regex")
+});
+
+static PAREN_WORD_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"(\))([A-Za-z])").expect("valid paren word join regex")
+});
+
+static LABEL_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(
+        r"(?i)\b(example|syntax|description|parameters|returns?|usage|notes)([A-Za-z])",
+    )
+    .expect("valid label join regex")
+});
+
+static CODE_KEYWORD_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"\b(const|let|var|function|return|class|struct|enum)([A-Za-z_])")
+        .expect("valid code keyword join regex")
 });
 
 static ALLCAPS_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
@@ -187,8 +256,7 @@ static ALLCAPS_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
 });
 
 static CAMEL_BREAK_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"([A-Za-z]{6,})([A-Z][a-z]{3,})")
-        .expect("valid camel break regex")
+    regex::Regex::new(r"([a-z])([A-Z])").expect("valid camel break regex")
 });
 
 #[derive(Clone, Debug)]
@@ -326,6 +394,8 @@ pub fn web_context_from_status(status: &WebDiscoveryStatus) -> Option<Vec<WebFet
         let mut cloned = item.clone();
         cloned.error = None;
         cloned.debug = None;
+        cloned.debug_html = None;
+        cloned.debug_dom_text = None;
         items.push(cloned);
     }
     if items.is_empty() {
@@ -351,6 +421,10 @@ pub struct WebFetchResult {
     pub ai_digested_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relevance_score: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug_html: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug_dom_text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -607,6 +681,7 @@ fn build_summary_prompt(
 ) -> String {
     let (snippet, _) = truncate_utf8_chars(content, MAX_WEB_SUMMARY_INPUT_CHARS);
     let query = query.trim();
+    let factoid = is_factoid_query(query);
     let mut prompt = String::new();
     if query.is_empty() {
         prompt.push_str("User query: <empty>\n\n");
@@ -634,9 +709,15 @@ fn build_summary_prompt(
             prompt.push_str(&format!("[code {}]\n{}\n[/code {}]\n", idx + 1, block, idx + 1));
         }
     }
-    prompt.push_str(
-        "\nInstructions:\n- Decide if the page is relevant to the query.\n- If relevant and the query/category asks for code/example, output ONLY the code from the provided code blocks as Markdown fenced code blocks. Do not add or rewrite code.\n- If relevant, code-focused, and there are no code blocks, output a short 2-4 bullet summary instead.\n- If relevant and not code-focused, output 2-4 bullet points in Markdown.\n- If irrelevant, set relevant=false and output empty string.\n\nReturn JSON ONLY in this shape:\n{\"relevant\":true|false,\"score\":0..1,\"kind\":\"summary\"|\"code\",\"output\":\"...\"}\n",
-    );
+    if factoid {
+        prompt.push_str(
+            "\nInstructions:\n- Decide if the page is relevant to the query.\n- If relevant and the query/category asks for code/example, output ONLY the code from the provided code blocks as Markdown fenced code blocks. Do not add or rewrite code.\n- If relevant and not code-focused, answer with a single concise phrase or one short sentence. Do NOT use bullet points.\n- If irrelevant, set relevant=false and output empty string.\n\nReturn JSON ONLY in this shape:\n{\"relevant\":true|false,\"score\":0..1,\"kind\":\"summary\"|\"code\",\"output\":\"...\"}\n",
+        );
+    } else {
+        prompt.push_str(
+            "\nInstructions:\n- Decide if the page is relevant to the query.\n- If relevant and the query/category asks for code/example, output ONLY the code from the provided code blocks as Markdown fenced code blocks. Do not add or rewrite code.\n- If relevant, code-focused, and there are no code blocks, output a short 2-4 bullet summary instead.\n- If relevant and not code-focused, output 2-4 bullet points in Markdown.\n- If irrelevant, set relevant=false and output empty string.\n\nReturn JSON ONLY in this shape:\n{\"relevant\":true|false,\"score\":0..1,\"kind\":\"summary\"|\"code\",\"output\":\"...\"}\n",
+        );
+    }
     prompt
 }
 
@@ -783,6 +864,25 @@ fn format_md_output(kind: &str, output: &str) -> String {
         "code" => format_md_code(&clean_code_text(output)),
         _ => format_md_summary(output),
     }
+}
+
+fn format_factoid_output(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let mut lines = trimmed.lines().filter(|line| !line.trim().is_empty());
+    let first = lines.next().unwrap_or("").trim();
+    let mut value = if first.starts_with("- ") || first.starts_with("* ") {
+        first[2..].trim()
+    } else {
+        first
+    }
+    .to_string();
+    if value.is_empty() {
+        value = trimmed.to_string();
+    }
+    value
 }
 
 fn format_md_summary(text: &str) -> String {
@@ -1340,6 +1440,7 @@ async fn run_web_discovery(
             }
             discovery_response.results = urls
                 .iter()
+                .take(web_limit)
                 .map(|url| WebDiscoveryResult { url: url.clone() })
                 .collect();
             let fetches = fetch_web_documents(query, &urls, &config, web_limit, query_category).await;
@@ -1844,6 +1945,7 @@ async fn fetch_web_documents(
     let layout = cache::cache_layout_from_config();
     let summary_client = load_web_summary_client();
     let debug_enabled = env_boolish("DOCDEX_WEB_DEBUG").unwrap_or(false);
+    let early_stop_score = resolve_early_stop_score();
     if !config
         .scraper_engine
         .trim()
@@ -1858,6 +1960,8 @@ async fn fetch_web_documents(
             ai_digested_content: None,
             ai_digested_kind: None,
             relevance_score: None,
+            debug_html: None,
+            debug_dom_text: None,
             error: Some(format!(
                 "web fetch engine is {}; only chrome is supported",
                 config.scraper_engine
@@ -1877,6 +1981,8 @@ async fn fetch_web_documents(
                 ai_digested_content: None,
                 ai_digested_kind: None,
                 relevance_score: None,
+                debug_html: None,
+                debug_dom_text: None,
                 error: Some("web fetch chrome binary not configured".to_string()),
                 debug: None,
             }];
@@ -1886,22 +1992,33 @@ async fn fetch_web_documents(
 
     let mut all_results = Vec::new();
     let mut good_count = 0usize;
+    let mut last_good: Option<WebFetchResult> = None;
     'batch_loop: for batch in urls.chunks(WEB_BATCH_SIZE).take(WEB_MAX_BATCHES) {
         let mut batch_results = Vec::new();
+        let mut early_stop_now = false;
         macro_rules! push_result {
             ($result:expr) => {{
                 batch_results.push($result);
                 if let Some(item) = batch_results.last() {
-                    if item
-                        .relevance_score
-                        .unwrap_or(0.0)
-                        >= WEB_GOOD_RELEVANCE_SCORE
-                    {
+                    if early_stop_now {
+                        all_results.clear();
+                        all_results.push(item.clone());
+                        break 'batch_loop;
+                    }
+                    if item.relevance_score.unwrap_or(0.0) >= WEB_GOOD_RELEVANCE_SCORE {
                         good_count += 1;
+                        last_good = Some(item.clone());
                     }
                 }
                 if good_count >= desired_count {
-                    all_results.extend(batch_results);
+                    if desired_count == 1 {
+                        all_results.clear();
+                        if let Some(best) = last_good.take() {
+                            all_results.push(best);
+                        }
+                    } else {
+                        all_results.extend(batch_results);
+                    }
                     break 'batch_loop;
                 }
             }};
@@ -1911,6 +2028,9 @@ async fn fetch_web_documents(
                 Ok(url) => url,
                 Err(_) => continue,
             };
+            if debug_enabled {
+                info!("web fetch start url={}", url.as_str());
+            }
             let host = match url.host_str() {
                 Some(host) => host.trim().to_ascii_lowercase(),
                 None => continue,
@@ -1925,6 +2045,8 @@ async fn fetch_web_documents(
             let mut code_blocks: Vec<String> = Vec::new();
             let mut quality_scale = 1.0f32;
             let mut debug_notes: Vec<String> = Vec::new();
+            let mut debug_html: Option<String> = None;
+            let mut debug_dom_text: Option<String> = None;
             let intent = resolve_query_intent(query, query_category);
 
             if let Some(layout) = layout.as_ref() {
@@ -1937,6 +2059,10 @@ async fn fetch_web_documents(
                         status = entry.status;
                         content = Some(normalize_text_spacing(&entry.content));
                         code_blocks = entry.code_blocks;
+                        tighten_code_blocks_for_category(query_category, &mut code_blocks);
+                        if debug_enabled {
+                            info!("web fetch cache hit url={}", url.as_str());
+                        }
                     }
                 }
             }
@@ -1945,6 +2071,13 @@ async fn fetch_web_documents(
                 let now_ms = now_epoch_ms_u64();
                 if let Some(layout) = layout.as_ref() {
                     if let Some(until_ms) = domain_in_cooldown(layout, &host, now_ms) {
+                        if debug_enabled {
+                            info!(
+                                "web fetch skipped cooldown url={} until={}",
+                                url.as_str(),
+                                until_ms
+                            );
+                        }
                         push_result!(WebFetchResult {
                             url: url.to_string(),
                             status: None,
@@ -1954,6 +2087,8 @@ async fn fetch_web_documents(
                             ai_digested_content: None,
                             ai_digested_kind: None,
                             relevance_score: None,
+                            debug_html: debug_html.clone(),
+                            debug_dom_text: debug_dom_text.clone(),
                             error: Some(format!(
                                 "web fetch skipped for host cooldown until {until_ms}"
                             )),
@@ -1967,6 +2102,13 @@ async fn fetch_web_documents(
                 let status_probe =
                     fetch_status(&url, &config.user_agent, config.request_timeout).await;
                 if should_skip_status(status_probe) {
+                    if debug_enabled {
+                        info!(
+                            "web fetch skipped preflight url={} status={:?}",
+                            url.as_str(),
+                            status_probe
+                        );
+                    }
                     push_result!(WebFetchResult {
                         url: url.to_string(),
                         status: status_probe,
@@ -1976,6 +2118,8 @@ async fn fetch_web_documents(
                         ai_digested_content: None,
                         ai_digested_kind: None,
                         relevance_score: None,
+                        debug_html: debug_html.clone(),
+                        debug_dom_text: debug_dom_text.clone(),
                         error: Some("web fetch skipped due to preflight status".to_string()),
                         debug: None,
                     });
@@ -1985,6 +2129,26 @@ async fn fetch_web_documents(
                     Ok(fetch_result) => {
                         status = fetch_result.status.or(status_probe);
                         let html = fetch_result.html;
+                        let inner_text = fetch_result.inner_text.clone().unwrap_or_default();
+                        let text_content = fetch_result.text_content.clone().unwrap_or_default();
+                        let dom_text = if !inner_text.trim().is_empty() {
+                            Some(inner_text)
+                        } else {
+                            None
+                        };
+                        if debug_enabled {
+                            info!(
+                                "web fetch dom ok url={} status={:?}",
+                                url.as_str(),
+                                status
+                            );
+                        }
+                        if debug_enabled {
+                            debug_html = Some(truncate_debug_html(&html));
+                            if let Some(dom) = dom_text.as_ref() {
+                                debug_dom_text = Some(truncate_debug_text(dom));
+                            }
+                        }
                         if debug_enabled {
                             if let Some(final_url) = fetch_result.final_url.as_ref() {
                                 if final_url == "about:blank" {
@@ -1996,11 +2160,48 @@ async fn fetch_web_documents(
                         }
                         code_blocks = extract_code_blocks(&html);
                         let ad_markers = count_ad_markers(&html);
-                        let readable_opt = extract_readable_text(&html, &url);
-                        if debug_enabled && readable_opt.is_none() {
-                            debug_notes.push("readability failed; used fallback extraction".to_string());
+                        let formatted_html = format_html_text(&html);
+                        let readable_opt = if dom_text.is_none() {
+                            extract_readable_text(&html, &url)
+                        } else {
+                            None
+                        };
+                        if debug_enabled {
+                            if dom_text.is_some() {
+                                debug_notes.push("used dom innerText".to_string());
+                            } else {
+                                if !text_content.trim().is_empty() {
+                                    debug_notes.push("dom innerText empty; skipped textContent fallback".to_string());
+                                } else {
+                                    debug_notes.push("dom innerText unavailable (possible dump-dom fallback)".to_string());
+                                }
+                                if readable_opt.is_none() && formatted_html.trim().is_empty() {
+                                    debug_notes.push("readability failed; used fallback extraction".to_string());
+                                }
+                            }
                         }
-                        let mut readable = readable_opt.unwrap_or_else(|| clean_web_text(&html));
+                        let mut readable = if let Some(dom) = dom_text {
+                            dom
+                        } else if let Some((selected, source, html_score, readable_score)) =
+                            select_fallback_text(&formatted_html, readable_opt.as_deref())
+                        {
+                            if debug_enabled {
+                                let mut note = format!("fallback selected: {source}");
+                                if let (Some(html_score), Some(readable_score)) =
+                                    (html_score, readable_score)
+                                {
+                                    note.push_str(&format!(
+                                        " (html2text={html_score:.2}, readability={readable_score:.2})"
+                                    ));
+                                }
+                                debug_notes.push(note);
+                            }
+                            selected
+                        } else if !formatted_html.trim().is_empty() {
+                            formatted_html
+                        } else {
+                            clean_web_text(&html)
+                        };
                         readable = normalize_text_spacing(&readable);
                         let mut boiler_ratio = boilerplate_ratio(&readable, boilerplate_phrases);
                         if boiler_ratio >= WEB_NOISE_RATIO_THRESHOLD {
@@ -2018,6 +2219,7 @@ async fn fetch_web_documents(
                             );
                             if debug_enabled {
                                 debug_notes.push("js challenge detected (multiple signals + short text)".to_string());
+                                info!("web fetch blocked by js challenge url={}", url.as_str());
                             }
                             push_result!(WebFetchResult {
                                 url: url.to_string(),
@@ -2025,12 +2227,14 @@ async fn fetch_web_documents(
                                 fetched_at_epoch_ms,
                                 cached: false,
                                 content: None,
-                                ai_digested_content: None,
-                                ai_digested_kind: None,
-                                relevance_score: None,
-                                error: Some("web fetch blocked by JS challenge".to_string()),
-                                debug: if debug_enabled && !debug_notes.is_empty() {
-                                    Some(debug_notes.clone())
+                            ai_digested_content: None,
+                            ai_digested_kind: None,
+                            relevance_score: None,
+                            debug_html: debug_html.clone(),
+                            debug_dom_text: debug_dom_text.clone(),
+                            error: Some("web fetch blocked by JS challenge".to_string()),
+                            debug: if debug_enabled && !debug_notes.is_empty() {
+                                Some(debug_notes.clone())
                                 } else {
                                     None
                                 },
@@ -2059,18 +2263,23 @@ async fn fetch_web_documents(
                             boiler_ratio = boilerplate_ratio(&readable, boilerplate_phrases);
                             let penalty = quality_penalty(boiler_ratio, ad_markers);
                             if penalty == 0.0 {
+                                if debug_enabled {
+                                    info!("web fetch skipped boilerplate url={}", url.as_str());
+                                }
                                 push_result!(WebFetchResult {
                                     url: url.to_string(),
                                     status: status_probe,
                                     fetched_at_epoch_ms,
                                     cached: false,
                                     content: None,
-                                    ai_digested_content: None,
-                                    ai_digested_kind: None,
-                                    relevance_score: None,
-                                    error: Some("web fetch skipped due to boilerplate noise".to_string()),
-                                    debug: None,
-                                });
+                        ai_digested_content: None,
+                        ai_digested_kind: None,
+                        relevance_score: None,
+                        debug_html: debug_html.clone(),
+                        debug_dom_text: debug_dom_text.clone(),
+                        error: Some("web fetch skipped due to boilerplate noise".to_string()),
+                        debug: None,
+                    });
                                 continue;
                             }
                             quality_scale = penalty;
@@ -2093,6 +2302,7 @@ async fn fetch_web_documents(
                                     code_blocks = fallback_blocks;
                                 }
                             }
+                            tighten_code_blocks_for_category(query_category, &mut code_blocks);
                             let (content_input, should_chunk) = match intent {
                                 QueryIntent::Code => (readable, true),
                                 QueryIntent::Definition => {
@@ -2139,18 +2349,28 @@ async fn fetch_web_documents(
                         let failure_kind =
                             classify_status_failure(status_probe).unwrap_or(DomainFailureKind::Fetch);
                         record_domain_failure(layout.as_ref(), &host, failure_kind, now_ms);
+                        if debug_enabled {
+                            info!(
+                                "web fetch failed url={} status={:?} err={}",
+                                url.as_str(),
+                                status_probe,
+                                err
+                            );
+                        }
                         push_result!(WebFetchResult {
                             url: url.to_string(),
                             status: status_probe,
                             fetched_at_epoch_ms,
                             cached: false,
                             content: None,
-                            ai_digested_content: None,
-                            ai_digested_kind: None,
-                            relevance_score: None,
-                            error: Some(format!("web fetch failed: {err}")),
-                            debug: None,
-                        });
+                                ai_digested_content: None,
+                                ai_digested_kind: None,
+                                relevance_score: None,
+                                debug_html: debug_html.clone(),
+                                debug_dom_text: debug_dom_text.clone(),
+                                error: Some(format!("web fetch failed: {err}")),
+                                debug: None,
+                            });
                         continue;
                     }
                 };
@@ -2167,6 +2387,8 @@ async fn fetch_web_documents(
                     ai_digested_content: None,
                     ai_digested_kind: None,
                     relevance_score: Some(0.0),
+                    debug_html: debug_html.clone(),
+                    debug_dom_text: debug_dom_text.clone(),
                     error: Some(empty_error),
                     debug: if debug_enabled && !debug_notes.is_empty() {
                         Some(debug_notes.clone())
@@ -2207,6 +2429,8 @@ async fn fetch_web_documents(
                     ai_digested_content: None,
                     ai_digested_kind: None,
                     relevance_score: Some(0.0),
+                    debug_html: debug_html.clone(),
+                    debug_dom_text: debug_dom_text.clone(),
                     error: Some(error),
                     debug: if debug_enabled && !debug_notes.is_empty() {
                         Some(debug_notes.clone())
@@ -2253,11 +2477,11 @@ async fn fetch_web_documents(
                     evaluation.output = snippet;
                 }
             }
-            if evaluation.kind == "summary" {
-                evaluation.output = content_text.to_string();
-            }
             let mut formatted_output = format_md_output(&evaluation.kind, &evaluation.output);
             let mut ai_kind = evaluation.kind.clone();
+            if ai_kind == "summary" && is_factoid_query(query) {
+                formatted_output = format_factoid_output(&formatted_output);
+            }
             let mut summary_error = None;
             if formatted_output.trim().is_empty() {
                 let fallback = fallback_excerpt_md(content_text);
@@ -2334,6 +2558,27 @@ async fn fetch_web_documents(
             let category_multiplier =
                 category_relevance_multiplier(query_category, &url, &code_blocks, &ai_kind);
             relevance_score = (relevance_score * category_multiplier).clamp(0.0, 1.0);
+            let has_content = ai_digested_content
+                .as_ref()
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+                || !content_text.trim().is_empty();
+            early_stop_now = should_stop_early(
+                desired_count,
+                relevance_score,
+                &match_stats,
+                query_category,
+                &ai_kind,
+                has_content,
+                early_stop_score,
+            );
+            if debug_enabled && early_stop_now {
+                info!(
+                    "web fetch early stop url={} score={:.3}",
+                    url.as_str(),
+                    relevance_score
+                );
+            }
             record_domain_success(layout.as_ref(), &host);
             push_result!(WebFetchResult {
                 url: url.to_string(),
@@ -2344,6 +2589,8 @@ async fn fetch_web_documents(
                 ai_digested_content,
                 ai_digested_kind,
                 relevance_score: Some(relevance_score),
+                debug_html,
+                debug_dom_text,
                 error: summary_error,
                 debug,
             });
@@ -2366,6 +2613,9 @@ async fn fetch_web_documents(
             .partial_cmp(&a.relevance_score.unwrap_or(0.0))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+    if all_results.len() > desired_count {
+        all_results.truncate(desired_count);
+    }
     all_results
 }
 
@@ -2383,6 +2633,99 @@ fn clean_web_text(html: &str) -> String {
         .join("\n")
 }
 
+fn format_html_text(html: &str) -> String {
+    let cleaned = ammonia::clean(html);
+    if cleaned.trim().is_empty() {
+        return String::new();
+    }
+    html2text::from_read(cleaned.as_bytes(), WEB_HTML2TEXT_WRAP_COLS)
+        .unwrap_or_default()
+}
+
+fn join_density_score(text: &str) -> f32 {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return 0.0;
+    }
+    let mut count = 0usize;
+    count += LOWER_UPPER_JOIN_RE.find_iter(trimmed).count();
+    count += LOWER_JOIN_STOPWORD_RE.find_iter(trimmed).count();
+    count += PREFIX_COMMON_JOIN_RE.find_iter(trimmed).count();
+    count += TITLE_AND_JOIN_RE.find_iter(trimmed).count();
+    let len = trimmed.chars().count().max(1) as f32;
+    let scale = (len / 1000.0).max(1.0);
+    count as f32 / scale
+}
+
+fn select_fallback_text(
+    html_text: &str,
+    readable_opt: Option<&str>,
+) -> Option<(String, &'static str, Option<f32>, Option<f32>)> {
+    let html_trimmed = html_text.trim();
+    let readable_trimmed = readable_opt
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty());
+    let html_ready = !html_trimmed.is_empty();
+    let readable_ready = readable_trimmed.is_some();
+    match (html_ready, readable_ready) {
+        (false, false) => None,
+        (true, false) => Some((html_trimmed.to_string(), "html2text", None, None)),
+        (false, true) => Some((
+            readable_trimmed.unwrap_or_default().to_string(),
+            "readability",
+            None,
+            None,
+        )),
+        (true, true) => {
+            let readable = readable_trimmed.unwrap_or_default();
+            let html_score = join_density_score(html_trimmed);
+            let readable_score = join_density_score(readable);
+            let prefer_readable = readable_score < html_score;
+            if prefer_readable {
+                Some((
+                    readable.to_string(),
+                    "readability",
+                    Some(html_score),
+                    Some(readable_score),
+                ))
+            } else {
+                Some((
+                    html_trimmed.to_string(),
+                    "html2text",
+                    Some(html_score),
+                    Some(readable_score),
+                ))
+            }
+        }
+    }
+}
+
+fn truncate_debug_html(html: &str) -> String {
+    let limit = env_usize("DOCDEX_WEB_DEBUG_HTML_MAX_CHARS").unwrap_or(0);
+    if limit == 0 {
+        return html.to_string();
+    }
+    let lower = html.to_ascii_lowercase();
+    let start = lower
+        .find("<body")
+        .or_else(|| lower.find("<main"))
+        .or_else(|| lower.find("<article"))
+        .or_else(|| lower.find("<div id=\"content\""))
+        .unwrap_or(0);
+    let slice = &html[start..];
+    let (snippet, _) = truncate_utf8_chars(slice, limit.max(1));
+    snippet
+}
+
+fn truncate_debug_text(text: &str) -> String {
+    let limit = env_usize("DOCDEX_WEB_DEBUG_TEXT_MAX_CHARS").unwrap_or(0);
+    if limit == 0 {
+        return text.to_string();
+    }
+    let (snippet, _) = truncate_utf8_chars(text, limit.max(1));
+    snippet
+}
+
 fn normalize_text_spacing(text: &str) -> String {
     let mut lines = Vec::new();
     for line in text.lines() {
@@ -2396,12 +2739,28 @@ fn normalize_text_spacing(text: &str) -> String {
         let mut updated = trimmed.to_string();
         updated = TAG_ATTR_JOIN_RE.replace_all(&updated, "$1 $2$3").to_string();
         updated = HEADING_JOIN_RE.replace_all(&updated, "$1\n#$2").to_string();
+        updated = COLON_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
+        updated = COMMA_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
+        updated = LABEL_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
         updated = TLD_JOIN_RE.replace_all(&updated, ".$1 $2").to_string();
-        updated = LOWER_UPPER_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
+        updated = BRACKET_LEFT_JOIN_RE.replace_all(&updated, "$1 [").to_string();
+        updated = BRACKET_RIGHT_JOIN_RE.replace_all(&updated, "] $1").to_string();
+        updated = LOWER_JOIN_STOPWORD_RE.replace_all(&updated, "$1 $2 $3").to_string();
+        updated = TITLE_AND_JOIN_RE.replace_all(&updated, "$1 and$2").to_string();
         updated = AND_JOIN_RE.replace_all(&updated, "$1 and $2").to_string();
+        updated = AND_LOWER_JOIN_RE.replace_all(&updated, "$1 and $2").to_string();
+        updated = PREFIX_COMMON_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
+        updated = LONG_JOIN_RE.replace_all(&updated, "$1 $2 $3").to_string();
+        updated = LOWER_UPPER_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
+        updated = CAPITAL_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
+        updated = WORD_METHOD_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
+        updated = PAREN_WORD_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
         updated = PUNCT_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
         updated = ALLCAPS_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
         updated = CAMEL_BREAK_RE.replace_all(&updated, "$1 $2").to_string();
+        if looks_codeish(&updated) {
+            updated = CODE_KEYWORD_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
+        }
         let normalized = updated
             .split_whitespace()
             .collect::<Vec<_>>()
@@ -2421,6 +2780,16 @@ fn strip_invisible_chars(text: &str) -> String {
         .replace('\u{200D}', " ")
         .replace('\u{FEFF}', " ")
         .replace('\u{00AD}', "")
+}
+
+fn looks_codeish(text: &str) -> bool {
+    text.contains('=')
+        || text.contains(';')
+        || text.contains('{')
+        || text.contains('}')
+        || text.contains("()")
+        || text.contains("=>")
+        || text.contains("->")
 }
 
 fn is_probable_code_line(line: &str) -> bool {
@@ -2464,7 +2833,13 @@ fn is_strict_code_line(line: &str) -> bool {
     }
     let symbols = ['{', '}', ';', '=', '<', '>', '[', ']', '(', ')'];
     let symbol_hits = trimmed.chars().filter(|ch| symbols.contains(ch)).count();
-    if symbol_hits >= 4 {
+    let hard_symbols = ['{', '}', ';', '=', '<', '>'];
+    let hard_hits = trimmed.chars().filter(|ch| hard_symbols.contains(ch)).count();
+    let len = trimmed.len();
+    if hard_hits >= 1 && symbol_hits >= 3 {
+        return true;
+    }
+    if (symbol_hits >= 6 && len <= 120) || (symbol_hits >= 4 && len <= 60) {
         return true;
     }
     if trimmed.contains("::") || trimmed.contains("->") || trimmed.contains("=>") {
@@ -2621,6 +2996,9 @@ fn push_code_block(
     if cleaned.is_empty() {
         return;
     }
+    if is_tiny_code_fragment(&cleaned) {
+        return;
+    }
     if require_blocklike && !is_probable_code_block(&cleaned) {
         return;
     }
@@ -2641,6 +3019,9 @@ fn is_probable_code_block(text: &str) -> bool {
     if trimmed.contains('\n') {
         return true;
     }
+    if is_tiny_code_fragment(trimmed) {
+        return false;
+    }
     if trimmed.len() >= 80 {
         return true;
     }
@@ -2655,6 +3036,135 @@ fn is_probable_code_block(text: &str) -> bool {
         }
     }
     false
+}
+
+fn is_tiny_code_fragment(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    if trimmed.contains('\n') {
+        return false;
+    }
+    let len = trimmed.len();
+    if len < 12 {
+        return true;
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    let has_statement_markers = trimmed.contains(';')
+        || trimmed.contains('=')
+        || trimmed.contains('{')
+        || trimmed.contains('}')
+        || trimmed.contains("=>")
+        || trimmed.contains("->")
+        || lowered.starts_with("return ")
+        || lowered.starts_with("if ")
+        || lowered.starts_with("for ")
+        || lowered.starts_with("while ")
+        || lowered.starts_with("match ")
+        || lowered.starts_with("switch ")
+        || lowered.starts_with("case ")
+        || lowered.starts_with("func ")
+        || lowered.starts_with("fn ")
+        || lowered.starts_with("def ")
+        || lowered.starts_with("class ")
+        || lowered.starts_with("struct ")
+        || lowered.starts_with("enum ")
+        || lowered.starts_with("const ")
+        || lowered.starts_with("let ")
+        || lowered.starts_with("var ")
+        || lowered.starts_with("public ")
+        || lowered.starts_with("private ")
+        || lowered.starts_with("protected ")
+        || lowered.starts_with("import ")
+        || lowered.starts_with("export ");
+    if has_statement_markers {
+        return false;
+    }
+    let token_count = trimmed.split_whitespace().count();
+    if token_count >= 2 && len >= 40 {
+        return false;
+    }
+    let mut all_ident = true;
+    for ch in trimmed.chars() {
+        if ch.is_ascii_alphanumeric()
+            || matches!(
+                ch,
+                '.' | '_' | '<' | '>' | ':' | '(' | ')' | '[' | ']' | '#' | '?' | '!' | ','
+            )
+        {
+            continue;
+        }
+        all_ident = false;
+        break;
+    }
+    if all_ident && len < 60 {
+        return true;
+    }
+    token_count <= 1 && len < 60
+}
+
+fn tighten_code_blocks_for_category(category: QueryCategory, blocks: &mut Vec<String>) {
+    if !matches!(category, QueryCategory::CodeExample) {
+        return;
+    }
+    let filtered: Vec<String> = blocks
+        .iter()
+        .filter(|block| is_strong_code_sample(block))
+        .cloned()
+        .collect();
+    if filtered.is_empty() {
+        blocks.clear();
+    } else {
+        *blocks = filtered;
+    }
+}
+
+fn is_strong_code_sample(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.contains('\n') {
+        return true;
+    }
+    if trimmed.len() < 18 {
+        return false;
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    let keywords = [
+        "return ",
+        "const ",
+        "let ",
+        "var ",
+        "function ",
+        "class ",
+        "struct ",
+        "enum ",
+        "fn ",
+        "def ",
+        "import ",
+        "from ",
+        "package ",
+        "use ",
+    ];
+    if keywords.iter().any(|kw| lowered.contains(kw)) {
+        return true;
+    }
+    if trimmed.contains("=>") || trimmed.contains("->") {
+        return true;
+    }
+    if trimmed.contains(';') || trimmed.contains('=') {
+        return true;
+    }
+    let symbol_hits = trimmed
+        .chars()
+        .filter(|ch| ['{', '}', '[', ']', '(', ')', ':', ','].contains(ch))
+        .count();
+    if symbol_hits >= 2 && trimmed.len() >= 30 {
+        return true;
+    }
+    trimmed.contains(' ') && trimmed.contains('(') && trimmed.contains(')')
 }
 
 fn html_unescape_text(value: &str) -> String {
@@ -2919,6 +3429,31 @@ pub(crate) fn detect_query_intent(query: &str) -> QueryIntent {
         return QueryIntent::Definition;
     }
     QueryIntent::General
+}
+
+fn is_factoid_query(query: &str) -> bool {
+    let query_lc = query.trim().to_ascii_lowercase();
+    if query_lc.is_empty() {
+        return false;
+    }
+    let tokens = tokenize_terms(&query_lc);
+    if tokens.len() > 8 {
+        return false;
+    }
+    if let Some(first) = tokens.first() {
+        if matches!(
+            first.as_str(),
+            "what" | "who" | "where" | "when" | "which"
+        ) {
+            return true;
+        }
+    }
+    query_lc.starts_with("what is ")
+        || query_lc.starts_with("what's ")
+        || query_lc.starts_with("who is ")
+        || query_lc.starts_with("where is ")
+        || query_lc.contains("capital of ")
+        || query_lc.contains("capital city of ")
 }
 
 fn resolve_query_intent(query: &str, category: QueryCategory) -> QueryIntent {
@@ -3805,6 +4340,45 @@ fn category_relevance_multiplier(
     }
 }
 
+fn should_stop_early(
+    desired_count: usize,
+    score: f32,
+    match_stats: &WebMatchStats,
+    query_category: QueryCategory,
+    ai_kind: &str,
+    has_content: bool,
+    early_stop_score: f32,
+) -> bool {
+    if desired_count != 1 || !has_content {
+        return false;
+    }
+    if score >= early_stop_score {
+        return true;
+    }
+    if matches!(
+        query_category,
+        QueryCategory::ConceptDefinition | QueryCategory::General | QueryCategory::ApiReference
+    ) {
+        let short_threshold = (early_stop_score * 0.8).clamp(0.35, early_stop_score);
+        if match_stats.query_len <= 4 && score >= short_threshold {
+            return true;
+        }
+    }
+    if match_stats.query_len >= 3 && match_stats.overlap_ratio >= 0.75 {
+        return true;
+    }
+    if matches!(
+        query_category,
+        QueryCategory::ConceptDefinition | QueryCategory::General | QueryCategory::ApiReference
+    ) && match_stats.query_len >= 2
+        && match_stats.overlap_ratio >= 0.6
+        && !ai_kind.eq_ignore_ascii_case("code")
+    {
+        return true;
+    }
+    false
+}
+
 fn min_overlap_ratio_for_intent(intent: QueryIntent, query_len: usize) -> Option<f32> {
     if matches!(intent, QueryIntent::Code) && query_len >= 4 {
         return Some(0.5);
@@ -3995,6 +4569,12 @@ fn env_string(key: &str) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+fn resolve_early_stop_score() -> f32 {
+    env_f32("DOCDEX_WEB_EARLY_STOP_SCORE")
+        .unwrap_or(WEB_EARLY_STOP_SCORE)
+        .clamp(0.0, 1.0)
 }
 
 fn config_web_trigger_threshold() -> Option<f32> {

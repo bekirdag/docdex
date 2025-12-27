@@ -4,19 +4,21 @@ use crate::error::{
     ERR_MISSING_REPO, ERR_RATE_LIMITED, ERR_UNKNOWN_REPO,
 };
 use crate::index::{
-    DocSnapshot, Hit, Indexer, SearchError, SearchQueryMeta, SnippetOrigin, SnippetResult,
+    DocSnapshot, Hit, Indexer, SearchError, SearchQueryMeta, SearchSnippetOrigin, SnippetOrigin,
+    SnippetResult,
 };
 use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::orchestrator::web::{web_context_from_status, WebDiscoveryStatus, WebFetchResult};
 use crate::orchestrator::{
-    memory_budget_from_max_answer_tokens, run_waterfall, MemoryContextAssembly, WaterfallPlan,
-    WaterfallRequest, WebGateConfig,
+    memory_budget_from_max_answer_tokens, run_waterfall, MemoryContextAssembly,
+    SymbolContextAssembly, WaterfallPlan, WaterfallRequest, WebGateConfig,
 };
 use crate::repo_manager;
 use crate::ratelimit::RateLimiter;
 use crate::tier2::Tier2Config;
+use crate::symbols::SymbolSearchMatch;
 use anyhow::Result;
 use axum::body::HttpBody;
 use axum::{
@@ -41,6 +43,18 @@ const MAX_SNIPPET_WINDOW: usize = 400;
 const MAX_RATE_LIMIT_MESSAGE_BYTES: usize = 256;
 const REPO_ID_HEADER: &str = "x-docdex-repo-id";
 const TOP_SCORE_NORMALIZATION_K: f32 = 8.0;
+const SYMBOL_MATCH_MAX_FILES: usize = 6;
+const SYMBOL_MATCH_MAX_PER_FILE: usize = 8;
+const SYMBOL_SCORE_BASE: f32 = 0.1;
+const SYMBOL_SCORE_SCALE: f32 = 0.05;
+const SYMBOL_SCORE_PER_MATCH: f32 = 0.02;
+const SYMBOL_SCORE_MAX_BOOST: f32 = 0.2;
+const SYMBOL_SNIPPET_FALLBACK_LINES: usize = 60;
+const AST_MATCH_MAX_FILES: usize = 6;
+const AST_SCORE_BASE: f32 = 0.08;
+const AST_SCORE_SCALE: f32 = 0.03;
+const AST_SCORE_PER_MATCH: f32 = 0.015;
+const AST_SCORE_MAX_BOOST: f32 = 0.15;
 
 // Rate limiting is shared with MCP and other surfaces via crate::ratelimit.
 
@@ -211,6 +225,19 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/graph/impact",
             get(crate::api::v1::graph::impact_graph_handler),
+        )
+        .route(
+            "/v1/graph/impact/diagnostics",
+            get(crate::api::v1::graph::impact_diagnostics_handler),
+        )
+        .route(
+            "/v1/symbols",
+            get(crate::api::v1::symbols::symbols_handler),
+        )
+        .route("/v1/ast", get(crate::api::v1::ast::ast_handler))
+        .route(
+            "/v1/symbols/status",
+            get(crate::api::v1::symbols::symbols_status_handler),
         )
         .route(
             "/v1/dag/export",
@@ -733,6 +760,31 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 ],
             },
             AiHelpEndpoint {
+                method: "GET",
+                path: "/v1/graph/impact/diagnostics",
+                description: "List unresolved dynamic import diagnostics.",
+                params: &[
+                    "file=<repo-relative path optional>",
+                    "limit=<int optional>",
+                    "offset=<int optional>",
+                ],
+            },
+            AiHelpEndpoint {
+                method: "GET",
+                path: "/v1/ast",
+                description: "Read Tree-sitter AST nodes for a file.",
+                params: &[
+                    "path=<repo-relative path>",
+                    "maxNodes=<int optional>",
+                ],
+            },
+            AiHelpEndpoint {
+                method: "GET",
+                path: "/v1/symbols",
+                description: "Read per-file symbol extraction output.",
+                params: &["path=<repo-relative path>"],
+            },
+            AiHelpEndpoint {
                 method: "POST",
                 path: "/v1/chat/completions",
                 description: "OpenAI-compatible chat completions (local-only summary of matching docs).",
@@ -814,6 +866,29 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 description: "Report index metadata.",
                 args: &["project_root (string, optional)"],
                 returns: &["num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "repo_root"],
+            },
+            AiHelpMcpTool {
+                name: "docdex_symbols",
+                description: "Read per-file symbols from the repo.",
+                args: &["path (string, required, relative)", "project_root (string, optional)"],
+                returns: &["schema", "repo_id", "file", "symbols[]", "outcome?"],
+            },
+            AiHelpMcpTool {
+                name: "docdex_ast",
+                description: "Read Tree-sitter AST nodes for a file.",
+                args: &["path (string, required, relative)", "max_nodes (int, optional)", "project_root (string, optional)"],
+                returns: &["schema", "repo_id", "file", "nodes[]", "total_nodes", "truncated", "outcome?"],
+            },
+            AiHelpMcpTool {
+                name: "docdex_impact_diagnostics",
+                description: "List unresolved dynamic import diagnostics.",
+                args: &[
+                    "file (string, optional, relative)",
+                    "limit (int, optional)",
+                    "offset (int, optional)",
+                    "project_root (string, optional)",
+                ],
+                returns: &["schema", "repo_id", "diagnostics[]", "total", "limit", "offset", "truncated"],
             },
             AiHelpMcpTool {
                 name: "docdex_memory_save",
@@ -900,6 +975,8 @@ pub struct SearchResponse {
     pub web_discovery: Option<WebDiscoveryStatus>,
     #[serde(rename = "memoryContext", skip_serializing_if = "Option::is_none")]
     pub memory_context: Option<MemoryContextAssembly>,
+    #[serde(rename = "symbolsContext", skip_serializing_if = "Option::is_none")]
+    pub symbols_context: Option<SymbolContextAssembly>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meta: Option<SearchMeta>,
 }
@@ -1118,7 +1195,7 @@ mod latency_perf_tests {
         }
 
         let index_config =
-            index::IndexConfig::with_overrides(repo_root, None, Vec::new(), Vec::new(), false)?;
+            index::IndexConfig::with_overrides(repo_root, None, Vec::new(), Vec::new(), true)?;
         let indexer = index::Indexer::with_config(repo_root.to_path_buf(), index_config)?;
         indexer.reindex_all().await?;
 
@@ -1216,6 +1293,7 @@ pub async fn run_query(
         web_context: None,
         web_discovery: None,
         memory_context: None,
+        symbols_context: None,
         meta: Some(build_search_meta(indexer, Some(query_meta), None)?),
     })
 }
@@ -1226,7 +1304,9 @@ fn search_with_optional_libs(
     query: &str,
     limit: usize,
 ) -> Result<(Vec<Hit>, SearchQueryMeta)> {
-    let (repo_hits, query_meta) = indexer.search_with_query_meta(query, limit)?;
+    let (mut repo_hits, query_meta) = indexer.search_with_query_meta(query, limit)?;
+    apply_symbol_matches(indexer, &mut repo_hits, query, limit)?;
+    apply_ast_matches(indexer, &mut repo_hits, query, limit)?;
     let Some(libs) = libs_indexer else {
         return Ok((repo_hits, query_meta));
     };
@@ -1238,6 +1318,322 @@ fn search_with_optional_libs(
         }
     };
     Ok((merge_hits(repo_hits, libs_hits, limit), query_meta))
+}
+
+fn apply_symbol_matches(
+    indexer: &Indexer,
+    hits: &mut Vec<Hit>,
+    query: &str,
+    limit: usize,
+) -> Result<()> {
+    let max_files = SYMBOL_MATCH_MAX_FILES.min(limit.max(1));
+    let matches = indexer.search_symbols(query, max_files, SYMBOL_MATCH_MAX_PER_FILE)?;
+    if matches.is_empty() {
+        return Ok(());
+    }
+
+    let mut by_path: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (idx, hit) in hits.iter().enumerate() {
+        by_path.insert(hit.rel_path.clone(), idx);
+    }
+
+    for symbol_match in matches {
+        let match_count = symbol_match.symbols.len().max(1) as f32;
+        let boost = (match_count * SYMBOL_SCORE_PER_MATCH).min(SYMBOL_SCORE_MAX_BOOST);
+        if let Some(idx) = by_path.get(&symbol_match.file).copied() {
+            let hit = &mut hits[idx];
+            hit.score += hit.score * SYMBOL_SCORE_SCALE + boost;
+            continue;
+        }
+        if let Some(hit) = build_symbol_hit(indexer, &symbol_match, query, boost)? {
+            by_path.insert(hit.rel_path.clone(), hits.len());
+            hits.push(hit);
+        }
+    }
+
+    sort_hits_deterministically(hits);
+    if hits.len() > limit {
+        hits.truncate(limit);
+    }
+    Ok(())
+}
+
+fn apply_ast_matches(
+    indexer: &Indexer,
+    hits: &mut Vec<Hit>,
+    query: &str,
+    limit: usize,
+) -> Result<()> {
+    if !indexer.symbols_enabled() {
+        return Ok(());
+    }
+
+    let ast_query = extract_ast_query_kinds(query);
+    if ast_query.kinds.is_empty() {
+        return Ok(());
+    }
+
+    let max_files = AST_MATCH_MAX_FILES.min(limit.max(1));
+    let matches = indexer.search_ast_kinds(&ast_query.kinds, max_files)?;
+    if matches.is_empty() {
+        return Ok(());
+    }
+
+    let mut by_path: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (idx, hit) in hits.iter().enumerate() {
+        by_path.insert(hit.rel_path.clone(), idx);
+    }
+
+    for ast_match in matches {
+        let match_count = ast_match.match_count.max(1) as f32;
+        let boost = (match_count * AST_SCORE_PER_MATCH).min(AST_SCORE_MAX_BOOST);
+        if let Some(idx) = by_path.get(&ast_match.file).copied() {
+            let hit = &mut hits[idx];
+            hit.score += hit.score * AST_SCORE_SCALE + boost;
+            continue;
+        }
+        if let Some(hit) = build_ast_hit(indexer, &ast_match, query, &ast_query.labels, boost)? {
+            by_path.insert(hit.rel_path.clone(), hits.len());
+            hits.push(hit);
+        }
+    }
+
+    sort_hits_deterministically(hits);
+    if hits.len() > limit {
+        hits.truncate(limit);
+    }
+    Ok(())
+}
+
+fn build_symbol_hit(
+    indexer: &Indexer,
+    symbol_match: &SymbolSearchMatch,
+    query: &str,
+    boost: f32,
+) -> Result<Option<Hit>> {
+    let rel_path = symbol_match.file.as_str();
+    let Some((snapshot, snippet)) =
+        indexer.snapshot_with_snippet(rel_path, Some(query), SYMBOL_SNIPPET_FALLBACK_LINES)?
+    else {
+        return Ok(None);
+    };
+    let symbol_snippet = symbol_match_snippet(symbol_match);
+    let (snippet_text, snippet_origin, snippet_truncated, line_start, line_end) =
+        if !symbol_snippet.is_empty() {
+            (
+                symbol_snippet,
+                SearchSnippetOrigin::Summary,
+                false,
+                None,
+                None,
+            )
+        } else if let Some(snippet) = snippet {
+            (
+                snippet.text,
+                map_snippet_origin(snippet.origin),
+                snippet.truncated,
+                snippet.line_start,
+                snippet.line_end,
+            )
+        } else {
+            (
+                snapshot.summary.clone(),
+                SearchSnippetOrigin::Summary,
+                false,
+                None,
+                None,
+            )
+        };
+    Ok(Some(Hit {
+        doc_id: snapshot.doc_id.clone(),
+        rel_path: snapshot.rel_path.clone(),
+        path: snapshot.rel_path.clone(),
+        score: SYMBOL_SCORE_BASE + boost,
+        summary: snapshot.summary,
+        snippet: snippet_text,
+        token_estimate: snapshot.token_estimate,
+        snippet_origin: Some(snippet_origin),
+        snippet_truncated: Some(snippet_truncated),
+        line_start,
+        line_end,
+    }))
+}
+
+fn build_ast_hit(
+    indexer: &Indexer,
+    ast_match: &crate::symbols::AstSearchMatch,
+    query: &str,
+    labels: &[String],
+    boost: f32,
+) -> Result<Option<Hit>> {
+    let rel_path = ast_match.file.as_str();
+    let Some((snapshot, snippet)) =
+        indexer.snapshot_with_snippet(rel_path, Some(query), SYMBOL_SNIPPET_FALLBACK_LINES)?
+    else {
+        return Ok(None);
+    };
+    let ast_snippet = if labels.is_empty() {
+        "AST: query match".to_string()
+    } else {
+        format!("AST: {}", labels.join(", "))
+    };
+    let (snippet_text, snippet_origin, snippet_truncated, line_start, line_end) =
+        if !ast_snippet.is_empty() {
+            (
+                ast_snippet,
+                SearchSnippetOrigin::Summary,
+                false,
+                None,
+                None,
+            )
+        } else if let Some(snippet) = snippet {
+            (
+                snippet.text,
+                map_snippet_origin(snippet.origin),
+                snippet.truncated,
+                snippet.line_start,
+                snippet.line_end,
+            )
+        } else {
+            (
+                snapshot.summary.clone(),
+                SearchSnippetOrigin::Summary,
+                false,
+                None,
+                None,
+            )
+        };
+    Ok(Some(Hit {
+        doc_id: snapshot.doc_id.clone(),
+        rel_path: snapshot.rel_path.clone(),
+        path: snapshot.rel_path.clone(),
+        score: AST_SCORE_BASE + boost,
+        summary: snapshot.summary,
+        snippet: snippet_text,
+        token_estimate: snapshot.token_estimate,
+        snippet_origin: Some(snippet_origin),
+        snippet_truncated: Some(snippet_truncated),
+        line_start,
+        line_end,
+    }))
+}
+
+fn map_snippet_origin(origin: SnippetOrigin) -> SearchSnippetOrigin {
+    match origin {
+        SnippetOrigin::Query => SearchSnippetOrigin::Query,
+        SnippetOrigin::Preview => SearchSnippetOrigin::Preview,
+    }
+}
+
+fn symbol_match_snippet(symbol_match: &SymbolSearchMatch) -> String {
+    const MAX_SYMBOLS: usize = 6;
+    let mut labels = Vec::new();
+    for symbol in symbol_match.symbols.iter().take(MAX_SYMBOLS) {
+        let label = if let Some(signature) = symbol.signature.as_ref() {
+            let trimmed = signature.trim();
+            if trimmed.is_empty() {
+                format!("{} {}", symbol.kind, symbol.name)
+            } else {
+                trimmed.to_string()
+            }
+        } else {
+            format!("{} {}", symbol.kind, symbol.name)
+        };
+        labels.push(label);
+    }
+    if labels.is_empty() {
+        return String::new();
+    }
+    format!("Symbols: {}", labels.join(", "))
+}
+
+struct AstQueryKinds {
+    kinds: Vec<String>,
+    labels: Vec<String>,
+}
+
+fn extract_ast_query_kinds(query: &str) -> AstQueryKinds {
+    const MAX_TOKENS: usize = 6;
+    let mut labels = Vec::new();
+    let mut kinds = Vec::new();
+    let mut seen_labels = std::collections::HashSet::new();
+    let mut seen_kinds = std::collections::HashSet::new();
+
+    for raw in query.split_whitespace() {
+        for part in raw.split(|ch: char| !ch.is_alphanumeric() && ch != '_') {
+            let trimmed = part.trim();
+            if trimmed.len() < 2 {
+                continue;
+            }
+            let token = trimmed.to_lowercase();
+            if seen_labels.len() >= MAX_TOKENS {
+                break;
+            }
+            if !seen_labels.contains(&token) {
+                if let Some(kinds_for_token) = ast_kinds_for_token(&token) {
+                    seen_labels.insert(token.clone());
+                    labels.push(token.clone());
+                    for kind in kinds_for_token {
+                        if seen_kinds.insert(kind.to_string()) {
+                            kinds.push(kind.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        if seen_labels.len() >= MAX_TOKENS {
+            break;
+        }
+    }
+
+    AstQueryKinds { kinds, labels }
+}
+
+fn ast_kinds_for_token(token: &str) -> Option<&'static [&'static str]> {
+    match token {
+        "function" | "fn" | "method" => Some(&[
+            "function_item",
+            "function_definition",
+            "function_declaration",
+            "method_definition",
+            "method_declaration",
+            "arrow_function",
+        ]),
+        "class" => Some(&[
+            "class_definition",
+            "class_declaration",
+            "class_item",
+        ]),
+        "struct" => Some(&["struct_item", "struct_declaration"]),
+        "enum" => Some(&["enum_item", "enum_declaration"]),
+        "interface" => Some(&["interface_declaration"]),
+        "trait" => Some(&["trait_item"]),
+        "module" | "mod" => Some(&["mod_item", "module"]),
+        "import" | "require" | "include" | "use" => Some(&[
+            "import_statement",
+            "import_declaration",
+            "import_clause",
+            "use_declaration",
+            "include_macro_invocation",
+        ]),
+        "const" => Some(&["const_item", "const_declaration", "constant_declaration"]),
+        "type" => Some(&["type_alias_declaration", "type_item", "type_definition"]),
+        _ => None,
+    }
+}
+
+fn sort_hits_deterministically(hits: &mut [Hit]) {
+    hits.sort_by(|a, b| {
+        let score_cmp = b.score.total_cmp(&a.score);
+        if score_cmp != std::cmp::Ordering::Equal {
+            return score_cmp;
+        }
+        let path_cmp = a.rel_path.cmp(&b.rel_path);
+        if path_cmp != std::cmp::Ordering::Equal {
+            return path_cmp;
+        }
+        a.doc_id.cmp(&b.doc_id)
+    });
 }
 
 pub(crate) fn normalize_score(score: f32) -> f32 {
@@ -1413,9 +1809,9 @@ async fn search_handler(
     .await
     {
         Ok(waterfall_result) => {
-            let mut hits = waterfall_result.search_response.hits;
-            let query_meta = waterfall_result
-                .search_response
+            let mut response = waterfall_result.search_response;
+            let mut hits = std::mem::take(&mut response.hits);
+            let query_meta = response
                 .meta
                 .as_ref()
                 .and_then(|meta| meta.query.clone());
@@ -1485,17 +1881,16 @@ async fn search_handler(
             let meta = build_search_meta(&state.indexer, query_meta, Some(context_assembly)).ok();
             let top_score_normalized = top_score.map(normalize_score);
             let web_context = web_context_from_status(&waterfall_result.tier2.status);
-            Json(SearchResponse {
-                hits,
-                top_score,
-                top_score_camel: top_score,
-                top_score_normalized,
-                top_score_normalized_camel: top_score_normalized,
-                web_context,
-                web_discovery: Some(waterfall_result.tier2.status),
-                memory_context: waterfall_result.memory_context,
-                meta,
-            })
+            response.hits = hits;
+            response.top_score = top_score;
+            response.top_score_camel = top_score;
+            response.top_score_normalized = top_score_normalized;
+            response.top_score_normalized_camel = top_score_normalized;
+            response.web_context = web_context;
+            response.web_discovery = Some(waterfall_result.tier2.status);
+            response.memory_context = waterfall_result.memory_context;
+            response.meta = meta;
+            Json(response)
             .into_response()
         }
         Err(err) => {

@@ -1,6 +1,6 @@
 use reqwest::blocking::Client;
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fs;
 use std::net::TcpListener;
@@ -48,12 +48,33 @@ fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
     Ok(temp)
 }
 
-fn symbols_record_path(repo_state_root: &Path, rel_path: &str) -> PathBuf {
-    let key = hex::encode(Sha256::digest(rel_path.as_bytes()));
-    repo_state_root
-        .join("symbols.db")
-        .join("files")
-        .join(format!("{key}.json"))
+fn symbols_db_path(repo_state_root: &Path) -> PathBuf {
+    repo_state_root.join("symbols.db")
+}
+
+fn symbols_outcome_status(
+    repo_state_root: &Path,
+    rel_path: &str,
+) -> Result<Option<String>, Box<dyn Error>> {
+    let conn = Connection::open(symbols_db_path(repo_state_root))?;
+    let status: Option<String> = conn
+        .query_row(
+            "SELECT outcome_status FROM symbols_files WHERE file_path = ?1",
+            params![rel_path],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(status)
+}
+
+fn symbols_has_rows(repo_state_root: &Path, rel_path: &str) -> Result<bool, Box<dyn Error>> {
+    let conn = Connection::open(symbols_db_path(repo_state_root))?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM symbols WHERE file_path = ?1",
+        params![rel_path],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
 }
 
 fn run_docdex<I, S>(state_root: &Path, args: I) -> Result<Vec<u8>, Box<dyn Error>>
@@ -267,18 +288,26 @@ fn index_honors_custom_state_dir() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn symbols_disabled_does_not_create_symbols_store() -> Result<(), Box<dyn Error>> {
+fn symbols_disable_flag_is_ignored() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
     let repo_root = repo.path();
     let repo_str = repo_root.to_string_lossy().to_string();
 
-    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
+    run_docdex(
+        state_root.path(),
+        [
+            "index",
+            "--repo",
+            repo_str.as_str(),
+            "--enable-symbol-extraction=false",
+        ],
+    )?;
 
     let repo_state_root = resolve_repo_state_root(state_root.path(), repo_root)?;
     assert!(
-        !repo_state_root.join("symbols.db").exists(),
-        "symbols.db should not be created when symbol extraction is disabled"
+        symbols_db_path(&repo_state_root).exists(),
+        "symbols.db should be created even when symbol extraction is disabled"
     );
     Ok(())
 }
@@ -291,42 +320,14 @@ fn symbols_enabled_creates_symbols_store_records() -> Result<(), Box<dyn Error>>
     let repo_str = repo_root.to_string_lossy().to_string();
     let rel_path = "docs/overview.md";
 
-    run_docdex(
-        state_root.path(),
-        [
-            "index",
-            "--repo",
-            repo_str.as_str(),
-            "--enable-symbol-extraction=true",
-        ],
-    )?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let repo_state_root = resolve_repo_state_root(state_root.path(), repo_root)?;
-    let record_path = symbols_record_path(&repo_state_root, rel_path);
-    assert!(
-        record_path.exists(),
-        "expected symbols record to exist for {rel_path}"
-    );
-    let raw = fs::read_to_string(record_path)?;
-    let parsed: Value = serde_json::from_str(&raw)?;
+    let db_path = symbols_db_path(&repo_state_root);
+    assert!(db_path.exists(), "expected symbols.db to exist");
+    assert!(symbols_has_rows(&repo_state_root, rel_path)?, "expected symbols rows for {rel_path}");
     assert_eq!(
-        parsed
-            .get("schema")
-            .and_then(|v| v.get("name"))
-            .and_then(|v| v.as_str()),
-        Some("docdex.symbols"),
-        "symbols record should use docdex.symbols schema"
-    );
-    assert_eq!(
-        parsed.get("file").and_then(|v| v.as_str()),
-        Some(rel_path),
-        "symbols record should include the file rel path"
-    );
-    assert_eq!(
-        parsed
-            .get("outcome")
-            .and_then(|v| v.get("status"))
-            .and_then(|v| v.as_str()),
+        symbols_outcome_status(&repo_state_root, rel_path)?.as_deref(),
         Some("ok"),
         "markdown symbol extraction should succeed"
     );

@@ -14,6 +14,8 @@ tags:
     description: OpenAI-compatible chat completions scoped to a repo.
   - name: Graph
     description: Repo-scoped impact graph read APIs.
+  - name: Symbols
+    description: Repo-scoped symbol lookup APIs.
   - name: Memory
     description: Repo-scoped semantic memory operations.
 paths:
@@ -403,6 +405,8 @@ paths:
                         type: array
                         items:
                           type: string
+                  diagnostics:
+                    $ref: "#/components/schemas/ImpactGraphDiagnostics"
         "400":
           description: Bad request
           content:
@@ -415,6 +419,218 @@ paths:
               schema: *a3
         "404":
           description: Repo unknown or not indexed
+          content:
+            application/json:
+              schema: *a3
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: *a3
+  /v1/graph/impact/diagnostics:
+    get:
+      tags:
+        - Graph
+      summary: Get impact diagnostics
+      description: |-
+        Lists unresolved dynamic import diagnostics across files.
+
+        Repo context may be provided via `x-docdex-repo-id` header or `repo_id` query parameter.
+      operationId: getImpactDiagnostics
+      parameters:
+        - *a4
+        - *a5
+        - name: file
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Optional repo-relative file path to filter diagnostics.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 200
+          description: Max entries to return (hard-capped server-side).
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Offset into the diagnostics list.
+      responses:
+        "200":
+          description: Impact diagnostics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImpactDiagnosticsResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema: *a3
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: *a3
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: *a3
+  /v1/ast:
+    get:
+      tags:
+        - Symbols
+      summary: Get AST for a file
+      description: |-
+        Returns Tree-sitter AST nodes for the requested file from the repo-scoped symbols store.
+
+        Repo context may be provided via `x-docdex-repo-id` header or `repo_id` query parameter.
+      operationId: getAst
+      parameters:
+        - *a4
+        - *a5
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+          description: Repo-relative file path.
+        - name: maxNodes
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100000
+            default: 20000
+          description: Maximum number of AST nodes returned (hard-capped server-side).
+      responses:
+        "200":
+          description: AST response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AstResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema: *a3
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: *a3
+        "404":
+          description: AST record missing
+          content:
+            application/json:
+              schema: *a3
+        "409":
+          description: AST extraction disabled or stale after parser drift
+          content:
+            application/json:
+              schema: *a3
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: *a3
+  /v1/symbols:
+    get:
+      tags:
+        - Symbols
+      summary: Get symbols for a file
+      description: |-
+        Returns per-file symbol extraction results from `symbols.db`.
+
+        Repo context may be provided via `x-docdex-repo-id` header or `repo_id` query parameter.
+
+        When started with `--expose`, requests require `Authorization: Bearer <token>`.
+      operationId: getSymbols
+      parameters:
+        - *a4
+        - *a5
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Repo-relative file path.
+      responses:
+        "200":
+          description: Symbols payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SymbolsResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema: *a3
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: *a3
+        "404":
+          description: Symbols record missing
+          content:
+            application/json:
+              schema: *a3
+        "409":
+          description: Symbol extraction disabled or stale after parser drift
+          content:
+            application/json:
+              schema: *a3
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: *a3
+  /v1/symbols/status:
+    get:
+      tags:
+        - Symbols
+      summary: Get symbols parser status
+      description: |-
+        Returns Tree-sitter parser version metadata and drift status for the repo-scoped symbols store.
+
+        Repo context may be provided via `x-docdex-repo-id` header or `repo_id` query parameter.
+      operationId: getSymbolsStatus
+      parameters:
+        - *a4
+        - *a5
+      responses:
+        "200":
+          description: Symbols parser status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SymbolsParserStatus"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema: *a3
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: *a3
+        "409":
+          description: Symbol extraction disabled
           content:
             application/json:
               schema: *a3
@@ -650,6 +866,245 @@ components:
         kind:
           type: string
           description: Optional edge classifier (e.g. `import`, `include`, `require`), truncated to 128 bytes when needed.
+    ImpactDiagnostics:
+      type: object
+      additionalProperties: false
+      required:
+        - unresolvedImportsTotal
+        - unresolvedImportsSample
+      properties:
+        unresolvedImportsTotal:
+          type: integer
+          minimum: 0
+        unresolvedImportsSample:
+          type: array
+          items:
+            type: string
+    ImpactDiagnosticsEntry:
+      type: object
+      additionalProperties: false
+      required:
+        - file
+        - diagnostics
+      properties:
+        file:
+          type: string
+        diagnostics:
+          $ref: "#/components/schemas/ImpactDiagnostics"
+    ImpactDiagnosticsResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - schema
+        - repo_id
+        - total
+        - limit
+        - offset
+        - truncated
+        - diagnostics
+      properties:
+        schema:
+          $ref: "#/components/schemas/DocdexSchemaInfo"
+        repo_id:
+          $ref: "#/components/schemas/RepoId"
+        total:
+          type: integer
+          minimum: 0
+        limit:
+          type: integer
+          minimum: 1
+        offset:
+          type: integer
+          minimum: 0
+        truncated:
+          type: boolean
+        diagnostics:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImpactDiagnosticsEntry"
+    AstNode:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - kind
+        - is_named
+        - range
+      properties:
+        id:
+          type: integer
+          minimum: 0
+        parent_id:
+          type: integer
+          minimum: 0
+        kind:
+          type: string
+        is_named:
+          type: boolean
+        range:
+          $ref: "#/components/schemas/SymbolRange"
+    AstResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - schema
+        - repo_id
+        - file
+        - nodes
+        - total_nodes
+        - truncated
+      properties:
+        schema:
+          $ref: "#/components/schemas/DocdexSchemaInfo"
+        repo_id:
+          $ref: "#/components/schemas/RepoId"
+        file:
+          type: string
+        language:
+          type: string
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/AstNode"
+        total_nodes:
+          type: integer
+          minimum: 0
+        truncated:
+          type: boolean
+        outcome:
+          $ref: "#/components/schemas/SymbolOutcome"
+    ImpactGraphDiagnostics:
+      type: object
+      additionalProperties: false
+      required:
+        - unresolvedImportsTotal
+        - unresolvedImportsSample
+      properties:
+        unresolvedImportsTotal:
+          type: integer
+          minimum: 0
+        unresolvedImportsSample:
+          type: array
+          items:
+            type: string
+    SymbolRange:
+      type: object
+      additionalProperties: false
+      required:
+        - start_line
+        - start_col
+        - end_line
+        - end_col
+      properties:
+        start_line:
+          type: integer
+          minimum: 1
+        start_col:
+          type: integer
+          minimum: 1
+        end_line:
+          type: integer
+          minimum: 1
+        end_col:
+          type: integer
+          minimum: 1
+    SymbolOutcome:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+            - skipped
+            - failed
+        reason:
+          type: string
+        error_summary:
+          type: string
+    SymbolItem:
+      type: object
+      additionalProperties: false
+      required:
+        - symbol_id
+        - name
+        - kind
+        - range
+      properties:
+        symbol_id:
+          type: string
+        name:
+          type: string
+        kind:
+          type: string
+        range:
+          $ref: "#/components/schemas/SymbolRange"
+        signature:
+          type: string
+    SymbolsResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - schema
+        - repo_id
+        - file
+        - symbols
+      properties:
+        schema:
+          $ref: "#/components/schemas/DocdexSchemaInfo"
+        repo_id:
+          $ref: "#/components/schemas/RepoId"
+        file:
+          type: string
+          description: Repo-relative file path.
+        symbols:
+          type: array
+          items:
+            $ref: "#/components/schemas/SymbolItem"
+        outcome:
+          $ref: "#/components/schemas/SymbolOutcome"
+    SymbolsParserStatus:
+      type: object
+      additionalProperties: false
+      required:
+        - schema
+        - repo_id
+        - current_parser_versions
+        - parser_versions_changed
+        - requires_reindex
+        - drift
+      properties:
+        schema:
+          $ref: "#/components/schemas/DocdexSchemaInfo"
+        repo_id:
+          $ref: "#/components/schemas/RepoId"
+        current_parser_versions:
+          type: object
+          additionalProperties: true
+        stored_parser_versions:
+          type: object
+          additionalProperties: true
+        parser_versions_previous:
+          type: object
+          additionalProperties: true
+        parser_versions_changed_at_ms:
+          type: integer
+          minimum: 0
+        symbols_invalidated_at_ms:
+          type: integer
+          minimum: 0
+        symbols_invalidation_reason:
+          type: string
+        docdex_version:
+          type: string
+        parser_versions_changed:
+          type: boolean
+        requires_reindex:
+          type: boolean
+        drift:
+          type: boolean
     MemoryStoreRequest: *a13
     MemoryStoreResponse: *a14
     MemoryRecallRequest: *a15

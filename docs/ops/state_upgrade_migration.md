@@ -16,6 +16,9 @@ Docdex. It does not cover installer upgrades or downgrades; see
   `compatible` range; clients should validate compatibility before consuming
   `docdex.symbols` or `docdex.impact_graph` payloads. See
   `docs/contracts/code_intelligence_schema_v1.md`.
+- `impact_graph.json` persists per-file impact graphs with schema metadata.
+  Legacy formats are read with warnings, but future schema versions are rejected;
+  reindex to persist upgrades.
 
 ## State directory resolution (shared across CLI/HTTP/MCP)
 

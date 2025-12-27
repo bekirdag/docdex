@@ -11,6 +11,7 @@ pub mod mcp_add;
 pub mod memory;
 pub mod query;
 pub mod repo;
+pub mod symbols;
 pub mod self_check;
 pub mod serve;
 pub mod run_tests;
@@ -197,6 +198,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             )
             .await
         }
+        super::Command::SymbolsStatus { repo } => symbols::run_status(repo),
         super::Command::Mcp {
             repo,
             log,

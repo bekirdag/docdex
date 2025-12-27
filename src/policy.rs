@@ -29,7 +29,7 @@ fn dependency_meta(dep: Dependency) -> DependencyMeta {
         Dependency::Symbols => DependencyMeta {
             code: ERR_MISSING_DEPENDENCY,
             message:
-                "symbol extraction is disabled; enable DOCDEX_ENABLE_SYMBOL_EXTRACTION=1 or --enable-symbol-extraction=true",
+                "symbol extraction is unavailable; symbols are always enabled but the store may be missing or unhealthy",
             env: "DOCDEX_ENABLE_SYMBOL_EXTRACTION",
             flag: "--enable-symbol-extraction=true",
         },

@@ -57,7 +57,7 @@ These codes are the **required** set for repo/index/dependency failures and are 
 - `unknown_repo`: provided repo context does not match the server’s configured repo root.
 - `repo_state_mismatch`: per-repo state cannot be safely associated (fingerprint/meta/registry mismatch); Docdex must fast-fail to prevent cross-repo mixing.
 - `missing_index`: on-disk index is not present (e.g. `docdexd chat` before indexing).
-- `stale_index`: index exists but is known to be stale (reserved for future use).
+- `stale_index`: index exists but is known to be stale (emitted for symbols/AST when parser version drift requires reindexing).
 - `missing_dependency`: a required optional feature/dependency is disabled (e.g. symbols extraction disabled).
 - `rate_limited`: request rejected due to rate limiting (reserved for future use in MCP).
 - `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable).
@@ -118,10 +118,10 @@ Docdex presents the same underlying failures in three different wrappers:
 | Repo mismatch (`project_root` does not match server repo) | `unknown_repo` | `-32602` | N/A (daemon is started per-repo) | N/A (CLI always has `--repo`; mismatch is not represented) |
 | Repo state mismatch (unsafe to associate state) | `repo_state_mismatch` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"repo_state_mismatch",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"repo_state_mismatch",...}}` |
 | Index missing (chat/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
-| Index stale | `stale_index` | `-32602` | Not currently emitted by the per-repo daemon | Not currently emitted by the per-repo CLI |
+| Index stale | `stale_index` | `-32602` | Emitted by `/v1/symbols` and `/v1/ast` when data are stale after parser drift | Not currently emitted by the per-repo CLI (no symbols/ast lookup command) |
 | Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |
 | Rate limited | `rate_limited` | `-32602` | `429` (security middleware returns status-only; no JSON envelope) | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
-| Optional dependency disabled (e.g. symbols) | `missing_dependency` | `-32602` | N/A (no HTTP endpoint for MCP symbols) | N/A (no CLI symbols command) |
+| Optional dependency disabled (e.g. symbols) | `missing_dependency` | `-32602` | `409` from `/v1/symbols` when symbol extraction is disabled (deprecated toggle) | N/A (no CLI symbols command) |
 | Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_params` | `-32602` | N/A | N/A |
 | Invalid path for `docdex_open` | `invalid_path` | `-32602` | N/A | N/A |
 | Invalid line window for `docdex_open` | `invalid_range` | `-32602` | N/A | N/A |

@@ -544,6 +544,11 @@ pub(crate) enum Command {
         )]
         embedding_timeout_ms: u64,
     },
+    /// Report Tree-sitter parser version status for symbols indexing.
+    SymbolsStatus {
+        #[command(flatten)]
+        repo: RepoArgs,
+    },
     /// Manage explicit repo identity mappings for shared state dirs.
     Repo {
         #[command(subcommand)]

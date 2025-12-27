@@ -4,6 +4,7 @@ use crate::hardware;
 use crate::memory::MemoryStore;
 use crate::ollama;
 use crate::orchestrator::web;
+use crate::symbols::SymbolsStore;
 use crate::state_layout::StateLayout;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -11,7 +12,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::fs;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -40,6 +41,14 @@ struct RepoRegistryFile {
 #[derive(Deserialize)]
 struct RepoRegistryEntry {
     state_key: String,
+    #[serde(default)]
+    canonical_path: Option<String>,
+}
+
+#[derive(Clone)]
+struct RepoStateEntry {
+    state_key: String,
+    canonical_path: Option<PathBuf>,
 }
 
 pub async fn run() -> Result<()> {
@@ -300,13 +309,17 @@ pub async fn run() -> Result<()> {
             });
         }
 
-        let (repo_state_keys, repo_state_error) = match state_dir.as_ref() {
-            Some(state_dir) => match load_repo_state_keys(state_dir) {
-                Ok(keys) => (keys, None),
+        let (repo_state_entries, repo_state_error) = match state_dir.as_ref() {
+            Some(state_dir) => match load_repo_state_entries(state_dir) {
+                Ok(entries) => (entries, None),
                 Err(err) => (Vec::new(), Some(err.to_string())),
             },
             None => (Vec::new(), None),
         };
+        let repo_state_keys = repo_state_entries
+            .iter()
+            .map(|entry| entry.state_key.clone())
+            .collect::<Vec<_>>();
 
         if memory_enabled {
             match state_dir.as_ref() {
@@ -529,6 +542,379 @@ pub async fn run() -> Result<()> {
             }
         }
 
+        match state_dir.as_ref() {
+            Some(state_dir) => {
+                if let Some(err) = repo_state_error.as_deref() {
+                    let registry_path = StateLayout::new(state_dir.clone())
+                        .repos_dir()
+                        .join("repo_registry.json");
+                    checks.push(CheckItem {
+                        name: "symbols_db",
+                        status: "fail",
+                        message: format!("symbols.db check failed: {err}"),
+                        details: Some(json!({ "path": registry_path.to_string_lossy() })),
+                    });
+                    checks.push(CheckItem {
+                        name: "symbols_parser",
+                        status: "fail",
+                        message: format!("symbols parser check failed: {err}"),
+                        details: Some(json!({ "path": registry_path.to_string_lossy() })),
+                    });
+                    success = false;
+                } else if repo_state_entries.is_empty() {
+                    let scratch = state_dir
+                        .join("checks")
+                        .join(format!("symbols-{}", Uuid::new_v4()));
+                    let repo_root = scratch.join("repo");
+                    if let Err(err) = std::fs::create_dir_all(&repo_root) {
+                        checks.push(CheckItem {
+                            name: "symbols_db",
+                            status: "fail",
+                            message: format!("symbols.db check failed: {err}"),
+                            details: Some(json!({ "path": repo_root.to_string_lossy() })),
+                        });
+                        checks.push(CheckItem {
+                            name: "symbols_parser",
+                            status: "fail",
+                            message: format!("symbols parser check failed: {err}"),
+                            details: Some(json!({ "path": repo_root.to_string_lossy() })),
+                        });
+                        success = false;
+                    } else {
+                        match SymbolsStore::new(&repo_root, &scratch) {
+                            Ok(store) => {
+                                match store.check_access() {
+                                    Ok(()) => checks.push(CheckItem {
+                                        name: "symbols_db",
+                                        status: "ok",
+                                        message: "symbols.db is writable (scratch)".to_string(),
+                                        details: Some(json!({
+                                            "path": scratch.join("symbols.db").to_string_lossy()
+                                        })),
+                                    }),
+                                    Err(err) => {
+                                        checks.push(CheckItem {
+                                            name: "symbols_db",
+                                            status: "fail",
+                                            message: format!("symbols.db not writable: {err}"),
+                                            details: Some(json!({
+                                                "path": scratch.join("symbols.db").to_string_lossy()
+                                            })),
+                                        });
+                                        success = false;
+                                    }
+                                }
+                                match store.parser_status() {
+                                    Ok(status) => checks.push(CheckItem {
+                                        name: "symbols_parser",
+                                        status: if status.requires_reindex || status.drift {
+                                            "warn"
+                                        } else {
+                                            "ok"
+                                        },
+                                        message: if status.requires_reindex || status.drift {
+                                            "symbols parser versions drifted; reindex required".to_string()
+                                        } else {
+                                            "symbols parser versions aligned".to_string()
+                                        },
+                                        details: Some(json!({
+                                            "requires_reindex": status.requires_reindex,
+                                            "drift": status.drift,
+                                            "current_parser_versions": status.current_parser_versions,
+                                            "stored_parser_versions": status.stored_parser_versions,
+                                        })),
+                                    }),
+                                    Err(err) => {
+                                        checks.push(CheckItem {
+                                            name: "symbols_parser",
+                                            status: "fail",
+                                            message: format!("symbols parser status failed: {err}"),
+                                            details: Some(json!({
+                                                "path": scratch.join("symbols.db").to_string_lossy()
+                                            })),
+                                        });
+                                        success = false;
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                checks.push(CheckItem {
+                                    name: "symbols_db",
+                                    status: "fail",
+                                    message: format!("symbols.db check failed: {err}"),
+                                    details: Some(json!({
+                                        "path": scratch.join("symbols.db").to_string_lossy()
+                                    })),
+                                });
+                                checks.push(CheckItem {
+                                    name: "symbols_parser",
+                                    status: "fail",
+                                    message: format!("symbols parser status failed: {err}"),
+                                    details: Some(json!({
+                                        "path": scratch.join("symbols.db").to_string_lossy()
+                                    })),
+                                });
+                                success = false;
+                            }
+                        }
+                    }
+                    let _ = std::fs::remove_dir_all(&scratch);
+                } else {
+                    let repos_dir = StateLayout::new(state_dir.clone()).repos_dir();
+                    let mut ok_count = 0usize;
+                    let mut fail_count = 0usize;
+                    let mut failures = Vec::new();
+                    let mut parser_drift = Vec::new();
+                    let mut parser_reindex = Vec::new();
+                    let mut parser_failures = Vec::new();
+                    for entry in &repo_state_entries {
+                        let repo_state_root = repos_dir.join(&entry.state_key);
+                        if !repo_state_root.exists() {
+                            fail_count += 1;
+                            if failures.len() < 5 {
+                                failures.push(format!(
+                                    "{}: repo state dir missing",
+                                    repo_state_root.display()
+                                ));
+                            }
+                            continue;
+                        }
+                        let repo_root = entry
+                            .canonical_path
+                            .clone()
+                            .unwrap_or_else(|| repo_state_root.clone());
+                        match SymbolsStore::new(&repo_root, &repo_state_root) {
+                            Ok(store) => {
+                                match store.check_access() {
+                                    Ok(()) => ok_count += 1,
+                                    Err(err) => {
+                                        fail_count += 1;
+                                        if failures.len() < 5 {
+                                            failures.push(format!(
+                                                "{}: {err}",
+                                                repo_state_root.display()
+                                            ));
+                                        }
+                                    }
+                                }
+                                match store.parser_status() {
+                                    Ok(status) => {
+                                        if status.drift && parser_drift.len() < 5 {
+                                            parser_drift.push(entry.state_key.clone());
+                                        }
+                                        if status.requires_reindex && parser_reindex.len() < 5 {
+                                            parser_reindex.push(entry.state_key.clone());
+                                        }
+                                    }
+                                    Err(err) => {
+                                        if parser_failures.len() < 5 {
+                                            parser_failures.push(format!(
+                                                "{}: {err}",
+                                                repo_state_root.display()
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                fail_count += 1;
+                                if failures.len() < 5 {
+                                    failures.push(format!(
+                                        "{}: {err}",
+                                        repo_state_root.display()
+                                    ));
+                                }
+                                if parser_failures.len() < 5 {
+                                    parser_failures.push(format!(
+                                        "{}: {err}",
+                                        repo_state_root.display()
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    let total = repo_state_entries.len();
+                    let status = if fail_count == 0 { "ok" } else { "fail" };
+                    let message = if fail_count == 0 {
+                        format!("symbols.db writable for {ok_count}/{total} repos")
+                    } else {
+                        format!("symbols.db check failed for {fail_count}/{total} repos")
+                    };
+                    checks.push(CheckItem {
+                        name: "symbols_db",
+                        status,
+                        message,
+                        details: Some(json!({
+                            "checked": total,
+                            "ok": ok_count,
+                            "failed": fail_count,
+                            "failures": failures,
+                        })),
+                    });
+                    if fail_count > 0 {
+                        success = false;
+                    }
+
+                    let parser_status = if parser_failures.is_empty()
+                        && parser_drift.is_empty()
+                        && parser_reindex.is_empty()
+                    {
+                        "ok"
+                    } else if parser_failures.is_empty() {
+                        "warn"
+                    } else {
+                        "fail"
+                    };
+                    let parser_message = if parser_failures.is_empty()
+                        && parser_drift.is_empty()
+                        && parser_reindex.is_empty()
+                    {
+                        "symbols parser versions aligned".to_string()
+                    } else if parser_failures.is_empty() {
+                        "symbols parser versions drifted; reindex required".to_string()
+                    } else {
+                        "symbols parser status failed for one or more repos".to_string()
+                    };
+                    checks.push(CheckItem {
+                        name: "symbols_parser",
+                        status: parser_status,
+                        message: parser_message,
+                        details: Some(json!({
+                            "drifted": parser_drift,
+                            "requires_reindex": parser_reindex,
+                            "failures": parser_failures,
+                        })),
+                    });
+                    if parser_status == "fail" {
+                        success = false;
+                    }
+                }
+            }
+            None => {
+                checks.push(CheckItem {
+                    name: "symbols_db",
+                    status: "fail",
+                    message: "symbols.db check failed: global_state_dir is not configured"
+                        .to_string(),
+                    details: None,
+                });
+                checks.push(CheckItem {
+                    name: "symbols_parser",
+                    status: "fail",
+                    message: "symbols parser check failed: global_state_dir is not configured"
+                        .to_string(),
+                    details: None,
+                });
+                success = false;
+            }
+        }
+
+        match state_dir.as_ref() {
+            Some(state_dir) => {
+                if let Some(err) = repo_state_error.as_deref() {
+                    let registry_path = StateLayout::new(state_dir.clone())
+                        .repos_dir()
+                        .join("repo_registry.json");
+                    checks.push(CheckItem {
+                        name: "impact_graph",
+                        status: "fail",
+                        message: format!("impact_graph.json check failed: {err}"),
+                        details: Some(json!({ "path": registry_path.to_string_lossy() })),
+                    });
+                    success = false;
+                } else if repo_state_entries.is_empty() {
+                    let scratch = state_dir
+                        .join("checks")
+                        .join(format!("impact-{}", Uuid::new_v4()));
+                    match check_impact_graph_access(&scratch) {
+                        Ok(()) => checks.push(CheckItem {
+                            name: "impact_graph",
+                            status: "ok",
+                            message: "impact_graph.json is writable (scratch)".to_string(),
+                            details: Some(json!({
+                                "path": scratch.join("impact_graph.json").to_string_lossy()
+                            })),
+                        }),
+                        Err(err) => {
+                            checks.push(CheckItem {
+                                name: "impact_graph",
+                                status: "fail",
+                                message: format!("impact_graph.json not writable: {err}"),
+                                details: Some(json!({
+                                    "path": scratch.join("impact_graph.json").to_string_lossy()
+                                })),
+                            });
+                            success = false;
+                        }
+                    }
+                    let _ = std::fs::remove_dir_all(&scratch);
+                } else {
+                    let repos_dir = StateLayout::new(state_dir.clone()).repos_dir();
+                    let mut ok_count = 0usize;
+                    let mut fail_count = 0usize;
+                    let mut failures = Vec::new();
+                    for entry in &repo_state_entries {
+                        let repo_state_root = repos_dir.join(&entry.state_key);
+                        if !repo_state_root.exists() {
+                            fail_count += 1;
+                            if failures.len() < 5 {
+                                failures.push(format!(
+                                    "{}: repo state dir missing",
+                                    repo_state_root.display()
+                                ));
+                            }
+                            continue;
+                        }
+                        match check_impact_graph_access(&repo_state_root) {
+                            Ok(()) => ok_count += 1,
+                            Err(err) => {
+                                fail_count += 1;
+                                if failures.len() < 5 {
+                                    failures.push(format!(
+                                        "{}: {err}",
+                                        repo_state_root.display()
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    let total = repo_state_entries.len();
+                    let status = if fail_count == 0 { "ok" } else { "fail" };
+                    let message = if fail_count == 0 {
+                        format!("impact_graph.json writable for {ok_count}/{total} repos")
+                    } else {
+                        format!(
+                            "impact_graph.json check failed for {fail_count}/{total} repos"
+                        )
+                    };
+                    checks.push(CheckItem {
+                        name: "impact_graph",
+                        status,
+                        message,
+                        details: Some(json!({
+                            "checked": total,
+                            "ok": ok_count,
+                            "failed": fail_count,
+                            "failures": failures,
+                        })),
+                    });
+                    if fail_count > 0 {
+                        success = false;
+                    }
+                }
+            }
+            None => {
+                checks.push(CheckItem {
+                    name: "impact_graph",
+                    status: "fail",
+                    message: "impact_graph.json check failed: global_state_dir is not configured"
+                        .to_string(),
+                    details: None,
+                });
+                success = false;
+            }
+        }
+
         let engine = config.web.scraper.engine.trim();
         let engine_lower = engine.to_ascii_lowercase();
         let needs_chrome = matches!(
@@ -576,6 +962,9 @@ pub async fn run() -> Result<()> {
             "ollama_models",
             "memory_db",
             "dag_db",
+            "symbols_db",
+            "symbols_parser",
+            "impact_graph",
             "chrome",
         ] {
             checks.push(CheckItem {
@@ -602,10 +991,10 @@ pub async fn run() -> Result<()> {
     }
 }
 
-fn load_repo_state_keys(state_dir: &Path) -> Result<Vec<String>> {
+fn load_repo_state_entries(state_dir: &Path) -> Result<Vec<RepoStateEntry>> {
     let layout = StateLayout::new(state_dir.to_path_buf());
     let registry_path = layout.repos_dir().join("repo_registry.json");
-    let mut keys = Vec::new();
+    let mut entries = Vec::new();
     match fs::read_to_string(&registry_path) {
         Ok(raw) => {
             let parsed: RepoRegistryFile =
@@ -613,7 +1002,21 @@ fn load_repo_state_keys(state_dir: &Path) -> Result<Vec<String>> {
             for entry in parsed.repos.values() {
                 let trimmed = entry.state_key.trim();
                 if !trimmed.is_empty() {
-                    keys.push(trimmed.to_string());
+                    let canonical_path = entry
+                        .canonical_path
+                        .as_deref()
+                        .and_then(|value| {
+                            let trimmed = value.trim();
+                            if trimmed.is_empty() {
+                                None
+                            } else {
+                                Some(PathBuf::from(trimmed))
+                            }
+                        });
+                    entries.push(RepoStateEntry {
+                        state_key: trimmed.to_string(),
+                        canonical_path,
+                    });
                 }
             }
         }
@@ -623,7 +1026,7 @@ fn load_repo_state_keys(state_dir: &Path) -> Result<Vec<String>> {
         }
     }
 
-    if keys.is_empty() {
+    if entries.is_empty() {
         if let Ok(entries) = fs::read_dir(layout.repos_dir()) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -633,16 +1036,41 @@ fn load_repo_state_keys(state_dir: &Path) -> Result<Vec<String>> {
                 if let Some(name) = path.file_name().and_then(|value| value.to_str()) {
                     let trimmed = name.trim();
                     if !trimmed.is_empty() {
-                        keys.push(trimmed.to_string());
+                        entries.push(RepoStateEntry {
+                            state_key: trimmed.to_string(),
+                            canonical_path: None,
+                        });
                     }
                 }
             }
         }
     }
 
-    keys.sort();
-    keys.dedup();
-    Ok(keys)
+    entries.sort_by(|a, b| a.state_key.cmp(&b.state_key));
+    entries.dedup_by(|a, b| a.state_key == b.state_key);
+    Ok(entries)
+}
+
+fn check_impact_graph_access(repo_state_root: &Path) -> Result<()> {
+    fs::create_dir_all(repo_state_root)
+        .with_context(|| format!("create {}", repo_state_root.display()))?;
+    let graph_path = repo_state_root.join("impact_graph.json");
+    if graph_path.exists() {
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&graph_path)
+            .with_context(|| format!("open {}", graph_path.display()))?;
+        return Ok(());
+    }
+    let scratch_path = repo_state_root.join(format!("impact_graph.check-{}", Uuid::new_v4()));
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&scratch_path)
+        .with_context(|| format!("create {}", scratch_path.display()))?;
+    let _ = fs::remove_file(&scratch_path);
+    Ok(())
 }
 
 fn env_non_empty(key: &str) -> Option<String> {

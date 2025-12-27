@@ -8,7 +8,7 @@ use tracing::{info, warn};
 
 use super::budget::MemoryBudget;
 use super::plan::WaterfallPlan;
-use crate::index::Indexer;
+use crate::index::{Hit, Indexer};
 use crate::libs::LibsIndexer;
 use crate::memory::{
     prune_and_truncate_memory_context, repo_state_root_from_state_dir, MemoryContextItem,
@@ -65,6 +65,39 @@ pub struct MemoryContextAssembly {
     pub prune_trace: MemoryContextPruneTrace,
 }
 
+/// Symbol context assembly returned alongside local search hits.
+#[derive(Clone, Debug, Serialize)]
+pub struct SymbolContextAssembly {
+    pub items: Vec<SymbolContextItem>,
+    pub prune_trace: SymbolContextPruneTrace,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SymbolContextItem {
+    pub file: String,
+    pub symbols: Vec<SymbolContextSymbol>,
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SymbolContextSymbol {
+    pub name: String,
+    pub kind: String,
+    pub line_start: u32,
+    pub line_end: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SymbolContextPruneTrace {
+    pub candidate_files: usize,
+    pub kept_files: usize,
+    pub max_files: usize,
+    pub max_symbols_per_file: usize,
+    pub truncated_files: usize,
+}
+
 /// Execute the waterfall (Tier 1 → Tier 2 → Tier 3) for a single query.
 pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallResult> {
     let intent = detect_query_intent(request.query);
@@ -78,6 +111,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
             web_context: None,
             web_discovery: None,
             memory_context: None,
+            symbols_context: None,
             meta: None,
         }
     } else {
@@ -114,6 +148,11 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
         search_response.top_score_normalized_camel = top_score_normalized;
         (top_score, top_score_normalized, local_match_ratio)
     };
+
+    if !request.skip_local_search {
+        search_response.symbols_context =
+            collect_symbol_context(request.indexer, &search_response.hits);
+    }
     let effective_force_web = request.force_web || request.skip_local_search;
     let should_run_tier2 = request.plan.web_gate.should_attempt(
         top_score_normalized,
@@ -426,4 +465,71 @@ async fn collect_memory_context(
         prune_and_truncate_memory_context(&recall, budget.max_items.max(1), budget.token_budget);
 
     Ok(Some(MemoryContextAssembly { items, prune_trace }))
+}
+
+fn collect_symbol_context(indexer: &Indexer, hits: &[Hit]) -> Option<SymbolContextAssembly> {
+    const MAX_FILES: usize = 5;
+    const MAX_SYMBOLS_PER_FILE: usize = 20;
+
+    if !indexer.symbols_enabled() {
+        return None;
+    }
+
+    let candidate_files = hits.iter().take(MAX_FILES).count();
+    let mut items = Vec::new();
+    let mut truncated_files = 0usize;
+
+    for hit in hits.iter().take(MAX_FILES) {
+        let symbols = match indexer.read_symbols(&hit.rel_path) {
+            Ok(Some(payload)) => payload.symbols,
+            Ok(None) => continue,
+            Err(err) => {
+                warn!(
+                    target: "docdexd",
+                    error = ?err,
+                    rel_path = %hit.rel_path,
+                    "symbols lookup failed"
+                );
+                continue;
+            }
+        };
+        if symbols.is_empty() {
+            continue;
+        }
+        let truncated = symbols.len() > MAX_SYMBOLS_PER_FILE;
+        if truncated {
+            truncated_files += 1;
+        }
+        let symbols = symbols
+            .into_iter()
+            .take(MAX_SYMBOLS_PER_FILE)
+            .map(|symbol| SymbolContextSymbol {
+                name: symbol.name,
+                kind: symbol.kind,
+                line_start: symbol.range.start_line,
+                line_end: symbol.range.end_line,
+                signature: symbol.signature,
+            })
+            .collect::<Vec<_>>();
+        items.push(SymbolContextItem {
+            file: hit.rel_path.clone(),
+            symbols,
+            truncated,
+        });
+    }
+
+    if items.is_empty() {
+        return None;
+    }
+
+    Some(SymbolContextAssembly {
+        items,
+        prune_trace: SymbolContextPruneTrace {
+            candidate_files,
+            kept_files: items.len(),
+            max_files: MAX_FILES,
+            max_symbols_per_file: MAX_SYMBOLS_PER_FILE,
+            truncated_files,
+        },
+    })
 }

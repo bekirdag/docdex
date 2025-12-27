@@ -17,6 +17,7 @@ use docdexd::orchestrator::{
 };
 use docdexd::ratelimit::RateLimiter;
 use docdexd::search;
+use docdexd::impact::{build_impact_diagnostics_response, ImpactDiagnosticsEntry, ImpactGraphStore};
 use docdexd::symbols::SymbolsStore;
 use docdexd::tier2::Tier2Config;
 use anyhow::{Context, Result};
@@ -42,6 +43,10 @@ const FILES_DEFAULT_LIMIT: usize = 200;
 const FILES_MAX_LIMIT: usize = 1000;
 const FILES_MAX_OFFSET: usize = 50_000;
 const OPEN_MAX_BYTES: usize = 512 * 1024; // guard rail for returning file content
+const AST_DEFAULT_MAX_NODES: usize = 20_000;
+const AST_MAX_NODES: usize = 100_000;
+const DIAGNOSTICS_DEFAULT_LIMIT: usize = 200;
+const DIAGNOSTICS_MAX_LIMIT: usize = 1000;
 const MAX_ERROR_MESSAGE_BYTES: usize = 256;
 const MAX_ERROR_REASON_BYTES: usize = 768;
 
@@ -73,7 +78,7 @@ struct PathOutsideRepoError;
 struct InvalidUriError;
 
 #[derive(Error, Debug)]
-#[error("symbol extraction is disabled; re-run with --enable-symbol-extraction=true (or set DOCDEX_ENABLE_SYMBOL_EXTRACTION=1) and reindex")]
+#[error("symbol extraction is unavailable; reindex the repo to rebuild symbols")]
 struct MissingSymbolsDependencyError;
 
 #[derive(Error, Debug)]
@@ -81,6 +86,16 @@ struct MissingSymbolsDependencyError;
 struct MissingSymbolsIndexError {
     rel_path: String,
 }
+
+#[derive(Error, Debug)]
+#[error("no ast record found for {rel_path}; run docdex_index")]
+struct MissingAstIndexError {
+    rel_path: String,
+}
+
+#[derive(Error, Debug)]
+#[error("symbols require reindex after parser version change")]
+struct StaleSymbolsIndexError;
 
 fn mcp_error_data(
     code: &'static str,
@@ -282,6 +297,15 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
             Some(json!({ "resource": "symbols", "path": missing.rel_path })),
         );
     }
+    if let Some(missing) = err.downcast_ref::<MissingAstIndexError>() {
+        return (
+            ERR_MISSING_INDEX,
+            Some(json!({ "resource": "ast", "path": missing.rel_path })),
+        );
+    }
+    if err.downcast_ref::<StaleSymbolsIndexError>().is_some() {
+        return (ERR_STALE_INDEX, Some(json!({ "resource": "symbols" })));
+    }
     (ERR_INTERNAL_ERROR, None)
 }
 
@@ -422,6 +446,31 @@ struct SymbolsArgs {
     project_root: Option<PathBuf>,
     #[serde(default, alias = "repoPath")]
     repo_path: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
+struct AstArgs {
+    path: String,
+    #[serde(default, alias = "maxNodes")]
+    max_nodes: Option<usize>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
+struct ImpactDiagnosticsArgs {
+    #[serde(default)]
+    file: Option<String>,
+    #[serde(default, alias = "project_root")]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -1081,6 +1130,80 @@ impl McpServer {
                             }
                         }
                     }
+                    "docdex_ast" | "docdex.ast" => {
+                        let args_res: Result<AstArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_ast"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_ast" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_ast(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_ast"))),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_impact_diagnostics" | "docdex.impact_diagnostics" => {
+                        let args_res: Result<ImpactDiagnosticsArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_impact_diagnostics"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_impact_diagnostics"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_impact_diagnostics(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_impact_diagnostics"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
                     "docdex_memory_store"
                     | "docdex.memory_store"
                     | "docdex_memory_save"
@@ -1314,6 +1437,34 @@ impl McpServer {
                         "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
                     },
                     "required": ["path"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_ast",
+                description: "Read Tree-sitter AST nodes for a file, including per-file outcome (ok/skipped/failed).",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "minLength": 1, "description": "Relative path under the repo" },
+                        "max_nodes": { "type": "integer", "minimum": 1, "description": "Maximum nodes to return (default 20000)" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
+                    },
+                    "required": ["path"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_impact_diagnostics",
+                description: "List unresolved dynamic import diagnostics by file.",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "file": { "type": "string", "description": "Optional repo-relative file path to filter diagnostics" },
+                        "limit": { "type": "integer", "minimum": 1, "description": "Max entries to return (default 200)" },
+                        "offset": { "type": "integer", "minimum": 0, "description": "Offset into the diagnostics list (default 0)" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
+                    }
                 }),
             },
             ToolDefinition {
@@ -1663,12 +1814,96 @@ impl McpServer {
         let rel_str = rel_path.to_string_lossy().replace('\\', "/");
         let store = SymbolsStore::new(self.indexer.repo_root(), self.indexer.config().state_dir())
             .context("open symbols store")?;
+        if store.requires_reindex()? {
+            return Err(StaleSymbolsIndexError.into());
+        }
         let payload = store
             .read_symbols(&rel_str)?
             .ok_or_else(|| MissingSymbolsIndexError {
                 rel_path: rel_str.to_string(),
             })?;
         Ok(serde_json::to_value(payload).context("serialize symbols payload")?)
+    }
+
+    async fn handle_ast(&self, args: AstArgs) -> Result<serde_json::Value> {
+        let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
+        self.ensure_project_root(project_root.as_deref())?;
+        if !self.indexer.config().symbols_enabled() {
+            return Err(MissingSymbolsDependencyError.into());
+        }
+        let rel_path = normalize_rel_path(&args.path).ok_or(InvalidPathError)?;
+        let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+        let store = SymbolsStore::new(self.indexer.repo_root(), self.indexer.config().state_dir())
+            .context("open symbols store")?;
+        if store.requires_reindex()? {
+            return Err(StaleSymbolsIndexError.into());
+        }
+        let max_nodes = args
+            .max_nodes
+            .unwrap_or(AST_DEFAULT_MAX_NODES)
+            .clamp(1, AST_MAX_NODES);
+        let payload = store
+            .read_ast(&rel_str, max_nodes)?
+            .ok_or_else(|| MissingAstIndexError {
+                rel_path: rel_str.to_string(),
+            })?;
+        Ok(serde_json::to_value(payload).context("serialize ast payload")?)
+    }
+
+    async fn handle_impact_diagnostics(
+        &self,
+        args: ImpactDiagnosticsArgs,
+    ) -> Result<serde_json::Value> {
+        let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
+        self.ensure_project_root(project_root.as_deref())?;
+        let repo_id = docdexd::symbols::repo_id_for_root(self.indexer.repo_root())?;
+        let store = ImpactGraphStore::new(self.indexer.state_dir());
+        let diagnostics_map = store.read_diagnostics_map()?;
+        let file = match args.file.as_deref().map(str::trim) {
+            None => None,
+            Some("") => {
+                return Err(AppError::new(ERR_INVALID_ARGUMENT, "file must not be empty").into());
+            }
+            Some(value) => {
+                let rel = normalize_rel_path(value)
+                    .ok_or_else(|| AppError::new(ERR_INVALID_ARGUMENT, "file must be repo-relative"))?;
+                Some(rel.to_string_lossy().replace('\\', "/"))
+            }
+        };
+
+        let (entries, total, limit, offset) = if let Some(file) = file {
+            let entry = diagnostics_map.get(&file).cloned().map(|diag| {
+                ImpactDiagnosticsEntry {
+                    file: file.clone(),
+                    diagnostics: diag,
+                }
+            });
+            let diagnostics = entry.into_iter().collect::<Vec<_>>();
+            (diagnostics, diagnostics.len(), 1, 0)
+        } else {
+            let mut entries = diagnostics_map
+                .into_iter()
+                .map(|(file, diagnostics)| ImpactDiagnosticsEntry { file, diagnostics })
+                .collect::<Vec<_>>();
+            entries.sort_by(|a, b| a.file.cmp(&b.file));
+            let total = entries.len();
+            let limit = args
+                .limit
+                .unwrap_or(DIAGNOSTICS_DEFAULT_LIMIT)
+                .min(DIAGNOSTICS_MAX_LIMIT)
+                .max(1);
+            let offset = args.offset.unwrap_or(0);
+            let diagnostics = entries
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .collect::<Vec<_>>();
+            (diagnostics, total, limit, offset)
+        };
+
+        let payload =
+            build_impact_diagnostics_response(&repo_id, entries, total, limit, offset);
+        Ok(serde_json::to_value(payload).context("serialize impact diagnostics")?)
     }
 
     async fn handle_memory_store(&self, args: MemoryStoreArgs) -> Result<serde_json::Value> {

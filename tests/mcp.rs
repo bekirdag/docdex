@@ -1,5 +1,5 @@
+use rusqlite::{params, Connection};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -115,26 +115,36 @@ fn inspect_repo_state(
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 
-fn resolve_index_dir(state_root: &Path, repo_root: &Path) -> Result<PathBuf, Box<dyn Error>> {
+fn resolve_repo_state_root(
+    state_root: &Path,
+    repo_root: &Path,
+) -> Result<PathBuf, Box<dyn Error>> {
     let payload = inspect_repo_state(state_root, repo_root)?;
-    let resolved = payload
-        .get("resolvedIndexStateDir")
+    let root = payload
+        .get("statePaths")
+        .and_then(|value| value.get("repoStateRoot"))
         .and_then(|value| value.as_str())
-        .ok_or("missing resolvedIndexStateDir")?;
-    Ok(PathBuf::from(resolved))
+        .ok_or("missing statePaths.repoStateRoot")?;
+    Ok(PathBuf::from(root))
 }
 
-fn symbols_record_path(
+fn symbols_db_path(state_root: &Path, repo_root: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let repo_state_root = resolve_repo_state_root(state_root, repo_root)?;
+    Ok(repo_state_root.join("symbols.db"))
+}
+
+fn clear_symbol_ids(
     state_root: &Path,
     repo_root: &Path,
     rel_path: &str,
-) -> Result<PathBuf, Box<dyn Error>> {
-    let key = hex::encode(Sha256::digest(rel_path.as_bytes()));
-    let index_dir = resolve_index_dir(state_root, repo_root)?;
-    Ok(index_dir
-        .join("symbols.db")
-        .join("files")
-        .join(format!("{key}.json")))
+) -> Result<(), Box<dyn Error>> {
+    let db_path = symbols_db_path(state_root, repo_root)?;
+    let conn = Connection::open(db_path)?;
+    conn.execute(
+        "UPDATE symbols SET symbol_id = NULL WHERE file_path = ?1",
+        params![rel_path],
+    )?;
+    Ok(())
 }
 
 fn send_line(
@@ -584,19 +594,7 @@ fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<
     )?;
     let _ = read_line(&mut harness.reader)?;
 
-    let record_path = symbols_record_path(state_root.path(), repo_root, rel_path)?;
-    let raw = fs::read_to_string(&record_path)?;
-    let mut value: serde_json::Value = serde_json::from_str(&raw)?;
-    let symbols = value
-        .get_mut("symbols")
-        .and_then(|v| v.as_array_mut())
-        .ok_or("expected symbols store record to contain a symbols array")?;
-    for symbol in symbols {
-        if let Some(obj) = symbol.as_object_mut() {
-            obj.remove("symbol_id");
-        }
-    }
-    fs::write(&record_path, serde_json::to_string_pretty(&value)?)?;
+    clear_symbol_ids(state_root.path(), repo_root, rel_path)?;
 
     send_line(
         &mut harness.stdin,

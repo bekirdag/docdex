@@ -1,15 +1,21 @@
 pub(crate) mod libs;
+mod impact;
 mod symbols;
 
 use crate::error::{
     repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
     ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
 };
-use crate::symbols::SymbolsStore;
+use crate::impact::{extract_import_edges, ImpactGraphEdge};
+use crate::symbols::{
+    AstResponseV1, AstSearchMatch, SymbolSearchMatch, SymbolsParserStatus, SymbolsResponseV1,
+    SymbolsStore,
+};
 use anyhow::{anyhow, Context, Result};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use regex::Regex;
+use std::collections::{BTreeSet, HashMap};
 use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read};
@@ -279,12 +285,18 @@ pub struct IndexStats {
 impl IndexConfig {
     #[allow(dead_code)]
     pub fn for_repo(repo_root: &Path) -> Result<Self> {
+        if env_flag_disabled("DOCDEX_ENABLE_SYMBOL_EXTRACTION") {
+            warn!(
+                target: "docdexd",
+                "symbol + impact extraction are always enabled; ignoring DOCDEX_ENABLE_SYMBOL_EXTRACTION=0"
+            );
+        }
         Self::with_overrides(
             repo_root,
             None,
             Vec::new(),
             Vec::new(),
-            env_flag_enabled("DOCDEX_ENABLE_SYMBOL_EXTRACTION"),
+            true,
         )
     }
 
@@ -295,6 +307,12 @@ impl IndexConfig {
         extra_excluded_prefixes: Vec<String>,
         symbols_enabled: bool,
     ) -> Result<Self> {
+        if !symbols_enabled {
+            warn!(
+                target: "docdexd",
+                "symbol + impact extraction are always enabled; ignoring symbols_enabled=false"
+            );
+        }
         let state_dir = resolve_state_dir(repo_root, state_dir)?;
         let mut excluded_dir_names: Vec<String> = DEFAULT_EXCLUDED_DIR_NAMES
             .iter()
@@ -332,7 +350,7 @@ impl IndexConfig {
             state_dir,
             excluded_dir_names,
             excluded_relative_prefixes,
-            symbols_enabled,
+            symbols_enabled: true,
         })
     }
 
@@ -497,6 +515,9 @@ impl Indexer {
         let mut writer = writer_arc.lock();
         writer.delete_all_documents()?;
         self.reset_symbols_store();
+        let mut impact_edges: BTreeSet<ImpactGraphEdge> = BTreeSet::new();
+        let mut impact_diagnostics: HashMap<String, crate::impact::ImpactDiagnostics> =
+            HashMap::new();
         for entry in WalkDir::new(&self.repo_root)
             .into_iter()
             .filter_map(|e| e.ok())
@@ -509,9 +530,20 @@ impl Indexer {
             }
             let ingest = self.add_document(&mut writer, path)?;
             self.maybe_update_symbols(&ingest);
+            if self.symbols_store.is_some() {
+                for edge in ingest.impact_edges {
+                    impact_edges.insert(edge);
+                }
+                if let Some(diag) = ingest.impact_diagnostics {
+                    impact_diagnostics.insert(ingest.rel_path.clone(), diag);
+                }
+            }
         }
         writer.commit()?;
         self.reader.reload()?;
+        if self.symbols_store.is_some() {
+            self.write_impact_graph(impact_edges.into_iter().collect(), impact_diagnostics)?;
+        }
         Ok(())
     }
 
@@ -530,6 +562,9 @@ impl Indexer {
         self.maybe_update_symbols(&ingest);
         writer.commit()?;
         self.reader.reload()?;
+        if self.symbols_store.is_some() {
+            self.update_impact_graph_for_file(&rel, &ingest.impact_edges, ingest.impact_diagnostics)?;
+        }
         Ok(decision)
     }
 
@@ -545,6 +580,9 @@ impl Indexer {
         writer.commit()?;
         self.reader.reload()?;
         self.delete_symbols_record(&rel);
+        if self.symbols_store.is_some() {
+            self.remove_impact_edges_for_file(&rel)?;
+        }
         Ok(())
     }
 
@@ -792,6 +830,72 @@ impl Indexer {
         &self.repo_root
     }
 
+    pub fn read_symbols(&self, rel_path: &str) -> Result<Option<SymbolsResponseV1>> {
+        let Some(store) = self.symbols_store.as_ref() else {
+            return Ok(None);
+        };
+        if store.requires_reindex()? {
+            return Ok(None);
+        }
+        store.read_symbols(rel_path)
+    }
+
+    pub fn read_ast(&self, rel_path: &str, max_nodes: usize) -> Result<Option<AstResponseV1>> {
+        let Some(store) = self.symbols_store.as_ref() else {
+            return Ok(None);
+        };
+        if store.requires_reindex()? {
+            return Ok(None);
+        }
+        store.read_ast(rel_path, max_nodes)
+    }
+
+    pub fn symbols_parser_status(&self) -> Result<SymbolsParserStatus> {
+        match self.symbols_store.as_ref() {
+            Some(store) => store.parser_status(),
+            None => {
+                let store = SymbolsStore::new(self.repo_root(), self.config.state_dir())?;
+                store.parser_status()
+            }
+        }
+    }
+
+    pub fn symbols_reindex_required(&self) -> Result<bool> {
+        match self.symbols_store.as_ref() {
+            Some(store) => store.requires_reindex(),
+            None => Ok(false),
+        }
+    }
+
+    pub fn search_symbols(
+        &self,
+        query: &str,
+        max_files: usize,
+        max_symbols_per_file: usize,
+    ) -> Result<Vec<SymbolSearchMatch>> {
+        let Some(store) = self.symbols_store.as_ref() else {
+            return Ok(Vec::new());
+        };
+        if store.requires_reindex()? {
+            return Ok(Vec::new());
+        }
+        store.search_symbols(query, max_files, max_symbols_per_file)
+    }
+
+    pub fn search_ast_kinds(
+        &self,
+        kinds: &[String],
+        max_files: usize,
+    ) -> Result<Vec<AstSearchMatch>> {
+        let Some(store) = self.symbols_store.as_ref() else {
+            return Ok(Vec::new());
+        };
+        if store.requires_reindex()? {
+            return Ok(Vec::new());
+        }
+        store.search_ast_kinds(kinds, max_files)
+    }
+
     pub fn state_dir(&self) -> &Path {
         self.config.state_dir()
     }
@@ -929,6 +1033,13 @@ impl Indexer {
         } else {
             String::new()
         };
+        let (impact_edges, impact_diagnostics) =
+            if self.symbols_store.is_some() && read_error.is_none() {
+                let result = extract_import_edges(&self.repo_root, &rel_for_return, &content);
+                (result.edges, result.diagnostics)
+            } else {
+                (Vec::new(), None)
+            };
         let summary = summarize(&content);
         let tokens = estimate_tokens(&content);
         writer.add_document(doc!(
@@ -942,6 +1053,8 @@ impl Indexer {
             rel_path: rel_for_return,
             content: content_for_symbols,
             read_error,
+            impact_edges,
+            impact_diagnostics,
         })
     }
 
@@ -1038,15 +1151,17 @@ struct DocumentIngest {
     rel_path: String,
     content: String,
     read_error: Option<String>,
+    impact_edges: Vec<ImpactGraphEdge>,
+    impact_diagnostics: Option<crate::impact::ImpactDiagnostics>,
 }
 
-fn env_flag_enabled(key: &str) -> bool {
+fn env_flag_disabled(key: &str) -> bool {
     std::env::var(key)
         .ok()
         .map(|v| {
             matches!(
                 v.trim().to_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
+                "0" | "false" | "no" | "off"
             )
         })
         .unwrap_or(false)
@@ -1259,7 +1374,7 @@ mod file_decision_tests {
             None,
             Vec::new(),
             vec!["docs/".into(), "docs/private/".into()],
-            false,
+            true,
         )
         .expect("config");
         let file = repo_root.join("docs/private/a.md");
@@ -1280,7 +1395,7 @@ mod file_decision_tests {
     fn decide_file_excludes_state_dir_before_prefix_rules() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false)
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
             .expect("config");
         let file = config.state_dir().join("doc.md");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
@@ -1295,7 +1410,7 @@ mod file_decision_tests {
     fn decide_file_excludes_default_vendor_dir() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false)
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
             .expect("config");
         let file = repo_root.join("vendor/doc.md");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
@@ -1315,7 +1430,7 @@ mod file_decision_tests {
     fn decide_file_excludes_outside_repo() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false)
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
             .expect("config");
 
         let other = TempDir::new().expect("other repo");
@@ -1336,7 +1451,7 @@ mod file_decision_tests {
             None,
             Vec::new(),
             Vec::new(),
-            false,
+            true,
         )
         .expect("config");
         let binary_path = repo_root.join("large.md");
@@ -1356,7 +1471,7 @@ mod file_decision_tests {
     fn decide_file_includes_supported_extensions() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), false)
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
             .expect("config");
         let file = repo_root.join("docs/notes.txt");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");

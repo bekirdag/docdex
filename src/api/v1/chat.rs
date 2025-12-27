@@ -19,8 +19,8 @@ use uuid::Uuid;
 use crate::dag::logging as dag_logging;
 use crate::memory::repo_state_root_from_state_dir;
 use crate::orchestrator::{
-    memory_budget_from_max_answer_tokens, run_waterfall, WaterfallPlan, WaterfallRequest,
-    WebGateConfig,
+    memory_budget_from_max_answer_tokens, run_waterfall, SymbolContextAssembly, WaterfallPlan,
+    WaterfallRequest, WebGateConfig,
 };
 use crate::orchestrator::web::web_context_from_status;
 use crate::ollama::OllamaClient;
@@ -278,6 +278,7 @@ pub(crate) async fn chat_completions_handler(
                 }
                 let content = format_compressed_results(
                     &result.search_response.hits,
+                    result.search_response.symbols_context.as_ref(),
                     web_context.as_deref(),
                     result.memory_context.as_ref(),
                     &budgets,
@@ -373,6 +374,7 @@ pub(crate) async fn chat_completions_handler(
                 let (context, context_trace) = build_context_summary(
                     &query,
                     &result.search_response.hits,
+                    result.search_response.symbols_context.as_ref(),
                     web_context.as_deref(),
                     result.memory_context.as_ref(),
                     &budgets,
@@ -604,7 +606,15 @@ struct WebContextTrace {
 struct ChatContextTrace {
     memory: MemorySnippetTrace,
     repo: RepoContextTrace,
+    symbols: SymbolContextTrace,
     web: WebContextTrace,
+}
+
+struct SymbolContextTrace {
+    candidates: usize,
+    selected: usize,
+    budget_tokens: usize,
+    budget_exhausted: bool,
 }
 
 fn chat_context_budgets(max_answer_tokens: u32) -> ChatContextBudgets {
@@ -682,6 +692,7 @@ fn select_memory_snippets(
 fn build_context_summary(
     query: &str,
     hits: &[crate::index::Hit],
+    symbols_context: Option<&SymbolContextAssembly>,
     web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
     memory_context: Option<&crate::orchestrator::MemoryContextAssembly>,
     budgets: &ChatContextBudgets,
@@ -766,6 +777,29 @@ fn build_context_summary(
         }
     }
 
+    let (symbol_lines, symbol_trace, repo_remaining) = if let Some(symbols_context) = symbols_context
+    {
+        format_symbol_context_with_budget(symbols_context, repo_remaining)
+    } else {
+        (
+            Vec::new(),
+            SymbolContextTrace {
+                candidates: 0,
+                selected: 0,
+                budget_tokens: repo_remaining,
+                budget_exhausted: false,
+            },
+            repo_remaining,
+        )
+    };
+    if !symbol_lines.is_empty() {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.push("Symbols context:".to_string());
+        lines.extend(symbol_lines);
+    }
+
     let (web_lines, web_trace) = if let Some(web_context) = web_context {
         format_web_context_with_budget(web_context, repo_remaining)
     } else {
@@ -796,6 +830,7 @@ fn build_context_summary(
                 budget_tokens: budgets.repo_tokens,
                 budget_exhausted: repo_budget_exhausted,
             },
+            symbols: symbol_trace,
             web: web_trace,
         },
     )
@@ -835,6 +870,14 @@ fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace
     } else {
         0
     };
+    let symbols_dropped = if trace.symbols.budget_exhausted {
+        trace
+            .symbols
+            .candidates
+            .saturating_sub(trace.symbols.selected)
+    } else {
+        0
+    };
     let web_dropped = if trace.web.budget_exhausted {
         trace
             .web
@@ -844,7 +887,12 @@ fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace
         0
     };
 
-    if memory_dropped > 0 || memory_truncated > 0 || repo_dropped > 0 || web_dropped > 0 {
+    if memory_dropped > 0
+        || memory_truncated > 0
+        || repo_dropped > 0
+        || symbols_dropped > 0
+        || web_dropped > 0
+    {
         info!(
             target: "docdexd",
             request_id = %request_id,
@@ -854,6 +902,8 @@ fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace
             memory_budget_tokens = trace.memory.budget_tokens,
             repo_dropped,
             repo_budget_tokens = trace.repo.budget_tokens,
+            symbols_dropped,
+            symbols_budget_tokens = trace.symbols.budget_tokens,
             web_dropped,
             web_budget_tokens = trace.web.budget_tokens,
             "context pruned to fit token budget"
@@ -861,6 +911,76 @@ fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace
     }
 }
 
+fn format_symbol_context_with_budget(
+    symbols_context: &SymbolContextAssembly,
+    budget_tokens: usize,
+) -> (Vec<String>, SymbolContextTrace, usize) {
+    let mut lines = Vec::new();
+    let mut remaining = budget_tokens;
+    let candidates = symbols_context.items.len();
+    let mut selected = 0usize;
+    let mut budget_exhausted = false;
+    for item in &symbols_context.items {
+        if remaining == 0 {
+            budget_exhausted = true;
+            break;
+        }
+        if item.symbols.is_empty() {
+            continue;
+        }
+        let prefix = format!("- {}: ", item.file);
+        let prefix_tokens = estimate_tokens(&prefix) as usize;
+        if prefix_tokens >= remaining {
+            budget_exhausted = true;
+            break;
+        }
+        let available = remaining - prefix_tokens;
+        let symbols_text = format_symbol_list(&item.symbols);
+        let (trimmed_snippet, used_tokens) = truncate_to_tokens(&symbols_text, available);
+        if trimmed_snippet.is_empty() {
+            budget_exhausted = true;
+            break;
+        }
+        lines.push(format!("{prefix}{trimmed_snippet}"));
+        selected += 1;
+        remaining = remaining.saturating_sub(prefix_tokens + used_tokens);
+    }
+    (
+        lines,
+        SymbolContextTrace {
+            candidates,
+            selected,
+            budget_tokens,
+            budget_exhausted,
+        },
+        remaining,
+    )
+}
+
+fn format_symbol_list(symbols: &[crate::orchestrator::SymbolContextSymbol]) -> String {
+    let mut out = Vec::with_capacity(symbols.len());
+    for symbol in symbols {
+        out.push(format_symbol_label(symbol));
+    }
+    out.join(", ")
+}
+
+fn format_symbol_label(symbol: &crate::orchestrator::SymbolContextSymbol) -> String {
+    let signature = symbol
+        .signature
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty());
+    let mut label = if let Some(signature) = signature {
+        signature.to_string()
+    } else {
+        format!("{} {}", symbol.kind, symbol.name)
+    };
+    if symbol.line_start > 0 {
+        label.push_str(&format!("@L{}", symbol.line_start));
+    }
+    label
+}
 fn format_web_context_with_budget(
     web_context: &[crate::orchestrator::web::WebFetchResult],
     budget_tokens: usize,
@@ -919,13 +1039,14 @@ fn format_web_context_with_budget(
 
 fn format_compressed_results(
     hits: &[crate::index::Hit],
+    symbols_context: Option<&SymbolContextAssembly>,
     web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
     memory_context: Option<&crate::orchestrator::MemoryContextAssembly>,
     budgets: &ChatContextBudgets,
 ) -> String {
     const MAX_COMPRESSED_MEMORY_ITEMS: usize = 3;
 
-    let local = build_compressed_local(hits);
+    let local = build_compressed_local(hits, symbols_context);
     let web = best_web_summary(web_context);
     let (memory_snippets, _) = select_memory_snippets(memory_context, budgets.memory_tokens);
     let memory = if memory_snippets.is_empty() {
@@ -987,21 +1108,58 @@ struct CompressedMemoryItem {
     content: String,
 }
 
-fn build_compressed_local(hits: &[crate::index::Hit]) -> Option<CompressedLocal> {
+fn build_compressed_local(
+    hits: &[crate::index::Hit],
+    symbols_context: Option<&SymbolContextAssembly>,
+) -> Option<CompressedLocal> {
     let hit = hits.first()?;
     let score = crate::search::normalize_score(hit.score);
-    let summary = if !hit.summary.trim().is_empty() {
+    let mut summary = if !hit.summary.trim().is_empty() {
         Some(truncate_compressed_text(hit.summary.trim()))
     } else if !hit.snippet.trim().is_empty() {
         Some(truncate_compressed_text(hit.snippet.trim()))
     } else {
         None
     };
+    if let Some(symbols_context) = symbols_context {
+        if let Some(symbols_summary) =
+            compressed_symbols_summary(symbols_context, hit.rel_path.as_str())
+        {
+            let combined = match summary.take() {
+                Some(existing) => format!("{existing}\n{symbols_summary}"),
+                None => symbols_summary,
+            };
+            summary = Some(truncate_compressed_text(combined.trim()));
+        }
+    }
     Some(CompressedLocal {
         score,
         path: hit.rel_path.clone(),
         summary,
     })
+}
+
+fn compressed_symbols_summary(
+    symbols_context: &SymbolContextAssembly,
+    rel_path: &str,
+) -> Option<String> {
+    const MAX_SYMBOLS: usize = 6;
+
+    let item = symbols_context
+        .items
+        .iter()
+        .find(|item| item.file == rel_path)?;
+    if item.symbols.is_empty() {
+        return None;
+    }
+    let mut labels = Vec::new();
+    for symbol in item.symbols.iter().take(MAX_SYMBOLS) {
+        labels.push(format_symbol_label(symbol));
+    }
+    if labels.is_empty() {
+        return None;
+    }
+    Some(format!("Symbols: {}", labels.join(", ")))
 }
 
 fn best_web_summary(

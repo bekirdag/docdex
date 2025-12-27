@@ -28,6 +28,21 @@ pub(crate) struct RepoIdQuery {
     repo_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub(crate) struct ImpactDiagnosticsQuery {
+    #[serde(default)]
+    file: Option<String>,
+    #[serde(default)]
+    repo_id: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+}
+
+const DIAGNOSTICS_DEFAULT_LIMIT: usize = 200;
+const DIAGNOSTICS_MAX_LIMIT: usize = 1000;
+
 fn invalid_argument_details(
     issues: Vec<crate::impact::InvalidFieldIssue>,
 ) -> crate::impact::InvalidArgumentDetails {
@@ -249,6 +264,146 @@ pub(crate) async fn impact_graph_handler(
     };
 
     let traversal = crate::impact::traverse_impact(&source, &all_edges, &controls);
-    let response = crate::impact::build_impact_response(&repo_id, &source, traversal, &controls);
+    let diagnostics = match store.read_diagnostics(&source) {
+        Ok(value) => value,
+        Err(err) => {
+            state.metrics.inc_error();
+            warn!(target: "docdexd", error = ?err, "impact diagnostics read failed");
+            None
+        }
+    };
+    let response =
+        crate::impact::build_impact_response(&repo_id, &source, traversal, &controls, diagnostics);
     Json(response).into_response()
+}
+
+pub(crate) async fn impact_diagnostics_handler(
+    State(state): State<AppState>,
+    Query(params): Query<ImpactDiagnosticsQuery>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(err) = crate::search::resolve_repo_id(
+        &headers,
+        params.repo_id.as_deref(),
+        None,
+        state.indexer.as_ref(),
+        false,
+    ) {
+        return json_error(err.status, err.code, err.message);
+    }
+
+    let repo_id = match crate::symbols::repo_id_for_root(state.indexer.repo_root()) {
+        Ok(value) => value,
+        Err(err) => {
+            state.metrics.inc_error();
+            warn!(target: "docdexd", error = ?err, "impact diagnostics repo id unavailable");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ImpactErrorResponse {
+                    error: ImpactErrorDetail {
+                        code: "internal_error",
+                        message: "repo identity unavailable".to_string(),
+                        details: None,
+                    },
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let file = match params.file.as_deref().map(str::trim) {
+        Some("") => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_argument",
+                "file must not be empty",
+            )
+        }
+        Some(value) => match normalize_rel_path(value) {
+            Some(path) => Some(path),
+            None => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_argument",
+                    "file must be repo-relative",
+                )
+            }
+        },
+        None => None,
+    };
+
+    let store = crate::impact::ImpactGraphStore::new(state.indexer.state_dir());
+    let diagnostics_map = match store.read_diagnostics_map() {
+        Ok(map) => map,
+        Err(err) => {
+            state.metrics.inc_error();
+            warn!(target: "docdexd", error = ?err, "impact diagnostics read failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ImpactErrorResponse {
+                    error: ImpactErrorDetail {
+                        code: "internal_error",
+                        message: "impact diagnostics unavailable".to_string(),
+                        details: None,
+                    },
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let (entries, total, limit, offset) = if let Some(file) = file {
+        let entry = diagnostics_map.get(&file).cloned().map(|diag| {
+            crate::impact::ImpactDiagnosticsEntry {
+                file: file.clone(),
+                diagnostics: diag,
+            }
+        });
+        let diagnostics = entry.into_iter().collect::<Vec<_>>();
+        (diagnostics, diagnostics.len(), 1, 0)
+    } else {
+        let mut entries = diagnostics_map
+            .into_iter()
+            .map(|(file, diagnostics)| crate::impact::ImpactDiagnosticsEntry { file, diagnostics })
+            .collect::<Vec<_>>();
+        entries.sort_by(|a, b| a.file.cmp(&b.file));
+        let total = entries.len();
+        let limit = params
+            .limit
+            .unwrap_or(DIAGNOSTICS_DEFAULT_LIMIT)
+            .min(DIAGNOSTICS_MAX_LIMIT)
+            .max(1);
+        let offset = params.offset.unwrap_or(0);
+        let diagnostics = entries
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<_>>();
+        (diagnostics, total, limit, offset)
+    };
+
+    let response =
+        crate::impact::build_impact_diagnostics_response(&repo_id, entries, total, limit, offset);
+    Json(response).into_response()
+}
+
+fn normalize_rel_path(input: &str) -> Option<String> {
+    let path = std::path::Path::new(input);
+    if path.is_absolute() {
+        return None;
+    }
+    let mut clean = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => continue,
+            std::path::Component::Normal(part) => clean.push(part),
+            _ => return None,
+        }
+    }
+    let clean_str = clean.to_string_lossy().replace('\\', "/");
+    if clean_str.is_empty() {
+        None
+    } else {
+        Some(clean_str)
+    }
 }

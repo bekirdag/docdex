@@ -560,6 +560,137 @@ fn impact_edge_types_does_not_expand_through_excluded_edges() -> Result<(), Box<
 }
 
 #[test]
+fn impact_diagnostics_lists_entries() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
+    let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
+    write_impact_graph_payload(
+        &state_dir,
+        serde_json::json!({
+            "graphs": [
+                {
+                    "schema": { "name": "docdex.impact_graph", "version": 1, "compatible": { "min": 1, "max": 1 } },
+                    "repo_id": "test-repo",
+                    "source": "a.ts",
+                    "inbound": [],
+                    "outbound": [],
+                    "edges": [],
+                    "diagnostics": {
+                        "unresolvedImportsTotal": 2,
+                        "unresolvedImportsSample": ["./dynamic.js", "./other.js"]
+                    }
+                },
+                {
+                    "schema": { "name": "docdex.impact_graph", "version": 1, "compatible": { "min": 1, "max": 1 } },
+                    "repo_id": "test-repo",
+                    "source": "b.ts",
+                    "inbound": [],
+                    "outbound": [],
+                    "edges": [],
+                    "diagnostics": {
+                        "unresolvedImportsTotal": 1,
+                        "unresolvedImportsSample": ["./dyn.ts"]
+                    }
+                }
+            ]
+        }),
+    )?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/v1/graph/impact/diagnostics");
+    let resp: Value = client.get(&url).send()?.json()?;
+    let schema_name = resp
+        .get("schema")
+        .and_then(|v| v.get("name"))
+        .and_then(|v| v.as_str())
+        .ok_or("impact diagnostics response missing schema.name")?;
+    assert_eq!(schema_name, "docdex.impact_diagnostics");
+    assert_eq!(resp.get("total").and_then(|v| v.as_u64()), Some(2));
+    assert_eq!(resp.get("limit").and_then(|v| v.as_u64()), Some(200));
+    assert_eq!(resp.get("offset").and_then(|v| v.as_u64()), Some(0));
+
+    let diagnostics = resp
+        .get("diagnostics")
+        .and_then(|v| v.as_array())
+        .ok_or("missing diagnostics array")?;
+    let mut files = diagnostics
+        .iter()
+        .filter_map(|entry| entry.get("file").and_then(|v| v.as_str()))
+        .collect::<Vec<_>>();
+    files.sort();
+    assert_eq!(files, vec!["a.ts", "b.ts"]);
+
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn impact_diagnostics_filters_by_file() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
+    let repo_str = repo.path().to_string_lossy().to_string();
+    run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
+    let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
+    write_impact_graph_payload(
+        &state_dir,
+        serde_json::json!({
+            "graphs": [
+                {
+                    "schema": { "name": "docdex.impact_graph", "version": 1, "compatible": { "min": 1, "max": 1 } },
+                    "repo_id": "test-repo",
+                    "source": "a.ts",
+                    "inbound": [],
+                    "outbound": [],
+                    "edges": [],
+                    "diagnostics": {
+                        "unresolvedImportsTotal": 2,
+                        "unresolvedImportsSample": ["./dynamic.js"]
+                    }
+                }
+            ]
+        }),
+    )?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/v1/graph/impact/diagnostics");
+    let resp: Value = client
+        .get(&url)
+        .query(&[("file", "a.ts")])
+        .send()?
+        .json()?;
+    let diagnostics = resp
+        .get("diagnostics")
+        .and_then(|v| v.as_array())
+        .ok_or("missing diagnostics array")?;
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].get("file").and_then(|v| v.as_str()),
+        Some("a.ts")
+    );
+
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}
+
+#[test]
 fn impact_invalid_params_return_invalid_argument_with_field_details() -> Result<(), Box<dyn Error>>
 {
     let repo = setup_repo()?;

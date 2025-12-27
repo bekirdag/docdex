@@ -458,9 +458,9 @@ pub struct RepoArgs {
         long,
         env = "DOCDEX_ENABLE_SYMBOL_EXTRACTION",
         value_parser = clap::builder::BoolishValueParser::new(),
-        default_value_t = false,
+        default_value_t = true,
         action = ArgAction::Set,
-        help = "Enable best-effort symbol extraction into a per-repo symbols store (symbols.db)"
+        help = "Deprecated (no-op): symbol + impact extraction are always enabled for indexing"
     )]
     pub enable_symbol_extraction: bool,
 }
@@ -485,7 +485,13 @@ impl RepoArgs {
     }
 
     pub fn symbols_enabled(&self) -> bool {
-        self.enable_symbol_extraction
+        if !self.enable_symbol_extraction {
+            warn!(
+                target: "docdexd",
+                "symbol + impact extraction are always enabled; ignoring --enable-symbol-extraction=false"
+            );
+        }
+        true
     }
 }
 

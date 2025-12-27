@@ -428,7 +428,7 @@ fn default_enable_mcp() -> bool {
     true
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Clone)]
 pub struct RepoArgs {
     #[arg(long, default_value = ".", help = "Repository/workspace root to index")]
     pub repo: PathBuf,

@@ -263,6 +263,7 @@ pub(crate) async fn chat_completions_handler(
     .await
     {
         Ok(result) => {
+            let result = result;
             let budgets = chat_context_budgets(state.max_answer_tokens);
             let web_context = web_context_from_status(&result.tier2.status);
             let created = now_epoch_seconds();
@@ -572,14 +573,11 @@ struct ChatContextBudgets {
     system_tokens: usize,
     memory_tokens: usize,
     repo_tokens: usize,
-    generation_tokens: usize,
-    total_tokens: usize,
 }
 
 struct MemorySnippet {
     content: String,
     score: f32,
-    truncated: bool,
 }
 
 struct MemorySnippetTrace {
@@ -623,8 +621,6 @@ fn chat_context_budgets(max_answer_tokens: u32) -> ChatContextBudgets {
         system_tokens,
         memory_tokens,
         repo_tokens,
-        generation_tokens,
-        total_tokens,
     }
 }
 
@@ -656,29 +652,27 @@ fn select_memory_snippets(
             snippets.push(MemorySnippet {
                 content: item.content.clone(),
                 score: item.score,
-                truncated: false,
             });
             remaining = remaining.saturating_sub(item_tokens);
         } else {
-            let (truncated_content, used_tokens) = truncate_to_tokens(&item.content, remaining);
+            let (truncated_content, _used_tokens) = truncate_to_tokens(&item.content, remaining);
             if truncated_content.is_empty() {
                 break;
             }
             snippets.push(MemorySnippet {
                 content: truncated_content,
                 score: item.score,
-                truncated: true,
             });
             truncated_count += 1;
-            remaining = remaining.saturating_sub(used_tokens);
             break;
         }
     }
+    let selected = snippets.len();
     (
         snippets,
         MemorySnippetTrace {
             available,
-            selected: snippets.len(),
+            selected,
             truncated: truncated_count,
             budget_tokens,
         },
@@ -1157,6 +1151,7 @@ fn queue_dag_log(
     payload: serde_json::Value,
 ) {
     tokio::spawn(async move {
+        let session_id_log = session_id.clone();
         let result = tokio::task::spawn_blocking(move || {
             dag_logging::log_node(&repo_state_root, &session_id, node_type, &payload)
         })
@@ -1165,13 +1160,13 @@ fn queue_dag_log(
             Ok(Ok(())) => {}
             Ok(Err(err)) => warn!(
                 target: "docdexd",
-                session_id = %session_id,
+                session_id = %session_id_log,
                 error = ?err,
                 "dag log failed"
             ),
             Err(err) => warn!(
                 target: "docdexd",
-                session_id = %session_id,
+                session_id = %session_id_log,
                 error = ?err,
                 "dag log task failed"
             ),

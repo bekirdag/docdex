@@ -1254,6 +1254,9 @@ fn merge_hits(repo_hits: Vec<Hit>, libs_hits: Vec<Hit>, limit: usize) -> Vec<Hit
     if libs_hits.is_empty() {
         return repo_hits;
     }
+    if repo_hits.is_empty() {
+        return libs_hits.into_iter().take(limit).collect();
+    }
     let repo_max = repo_hits
         .first()
         .map(|h| h.score)
@@ -1270,26 +1273,47 @@ fn merge_hits(repo_hits: Vec<Hit>, libs_hits: Vec<Hit>, limit: usize) -> Vec<Hit
         hit: Hit,
     }
 
-    let mut ranked: Vec<Ranked> = Vec::with_capacity(repo_hits.len() + libs_hits.len());
-    for hit in repo_hits {
-        ranked.push(Ranked {
+    let mut repo_ranked: Vec<Ranked> = repo_hits
+        .into_iter()
+        .map(|hit| Ranked {
             rank: (hit.score / repo_max) * 1.0,
             hit,
-        });
-    }
-    for hit in libs_hits {
-        ranked.push(Ranked {
-            rank: (hit.score / libs_max) * 0.95,
-            hit,
-        });
-    }
-    ranked.sort_by(|a, b| {
+        })
+        .collect();
+    repo_ranked.sort_by(|a, b| {
         b.rank
             .partial_cmp(&a.rank)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.hit.doc_id.cmp(&b.hit.doc_id))
     });
-    ranked.into_iter().take(limit).map(|r| r.hit).collect()
+    let mut libs_ranked: Vec<Ranked> = libs_hits
+        .into_iter()
+        .map(|hit| Ranked {
+            rank: (hit.score / libs_max) * 0.95,
+            hit,
+        })
+        .collect();
+    libs_ranked.sort_by(|a, b| {
+        b.rank
+            .partial_cmp(&a.rank)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.hit.doc_id.cmp(&b.hit.doc_id))
+    });
+
+    let mut ordered: Vec<Hit> = Vec::with_capacity(limit);
+    for ranked in repo_ranked {
+        if ordered.len() >= limit {
+            return ordered;
+        }
+        ordered.push(ranked.hit);
+    }
+    for ranked in libs_ranked {
+        if ordered.len() >= limit {
+            break;
+        }
+        ordered.push(ranked.hit);
+    }
+    ordered
 }
 
 fn now_epoch_ms() -> Result<u128> {

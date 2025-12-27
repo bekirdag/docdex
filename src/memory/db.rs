@@ -119,9 +119,8 @@ impl MemoryStore {
                 "SELECT m.id, m.content, m.created_at, m.metadata, v.distance
                  FROM memory_vec v
                  JOIN memories m ON m.rowid = v.rowid
-                 WHERE v.embedding MATCH ?1
-                 ORDER BY v.distance ASC, m.created_at DESC, m.id ASC
-                 LIMIT ?2",
+                 WHERE v.embedding MATCH ?1 AND k = ?2
+                 ORDER BY v.distance ASC, m.created_at DESC, m.id ASC",
             )
             .context("prepare memory recall")?;
         let rows = stmt.query_map(params![query_json, top_k as i64], |row| {
@@ -333,12 +332,14 @@ fn store_schema_version(conn: &Connection, version: u32) -> Result<()> {
     Ok(())
 }
 
-fn migrate_schema(_conn: &Connection, from: u32, to: u32) -> Result<()> {
+fn migrate_schema(conn: &Connection, from: u32, to: u32) -> Result<()> {
     let mut current = from;
     while current < to {
         let next = current + 1;
         match next {
-            1 => {}
+            1 => {
+                migrate_to_v1(conn)?;
+            }
             _ => {
                 return Err(anyhow::anyhow!(
                     "unsupported memory schema migration {current}->{next}"
@@ -346,6 +347,27 @@ fn migrate_schema(_conn: &Connection, from: u32, to: u32) -> Result<()> {
             }
         }
         current = next;
+    }
+    Ok(())
+}
+
+fn migrate_to_v1(conn: &Connection) -> Result<()> {
+    let stored_dim = load_embedding_dim(conn)?;
+    let inferred = if stored_dim.is_some() {
+        stored_dim
+    } else {
+        infer_embedding_dim(conn)?
+    };
+    if let Some(dim) = inferred {
+        ensure_vec_table(conn, dim)?;
+        backfill_vec_table(conn, dim)?;
+        if stored_dim.is_none() {
+            conn.execute(
+                "INSERT OR REPLACE INTO memory_meta (key, value) VALUES (?1, ?2)",
+                params![MEMORY_META_EMBED_DIM, dim.to_string()],
+            )
+            .context("store embedding dimension")?;
+        }
     }
     Ok(())
 }

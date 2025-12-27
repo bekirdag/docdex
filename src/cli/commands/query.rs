@@ -3,12 +3,15 @@ use crate::dag::logging as dag_logging;
 use crate::index;
 use crate::libs;
 use crate::index::Hit;
+use crate::memory::MemoryStore;
 use crate::memory::repo_state_root_from_state_dir;
+use crate::ollama::OllamaEmbedder;
 use crate::orchestrator::{
     memory_budget_from_max_answer_tokens, run_waterfall, WaterfallPlan, WaterfallRequest,
     WaterfallResult, WebGateConfig,
 };
 use crate::repo_manager;
+use crate::search::MemoryState;
 use crate::tier2::Tier2Config;
 use crate::util;
 use anyhow::Result;
@@ -18,6 +21,7 @@ use serde::Serialize;
 use serde_json::json;
 use std::io::{self, Write};
 use std::path::Path;
+use std::time::Duration;
 use uuid::Uuid;
 
 pub async fn run(
@@ -73,6 +77,7 @@ pub async fn run(
         .as_ref()
         .map(|cfg| cfg.llm.max_answer_tokens)
         .unwrap_or(1024);
+    let memory_state = resolve_memory_state(config.as_ref(), server.state_dir())?;
     let plan = WaterfallPlan::new(
         web_gate,
         Tier2Config::enabled(),
@@ -107,7 +112,7 @@ pub async fn run(
         libs_indexer: libs_indexer.as_ref(),
         plan,
         tier2_limiter: None,
-        memory: None,
+        memory: memory_state.as_ref(),
     };
     let waterfall = run_waterfall(request).await?;
     let _ = dag_logging::log_node(
@@ -139,6 +144,46 @@ pub async fn run(
         println!("{}", serde_json::to_string_pretty(&response)?);
     }
     Ok(())
+}
+
+pub(crate) fn resolve_memory_state(
+    config: Option<&config::AppConfig>,
+    state_dir: &Path,
+) -> Result<Option<MemoryState>> {
+    let env_enabled = std::env::var_os("DOCDEX_ENABLE_MEMORY").is_some();
+    let config_enabled = config.map(|cfg| cfg.memory.enabled).unwrap_or(false);
+    if !env_enabled && !config_enabled {
+        return Ok(None);
+    }
+
+    let base_url = env_non_empty("DOCDEX_EMBEDDING_BASE_URL")
+        .or_else(|| env_non_empty("DOCDEX_OLLAMA_BASE_URL"))
+        .or_else(|| config.map(|cfg| cfg.llm.base_url.clone()))
+        .unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
+    let model = env_non_empty("DOCDEX_EMBEDDING_MODEL")
+        .or_else(|| config.map(|cfg| cfg.llm.embedding_model.clone()))
+        .unwrap_or_else(|| "nomic-embed-text".to_string());
+    if model.trim().is_empty() {
+        anyhow::bail!("embedding model is not configured");
+    }
+    let timeout_ms = env_u64("DOCDEX_EMBEDDING_TIMEOUT_MS").unwrap_or(5000);
+    let timeout = Duration::from_millis(timeout_ms.max(1));
+    let embedder = OllamaEmbedder::new(base_url, model, timeout)?;
+    Ok(Some(MemoryState {
+        store: MemoryStore::new(state_dir),
+        embedder,
+    }))
+}
+
+fn env_non_empty(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn env_u64(key: &str) -> Option<u64> {
+    env_non_empty(key)?.parse::<u64>().ok()
 }
 
 pub(crate) fn stream_completion(query: &str, hits: &[Hit]) -> Result<()> {

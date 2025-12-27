@@ -109,7 +109,7 @@ pub async fn run_eval(options: EvalOptions) -> Result<()> {
         options.repo.symbols_enabled(),
     )?;
     util::init_logging("warn")?;
-    let indexer = index::Indexer::with_config_read_only(&repo_root, index_config)?;
+    let indexer = index::Indexer::with_config_read_only(repo_root, index_config)?;
     let libs_indexer = if options.repo_only {
         None
     } else {

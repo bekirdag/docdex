@@ -4,6 +4,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 const SYMBOLS_SCHEMA_VERSION: u32 = 1;
@@ -274,7 +275,9 @@ impl SymbolsStore {
         while current < to {
             let next = current + 1;
             match next {
-                1 => {}
+                1 => {
+                    self.migrate_to_v1()?;
+                }
                 _ => {
                     return Err(anyhow!(
                         "unsupported symbols schema migration {current}->{next}"
@@ -282,6 +285,49 @@ impl SymbolsStore {
                 }
             }
             current = next;
+        }
+        Ok(())
+    }
+
+    fn migrate_to_v1(&self) -> Result<()> {
+        let files_dir = self.files_dir();
+        if !files_dir.exists() {
+            return Ok(());
+        }
+        for entry in fs::read_dir(&files_dir)
+            .with_context(|| format!("read {}", files_dir.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let raw = match fs::read_to_string(&path) {
+                Ok(raw) => raw,
+                Err(err) if err.kind() == ErrorKind::NotFound => continue,
+                Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+            };
+            let mut value: serde_json::Value =
+                serde_json::from_str(&raw).context("parse symbols payload")?;
+            let Some(obj) = value.as_object_mut() else {
+                continue;
+            };
+            let mut needs_update = true;
+            if let Some(schema) = obj.get("schema") {
+                if let Some(version) = schema.get("version").and_then(|v| v.as_u64()) {
+                    if version >= SYMBOLS_SCHEMA_VERSION as u64 {
+                        needs_update = false;
+                    }
+                }
+            }
+            if !needs_update {
+                continue;
+            }
+            let schema_value =
+                serde_json::to_value(default_symbols_schema()).context("serialize schema")?;
+            obj.insert("schema".to_string(), schema_value);
+            let serialized = serde_json::to_vec_pretty(&value).context("serialize symbols")?;
+            fs::write(&path, serialized).with_context(|| format!("write {}", path.display()))?;
         }
         Ok(())
     }

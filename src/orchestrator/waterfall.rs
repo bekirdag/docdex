@@ -381,6 +381,7 @@ fn queue_dag_log(
     let repo_state_root = repo_state_root.to_path_buf();
     let session_id = session_id.to_string();
     tokio::spawn(async move {
+        let session_id_log = session_id.clone();
         let result = tokio::task::spawn_blocking(move || {
             dag_logging::log_node(&repo_state_root, &session_id, node_type, &payload)
         })
@@ -389,13 +390,13 @@ fn queue_dag_log(
             Ok(Ok(())) => {}
             Ok(Err(err)) => warn!(
                 target: "docdexd",
-                session_id = %session_id,
+                session_id = %session_id_log,
                 error = ?err,
                 "dag log failed"
             ),
             Err(err) => warn!(
                 target: "docdexd",
-                session_id = %session_id,
+                session_id = %session_id_log,
                 error = ?err,
                 "dag log task failed"
             ),

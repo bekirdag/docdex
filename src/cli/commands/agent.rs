@@ -4,7 +4,7 @@ use crate::cli::AgentCommand;
 
 use super::mcoda_eval;
 
-pub async fn run(command: AgentCommand) -> Result<()> {
+pub(crate) async fn run(command: AgentCommand) -> Result<()> {
     match command {
         AgentCommand::Eval {
             repo,

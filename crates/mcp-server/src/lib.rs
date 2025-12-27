@@ -482,7 +482,13 @@ pub async fn serve(
         }
         Err(err) => return Err(err),
     };
-    let memory = if env_flag_enabled("DOCDEX_ENABLE_MEMORY") {
+    let config = config::AppConfig::load_default().ok();
+    let memory_enabled = if std::env::var_os("DOCDEX_ENABLE_MEMORY").is_some() {
+        env_flag_enabled("DOCDEX_ENABLE_MEMORY")
+    } else {
+        config.as_ref().map(|cfg| cfg.memory.enabled).unwrap_or(false)
+    };
+    let memory = if memory_enabled {
         let base_url = std::env::var("DOCDEX_EMBEDDING_BASE_URL")
             .ok()
             .filter(|v| !v.trim().is_empty())
@@ -491,10 +497,12 @@ pub async fn serve(
                     .ok()
                     .filter(|v| !v.trim().is_empty())
             })
+            .or_else(|| config.as_ref().map(|cfg| cfg.llm.base_url.clone()))
             .unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
         let model = std::env::var("DOCDEX_EMBEDDING_MODEL")
             .ok()
             .filter(|v| !v.trim().is_empty())
+            .or_else(|| config.as_ref().map(|cfg| cfg.llm.embedding_model.clone()))
             .unwrap_or_else(|| "nomic-embed-text".to_string());
         let timeout_ms = std::env::var("DOCDEX_EMBEDDING_TIMEOUT_MS")
             .ok()
@@ -508,7 +516,8 @@ pub async fn serve(
     } else {
         None
     };
-    let max_answer_tokens = config::AppConfig::load_default()
+    let max_answer_tokens = config
+        .as_ref()
         .map(|cfg| cfg.llm.max_answer_tokens)
         .unwrap_or(1024);
     let effective_burst = if rate_limit_per_min > 0 && rate_limit_burst == 0 {
@@ -1386,6 +1395,7 @@ impl McpServer {
             .display()
             .to_string();
         let repo_state_root = repo_state_root_from_state_dir(self.indexer.state_dir());
+        let force_web = force_web_arg.unwrap_or(false);
         queue_dag_log(
             &repo_state_root,
             &request_id,
@@ -1402,8 +1412,7 @@ impl McpServer {
             Tier2Config::enabled(),
             memory_budget_from_max_answer_tokens(self.max_answer_tokens),
         );
-        let force_web = force_web_arg.unwrap_or(false);
-        let mut memory_state = self.memory.as_ref().map(|state| search::MemoryState {
+        let memory_state = self.memory.as_ref().map(|state| search::MemoryState {
             store: state.store.clone(),
             embedder: state.embedder.clone(),
         });
@@ -1412,7 +1421,13 @@ impl McpServer {
             request_id: request_id_ref,
             query,
             limit,
+            web_limit: None,
             force_web,
+            skip_local_search: false,
+            disable_web_cache: false,
+            llm_filter_local_results: false,
+            llm_model: None,
+            llm_agent: None,
             indexer: &self.indexer,
             libs_indexer: self.libs_indexer.as_ref(),
             plan,
@@ -1952,14 +1967,15 @@ fn queue_dag_log(
     let repo_state_root = repo_state_root.to_path_buf();
     let session_id = session_id.to_string();
     tokio::spawn(async move {
+        let session_id_log = session_id.clone();
         let result = tokio::task::spawn_blocking(move || {
             dag_logging::log_node(&repo_state_root, &session_id, node_type, &payload)
         })
         .await;
         if let Err(err) = result {
-            eprintln!("docdex mcp: dag log task failed for {session_id}: {err}");
+            eprintln!("docdex mcp: dag log task failed for {session_id_log}: {err}");
         } else if let Ok(Err(err)) = result {
-            eprintln!("docdex mcp: dag log failed for {session_id}: {err}");
+            eprintln!("docdex mcp: dag log failed for {session_id_log}: {err}");
         }
     });
 }

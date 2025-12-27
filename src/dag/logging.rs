@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use fs4::FileExt;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
@@ -176,12 +176,14 @@ fn store_schema_version(conn: &Connection, version: u32) -> Result<()> {
     Ok(())
 }
 
-fn migrate_schema(_conn: &Connection, from: u32, to: u32) -> Result<()> {
+fn migrate_schema(conn: &Connection, from: u32, to: u32) -> Result<()> {
     let mut current = from;
     while current < to {
         let next = current + 1;
         match next {
-            1 => {}
+            1 => {
+                migrate_to_v1(conn)?;
+            }
             _ => {
                 return Err(anyhow::anyhow!(
                     "unsupported dag schema migration {current}->{next}"
@@ -190,6 +192,33 @@ fn migrate_schema(_conn: &Connection, from: u32, to: u32) -> Result<()> {
         }
         current = next;
     }
+    Ok(())
+}
+
+fn migrate_to_v1(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS nodes (
+            session_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )",
+        [],
+    )
+    .context("prepare dag schema")?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_nodes_session_id ON nodes(session_id)",
+        [],
+    )
+    .context("prepare dag schema index")?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS dag_meta(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )",
+        [],
+    )
+    .context("prepare dag meta table")?;
     Ok(())
 }
 

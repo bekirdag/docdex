@@ -156,6 +156,7 @@ pub async fn run_rag(
         .as_ref()
         .map(|cfg| cfg.llm.max_answer_tokens)
         .unwrap_or(1024);
+    let memory_state = query::resolve_memory_state(config.as_ref(), server.state_dir())?;
     let plan = WaterfallPlan::new(
         web_gate,
         Tier2Config::enabled(),
@@ -189,7 +190,7 @@ pub async fn run_rag(
         libs_indexer: libs_indexer.as_ref(),
         plan,
         tier2_limiter: None,
-        memory: None,
+        memory: memory_state.as_ref(),
     };
     let waterfall = run_waterfall(request).await?;
     let _ = dag_logging::log_node(

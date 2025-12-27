@@ -26,7 +26,7 @@ const LIBS_SOURCE_SCOPE_ERROR: &str =
 const LIBS_SOURCE_TRAVERSAL_ERROR: &str =
     "libs source path must not contain parent traversal";
 
-pub(crate) fn libs_state_dir_from_index_state_dir(index_state_dir: &Path) -> PathBuf {
+pub fn libs_state_dir_from_index_state_dir(index_state_dir: &Path) -> PathBuf {
     index_state_dir
         .parent()
         .unwrap_or(index_state_dir)

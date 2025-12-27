@@ -522,11 +522,12 @@ fn collect_symbol_context(indexer: &Indexer, hits: &[Hit]) -> Option<SymbolConte
         return None;
     }
 
+    let kept_files = items.len();
     Some(SymbolContextAssembly {
         items,
         prune_trace: SymbolContextPruneTrace {
             candidate_files,
-            kept_files: items.len(),
+            kept_files,
             max_files: MAX_FILES,
             max_symbols_per_file: MAX_SYMBOLS_PER_FILE,
             truncated_files,

@@ -18,12 +18,12 @@ use tracing::warn;
 const SYMBOLS_SCHEMA_VERSION: u32 = 4;
 const SYMBOLS_SCHEMA_MIN_VERSION: u32 = 1;
 const AST_NODE_STORE_LIMIT: usize = 50_000;
-const TREE_SITTER_VERSION: &str = "0.22";
-const TREE_SITTER_GO_VERSION: &str = "0.20";
-const TREE_SITTER_JAVASCRIPT_VERSION: &str = "0.22";
-const TREE_SITTER_PYTHON_VERSION: &str = "0.21";
-const TREE_SITTER_RUST_VERSION: &str = "0.21";
-const TREE_SITTER_TYPESCRIPT_VERSION: &str = "0.20";
+const TREE_SITTER_VERSION: &str = "0.20";
+const TREE_SITTER_GO_VERSION: &str = "0.20.0";
+const TREE_SITTER_JAVASCRIPT_VERSION: &str = "0.20.4";
+const TREE_SITTER_PYTHON_VERSION: &str = "0.20.4";
+const TREE_SITTER_RUST_VERSION: &str = "0.20.4";
+const TREE_SITTER_TYPESCRIPT_VERSION: &str = "0.20.5";
 fn default_symbols_schema() -> SchemaInfo {
     SchemaInfo {
         name: "docdex.symbols".to_string(),
@@ -292,7 +292,7 @@ impl SymbolsStore {
     }
 
     pub fn upsert_symbols(&self, rel_path: &str, payload: &SymbolsResponseV1) -> Result<()> {
-        let conn = self.connection()?;
+        let mut conn = self.connection()?;
         let tx = conn.transaction().context("start symbols transaction")?;
         self.upsert_symbols_tx(&tx, rel_path, payload)?;
         tx.commit().context("commit symbols transaction")?;
@@ -300,7 +300,7 @@ impl SymbolsStore {
     }
 
     pub fn upsert_ast(&self, rel_path: &str, payload: &AstResponseV1) -> Result<()> {
-        let conn = self.connection()?;
+        let mut conn = self.connection()?;
         let tx = conn.transaction().context("start ast transaction")?;
         self.upsert_ast_tx(&tx, rel_path, payload)?;
         tx.commit().context("commit ast transaction")?;
@@ -591,7 +591,7 @@ impl SymbolsStore {
             let range = SymbolRange {
                 start_line: line_start,
                 start_col,
-                end_line,
+                end_line: line_end,
                 end_col,
             };
             let computed_id = match symbol_id {
@@ -922,7 +922,8 @@ impl SymbolsStore {
     }
 
     fn migration_steps() -> BTreeMap<u32, fn(&SymbolsStore, &Connection) -> Result<()>> {
-        let mut steps = BTreeMap::new();
+        let mut steps: BTreeMap<u32, fn(&SymbolsStore, &Connection) -> Result<()>> =
+            BTreeMap::new();
         steps.insert(1, SymbolsStore::migrate_to_v1);
         steps.insert(2, SymbolsStore::migrate_to_v2);
         steps.insert(3, SymbolsStore::migrate_to_v3);

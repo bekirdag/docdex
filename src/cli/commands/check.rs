@@ -1027,8 +1027,8 @@ fn load_repo_state_entries(state_dir: &Path) -> Result<Vec<RepoStateEntry>> {
     }
 
     if entries.is_empty() {
-        if let Ok(entries) = fs::read_dir(layout.repos_dir()) {
-            for entry in entries.flatten() {
+        if let Ok(dir_entries) = fs::read_dir(layout.repos_dir()) {
+            for entry in dir_entries.flatten() {
                 let path = entry.path();
                 if !path.is_dir() {
                     continue;

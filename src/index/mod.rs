@@ -35,7 +35,21 @@ use walkdir::WalkDir;
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
 const MAX_BINARY_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8192;
-const DEFAULT_EXTENSIONS: &[&str] = &[".md", ".markdown", ".mdx", ".txt"];
+const DOC_EXTENSIONS: &[&str] = &[".md", ".markdown", ".mdx", ".txt"];
+const CODE_EXTENSIONS: &[&str] = &[".rs", ".py", ".js", ".jsx", ".ts", ".tsx", ".go"];
+const DEFAULT_EXTENSIONS: &[&str] = &[
+    ".md",
+    ".markdown",
+    ".mdx",
+    ".txt",
+    ".rs",
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".go",
+];
 const DEFAULT_EXCLUDED_DIR_NAMES: &[&str] = &[
     // Core VCS / tooling
     ".git",
@@ -192,8 +206,25 @@ pub struct Indexer {
     body_field: tantivy::schema::Field,
     summary_field: tantivy::schema::Field,
     token_field: tantivy::schema::Field,
+    kind_field: Option<tantivy::schema::Field>,
     writer: Option<Arc<Mutex<IndexWriter>>>,
     symbols_store: Option<SymbolsStore>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentKind {
+    Doc,
+    Code,
+}
+
+impl DocumentKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            DocumentKind::Doc => "doc",
+            DocumentKind::Code => "code",
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -202,6 +233,7 @@ pub struct Hit {
     pub rel_path: String,
     // Stable search contract alias for `rel_path` (preferred by downstream clients).
     pub path: String,
+    pub kind: DocumentKind,
     pub score: f32,
     pub summary: String,
     pub snippet: String,
@@ -265,6 +297,7 @@ pub struct SnippetResult {
 pub struct DocSnapshot {
     pub doc_id: String,
     pub rel_path: String,
+    pub kind: DocumentKind,
     pub summary: String,
     pub token_estimate: u64,
 }
@@ -402,16 +435,33 @@ impl Indexer {
         }
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
         ensure_state_dir_secure(config.state_dir())?;
-        let (schema, doc_id_field, path_field, body_field, summary_field, token_field) =
-            build_schema();
-        let index = Index::open_or_create(
-            tantivy::directory::MmapDirectory::open(config.state_dir())?,
-            schema.clone(),
-        )?;
+        let (schema, _, _, _, _, _, _) = build_schema();
+        let index = if config.state_dir().join("meta.json").exists() {
+            Index::open_in_dir(config.state_dir())?
+        } else {
+            Index::create_in_dir(config.state_dir(), schema.clone())?
+        };
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommit)
             .try_into()?;
+        let schema = index.schema();
+        let doc_id_field = schema
+            .get_field("doc_id")
+            .map_err(|_| anyhow!("index schema missing doc_id field"))?;
+        let path_field = schema
+            .get_field("rel_path")
+            .map_err(|_| anyhow!("index schema missing rel_path field"))?;
+        let body_field = schema
+            .get_field("body")
+            .map_err(|_| anyhow!("index schema missing body field"))?;
+        let summary_field = schema
+            .get_field("summary")
+            .map_err(|_| anyhow!("index schema missing summary field"))?;
+        let token_field = schema
+            .get_field("token_estimate")
+            .map_err(|_| anyhow!("index schema missing token_estimate field"))?;
+        let kind_field = schema.get_field("kind").ok();
         let writer = index.writer(MAX_INDEX_RAM_BYTES)?;
         let symbols_store = if config.symbols_enabled() {
             symbols::open_symbols_store(&repo_root, config.state_dir(), true)
@@ -439,6 +489,7 @@ impl Indexer {
             body_field,
             summary_field,
             token_field,
+            kind_field,
             writer: Some(Arc::new(Mutex::new(writer))),
             symbols_store,
         })
@@ -477,6 +528,7 @@ impl Indexer {
         let body_field = schema.get_field("body").unwrap();
         let summary_field = schema.get_field("summary").unwrap();
         let token_field = schema.get_field("token_estimate").unwrap();
+        let kind_field = schema.get_field("kind").ok();
         let symbols_store = if config.symbols_enabled() {
             symbols::open_symbols_store(&repo_root, config.state_dir(), false)
         } else {
@@ -505,6 +557,7 @@ impl Indexer {
             body_field,
             summary_field,
             token_field,
+            kind_field,
             writer: None,
             symbols_store,
         })
@@ -682,6 +735,7 @@ impl Indexer {
                 .get_first(self.summary_field)
                 .and_then(|v| v.as_text().map(|s| s.to_string()))
                 .unwrap_or_default();
+            let kind = self.document_kind_from_doc(&retrieved, &rel_path);
             let token_estimate = retrieved
                 .get_first(self.token_field)
                 .and_then(|v| v.as_u64())
@@ -738,6 +792,7 @@ impl Indexer {
                 doc_id,
                 rel_path,
                 path,
+                kind,
                 score,
                 summary,
                 snippet,
@@ -914,6 +969,10 @@ impl Indexer {
         &self.config
     }
 
+    pub fn symbols_enabled(&self) -> bool {
+        self.config.symbols_enabled()
+    }
+
     pub fn stats(&self) -> Result<IndexStats> {
         let searcher = self.reader.searcher();
         let mut num_docs: u64 = 0;
@@ -1042,13 +1101,18 @@ impl Indexer {
             };
         let summary = summarize(&content);
         let tokens = estimate_tokens(&content);
-        writer.add_document(doc!(
+        let kind = document_kind_for_path(&rel_for_return);
+        let mut document = doc!(
             self.doc_id_field => rel.clone(),
             self.path_field => rel,
             self.body_field => content,
             self.summary_field => summary,
             self.token_field => tokens,
-        ))?;
+        );
+        if let Some(kind_field) = self.kind_field {
+            document.add_text(kind_field, kind.as_str());
+        }
+        writer.add_document(document)?;
         Ok(DocumentIngest {
             rel_path: rel_for_return,
             content: content_for_symbols,
@@ -1074,6 +1138,7 @@ impl Indexer {
             .get_first(self.summary_field)
             .and_then(|v| v.as_text().map(|s| s.to_string()))
             .unwrap_or_default();
+        let kind = self.document_kind_from_doc(doc, &rel_path);
         let token_estimate = doc
             .get_first(self.token_field)
             .and_then(|v| v.as_u64())
@@ -1081,6 +1146,7 @@ impl Indexer {
         DocSnapshot {
             doc_id: doc_id.to_string(),
             rel_path,
+            kind,
             summary,
             token_estimate,
         }
@@ -1174,6 +1240,7 @@ fn build_schema() -> (
     tantivy::schema::Field,
     tantivy::schema::Field,
     tantivy::schema::Field,
+    tantivy::schema::Field,
 ) {
     let mut builder = Schema::builder();
     let doc_id_field = builder.add_text_field("doc_id", STRING | STORED);
@@ -1181,6 +1248,7 @@ fn build_schema() -> (
     let body_field = builder.add_text_field("body", TEXT | STORED);
     let summary_field = builder.add_text_field("summary", TEXT | STORED);
     let token_field = builder.add_u64_field("token_estimate", FAST | STORED);
+    let kind_field = builder.add_text_field("kind", STRING | STORED);
     let schema = builder.build();
     (
         schema,
@@ -1189,7 +1257,45 @@ fn build_schema() -> (
         body_field,
         summary_field,
         token_field,
+        kind_field,
     )
+}
+
+fn document_kind_from_text(value: &str) -> Option<DocumentKind> {
+    match value.trim() {
+        "doc" => Some(DocumentKind::Doc),
+        "code" => Some(DocumentKind::Code),
+        _ => None,
+    }
+}
+
+fn document_kind_for_path(rel_path: &str) -> DocumentKind {
+    let extension = Path::new(rel_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| format!(".{}", ext.to_lowercase()));
+    if let Some(extension) = extension {
+        if DOC_EXTENSIONS.contains(&extension.as_str()) {
+            return DocumentKind::Doc;
+        }
+        if CODE_EXTENSIONS.contains(&extension.as_str()) {
+            return DocumentKind::Code;
+        }
+    }
+    DocumentKind::Doc
+}
+
+impl Indexer {
+    fn document_kind_from_doc(&self, doc: &Document, rel_path: &str) -> DocumentKind {
+        if let Some(kind_field) = self.kind_field {
+            if let Some(raw) = doc.get_first(kind_field).and_then(|v| v.as_text()) {
+                if let Some(kind) = document_kind_from_text(raw) {
+                    return kind;
+                }
+            }
+        }
+        document_kind_for_path(rel_path)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -2068,13 +2174,14 @@ fn sort_hits_deterministically(hits: &mut [Hit]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{sort_hits_deterministically, Hit};
+    use super::{sort_hits_deterministically, DocumentKind, Hit};
 
     fn hit(doc_id: &str, rel_path: &str, score: f32) -> Hit {
         Hit {
             doc_id: doc_id.to_string(),
             rel_path: rel_path.to_string(),
             path: rel_path.to_string(),
+            kind: DocumentKind::Doc,
             score,
             summary: String::new(),
             snippet: String::new(),

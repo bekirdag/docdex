@@ -854,9 +854,9 @@ struct ImportRef {
 }
 
 #[derive(Debug, Clone)]
-struct ImpactEdgeBuildResult {
-    edges: Vec<ImpactGraphEdge>,
-    diagnostics: Option<ImpactDiagnostics>,
+pub(crate) struct ImpactEdgeBuildResult {
+    pub(crate) edges: Vec<ImpactGraphEdge>,
+    pub(crate) diagnostics: Option<ImpactDiagnostics>,
 }
 
 impl StringPattern {
@@ -1493,7 +1493,7 @@ fn import_hints_for_repo(repo_root: &Path) -> ImportHints {
     let mut cache = IMPORT_HINT_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let entry = cache.entry(key).or_default();
+    let entry = cache.entry(key.clone()).or_default();
     if entry.map_mtime != map_mtime {
         let map = load_import_map(&key, &map_path);
         entry.hints.edges = map.edges;
@@ -1572,8 +1572,8 @@ fn normalize_import_map(repo_root: &Path, raw: ImportMapFileRaw) -> ImportMapFil
         if spec.is_empty() || target.is_empty() {
             continue;
         }
-        let source = match entry.source {
-            Some(source) => normalize_hint_path(repo_root, &source),
+        let source = match entry.source.as_ref() {
+            Some(source) => normalize_hint_path(repo_root, source),
             None => None,
         };
         if entry.source.is_some() && source.is_none() {

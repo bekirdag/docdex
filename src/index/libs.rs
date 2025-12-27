@@ -350,6 +350,7 @@ impl LibsIndexer {
                 doc_id,
                 rel_path,
                 path,
+                kind: crate::index::DocumentKind::Doc,
                 score,
                 summary,
                 snippet,
@@ -414,6 +415,7 @@ impl LibsIndexer {
         DocSnapshot {
             doc_id: doc_id.to_string(),
             rel_path,
+            kind: crate::index::DocumentKind::Doc,
             summary,
             token_estimate,
         }

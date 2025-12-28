@@ -3,7 +3,7 @@ use docdexd::error::{
     ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
     ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
     ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
-    ERR_UNKNOWN_REPO,
+    ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
 };
 use docdexd::config;
 use docdexd::dag::logging as dag_logging;
@@ -235,6 +235,7 @@ fn default_message_for_code(code: &str) -> &'static str {
         ERR_RATE_LIMITED => "rate limited",
         ERR_BACKOFF_REQUIRED => "backoff required",
         ERR_REPO_STATE_MISMATCH => "repo state mismatch",
+        ERR_UNAUTHORIZED => "unauthorized",
         ERR_INTERNAL_ERROR => "internal error",
         _ => "error",
     }
@@ -341,6 +342,8 @@ struct InitializeParams {
     protocol_version: Option<String>,
     #[serde(default)]
     capabilities: Option<serde_json::Value>,
+    #[serde(default, alias = "authToken")]
+    auth_token: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -518,6 +521,7 @@ pub async fn serve(
     max_results: usize,
     rate_limit_per_min: u32,
     rate_limit_burst: u32,
+    auth_token: Option<String>,
 ) -> Result<()> {
     let repo_root = repo_root
         .canonicalize()
@@ -587,6 +591,15 @@ pub async fn serve(
     )
     .ok()
     .flatten();
+    let auth_token = auth_token.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+    let authorized = auth_token.is_none();
     let mut server = McpServer {
         repo_root,
         indexer,
@@ -596,6 +609,8 @@ pub async fn serve(
         memory,
         max_answer_tokens,
         tool_rate_limit,
+        auth_token,
+        authorized,
     };
     server.run().await
 }
@@ -615,6 +630,8 @@ struct McpServer {
     memory: Option<McpMemoryState>,
     max_answer_tokens: u32,
     tool_rate_limit: Option<RateLimiter<()>>,
+    auth_token: Option<String>,
+    authorized: bool,
 }
 
 impl McpServer {
@@ -719,11 +736,53 @@ impl McpServer {
                 }));
             }
         }
+        if self.auth_token.is_some() && !self.authorized && req.method != "initialize" {
+            return Ok(Some(RpcResponse {
+                jsonrpc: JSONRPC_VERSION,
+                id: id.clone(),
+                result: None,
+                error: Some(rpc_error(
+                    ERR_INVALID_REQUEST,
+                    default_message_for_code(ERR_UNAUTHORIZED),
+                    ERR_UNAUTHORIZED,
+                    None,
+                    None,
+                    Some(json!({
+                        "hint": "Call initialize with auth_token",
+                    })),
+                )),
+            }));
+        }
         match req.method.as_str() {
             "initialize" => {
                 let init_params: InitializeParams =
                     serde_json::from_value(req.params.clone().unwrap_or_default())
                         .unwrap_or_default();
+                if let Some(expected) = self.auth_token.as_ref() {
+                    let provided = init_params
+                        .auth_token
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty());
+                    if provided != Some(expected.as_str()) {
+                        return Ok(Some(RpcResponse {
+                            jsonrpc: JSONRPC_VERSION,
+                            id: id.clone(),
+                            result: None,
+                            error: Some(rpc_error(
+                                ERR_INVALID_REQUEST,
+                                default_message_for_code(ERR_UNAUTHORIZED),
+                                ERR_UNAUTHORIZED,
+                                None,
+                                None,
+                                Some(json!({
+                                    "hint": "Call initialize with auth_token",
+                                })),
+                            )),
+                        }));
+                    }
+                    self.authorized = true;
+                }
                 if let Some(client_root) = init_params
                     .workspace_root
                     .or(init_params.project_root)

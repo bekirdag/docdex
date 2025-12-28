@@ -29,6 +29,12 @@ struct Cli {
         help = "Optional burst size for MCP rate limiting (defaults to per-minute limit when 0)"
     )]
     rate_limit_burst: u32,
+    #[arg(
+        long,
+        env = "DOCDEX_AUTH_TOKEN",
+        help = "Optional bearer token required by MCP initialize"
+    )]
+    auth_token: Option<String>,
 }
 
 #[tokio::main]
@@ -58,6 +64,7 @@ async fn main() -> Result<()> {
         max_results,
         cli.rate_limit_per_min,
         cli.rate_limit_burst,
+        cli.auth_token,
     )
     .await
 }

@@ -2,6 +2,7 @@ use crate::config;
 use crate::dag::logging as dag_logging;
 use crate::hardware;
 use crate::memory::MemoryStore;
+use crate::mcp;
 use crate::ollama;
 use crate::orchestrator::web;
 use crate::symbols::SymbolsStore;
@@ -13,6 +14,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -160,6 +162,81 @@ pub async fn run() -> Result<()> {
                     details: Some(json!({ "bind_addr": bind_addr_raw })),
                 });
                 success = false;
+            }
+        }
+
+        let mcp_env_value = std::env::var("DOCDEX_ENABLE_MCP").ok();
+        let mcp_env_bool = env_boolish("DOCDEX_ENABLE_MCP");
+        let (mcp_enabled, mcp_source) = match mcp_env_bool {
+            Some(value) => (value, "env"),
+            None => (config.server.enable_mcp, "config"),
+        };
+        let mcp_spawn_check = env_boolish("DOCDEX_CHECK_MCP_SPAWN").unwrap_or(false);
+        if !mcp_enabled {
+            checks.push(CheckItem {
+                name: "mcp_ready",
+                status: "skipped",
+                message: "mcp disabled".to_string(),
+                details: Some(json!({
+                    "enabled": false,
+                    "source": mcp_source,
+                    "env_value": mcp_env_value,
+                })),
+            });
+        } else {
+            let env_bin = env_non_empty("DOCDEX_MCP_SERVER_BIN");
+            match mcp::resolve_mcp_server_binary() {
+                Ok(path) => {
+                    let mut spawn_ok = None;
+                    if mcp_spawn_check {
+                        let status = Command::new(&path)
+                            .arg("--help")
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .status();
+                        spawn_ok = Some(status.map(|s| s.success()).unwrap_or(false));
+                    }
+                    let status = if spawn_ok == Some(false) { "fail" } else { "ok" };
+                    let message = if spawn_ok == Some(false) {
+                        "mcp server binary resolved but spawn check failed".to_string()
+                    } else if mcp_spawn_check {
+                        "mcp server binary resolved (spawn check ok)".to_string()
+                    } else {
+                        "mcp server binary resolved".to_string()
+                    };
+                    checks.push(CheckItem {
+                        name: "mcp_ready",
+                        status,
+                        message,
+                        details: Some(json!({
+                            "enabled": true,
+                            "source": mcp_source,
+                            "env_value": mcp_env_value,
+                            "binary": path.to_string_lossy(),
+                            "binary_override": env_bin,
+                            "spawn_check": mcp_spawn_check,
+                            "spawn_ok": spawn_ok,
+                        })),
+                    });
+                    if status == "fail" {
+                        success = false;
+                    }
+                }
+                Err(err) => {
+                    checks.push(CheckItem {
+                        name: "mcp_ready",
+                        status: "fail",
+                        message: format!("mcp server binary resolution failed: {err}"),
+                        details: Some(json!({
+                            "enabled": true,
+                            "source": mcp_source,
+                            "env_value": mcp_env_value,
+                            "binary_override": env_bin,
+                        })),
+                    });
+                    success = false;
+                }
             }
         }
 
@@ -956,6 +1033,7 @@ pub async fn run() -> Result<()> {
         for name in [
             "state",
             "bind",
+            "mcp_ready",
             "llm_budget",
             "llm_provider",
             "ollama",

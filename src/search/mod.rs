@@ -1,4 +1,5 @@
 use crate::config;
+use crate::diff;
 use crate::error::{
     AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
@@ -273,6 +274,38 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/dag/export",
             get(crate::api::v1::dag::dag_export_handler),
+        )
+        .route(
+            "/v1/index/rebuild",
+            post(crate::api::v1::index::index_rebuild_handler),
+        )
+        .route(
+            "/v1/index/ingest",
+            post(crate::api::v1::index::index_ingest_handler),
+        )
+        .route(
+            "/v1/libs/discover",
+            post(crate::api::v1::libs::libs_discover_handler),
+        )
+        .route(
+            "/v1/libs/ingest",
+            post(crate::api::v1::libs::libs_ingest_handler),
+        )
+        .route(
+            "/v1/libs/fetch",
+            post(crate::api::v1::libs::libs_fetch_handler),
+        )
+        .route(
+            "/v1/web/search",
+            post(crate::api::v1::web::web_search_handler),
+        )
+        .route(
+            "/v1/web/fetch",
+            post(crate::api::v1::web::web_fetch_handler),
+        )
+        .route(
+            "/v1/web/cache/flush",
+            post(crate::api::v1::web::web_cache_flush_handler),
         )
         .route("/v1/memory/store", post(memory_store_handler))
         .route("/v1/memory/recall", post(memory_recall_handler))
@@ -1010,6 +1043,22 @@ struct SearchParams {
     include_libs: Option<bool>,
     #[serde(default)]
     force_web: Option<bool>,
+    #[serde(default)]
+    max_web_results: Option<usize>,
+    #[serde(default)]
+    skip_local_search: Option<bool>,
+    #[serde(default)]
+    no_cache: Option<bool>,
+    #[serde(default)]
+    llm_filter_local_results: Option<bool>,
+    #[serde(default)]
+    diff_mode: Option<diff::DiffMode>,
+    #[serde(default)]
+    diff_base: Option<String>,
+    #[serde(default)]
+    diff_head: Option<String>,
+    #[serde(default)]
+    diff_path: Vec<String>,
     #[serde(default)]
     repo_id: Option<String>,
 }
@@ -2088,6 +2137,27 @@ async fn search_handler(
     } else {
         None
     };
+    let diff_paths = params
+        .diff_path
+        .iter()
+        .map(|path| std::path::PathBuf::from(path))
+        .collect::<Vec<_>>();
+    let diff_request = match diff::resolve_diff_request(
+        params.diff_mode,
+        params.diff_base.clone(),
+        params.diff_head.clone(),
+        diff_paths,
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                err.to_string(),
+            )
+            .into_response();
+        }
+    };
 
     let request_id_value = request_id.0;
     let request_id_str = request_id_value.as_str();
@@ -2097,17 +2167,20 @@ async fn search_handler(
         memory_budget_from_max_answer_tokens(state.max_answer_tokens),
     );
     let force_web = params.force_web.unwrap_or(false);
+    let skip_local_search = params.skip_local_search.unwrap_or(false);
+    let disable_web_cache = params.no_cache.unwrap_or(false);
+    let llm_filter_local_results = params.llm_filter_local_results.unwrap_or(false);
 
     match run_waterfall(WaterfallRequest {
         request_id: request_id_str,
         query,
         limit,
-        diff: None,
-        web_limit: None,
+        diff: diff_request,
+        web_limit: params.max_web_results,
         force_web,
-        skip_local_search: false,
-        disable_web_cache: false,
-        llm_filter_local_results: false,
+        skip_local_search,
+        disable_web_cache,
+        llm_filter_local_results,
         llm_model: None,
         llm_agent: None,
         indexer: state.indexer.as_ref(),

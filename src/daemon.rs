@@ -369,6 +369,7 @@ pub async fn serve(
     } else {
         None
     };
+    let mcp_auth_token = security.auth_token.clone();
     let metrics = Arc::new(metrics::Metrics::default());
     metrics::set_global(metrics.clone());
     let state = AppState {
@@ -462,6 +463,7 @@ pub async fn serve(
             ollama_base_url.clone(),
             embedding_model.clone(),
             embedding_timeout_ms,
+            mcp_auth_token.clone(),
         )
         .await;
         match result {

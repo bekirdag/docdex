@@ -20,6 +20,7 @@ pub const ERR_MISSING_DEPENDENCY: &str = "missing_dependency";
 pub const ERR_RATE_LIMITED: &str = "rate_limited";
 pub const ERR_BACKOFF_REQUIRED: &str = "backoff_required";
 pub const ERR_REPO_STATE_MISMATCH: &str = "repo_state_mismatch";
+pub const ERR_UNAUTHORIZED: &str = "unauthorized";
 pub const ERR_INTERNAL_ERROR: &str = "internal_error";
 
 #[derive(Debug, Clone)]

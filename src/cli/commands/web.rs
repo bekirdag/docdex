@@ -1,4 +1,5 @@
 use crate::config::RepoArgs;
+use crate::cli::http_client::CliHttpClient;
 use crate::dag::logging as dag_logging;
 use crate::error::{AppError, ERR_INVALID_ARGUMENT};
 use crate::index;
@@ -18,11 +19,16 @@ use crate::web::status::fetch_status;
 use anyhow::Context;
 use anyhow::Result;
 use serde_json::json;
+use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
 use uuid::Uuid;
+use reqwest::Method;
 
 pub async fn run_search(query: String, limit: usize) -> Result<()> {
+    if !crate::cli::cli_local_mode() {
+        return run_search_via_http(&query, limit).await;
+    }
     util::init_logging("warn")?;
     let config = web::WebConfig::from_env();
     let discovery = web::ddg::DdgDiscovery::new(config)?;
@@ -32,6 +38,9 @@ pub async fn run_search(query: String, limit: usize) -> Result<()> {
 }
 
 pub async fn run_fetch(url: String) -> Result<()> {
+    if !crate::cli::cli_local_mode() {
+        return run_fetch_via_http(&url).await;
+    }
     util::init_logging("warn")?;
     let config = web::WebConfig::from_env();
     let url = Url::parse(url.trim()).map_err(|err| {
@@ -139,6 +148,26 @@ pub async fn run_rag(
         )
         .await;
     }
+    if !crate::cli::cli_local_mode() {
+        let payload = query::search_via_http(
+            &repo_root,
+            &query,
+            limit,
+            !repo_only,
+            true,
+            false,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .await?;
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
         repo.state_dir_override(),
@@ -224,7 +253,10 @@ pub async fn run_rag(
     Ok(())
 }
 
-pub fn run_cache_flush() -> Result<()> {
+pub async fn run_cache_flush() -> Result<()> {
+    if !crate::cli::cli_local_mode() {
+        return run_cache_flush_via_http().await;
+    }
     let Some(layout) = web::cache::cache_layout_from_config() else {
         println!("web cache is not configured");
         return Ok(());
@@ -235,5 +267,53 @@ pub fn run_cache_flush() -> Result<()> {
     }
     std::fs::create_dir_all(&dir)?;
     println!("web cache cleared: {}", dir.display());
+    Ok(())
+}
+
+async fn run_search_via_http(query: &str, limit: usize) -> Result<()> {
+    let client = CliHttpClient::new()?;
+    let payload = serde_json::json!({
+        "query": query,
+        "limit": limit,
+    });
+    let resp = client
+        .request(Method::POST, "/v1/web/search")
+        .json(&payload)
+        .send()
+        .await?;
+    emit_json_or_error(resp, "web search").await?;
+    Ok(())
+}
+
+async fn run_fetch_via_http(url: &str) -> Result<()> {
+    let client = CliHttpClient::new()?;
+    let payload = serde_json::json!({ "url": url });
+    let resp = client
+        .request(Method::POST, "/v1/web/fetch")
+        .json(&payload)
+        .send()
+        .await?;
+    emit_json_or_error(resp, "web fetch").await?;
+    Ok(())
+}
+
+async fn run_cache_flush_via_http() -> Result<()> {
+    let client = CliHttpClient::new()?;
+    let resp = client
+        .request(Method::POST, "/v1/web/cache/flush")
+        .send()
+        .await?;
+    emit_json_or_error(resp, "web cache flush").await?;
+    Ok(())
+}
+
+async fn emit_json_or_error(resp: reqwest::Response, label: &str) -> Result<()> {
+    let status = resp.status();
+    let text = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("docdexd {} failed ({}): {}", label, status, text);
+    }
+    let value: Value = serde_json::from_str(&text)?;
+    println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
 }

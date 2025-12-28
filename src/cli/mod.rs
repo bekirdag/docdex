@@ -1,4 +1,5 @@
 pub mod commands;
+pub(crate) mod http_client;
 
 use crate::config;
 use crate::config::RepoArgs;
@@ -7,6 +8,7 @@ use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use serde_json::json;
 use std::path::PathBuf;
+use std::env;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -27,6 +29,20 @@ pub(crate) enum CliDiffMode {
     WorkingTree,
     Staged,
     Range,
+}
+
+pub(crate) fn cli_local_mode() -> bool {
+    match env::var("DOCDEX_CLI_LOCAL").ok().map(|v| v.trim().to_ascii_lowercase()) {
+        Some(value)
+            if matches!(
+                value.as_str(),
+                "1" | "true" | "t" | "yes" | "y" | "on"
+            ) =>
+        {
+            true
+        }
+        _ => false,
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -632,6 +648,12 @@ pub(crate) enum Command {
             help = "Optional burst size for MCP rate limiting (defaults to per-minute limit when 0)"
         )]
         rate_limit_burst: u32,
+        #[arg(
+            long,
+            env = "DOCDEX_AUTH_TOKEN",
+            help = "Optional bearer token required by MCP initialize"
+        )]
+        auth_token: Option<String>,
     },
     /// Helper to register or remove Docdex MCP in supported agent CLIs.
     McpAdd {

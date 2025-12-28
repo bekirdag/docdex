@@ -13,6 +13,7 @@ pub async fn serve(
     max_results: usize,
     rate_limit_per_min: u32,
     rate_limit_burst: u32,
+    auth_token: Option<String>,
 ) -> Result<()> {
     let memory_settings = resolve_memory_settings()?;
     let options = McpSpawnOptions {
@@ -25,6 +26,7 @@ pub async fn serve(
         embedding_base_url: Some(memory_settings.base_url),
         embedding_model: Some(memory_settings.model),
         embedding_timeout_ms: Some(memory_settings.timeout_ms),
+        auth_token,
         detach_stdio: false,
     };
     let mut child = spawn_mcp(options).await?;
@@ -51,6 +53,7 @@ pub async fn spawn_for_serve(
     embedding_base_url: String,
     embedding_model: String,
     embedding_timeout_ms: u64,
+    auth_token: Option<String>,
 ) -> Result<Child> {
     let options = McpSpawnOptions {
         repo,
@@ -62,6 +65,7 @@ pub async fn spawn_for_serve(
         embedding_base_url: Some(embedding_base_url),
         embedding_model: Some(embedding_model),
         embedding_timeout_ms: Some(embedding_timeout_ms),
+        auth_token,
         detach_stdio: true,
     };
     spawn_mcp(options).await
@@ -77,6 +81,7 @@ struct McpSpawnOptions {
     embedding_base_url: Option<String>,
     embedding_model: Option<String>,
     embedding_timeout_ms: Option<u64>,
+    auth_token: Option<String>,
     detach_stdio: bool,
 }
 
@@ -139,6 +144,11 @@ fn build_mcp_command(options: &McpSpawnOptions) -> Result<Command> {
     if let Some(timeout_ms) = options.embedding_timeout_ms {
         cmd.env("DOCDEX_EMBEDDING_TIMEOUT_MS", timeout_ms.to_string());
     }
+    if let Some(token) = options.auth_token.as_ref() {
+        if !token.trim().is_empty() {
+            cmd.arg("--auth-token").arg(token.trim());
+        }
+    }
     Ok(cmd)
 }
 
@@ -172,7 +182,7 @@ fn resolve_memory_settings() -> Result<McpMemorySettings> {
     })
 }
 
-fn resolve_mcp_server_binary() -> Result<PathBuf> {
+pub(crate) fn resolve_mcp_server_binary() -> Result<PathBuf> {
     if let Ok(path) = std::env::var(MCP_SERVER_BIN_ENV) {
         if !path.trim().is_empty() {
             let candidate = PathBuf::from(path);

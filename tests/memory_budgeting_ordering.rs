@@ -15,6 +15,7 @@ use tempfile::TempDir;
 use tokio::sync::oneshot;
 
 fn docdex_bin() -> PathBuf {
+    std::env::set_var("DOCDEX_CLI_LOCAL", "1");
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 

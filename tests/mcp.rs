@@ -1,3 +1,5 @@
+mod common;
+
 use rusqlite::{params, Connection};
 use serde_json::json;
 use std::error::Error;
@@ -8,6 +10,8 @@ use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 fn docdex_bin() -> PathBuf {
+    std::env::set_var("DOCDEX_CLI_LOCAL", "1");
+    std::env::set_var("DOCDEX_MCP_SERVER_BIN", common::mcp_server_bin());
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 

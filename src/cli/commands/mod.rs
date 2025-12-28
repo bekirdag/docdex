@@ -154,9 +154,9 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
         }
         super::Command::Agent { command } => agent::run(command).await,
         super::Command::Repo { command } => repo::run(command),
-        super::Command::LibsIngest { repo, sources } => libs::run_ingest(repo, sources),
-        super::Command::LibsDiscover { repo, sources } => libs::run_discover(repo, sources),
-        super::Command::Libs { command } => libs::run_command(command),
+        super::Command::LibsIngest { repo, sources } => libs::run_ingest(repo, sources).await,
+        super::Command::LibsDiscover { repo, sources } => libs::run_discover(repo, sources).await,
+        super::Command::Libs { command } => libs::run_command(command).await,
         super::Command::WebSearch { query, limit } => web::run_search(query, limit).await,
         super::Command::WebFetch { url } => web::run_fetch(url).await,
         super::Command::WebRag {
@@ -166,8 +166,8 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             repo_only,
             stream,
         } => web::run_rag(repo, query, limit, repo_only, stream).await,
-        super::Command::WebCacheFlush => web::run_cache_flush(),
-        super::Command::Dag { command } => dag::run(command),
+        super::Command::WebCacheFlush => web::run_cache_flush().await,
+        super::Command::Dag { command } => dag::run(command).await,
         super::Command::RunTests { repo, target } => run_tests::run(repo, target),
         super::Command::Tui { repo } => tui::run(repo),
         super::Command::MemoryStore {
@@ -210,14 +210,25 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             )
             .await
         }
-        super::Command::SymbolsStatus { repo } => symbols::run_status(repo),
+        super::Command::SymbolsStatus { repo } => symbols::run_status(repo).await,
         super::Command::Mcp {
             repo,
             log,
             max_results,
             rate_limit_per_min,
             rate_limit_burst,
-        } => mcp::run(repo, log, max_results, rate_limit_per_min, rate_limit_burst).await,
+            auth_token,
+        } => {
+            mcp::run(
+                repo,
+                log,
+                max_results,
+                rate_limit_per_min,
+                rate_limit_burst,
+                auth_token,
+            )
+            .await
+        }
         super::Command::McpAdd {
             agent,
             repo,

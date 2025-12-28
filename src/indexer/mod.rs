@@ -29,7 +29,7 @@ impl IndexingOptions {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct IndexingReport {
     pub repo_root: PathBuf,
     pub state_dir: PathBuf,

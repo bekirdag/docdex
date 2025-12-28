@@ -1,3 +1,4 @@
+use crate::cli::http_client::CliHttpClient;
 use crate::config::RepoArgs;
 use crate::index;
 use crate::libs;
@@ -6,18 +7,22 @@ use crate::util;
 use crate::{error, error::AppError};
 use anyhow::Context;
 use anyhow::Result;
+use reqwest::Method;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
-pub(crate) fn run_command(command: super::super::LibsCommand) -> Result<()> {
+pub(crate) async fn run_command(command: super::super::LibsCommand) -> Result<()> {
     match command {
-        super::super::LibsCommand::Fetch { repo, sources } => run_fetch(repo, sources),
-        super::super::LibsCommand::Discover { repo, sources } => run_discover(repo, sources),
+        super::super::LibsCommand::Fetch { repo, sources } => run_fetch(repo, sources).await,
+        super::super::LibsCommand::Discover { repo, sources } => run_discover(repo, sources).await,
     }
 }
 
-pub fn run_fetch(repo: RepoArgs, sources: Option<PathBuf>) -> Result<()> {
+pub async fn run_fetch(repo: RepoArgs, sources: Option<PathBuf>) -> Result<()> {
+    if !crate::cli::cli_local_mode() {
+        return run_fetch_via_http(repo, sources).await;
+    }
     let explicit = sources
         .as_ref()
         .map(read_sources_file)
@@ -42,12 +47,18 @@ pub fn run_fetch(repo: RepoArgs, sources: Option<PathBuf>) -> Result<()> {
     ingest_sources_for_repo(&repo, &sources_file)
 }
 
-pub fn run_ingest(repo: RepoArgs, sources: PathBuf) -> Result<()> {
+pub async fn run_ingest(repo: RepoArgs, sources: PathBuf) -> Result<()> {
+    if !crate::cli::cli_local_mode() {
+        return run_ingest_via_http(repo, sources).await;
+    }
     let sources_file = read_sources_file(&sources)?;
     ingest_sources_for_repo(&repo, &sources_file)
 }
 
-pub fn run_discover(repo: RepoArgs, sources: Option<PathBuf>) -> Result<()> {
+pub async fn run_discover(repo: RepoArgs, sources: Option<PathBuf>) -> Result<()> {
+    if !crate::cli::cli_local_mode() {
+        return run_discover_via_http(repo, sources).await;
+    }
     let repo_root = repo.repo_root();
     util::init_logging("warn")?;
     let explicit = match sources {
@@ -60,6 +71,59 @@ pub fn run_discover(repo: RepoArgs, sources: Option<PathBuf>) -> Result<()> {
     let resolver = libs_source_resolver::LibsSourceResolver::new(repo_root);
     let resolution = resolver.resolve(explicit.as_ref())?;
     println!("{}", serde_json::to_string_pretty(&resolution)?);
+    Ok(())
+}
+
+async fn run_fetch_via_http(repo: RepoArgs, sources: Option<PathBuf>) -> Result<()> {
+    let repo_root = repo.repo_root();
+    let payload = serde_json::json!({
+        "sources_path": sources.as_ref().map(|path| path.to_string_lossy().to_string()),
+    });
+    let client = CliHttpClient::new()?;
+    let mut req = client
+        .request(Method::POST, "/v1/libs/fetch")
+        .json(&payload);
+    req = client.with_repo(req, &repo_root)?;
+    let resp = req.send().await?;
+    emit_json_or_error(resp, "libs fetch").await
+}
+
+async fn run_ingest_via_http(repo: RepoArgs, sources: PathBuf) -> Result<()> {
+    let repo_root = repo.repo_root();
+    let payload = serde_json::json!({
+        "sources_path": sources.to_string_lossy().to_string(),
+    });
+    let client = CliHttpClient::new()?;
+    let mut req = client
+        .request(Method::POST, "/v1/libs/ingest")
+        .json(&payload);
+    req = client.with_repo(req, &repo_root)?;
+    let resp = req.send().await?;
+    emit_json_or_error(resp, "libs ingest").await
+}
+
+async fn run_discover_via_http(repo: RepoArgs, sources: Option<PathBuf>) -> Result<()> {
+    let repo_root = repo.repo_root();
+    let payload = serde_json::json!({
+        "sources_path": sources.as_ref().map(|path| path.to_string_lossy().to_string()),
+    });
+    let client = CliHttpClient::new()?;
+    let mut req = client
+        .request(Method::POST, "/v1/libs/discover")
+        .json(&payload);
+    req = client.with_repo(req, &repo_root)?;
+    let resp = req.send().await?;
+    emit_json_or_error(resp, "libs discover").await
+}
+
+async fn emit_json_or_error(resp: reqwest::Response, label: &str) -> Result<()> {
+    let status = resp.status();
+    let text = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("docdexd {} failed ({}): {}", label, status, text);
+    }
+    let value: serde_json::Value = serde_json::from_str(&text)?;
+    println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
 }
 

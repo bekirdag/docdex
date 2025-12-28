@@ -1,3 +1,5 @@
+mod common;
+
 use serde_json::{json, Value};
 use std::error::Error;
 use std::io::{BufRead, BufReader, Write};
@@ -10,6 +12,8 @@ use tempfile::TempDir;
 type BoxError = Box<dyn Error + Send + Sync>;
 
 fn docdex_bin() -> PathBuf {
+    std::env::set_var("DOCDEX_CLI_LOCAL", "1");
+    std::env::set_var("DOCDEX_MCP_SERVER_BIN", common::mcp_server_bin());
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 

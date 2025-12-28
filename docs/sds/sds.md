@@ -47,7 +47,7 @@ Docdex v2.0 runs a per-repo local-first daemon (`docdexd serve`) per repo. Run o
 - **Context assembly**: fixed priority Memory → Repo Code → Library/Web; token budget roughly 10% system prompt, 20% memory, 50% repo/library/web, 20% generation buffer. Budgeting happens before Ollama calls.  
 - **Isolation model**: per-repo state under `~/.docdex/state/repos/<fingerprint>/`; global caches (`cache/web`, `cache/libs`) are reused but ingested per repo. CLI/MCP require explicit repo id/path; HTTP uses the daemon repo by default and validates any provided repo id/path.  
 - **Hardware awareness**: daemon detects RAM/VRAM to recommend or constrain Ollama models (e.g., \<8GB ultra-light; ≥16GB default `phi3.5:3.8b`; ≥32GB \+ GPU suggests `llama3.1:70b` if present). No auto-install; guidance only.  
-- **Security posture**: binds to `127.0.0.1` by default; `--expose` demands token auth across HTTP/MCP. No telemetry or paid/cloud services.  
+- **Security posture**: binds to `127.0.0.1` by default; `--expose` demands token auth on HTTP, and MCP enforces `auth_token` when configured. No telemetry or paid/cloud services.  
 - **Scalability & reliability (per PDR scope)**: targets ≥8 concurrent repos by running separate per-repo daemons; local search p95 \< 50ms (\<20ms typical). Browser guard prevents zombie Chrome; web rate limits (≥2s DDG, ≥1s fetch) mitigate bans.  
 - **Out-of-scope (per section)**: new surfaces, cloud/vector backends, cross-repo memory, clustered/multi-tenant daemon topologies are explicitly excluded.
 
@@ -83,7 +83,7 @@ Local-first, per-repo daemon discipline governs all decisions: `docdexd` serves 
 
 **Security and privacy defaults**
 
-- Bind HTTP/MCP to `127.0.0.1`; `--expose` requires token auth on every request.  
+- Bind HTTP/MCP to `127.0.0.1`; `--expose` requires token auth on HTTP requests, and stdio MCP expects `auth_token` in `initialize` when configured.  
 - No telemetry, no paid keys; compliance demands open-source dependencies only.  
 - Browser lifecycle guarded; locks directory to prevent zombie Chrome processes.
 
@@ -273,7 +273,7 @@ This section defines the daemon’s key subsystems and how they cooperate to sat
 
 **Verification Strategy**
 
-- `docdexd check` validates config, state perms, Ollama reachability/models, Chrome availability, repo registry, HTTP bind/MCP toggle.  
+- `docdexd check` validates config, state perms, Ollama reachability/models, Chrome availability, repo registry, HTTP bind, and MCP binary readiness.  
 - Repo Manager tests for isolation under concurrent access across multiple per-repo daemons.  
 - Waterfall tests: force low-confidence path to verify DDG spacing, fetch delays, cache use, and Chrome guard; ensure local-only when above threshold.  
 - Memory tests: store/recall per repo; ensure no cross-repo leakage; embedding flow via Ollama.  
@@ -859,6 +859,7 @@ Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper
 - **Interactions & Data Flow**  
     
 - Commands invoke daemon APIs; daemon resolves repo fingerprint → per-repo state dirs (`index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`, `impact_graph.json`).  
+  - CLI base URL derives from `server.http_bind_addr` unless `DOCDEX_HTTP_BASE_URL` is set; `DOCDEX_CLI_LOCAL=1` forces legacy local execution when the daemon is unavailable.  
   - Waterfall commands share caches: `cache/web` (HTML \+ cleaned JSON) and `cache/libs`; ingestion is repo-scoped.  
   - Token budgeting for chat/web-rag enforced by daemon (not CLI); CLI streams outputs from Ollama via daemon.
 
@@ -873,6 +874,7 @@ Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper
 - **Security/Privacy**  
     
   - Default localhost bind; `--expose` requires token; CLI must pass token when remote.  
+  - Stdio MCP enforces `auth_token` in `initialize` only when `DOCDEX_AUTH_TOKEN`/`--auth-token` is supplied (auto-started MCP inherits the daemon token).  
   - No paid APIs; offline-first; web only on low confidence or explicit web commands.  
   - All repo-scoped commands require repo arg to prevent cross-repo bleed; MCP tools mirror this.
 

@@ -1,3 +1,5 @@
+mod common;
+
 use axum::{routing::post, Json, Router};
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
@@ -12,6 +14,8 @@ use tempfile::TempDir;
 use tokio::sync::oneshot;
 
 fn docdex_bin() -> PathBuf {
+    std::env::set_var("DOCDEX_CLI_LOCAL", "1");
+    std::env::set_var("DOCDEX_MCP_SERVER_BIN", common::mcp_server_bin());
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 

@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 fn docdex_bin() -> PathBuf {
+    std::env::set_var("DOCDEX_CLI_LOCAL", "1");
     cargo_bin!("docdexd").to_path_buf()
 }
 

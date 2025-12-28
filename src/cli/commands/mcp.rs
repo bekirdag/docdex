@@ -8,6 +8,7 @@ pub async fn run(
     max_results: usize,
     rate_limit_per_min: u32,
     rate_limit_burst: u32,
+    auth_token: Option<String>,
 ) -> Result<()> {
     let max_results = std::env::var("DOCDEX_MCP_MAX_RESULTS")
         .ok()
@@ -20,6 +21,7 @@ pub async fn run(
         max_results,
         rate_limit_per_min,
         rate_limit_burst,
+        auth_token,
     )
     .await?;
     Ok(())

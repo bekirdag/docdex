@@ -1,4 +1,5 @@
 use crate::config::{self, RepoArgs};
+use crate::cli::http_client::CliHttpClient;
 use crate::diff;
 use crate::dag::logging as dag_logging;
 use crate::index;
@@ -17,9 +18,10 @@ use crate::tier2::Tier2Config;
 use crate::util;
 use anyhow::Result;
 use futures::StreamExt;
-use reqwest::header::{ACCEPT, AUTHORIZATION};
+use reqwest::header::ACCEPT;
+use reqwest::Method;
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::io::{self, Write};
 use std::path::Path;
 use std::time::Duration;
@@ -44,6 +46,7 @@ pub(crate) async fn run(
     diff_head: Option<String>,
     diff_path: Vec<std::path::PathBuf>,
 ) -> Result<()> {
+    let use_local = crate::cli::cli_local_mode();
     let repo_root = repo.repo_root();
     let diff_mode = diff_mode.map(|mode| match mode {
         CliDiffMode::WorkingTree => diff::DiffMode::WorkingTree,
@@ -65,6 +68,24 @@ pub(crate) async fn run(
             limit,
             max_web_results,
             false,
+            !repo_only,
+            skip_local_search,
+            no_cache,
+            llm_filter_local_results,
+            compress_results,
+            diff_mode,
+            diff_base,
+            diff_head,
+            diff_path,
+        )
+        .await;
+    }
+    if !use_local {
+        return run_via_http(
+            &repo_root,
+            &query,
+            limit,
+            max_web_results,
             !repo_only,
             skip_local_search,
             no_cache,
@@ -171,6 +192,46 @@ pub(crate) async fn run(
     Ok(())
 }
 
+async fn run_via_http(
+    repo_root: &Path,
+    query: &str,
+    limit: usize,
+    max_web_results: Option<usize>,
+    include_libs: bool,
+    skip_local_search: bool,
+    no_cache: bool,
+    llm_filter_local_results: bool,
+    compress_results: bool,
+    diff_mode: Option<diff::DiffMode>,
+    diff_base: Option<String>,
+    diff_head: Option<String>,
+    diff_path: Vec<std::path::PathBuf>,
+) -> Result<()> {
+    let payload = search_via_http(
+        repo_root,
+        query,
+        limit,
+        include_libs,
+        false,
+        skip_local_search,
+        no_cache,
+        llm_filter_local_results,
+        max_web_results,
+        diff_mode,
+        diff_base,
+        diff_head,
+        diff_path,
+    )
+    .await?;
+    if compress_results {
+        let compressed = build_compressed_from_value(&payload);
+        println!("{}", serde_json::to_string_pretty(&compressed)?);
+    } else {
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+    }
+    Ok(())
+}
+
 pub(crate) fn resolve_memory_state(
     config: Option<&config::AppConfig>,
     state_dir: &Path,
@@ -261,6 +322,14 @@ fn build_compressed_response(waterfall: &WaterfallResult) -> CompressedResponse 
     }
 }
 
+fn build_compressed_from_value(payload: &Value) -> CompressedResponse {
+    let local = compressed_local_from_value(payload);
+    let web = compressed_web_from_value(payload);
+    CompressedResponse {
+        results: CompressedResults { local, web },
+    }
+}
+
 fn build_compressed_local(search: &crate::search::SearchResponse) -> Option<CompressedLocal> {
     let hit = search.hits.first()?;
     let score = search
@@ -278,6 +347,40 @@ fn build_compressed_local(search: &crate::search::SearchResponse) -> Option<Comp
         path: hit.rel_path.clone(),
         summary,
     })
+}
+
+fn compressed_local_from_value(payload: &Value) -> Option<CompressedLocal> {
+    let hits = payload.get("hits")?.as_array()?;
+    let hit = hits.first()?;
+    let path = hit
+        .get("path")
+        .or_else(|| hit.get("rel_path"))
+        .and_then(|value| value.as_str())?
+        .to_string();
+    let score = payload
+        .get("top_score_normalized")
+        .or_else(|| payload.get("topScoreNormalized"))
+        .and_then(|value| value.as_f64())
+        .map(|value| value as f32)
+        .or_else(|| {
+            hit.get("score")
+                .and_then(|value| value.as_f64())
+                .map(|value| crate::search::normalize_score(value as f32))
+        })?;
+    let summary = hit
+        .get("summary")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(truncate_compressed_text)
+        .or_else(|| {
+            hit.get("snippet")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(truncate_compressed_text)
+        });
+    Some(CompressedLocal { score, path, summary })
 }
 
 fn best_web_summary(
@@ -318,10 +421,129 @@ fn best_web_summary(
     })
 }
 
+fn compressed_web_from_value(payload: &Value) -> Option<CompressedWeb> {
+    let items = payload
+        .get("web_context")
+        .or_else(|| payload.get("webContext"))
+        .and_then(|value| value.as_array())?;
+    let mut best: Option<&Value> = None;
+    let mut best_score = 0.0;
+    for item in items {
+        let ai = item
+            .get("ai_digested_content")
+            .or_else(|| item.get("aiDigestedContent"))
+            .and_then(|value| value.as_str());
+        let content = item.get("content").and_then(|value| value.as_str());
+        if ai.is_none() && content.is_none() {
+            continue;
+        }
+        let score = item
+            .get("relevance_score")
+            .or_else(|| item.get("relevanceScore"))
+            .and_then(|value| value.as_f64())
+            .unwrap_or(0.0) as f32;
+        if best.is_none() || score > best_score {
+            best = Some(item);
+            best_score = score;
+        }
+    }
+    let best = best?;
+    let url = best.get("url")?.as_str()?.to_string();
+    let ai_digested_content = best
+        .get("ai_digested_content")
+        .or_else(|| best.get("aiDigestedContent"))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
+    let content_snippet = if ai_digested_content.is_none() {
+        best.get("content")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(truncate_compressed_text)
+    } else {
+        None
+    };
+    Some(CompressedWeb {
+        score: best_score,
+        url,
+        ai_digested_content,
+        content_snippet,
+    })
+}
+
 fn truncate_compressed_text(text: &str) -> String {
     const MAX_COMPRESS_CHARS: usize = 280;
     let (snippet, _) = crate::max_size::truncate_utf8_chars(text, MAX_COMPRESS_CHARS);
     snippet
+}
+
+#[derive(Serialize)]
+struct SearchRequest {
+    q: String,
+    limit: usize,
+    include_libs: bool,
+    force_web: bool,
+    skip_local_search: bool,
+    no_cache: bool,
+    llm_filter_local_results: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_web_results: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diff_mode: Option<diff::DiffMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diff_base: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diff_head: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    diff_path: Vec<String>,
+}
+
+pub(crate) async fn search_via_http(
+    repo_root: &Path,
+    query: &str,
+    limit: usize,
+    include_libs: bool,
+    force_web: bool,
+    skip_local_search: bool,
+    no_cache: bool,
+    llm_filter_local_results: bool,
+    max_web_results: Option<usize>,
+    diff_mode: Option<diff::DiffMode>,
+    diff_base: Option<String>,
+    diff_head: Option<String>,
+    diff_path: Vec<std::path::PathBuf>,
+) -> Result<Value> {
+    let client = CliHttpClient::new_streaming()?;
+    let payload = SearchRequest {
+        q: query.to_string(),
+        limit,
+        include_libs,
+        force_web,
+        skip_local_search,
+        no_cache,
+        llm_filter_local_results,
+        max_web_results,
+        diff_mode,
+        diff_base,
+        diff_head,
+        diff_path: diff_path
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect(),
+    };
+    let mut req = client.request(Method::GET, "/search").query(&payload);
+    req = client.with_repo(req, repo_root)?;
+    let resp = req.send().await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "docdexd search failed ({status}): {body}; ensure `docdexd serve --repo {}` is running",
+            repo_root.display()
+        );
+    }
+    let raw = resp.text().await?;
+    Ok(serde_json::from_str(&raw)?)
 }
 
 #[derive(Serialize)]
@@ -411,17 +633,7 @@ pub(crate) async fn stream_via_http(
     diff_head: Option<String>,
     diff_path: Vec<std::path::PathBuf>,
 ) -> Result<()> {
-    let config = config::AppConfig::load_default()?;
-    let bind_addr = config.server.http_bind_addr.trim();
-    if bind_addr.is_empty() {
-        anyhow::bail!("server.http_bind_addr is empty; set it in ~/.docdex/config.toml");
-    }
-    let base = if bind_addr.contains("://") {
-        bind_addr.to_string()
-    } else {
-        format!("http://{bind_addr}")
-    };
-    let url = format!("{}/v1/chat/completions", base.trim_end_matches('/'));
+    let client = CliHttpClient::new()?;
     let repo_id = repo_manager::repo_fingerprint_sha256(repo_root).ok();
     let diff_payload = if diff_mode.is_some()
         || diff_base.is_some()
@@ -462,14 +674,11 @@ pub(crate) async fn stream_via_http(
         }),
     };
 
-    let client = reqwest::Client::new();
-    let mut request = client.post(url).header(ACCEPT, "text/event-stream").json(&payload);
-    if let Ok(token) = std::env::var("DOCDEX_AUTH_TOKEN") {
-        let trimmed = token.trim();
-        if !trimmed.is_empty() {
-            request = request.header(AUTHORIZATION, format!("Bearer {trimmed}"));
-        }
-    }
+    let mut request = client
+        .request(Method::POST, "/v1/chat/completions")
+        .header(ACCEPT, "text/event-stream")
+        .json(&payload);
+    request = client.with_repo(request, repo_root)?;
     let response = request.send().await?;
     if !response.status().is_success() {
         let status = response.status();

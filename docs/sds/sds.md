@@ -1009,12 +1009,16 @@ Docdex relies solely on locally managed, zero-cost components for LLM/embeddings
 - DuckDuckGo HTML discovery: search-only HTML endpoint used for web queries; enforces ≥2s between queries.  
 - Headless Chrome: fetch and readability extraction for discovered URLs; guarded lifecycle to avoid zombie processes; respects per-domain ≥1s fetch delay and 15s page timeout defaults.  
 - Tree-sitter: language parsers (Rust, TS/JS, Python, Go) for symbol extraction during `index`; outputs stored in per-repo `symbols.db`.
+- Impact graph resolution (best-effort): import edges resolve static patterns including literal import strings, string concatenation with constant bindings, static path joins (`path.join`, `path.resolve`, `os.path.join`), template strings with static bindings or unique repo match, Python `importlib.import_module` and `importlib.util.spec_from_file_location`, and Rust `mod`/`use`/`include!`. Unresolved dynamic imports are skipped and recorded in impact diagnostics.
+- Parser drift policy: when stored Tree-sitter parser versions differ from the running build, Docdex invalidates symbols/AST, sets `symbols_reindex_required`, and `GET /v1/symbols`/`GET /v1/ast` return `409 stale_index` until reindex. Drift metadata is exposed via `GET /v1/symbols/status` and `docdexd symbols-status`.
+- AST search surface: `GET /v1/ast/search` accepts `kinds` (node kinds), `mode` (`any|all`), and `limit` to list files matching AST criteria for richer code intelligence queries.
 
 **Interactions and Data Flow**
 
 - Waterfall Tier-2 (web) path: Local search confidence below `web_trigger_threshold` or explicit user request → DuckDuckGo discovery (rate-limited) → headless Chrome fetch with readability → raw HTML \+ cleaned JSON cached under `cache/web/` → ingested per repo when merged into context.  
 - Library docs path: Dependency detectors resolve docs URLs → headless Chrome fetch with same guardrails → cached under `cache/libs/<ecosystem>/<pkg>/` → ingested into per-repo `libs_index`, treated as Tier-1 support content.  
 - Indexing path: `docdexd index --repo` invokes Tree-sitter to emit symbols (name, kind, file\_path, line\_start/line\_end, signature) into `symbols.db`; Repo Manager ensures per-repo isolation via SHA256 fingerprinted paths.  
+- Diff-aware RAG path: when diff inputs are provided (CLI diff flags or `docdex.diff` in `/v1/chat/completions`), collect git diff (working tree, staged, or range; optionally path-scoped), expand to 1-hop dependencies using the impact graph, and assemble a diff context slice. Context ordering is Memory → Diff → Repo → Lib/Web with token budgets and drop logging. Dynamic imports resolve best-effort (literals, concatenations, static joins, template strings with static bindings, optional `docdex.import_map.json` hints); unresolved imports are skipped and reported via diagnostics/logs.  
 - LLM path: Completions and embeddings use the configured provider; local Ollama is the default. No implicit cloud fallback; `[llm]` warns if provider is unknown or missing required config.
 
 **Operational Guardrails**

@@ -179,6 +179,12 @@ pub struct AstSearchMatch {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AstSearchMode {
+    Any,
+    All,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceLanguage {
     Markdown,
     Rust,
@@ -619,6 +625,15 @@ impl SymbolsStore {
         kinds: &[String],
         max_files: usize,
     ) -> Result<Vec<AstSearchMatch>> {
+        self.search_ast_kinds_with_mode(kinds, max_files, AstSearchMode::Any)
+    }
+
+    pub fn search_ast_kinds_with_mode(
+        &self,
+        kinds: &[String],
+        max_files: usize,
+        mode: AstSearchMode,
+    ) -> Result<Vec<AstSearchMatch>> {
         if kinds.is_empty() || max_files == 0 {
             return Ok(Vec::new());
         }
@@ -631,18 +646,24 @@ impl SymbolsStore {
             }
             sql.push_str(&format!("?{}", idx + 1));
         }
-        sql.push_str(") GROUP BY file_path ORDER BY match_count DESC, file_path ASC LIMIT ?");
-        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(kinds.len() + 1);
-        for kind in kinds {
-            params.push(kind);
+        sql.push(')');
+        if mode == AstSearchMode::All {
+            sql.push_str(" GROUP BY file_path HAVING COUNT(DISTINCT kind) = ?");
+        } else {
+            sql.push_str(" GROUP BY file_path");
         }
-        let limit = max_files as i64;
-        params.push(&limit);
+        sql.push_str(" ORDER BY match_count DESC, file_path ASC LIMIT ?");
+        let mut params: Vec<rusqlite::types::Value> =
+            kinds.iter().cloned().map(Into::into).collect();
+        if mode == AstSearchMode::All {
+            params.push((kinds.len() as i64).into());
+        }
+        params.push((max_files as i64).into());
         let mut stmt = conn
             .prepare(&sql)
             .context("prepare ast kind search")?;
         let mut rows = stmt
-            .query(params_from_iter(params))
+            .query(params_from_iter(params.iter()))
             .context("query ast kind matches")?;
         let mut out = Vec::new();
         while let Some(row) = rows.next().context("read ast kind row")? {

@@ -8,8 +8,8 @@ use crate::error::{
 };
 use crate::impact::{extract_import_edges, ImpactGraphEdge};
 use crate::symbols::{
-    AstResponseV1, AstSearchMatch, SymbolSearchMatch, SymbolsParserStatus, SymbolsResponseV1,
-    SymbolsStore,
+    AstResponseV1, AstSearchMatch, AstSearchMode, SymbolSearchMatch, SymbolsParserStatus,
+    SymbolsResponseV1, SymbolsStore,
 };
 use anyhow::{anyhow, Context, Result};
 use once_cell::sync::Lazy;
@@ -949,6 +949,21 @@ impl Indexer {
             return Ok(Vec::new());
         }
         store.search_ast_kinds(kinds, max_files)
+    }
+
+    pub fn search_ast_kinds_with_mode(
+        &self,
+        kinds: &[String],
+        max_files: usize,
+        mode: AstSearchMode,
+    ) -> Result<Vec<AstSearchMatch>> {
+        let Some(store) = self.symbols_store.as_ref() else {
+            return Ok(Vec::new());
+        };
+        if store.requires_reindex()? {
+            return Ok(Vec::new());
+        }
+        store.search_ast_kinds_with_mode(kinds, max_files, mode)
     }
 
     pub fn state_dir(&self) -> &Path {

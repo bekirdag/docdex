@@ -8,6 +8,10 @@ use tracing::{info, warn};
 
 use super::budget::MemoryBudget;
 use super::plan::WaterfallPlan;
+use crate::impact::{
+    assemble_impact_context, expand_impact_from_diff_files, ImpactContextAssembly,
+    ImpactQueryControlsRaw,
+};
 use crate::index::{Hit, Indexer};
 use crate::libs::LibsIndexer;
 use crate::memory::{
@@ -23,6 +27,8 @@ use crate::metrics;
 use crate::search::{MemoryState, SearchResponse};
 use crate::tier2::{self, Tier2Limiter, Tier2Unavailable};
 use crate::dag::logging as dag_logging;
+use crate::diff;
+use std::env;
 
 /// Description of the waterfall request.
 #[derive(Clone)]
@@ -30,6 +36,7 @@ pub struct WaterfallRequest<'a> {
     pub request_id: &'a str,
     pub query: &'a str,
     pub limit: usize,
+    pub diff: Option<crate::diff::DiffRequest>,
     pub web_limit: Option<usize>,
     pub force_web: bool,
     pub skip_local_search: bool,
@@ -48,6 +55,7 @@ pub struct WaterfallRequest<'a> {
 pub struct WaterfallResult {
     pub search_response: SearchResponse,
     pub tier2: Tier2Outcome,
+    pub impact_context: Option<ImpactContextAssembly>,
     pub memory_context: Option<MemoryContextAssembly>,
 }
 
@@ -98,6 +106,9 @@ pub struct SymbolContextPruneTrace {
     pub truncated_files: usize,
 }
 
+const DEFAULT_DIFF_MAX_EDGES: usize = 200;
+const DEFAULT_DIFF_MAX_DEPTH: usize = 1;
+
 /// Execute the waterfall (Tier 1 → Tier 2 → Tier 3) for a single query.
 pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallResult> {
     let intent = detect_query_intent(request.query);
@@ -110,6 +121,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
             top_score_normalized_camel: None,
             web_context: None,
             web_discovery: None,
+            impact_context: None,
             memory_context: None,
             symbols_context: None,
             meta: None,
@@ -119,6 +131,12 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
             .await?
     };
     let repo_state_root = repo_state_root_from_state_dir(request.indexer.state_dir());
+    let impact_context = collect_impact_context(
+        request.indexer.repo_root(),
+        request.indexer.state_dir(),
+        request.diff.as_ref(),
+        request.request_id,
+    )?;
 
     let (top_score, top_score_normalized, local_match_ratio) = if request.skip_local_search {
         (None, None, None)
@@ -289,8 +307,95 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
     Ok(WaterfallResult {
         search_response,
         tier2,
+        impact_context,
         memory_context,
     })
+}
+
+fn collect_impact_context(
+    repo_root: &Path,
+    state_dir: &Path,
+    diff_request: Option<&diff::DiffRequest>,
+    request_id: &str,
+) -> Result<Option<ImpactContextAssembly>> {
+    let Some(diff_request) = diff_request else {
+        return Ok(None);
+    };
+    let diff_changes = diff::collect_git_diff(repo_root, diff_request)?;
+    if diff_changes.is_empty() {
+        return Ok(None);
+    }
+    let diff_file_count = diff_changes.len();
+    let diff_ranges = diff_changes.iter().map(|change| change.ranges.len()).sum::<usize>();
+    let diff_lines = diff_changes
+        .iter()
+        .flat_map(|change| change.ranges.iter())
+        .map(|range| range.end.saturating_sub(range.start).saturating_add(1) as usize)
+        .sum::<usize>();
+    let diff_files = diff_changes
+        .iter()
+        .map(|change| change.path.clone())
+        .collect::<Vec<_>>();
+    let controls = impact_controls_from_env();
+    let expansion = expand_impact_from_diff_files(state_dir, &diff_files, &controls)?;
+    let context = assemble_impact_context(&diff_files, expansion, &controls);
+    info!(
+        target: "docdexd",
+        request_id = %request_id,
+        repo_root = %repo_root.display(),
+        diff_files = diff_file_count,
+        diff_ranges,
+        diff_lines,
+        "diff context collected"
+    );
+    info!(
+        target: "docdexd",
+        request_id = %request_id,
+        repo_root = %repo_root.display(),
+        sources = context.prune_trace.normalized_sources,
+        dropped_sources = context.prune_trace.dropped_sources,
+        expanded_files = context.prune_trace.expanded_files,
+        edges = context.prune_trace.edges,
+        max_edges = context.prune_trace.max_edges,
+        max_depth = context.prune_trace.max_depth,
+        truncated = context.prune_trace.truncated,
+        "impact context expanded from diff"
+    );
+    if context.prune_trace.truncated {
+        info!(
+            target: "docdexd",
+            repo_root = %repo_root.display(),
+            max_edges = context.prune_trace.max_edges,
+            max_depth = context.prune_trace.max_depth,
+            edges = context.prune_trace.edges,
+            "impact graph expansion truncated"
+        );
+    }
+    Ok(Some(context))
+}
+
+fn impact_controls_from_env() -> crate::impact::ImpactQueryControls {
+    let max_edges = env::var("DOCDEX_DIFF_MAX_EDGES")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(DEFAULT_DIFF_MAX_EDGES as i64);
+    let max_depth = env::var("DOCDEX_DIFF_MAX_DEPTH")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(DEFAULT_DIFF_MAX_DEPTH as i64);
+    let raw = ImpactQueryControlsRaw {
+        max_edges: Some(max_edges),
+        max_depth: Some(max_depth),
+        edge_types: None,
+    };
+    match raw.validate() {
+        Ok(controls) => controls,
+        Err(_) => crate::impact::ImpactQueryControls {
+            max_edges: DEFAULT_DIFF_MAX_EDGES,
+            max_depth: DEFAULT_DIFF_MAX_DEPTH,
+            edge_types: None,
+        },
+    }
 }
 
 async fn run_tier2(
@@ -472,6 +577,13 @@ fn collect_symbol_context(indexer: &Indexer, hits: &[Hit]) -> Option<SymbolConte
     const MAX_SYMBOLS_PER_FILE: usize = 20;
 
     if !indexer.symbols_enabled() {
+        return None;
+    }
+    if let Ok(true) = indexer.symbols_reindex_required() {
+        warn!(
+            target: "docdexd",
+            "symbols reindex required; skipping symbol context"
+        );
         return None;
     }
 

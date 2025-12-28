@@ -1,4 +1,5 @@
 use crate::config::{self, RepoArgs};
+use crate::diff;
 use crate::dag::logging as dag_logging;
 use crate::index;
 use crate::libs;
@@ -23,8 +24,9 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::time::Duration;
 use uuid::Uuid;
+use crate::cli::CliDiffMode;
 
-pub async fn run(
+pub(crate) async fn run(
     repo: RepoArgs,
     query: String,
     model: Option<String>,
@@ -37,8 +39,23 @@ pub async fn run(
     llm_filter_local_results: bool,
     compress_results: bool,
     stream: bool,
+    diff_mode: Option<CliDiffMode>,
+    diff_base: Option<String>,
+    diff_head: Option<String>,
+    diff_path: Vec<std::path::PathBuf>,
 ) -> Result<()> {
     let repo_root = repo.repo_root();
+    let diff_mode = diff_mode.map(|mode| match mode {
+        CliDiffMode::WorkingTree => diff::DiffMode::WorkingTree,
+        CliDiffMode::Staged => diff::DiffMode::Staged,
+        CliDiffMode::Range => diff::DiffMode::Range,
+    });
+    let diff_request = diff::resolve_diff_request(
+        diff_mode,
+        diff_base.clone(),
+        diff_head.clone(),
+        diff_path.clone(),
+    )?;
     if stream {
         return stream_via_http(
             &repo_root,
@@ -53,6 +70,10 @@ pub async fn run(
             no_cache,
             llm_filter_local_results,
             compress_results,
+            diff_mode,
+            diff_base,
+            diff_head,
+            diff_path,
         )
         .await;
     }
@@ -101,6 +122,7 @@ pub async fn run(
         request_id: &request_id,
         query: &query,
         limit,
+        diff: diff_request,
         web_limit: max_web_results,
         force_web: false,
         skip_local_search,
@@ -138,9 +160,11 @@ pub async fn run(
     } else {
         let tier2_status = waterfall.tier2.status;
         let memory_context = waterfall.memory_context;
+        let impact_context = waterfall.impact_context;
         let mut response = waterfall.search_response;
         response.web_discovery = Some(tier2_status);
         response.memory_context = memory_context;
+        response.impact_context = impact_context;
         println!("{}", serde_json::to_string_pretty(&response)?);
     }
     Ok(())
@@ -333,6 +357,8 @@ struct DocdexOptions {
     llm_filter_local_results: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     compress_results: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diff: Option<diff::DiffOptions>,
 }
 
 #[derive(Serialize)]
@@ -379,6 +405,10 @@ pub(crate) async fn stream_via_http(
     no_cache: bool,
     llm_filter_local_results: bool,
     compress_results: bool,
+    diff_mode: Option<diff::DiffMode>,
+    diff_base: Option<String>,
+    diff_head: Option<String>,
+    diff_path: Vec<std::path::PathBuf>,
 ) -> Result<()> {
     let config = config::AppConfig::load_default()?;
     let bind_addr = config.server.http_bind_addr.trim();
@@ -392,6 +422,23 @@ pub(crate) async fn stream_via_http(
     };
     let url = format!("{}/v1/chat/completions", base.trim_end_matches('/'));
     let repo_id = repo_manager::repo_fingerprint_sha256(repo_root).ok();
+    let diff_payload = if diff_mode.is_some()
+        || diff_base.is_some()
+        || diff_head.is_some()
+        || !diff_path.is_empty()
+    {
+        Some(diff::DiffOptions {
+            mode: diff_mode,
+            base: diff_base,
+            head: diff_head,
+            paths: diff_path
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect(),
+        })
+    } else {
+        None
+    };
     let payload = ChatCompletionRequest {
         model: model.map(|value| value.to_string()),
         agent: agent.map(|value| value.to_string()),
@@ -410,6 +457,7 @@ pub(crate) async fn stream_via_http(
             include_libs: Some(include_libs),
             llm_filter_local_results: Some(llm_filter_local_results),
             compress_results: Some(compress_results),
+            diff: diff_payload,
         }),
     };
 

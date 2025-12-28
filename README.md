@@ -119,7 +119,7 @@ State is fingerprinted and isolated under `~/.docdex/state/repos/<fingerprint>` 
 - `--state-dir <path>` / `DOCDEX_STATE_DIR`: override index storage path (relative paths are resolved under `repo`). When `--state-dir` is an absolute shared base used across repos, repo moves/renames require an explicit `docdexd repo reassociate` step before Docdex will reuse the existing state.
 - `--exclude-prefix a,b,c` / `DOCDEX_EXCLUDE_PREFIXES`: extra relative prefixes to skip.
 - `--exclude-dir a,b,c` / `DOCDEX_EXCLUDE_DIRS`: extra directory names to skip anywhere in the tree.
-- `DOCDEX_ENABLE_SYMBOL_EXTRACTION`: enable optional per-file symbol extraction during indexing; see `docs/symbols_store.md`.
+- `DOCDEX_ENABLE_SYMBOL_EXTRACTION`: deprecated (no-op). Symbols/AST/impact extraction are always enabled; see `docs/symbols_store.md` for drift/reindex behavior.
 - `--auth-token <token>` / `DOCDEX_AUTH_TOKEN`: bearer token required in secure mode (default); omit only when starting with `--secure-mode=false`.
 - `--secure-mode <true|false>` / `DOCDEX_SECURE_MODE`: default `true`; when enabled, requires an auth token, loopback allowlist by default, and default rate limiting (60 req/min).
 - `--allow-ip a,b,c` / `DOCDEX_ALLOW_IPS`: optional comma-separated IPs/CIDRs allowed to reach the HTTP API (default: loopback-only in secure mode; allow all when secure mode is disabled).
@@ -148,6 +148,13 @@ State is fingerprinted and isolated under `~/.docdex/state/repos/<fingerprint>` 
 
 ## Indexing rules (see `index/mod.rs`)
 - File types: `.md`, `.markdown`, `.mdx`, `.txt` (extend `DEFAULT_EXTENSIONS` to add more).
+
+## Parser drift and reindexing
+
+Docdex stores Tree-sitter parser versions in `symbols.db`. If the stored parser versions differ from the running build, symbols/AST data are invalidated and requests return `stale_index` until you reindex.
+
+- Check drift status: `docdexd symbols-status --repo <path>` (or `GET /v1/symbols/status`).
+- Rebuild symbols/AST: `docdexd index --repo <path>` (this refreshes `symbols.db` and `impact_graph.json`).
 - Skipped directories: broad VCS/build/cache/vendor folders across ecosystems (e.g., `.git`, `.hg`, `.svn`, `node_modules`, `.pnpm-store`, `.yarn*`, `.nx`, `.rollup-cache`, `.webpack-cache`, `.tsbuildinfo`, `.next`, `.nuxt`, `.svelte-kit`, `.mypy_cache`, `.ruff_cache`, `.venv`, `target`, `go-build`, `.gradle`, `.mvn`, `pods`, `.dart_tool`, `.android`, `.serverless`, `.vercel`, `.netlify`, `_build`, `_opam`, `.stack-work`, `elm-stuff`, `library`, `intermediate`, `.godot`, etc.; see `DEFAULT_EXCLUDED_DIR_NAMES` for the full list).
 - Skipped relative prefixes: `logs/`, `.docdex/`, `.docdex/logs/`, `.docdex/tmp/`, `.gpt-creator/logs/`, `.gpt-creator/tmp/`, `.mastercoda/logs/`, `.mastercoda/tmp/`, `docker/.data/`, `docker-data/`, `.docker/`.
 - Snippet sizing: summaries ~360 chars (up to 4 segments); snippets ~420 chars.

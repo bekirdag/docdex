@@ -136,6 +136,7 @@ pub async fn run_eval(options: EvalOptions) -> Result<()> {
                 request_id: &request_id,
                 query: query.text,
                 limit: options.limit,
+                diff: None,
                 web_limit: options.max_web_results,
                 force_web: query.force_web,
                 skip_local_search: options.web_only,

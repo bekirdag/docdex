@@ -132,6 +132,10 @@ pub async fn run_rag(
             false,
             false,
             false,
+            None,
+            None,
+            None,
+            Vec::new(),
         )
         .await;
     }
@@ -179,6 +183,7 @@ pub async fn run_rag(
         request_id: &request_id,
         query: &query,
         limit,
+        diff: None,
         web_limit: None,
         force_web: true,
         skip_local_search: false,
@@ -209,9 +214,11 @@ pub async fn run_rag(
     }
     let tier2_status = waterfall.tier2.status;
     let memory_context = waterfall.memory_context;
+    let impact_context = waterfall.impact_context;
     let mut response = waterfall.search_response;
     response.web_discovery = Some(tier2_status);
     response.memory_context = memory_context;
+    response.impact_context = impact_context;
     println!("{}", serde_json::to_string_pretty(&response)?);
     Ok(())
 }

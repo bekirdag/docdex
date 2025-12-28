@@ -4,7 +4,7 @@ use crate::config;
 use crate::config::RepoArgs;
 use crate::error::StartupError;
 use anyhow::Result;
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -18,6 +18,15 @@ use std::path::PathBuf;
 struct Cli {
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug)]
+#[value(rename_all = "kebab-case")]
+pub(crate) enum CliDiffMode {
+    #[value(alias = "working_tree")]
+    WorkingTree,
+    Staged,
+    Range,
 }
 
 #[derive(Subcommand, Debug)]
@@ -383,6 +392,31 @@ pub(crate) enum Command {
             help = "Stream a text summary to stdout instead of printing JSON"
         )]
         stream: bool,
+        #[arg(
+            long,
+            value_enum,
+            help = "Enable diff-aware context (working-tree, staged, or range)"
+        )]
+        diff_mode: Option<CliDiffMode>,
+        #[arg(
+            long,
+            value_name = "REV",
+            help = "Diff range base ref (required when diff-mode=range)"
+        )]
+        diff_base: Option<String>,
+        #[arg(
+            long,
+            value_name = "REV",
+            help = "Diff range head ref (required when diff-mode=range)"
+        )]
+        diff_head: Option<String>,
+        #[arg(
+            long,
+            value_name = "PATH",
+            action = ArgAction::Append,
+            help = "Limit diff to specific paths (repeatable)"
+        )]
+        diff_path: Vec<PathBuf>,
     },
     /// Agent-related workflows.
     Agent {

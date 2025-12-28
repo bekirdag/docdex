@@ -26,6 +26,7 @@ pub fn run() -> Result<()> {
         "repo",
         "memory-store",
         "memory-recall",
+        "symbols-status",
     ] {
         let mut cmd = Cli::command();
         if let Some(sub) = cmd.find_subcommand_mut(name) {

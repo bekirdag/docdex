@@ -7,6 +7,7 @@ use docdexd::error::{
 };
 use docdexd::config;
 use docdexd::dag::logging as dag_logging;
+use docdexd::diff;
 use docdexd::index::{IndexConfig, Indexer};
 use docdexd::libs;
 use docdexd::memory::{inject_embedding_metadata, repo_state_root_from_state_dir, MemoryStore};
@@ -382,6 +383,8 @@ struct SearchArgs {
     limit: Option<usize>,
     #[serde(default)]
     force_web: Option<bool>,
+    #[serde(default)]
+    diff: Option<diff::DiffOptions>,
     #[serde(default)]
     project_root: Option<PathBuf>,
     #[serde(default, alias = "repoPath")]
@@ -1349,6 +1352,16 @@ impl McpServer {
                         "query": { "type": "string", "minLength": 1, "description": "Concise search query (will be rejected if empty)" },
                         "limit": { "type": "integer", "minimum": 1, "maximum": self.max_results as i64, "default": self.max_results, "description": "Max results to return (clamped to server max)" },
                         "force_web": { "type": "boolean", "description": "When true, bypasses the Tier 2 gate and runs web research" },
+                        "diff": {
+                            "type": "object",
+                            "description": "Optional diff-aware context inputs",
+                            "properties": {
+                                "mode": { "type": "string", "enum": ["working_tree", "working", "staged", "range"], "description": "Diff scope (working tree, staged, or range)" },
+                                "base": { "type": "string", "description": "Base ref for range diffs" },
+                                "head": { "type": "string", "description": "Head ref for range diffs" },
+                                "paths": { "type": "array", "items": { "type": "string" }, "description": "Limit diff to specific paths" }
+                            }
+                        },
                         "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
                         "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
                     },
@@ -1531,6 +1544,7 @@ impl McpServer {
             query,
             limit,
             force_web: force_web_arg,
+            diff,
             project_root,
             repo_path,
         } = args;
@@ -1547,6 +1561,7 @@ impl McpServer {
             .to_string();
         let repo_state_root = repo_state_root_from_state_dir(self.indexer.state_dir());
         let force_web = force_web_arg.unwrap_or(false);
+        let diff_request = diff::resolve_diff_request_from_options(diff.as_ref())?;
         queue_dag_log(
             &repo_state_root,
             &request_id,
@@ -1556,6 +1571,7 @@ impl McpServer {
                 "limit": limit,
                 "force_web": force_web,
                 "project_root": project_root_path.clone(),
+                "diff": diff.as_ref().map(|opts| json!(opts)),
             }),
         );
         let plan = WaterfallPlan::new(
@@ -1572,6 +1588,7 @@ impl McpServer {
             request_id: request_id_ref,
             query,
             limit,
+            diff: diff_request,
             web_limit: None,
             force_web,
             skip_local_search: false,
@@ -1598,6 +1615,7 @@ impl McpServer {
         );
         let mut response = waterfall.search_response;
         response.web_discovery = Some(waterfall.tier2.status.clone());
+        response.impact_context = waterfall.impact_context;
         response.memory_context = waterfall.memory_context;
         let hits_value = serde_json::to_value(&response.hits)?;
         let top_score = response.top_score;

@@ -236,6 +236,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/ast", get(crate::api::v1::ast::ast_handler))
         .route(
+            "/v1/ast/search",
+            get(crate::api::v1::ast::ast_search_handler),
+        )
+        .route(
             "/v1/symbols/status",
             get(crate::api::v1::symbols::symbols_status_handler),
         )
@@ -973,6 +977,8 @@ pub struct SearchResponse {
     pub web_context: Option<Vec<WebFetchResult>>,
     #[serde(rename = "webDiscovery", skip_serializing_if = "Option::is_none")]
     pub web_discovery: Option<WebDiscoveryStatus>,
+    #[serde(rename = "impactContext", skip_serializing_if = "Option::is_none")]
+    pub impact_context: Option<crate::impact::ImpactContextAssembly>,
     #[serde(rename = "memoryContext", skip_serializing_if = "Option::is_none")]
     pub memory_context: Option<MemoryContextAssembly>,
     #[serde(rename = "symbolsContext", skip_serializing_if = "Option::is_none")]
@@ -1292,6 +1298,7 @@ pub async fn run_query(
         top_score_normalized_camel: top_score_normalized,
         web_context: None,
         web_discovery: None,
+        impact_context: None,
         memory_context: None,
         symbols_context: None,
         meta: Some(build_search_meta(indexer, Some(query_meta), None)?),
@@ -1326,6 +1333,16 @@ fn apply_symbol_matches(
     query: &str,
     limit: usize,
 ) -> Result<()> {
+    if !indexer.symbols_enabled() {
+        return Ok(());
+    }
+    if indexer.symbols_reindex_required().unwrap_or(false) {
+        warn!(
+            target: "docdexd",
+            "symbols reindex required; skipping symbol matches"
+        );
+        return Ok(());
+    }
     let max_files = SYMBOL_MATCH_MAX_FILES.min(limit.max(1));
     let matches = indexer.search_symbols(query, max_files, SYMBOL_MATCH_MAX_PER_FILE)?;
     if matches.is_empty() {
@@ -1365,6 +1382,13 @@ fn apply_ast_matches(
     limit: usize,
 ) -> Result<()> {
     if !indexer.symbols_enabled() {
+        return Ok(());
+    }
+    if indexer.symbols_reindex_required().unwrap_or(false) {
+        warn!(
+            target: "docdexd",
+            "symbols reindex required; skipping AST matches"
+        );
         return Ok(());
     }
 
@@ -1795,6 +1819,7 @@ async fn search_handler(
         request_id: request_id_str,
         query,
         limit,
+        diff: None,
         web_limit: None,
         force_web,
         skip_local_search: false,
@@ -1890,6 +1915,7 @@ async fn search_handler(
             response.top_score_normalized_camel = top_score_normalized;
             response.web_context = web_context;
             response.web_discovery = Some(waterfall_result.tier2.status);
+            response.impact_context = waterfall_result.impact_context;
             response.memory_context = waterfall_result.memory_context;
             response.meta = meta;
             Json(response)

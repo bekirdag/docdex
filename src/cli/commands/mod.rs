@@ -123,6 +123,10 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             llm_filter_local_results,
             compress_results,
             stream,
+            diff_mode,
+            diff_base,
+            diff_head,
+            diff_path,
         } => {
             query::run(
                 repo,
@@ -137,6 +141,10 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
                 llm_filter_local_results,
                 compress_results,
                 stream,
+                diff_mode,
+                diff_base,
+                diff_head,
+                diff_path,
             )
             .await
         }

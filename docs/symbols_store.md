@@ -131,6 +131,7 @@ Failure semantics (HTTP JSON errors):
 
 - `invalid_argument`: `path` is missing/empty or not a safe repo-relative path.
 - `missing_index`: no symbols record exists for the requested path.
+- `stale_index`: parser version drift invalidated symbols/AST; reindex required.
 
 ### HTTP endpoint: `GET /v1/ast`
 
@@ -143,6 +144,35 @@ GET /v1/ast?path=path/relative/to/repo.ext&maxNodes=20000
 Return value:
 
 - A `docdex.ast` payload, as defined in `docs/contracts/code_intelligence_schema_v1.md`.
+
+Failure semantics (HTTP JSON errors):
+
+- `invalid_argument`: `path` is missing/empty or not a safe repo-relative path.
+- `missing_index`: no AST record exists for the requested path.
+- `stale_index`: parser version drift invalidated symbols/AST; reindex required.
+
+### HTTP endpoint: `GET /v1/ast/search`
+
+Query:
+
+```
+GET /v1/ast/search?kinds=function_item,struct_item&mode=all&limit=50
+```
+
+Parameters:
+
+- `kinds`: comma-separated list of Tree-sitter node kinds to match (required).
+- `mode`: `any` (default) or `all` (require all kinds per file).
+- `limit`: maximum files returned (default 50, server capped).
+
+Return value:
+
+- A `docdex.ast_search` payload listing files and match counts.
+
+Failure semantics (HTTP JSON errors):
+
+- `invalid_argument`: `kinds` is missing/empty or `mode` is unsupported.
+- `stale_index`: parser version drift invalidated symbols/AST; reindex required.
 
 ### HTTP endpoint: `GET /v1/symbols/status`
 

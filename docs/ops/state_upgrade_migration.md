@@ -91,9 +91,9 @@ Docdex uses the same underlying error codes for CLI/HTTP/MCP; see
      `<state_dir>/../libs_index`.
   4) Re-run your libs ingestion workflow or reindex.
 - If symbols payloads are missing or stale after enabling symbols:
-  1) Set `DOCDEX_ENABLE_SYMBOL_EXTRACTION=1`.
-  2) Remove `<state_dir>/symbols.db`.
-  3) Run `docdexd index --repo <repo>`.
+  1) Run `docdexd symbols-status --repo <repo>` to confirm parser drift.
+  2) Remove `<state_dir>/symbols.db` if you want a clean rebuild (optional).
+  3) Run `docdexd index --repo <repo>` to regenerate symbols/AST and `impact_graph.json`.
 - For persistent corruption in the main index, remove the affected index dir and
   rebuild:
   - Shared base: remove `~/.docdex/state/repos/<repo_id>/index` (or the index dir

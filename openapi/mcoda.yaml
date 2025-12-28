@@ -102,6 +102,8 @@ paths:
                   type: boolean
                   description: When true, explicitly allows Tier-2 web enrichment even if local
                     confidence is high.
+                docdex:
+                  $ref: "#/components/schemas/DocdexChatOptions"
       responses:
         "200":
           description: Chat completion (JSON when `stream=false`, SSE when `stream=true`).
@@ -546,6 +548,71 @@ paths:
           content:
             application/json:
               schema: *a3
+  /v1/ast/search:
+    get:
+      tags:
+        - Symbols
+      summary: Search AST by node kinds
+      description: |-
+        Search the repo-scoped AST store for files that contain the requested Tree-sitter node kinds.
+
+        Repo context may be provided via `x-docdex-repo-id` header or `repo_id` query parameter.
+      operationId: searchAst
+      parameters:
+        - *a4
+        - *a5
+        - name: kinds
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Comma-separated list of Tree-sitter node kinds to match.
+        - name: mode
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - any
+              - all
+            default: any
+          description: Match mode; `all` requires all kinds to appear in a file.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 50
+          description: Maximum number of files returned.
+      responses:
+        "200":
+          description: AST search response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AstSearchResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema: *a3
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: *a3
+        "409":
+          description: AST extraction disabled or stale after parser drift
+          content:
+            application/json:
+              schema: *a3
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: *a3
   /v1/symbols:
     get:
       tags:
@@ -819,6 +886,40 @@ components:
     ChatCompletionChoice: *a9
     ChatCompletionUsage: *a10
     ChatCompletionResponse: *a11
+    DocdexChatOptions:
+      type: object
+      additionalProperties: false
+      properties:
+        compress_results:
+          type: boolean
+          default: false
+          description: When true, the assistant content includes a Docdex-structured summary payload.
+        diff:
+          $ref: "#/components/schemas/DocdexDiffOptions"
+    DocdexDiffOptions:
+      type: object
+      additionalProperties: false
+      properties:
+        mode:
+          type: string
+          enum:
+            - working_tree
+            - staged
+            - range
+          description: Diff mode; `working` is accepted as an alias of `working_tree`.
+        base:
+          type: string
+          description: Base revision for `mode=range`.
+        head:
+          type: string
+          description: Head revision for `mode=range`.
+        paths:
+          type: array
+          items:
+            type: string
+          description: Optional repo-relative path filters.
+      description: |-
+        Diff-aware context options. When `mode=range`, `base` and `head` are required.
     ImpactGraphResponse: *a12
     DocdexSchemaCompatRange: &a19
       type: object
@@ -973,6 +1074,54 @@ components:
           type: boolean
         outcome:
           $ref: "#/components/schemas/SymbolOutcome"
+    AstSearchMatch:
+      type: object
+      additionalProperties: false
+      required:
+        - file
+        - match_count
+      properties:
+        file:
+          type: string
+          description: Repo-relative file path.
+        match_count:
+          type: integer
+          minimum: 0
+          description: Number of matching AST nodes found in the file.
+    AstSearchResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - schema
+        - repo_id
+        - kinds
+        - mode
+        - limit
+        - truncated
+        - matches
+      properties:
+        schema:
+          $ref: "#/components/schemas/DocdexSchemaInfo"
+        repo_id:
+          $ref: "#/components/schemas/RepoId"
+        kinds:
+          type: array
+          items:
+            type: string
+        mode:
+          type: string
+          enum:
+            - any
+            - all
+        limit:
+          type: integer
+          minimum: 1
+        truncated:
+          type: boolean
+        matches:
+          type: array
+          items:
+            $ref: "#/components/schemas/AstSearchMatch"
     ImpactGraphDiagnostics:
       type: object
       additionalProperties: false

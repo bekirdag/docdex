@@ -17,6 +17,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::dag::logging as dag_logging;
+use crate::diff;
 use crate::memory::repo_state_root_from_state_dir;
 use crate::orchestrator::{
     memory_budget_from_max_answer_tokens, run_waterfall, SymbolContextAssembly, WaterfallPlan,
@@ -57,6 +58,7 @@ struct DocdexOptions {
     max_web_results: Option<usize>,
     llm_filter_local_results: Option<bool>,
     compress_results: Option<bool>,
+    diff: Option<diff::DiffOptions>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -212,6 +214,19 @@ pub(crate) async fn chat_completions_handler(
     let llm_filter_local_results =
         docdex.and_then(|opts| opts.llm_filter_local_results).unwrap_or(false);
     let compress_results = docdex.and_then(|opts| opts.compress_results).unwrap_or(false);
+    let diff_request = match diff::resolve_diff_request_from_options(
+        docdex.and_then(|opts| opts.diff.as_ref()),
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                "invalid_diff",
+                &err.to_string(),
+            );
+        }
+    };
     let libs_indexer = if include_libs {
         state.libs_indexer.as_deref()
     } else {
@@ -236,6 +251,7 @@ pub(crate) async fn chat_completions_handler(
             "skip_local_search": skip_local_search,
             "max_web_results": max_web_results,
             "limit": limit,
+            "diff": docdex.and_then(|opts| opts.diff.as_ref()).map(|opts| json!(opts)),
         }),
     );
     let query_with_context = if extracted.context.trim().is_empty() {
@@ -247,6 +263,7 @@ pub(crate) async fn chat_completions_handler(
         request_id: &request_id,
         query: &query_with_context,
         limit,
+        diff: diff_request,
         web_limit: max_web_results,
         force_web,
         skip_local_search,
@@ -281,6 +298,7 @@ pub(crate) async fn chat_completions_handler(
                     result.search_response.symbols_context.as_ref(),
                     web_context.as_deref(),
                     result.memory_context.as_ref(),
+                    result.impact_context.as_ref(),
                     &budgets,
                 );
                 let prompt_tokens = estimate_tokens(&query);
@@ -377,6 +395,7 @@ pub(crate) async fn chat_completions_handler(
                     result.search_response.symbols_context.as_ref(),
                     web_context.as_deref(),
                     result.memory_context.as_ref(),
+                    result.impact_context.as_ref(),
                     &budgets,
                 );
                 log_budget_drops(
@@ -574,6 +593,7 @@ fn extract_message_text(content: &MessageContent) -> Option<String> {
 struct ChatContextBudgets {
     system_tokens: usize,
     memory_tokens: usize,
+    diff_tokens: usize,
     repo_tokens: usize,
 }
 
@@ -596,6 +616,13 @@ struct RepoContextTrace {
     budget_exhausted: bool,
 }
 
+struct DiffContextTrace {
+    candidates: usize,
+    selected: usize,
+    budget_tokens: usize,
+    budget_exhausted: bool,
+}
+
 struct WebContextTrace {
     candidates: usize,
     selected: usize,
@@ -605,6 +632,7 @@ struct WebContextTrace {
 
 struct ChatContextTrace {
     memory: MemorySnippetTrace,
+    diff: DiffContextTrace,
     repo: RepoContextTrace,
     symbols: SymbolContextTrace,
     web: WebContextTrace,
@@ -622,14 +650,18 @@ fn chat_context_budgets(max_answer_tokens: u32) -> ChatContextBudgets {
     let total_tokens = generation_tokens.saturating_mul(5);
     let system_tokens = total_tokens / 10;
     let memory_tokens = total_tokens / 5;
+    let diff_tokens = total_tokens / 10;
     let mut repo_tokens = total_tokens / 2;
-    let used = system_tokens + memory_tokens + repo_tokens + generation_tokens;
+    let used = system_tokens + memory_tokens + diff_tokens + repo_tokens + generation_tokens;
     if total_tokens > used {
         repo_tokens = repo_tokens.saturating_add(total_tokens - used);
+    } else if used > total_tokens {
+        repo_tokens = repo_tokens.saturating_sub(used - total_tokens);
     }
     ChatContextBudgets {
         system_tokens,
         memory_tokens,
+        diff_tokens,
         repo_tokens,
     }
 }
@@ -689,12 +721,68 @@ fn select_memory_snippets(
     )
 }
 
+fn format_diff_context_with_budget(
+    impact_context: &crate::impact::ImpactContextAssembly,
+    budget_tokens: usize,
+) -> (Vec<String>, DiffContextTrace) {
+    let candidates = impact_context.sources.len() + impact_context.expanded_files.len();
+    let mut lines = Vec::new();
+    let mut remaining = budget_tokens;
+    let mut selected = 0usize;
+    let mut budget_exhausted = false;
+
+    for source in &impact_context.sources {
+        if remaining == 0 {
+            budget_exhausted = true;
+            break;
+        }
+        let line = format!("- changed: {source}");
+        let tokens = estimate_tokens(&line) as usize;
+        if tokens > remaining {
+            budget_exhausted = true;
+            break;
+        }
+        lines.push(line);
+        selected += 1;
+        remaining = remaining.saturating_sub(tokens);
+    }
+
+    if !budget_exhausted {
+        for file in &impact_context.expanded_files {
+            if remaining == 0 {
+                budget_exhausted = true;
+                break;
+            }
+            let line = format!("- related: {file}");
+            let tokens = estimate_tokens(&line) as usize;
+            if tokens > remaining {
+                budget_exhausted = true;
+                break;
+            }
+            lines.push(line);
+            selected += 1;
+            remaining = remaining.saturating_sub(tokens);
+        }
+    }
+
+    (
+        lines,
+        DiffContextTrace {
+            candidates,
+            selected,
+            budget_tokens,
+            budget_exhausted,
+        },
+    )
+}
+
 fn build_context_summary(
     query: &str,
     hits: &[crate::index::Hit],
     symbols_context: Option<&SymbolContextAssembly>,
     web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
     memory_context: Option<&crate::orchestrator::MemoryContextAssembly>,
+    impact_context: Option<&crate::impact::ImpactContextAssembly>,
     budgets: &ChatContextBudgets,
 ) -> (String, ChatContextTrace) {
     let mut lines = Vec::new();
@@ -707,6 +795,27 @@ fn build_context_summary(
         for snippet in memory_snippets {
             lines.push(format!("- {}", snippet.content));
         }
+    }
+
+    let (diff_lines, diff_trace) = if let Some(context) = impact_context {
+        format_diff_context_with_budget(context, budgets.diff_tokens)
+    } else {
+        (
+            Vec::new(),
+            DiffContextTrace {
+                candidates: 0,
+                selected: 0,
+                budget_tokens: budgets.diff_tokens,
+                budget_exhausted: false,
+            },
+        )
+    };
+    if !diff_lines.is_empty() {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.push("Diff context:".to_string());
+        lines.extend(diff_lines);
     }
 
     let mut repo_remaining = budgets.repo_tokens;
@@ -824,6 +933,7 @@ fn build_context_summary(
         lines.join("\n"),
         ChatContextTrace {
             memory: memory_trace,
+            diff: diff_trace,
             repo: RepoContextTrace {
                 candidates: repo_candidates,
                 selected: repo_selected,
@@ -862,6 +972,14 @@ fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace
         .available
         .saturating_sub(trace.memory.selected);
     let memory_truncated = trace.memory.truncated;
+    let diff_dropped = if trace.diff.budget_exhausted {
+        trace
+            .diff
+            .candidates
+            .saturating_sub(trace.diff.selected)
+    } else {
+        0
+    };
     let repo_dropped = if trace.repo.budget_exhausted {
         trace
             .repo
@@ -889,6 +1007,7 @@ fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace
 
     if memory_dropped > 0
         || memory_truncated > 0
+        || diff_dropped > 0
         || repo_dropped > 0
         || symbols_dropped > 0
         || web_dropped > 0
@@ -900,6 +1019,8 @@ fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace
             memory_dropped,
             memory_truncated,
             memory_budget_tokens = trace.memory.budget_tokens,
+            diff_dropped,
+            diff_budget_tokens = trace.diff.budget_tokens,
             repo_dropped,
             repo_budget_tokens = trace.repo.budget_tokens,
             symbols_dropped,
@@ -1042,9 +1163,11 @@ fn format_compressed_results(
     symbols_context: Option<&SymbolContextAssembly>,
     web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
     memory_context: Option<&crate::orchestrator::MemoryContextAssembly>,
+    impact_context: Option<&crate::impact::ImpactContextAssembly>,
     budgets: &ChatContextBudgets,
 ) -> String {
     const MAX_COMPRESSED_MEMORY_ITEMS: usize = 3;
+    const MAX_COMPRESSED_DIFF_ITEMS: usize = 4;
 
     let local = build_compressed_local(hits, symbols_context);
     let web = best_web_summary(web_context);
@@ -1063,8 +1186,29 @@ fn format_compressed_results(
                 .collect(),
         )
     };
+    let diff = impact_context.map(|context| CompressedDiffContext {
+        sources: context
+            .sources
+            .iter()
+            .take(MAX_COMPRESSED_DIFF_ITEMS)
+            .cloned()
+            .collect(),
+        expanded: context
+            .expanded_files
+            .iter()
+            .take(MAX_COMPRESSED_DIFF_ITEMS)
+            .cloned()
+            .collect(),
+        truncated: context.sources.len() > MAX_COMPRESSED_DIFF_ITEMS
+            || context.expanded_files.len() > MAX_COMPRESSED_DIFF_ITEMS,
+    });
     let payload = CompressedEnvelope {
-        results: CompressedResults { local, web, memory },
+        results: CompressedResults {
+            local,
+            web,
+            memory,
+            diff,
+        },
     };
     serde_json::to_string(&payload).unwrap_or_else(|_| "{\"results\":{}}".to_string())
 }
@@ -1082,6 +1226,8 @@ struct CompressedResults {
     web: Option<CompressedWeb>,
     #[serde(skip_serializing_if = "Option::is_none")]
     memory: Option<Vec<CompressedMemoryItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diff: Option<CompressedDiffContext>,
 }
 
 #[derive(Serialize)]
@@ -1106,6 +1252,13 @@ struct CompressedWeb {
 struct CompressedMemoryItem {
     score: f32,
     content: String,
+}
+
+#[derive(Serialize)]
+struct CompressedDiffContext {
+    sources: Vec<String>,
+    expanded: Vec<String>,
+    truncated: bool,
 }
 
 fn build_compressed_local(
@@ -1330,4 +1483,94 @@ fn queue_dag_log(
             ),
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::impact::{ImpactContextAssembly, ImpactContextPruneTrace};
+    use crate::index::{DocumentKind, Hit};
+    use crate::memory::{MemoryContextItem, MemoryContextPruneTrace};
+    use crate::orchestrator::MemoryContextAssembly;
+    use serde_json::json;
+
+    #[test]
+    fn diff_context_ordering_and_budgeting() {
+        let hits = vec![Hit {
+            doc_id: "doc-1".to_string(),
+            rel_path: "docs/readme.md".to_string(),
+            path: "docs/readme.md".to_string(),
+            kind: DocumentKind::Doc,
+            score: 1.0,
+            summary: "Repo summary text".to_string(),
+            snippet: String::new(),
+            token_estimate: 12,
+            snippet_origin: None,
+            snippet_truncated: None,
+            line_start: None,
+            line_end: None,
+        }];
+
+        let memory_context = MemoryContextAssembly {
+            items: vec![MemoryContextItem {
+                id: "mem-1".to_string(),
+                created_at_ms: 0,
+                score: 0.9,
+                token_estimate: 3,
+                truncated: false,
+                content: "remember alpha".to_string(),
+                metadata: json!({ "source": "test" }),
+            }],
+            prune_trace: MemoryContextPruneTrace {
+                budget_tokens: 10,
+                max_items: 5,
+                candidates: 1,
+                kept: 1,
+                dropped: Vec::new(),
+            },
+        };
+
+        let impact_context = ImpactContextAssembly {
+            sources: vec!["src/a.rs".to_string(), "src/b.rs".to_string()],
+            expanded_files: vec!["src/c.rs".to_string()],
+            edges: Vec::new(),
+            prune_trace: ImpactContextPruneTrace {
+                requested_sources: 2,
+                normalized_sources: 2,
+                dropped_sources: 0,
+                expanded_files: 1,
+                max_edges: 10,
+                max_depth: 1,
+                edges: 1,
+                truncated: false,
+            },
+        };
+
+        let budgets = ChatContextBudgets {
+            system_tokens: 0,
+            memory_tokens: 10,
+            diff_tokens: 5,
+            repo_tokens: 20,
+        };
+
+        let (context, trace) = build_context_summary(
+            "hello",
+            &hits,
+            None,
+            None,
+            Some(&memory_context),
+            Some(&impact_context),
+            &budgets,
+        );
+
+        let memory_pos = context.find("Memory context:").expect("memory context");
+        let diff_pos = context.find("Diff context:").expect("diff context");
+        let repo_pos = context
+            .find("Top local matches")
+            .expect("repo context");
+        assert!(memory_pos < diff_pos);
+        assert!(diff_pos < repo_pos);
+        assert!(trace.diff.budget_exhausted);
+        assert_eq!(trace.diff.selected, 1);
+    }
 }

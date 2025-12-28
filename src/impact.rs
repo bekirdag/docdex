@@ -318,6 +318,13 @@ struct ImpactGraphStoreFileRaw {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct ImpactGraphStoreFile {
+    schema: SchemaInfo,
+    repo_id: String,
+    graphs: Vec<ImpactGraphStoreEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ImpactGraphStoreEntry {
     schema: SchemaInfo,
     repo_id: String,
@@ -333,20 +340,37 @@ enum ImpactGraphStorePayload {
     Entries {
         entries: Vec<ImpactGraphStoreEntry>,
         migrated: bool,
+        newer_compatible: bool,
     },
     Edges(Vec<ImpactGraphEdge>),
+}
+
+struct ImpactSchemaValidation {
+    schema: SchemaInfo,
+    migrated: bool,
+    from_version: u32,
+    newer_compatible: bool,
 }
 
 fn normalize_impact_schema(
     schema: Option<SchemaInfo>,
     fallback: Option<&SchemaInfo>,
-) -> Result<(SchemaInfo, bool)> {
+) -> Result<ImpactSchemaValidation> {
     let mut migrated = false;
-    let schema = match schema {
-        Some(value) => value,
+    let mut from_version = 0;
+    let mut schema = match schema {
+        Some(value) => {
+            from_version = value.version;
+            value
+        }
         None => {
             migrated = true;
-            fallback.cloned().unwrap_or_else(default_impact_schema)
+            if let Some(fallback) = fallback {
+                from_version = fallback.version;
+                fallback.clone()
+            } else {
+                default_impact_schema()
+            }
         }
     };
 
@@ -356,14 +380,10 @@ fn normalize_impact_schema(
             schema.name
         ));
     }
-    if schema.version > IMPACT_GRAPH_SCHEMA_VERSION {
+    if schema.compatible.min > schema.compatible.max {
         return Err(anyhow!(
-            "unsupported impact graph schema version {}",
-            schema.version
+            "impact graph schema compatible range is invalid (min > max)"
         ));
-    }
-    if schema.version < IMPACT_GRAPH_SCHEMA_VERSION {
-        return Ok((default_impact_schema(), true));
     }
     if schema.compatible.min > schema.version || schema.compatible.max < schema.version {
         return Err(anyhow!(
@@ -373,17 +393,53 @@ fn normalize_impact_schema(
             schema.compatible.max
         ));
     }
+    let current = IMPACT_GRAPH_SCHEMA_VERSION;
+    if schema.compatible.min > current || schema.compatible.max < current {
+        return Err(anyhow!(
+            "impact graph schema version {} is not compatible with current {}",
+            schema.version,
+            current
+        ));
+    }
 
-    Ok((schema, migrated))
+    let newer_compatible = schema.version > current;
+    if schema.version < current {
+        migrated = true;
+        schema = default_impact_schema();
+    }
+
+    Ok(ImpactSchemaValidation {
+        schema,
+        migrated,
+        from_version,
+        newer_compatible,
+    })
 }
 
 fn normalize_impact_entry(
     raw: ImpactGraphStoreEntryRaw,
     fallback_schema: Option<&SchemaInfo>,
     fallback_repo_id: Option<&str>,
-) -> Result<(ImpactGraphStoreEntry, bool)> {
-    let (schema, migrated_schema) = normalize_impact_schema(raw.schema, fallback_schema)?;
-    let mut migrated = migrated_schema;
+    enforce_schema_match: bool,
+) -> Result<(ImpactGraphStoreEntry, ImpactSchemaValidation)> {
+    if enforce_schema_match {
+        if let (Some(expected), Some(entry_schema)) = (fallback_schema, raw.schema.as_ref()) {
+            if entry_schema.name != expected.name || entry_schema.version != expected.version {
+                return Err(anyhow!(
+                    "impact graph entry schema does not match file schema ({} v{})",
+                    entry_schema.name,
+                    entry_schema.version
+                ));
+            }
+        }
+    }
+    let ImpactSchemaValidation {
+        schema,
+        migrated: schema_migrated,
+        from_version,
+        newer_compatible,
+    } = normalize_impact_schema(raw.schema, fallback_schema)?;
+    let mut migrated = schema_migrated;
     let repo_id = if raw.repo_id.is_empty() {
         if let Some(fallback) = fallback_repo_id {
             migrated = true;
@@ -395,6 +451,7 @@ fn normalize_impact_entry(
         raw.repo_id
     };
 
+    let schema_for_validation = schema.clone();
     Ok((
         ImpactGraphStoreEntry {
             schema,
@@ -405,7 +462,12 @@ fn normalize_impact_entry(
             edges: raw.edges,
             diagnostics: raw.diagnostics,
         },
-        migrated,
+        ImpactSchemaValidation {
+            schema: schema_for_validation,
+            migrated,
+            from_version,
+            newer_compatible,
+        },
     ))
 }
 
@@ -419,21 +481,33 @@ fn parse_store_payload(value: serde_json::Value) -> Result<ImpactGraphStorePaylo
     if value.get("graphs").is_some() {
         let file: ImpactGraphStoreFileRaw =
             serde_json::from_value(value).context("parse impact_graph.json graphs")?;
-        let fallback_schema = file.schema.as_ref();
+        let file_schema_present = file.schema.is_some();
+        let file_validation = normalize_impact_schema(file.schema.clone(), None)?;
+        let fallback_schema = Some(&file_validation.schema);
         let fallback_repo_id = file.repo_id.as_deref();
-        let mut migrated = file.schema.is_none() || file.repo_id.is_none();
-        if let Some(schema) = fallback_schema {
-            let (_, schema_migrated) = normalize_impact_schema(Some(schema.clone()), None)?;
-            migrated |= schema_migrated;
-        }
+        let mut migrated = file_validation.migrated || file.repo_id.is_none();
+        let mut newer_compatible = file_validation.newer_compatible;
+        let mut min_from_version = file_validation.from_version;
         let mut entries = Vec::with_capacity(file.graphs.len());
         for raw in file.graphs {
-            let (entry, entry_migrated) =
-                normalize_impact_entry(raw, fallback_schema, fallback_repo_id)?;
-            migrated |= entry_migrated;
+            let (entry, entry_validation) =
+                normalize_impact_entry(raw, fallback_schema, fallback_repo_id, file_schema_present)?;
+            migrated |= entry_validation.migrated;
+            newer_compatible |= entry_validation.newer_compatible;
+            if entry_validation.from_version > 0 {
+                min_from_version = min_from_version.min(entry_validation.from_version);
+            }
             entries.push(entry);
         }
-        return Ok(ImpactGraphStorePayload::Entries { entries, migrated });
+        if min_from_version < IMPACT_GRAPH_SCHEMA_VERSION {
+            run_impact_graph_migrations(min_from_version, &mut entries)?;
+            migrated = true;
+        }
+        return Ok(ImpactGraphStorePayload::Entries {
+            entries,
+            migrated,
+            newer_compatible,
+        });
     }
 
     if let Some(list) = value.as_array() {
@@ -448,12 +522,35 @@ fn parse_store_payload(value: serde_json::Value) -> Result<ImpactGraphStorePaylo
             serde_json::from_value(value).context("parse impact_graph.json entries")?;
         let mut entries = Vec::with_capacity(raws.len());
         let mut migrated = false;
+        let mut newer_compatible = false;
+        let mut min_from_version: Option<u32> = None;
         for raw in raws {
-            let (entry, entry_migrated) = normalize_impact_entry(raw, None, None)?;
-            migrated |= entry_migrated;
+            let (entry, entry_validation) = normalize_impact_entry(raw, None, None, false)?;
+            migrated |= entry_validation.migrated;
+            newer_compatible |= entry_validation.newer_compatible;
+            if entry_validation.from_version > 0 {
+                min_from_version = Some(
+                    min_from_version
+                        .unwrap_or(entry_validation.from_version)
+                        .min(entry_validation.from_version),
+                );
+            }
             entries.push(entry);
         }
-        return Ok(ImpactGraphStorePayload::Entries { entries, migrated });
+        if let Some(from_version) = min_from_version {
+            if from_version < IMPACT_GRAPH_SCHEMA_VERSION {
+                run_impact_graph_migrations(from_version, &mut entries)?;
+                migrated = true;
+            }
+        } else if migrated {
+            run_impact_graph_migrations(0, &mut entries)?;
+            migrated = true;
+        }
+        return Ok(ImpactGraphStorePayload::Entries {
+            entries,
+            migrated,
+            newer_compatible,
+        });
     }
 
     Err(anyhow!("impact_graph.json missing edges"))
@@ -552,12 +649,23 @@ impl ImpactGraphStore {
                 );
                 Ok(edges)
             }
-            ImpactGraphStorePayload::Entries { entries, migrated } => {
+            ImpactGraphStorePayload::Entries {
+                entries,
+                migrated,
+                newer_compatible,
+            } => {
                 if migrated {
                     warn!(
                         target: "docdexd",
                         path = %self.path.display(),
                         "impact graph store schema migrated in-memory; reindex to persist"
+                    );
+                }
+                if newer_compatible {
+                    warn!(
+                        target: "docdexd",
+                        path = %self.path.display(),
+                        "impact graph store schema is newer but compatible with this version"
                     );
                 }
                 Ok(flatten_store_edges(entries))
@@ -582,12 +690,23 @@ impl ImpactGraphStore {
                 );
                 return Ok(HashMap::new());
             }
-            ImpactGraphStorePayload::Entries { entries, migrated } => {
+            ImpactGraphStorePayload::Entries {
+                entries,
+                migrated,
+                newer_compatible,
+            } => {
                 if migrated {
                     warn!(
                         target: "docdexd",
                         path = %self.path.display(),
                         "impact graph store schema migrated in-memory; reindex to persist"
+                    );
+                }
+                if newer_compatible {
+                    warn!(
+                        target: "docdexd",
+                        path = %self.path.display(),
+                        "impact graph store schema is newer but compatible with this version"
                     );
                 }
                 entries
@@ -619,12 +738,23 @@ impl ImpactGraphStore {
                 );
                 return Ok(None);
             }
-            ImpactGraphStorePayload::Entries { entries, migrated } => {
+            ImpactGraphStorePayload::Entries {
+                entries,
+                migrated,
+                newer_compatible,
+            } => {
                 if migrated {
                     warn!(
                         target: "docdexd",
                         path = %self.path.display(),
                         "impact graph store schema migrated in-memory; reindex to persist"
+                    );
+                }
+                if newer_compatible {
+                    warn!(
+                        target: "docdexd",
+                        path = %self.path.display(),
+                        "impact graph store schema is newer but compatible with this version"
                     );
                 }
                 entries
@@ -649,8 +779,13 @@ impl ImpactGraphStore {
                 .with_context(|| format!("create {}", parent.display()))?;
         }
         let entries = build_store_entries(repo_id, edges, diagnostics);
+        let payload = ImpactGraphStoreFile {
+            schema: default_impact_schema(),
+            repo_id: repo_id.to_string(),
+            graphs: entries,
+        };
         let bytes =
-            serde_json::to_vec_pretty(&entries).context("serialize impact graph entries")?;
+            serde_json::to_vec_pretty(&payload).context("serialize impact graph entries")?;
         let tmp = self
             .path
             .with_extension(format!("tmp.{}", uuid::Uuid::new_v4()));
@@ -661,6 +796,18 @@ impl ImpactGraphStore {
         std::fs::rename(&tmp, &self.path)
             .with_context(|| format!("rename {} -> {}", tmp.display(), self.path.display()))?;
         Ok(())
+    }
+}
+
+fn run_impact_graph_migrations(from_version: u32, _entries: &mut Vec<ImpactGraphStoreEntry>) -> Result<()> {
+    if from_version >= IMPACT_GRAPH_SCHEMA_VERSION {
+        return Ok(());
+    }
+    match from_version {
+        0 | 1 => Ok(()),
+        _ => Err(anyhow!(
+            "missing impact graph migration step for v{from_version}"
+        )),
     }
 }
 
@@ -677,6 +824,28 @@ fn impact_graph_path(state_dir: &Path) -> PathBuf {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImpactTraversalResult {
     pub edges: Vec<ImpactGraphEdge>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImpactContextAssembly {
+    pub sources: Vec<String>,
+    pub expanded_files: Vec<String>,
+    pub edges: Vec<ImpactGraphEdge>,
+    pub prune_trace: ImpactContextPruneTrace,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImpactContextPruneTrace {
+    pub requested_sources: usize,
+    pub normalized_sources: usize,
+    pub dropped_sources: usize,
+    pub expanded_files: usize,
+    pub max_edges: usize,
+    pub max_depth: usize,
+    pub edges: usize,
     pub truncated: bool,
 }
 
@@ -719,6 +888,219 @@ pub fn traverse_impact(
     visited.insert(root.to_string());
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();
     queue.push_back((root.to_string(), 0));
+
+    let incident_edges = |node: &str,
+                          outgoing: &HashMap<&str, Vec<usize>>,
+                          incoming: &HashMap<&str, Vec<usize>>|
+     -> Vec<usize> {
+        let mut incident: Vec<usize> = Vec::new();
+        if let Some(list) = outgoing.get(node) {
+            incident.extend(list.iter().copied());
+        }
+        if let Some(list) = incoming.get(node) {
+            incident.extend(list.iter().copied());
+        }
+        incident.sort_unstable();
+        incident.dedup();
+        incident.sort_unstable_by(|left, right| {
+            edge_sort_key(&all_edges[*left]).cmp(&edge_sort_key(&all_edges[*right]))
+        });
+        incident
+    };
+
+    while let Some((node, depth)) = queue.pop_front() {
+        if depth >= controls.max_depth {
+            if depth == controls.max_depth && !hard_truncated {
+                let incident = incident_edges(node.as_str(), &outgoing, &incoming);
+                for edge_idx in incident {
+                    let edge = &all_edges[edge_idx];
+                    if !edge_kind_matches(edge, &controls.edge_types) {
+                        filter_truncated = filter_truncated || controls.edge_types.is_some();
+                        continue;
+                    }
+                    let key = edge_sort_key(edge);
+                    if !seen_edges.contains(&key) {
+                        hard_truncated = true;
+                        break;
+                    }
+                }
+                if hard_truncated {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        let incident = incident_edges(node.as_str(), &outgoing, &incoming);
+
+        for edge_idx in incident {
+            let edge = &all_edges[edge_idx];
+            if !edge_kind_matches(edge, &controls.edge_types) {
+                filter_truncated = filter_truncated || controls.edge_types.is_some();
+                continue;
+            }
+            let key = edge_sort_key(edge);
+            if !seen_edges.insert(key) {
+                continue;
+            }
+            if result.len() >= controls.max_edges {
+                hard_truncated = true;
+                break;
+            }
+            result.push(edge.clone());
+
+            let neighbor = if edge.source == node {
+                &edge.target
+            } else {
+                &edge.source
+            };
+            if depth + 1 <= controls.max_depth && visited.insert(neighbor.clone()) {
+                queue.push_back((neighbor.clone(), depth + 1));
+            }
+        }
+
+        if hard_truncated {
+            break;
+        }
+    }
+
+    ImpactTraversalResult {
+        edges: result,
+        truncated: hard_truncated || filter_truncated,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImpactExpansionResult {
+    pub sources: Vec<String>,
+    pub edges: Vec<ImpactGraphEdge>,
+    pub truncated: bool,
+}
+
+pub fn expand_impact_from_diff_files(
+    state_dir: &Path,
+    diff_files: &[String],
+    controls: &ImpactQueryControls,
+) -> Result<ImpactExpansionResult> {
+    let store = ImpactGraphStore::new(state_dir);
+    let edges = store.read_edges()?;
+    Ok(expand_impact_from_edges(diff_files, &edges, controls))
+}
+
+pub fn expand_impact_from_edges(
+    diff_files: &[String],
+    all_edges: &[ImpactGraphEdge],
+    controls: &ImpactQueryControls,
+) -> ImpactExpansionResult {
+    let sources = normalize_diff_sources(diff_files);
+    if sources.is_empty() || all_edges.is_empty() {
+        return ImpactExpansionResult {
+            sources,
+            edges: Vec::new(),
+            truncated: false,
+        };
+    }
+    let traversal = traverse_impact_multi(&sources, all_edges, controls);
+    ImpactExpansionResult {
+        sources,
+        edges: traversal.edges,
+        truncated: traversal.truncated,
+    }
+}
+
+pub fn assemble_impact_context(
+    diff_files: &[String],
+    expansion: ImpactExpansionResult,
+    controls: &ImpactQueryControls,
+) -> ImpactContextAssembly {
+    let requested_sources = diff_files.len();
+    let mut sources_set: BTreeSet<String> = BTreeSet::new();
+    for source in &expansion.sources {
+        sources_set.insert(source.clone());
+    }
+    let mut expanded_set: BTreeSet<String> = BTreeSet::new();
+    for edge in &expansion.edges {
+        expanded_set.insert(edge.source.clone());
+        expanded_set.insert(edge.target.clone());
+    }
+    for source in &sources_set {
+        expanded_set.remove(source);
+    }
+    let expanded_files: Vec<String> = expanded_set.into_iter().collect();
+    let edges_count = expansion.edges.len();
+    let expanded_count = expanded_files.len();
+    let sources = expansion.sources.clone();
+    let dropped_sources = requested_sources.saturating_sub(sources.len());
+    let prune_trace = ImpactContextPruneTrace {
+        requested_sources,
+        normalized_sources: sources.len(),
+        dropped_sources,
+        expanded_files: expanded_count,
+        max_edges: controls.max_edges,
+        max_depth: controls.max_depth,
+        edges: edges_count,
+        truncated: expansion.truncated,
+    };
+    ImpactContextAssembly {
+        sources,
+        expanded_files,
+        edges: expansion.edges,
+        prune_trace,
+    }
+}
+
+fn normalize_diff_sources(diff_files: &[String]) -> Vec<String> {
+    let mut sources: BTreeSet<String> = BTreeSet::new();
+    for file in diff_files {
+        if let Some(normalized) = normalize_hint_rel_path(Path::new(file)) {
+            sources.insert(normalized);
+        }
+    }
+    sources.into_iter().collect()
+}
+
+pub fn traverse_impact_multi(
+    roots: &[String],
+    all_edges: &[ImpactGraphEdge],
+    controls: &ImpactQueryControls,
+) -> ImpactTraversalResult {
+    fn edge_sort_key(edge: &ImpactGraphEdge) -> (&str, &str, Option<&str>) {
+        (
+            edge.source.as_str(),
+            edge.target.as_str(),
+            edge.kind.as_deref(),
+        )
+    }
+
+    let mut outgoing: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut incoming: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (idx, edge) in all_edges.iter().enumerate() {
+        outgoing.entry(edge.source.as_str()).or_default().push(idx);
+        incoming.entry(edge.target.as_str()).or_default().push(idx);
+    }
+
+    let mut seen_edges: HashSet<(&str, &str, Option<&str>)> = HashSet::new();
+    let mut result: Vec<ImpactGraphEdge> = Vec::new();
+    let mut hard_truncated = false;
+    let mut filter_truncated = false;
+
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+    for root in roots {
+        let root = root.trim();
+        if root.is_empty() {
+            continue;
+        }
+        if visited.insert(root.to_string()) {
+            queue.push_back((root.to_string(), 0));
+        }
+    }
+    if queue.is_empty() {
+        return ImpactTraversalResult {
+            edges: Vec::new(),
+            truncated: false,
+        };
+    }
 
     let incident_edges = |node: &str,
                           outgoing: &HashMap<&str, Vec<usize>>,
@@ -1376,7 +1758,7 @@ where
                     kind: Some(normalize_edge_kind(import_ref.kind).to_string()),
                 });
             }
-        } else if matches!(&import_ref.path, ImportPath::Pattern(_)) {
+        } else if should_report_unresolved(&import_ref) {
             unresolved.push(import_ref);
         }
     }
@@ -1391,7 +1773,7 @@ where
             file = %rel_path,
             count = unresolved.len(),
             sample = ?samples,
-            "unresolved dynamic imports skipped"
+            "unresolved imports skipped"
         );
     }
     let diagnostics = if unresolved.is_empty() {
@@ -1436,6 +1818,24 @@ where
             }
             resolve_unique_match(repo_root, rel_path, import_ref, pattern)
         }
+    }
+}
+
+fn should_report_unresolved(import_ref: &ImportRef) -> bool {
+    match &import_ref.path {
+        ImportPath::Pattern(_) => true,
+        ImportPath::Exact(value) => match import_ref.language {
+            SourceLanguage::JavaScript | SourceLanguage::TypeScript => {
+                value.starts_with('.') || value.starts_with('/')
+            }
+            SourceLanguage::Python => {
+                value.starts_with('.')
+                    || value.starts_with('/')
+                    || value.contains('/')
+                    || value.ends_with(".py")
+            }
+            _ => value.starts_with('.') || value.starts_with('/'),
+        },
     }
 }
 
@@ -2377,6 +2777,9 @@ fn static_string_eval_with_resolver<F>(content: &str, node: Node, resolver: &F) 
 where
     F: Fn(&str) -> Option<StringEval>,
 {
+    if let Some(eval) = template_string_eval_with_resolver(content, node, resolver) {
+        return eval;
+    }
     if let Some(eval) = string_literal_eval(content, node) {
         return eval;
     }
@@ -2444,6 +2847,49 @@ where
             resolve_path_call_eval(name.as_str(), &values)
         }
         _ => StringEval::Unknown,
+    }
+}
+
+fn template_string_eval_with_resolver<F>(
+    content: &str,
+    node: Node,
+    resolver: &F,
+) -> Option<StringEval>
+where
+    F: Fn(&str) -> Option<StringEval>,
+{
+    let kind = node.kind();
+    if kind != "template_string" && kind != "template_literal" {
+        return None;
+    }
+    let mut cursor = node.walk();
+    let mut saw_part = false;
+    let mut result = StringEval::Exact(String::new());
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "string_fragment" | "template_string_content" => {
+                if let Some(text) = node_text(content, child) {
+                    result = concat_eval(result, StringEval::Exact(text.to_string()));
+                    saw_part = true;
+                }
+            }
+            "template_substitution" => {
+                let expr = child
+                    .child_by_field_name("expression")
+                    .or_else(|| child.named_child(0));
+                let eval = expr
+                    .map(|expr| static_string_eval_with_resolver(content, expr, resolver))
+                    .unwrap_or(StringEval::Unknown);
+                result = concat_eval(result, eval);
+                saw_part = true;
+            }
+            _ => {}
+        }
+    }
+    if saw_part {
+        Some(result)
+    } else {
+        None
     }
 }
 
@@ -2683,7 +3129,11 @@ fn resolve_path_call_eval(name: &str, args: &[StringEval]) -> StringEval {
     let mut force_dot = false;
     let mut result = StringEval::Unknown;
     for (idx, arg) in args.iter().enumerate() {
-        if !eval_is_relative(arg) {
+        if idx == 0 {
+            if !eval_is_relative(arg) {
+                return StringEval::Unknown;
+            }
+        } else if !matches!(arg, StringEval::Unknown) && !eval_is_relative(arg) {
             return StringEval::Unknown;
         }
         if idx == 0 {
@@ -3144,6 +3594,7 @@ pub fn build_impact_diagnostics_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use tempfile::TempDir;
 
     fn fixture_edges() -> Vec<ImpactGraphEdge> {
@@ -3397,6 +3848,251 @@ mod tests {
     }
 
     #[test]
+    fn expand_from_diff_files_one_hop() {
+        let edges = fixture_edges();
+        let controls = ImpactQueryControlsRaw {
+            max_edges: Some(10),
+            max_depth: Some(1),
+            edge_types: None,
+        }
+        .validate()
+        .expect("controls");
+        let result = expand_impact_from_edges(&vec!["./a.ts".into()], &edges, &controls);
+        let expected: BTreeSet<ImpactGraphEdge> = vec![
+            ImpactGraphEdge {
+                source: "a.ts".into(),
+                target: "b.ts".into(),
+                kind: Some("import".into()),
+            },
+            ImpactGraphEdge {
+                source: "x.ts".into(),
+                target: "a.ts".into(),
+                kind: Some("include".into()),
+            },
+            ImpactGraphEdge {
+                source: "a.ts".into(),
+                target: "z.ts".into(),
+                kind: None,
+            },
+        ]
+        .into_iter()
+        .collect();
+        let actual: BTreeSet<ImpactGraphEdge> = result.edges.into_iter().collect();
+        assert_eq!(actual, expected);
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn assemble_context_tracks_expanded_files_and_prune_trace() {
+        let edges = fixture_edges();
+        let controls = ImpactQueryControlsRaw {
+            max_edges: Some(10),
+            max_depth: Some(1),
+            edge_types: None,
+        }
+        .validate()
+        .expect("controls");
+        let diff_files = vec!["./a.ts".to_string()];
+        let expansion = expand_impact_from_edges(&diff_files, &edges, &controls);
+        let context = assemble_impact_context(&diff_files, expansion, &controls);
+        assert_eq!(context.sources, vec!["a.ts".to_string()]);
+        assert_eq!(
+            context.expanded_files,
+            vec!["b.ts".to_string(), "x.ts".to_string(), "z.ts".to_string()]
+        );
+        assert_eq!(context.prune_trace.requested_sources, 1);
+        assert_eq!(context.prune_trace.normalized_sources, 1);
+        assert_eq!(context.prune_trace.dropped_sources, 0);
+        assert_eq!(context.prune_trace.expanded_files, 3);
+        assert_eq!(context.prune_trace.max_edges, 10);
+        assert_eq!(context.prune_trace.max_depth, 1);
+    }
+
+    fn write_fixture(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent dir");
+        }
+        std::fs::write(path, content).expect("write fixture");
+    }
+
+    #[test]
+    fn js_template_literal_with_static_bindings_resolves() {
+        let dir = TempDir::new().expect("tempdir");
+        let repo_root = dir.path();
+        write_fixture(&repo_root.join("src/foo/bar.ts"), "export const x = 1;");
+        let content = r#"
+const part = "foo";
+const name = "bar";
+import(`./${part}/${name}.ts`);
+"#;
+        let result = extract_js_ts_import_edges(
+            repo_root,
+            "src/main.ts",
+            content,
+            SourceLanguage::TypeScript,
+        );
+        assert!(
+            result.edges.iter().any(|edge| {
+                edge.source == "src/main.ts" && edge.target == "src/foo/bar.ts"
+            }),
+            "expected template literal import to resolve"
+        );
+    }
+
+    #[test]
+    fn js_path_join_with_bindings_resolves() {
+        let dir = TempDir::new().expect("tempdir");
+        let repo_root = dir.path();
+        write_fixture(
+            &repo_root.join("src/util/index.ts"),
+            "export const util = true;",
+        );
+        let content = r#"
+const segment = "util";
+const target = path.join("./", segment, "index.ts");
+require(target);
+"#;
+        let result = extract_js_ts_import_edges(
+            repo_root,
+            "src/main.ts",
+            content,
+            SourceLanguage::JavaScript,
+        );
+        assert!(
+            result.edges.iter().any(|edge| {
+                edge.source == "src/main.ts" && edge.target == "src/util/index.ts"
+            }),
+            "expected path.join import to resolve"
+        );
+    }
+
+    #[test]
+    fn python_os_path_join_resolves_spec_from_file_location() {
+        let dir = TempDir::new().expect("tempdir");
+        let repo_root = dir.path();
+        write_fixture(&repo_root.join("pkg/mod.py"), "value = 42");
+        let content = r#"
+import os
+from importlib.util import spec_from_file_location
+module_path = os.path.join("pkg", "mod.py")
+spec_from_file_location("mod", module_path)
+"#;
+        let result = extract_python_import_edges(repo_root, "main.py", content);
+        assert!(
+            result.edges.iter().any(|edge| edge.source == "main.py" && edge.target == "pkg/mod.py"),
+            "expected os.path.join to resolve in spec_from_file_location"
+        );
+    }
+
+    #[test]
+    fn js_path_resolve_with_bindings_resolves() {
+        let dir = TempDir::new().expect("tempdir");
+        let repo_root = dir.path();
+        write_fixture(
+            &repo_root.join("src/dir/entry.js"),
+            "module.exports = {};",
+        );
+        let content = r#"
+const base = "./dir";
+const target = path.resolve(base, "entry.js");
+require(target);
+"#;
+        let result = extract_js_ts_import_edges(
+            repo_root,
+            "src/main.js",
+            content,
+            SourceLanguage::JavaScript,
+        );
+        assert!(
+            result.edges.iter().any(|edge| {
+                edge.source == "src/main.js" && edge.target == "src/dir/entry.js"
+            }),
+            "expected path.resolve import to resolve"
+        );
+    }
+
+    #[test]
+    fn python_import_module_with_concat_resolves() {
+        let dir = TempDir::new().expect("tempdir");
+        let repo_root = dir.path();
+        write_fixture(&repo_root.join("pkg/extra.py"), "value = 42");
+        let content = r#"
+import importlib
+BASE = "pkg"
+importlib.import_module(BASE + ".extra")
+"#;
+        let result = extract_python_import_edges(repo_root, "main.py", content);
+        assert!(
+            result.edges.iter().any(|edge| edge.source == "main.py" && edge.target == "pkg/extra.py"),
+            "expected importlib.import_module to resolve"
+        );
+    }
+
+    #[test]
+    fn js_template_unique_match_requires_single_candidate() {
+        let dir = TempDir::new().expect("tempdir");
+        let repo_root = dir.path();
+        write_fixture(&repo_root.join("src/tpl/alpha.js"), "export const a = 1;");
+        write_fixture(&repo_root.join("src/tpl/beta.js"), "export const b = 2;");
+        let content = r#"
+const choice = getChoice();
+require(`./tpl/${choice}.js`);
+"#;
+        let result = extract_js_ts_import_edges(
+            repo_root,
+            "src/main.js",
+            content,
+            SourceLanguage::JavaScript,
+        );
+        assert!(
+            result.edges.is_empty(),
+            "expected unique-match resolver to skip ambiguous template imports"
+        );
+        let diagnostics = result.diagnostics.expect("expected diagnostics");
+        assert_eq!(diagnostics.unresolved_imports_total, 1);
+    }
+
+    #[test]
+    fn unresolved_import_samples_are_capped() {
+        let dir = TempDir::new().expect("tempdir");
+        let repo_root = dir.path();
+        let content = r#"
+import "./missing-1.js";
+import "./missing-2.js";
+import "./missing-3.js";
+import "./missing-4.js";
+import "./missing-5.js";
+import "./missing-6.js";
+import "./missing-7.js";
+"#;
+        let result = extract_js_ts_import_edges(
+            repo_root,
+            "src/main.js",
+            content,
+            SourceLanguage::JavaScript,
+        );
+        let diagnostics = result.diagnostics.expect("expected diagnostics");
+        assert_eq!(diagnostics.unresolved_imports_total, 7);
+        assert_eq!(diagnostics.unresolved_imports_sample.len(), UNRESOLVED_IMPORT_SAMPLE_LIMIT);
+    }
+
+    #[test]
+    fn unresolved_relative_imports_reported() {
+        let dir = TempDir::new().expect("tempdir");
+        let repo_root = dir.path();
+        let content = r#"import "./missing.js";"#;
+        let result = extract_js_ts_import_edges(
+            repo_root,
+            "src/main.ts",
+            content,
+            SourceLanguage::TypeScript,
+        );
+        let diagnostics = result.diagnostics.expect("expected diagnostics");
+        assert_eq!(diagnostics.unresolved_imports_total, 1);
+        assert_eq!(diagnostics.unresolved_imports_sample, vec!["./missing.js"]);
+    }
+
+    #[test]
     fn traverse_does_not_expand_through_excluded_edge_types() {
         let edges = vec![
             ImpactGraphEdge {
@@ -3461,6 +4157,8 @@ mod tests {
         let state_dir = state_root.join("index");
         std::fs::create_dir_all(&state_dir).expect("create state dir");
         let payload = serde_json::json!({
+            "schema": { "name": "docdex.impact_graph", "version": 99, "compatible": { "min": 99, "max": 99 } },
+            "repo_id": "test-repo",
             "graphs": [
                 {
                     "schema": { "name": "docdex.impact_graph", "version": 99, "compatible": { "min": 99, "max": 99 } },
@@ -3481,9 +4179,44 @@ mod tests {
         let store = ImpactGraphStore::new(&state_dir);
         let err = store.read_edges().expect_err("expected schema version error");
         assert!(
-            err.to_string().contains("unsupported impact graph schema version"),
+            err.to_string()
+                .contains("impact graph schema version 99 is not compatible with current"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn store_accepts_newer_compatible_schema() {
+        let dir = TempDir::new().expect("tempdir");
+        let state_root = dir.path().join(".docdex");
+        let state_dir = state_root.join("index");
+        std::fs::create_dir_all(&state_dir).expect("create state dir");
+        let payload = serde_json::json!({
+            "schema": { "name": "docdex.impact_graph", "version": 2, "compatible": { "min": 1, "max": 2 } },
+            "repo_id": "test-repo",
+            "graphs": [
+                {
+                    "schema": { "name": "docdex.impact_graph", "version": 2, "compatible": { "min": 1, "max": 2 } },
+                    "repo_id": "test-repo",
+                    "source": "a.ts",
+                    "inbound": [],
+                    "outbound": [],
+                    "edges": [
+                        { "source": "a.ts", "target": "b.ts", "kind": "import" }
+                    ]
+                }
+            ]
+        });
+        std::fs::write(
+            state_root.join("impact_graph.json"),
+            serde_json::to_vec_pretty(&payload).expect("serialize impact_graph.json"),
+        )
+        .expect("write impact_graph.json");
+
+        let store = ImpactGraphStore::new(&state_dir);
+        let edges = store.read_edges().expect("read edges");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].target, "b.ts");
     }
 
     #[test]

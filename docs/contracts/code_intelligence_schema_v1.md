@@ -132,14 +132,28 @@ For a request where `source = F`:
 
 Diagnostics are best-effort and omitted when no unresolved imports are recorded.
 
+### Impact graph storage and migrations
+
+`impact_graph.json` stores a repo-scoped graph snapshot and includes schema metadata:
+
+```json
+{
+  "schema": { "name": "docdex.impact_graph", "version": 1, "compatible": { "min": 1, "max": 1 } },
+  "repo_id": "<sha256 fingerprint>",
+  "graphs": [ ... ]
+}
+```
+
+Readers must reject payloads whose schema name does not match or whose compatibility range does not include the current implementation version. Legacy files without schema metadata are accepted and migrated in-memory; reindex to persist the upgraded format. Newer schema versions may be accepted when the compatibility range explicitly includes the current version.
+
 ### Import resolution (best-effort)
 
 Impact edges are derived from static/heuristic import resolution. Supported patterns include:
 
 - Literal import strings (`import "./foo"`, `require("./bar")`, `from pkg import x`)
 - String concatenation with literals and constant identifiers (`"./foo" + "/bar"`)
-- Static path joins (`path.join("./dir", "file")`, `os.path.join("pkg", "mod")`)
-- Template literals with fixed segments when a unique repo match exists (`./dir/${name}.js`)
+- Static path joins (`path.join("./dir", "file")`, `path.resolve("./dir", "file")`, `os.path.join("pkg", "mod")`)
+- Template literals or f-strings when all substitutions resolve to static values; if the resulting pattern matches a unique repo file, emit an edge (`./dir/${name}.js`)
 - Python `importlib.import_module(...)` and `importlib.util.spec_from_file_location(..., path)`
 - Rust `mod`/`use` and `include!`/`include_str!`/`include_bytes!`
 

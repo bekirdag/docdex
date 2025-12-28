@@ -18,11 +18,11 @@ Docdex is a lightweight, local documentation indexer/search daemon. It runs per-
 
 ## Features at a glance
 - Per-repo daemon (`docdexd serve`) with HTTP API and optional MCP; defaults to `127.0.0.1:3210` and per-repo state under `~/.docdex/state/repos/<fingerprint>/`.
-- Local-first waterfall retrieval: repo index + libs, optional web fallback, optional memory (Ollama).
+- Local-first waterfall retrieval: repo index + libs, optional web fallback, memory enabled by default (Ollama embeddings).
 - Search + chat surfaces: `/search`, `/v1/chat/completions`, CLI `chat` (CLI proxies to HTTP by default; `DOCDEX_CLI_LOCAL=1` for in-process).
 - Code intelligence: symbols, AST, impact graph and diagnostics (`/v1/symbols`, `/v1/ast`, `/v1/graph/impact`).
 - Web discovery + scraping: DuckDuckGo HTML + headless Chrome with caching and rate limits.
-- Memory + reasoning DAG (`/v1/memory/*`, `/v1/dag/export`) when enabled.
+- Memory + reasoning DAG (`/v1/memory/*`, `/v1/dag/export`) enabled by default (disable in config if needed).
 - Hardware-aware LLM guidance (`llm-list`, `llm-setup`) and Ollama defaults (`phi3.5:3.8b`, `nomic-embed-text`).
 - Security/ops: loopback bind by default, non-loopback binds require auth token, secure-mode rate limiting, TLS options, audit logs, `/healthz` + `/metrics`, `docdexd check` preflight.
 
@@ -30,14 +30,14 @@ Docdex is a lightweight, local documentation indexer/search daemon. It runs per-
 - Indexes repo docs and code into Tantivy plus symbols/AST/impact data, stored under `~/.docdex/state/repos/<fingerprint>/` (override with `--state-dir`).
 - Serves the same repo data over HTTP and CLI (CLI uses the daemon unless `DOCDEX_CLI_LOCAL=1`).
 - Watches files while serving to incrementally ingest changes.
-- Offers optional web fallback, memory, and MCP tooling per repo with strict isolation.
+- Offers optional web fallback and MCP tooling per repo with strict isolation; memory is enabled by default but configurable.
 - Hardened defaults: loopback binding, `--expose` required for non-loopback binds, auth token required on non-loopback, secure-mode rate limiting, audit logging, strict state-dir perms.
 
 ## How it works
 1) `docdexd index` builds the repo index (and symbols/impact data) under `~/.docdex/state/repos/<fingerprint>/` and can ingest libs sources.  
 2) `docdexd serve` opens the repo index, starts a file watcher, optionally auto-starts MCP, and serves the HTTP API.  
 3) CLI commands use HTTP by default; override with `DOCDEX_HTTP_BASE_URL` or `DOCDEX_CLI_LOCAL=1` for in-process.  
-4) Waterfall retrieval uses local index first; web fallback and memory are gated by config/flags.
+4) Waterfall retrieval uses local index first; web fallback is gated by config/flags; memory is enabled by default but configurable.
 
 ## Quick start
 ```bash
@@ -153,6 +153,7 @@ Impact graph snapshots carry schema metadata and are migrated on read; reindex t
 - `--strip-snippet-html` / `DOCDEX_STRIP_SNIPPET_HTML=true`: omit `snippet.html` in responses to force text-only snippets (HTML is sanitized by default when present).
 - `--disable-snippet-text` / `DOCDEX_DISABLE_SNIPPET_TEXT=true`: omit snippet text/html in responses entirely (only doc metadata is returned).
 - `--access-log <true|false>` / `DOCDEX_ACCESS_LOG`: emit minimal structured access logs with query values redacted (default: true).
+- `--enable-memory <true|false>` / `DOCDEX_ENABLE_MEMORY`: control memory endpoints for the daemon (default: enabled via `[memory].enabled=true` in config; set `[memory].enabled=false` to disable).
 - `--enable-mcp` / `--disable-mcp` / `DOCDEX_ENABLE_MCP`: control MCP auto-start when serving (default: enabled).
 - `DOCDEX_MCP_SERVER_BIN`: override the MCP server binary path.
 - `--run-as-uid` / `DOCDEX_RUN_AS_UID`, `--run-as-gid` / `DOCDEX_RUN_AS_GID`: (Unix) drop privileges to the provided UID/GID after startup prep.
@@ -194,7 +195,7 @@ AST/symbol ranking boosts are enabled by default for search and chat, and can be
 - `GET /v1/ast?path=<repo-relative>&maxNodes=<n>` — returns AST nodes for a file (`docdex.ast`).
 - `GET /v1/ast/search?kinds=<csv>&mode=<any|all>&limit=<n>` — returns files containing AST kinds.
 - `POST /v1/ast/query` — returns files with matching AST nodes (kinds + optional `name`, `field`, `pathPrefix`, `mode`, `limit`, `sampleLimit`).
-- `POST /v1/memory/store` / `POST /v1/memory/recall` — store/recall repo-scoped memory items (requires memory enabled).
+- `POST /v1/memory/store` / `POST /v1/memory/recall` — store/recall repo-scoped memory items (memory enabled by default).
 - `GET /v1/dag/export` — export reasoning DAG for a session.
 - `POST /v1/web/search` / `POST /v1/web/fetch` / `POST /v1/web/cache/flush` — web discovery/fetch and cache control.
 - `POST /v1/libs/discover` / `POST /v1/libs/ingest` / `POST /v1/libs/fetch` — library docs discovery and ingestion.
@@ -208,7 +209,7 @@ AST/symbol ranking boosts are enabled by default for search and chat, and can be
 - `ingest --repo <path> --file <file>` — reindex a single file.
 - `chat --repo <path> --query "<text>" [--limit 8] [--repo-only] [--agent <slug>]` — run a search and print JSON hits.
 - `web-search --query "<text>" [--limit 8]`, `web-fetch --url <url>`, `web-rag --query "<text>" [--limit 8]` — web discovery/fetch and web-assisted queries.
-- `memory-store --text "<text>"` / `memory-recall --query "<text>" --top-k 5` — memory store/recall (requires embeddings).
+- `memory-store --text "<text>"` / `memory-recall --query "<text>" --top-k 5` — memory store/recall (requires embeddings; memory enabled by default).
 - `symbols-status --repo <path>` — Tree-sitter parser drift status.
 - `impact-diagnostics --repo <path>` — unresolved import diagnostics.
 - `dag view --repo <path> <session_id> [--format text|dot|json]` — render a session DAG trace.

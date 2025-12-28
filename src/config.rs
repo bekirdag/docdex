@@ -490,7 +490,7 @@ fn default_page_load_timeout_secs() -> u64 {
 }
 
 fn default_memory_enabled() -> bool {
-    false
+    true
 }
 
 fn default_memory_backend() -> String {

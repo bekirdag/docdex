@@ -1,3 +1,5 @@
+> Archived: this document captured an early v2 planning snapshot. Current behavior is documented in `README.md`.
+
 Based on the provided SDS and the current file structure of `docdex` v0.1.10, here is the breakdown of the main features to add and the necessary changes to existing features to reach v2.0.
 
 ### 1. New Core Components

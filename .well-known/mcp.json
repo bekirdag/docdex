@@ -3,10 +3,10 @@
   "protocolVersion": "2025-06-18",
   "serverInfo": {
     "name": "docdex",
-    "title": "Docdex – Repo Docs Index & Search",
+    "title": "Docdex – Repo Docs + Code Index & Search",
     "version": "1.0.0"
   },
-  "description": "Per-repo documentation indexer and MCP server exposing fast full-text search over your local docs.",
+  "description": "Per-repo docs + code indexer and MCP server for local search, chat, and code intelligence.",
   "iconUrl": "https://docdex.org/assets/docdex.png",
   "documentationUrl": "https://docdex.org/",
   "transport": {
@@ -28,7 +28,7 @@
     "roots": {},
     "sampling": {}
   },
-  "instructions": "Use docdex_search to find relevant docs before coding. Call docdex_index when results look stale, docdex_files to browse indexed files, docdex_open to read file slices, and docdex_stats to inspect the index.",
+  "instructions": "Use docdex_search for repo docs/code before edits; if results are weak or web context is needed, use docdex_web_research (requires DOCDEX_WEB_ENABLED=1). Use docdex_open for file reads, docdex_files to list indexed files, and docdex_index to refresh stale data. For code intelligence, use docdex_symbols/docdex_ast and docdex_impact_diagnostics. Memory tools (docdex_memory_store/recall) are enabled by default but can be disabled in config. Pass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).",
   "resources": ["dynamic"],
   "tools": ["dynamic"],
   "prompts": ["dynamic"]

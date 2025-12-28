@@ -1,6 +1,6 @@
 # Docdex
 
-Docdex is a lightweight, local documentation indexer/search daemon. It runs per-project, keeps an on-disk index of your markdown/text docs, and serves top-k snippets over HTTP or CLI for any coding assistant or tool—no external services or uploads required.
+Docdex is a local-first docs + code indexer/search daemon. It runs per repo, keeps an on-disk index, and serves search, chat, and code intelligence over HTTP, CLI, or MCP—no external services or uploads required.
 
 ## Install via npm
 - Requires Node.js >= 18.
@@ -15,23 +15,24 @@ Docdex is a lightweight, local documentation indexer/search daemon. It runs per-
 - Publishing uses npm Trusted Publishing (OIDC) — no NPM token needed; see `.github/workflows/release.yml`.
 
 ## Features at a glance
-- Per-repo, local indexing of Markdown/text files (tantivy-backed; no network calls).
-- HTTP API (`/search`, `/snippet`, `/healthz`) and CLI (`query`, `ingest`, `self-check`) share the same index.
-- Live file watching while serving for incremental updates.
-- Security knobs: TLS (manual certs or Certbot), auth token required by default (disable with `--secure-mode=false`), loopback-only allowlist by default, default rate limiting, request-size limits, strict state-dir perms, audit log, chroot/privilege drop/unshare net (Unix).
-- Output ready for coding assistants: summaries, snippets, and doc metadata.
-- AI-friendly: `GET /ai-help` returns a JSON playbook (endpoints, CLI commands, limits, best practices) for agents.
+- Per-repo indexing of docs + common source code extensions (tantivy-backed; no external services).
+- HTTP API (`/search`, `/snippet`, `/v1/chat/completions`, `/v1/symbols`, `/v1/ast`, `/v1/graph/impact`) and CLI (`chat`, `ingest`, `symbols-status`, `impact-diagnostics`) share the same state.
+- Memory + DAG endpoints (`/v1/memory/*`, `/v1/dag/export`) enabled by default (Ollama embeddings).
+- Optional web fallback with strict gating (disabled by default; enable with `DOCDEX_WEB_ENABLED=1`).
+- MCP tooling for agent integrations: search/open/files/index/stats plus web research, symbols/AST/impact, memory, and repo inspect.
+- Secure defaults: loopback bind, TLS enforcement on non-loopback, auth token required in secure mode, default rate limiting, request-size limits, strict state-dir perms, audit log, chroot/privilege drop/unshare net (Unix).
+- AI-friendly: `GET /ai-help` returns a JSON playbook (endpoints, CLI commands, limits, best practices).
 
 ## What it does
-- Indexes Markdown/text docs inside a repo and stores them locally (tantivy-based index under `<repo>/.docdex/index` by default).
-- Serves the same index over HTTP (`/search`, `/snippet`, `/healthz`) and via CLI (`query`, `ingest`, `self-check`), so automation and interactive use share one dataset.
+- Indexes docs and source files inside a repo and stores them locally under `~/.docdex/state/repos/<fingerprint>/index`.
+- Serves the same state over HTTP (`/search`, `/snippet`, `/v1/chat/completions`, `/v1/symbols`, `/v1/ast`, `/v1/graph/impact`) and via CLI (`chat`, `ingest`, `symbols-status`, `impact-diagnostics`).
 - Watches files while serving to incrementally ingest changes.
-- Hardened defaults: loopback binding, TLS enforcement on non-loopback, auth token required by default (disable with `--secure-mode=false`), loopback-only allowlist and default rate limit (60 req/min) in secure mode, audit log enabled, and strict state-dir perms.
+- Hardened defaults: loopback binding, TLS enforcement on non-loopback, auth token required by default (disable with `--secure-mode=false`), loopback-only allowlist and default rate limit (60 req/min) in secure mode, audit log enabled, strict state-dir perms.
 
 ## How it works
-1) `docdexd index` builds the on-disk index for your repo (or reuses a legacy `.gpt-creator/docdex/index` if present).  
+1) `docdexd index` builds the on-disk index for your repo.  
 2) `docdexd serve` loads that index, starts a file watcher for incremental updates, and exposes the HTTP API.  
-3) HTTP clients or the CLI (`docdexd query`) read from the same index; `ingest` can update a single file without full reindexing.  
+3) HTTP clients or the CLI (`docdexd chat`) read from the same state; `ingest` can update a single file without full reindexing.  
 4) Optional TLS/auth/rate-limit settings secure remote access; audit logging can record access actions.
 
 ## Quick start
@@ -45,38 +46,40 @@ npx docdex --version
 docdexd index --repo /path/to/repo
 
 # serve HTTP API with live file watching (secure mode requires an auth token)
-docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 46137 --log info --auth-token <token>
+docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 3210 --log info --auth-token <token>
 # for local, token-free use, add --secure-mode=false
-# docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 46137 --log info --secure-mode=false
+# docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 3210 --log info --secure-mode=false
 
-# ad-hoc search via CLI (JSON)
-docdexd query --repo /path/to/repo --query "otp flow" --limit 5
+# ad-hoc chat via CLI (JSON)
+docdexd chat --repo /path/to/repo --query "otp flow" --limit 5
 ```
 
 ## TL;DR for agents
-- Use Docdex for repo docs: run `docdexd index --repo .` once, then either `docdexd serve --repo . --host 127.0.0.1 --port 46137` for HTTP, or `docdexd mcp --repo . --log warn` for MCP.
+- Use Docdex for repo docs + code: run `docdexd index --repo .` once, then either `docdexd serve --repo . --host 127.0.0.1 --port 3210` for HTTP, or `docdexd mcp --repo . --log warn` for MCP.
 - Add `.docdex/` to `.gitignore` so indexes aren’t committed.
-- When MCP-aware, register a server named `docdex` that runs `docdexd mcp --repo . --log warn --max-results 8`, then call `docdex_search` before coding and `docdex_index` when stale.
+- When MCP-aware, register a server named `docdex` that runs `docdexd mcp --repo . --log warn --max-results 8`, then call `docdex_search` (or `docdex_web_research`) before coding and `docdex_index` when stale.
 - Prefer summary-first (snippets=false), fetch specific snippets only when needed, keep queries short, and respect token estimates.
 
 ## Usage cheat sheet
 - Build index: `docdexd index --repo <path>` (add `--exclude-*` to skip paths).
-- Serve with watcher: `docdexd serve --repo <path> --host 127.0.0.1 --port 46137 --log warn --auth-token <token>` (secure mode also allowlists loopback and rate-limits by default; add `--allow-ip`/`--secure-mode=false`/`--rate-limit-per-min` as needed for remote use).
+- Serve with watcher: `docdexd serve --repo <path> --host 127.0.0.1 --port 3210 --log warn --auth-token <token>` (secure mode also allowlists loopback and rate-limits by default; add `--allow-ip`/`--secure-mode=false`/`--rate-limit-per-min` as needed for remote use).
 - Secure serving: add `--auth-token <token>` (required by default); use TLS with `--tls-cert/--tls-key` or `--certbot-domain <domain>`.
 - Single-file ingest: `docdexd ingest --repo <path> --file docs/new.md` (honors excludes).
-- Query via CLI: `docdexd query --repo <path> --query "term" --limit 4` (add `--repo-only` to ignore libs index hits).
-- Git hygiene: add `.docdex/` (and especially `.docdex/index/`) to your repo's `.gitignore` so index artifacts never get committed.
-- Health check: `curl http://127.0.0.1:46137/healthz`.
-- Summary-only search responses: `curl "http://127.0.0.1:46137/search?q=foo&snippets=false"`; fetch snippets only for top hits.
-- Repo-only HTTP search (ignore libs index hits): `curl "http://127.0.0.1:46137/search?q=foo&include_libs=false"`.
-- Token budgets: `curl "http://127.0.0.1:46137/search?q=foo&max_tokens=800"` to drop hits that would exceed your prompt budget; pair with `snippets=false` then fetch 1–2 snippets you keep.
+- Query via CLI: `docdexd chat --repo <path> --query "term" --limit 4` (add `--repo-only` to ignore libs index hits).
+- Memory: `docdexd memory-store --repo <path> --text "..."` and `docdexd memory-recall --repo <path> --query "..."`.
+- Web fallback (disabled by default): `DOCDEX_WEB_ENABLED=1 docdexd web-search --query "..."`.
+- Git hygiene: add `.docdex/` to `.gitignore` only if you opt into an in-repo `--state-dir`.
+- Health check: `curl http://127.0.0.1:3210/healthz`.
+- Summary-only search responses: `curl "http://127.0.0.1:3210/search?q=foo&snippets=false"`; fetch snippets only for top hits.
+- Repo-only HTTP search (ignore libs index hits): `curl "http://127.0.0.1:3210/search?q=foo&include_libs=false"`.
+- Token budgets: `curl "http://127.0.0.1:3210/search?q=foo&max_tokens=800"` to drop hits that would exceed your prompt budget; pair with `snippets=false` then fetch 1–2 snippets you keep.
 - Text-only snippets: append `text_only=true` to `/snippet/:doc_id` or start `serve` with `--strip-snippet-html` (or `--disable-snippet-text` to return metadata only).
 - Keep requests compact: defaults enforce `max_query_bytes=4096` and `max_request_bytes=16384`; keep queries short and leave `--max-limit` low (default 8) to avoid oversized responses.
 - Prompt hygiene: in agent prompts, normalize whitespace and include only `rel_path`, `summary`, and trimmed `snippet` (omit `score`/`token_estimate`/`doc_id`).
 - Trim noise early: use `--exclude-dir` and `--exclude-prefix` to keep vendor/build/cache/secrets out of the index so snippets stay relevant and short.
 - Quiet logging for agents: run `docdexd serve --log warn --access-log=false` if you marshal responses elsewhere to cut log overhead.
 - Cache hits client-side: store `doc_id` ↔ `rel_path` ↔ `summary` to avoid repeat snippet calls; fetch snippets only for new doc_ids.
-- Agent help: `curl http://127.0.0.1:46137/ai-help` (requires auth if configured; include `Authorization: Bearer <token>` when you’ve set `--auth-token`). The response includes a short MCP registration recipe.
+- Agent help: `curl http://127.0.0.1:3210/ai-help` (requires auth if configured; include `Authorization: Bearer <token>` when you’ve set `--auth-token`). The response includes a short MCP registration recipe.
 
 ## Versioning
 - Semantic versioning with tagged releases (`vX.Y.Z`). The Rust crate and npm package share the same version.
@@ -85,13 +88,13 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - If you build from source, the version comes from `Cargo.toml` in this repo; the npm wrapper uses the matching version to fetch binaries.
 
 ## Paths and defaults
-- State/index directory: `<repo>/.docdex/index` (if missing but legacy `<repo>/.gpt-creator/docdex/index` exists, Docdex will reuse it and warn). The directory is created with `0700` permissions by default.
-- HTTP API: defaults to `127.0.0.1:46137` when serving.
-- Docdex data and logs stay inside the repo; no external services.
+- State/index directory: `~/.docdex/state/repos/<fingerprint>/index` (legacy `.gpt-creator/docdex/index` is reused with a warning). The directory is created with `0700` permissions by default.
+- HTTP API: defaults to `127.0.0.1:3210` when serving.
+- State and logs stay local; no external services are required.
 
 ## Configuration knobs
 - `--repo <path>`: workspace root to index (defaults to `.`).
-- `--state-dir <path>` / `DOCDEX_STATE_DIR`: override index storage path (relative paths are resolved under `repo`).
+- `--state-dir <path>` / `DOCDEX_STATE_DIR`: override state storage path (relative paths resolve under the repo root; absolute paths outside the repo are treated as shared base dirs and scoped to `<state-dir>/repos/<repo_id>/index`).
 - `--exclude-prefix a,b,c` / `DOCDEX_EXCLUDE_PREFIXES`: extra relative prefixes to skip.
 - `--exclude-dir a,b,c` / `DOCDEX_EXCLUDE_DIRS`: extra directory names to skip anywhere in the tree.
 - `--auth-token <token>` / `DOCDEX_AUTH_TOKEN`: bearer token required in secure mode (default); omit only when starting with `--secure-mode=false`.
@@ -113,6 +116,8 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - `--audit-disable` / `DOCDEX_AUDIT_DISABLE=true`: disable audit logging entirely.
 - `--strip-snippet-html` / `DOCDEX_STRIP_SNIPPET_HTML=true`: omit `snippet.html` in responses to force text-only snippets (HTML is sanitized by default when present).
 - `--disable-snippet-text` / `DOCDEX_DISABLE_SNIPPET_TEXT=true`: omit snippet text/html in responses entirely (only doc metadata is returned).
+- `--enable-memory <true|false>` / `DOCDEX_ENABLE_MEMORY`: control memory endpoints (enabled by default via config; set `[memory].enabled=false` or `DOCDEX_ENABLE_MEMORY=0` to disable).
+- `DOCDEX_WEB_ENABLED=1` / `DOCDEX_OFFLINE=1`: enable web fallback or force offline mode.
 - `--access-log <true|false>` / `DOCDEX_ACCESS_LOG`: emit minimal structured access logs with query values redacted (default: true).
 - `--run-as-uid` / `DOCDEX_RUN_AS_UID`, `--run-as-gid` / `DOCDEX_RUN_AS_GID`: (Unix) drop privileges to the provided UID/GID after startup prep.
 - `--chroot <path>` / `DOCDEX_CHROOT`: (Unix) chroot into `path` before serving; repo/state paths must exist inside that jail.
@@ -121,25 +126,38 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - Secure mode defaults: when `--secure-mode=true` (default), docdex requires an auth token, allows only loopback IPs unless overridden, and applies a 60 req/min rate limit. Set `--secure-mode=false` to opt out for local dev and adjust `--allow-ip`/rate limits as needed.
 
 ## Indexing rules (see `index/mod.rs`)
-- File types: `.md`, `.markdown`, `.mdx`, `.txt` (extend `DEFAULT_EXTENSIONS` to add more).
+- File types: `.md`, `.markdown`, `.mdx`, `.txt`, `.rs`, `.py`, `.js`, `.jsx`, `.ts`, `.tsx`, `.go` (extend `DEFAULT_EXTENSIONS` to add more).
 - Skipped directories: broad VCS/build/cache/vendor folders across ecosystems (e.g., `.git`, `.hg`, `.svn`, `node_modules`, `.pnpm-store`, `.yarn*`, `.nx`, `.rollup-cache`, `.webpack-cache`, `.tsbuildinfo`, `.next`, `.nuxt`, `.svelte-kit`, `.mypy_cache`, `.ruff_cache`, `.venv`, `target`, `go-build`, `.gradle`, `.mvn`, `pods`, `.dart_tool`, `.android`, `.serverless`, `.vercel`, `.netlify`, `_build`, `_opam`, `.stack-work`, `elm-stuff`, `library`, `intermediate`, `.godot`, etc.; see `DEFAULT_EXCLUDED_DIR_NAMES` for the full list).
 - Skipped relative prefixes: `logs/`, `.docdex/`, `.docdex/logs/`, `.docdex/tmp/`, `.gpt-creator/logs/`, `.gpt-creator/tmp/`, `.mastercoda/logs/`, `.mastercoda/tmp/`, `docker/.data/`, `docker-data/`, `.docker/`.
 - Snippet sizing: summaries ~360 chars (up to 4 segments); snippets ~420 chars.
 
 ## HTTP API
 - `GET /healthz` — returns `ok`; this endpoint is unauthenticated and not rate-limited (IP allowlist still applies).
-- `GET /search?q=<text>&limit=<n>&snippets=<bool>&max_tokens=<u64>&include_libs=<bool>` — returns `{ hits: [...] }` with doc id, rel path, summary, snippet, score, token estimate. Set `snippets=false` for summary-only responses; set `max_tokens` to drop hits above your budget. `include_libs` defaults to `true` when a libs index exists; set `include_libs=false` to search repo-only.
-- `GET /snippet/:doc_id?window=<lines>&q=<query>&text_only=<bool>&max_tokens=<u64>` — returns `{ doc, snippet }` with optional highlighted snippet; falls back to preview when query highlighting is empty (default window: 40 lines). Set `text_only=true` to drop HTML and shrink payloads; set `max_tokens` to omit the snippet if the doc exceeds your budget.
-- `GET /ai-help` — returns a JSON quickstart for agents (endpoints, CLI commands, limits, best practices).
-- `GET /metrics` — returns Prometheus-style counters/gauges for rate-limit/auth/error and browser guard metrics (see `docs/ops/browser_guard.md` in the repo).
+- `GET /search?q=<text>&limit=<n>&snippets=<bool>&max_tokens=<u64>&include_libs=<bool>` — returns `{ hits: [...] }` with doc id, `rel_path`/`path`, `kind` (`doc`|`code`), summary, snippet, score, token estimate. Optional: `force_web`, `skip_local_search`, `no_cache`, `max_web_results`, `llm_filter_local_results`, `diff_mode`, `diff_base`, `diff_head`, `diff_path`, `repo_id`.
+- `GET /snippet/:doc_id?window=<lines>&q=<query>&text_only=<bool>&max_tokens=<u64>` — returns `{ doc, snippet }` with optional highlighted snippet; falls back to preview when query highlighting is empty (default window: 40 lines).
+- `POST /v1/index/rebuild` — rebuild the repo index.
+- `POST /v1/index/ingest` — ingest a single file.
+- `POST /v1/chat/completions` — OpenAI-compatible chat completion with docdex context.
+- `GET /v1/graph/impact` / `GET /v1/graph/impact/diagnostics` — impact graph edges + unresolved imports.
+- `GET /v1/symbols`, `GET /v1/symbols/status` — symbols per file + parser drift status.
+- `GET /v1/ast`, `GET /v1/ast/search`, `POST /v1/ast/query` — AST queries.
+- `POST /v1/memory/store`, `POST /v1/memory/recall` — memory endpoints (enabled by default).
+- `POST /v1/web/search`, `POST /v1/web/fetch`, `POST /v1/web/cache/flush` — web discovery/fetch (requires `DOCDEX_WEB_ENABLED=1`).
+- `GET /ai-help` — JSON quickstart for agents.
+- `GET /metrics` — Prometheus-style counters/gauges (see `docs/ops/browser_guard.md` in the repo).
+- Repo scoping: include `repo_id` in query/body or the `x-docdex-repo-id` header; mismatches are rejected.
 - If `--auth-token` is set, include `Authorization: Bearer <token>` on HTTP calls (including `/ai-help`).
 
 ## CLI commands
-- `serve --repo <path> [--host 127.0.0.1] [--port 46137] [--log info]` — start HTTP API with file watching for incremental updates.
+- `serve --repo <path> [--host 127.0.0.1] [--port 3210] [--log info]` — start HTTP API with file watching for incremental updates.
 - `index --repo <path>` — rebuild the entire index.
 - `ingest --repo <path> --file <file>` — reindex a single file.
-- `query --repo <path> --query "<text>" [--limit 8] [--repo-only]` — run a search and print JSON hits.
-- `self-check --repo <path> --terms "foo,bar" [--limit 5]` — scan the index for sensitive terms before enabling access (fails with non-zero exit if any are found; reports sample hits and if more exist). Includes built-in token/password patterns by default; disable with `--include-default-patterns=false` if you only want your provided terms.
+- `chat --repo <path> --query "<text>" [--limit 8] [--repo-only|--web-only] [--max-web-results N]` — run a chat/search query (omit `--query` to enter REPL mode).
+- `web-search --query "<text>"`, `web-fetch --url <url>`, `web-rag --query "<text>"` — web discovery/fetch and web-assisted queries.
+- `memory-store --text "<text>"` / `memory-recall --query "<text>" --top-k 5` — memory store/recall (enabled by default).
+- `symbols-status --repo <path>` — report Tree-sitter parser drift.
+- `impact-diagnostics --repo <path>` — list unresolved dynamic imports.
+- `self-check --repo <path> --terms "foo,bar" [--limit 5]` — scan the index for sensitive terms before enabling access.
 
 ## Perf checks
 - Repo-only search latency (p95 < 50ms; see `docs/sds/sds.md`): `cargo test --release repo_only_search_p95_under_50ms_with_libs_index_present -- --ignored --nocapture`.
@@ -149,16 +167,21 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - Dump help for every subcommand: `docdexd help-all`.
 - See `serve` options (TLS, auth, rate limits, watcher): `docdexd serve --help`.
 - Indexing options: `docdexd index --help` (exclude paths, custom state dir).
-- Ad-hoc queries: `docdexd query --help`.
+- Ad-hoc queries: `docdexd chat --help`.
 - Self-check scanner options: `docdexd self-check --help`.
-- Agent help endpoint: `curl http://127.0.0.1:46137/ai-help` (include `Authorization: Bearer <token>` if `--auth-token` is set) for a JSON listing of endpoints, limits, and best practices.
+- Agent help endpoint: `curl http://127.0.0.1:3210/ai-help` (include `Authorization: Bearer <token>` if `--auth-token` is set) for a JSON listing of endpoints, limits, and best practices.
 - MCP help/registration: `docdexd mcp --help` lists MCP flags; register with your client using `docdexd mcp --repo <repo> --log warn --max-results 8` (Codex CLI shortcut: `codex mcp add docdex -- docdexd mcp --repo <repo> --log warn --max-results 8`).
 - Environment variables mirror the flags (e.g., `DOCDEX_AUTH_TOKEN`, `DOCDEX_TLS_CERT`, `DOCDEX_MAX_LIMIT`).
 - Command overview (same as `docdexd --help`):
   - `serve` — run HTTP API with watcher and security knobs.
   - `index` — build or rebuild the whole index.
   - `ingest` — reindex a single file.
-  - `query` — run an ad-hoc search, JSON to stdout.
+  - `chat` — run an ad-hoc search, JSON to stdout (omit `--query` for REPL).
+  - `web-search` / `web-fetch` / `web-rag` — web discovery and web-assisted queries (requires `DOCDEX_WEB_ENABLED=1`).
+  - `memory-store` / `memory-recall` — memory store/recall.
+  - `symbols-status` / `impact-diagnostics` — code intelligence status and unresolved imports.
+  - `repo` — inspect or reassociate repo identity for shared state dirs.
+  - `mcp` / `mcp-add` — MCP server + helper for agent CLIs.
   - `self-check` — scan index for sensitive terms with report.
   - `help-all` — print help for every command/flag in one output.
 
@@ -183,7 +206,7 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
     allow 192.168.0.0/16;
     deny all;
     location / {
-      proxy_pass http://127.0.0.1:46137;
+      proxy_pass http://127.0.0.1:3210;
       proxy_set_header Host $host;
     }
   }
@@ -191,15 +214,16 @@ docdexd query --repo /path/to/repo --query "otp flow" --limit 5
 - Trim the corpus: prefer a curated staging directory, or use `--exclude-dir` / `--exclude-prefix` to keep secrets/private paths out before indexing; the watcher will ingest any in-scope file change under `repo`.
 - Mind logs: avoid verbose logging in production if snippets/paths are sensitive; reverse-proxy access logs can also capture query terms and paths.
 - Least privilege: run docdex under a low-privilege user/container and keep the state dir on a path with restricted permissions.
-- Validate before publish: run `docdexd query` for sensitive keywords to confirm no hits; store indexes on encrypted disks if required.
+- Validate before publish: run `docdexd chat` for sensitive keywords to confirm no hits; store indexes on encrypted disks if required.
 - Optional hardening: require an auth token on the HTTP API (or proxy); enforce TLS when not on localhost (default) or explicitly opt out with `--require-tls=false`/`--insecure` only behind a trusted proxy; enable rate limiting (`--rate-limit-per-min`) and clamp `limit`/request sizes (`--max-limit`, `--max-query-bytes`, `--max-request-bytes`); escape/sanitize snippet HTML if embedding or disable snippets entirely with `--disable-snippet-text`; state dir is created `0700` by default—keep it under an unprivileged user, optionally `--run-as-uid/--run-as-gid`, `--chroot`, or containerize; keep access logging minimal/redacted (`--access-log`), and run `self-check` for sensitive terms before exposing the service; for at-rest confidentiality, place the state dir on encrypted storage or use host-level disk encryption.
 
 ## Integrating with LLM tools
 Docdex is tool-agnostic. Drop-in recipe for agents/codegen tools:
-- Start once per repo: `docdexd index --repo <repo>` then `docdexd serve --repo <repo> --host 127.0.0.1 --port 46137 --log warn` (or use the CLI directly without serving).
-- Configure via env: `DOCDEX_STATE_DIR` (index location), `DOCDEX_EXCLUDE_PREFIXES`, `DOCDEX_EXCLUDE_DIRS`, `RUST_LOG=docdexd=debug` (optional verbose logs).
-- Query over HTTP: `GET /search?q=<text>&limit=<n>` returns `{"hits":[{"path","rel_path","doc_id","score","summary","snippet","token_estimate"}...],"top_score":<float|null>,"topScore":<float|null>,"meta":{...}}`; `GET /snippet/:doc_id` fetches a focused snippet plus doc metadata.
-- Or query via CLI: `docdexd query --repo <repo> --query "<text>" --limit 8` (JSON to stdout).
+- Start once per repo: `docdexd index --repo <repo>` then `docdexd serve --repo <repo> --host 127.0.0.1 --port 3210 --log warn` (or use the CLI directly without serving).
+- Configure via env: `DOCDEX_STATE_DIR` (state location), `DOCDEX_EXCLUDE_PREFIXES`, `DOCDEX_EXCLUDE_DIRS`, `RUST_LOG=docdexd=debug` (optional verbose logs).
+- Query over HTTP: `GET /search?q=<text>&limit=<n>` returns `{hits:[...], top_score, meta}`; `GET /snippet/:doc_id` fetches a focused snippet plus doc metadata.
+- Or chat over HTTP: `POST /v1/chat/completions` (OpenAI-compatible) with a `docdex` object to control gating and repo context.
+- Or query via CLI: `docdexd chat --repo <repo> --query "<text>" --limit 8` (JSON to stdout).
 - Health check: `GET /healthz` should return `ok` before issuing search requests.
 - Inject snippets into prompts:
 ```
@@ -210,7 +234,7 @@ Docdex is tool-agnostic. Drop-in recipe for agents/codegen tools:
 Docdex can run as an MCP tool provider over stdio; it does not replace the HTTP daemon—pick whichever fits your agent/editor. If your MCP client supports resource templates, Docdex advertises a `docdex_file` template (`docdex://{path}`) which delegates to `docdex_open`.
 - Run: `docdexd mcp --repo /path/to/repo --log warn --max-results 8` (alias: `--mcp-max-results 8`).
 - Env override: `DOCDEX_MCP_MAX_RESULTS` clamps `docdex_search` results (min 1).
-- Packaging: MCP server is built into the main `docdexd` binary (invoked via `docdexd mcp` or `docdex mcp` from the npm bin); no separate `docdex-mcp` download required.
+- Packaging: `docdexd mcp` launches the companion `docdex-mcp-server` binary; build it with `cargo build -p docdex-mcp-server` or set `DOCDEX_MCP_SERVER_BIN` to the binary path.
 - Registering with MCP clients: add a server named `docdex` that runs `docdexd mcp --repo <repo> --log warn`. Example Codex config snippet:
   ```json
   {
@@ -229,17 +253,21 @@ Docdex can run as an MCP tool provider over stdio; it does not replace the HTTP 
   - Generic JSON config (Cursor, Continue, Windsurf, Cline, Claude Desktop devtools): add the `mcpServers.docdex` block above to your MCP config file (paths vary by client; most accept the `command`/`args` schema shown).
   - Manual/stdio-only clients: start `docdexd mcp --repo /path/to/repo --log warn --max-results 8` yourself and point the client at that command/binary.
 - Tools exposed (CallToolResult content: result.content[0].text contains JSON):
-  - `docdex_search` — args: `{ "query": "<text>", "limit": <int optional>, "project_root": "<path optional>" }`. Returns `{ "hits": [...], "results": [...], "top_score": <float|null>, "topScore": <float|null>, "repo_root": "...", "state_dir": "...", "limit": <int>, "project_root": "...", "meta": {...} }`.
-  - `docdex_index` — args: `{ "paths": ["relative/or/absolute"], "project_root": "<path optional>" }`. Empty `paths` reindexes everything; otherwise ingests the listed files.
-  - `docdex_files` — args: `{ "limit": <int optional, default 200, max 1000>, "offset": <int optional, default 0>, "project_root": "<path optional>" }`. Returns `{ "results": [{ "doc_id", "rel_path", "summary", "token_estimate" }], "total", "limit", "offset", "repo_root", "project_root" }`.
-  - `docdex_open` — args: `{ "path": "<relative file>", "start_line": <int optional>, "end_line": <int optional>, "project_root": "<path optional>" }`. Returns `{ "path", "start_line", "end_line", "total_lines", "content", "repo_root", "project_root" }` (rejects paths outside repo and large files).
-  - `docdex_stats` — args: `{ "project_root": "<path optional>" }`. Returns `{ "num_docs", "state_dir", "index_size_bytes", "segments", "avg_bytes_per_doc", "generated_at_epoch_ms", "last_updated_epoch_ms", "repo_root", "project_root" }`.
+  - `docdex_search` — args: `{ "query": "<text>", "limit": <int>, "force_web": <bool>, "diff": {...}, "project_root": "<path>", "repo_path": "<path alias>" }`.
+  - `docdex_web_research` — args: `{ "query": "<text>", "limit": <int>, "web_limit": <int>, "force_web": <bool>, "skip_local_search": <bool>, "no_cache": <bool>, "llm_filter_local_results": <bool>, "repo_only": <bool>, "llm_model": "<id>", "llm_agent": "<slug>", "project_root": "<path>", "repo_path": "<path alias>" }`.
+  - `docdex_index` — args: `{ "paths": ["relative/or/absolute"], "project_root": "<path>", "repo_path": "<path alias>" }`.
+  - `docdex_files` — args: `{ "limit": <int>, "offset": <int>, "project_root": "<path>", "repo_path": "<path alias>" }`.
+  - `docdex_open` — args: `{ "path": "<relative file>", "start_line": <int>, "end_line": <int>, "project_root": "<path>", "repo_path": "<path alias>" }`.
+  - `docdex_stats` — args: `{ "project_root": "<path>", "repo_path": "<path alias>" }`.
+  - `docdex_repo_inspect` — args: `{ "project_root": "<path>", "repo_path": "<path alias>" }`.
+  - `docdex_symbols` / `docdex_ast` / `docdex_impact_diagnostics` — code intelligence tools.
+  - `docdex_memory_store` / `docdex_memory_recall` — memory tools (enabled by default).
 - Example calls:
   - Initialize: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
   - Initialize with workspace root: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"workspace_root":"/path/to/repo"}}` (must match the server repo; sets default project_root for later calls)
   - List tools: `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`
   - Reindex: `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"docdex_index","arguments":{"paths":[]}}}`
-  - Search: `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"docdex_search","arguments":{"query":"payment auth flow","limit":3,"project_root":"/repo"}}}`
+- Search: `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"docdex_search","arguments":{"query":"payment auth flow","limit":3,"project_root":"/repo"}}}`
   - List files: `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"docdex_files","arguments":{"limit":10,"offset":0}}}`
   - Open file: `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"docdex_open","arguments":{"path":"docs/readme.md","start_line":1,"end_line":20}}}`
   - Stats: `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"docdex_stats","arguments":{}}}`
@@ -250,6 +278,6 @@ Docdex can run as an MCP tool provider over stdio; it does not replace the HTTP 
 ## HTTPS and Certbot
 - TLS accepts PKCS8, PKCS1/RSA, and SEC1/EC private keys (compatible with Certbot output).
 - Manual cert/key: `docdexd serve --repo <repo> --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem`.
-- Certbot helper: `docdexd serve --repo <repo> --host 0.0.0.0 --port 46137 --certbot-domain docs.example.com` (uses `/etc/letsencrypt/live/docs.example.com/{fullchain.pem,privkey.pem}`), or pass `--certbot-live-dir /custom/live/dir`.
+- Certbot helper: `docdexd serve --repo <repo> --host 0.0.0.0 --port 3210 --certbot-domain docs.example.com` (uses `/etc/letsencrypt/live/docs.example.com/{fullchain.pem,privkey.pem}`), or pass `--certbot-live-dir /custom/live/dir`.
 - When using Certbot, set a deploy hook to restart/reload docdex after renewals (e.g., `certbot renew --deploy-hook "systemctl restart docdexd.service"` or kill -HUP your process supervisor).
 - If binding to 443 directly, you need privileges; otherwise, keep docdex on 127.0.0.1 and let a reverse proxy terminate TLS.

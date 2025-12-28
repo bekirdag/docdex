@@ -858,7 +858,7 @@ impl McpServer {
                 let protocol_version = init_params
                     .protocol_version
                     .unwrap_or_else(|| "2024-11-05".to_string());
-                let instructions = "Use docdex_search to find repo-local docs before changing code.\nUse docdex_index to refresh the index if results seem stale.";
+                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast and docdex_impact_diagnostics for unresolved imports.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
                 let mut caps = json!({
                     "tools": { "listChanged": false },
                     "resources": { "listChanged": false },
@@ -1472,7 +1472,7 @@ impl McpServer {
             ToolDefinition {
                 name: "docdex_search",
                 description:
-                    "Search repository docs and return hits with rel_path, summary, snippet, and doc_id.",
+                    "Search repo docs/code and return hits with rel_path/path, summary, snippet, and doc_id.",
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1498,7 +1498,7 @@ impl McpServer {
             ToolDefinition {
                 name: "docdex_web_research",
                 description:
-                    "Run local search plus web discovery/fetch and return the combined response.",
+                    "Run local search plus web discovery/fetch and return the combined response (requires web enabled).",
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1521,7 +1521,7 @@ impl McpServer {
             ToolDefinition {
                 name: "docdex_index",
                 description:
-                    "Rebuild the index (or ingest specific files) for the current repo root.",
+                    "Rebuild the index (or ingest specific files) for the current repo root; use after large changes or stale results.",
                 input_schema: json!({
                     "type": "object",
                     "properties": {

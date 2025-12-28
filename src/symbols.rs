@@ -561,7 +561,7 @@ impl SymbolsStore {
         for idx in 0..tokens.len() {
             let param = idx + 1;
             clauses.push(format!(
-                "(LOWER(name) LIKE ?{param} ESCAPE '\\' OR LOWER(signature) LIKE ?{param} ESCAPE '\\')"
+                "(LOWER(name) LIKE ?{param} ESCAPE '!' OR LOWER(signature) LIKE ?{param} ESCAPE '!')"
             ));
         }
         let sql = format!(
@@ -1377,7 +1377,7 @@ fn build_ast_query_filters(
             let mut pattern = trimmed.to_string();
             pattern.push('/');
             pattern.push('%');
-            clauses.push("(file_path = ? OR file_path LIKE ? ESCAPE '\\')".to_string());
+            clauses.push("(file_path = ? OR file_path LIKE ? ESCAPE '!')".to_string());
             params.push(trimmed.to_string().into());
             params.push(pattern.into());
         }
@@ -1540,7 +1540,10 @@ fn extract_symbol_query_tokens(query: &str) -> Vec<String> {
 }
 
 fn escape_like_token(token: &str) -> String {
-    token.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    token
+        .replace('!', "!!")
+        .replace('%', "!%")
+        .replace('_', "!_")
 }
 
 fn now_epoch_ms() -> u128 {

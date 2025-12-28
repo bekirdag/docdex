@@ -172,8 +172,7 @@ fn resolve_memory_settings() -> Result<McpMemorySettings> {
     let timeout_ms = std::env::var("DOCDEX_EMBEDDING_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(5000)
-        .max(1);
+        .unwrap_or(0);
     Ok(McpMemorySettings {
         enabled,
         base_url,

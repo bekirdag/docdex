@@ -234,8 +234,8 @@ pub(crate) enum Command {
         #[arg(
             long,
             env = "DOCDEX_EMBEDDING_TIMEOUT_MS",
-            default_value_t = 5000u64,
-            help = "Embedding request timeout in milliseconds"
+            default_value_t = 0u64,
+            help = "Embedding request timeout in milliseconds (0 disables)"
         )]
         embedding_timeout_ms: u64,
         #[arg(
@@ -578,8 +578,8 @@ pub(crate) enum Command {
         #[arg(
             long,
             env = "DOCDEX_EMBEDDING_TIMEOUT_MS",
-            default_value_t = 5000u64,
-            help = "Embedding request timeout in milliseconds"
+            default_value_t = 0u64,
+            help = "Embedding request timeout in milliseconds (0 disables)"
         )]
         embedding_timeout_ms: u64,
     },
@@ -616,8 +616,8 @@ pub(crate) enum Command {
         #[arg(
             long,
             env = "DOCDEX_EMBEDDING_TIMEOUT_MS",
-            default_value_t = 5000u64,
-            help = "Embedding request timeout in milliseconds"
+            default_value_t = 0u64,
+            help = "Embedding request timeout in milliseconds (0 disables)"
         )]
         embedding_timeout_ms: u64,
     },

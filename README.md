@@ -197,7 +197,7 @@ Impact graph snapshots carry schema metadata and are migrated on read; reindex t
 - `--embedding-base-url` / `DOCDEX_EMBEDDING_BASE_URL`: Ollama base URL for embedding calls (preferred over `--ollama-base-url`).
 - `--ollama-base-url` / `DOCDEX_OLLAMA_BASE_URL`: legacy embedding base URL fallback.
 - `--embedding-model` / `DOCDEX_EMBEDDING_MODEL`: embedding model identifier (default `nomic-embed-text`).
-- `--embedding-timeout-ms` / `DOCDEX_EMBEDDING_TIMEOUT_MS`: embedding request timeout (default 5000ms).
+- `--embedding-timeout-ms` / `DOCDEX_EMBEDDING_TIMEOUT_MS`: embedding request timeout in milliseconds (`0` disables; default `0`).
 - `--enable-mcp` / `--disable-mcp` / `DOCDEX_ENABLE_MCP`: control MCP auto-start when serving (default: enabled).
 - `DOCDEX_MCP_SERVER_BIN`: override the MCP server binary path.
 - `DOCDEX_MCP_MAX_RESULTS`: clamp MCP tool results (default 8).

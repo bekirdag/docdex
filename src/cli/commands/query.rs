@@ -369,8 +369,8 @@ pub(crate) fn resolve_memory_state(
     if model.trim().is_empty() {
         anyhow::bail!("embedding model is not configured");
     }
-    let timeout_ms = env_u64("DOCDEX_EMBEDDING_TIMEOUT_MS").unwrap_or(5000);
-    let timeout = Duration::from_millis(timeout_ms.max(1));
+    let timeout_ms = env_u64("DOCDEX_EMBEDDING_TIMEOUT_MS").unwrap_or(0);
+    let timeout = Duration::from_millis(timeout_ms);
     let embedder = OllamaEmbedder::new(base_url, model, timeout)?;
     Ok(Some(MemoryState {
         store: MemoryStore::new(state_dir),

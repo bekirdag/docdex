@@ -89,8 +89,7 @@ impl OllamaClient {
 
         let host_header = self.host_header.clone();
         let connect_addr = self.connect_addr.clone();
-        let result: Result<Result<Vec<f32>, anyhow::Error>, tokio::time::error::Elapsed> =
-            tokio::time::timeout(timeout, async move {
+        let embed_task = async move {
             let mut stream = TcpStream::connect(&connect_addr)
                 .await
                 .context("connect to ollama")?;
@@ -163,8 +162,14 @@ impl OllamaClient {
                     .into());
             }
             Ok(parsed.embedding)
-        })
-        .await;
+        };
+
+        let result: Result<Result<Vec<f32>, anyhow::Error>, tokio::time::error::Elapsed> =
+            if timeout.is_zero() {
+                Ok(embed_task.await)
+            } else {
+                tokio::time::timeout(timeout, embed_task).await
+            };
 
         match result {
             Ok(Ok(value)) => Ok(value),
@@ -419,7 +424,7 @@ impl OllamaEmbedder {
         Ok(Self {
             client: OllamaClient::new(base_url)?,
             model,
-            timeout: timeout.max(Duration::from_millis(1)),
+            timeout,
         })
     }
 

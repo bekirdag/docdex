@@ -353,7 +353,7 @@ pub async fn serve(
             .with_hint("Set --embedding-model (or DOCDEX_EMBEDDING_MODEL) to an Ollama embedding model identifier.")
             .into());
         }
-        let timeout = Duration::from_millis(embedding_timeout_ms.max(1));
+        let timeout = Duration::from_millis(embedding_timeout_ms);
         let embedder =
             OllamaEmbedder::new(ollama_base_url.clone(), model.clone(), timeout).map_err(|err| {
                 StartupError::new(

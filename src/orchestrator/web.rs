@@ -413,6 +413,10 @@ struct WebPhraseCacheEntry {
     fetched_at_epoch_ms: u128,
     ai_digested_kind: String,
     ai_digested_content: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    relevance_score: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -538,6 +542,9 @@ impl WebSummaryClient {
                 } else {
                     let raw = output.trim();
                     if raw.is_empty() {
+                        return None;
+                    }
+                    if looks_like_web_eval_metadata(raw) {
                         return None;
                     }
                     let kind = if allow_code && looks_like_code_output(raw) {
@@ -954,6 +961,7 @@ fn parse_json_response<T: serde::de::DeserializeOwned>(text: &str) -> Option<T> 
 fn parse_web_eval_response_lenient(raw: &str) -> Option<WebEvalResponse> {
     let output = extract_loose_output_field(raw)?;
     let kind = extract_loose_string_field(raw, "kind")
+        .or_else(|| extract_loose_string_field(raw, "type"))
         .unwrap_or_else(|| "summary".to_string())
         .to_ascii_lowercase();
     let relevant = extract_loose_bool_field(raw, "relevant").unwrap_or(true);
@@ -964,6 +972,18 @@ fn parse_web_eval_response_lenient(raw: &str) -> Option<WebEvalResponse> {
         kind,
         output,
     })
+}
+
+fn looks_like_web_eval_metadata(raw: &str) -> bool {
+    let lower = raw.to_ascii_lowercase();
+    let has_relevant = lower.contains("\"relevant\"");
+    let has_score = lower.contains("\"score\"");
+    let has_kind = lower.contains("\"kind\"") || lower.contains("\"type\"");
+    let has_output = lower.contains("\"output\"");
+    if has_relevant && has_score && has_kind && !has_output {
+        return true;
+    }
+    lower.contains("```json") && has_relevant && has_score
 }
 
 fn extract_loose_output_field(raw: &str) -> Option<String> {
@@ -1556,15 +1576,18 @@ async fn run_web_discovery(
     if cache_enabled && !query.trim().is_empty() {
         if let Some(layout) = cache::cache_layout_from_config() {
             if let Some(entry) = read_phrase_cache(&layout, &query_hash, config.cache_ttl) {
+                if entry.url.trim().is_empty() {
+                    // Ignore legacy phrase cache entries without a source URL.
+                } else {
                 let result = WebFetchResult {
-                    url: String::new(),
+                    url: entry.url.clone(),
                     status: None,
                     fetched_at_epoch_ms: Some(entry.fetched_at_epoch_ms),
                     cached: true,
                     content: None,
                     ai_digested_content: Some(entry.ai_digested_content),
                     ai_digested_kind: Some(entry.ai_digested_kind),
-                    relevance_score: Some(1.0),
+                    relevance_score: Some(entry.relevance_score.unwrap_or(1.0)),
                     debug_html: None,
                     debug_dom_text: None,
                     error: None,
@@ -1586,6 +1609,7 @@ async fn run_web_discovery(
                         force_web,
                     ),
                 };
+                }
             }
         }
     }
@@ -2947,6 +2971,8 @@ async fn fetch_web_documents(
                         fetched_at_epoch_ms,
                         ai_digested_kind: kind.clone(),
                         ai_digested_content: content.clone(),
+                        url: best.url.clone(),
+                        relevance_score: best.relevance_score,
                     };
                     write_phrase_cache(&layout, query_hash, &entry);
                 }

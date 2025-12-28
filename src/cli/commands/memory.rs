@@ -41,7 +41,7 @@ pub async fn run_store(
     util::init_logging("warn")?;
     index::ensure_state_dir_secure(index_config.state_dir())?;
 
-    let timeout = std::time::Duration::from_millis(embedding_timeout_ms.max(1));
+    let timeout = std::time::Duration::from_millis(embedding_timeout_ms);
     let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);
     let embedder = ollama::OllamaEmbedder::new(embedding_base_url, embedding_model, timeout)?;
     let embedding = embedder.embed(&text).await?;
@@ -109,7 +109,7 @@ pub async fn run_recall(
     util::init_logging("warn")?;
     index::ensure_state_dir_secure(index_config.state_dir())?;
 
-    let timeout = std::time::Duration::from_millis(embedding_timeout_ms.max(1));
+    let timeout = std::time::Duration::from_millis(embedding_timeout_ms);
     let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);
     let embedder = ollama::OllamaEmbedder::new(embedding_base_url, embedding_model, timeout)?;
     let embedding = embedder.embed(&query).await?;

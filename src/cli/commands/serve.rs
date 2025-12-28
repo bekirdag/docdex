@@ -34,6 +34,8 @@ pub async fn run(
     secure_mode: bool,
     disable_snippet_text: bool,
     enable_memory: bool,
+    enable_mcp: bool,
+    disable_mcp: bool,
     embedding_base_url: Option<String>,
     ollama_base_url: String,
     embedding_model: String,
@@ -61,6 +63,7 @@ pub async fn run(
         })?;
     }
     let repo_root = repo.repo_root();
+    let mcp_repo_args = repo.clone();
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
         repo.state_dir_override(),
@@ -140,6 +143,11 @@ pub async fn run(
     } else {
         enable_memory || config.memory.enabled
     };
+    let (enable_mcp, mcp_source) =
+        resolve_mcp_enabled(enable_mcp, disable_mcp, config.server.enable_mcp);
+    let mcp_max_results = resolve_mcp_max_results();
+    let mcp_rate_limit_per_min = resolve_mcp_rate_limit("DOCDEX_MCP_RATE_LIMIT_PER_MIN");
+    let mcp_rate_limit_burst = resolve_mcp_rate_limit("DOCDEX_MCP_RATE_LIMIT_BURST");
     let hardware_profile = hardware::detect_hardware();
     info!(
         "hardware profile: {}; recommended model: {}",
@@ -163,6 +171,12 @@ pub async fn run(
         run_as_gid,
         unshare_net,
         enable_memory,
+        enable_mcp,
+        mcp_source,
+        mcp_repo_args,
+        mcp_max_results,
+        mcp_rate_limit_per_min,
+        mcp_rate_limit_burst,
         config.llm.provider.clone(),
         embedding_base_url,
         embedding_model,
@@ -193,4 +207,46 @@ fn resolve_bind_addr(
     let default_host = addr.ip().to_string();
     let default_port = addr.port();
     Ok((host.unwrap_or(default_host), port.unwrap_or(default_port)))
+}
+
+fn resolve_mcp_enabled(
+    enable_mcp: bool,
+    disable_mcp: bool,
+    config_enabled: bool,
+) -> (bool, daemon::McpEnableSource) {
+    if enable_mcp {
+        return (true, daemon::McpEnableSource::Cli);
+    }
+    if disable_mcp {
+        return (false, daemon::McpEnableSource::Cli);
+    }
+    if let Some(enabled) = env_boolish("DOCDEX_ENABLE_MCP") {
+        return (enabled, daemon::McpEnableSource::Env);
+    }
+    (config_enabled, daemon::McpEnableSource::Config)
+}
+
+fn resolve_mcp_max_results() -> usize {
+    std::env::var("DOCDEX_MCP_MAX_RESULTS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(8)
+        .max(1)
+}
+
+fn resolve_mcp_rate_limit(env_key: &str) -> u32 {
+    std::env::var(env_key)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .unwrap_or(0)
+}
+
+fn env_boolish(key: &str) -> Option<bool> {
+    let raw = std::env::var(key).ok()?;
+    let trimmed = raw.trim().to_ascii_lowercase();
+    match trimmed.as_str() {
+        "1" | "true" | "t" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "f" | "no" | "n" | "off" => Some(false),
+        _ => None,
+    }
 }

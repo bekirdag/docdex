@@ -81,6 +81,7 @@ fn spawn_server(
     ];
     let child = Command::new(docdex_bin())
         .env("DOCDEX_STATE_DIR", state_root)
+        .env("DOCDEX_ENABLE_MCP", "0")
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())

@@ -1601,6 +1601,7 @@ impl McpServer {
             plan,
             tier2_limiter: None,
             memory: memory_state.as_ref(),
+            ranking_surface: search::RankingSurface::Search,
         })
         .await?;
         queue_dag_log(
@@ -1897,7 +1898,8 @@ impl McpServer {
                 }
             });
             let diagnostics = entry.into_iter().collect::<Vec<_>>();
-            (diagnostics, diagnostics.len(), 1, 0)
+            let count = diagnostics.len();
+            (diagnostics, count, 1, 0)
         } else {
             let mut entries = diagnostics_map
                 .into_iter()

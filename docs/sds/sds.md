@@ -667,7 +667,7 @@ Open Questions & Risks
 - Clarify exact Tantivy schema fields and analyzers; PDR leaves flexible.  
 - Define cache TTL/purge policy for web and library caches (config mentions TTL but not default).  
 - Concurrency semantics when two repos ingest the same cached library doc—need locking or idempotent writes.  
-- Impact graph storage format (tables/edges) not specified; needs concrete schema.  
+- Impact graph storage format uses `docdex.impact_graph` schema metadata (current v2) with in-memory migration for legacy files; reindex to persist upgrades.  
 - Risk: fingerprint collisions theoretically possible but negligible with SHA256; document assumption.
 
 Verification Strategy
@@ -675,7 +675,7 @@ Verification Strategy
 - `docdexd check` validates RW on `~/.docdex/state`, presence of per-repo dirs, and Chrome/Ollama availability.  
 - Unit/integration: repo isolation under concurrent access across per-repo daemons; prevent cross-repo reads.  
 - Rate-limit tests for scraper/discovery honoring delays and cache reuse.  
-- Schema migrations: initialize/upgrade `memory.db`, `symbols.db`, `dag.db` deterministically and reject cross-repo access by fingerprint.  
+- Schema migrations: initialize/upgrade `memory.db`, `symbols.db`, `dag.db` deterministically and reject cross-repo access by fingerprint; `impact_graph.json` uses schema metadata + migration guards.  
 - Functional: missing repo/index errors are clear; library ingestion only populates target repo `libs_index`.
 
 ### Directory and Fingerprint Layout
@@ -752,7 +752,7 @@ Architectural intent: define per-repo and global storage schemas that support lo
 
 **Assumptions**
 
-- Impact graph edges stored in per-repo `impact_graph.json` under the repo state root; schema matches `docdex.impact_graph` response requirements.  
+- Impact graph edges stored in per-repo `impact_graph.json` under the repo state root; schema matches `docdex.impact_graph` response requirements and carries version metadata. Legacy files are accepted and migrated in-memory; reindex to persist upgrades.  
 - No cross-repo memory or DAG aggregation is needed.
 
 **Open Questions & Risks**
@@ -852,7 +852,7 @@ Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper
   - Library docs: `libs fetch --repo <path>` detects deps (Cargo/Node/Python), scrapes docs, caches under `cache/libs`, ingests into repo `libs_index`.  
   - DAG: `dag view --repo <path> <session_id>` renders text/DOT from `dag.db`.  
   - Tests: `run-tests --repo <path> --target <file_or_dir>` executes configured test command; returns structured JSON.  
-  - MCP/TUI: `mcp` starts a per-repo MCP server; `tui` launches local UI bound to daemon.  
+  - MCP/TUI: `mcp` starts a per-repo MCP server; `tui` shells out to the `docdex-tui` binary (override with `DOCDEX_TUI_BIN`) and binds to the daemon.  
   - HTTP alignment: CLI routes to daemon HTTP/MCP surfaces; enforces repo id/path on every call.
 
 
@@ -944,7 +944,6 @@ Open Questions & Risks
 
 - Need exact shape of repo selector in headers/query/body for OpenAI-compatible calls (e.g., `docdex-repo-id` header vs body extension).  
 - Token auth scheme/format when `--expose` (bearer vs custom) not specified.  
-- Impact graph response schema (edge shape, direction labels) not fully detailed.  
 - Streaming chunk format: assume OpenAI SSE-compatible; confirm no deviations.  
 - Web escalation override: exact request flag naming for “force web” is unspecified.
 
@@ -963,6 +962,7 @@ Intent: per-repo MCP server surface (`docdexd mcp`) exposing repo-scoped tools f
 Scope and components
 
 - Surface: one MCP server per per-repo daemon. Enabled via `[server] enable_mcp=true`; inherits daemon bind defaults (127.0.0.1 unless `--expose` with token auth).  
+- Auto-start: `docdexd serve` spawns the MCP server when enabled (config, `DOCDEX_ENABLE_MCP`, or `--enable-mcp`); `--disable-mcp` overrides config/env. `docdexd mcp` still runs a standalone stdio server when desired.  
 - Tools (`project_root`/`repo_path` required for MCP calls unless `initialize` sets a default; validated to match the server repo):  
   - `docdex_search`: Tier-1 local (Tantivy \+ libs\_index) search; returns ranked snippets with source metadata.  
   - `docdex_web_research`: Waterfall gate checks `web_trigger_threshold`; on low confidence or explicit force, performs DDG discovery \+ guarded headless Chrome fetch \+ readability; ingests cache per repo before responding.  
@@ -1115,7 +1115,7 @@ Docdex relies solely on locally managed, zero-cost components for LLM/embeddings
 Per-repo `docdexd` processes expose one HTTP API and one MCP server each. Architectural intent: keep the daemon private by default (127.0.0.1:3210), allow optional exposure only with explicit user action and token auth, and ensure lifecycle guards prevent zombie processes or orphaned browser instances.
 
 - **Process model**: One `docdexd` per repo; multi-repo access comes from running multiple daemons. No clustered multi-tenant mode (out of scope per PDR).  
-- **Default binding**: Bind to `127.0.0.1:3210` from `[server] http_bind_addr`. MCP enabled by default (`enable_mcp=true`), sharing the same bind/interface posture.  
+- **Default binding**: Bind to `127.0.0.1:3210` from `[server] http_bind_addr`. MCP enabled by default (`enable_mcp=true`), sharing the same bind/interface posture; override via `DOCDEX_ENABLE_MCP` or `--disable-mcp`.  
 - **Exposed mode**: `--expose` (or equivalent config override) permits non-localhost binding; requires token authentication provided via env/config. Token is enforced on HTTP and MCP requests when exposed; reject unauthenticated requests.  
 - **Startup validation**: `docdexd check` ensures the bind address is free, permissions on `global_state_dir` are valid, Ollama and headless Chrome are reachable, and MCP can start. Fails fast if port unavailable or dependencies missing.  
 - **Shutdown/guard rails**: Browser guard ensures headless Chrome is started/stopped cleanly; lock directories under `~/.docdex/state/locks/` prevent zombie Chrome processes. On panic/exit, ensure teardown routines run to avoid lingering processes.  
@@ -1365,7 +1365,7 @@ Docdex advances through gated phases; each gate requires the preceding functiona
 - Phase 6 (Code Intelligence): Tree-sitter symbols for Rust/TS-JS/Python/Go stored in `symbols.db`; import graph impact API
   `GET /v1/graph/impact?file=` returns schema-tagged inbound/outbound deps with explicit edge direction semantics;
   `run-tests --repo --target` returns structured JSON; diff-aware RAG uses git diff \+ impact graph \+ memory.  
-- Phase 7 (UI Surfaces): TUI repo switcher; web dashboard (chat to `/v1/chat/completions`, memory explorer, library shelf, DAG viewer, repo selector); VSCode extension always passes `repo_path` and uses HTTP/MCP.
+- Phase 7 (UI Surfaces): TUI repo switcher via external `docdex-tui` binary; web dashboard + VSCode extension live in separate packages but target `/v1/chat/completions` and MCP, always passing `repo_path`.
 
 **Scalability/Reliability/Security Notes**
 

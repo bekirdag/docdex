@@ -183,6 +183,7 @@ fn http_search_includes_repo_id_and_is_reasonably_fast() -> Result<(), Box<dyn E
 
     let port_str = port.to_string();
     let mut cmd = Command::new(docdex_bin());
+    cmd.env("DOCDEX_ENABLE_MCP", "0");
     cmd.args([
         "serve",
         "--repo",

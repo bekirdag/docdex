@@ -1,7 +1,9 @@
 use crate::audit::AuditLogger;
+use crate::config::RepoArgs;
 use crate::error::StartupError;
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
+use crate::mcp;
 use crate::memory::MemoryStore;
 use crate::metrics;
 use crate::ollama::OllamaEmbedder;
@@ -26,6 +28,23 @@ use tokio_rustls::{
 };
 use tower::Service;
 use tracing::{error, info, warn};
+
+#[derive(Clone, Copy, Debug)]
+pub enum McpEnableSource {
+    Cli,
+    Env,
+    Config,
+}
+
+impl McpEnableSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            McpEnableSource::Cli => "cli",
+            McpEnableSource::Env => "env",
+            McpEnableSource::Config => "config",
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct TlsConfig {
@@ -243,6 +262,12 @@ pub async fn serve(
     run_as_gid: Option<u32>,
     unshare_net: bool,
     enable_memory: bool,
+    enable_mcp: bool,
+    mcp_enable_source: McpEnableSource,
+    mcp_repo_args: RepoArgs,
+    mcp_max_results: usize,
+    mcp_rate_limit_per_min: u32,
+    mcp_rate_limit_burst: u32,
     llm_provider: String,
     ollama_base_url: String,
     embedding_model: String,
@@ -330,7 +355,7 @@ pub async fn serve(
         }
         let timeout = Duration::from_millis(embedding_timeout_ms.max(1));
         let embedder =
-            OllamaEmbedder::new(ollama_base_url, model.clone(), timeout).map_err(|err| {
+            OllamaEmbedder::new(ollama_base_url.clone(), model.clone(), timeout).map_err(|err| {
                 StartupError::new(
                     "startup_config_invalid",
                     format!("invalid embedding base URL: {err}"),
@@ -426,6 +451,56 @@ pub async fn serve(
         port,
         "listening on {addr}"
     );
+    let mut mcp_child = if enable_mcp {
+        let result = mcp::spawn_for_serve(
+            mcp_repo_args,
+            log_level.clone(),
+            mcp_max_results,
+            mcp_rate_limit_per_min,
+            mcp_rate_limit_burst,
+            enable_memory,
+            ollama_base_url.clone(),
+            embedding_model.clone(),
+            embedding_timeout_ms,
+        )
+        .await;
+        match result {
+            Ok(child) => {
+                info!(
+                    target: "docdexd",
+                    source = %mcp_enable_source.as_str(),
+                    pid = child.id().unwrap_or(0),
+                    "mcp server started"
+                );
+                Some(child)
+            }
+            Err(err) => {
+                error!(
+                    target: "docdexd",
+                    source = %mcp_enable_source.as_str(),
+                    error = ?err,
+                    "mcp server failed to start"
+                );
+                return Err(StartupError::new(
+                    "startup_mcp_failed",
+                    format!("mcp server failed to start: {err}"),
+                )
+                .with_hint("Install/build the docdex-mcp-server binary or disable MCP auto-start.")
+                .with_remediation(vec![
+                    "Build the MCP server: `cargo build -p docdex-mcp-server`.".to_string(),
+                    "Or disable MCP auto-start: `docdexd serve --disable-mcp` (or set DOCDEX_ENABLE_MCP=0).".to_string(),
+                ])
+                .into());
+            }
+        }
+    } else {
+        info!(
+            target: "docdexd",
+            source = %mcp_enable_source.as_str(),
+            "mcp auto-start disabled"
+        );
+        None
+    };
     if let Some(tls_config) = tls_config.clone() {
         let tls_acceptor = TlsAcceptor::from(tls_config);
         loop {
@@ -462,6 +537,12 @@ pub async fn serve(
         }
     }
     let result = axum::serve(listener, make_service).await;
+    if let Some(mut child) = mcp_child.take() {
+        if let Err(err) = child.kill().await {
+            warn!(target: "docdexd", error = ?err, "failed to stop mcp server");
+        }
+        let _ = child.wait().await;
+    }
     match result {
         Ok(()) => {
             info!(

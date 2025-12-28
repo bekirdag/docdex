@@ -51,6 +51,7 @@ fn spawn_server(
     let repo_str = repo_root.to_string_lossy().to_string();
     Ok(Command::new(docdex_bin())
         .env("DOCDEX_STATE_DIR", state_root)
+        .env("DOCDEX_ENABLE_MCP", "0")
         .args([
             "serve",
             "--repo",
@@ -331,6 +332,7 @@ fn invalid_model_is_explicit_and_daemon_stays_healthy() -> Result<(), Box<dyn Er
     let host = "127.0.0.1";
     let mut server = Command::new(docdex_bin())
         .env("DOCDEX_STATE_DIR", state_root.path())
+        .env("DOCDEX_ENABLE_MCP", "0")
         .args([
             "serve",
             "--repo",
@@ -403,6 +405,7 @@ fn memory_metadata_includes_embedding_model() -> Result<(), Box<dyn Error>> {
     let host = "127.0.0.1";
     let mut server = Command::new(docdex_bin())
         .env("DOCDEX_STATE_DIR", state_root.path())
+        .env("DOCDEX_ENABLE_MCP", "0")
         .args([
             "serve",
             "--repo",

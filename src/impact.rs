@@ -23,7 +23,7 @@ const IMPORT_MAP_FILE: &str = "docdex.import_map.json";
 const IMPORT_TRACES_FILE: &str = "docdex.import_traces.jsonl";
 const UNRESOLVED_IMPORT_SAMPLE_LIMIT: usize = 5;
 const IMPACT_GRAPH_SCHEMA_NAME: &str = "docdex.impact_graph";
-const IMPACT_GRAPH_SCHEMA_VERSION: u32 = 1;
+const IMPACT_GRAPH_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ImpactSettings {
@@ -457,7 +457,9 @@ fn normalize_impact_schema(
         ));
     }
     let current = IMPACT_GRAPH_SCHEMA_VERSION;
-    if schema.compatible.min > current || schema.compatible.max < current {
+    if schema.version >= current
+        && (schema.compatible.min > current || schema.compatible.max < current)
+    {
         return Err(anyhow!(
             "impact graph schema version {} is not compatible with current {}",
             schema.version,
@@ -862,16 +864,35 @@ impl ImpactGraphStore {
     }
 }
 
-fn run_impact_graph_migrations(from_version: u32, _entries: &mut Vec<ImpactGraphStoreEntry>) -> Result<()> {
+fn run_impact_graph_migrations(
+    from_version: u32,
+    entries: &mut Vec<ImpactGraphStoreEntry>,
+) -> Result<()> {
     if from_version >= IMPACT_GRAPH_SCHEMA_VERSION {
         return Ok(());
     }
     match from_version {
-        0 | 1 => Ok(()),
+        0 | 1 => migrate_impact_graph_v1_to_v2(entries),
         _ => Err(anyhow!(
             "missing impact graph migration step for v{from_version}"
         )),
     }
+}
+
+fn migrate_impact_graph_v1_to_v2(entries: &mut Vec<ImpactGraphStoreEntry>) -> Result<()> {
+    for entry in entries.iter_mut() {
+        for edge in entry.edges.iter_mut() {
+            let Some(raw) = edge.kind.take() else {
+                continue;
+            };
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            edge.kind = Some(normalize_edge_kind(trimmed).to_string());
+        }
+    }
+    Ok(())
 }
 
 fn impact_graph_path(state_dir: &Path) -> PathBuf {
@@ -4703,11 +4724,11 @@ import "./missing-7.js";
         let state_dir = state_root.join("index");
         std::fs::create_dir_all(&state_dir).expect("create state dir");
         let payload = serde_json::json!({
-            "schema": { "name": "docdex.impact_graph", "version": 2, "compatible": { "min": 1, "max": 2 } },
+            "schema": { "name": "docdex.impact_graph", "version": 3, "compatible": { "min": 1, "max": 3 } },
             "repo_id": "test-repo",
             "graphs": [
                 {
-                    "schema": { "name": "docdex.impact_graph", "version": 2, "compatible": { "min": 1, "max": 2 } },
+                    "schema": { "name": "docdex.impact_graph", "version": 3, "compatible": { "min": 1, "max": 3 } },
                     "repo_id": "test-repo",
                     "source": "a.ts",
                     "inbound": [],
@@ -4728,6 +4749,40 @@ import "./missing-7.js";
         let edges = store.read_edges().expect("read edges");
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].target, "b.ts");
+    }
+
+    #[test]
+    fn store_migrates_v1_kind_normalization() {
+        let dir = TempDir::new().expect("tempdir");
+        let state_root = dir.path().join(".docdex");
+        let state_dir = state_root.join("index");
+        std::fs::create_dir_all(&state_dir).expect("create state dir");
+        let payload = serde_json::json!({
+            "schema": { "name": "docdex.impact_graph", "version": 1, "compatible": { "min": 1, "max": 1 } },
+            "repo_id": "test-repo",
+            "graphs": [
+                {
+                    "schema": { "name": "docdex.impact_graph", "version": 1, "compatible": { "min": 1, "max": 1 } },
+                    "repo_id": "test-repo",
+                    "source": "a.ts",
+                    "inbound": [],
+                    "outbound": [],
+                    "edges": [
+                        { "source": "a.ts", "target": "b.ts", "kind": "Require" }
+                    ]
+                }
+            ]
+        });
+        std::fs::write(
+            state_root.join("impact_graph.json"),
+            serde_json::to_vec_pretty(&payload).expect("serialize impact_graph.json"),
+        )
+        .expect("write impact_graph.json");
+
+        let store = ImpactGraphStore::new(&state_dir);
+        let edges = store.read_edges().expect("read edges");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].kind.as_deref(), Some("require"));
     }
 
     #[test]

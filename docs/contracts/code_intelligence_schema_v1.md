@@ -1,4 +1,4 @@
-# Code intelligence JSON schemas (v1)
+# Code intelligence JSON schemas (v1; impact graph v2)
 
 This document defines **wire contracts** for symbol extraction outputs and symbol-derived impact/graph outputs.
 
@@ -131,7 +131,7 @@ Impact graph responses represent **directed** dependency edges between repo file
 
 ```json
 {
-  "schema": { "name": "docdex.impact_graph", "version": 1, "compatible": { "min": 1, "max": 1 } },
+  "schema": { "name": "docdex.impact_graph", "version": 2, "compatible": { "min": 2, "max": 2 } },
   "repo_id": "<sha256 fingerprint>",
   "source": "path/relative/to/repo.ext",
   "inbound": [],
@@ -171,13 +171,13 @@ Diagnostics are best-effort and omitted when no unresolved imports are recorded.
 
 ```json
 {
-  "schema": { "name": "docdex.impact_graph", "version": 1, "compatible": { "min": 1, "max": 1 } },
+  "schema": { "name": "docdex.impact_graph", "version": 2, "compatible": { "min": 2, "max": 2 } },
   "repo_id": "<sha256 fingerprint>",
   "graphs": [ ... ]
 }
 ```
 
-Readers must reject payloads whose schema name does not match or whose compatibility range does not include the current implementation version. Legacy files without schema metadata are accepted and migrated in-memory; reindex to persist the upgraded format. Newer schema versions may be accepted when the compatibility range explicitly includes the current version.
+Readers must reject payloads whose schema name does not match or whose compatibility range does not include the current implementation version. Legacy files without schema metadata are accepted and migrated in-memory; reindex to persist the upgraded format. Newer schema versions may be accepted when the compatibility range explicitly includes the current version. Schema v2 additionally normalizes edge kinds to `import`/`include`/`require` during migration.
 
 ### Import resolution (best-effort)
 

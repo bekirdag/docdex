@@ -81,6 +81,7 @@ fn spawn_server_with_args(
         "warn",
     ]);
     cmd.env("DOCDEX_STATE_DIR", state_root);
+    cmd.env("DOCDEX_ENABLE_MCP", "0");
     cmd.args(extra_args);
     Ok(cmd
         .stdin(Stdio::null())

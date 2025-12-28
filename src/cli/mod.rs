@@ -173,6 +173,20 @@ pub(crate) enum Command {
         enable_memory: bool,
         #[arg(
             long,
+            action = ArgAction::SetTrue,
+            conflicts_with = "disable_mcp",
+            help = "Enable MCP auto-start when serving (overrides config)"
+        )]
+        enable_mcp: bool,
+        #[arg(
+            long,
+            action = ArgAction::SetTrue,
+            conflicts_with = "enable_mcp",
+            help = "Disable MCP auto-start when serving (overrides config)"
+        )]
+        disable_mcp: bool,
+        #[arg(
+            long,
             env = "DOCDEX_EMBEDDING_BASE_URL",
             value_parser = config::non_empty_string,
             help = "Ollama base URL for embedding calls (memory); takes precedence over --ollama-base-url when both are set"

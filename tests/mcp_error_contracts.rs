@@ -301,6 +301,7 @@ fn pick_free_port() -> Option<u16> {
 fn spawn_server(repo_root: &Path, host: &str, port: u16) -> Result<Child, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     Ok(Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MCP", "0")
         .args([
             "serve",
             "--repo",

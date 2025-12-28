@@ -56,7 +56,7 @@ docdexd chat --repo /path/to/repo --query "otp flow" --limit 5 --agent <slug>
 ```
 
 ## TL;DR for agents
-- Use Docdex for repo docs: run `docdexd index --repo .` once, then either `docdexd serve --repo . --host 127.0.0.1 --port 46137` for HTTP, or `docdexd mcp --repo . --log warn` for MCP.
+- Use Docdex for repo docs: run `docdexd index --repo .` once, then either `docdexd serve --repo . --host 127.0.0.1 --port 46137` for HTTP (auto-starts MCP when enabled; use `--disable-mcp` to skip), or `docdexd mcp --repo . --log warn` for MCP-only.
 - Add `.docdex/` to `.gitignore` so indexes aren't committed.
 - When MCP-aware, register a server named `docdex` that runs `docdexd mcp --repo . --log warn --max-results 8`, then call `docdex_search` before coding and `docdex_index` when stale.
 - Prefer summary-first (snippets=false), fetch specific snippets only when needed, keep queries short, and respect token estimates.
@@ -83,10 +83,12 @@ Use `docdexd llm-list` or `docdexd llm-setup` to print your host’s RAM + GPU s
 
 ## Repo-scoped caches & guardrails
 State is fingerprinted and isolated under `~/.docdex/state/repos/<fingerprint>` so Tier‑1/2/3 artifacts—indexes, `memory.db`, `dag.db`, and per-repo caches—stay repo-bound. `StateLayout`/`repo_manager` lock down secure directories, ensure `cache/web` and `cache/libs` are only ingested per fingerprint, and emit warnings when a repo tries to share an unexpected state key; this keeps web discoveries and memory contexts from leaking between projects.
+Impact graph snapshots (`impact_graph.json`) carry schema metadata and are migrated on read when older formats are detected; reindex to persist upgrades.
 
 ## Usage cheat sheet
 - Build index: `docdexd index --repo <path>` (add `--exclude-*` to skip paths).
 - Serve with watcher: `docdexd serve --repo <path> --host 127.0.0.1 --port 46137 --log warn --auth-token <token>` (secure mode also allowlists loopback and rate-limits by default; add `--allow-ip`/`--secure-mode=false`/`--rate-limit-per-min` as needed for remote use).
+- MCP auto-start: `docdexd serve --repo <path>` spawns MCP when enabled (default); set `--disable-mcp` or `DOCDEX_ENABLE_MCP=0` to skip, or `--enable-mcp` to force on.
 - Secure serving: add `--auth-token <token>` (required by default); use TLS with `--tls-cert/--tls-key` or `--certbot-domain <domain>`.
 - Single-file ingest: `docdexd ingest --repo <path> --file docs/new.md` (honors excludes).
 - Query via CLI: `docdexd chat --repo <path> --query "term" --limit 4` (add `--repo-only` to ignore libs index hits).
@@ -100,6 +102,7 @@ State is fingerprinted and isolated under `~/.docdex/state/repos/<fingerprint>` 
 - Prompt hygiene: in agent prompts, normalize whitespace and include only `rel_path`, `summary`, and trimmed `snippet` (omit `score`/`token_estimate`/`doc_id`).
 - Trim noise early: use `--exclude-dir` and `--exclude-prefix` to keep vendor/build/cache/secrets out of the index so snippets stay relevant and short.
 - Quiet logging for agents: run `docdexd serve --log warn --access-log=false` if you marshal responses elsewhere to cut log overhead.
+- TUI: `docdexd tui` shells out to the `docdex-tui` binary; set `DOCDEX_TUI_BIN` if it is not on `PATH`.
 - Cache hits client-side: store `doc_id` ↔ `rel_path` ↔ `summary` to avoid repeat snippet calls; fetch snippets only for new doc_ids.
 - Agent help: `curl http://127.0.0.1:46137/ai-help` (requires auth if configured; include `Authorization: Bearer <token>` when you've set `--auth-token`). The response includes a short MCP registration recipe.
 
@@ -313,6 +316,7 @@ Docdex is tool-agnostic. Drop-in recipe for agents/codegen tools:
 ### MCP (optional stdio server for MCP-aware clients)
 Docdex can run as an MCP tool provider over stdio; it does not replace the HTTP daemon—pick whichever fits your agent/editor. If your MCP client supports resource templates, Docdex advertises a `docdex_file` template (`docdex://{path}`) which delegates to `docdex_open`.
 - Run: `docdexd mcp --repo /path/to/repo --log warn --max-results 8` (alias: `--mcp-max-results 8`).
+- Auto-start: `docdexd serve --repo /path/to/repo` spawns MCP when enabled (config/default); override with `--enable-mcp` or `--disable-mcp`.
 - Env override: `DOCDEX_MCP_MAX_RESULTS` clamps `docdex_search` results (min 1).
 - Default repo: call `initialize` with `workspace_root` to set a default `project_root`; after that, tools may omit `project_root`/`repo_path`.
 - Packaging: `docdexd mcp` launches the companion `docdex-mcp-server` binary; build/install it with `cargo build -p docdex-mcp-server` or set `DOCDEX_MCP_SERVER_BIN` to the binary path.

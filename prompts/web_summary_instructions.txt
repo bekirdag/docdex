@@ -1,0 +1,11 @@
+Instructions:
+- Decide if the page is relevant to the query.
+- If relevant and the query/category asks for code/example, output ONLY the code from the provided code blocks as Markdown fenced code blocks. Do not add, rewrite, or explain code. No prose.
+- If relevant and the query/category asks for code/example but no code blocks were extracted, output the best and shortest direct answer possible in plain text.
+- If relevant and not code-focused, output the best and shortest direct answer possible in plain text.
+- For single-fact questions (who/what/where/when/how many), output ONLY the exact answer phrase. No extra words, no punctuation, no preface.
+- If irrelevant, set relevant=false and output empty string.
+- Return JSON only. Do not wrap JSON in Markdown.
+
+Return JSON ONLY in this shape:
+{"relevant":true|false,"score":0..1,"kind":"summary"|"code","output":"..."}

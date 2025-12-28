@@ -511,6 +511,12 @@ struct LocalRelevanceResponse {
     score: f32,
 }
 
+const WEB_SUMMARY_INSTRUCTIONS: &str = include_str!("../../prompts/web_summary_instructions.txt");
+const QUERY_CATEGORY_INSTRUCTIONS: &str =
+    include_str!("../../prompts/query_category_instructions.txt");
+const LOCAL_RELEVANCE_INSTRUCTIONS: &str =
+    include_str!("../../prompts/local_relevance_instructions.txt");
+
 impl WebSummaryClient {
     async fn evaluate(
         &self,
@@ -778,9 +784,8 @@ fn build_summary_prompt(
             prompt.push_str(&format!("[code {}]\n{}\n[/code {}]\n", idx + 1, block, idx + 1));
         }
     }
-    prompt.push_str(
-        "\nInstructions:\n- Decide if the page is relevant to the query.\n- If relevant and the query/category asks for code/example, output ONLY the code from the provided code blocks as Markdown fenced code blocks. Do not add or rewrite code.\n- If relevant and the query/category asks for code/example but no code blocks were extracted, output the best and shortest direct answer possible in plain text.\n- If relevant and not code-focused, output the best and shortest direct answer possible in plain text. No bullet points, no preface.\n- If irrelevant, set relevant=false and output empty string.\n\nReturn JSON ONLY in this shape:\n{\"relevant\":true|false,\"score\":0..1,\"kind\":\"summary\"|\"code\",\"output\":\"...\"}\n",
-    );
+    prompt.push('\n');
+    prompt.push_str(WEB_SUMMARY_INSTRUCTIONS);
     prompt
 }
 
@@ -794,23 +799,7 @@ fn build_query_category_prompt(query: &str) -> String {
         prompt.push_str(query);
         prompt.push_str("\n\n");
     }
-    prompt.push_str(
-        "Classify the user query into exactly one category from this list:\n\
-- code_example\n\
-- api_reference\n\
-- how_to_guide\n\
-- concept_definition\n\
-- troubleshooting\n\
-- spec_standard\n\
-- comparison_opinion\n\
-- news_release\n\
-- general\n\n\
-Instructions:\n\
-- Choose the category that best matches what the user wants to see in the answer.\n\
-- If unsure, choose general.\n\n\
-Return JSON ONLY in this shape:\n\
-{\"category\":\"...\"}\n",
-    );
+    prompt.push_str(QUERY_CATEGORY_INSTRUCTIONS);
     prompt
 }
 
@@ -854,9 +843,8 @@ fn build_local_relevance_prompt(query: &str, hit: &Hit) -> String {
             prompt.push_str("Query intent: general\n");
         }
     }
-    prompt.push_str(
-        "\nInstructions:\n- Decide if the local result is relevant to the query.\n- Ignore matches that only share generic terms like language names or common words.\n- If the query asks for code, only mark relevant if the local result contains code or a code snippet.\n- If unsure, mark irrelevant.\n\nReturn JSON ONLY in this shape:\n{\"relevant\":true|false,\"score\":0..1}\n",
-    );
+    prompt.push('\n');
+    prompt.push_str(LOCAL_RELEVANCE_INSTRUCTIONS);
     prompt
 }
 

@@ -1,0 +1,9 @@
+Instructions:
+- Decide if the local result is relevant to the query.
+- Ignore matches that only share generic terms like language names or common words.
+- If the query asks for code, only mark relevant if the local result contains code or a code snippet.
+- If unsure, mark irrelevant.
+- Return JSON only. Do not wrap JSON in Markdown.
+
+Return JSON ONLY in this shape:
+{"relevant":true|false,"score":0..1}

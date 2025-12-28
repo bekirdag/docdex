@@ -250,12 +250,41 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
         "tools/list should include docdex_search"
     );
     assert!(
+        tool_names.contains(&"docdex_web_research".to_string()),
+        "tools/list should include docdex_web_research"
+    );
+    assert!(
         tool_names.contains(&"docdex_index".to_string()),
         "tools/list should include docdex_index"
     );
     assert!(
         tool_names.contains(&"docdex_stats".to_string()),
         "tools/list should include docdex_stats"
+    );
+
+    // docdex_web_research without repo should return missing_repo
+    send_line(
+        &mut harness.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 22,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_web_research",
+                "arguments": { "query": "MCP_ROADMAP" }
+            }
+        }),
+    )?;
+    let missing_repo_resp = read_line(&mut harness.reader)?;
+    let missing_repo_code = missing_repo_resp
+        .get("error")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("code"))
+        .and_then(|v| v.as_str());
+    assert_eq!(
+        missing_repo_code,
+        Some("missing_repo"),
+        "docdex_web_research should require project_root when no default is set"
     );
 
     // build index via tool
@@ -351,6 +380,43 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
     assert!(
         (top_score.unwrap_or(-1.0) - top_score_camel.unwrap_or(-1.0)).abs() < 1e-6,
         "docdex_search topScore should match top_score"
+    );
+
+    // web research should return local hits and a disabled web status when web is disabled
+    send_line(
+        &mut harness.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_web_research",
+                "arguments": {
+                    "query": "MCP_ROADMAP",
+                    "limit": 5,
+                    "project_root": project_root.as_str()
+                }
+            }
+        }),
+    )?;
+    let web_resp = read_line(&mut harness.reader)?;
+    let web_body = parse_tool_result(&web_resp)?;
+    let web_hits = web_body
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .ok_or("docdex_web_research should return hits array")?;
+    assert!(
+        !web_hits.is_empty(),
+        "docdex_web_research should return at least one hit for MCP_ROADMAP"
+    );
+    let web_status = web_body
+        .get("webDiscovery")
+        .and_then(|v| v.get("status"))
+        .and_then(|v| v.as_str());
+    assert_eq!(
+        web_status,
+        Some("disabled"),
+        "docdex_web_research should report disabled web status when DOCDEX_WEB_ENABLED=0"
     );
 
     // no-match search should return empty results and a null top_score

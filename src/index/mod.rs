@@ -1133,7 +1133,12 @@ impl Indexer {
         };
         let (impact_edges, impact_diagnostics) =
             if self.symbols_store.is_some() && read_error.is_none() {
-                let result = extract_import_edges(&self.repo_root, &rel_for_return, &content);
+                let result = extract_import_edges(
+                    &self.repo_root,
+                    self.config.state_dir(),
+                    &rel_for_return,
+                    &content,
+                );
                 (result.edges, result.diagnostics)
             } else {
                 (Vec::new(), None)

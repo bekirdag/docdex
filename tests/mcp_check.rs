@@ -148,5 +148,93 @@ fn check_spawn_fails_when_mcp_binary_exits() -> Result<(), Box<dyn Error>> {
     let report = parse_report(&output.stdout)?;
     let check = find_check(&report, "mcp_ready").ok_or("missing mcp_ready check")?;
     assert_eq!(check.get("status").and_then(|v| v.as_str()), Some("fail"));
+    let spawn_status = check
+        .get("details")
+        .and_then(|v| v.get("spawn_details"))
+        .and_then(|v| v.get("spawn_status"))
+        .and_then(|v| v.as_str());
+    assert_eq!(spawn_status, Some("exit"));
+    Ok(())
+}
+
+#[test]
+fn check_spawn_succeeds_when_mcp_binary_exits_zero() -> Result<(), Box<dyn Error>> {
+    let home = TempDir::new()?;
+    let state_root = TempDir::new()?;
+    write_config(home.path(), state_root.path(), true)?;
+    let bin_path = home.path().join("docdex-mcp-server");
+    fs::write(&bin_path, "#!/bin/sh\nexit 0\n")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&bin_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&bin_path, perms)?;
+    }
+
+    let output = Command::new(docdex_bin())
+        .env("HOME", home.path())
+        .env("DOCDEX_LLM_AGENT", "test")
+        .env("DOCDEX_MCP_SERVER_BIN", &bin_path)
+        .env("DOCDEX_CHECK_MCP_SPAWN", "1")
+        .env_remove("DOCDEX_ENABLE_MCP")
+        .arg("check")
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "docdexd check should succeed when MCP spawn check passes"
+    );
+    let report = parse_report(&output.stdout)?;
+    let check = find_check(&report, "mcp_ready").ok_or("missing mcp_ready check")?;
+    assert_eq!(check.get("status").and_then(|v| v.as_str()), Some("ok"));
+    let spawn_status = check
+        .get("details")
+        .and_then(|v| v.get("spawn_details"))
+        .and_then(|v| v.get("spawn_status"))
+        .and_then(|v| v.as_str());
+    assert_eq!(spawn_status, Some("ok"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn check_spawn_times_out_when_mcp_binary_hangs() -> Result<(), Box<dyn Error>> {
+    let home = TempDir::new()?;
+    let state_root = TempDir::new()?;
+    write_config(home.path(), state_root.path(), true)?;
+    let bin_path = home.path().join("docdex-mcp-server");
+    fs::write(&bin_path, "#!/bin/sh\nsleep 2\n")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&bin_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&bin_path, perms)?;
+    }
+
+    let output = Command::new(docdex_bin())
+        .env("HOME", home.path())
+        .env("DOCDEX_LLM_AGENT", "test")
+        .env("DOCDEX_MCP_SERVER_BIN", &bin_path)
+        .env("DOCDEX_CHECK_MCP_SPAWN", "1")
+        .env("DOCDEX_CHECK_MCP_SPAWN_TIMEOUT_MS", "50")
+        .env_remove("DOCDEX_ENABLE_MCP")
+        .arg("check")
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "docdexd check should fail when MCP spawn check times out"
+    );
+    let report = parse_report(&output.stdout)?;
+    let check = find_check(&report, "mcp_ready").ok_or("missing mcp_ready check")?;
+    assert_eq!(check.get("status").and_then(|v| v.as_str()), Some("fail"));
+    let spawn_status = check
+        .get("details")
+        .and_then(|v| v.get("spawn_details"))
+        .and_then(|v| v.get("spawn_status"))
+        .and_then(|v| v.as_str());
+    assert_eq!(spawn_status, Some("timeout"));
     Ok(())
 }

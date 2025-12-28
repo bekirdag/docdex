@@ -3,6 +3,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
+use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
@@ -52,7 +53,7 @@ pub struct AstQuery {
 
 #[derive(Deserialize)]
 pub struct AstSearchQuery {
-    #[serde(default, alias = "kind")]
+    #[serde(default, alias = "kind", deserialize_with = "deserialize_kinds")]
     pub kinds: Vec<String>,
     #[serde(default)]
     pub mode: Option<String>,
@@ -535,4 +536,36 @@ fn normalize_kinds(raw: Vec<String>) -> Vec<String> {
         }
     }
     out
+}
+
+fn deserialize_kinds<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum RawKinds {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    let raw = RawKinds::deserialize(deserializer)?;
+    let mut out = Vec::new();
+    let mut push_split = |value: &str| {
+        for part in value.split(',') {
+            let trimmed = part.trim();
+            if !trimmed.is_empty() {
+                out.push(trimmed.to_string());
+            }
+        }
+    };
+    match raw {
+        RawKinds::One(value) => push_split(&value),
+        RawKinds::Many(values) => {
+            for value in values {
+                push_split(&value);
+            }
+        }
+    }
+    Ok(out)
 }

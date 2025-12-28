@@ -22,7 +22,7 @@ use reqwest::header::ACCEPT;
 use reqwest::Method;
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::time::Duration;
 use uuid::Uuid;
@@ -30,6 +30,65 @@ use crate::cli::CliDiffMode;
 
 pub(crate) async fn run(
     repo: RepoArgs,
+    query: Option<String>,
+    model: Option<String>,
+    agent: Option<String>,
+    limit: usize,
+    max_web_results: Option<usize>,
+    repo_only: bool,
+    skip_local_search: bool,
+    no_cache: bool,
+    llm_filter_local_results: bool,
+    compress_results: bool,
+    stream: bool,
+    diff_mode: Option<CliDiffMode>,
+    diff_base: Option<String>,
+    diff_head: Option<String>,
+    diff_path: Vec<std::path::PathBuf>,
+) -> Result<()> {
+    if let Some(query) = query {
+        return run_single(
+            &repo,
+            query,
+            model,
+            agent,
+            limit,
+            max_web_results,
+            repo_only,
+            skip_local_search,
+            no_cache,
+            llm_filter_local_results,
+            compress_results,
+            stream,
+            diff_mode,
+            diff_base,
+            diff_head,
+            diff_path,
+        )
+        .await;
+    }
+    run_repl(
+        &repo,
+        model,
+        agent,
+        limit,
+        max_web_results,
+        repo_only,
+        skip_local_search,
+        no_cache,
+        llm_filter_local_results,
+        compress_results,
+        stream,
+        diff_mode,
+        diff_base,
+        diff_head,
+        diff_path,
+    )
+    .await
+}
+
+async fn run_single(
+    repo: &RepoArgs,
     query: String,
     model: Option<String>,
     agent: Option<String>,
@@ -188,6 +247,64 @@ pub(crate) async fn run(
         response.memory_context = memory_context;
         response.impact_context = impact_context;
         println!("{}", serde_json::to_string_pretty(&response)?);
+    }
+    Ok(())
+}
+
+async fn run_repl(
+    repo: &RepoArgs,
+    model: Option<String>,
+    agent: Option<String>,
+    limit: usize,
+    max_web_results: Option<usize>,
+    repo_only: bool,
+    skip_local_search: bool,
+    no_cache: bool,
+    llm_filter_local_results: bool,
+    compress_results: bool,
+    stream: bool,
+    diff_mode: Option<CliDiffMode>,
+    diff_base: Option<String>,
+    diff_head: Option<String>,
+    diff_path: Vec<std::path::PathBuf>,
+) -> Result<()> {
+    let stdin = io::stdin();
+    let mut reader = io::BufReader::new(stdin.lock());
+    let mut line = String::new();
+    loop {
+        print!("docdex> ");
+        io::stdout().flush()?;
+        line.clear();
+        let bytes = reader.read_line(&mut line)?;
+        if bytes == 0 {
+            break;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if matches!(trimmed, "exit" | "quit") {
+            break;
+        }
+        run_single(
+            repo,
+            trimmed.to_string(),
+            model.clone(),
+            agent.clone(),
+            limit,
+            max_web_results,
+            repo_only,
+            skip_local_search,
+            no_cache,
+            llm_filter_local_results,
+            compress_results,
+            stream,
+            diff_mode,
+            diff_base.clone(),
+            diff_head.clone(),
+            diff_path.clone(),
+        )
+        .await?;
     }
     Ok(())
 }

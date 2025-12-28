@@ -561,7 +561,7 @@ impl SymbolsStore {
         for idx in 0..tokens.len() {
             let param = idx + 1;
             clauses.push(format!(
-                "(LOWER(name) LIKE ?{param} ESCAPE '\\\\' OR LOWER(signature) LIKE ?{param} ESCAPE '\\\\')"
+                "(LOWER(name) LIKE ?{param} ESCAPE '\\' OR LOWER(signature) LIKE ?{param} ESCAPE '\\')"
             ));
         }
         let sql = format!(

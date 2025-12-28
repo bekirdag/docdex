@@ -29,14 +29,32 @@ require_cmd curl
 require_cmd jq
 
 if [[ "$START_SERVER" == "1" ]]; then
+  require_cmd python3
   require_env OLLAMA_BASE_URL
   require_env EMBEDDING_MODEL
   if [[ -z "$LOG_FILE" ]]; then
     LOG_FILE="$(mktemp -t docdexd-log.XXXXXX)"
   fi
+  mapfile -t server_parts < <(
+    python3 - <<'PY' "$SERVER_URL"
+import sys
+from urllib.parse import urlparse
+
+url = sys.argv[1]
+parsed = urlparse(url)
+host = parsed.hostname or "127.0.0.1"
+port = parsed.port or 3210
+print(host)
+print(port)
+PY
+  )
+  SERVER_HOST="${server_parts[0]:-127.0.0.1}"
+  SERVER_PORT="${server_parts[1]:-3210}"
   echo "starting docdexd server; logging to $LOG_FILE"
   "$DOCDEXD_BIN" serve \
     --repo "$REPO_ROOT" \
+    --host "$SERVER_HOST" \
+    --port "$SERVER_PORT" \
     --enable-memory=true \
     --ollama-base-url "$OLLAMA_BASE_URL" \
     --embedding-model "$EMBEDDING_MODEL" \

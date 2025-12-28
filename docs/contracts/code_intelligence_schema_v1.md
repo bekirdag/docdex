@@ -196,6 +196,7 @@ Optional import hints:
 
 - `docdex.import_map.json` at the repo root can provide explicit mappings or edges for dynamic imports.
 - `docdex.import_traces.jsonl` can supply resolved runtime traces (one JSON object per line).
+- `<repo-state-root>/import_traces.jsonl` is also read when present (preferred for persistence).
 
 `docdex.import_map.json` fields (v1, backwards compatible):
 

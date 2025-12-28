@@ -16,6 +16,7 @@ use docdexd::orchestrator::{
     memory_budget_from_max_answer_tokens, run_waterfall, WaterfallPlan, WaterfallRequest,
     WebGateConfig,
 };
+use docdexd::orchestrator::web::run_web_research;
 use docdexd::ratelimit::RateLimiter;
 use docdexd::search;
 use docdexd::impact::{build_impact_diagnostics_response, ImpactDiagnosticsEntry, ImpactGraphStore};
@@ -388,6 +389,33 @@ struct SearchArgs {
     force_web: Option<bool>,
     #[serde(default)]
     diff: Option<diff::DiffOptions>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
+struct WebResearchArgs {
+    query: String,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default, alias = "webLimit")]
+    web_limit: Option<usize>,
+    #[serde(default)]
+    force_web: Option<bool>,
+    #[serde(default, alias = "skipLocalSearch")]
+    skip_local_search: Option<bool>,
+    #[serde(default, alias = "noCache")]
+    no_cache: Option<bool>,
+    #[serde(default, alias = "llmFilterLocalResults")]
+    llm_filter_local_results: Option<bool>,
+    #[serde(default, alias = "repoOnly")]
+    repo_only: Option<bool>,
+    #[serde(default, alias = "llmModel")]
+    llm_model: Option<String>,
+    #[serde(default, alias = "llmAgent")]
+    llm_agent: Option<String>,
     #[serde(default)]
     project_root: Option<PathBuf>,
     #[serde(default, alias = "repoPath")]
@@ -982,6 +1010,43 @@ impl McpServer {
                             }
                         }
                     }
+                    "docdex_web_research" | "docdex.web_research" => {
+                        let args_res: Result<WebResearchArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_web_research"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_web_research"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        let request_id = format!("mcp-web-{}", id.clone());
+                        match self.handle_web_research(request_id, args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_web_research"))),
+                                }))
+                            }
+                        }
+                    }
                     "docdex_index" | "docdex.index" => {
                         let args_res: Result<IndexArgs, _> =
                             serde_json::from_value(params.arguments.clone());
@@ -1354,12 +1419,15 @@ impl McpServer {
                                 Some(json!({
                                     "known_tools": [
                                         "docdex_search",
+                                        "docdex_web_research",
                                         "docdex_index",
                                         "docdex_files",
-                                    "docdex_open",
-                                    "docdex_stats",
+                                        "docdex_open",
+                                        "docdex_stats",
                                         "docdex_repo_inspect",
                                         "docdex_symbols",
+                                        "docdex_ast",
+                                        "docdex_impact_diagnostics",
                                         "docdex_memory_save",
                                         "docdex_memory_store",
                                         "docdex_memory_recall"
@@ -1421,6 +1489,29 @@ impl McpServer {
                                 "paths": { "type": "array", "items": { "type": "string" }, "description": "Limit diff to specific paths" }
                             }
                         },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_web_research",
+                description:
+                    "Run local search plus web discovery/fetch and return the combined response.",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "minLength": 1, "description": "Concise search query (will be rejected if empty)" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": self.max_results as i64, "default": self.max_results, "description": "Max local hits to return (clamped to server max)" },
+                        "web_limit": { "type": "integer", "minimum": 1, "description": "Optional max web hits to fetch (clamped by DOCDEX_WEB_MAX_HITS)" },
+                        "force_web": { "type": "boolean", "description": "When true, bypasses the Tier 2 gate and runs web research" },
+                        "skip_local_search": { "type": "boolean", "description": "When true, skip local search and only use web results" },
+                        "no_cache": { "type": "boolean", "description": "Disable web cache reads/writes for this query" },
+                        "llm_filter_local_results": { "type": "boolean", "description": "Use the LLM to filter local search results before scoring" },
+                        "repo_only": { "type": "boolean", "description": "Only search the repo index (ignore repo-scoped libs index, if present)" },
+                        "llm_model": { "type": "string", "description": "Override the LLM model for local result filtering" },
+                        "llm_agent": { "type": "string", "description": "Override the LLM agent slug for local result filtering" },
                         "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
                         "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
                     },
@@ -1706,6 +1797,103 @@ impl McpServer {
         }
         if let Some(context) = memory_context {
             payload["memoryContext"] = json!(context);
+        }
+        Ok(payload)
+    }
+
+    async fn handle_web_research(
+        &self,
+        request_id: String,
+        args: WebResearchArgs,
+    ) -> Result<serde_json::Value> {
+        let WebResearchArgs {
+            query,
+            limit,
+            web_limit,
+            force_web,
+            skip_local_search,
+            no_cache,
+            llm_filter_local_results,
+            repo_only,
+            llm_model,
+            llm_agent,
+            project_root,
+            repo_path,
+        } = args;
+        let project_root = self.resolve_project_root_arg(project_root, repo_path)?;
+        self.ensure_project_root(project_root.as_deref())?;
+        let query_owned = query;
+        let query = query_owned.trim();
+        let limit = limit.unwrap_or(self.max_results).clamp(1, self.max_results);
+        let web_limit = web_limit.map(|value| value.max(1));
+        let project_root_path = self
+            .default_project_root
+            .as_ref()
+            .unwrap_or(&self.repo_root)
+            .display()
+            .to_string();
+        let repo_state_root = repo_state_root_from_state_dir(self.indexer.state_dir());
+        let force_web = force_web.unwrap_or(false);
+        let skip_local_search = skip_local_search.unwrap_or(false);
+        let disable_web_cache = no_cache.unwrap_or(false);
+        let llm_filter_local_results = llm_filter_local_results.unwrap_or(false);
+        let libs_indexer = if repo_only.unwrap_or(false) {
+            None
+        } else {
+            self.libs_indexer.as_ref()
+        };
+        queue_dag_log(
+            &repo_state_root,
+            &request_id,
+            "UserRequest",
+            json!({
+                "query": query,
+                "limit": limit,
+                "web_limit": web_limit,
+                "force_web": force_web,
+                "skip_local_search": skip_local_search,
+                "disable_web_cache": disable_web_cache,
+                "project_root": project_root_path.clone(),
+            }),
+        );
+        let response = run_web_research(
+            &request_id,
+            &self.indexer,
+            libs_indexer,
+            query,
+            limit,
+            web_limit,
+            force_web,
+            &WebGateConfig::from_env(),
+            llm_filter_local_results,
+            skip_local_search,
+            disable_web_cache,
+            llm_model.as_deref(),
+            llm_agent.as_deref(),
+        )
+        .await?;
+        queue_dag_log(
+            &repo_state_root,
+            &request_id,
+            "Decision",
+            json!({
+                "hits": response.hits.len(),
+                "top_score": response.top_score,
+                "web_status": response.web_discovery.status,
+            }),
+        );
+        let mut payload = serde_json::to_value(&response)?;
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert(
+                "repo_root".to_string(),
+                json!(self.repo_root.display().to_string()),
+            );
+            obj.insert(
+                "state_dir".to_string(),
+                json!(self.indexer.config().state_dir().display().to_string()),
+            );
+            obj.insert("limit".to_string(), json!(limit));
+            obj.insert("project_root".to_string(), json!(project_root_path));
         }
         Ok(payload)
     }

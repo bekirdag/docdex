@@ -2,6 +2,7 @@ pub mod help_all;
 pub mod agent;
 pub mod check;
 pub mod dag;
+pub mod impact;
 pub mod index;
 pub mod libs;
 pub mod llm;
@@ -36,6 +37,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             insecure,
             require_tls,
             auth_token,
+            preflight_check,
             max_limit,
             max_query_bytes,
             max_request_bytes,
@@ -75,6 +77,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
                 insecure,
                 require_tls,
                 auth_token,
+                preflight_check,
                 max_limit,
                 max_query_bytes,
                 max_request_bytes,
@@ -211,6 +214,12 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             .await
         }
         super::Command::SymbolsStatus { repo } => symbols::run_status(repo).await,
+        super::Command::ImpactDiagnostics {
+            repo,
+            file,
+            limit,
+            offset,
+        } => impact::run_diagnostics(repo, file, limit, offset).await,
         super::Command::Mcp {
             repo,
             log,

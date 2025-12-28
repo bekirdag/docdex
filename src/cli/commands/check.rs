@@ -12,14 +12,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::fs;
-use std::net::SocketAddr;
+use std::io::ErrorKind;
+use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
 use std::time::Duration;
 use uuid::Uuid;
 
 #[derive(Serialize)]
-struct CheckItem {
+pub(crate) struct CheckItem {
     name: &'static str,
     status: &'static str,
     message: String,
@@ -28,9 +30,9 @@ struct CheckItem {
 }
 
 #[derive(Serialize)]
-struct CheckReport {
+pub(crate) struct CheckReport {
     status: &'static str,
-    success: bool,
+    pub(crate) success: bool,
     checks: Vec<CheckItem>,
 }
 
@@ -54,6 +56,25 @@ struct RepoStateEntry {
 }
 
 pub async fn run() -> Result<()> {
+    let report = build_report(CheckOptions::default()).await?;
+    let payload = serde_json::to_string(&report)?;
+    println!("{payload}");
+    if report.success {
+        Ok(())
+    } else {
+        std::process::exit(1);
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct CheckOptions {
+    pub(crate) bind_addr_override: Option<String>,
+    pub(crate) mcp_enabled_override: Option<bool>,
+    pub(crate) mcp_spawn_check_override: Option<bool>,
+    pub(crate) mcp_spawn_timeout_ms: Option<u64>,
+}
+
+pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
     let mut checks = Vec::new();
     let mut success = true;
 
@@ -127,7 +148,10 @@ pub async fn run() -> Result<()> {
             success = false;
         }
 
-        let bind_addr_raw = config.server.http_bind_addr.trim();
+        let bind_addr_raw = options
+            .bind_addr_override
+            .as_deref()
+            .unwrap_or_else(|| config.server.http_bind_addr.trim());
         match bind_addr_raw.parse::<SocketAddr>() {
             Ok(addr) => {
                 let loopback = addr.ip().is_loopback();
@@ -153,6 +177,30 @@ pub async fn run() -> Result<()> {
                         "loopback": loopback,
                     })),
                 });
+                let bind_available = match probe_bind(addr) {
+                    Ok(()) => CheckItem {
+                        name: "bind_available",
+                        status: "ok",
+                        message: "bind address available".to_string(),
+                        details: Some(json!({
+                            "bind_addr": bind_addr_raw,
+                        })),
+                    },
+                    Err(err) => {
+                        success = false;
+                        CheckItem {
+                            name: "bind_available",
+                            status: "fail",
+                            message: err.message,
+                            details: Some(json!({
+                                "bind_addr": bind_addr_raw,
+                                "error_kind": err.kind,
+                                "error": err.error,
+                            })),
+                        }
+                    }
+                };
+                checks.push(bind_available);
             }
             Err(err) => {
                 checks.push(CheckItem {
@@ -161,17 +209,38 @@ pub async fn run() -> Result<()> {
                     message: format!("invalid bind address: {err}"),
                     details: Some(json!({ "bind_addr": bind_addr_raw })),
                 });
+                checks.push(CheckItem {
+                    name: "bind_available",
+                    status: "fail",
+                    message: format!("invalid bind address: {err}"),
+                    details: Some(json!({
+                        "bind_addr": bind_addr_raw,
+                        "error_kind": "invalid_address",
+                        "error": err.to_string(),
+                    })),
+                });
                 success = false;
             }
         }
 
         let mcp_env_value = std::env::var("DOCDEX_ENABLE_MCP").ok();
         let mcp_env_bool = env_boolish("DOCDEX_ENABLE_MCP");
-        let (mcp_enabled, mcp_source) = match mcp_env_bool {
-            Some(value) => (value, "env"),
-            None => (config.server.enable_mcp, "config"),
+        let (mcp_enabled, mcp_source) = match options.mcp_enabled_override {
+            Some(value) => (value, "override"),
+            None => match mcp_env_bool {
+                Some(value) => (value, "env"),
+                None => (config.server.enable_mcp, "config"),
+            },
         };
-        let mcp_spawn_check = env_boolish("DOCDEX_CHECK_MCP_SPAWN").unwrap_or(false);
+        let mcp_spawn_check = options
+            .mcp_spawn_check_override
+            .or_else(|| env_boolish("DOCDEX_CHECK_MCP_SPAWN"))
+            .unwrap_or(false);
+        let mcp_spawn_timeout_ms = options
+            .mcp_spawn_timeout_ms
+            .or_else(resolve_mcp_spawn_timeout_ms)
+            .unwrap_or(2000)
+            .max(1);
         if !mcp_enabled {
             checks.push(CheckItem {
                 name: "mcp_ready",
@@ -188,14 +257,17 @@ pub async fn run() -> Result<()> {
             match mcp::resolve_mcp_server_binary() {
                 Ok(path) => {
                     let mut spawn_ok = None;
+                    let mut spawn_details = None;
                     if mcp_spawn_check {
-                        let status = Command::new(&path)
-                            .arg("--help")
-                            .stdin(Stdio::null())
-                            .stdout(Stdio::null())
-                            .stderr(Stdio::null())
-                            .status();
-                        spawn_ok = Some(status.map(|s| s.success()).unwrap_or(false));
+                        let timeout = Duration::from_millis(mcp_spawn_timeout_ms);
+                        let probe = probe_mcp_spawn(&path, timeout);
+                        spawn_ok = Some(probe.ok);
+                        spawn_details = Some(json!({
+                            "spawn_status": probe.status,
+                            "spawn_exit_code": probe.exit_code,
+                            "spawn_timeout_ms": probe.timeout_ms,
+                            "spawn_error": probe.error,
+                        }));
                     }
                     let status = if spawn_ok == Some(false) { "fail" } else { "ok" };
                     let message = if spawn_ok == Some(false) {
@@ -205,6 +277,9 @@ pub async fn run() -> Result<()> {
                     } else {
                         "mcp server binary resolved".to_string()
                     };
+                    if status == "fail" {
+                        success = false;
+                    }
                     checks.push(CheckItem {
                         name: "mcp_ready",
                         status,
@@ -217,11 +292,10 @@ pub async fn run() -> Result<()> {
                             "binary_override": env_bin,
                             "spawn_check": mcp_spawn_check,
                             "spawn_ok": spawn_ok,
+                            "spawn_timeout_ms": mcp_spawn_timeout_ms,
+                            "spawn_details": spawn_details,
                         })),
                     });
-                    if status == "fail" {
-                        success = false;
-                    }
                 }
                 Err(err) => {
                     checks.push(CheckItem {
@@ -233,6 +307,7 @@ pub async fn run() -> Result<()> {
                             "source": mcp_source,
                             "env_value": mcp_env_value,
                             "binary_override": env_bin,
+                            "error": err.to_string(),
                         })),
                     });
                     success = false;
@@ -1033,6 +1108,7 @@ pub async fn run() -> Result<()> {
         for name in [
             "state",
             "bind",
+            "bind_available",
             "mcp_ready",
             "llm_budget",
             "llm_provider",
@@ -1055,18 +1131,11 @@ pub async fn run() -> Result<()> {
     }
 
     let status = if success { "ok" } else { "failed" };
-    let report = CheckReport {
+    Ok(CheckReport {
         status,
         success,
         checks,
-    };
-    let payload = serde_json::to_string(&report)?;
-    println!("{payload}");
-    if success {
-        Ok(())
-    } else {
-        std::process::exit(1);
-    }
+    })
 }
 
 fn load_repo_state_entries(state_dir: &Path) -> Result<Vec<RepoStateEntry>> {
@@ -1169,6 +1238,115 @@ fn env_boolish(key: &str) -> Option<bool> {
         "1" | "true" | "t" | "yes" | "y" | "on" => Some(true),
         "0" | "false" | "f" | "no" | "n" | "off" => Some(false),
         _ => None,
+    }
+}
+
+fn resolve_mcp_spawn_timeout_ms() -> Option<u64> {
+    std::env::var("DOCDEX_CHECK_MCP_SPAWN_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+}
+
+struct BindProbeError {
+    kind: &'static str,
+    message: String,
+    error: Option<String>,
+}
+
+fn probe_bind(addr: SocketAddr) -> Result<(), BindProbeError> {
+    match TcpListener::bind(addr) {
+        Ok(listener) => {
+            drop(listener);
+            Ok(())
+        }
+        Err(err) => {
+            let (kind, message) = match err.kind() {
+                ErrorKind::AddrInUse => ("addr_in_use", "bind address already in use".to_string()),
+                ErrorKind::PermissionDenied => (
+                    "permission_denied",
+                    "bind permission denied (requires elevated privileges)".to_string(),
+                ),
+                _ => ("bind_failed", format!("bind failed: {err}")),
+            };
+            Err(BindProbeError {
+                kind,
+                message,
+                error: Some(err.to_string()),
+            })
+        }
+    }
+}
+
+struct McpSpawnProbe {
+    ok: bool,
+    status: &'static str,
+    exit_code: Option<i32>,
+    timeout_ms: Option<u64>,
+    error: Option<String>,
+}
+
+fn probe_mcp_spawn(path: &Path, timeout: Duration) -> McpSpawnProbe {
+    let mut cmd = Command::new(path);
+    cmd.arg("--help");
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            return McpSpawnProbe {
+                ok: false,
+                status: "spawn_error",
+                exit_code: None,
+                timeout_ms: Some(timeout.as_millis().min(u128::from(u64::MAX)) as u64),
+                error: Some(err.to_string()),
+            }
+        }
+    };
+
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let ok = status.success();
+                return McpSpawnProbe {
+                    ok,
+                    status: if ok { "ok" } else { "exit" },
+                    exit_code: status.code(),
+                    timeout_ms: Some(timeout.as_millis().min(u128::from(u64::MAX)) as u64),
+                    error: None,
+                };
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return McpSpawnProbe {
+                        ok: false,
+                        status: "timeout",
+                        exit_code: None,
+                        timeout_ms: Some(
+                            timeout
+                                .as_millis()
+                                .min(u128::from(u64::MAX)) as u64,
+                        ),
+                        error: None,
+                    };
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(err) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return McpSpawnProbe {
+                    ok: false,
+                    status: "spawn_error",
+                    exit_code: None,
+                    timeout_ms: Some(timeout.as_millis().min(u128::from(u64::MAX)) as u64),
+                    error: Some(err.to_string()),
+                };
+            }
+        }
     }
 }
 

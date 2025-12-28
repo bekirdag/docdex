@@ -9,6 +9,7 @@ use tracing::warn;
 
 use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT};
 use crate::indexer;
+use crate::libs;
 use crate::search::{json_error, resolve_repo_id, AppState};
 
 #[derive(Deserialize)]
@@ -65,24 +66,55 @@ pub async fn index_rebuild_handler(
         None => indexer::IndexingOptions::none(),
     };
 
-    match indexer::reindex_repo(
-        state.indexer.repo_root().to_path_buf(),
-        state.indexer.config().clone(),
-        options,
-    )
-    .await
-    {
-        Ok(report) => Json(report).into_response(),
-        Err(err) => {
-            state.metrics.inc_error();
-            warn!(target: "docdexd", error = ?err, "index rebuild failed");
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                ERR_INTERNAL_ERROR,
-                "index rebuild failed",
-            )
-        }
+    if let Err(err) = state.indexer.reindex_all().await {
+        state.metrics.inc_error();
+        warn!(target: "docdexd", error = ?err, "index rebuild failed");
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            "index rebuild failed",
+        );
     }
+
+    let libs_report = match options.libs_sources {
+        None => None,
+        Some(sources) => {
+            let libs_dir = libs::libs_state_dir_from_index_state_dir(state.indexer.state_dir());
+            let libs_indexer = match libs::LibsIndexer::open_or_create(libs_dir) {
+                Ok(indexer) => indexer,
+                Err(err) => {
+                    state.metrics.inc_error();
+                    warn!(target: "docdexd", error = ?err, "libs index open failed");
+                    return json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        ERR_INTERNAL_ERROR,
+                        "libs index unavailable",
+                    );
+                }
+            };
+            match libs_indexer.ingest_sources(state.indexer.repo_root(), &sources.sources) {
+                Ok(report) => Some(report),
+                Err(err) => {
+                    state.metrics.inc_error();
+                    warn!(target: "docdexd", error = ?err, "libs ingest failed");
+                    return json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        ERR_INTERNAL_ERROR,
+                        "libs ingest failed",
+                    );
+                }
+            }
+        }
+    };
+
+    let docs_indexed = state.indexer.stats().ok().map(|stats| stats.num_docs);
+    let report = indexer::IndexingReport {
+        repo_root: state.indexer.repo_root().to_path_buf(),
+        state_dir: state.indexer.state_dir().to_path_buf(),
+        docs_indexed,
+        libs_report,
+    };
+    Json(report).into_response()
 }
 
 pub async fn index_ingest_handler(

@@ -26,6 +26,7 @@ pub fn run() -> Result<()> {
         "repo",
         "memory-store",
         "memory-recall",
+        "impact-diagnostics",
         "symbols-status",
     ] {
         let mut cmd = Cli::command();
@@ -42,6 +43,7 @@ pub fn run() -> Result<()> {
     }
     println!("MCP tools (docdexd mcp):");
     println!("  - docdex_search: search repo docs; args: query (required), limit (<= max_results), project_root (optional)");
+    println!("  - docdex_web_research: search repo + web; args: query (required), limit/web_limit, project_root (optional)");
     println!("  - docdex_index: reindex all or ingest provided paths; args: paths[], project_root (optional)");
     println!("  - docdex_files: list indexed docs with pagination; args: limit (<=1000), offset (<=50000), project_root (optional)");
     println!("  - docdex_stats: index metadata; args: project_root (optional)");

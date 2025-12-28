@@ -1,4 +1,5 @@
 use crate::audit;
+use crate::cli::commands::check::{build_report, CheckOptions};
 use crate::config::{self, RepoArgs};
 use crate::daemon;
 use crate::error::StartupError;
@@ -7,8 +8,8 @@ use crate::index;
 use crate::search;
 use crate::web;
 use anyhow::Result;
-use std::path::PathBuf;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use tracing::info;
 
 #[allow(clippy::too_many_arguments)]
@@ -25,6 +26,7 @@ pub async fn run(
     insecure: bool,
     require_tls: bool,
     auth_token: Option<String>,
+    preflight_check: bool,
     max_limit: usize,
     max_query_bytes: usize,
     max_request_bytes: usize,
@@ -148,6 +150,7 @@ pub async fn run(
     let mcp_max_results = resolve_mcp_max_results();
     let mcp_rate_limit_per_min = resolve_mcp_rate_limit("DOCDEX_MCP_RATE_LIMIT_PER_MIN");
     let mcp_rate_limit_burst = resolve_mcp_rate_limit("DOCDEX_MCP_RATE_LIMIT_BURST");
+    let preflight_enabled = resolve_preflight_enabled(preflight_check);
     let hardware_profile = hardware::detect_hardware();
     info!(
         "hardware profile: {}; recommended model: {}",
@@ -155,6 +158,30 @@ pub async fn run(
         hardware::recommend_model(&hardware_profile)
     );
     let _ = web::scraper::init_global_from_env();
+    if preflight_enabled {
+        let bind_addr_override = if host.eq_ignore_ascii_case("localhost") {
+            Some(format!("127.0.0.1:{port}"))
+        } else {
+            Some(format!("{host}:{port}"))
+        };
+        let report = build_report(CheckOptions {
+            bind_addr_override,
+            mcp_enabled_override: Some(enable_mcp),
+            mcp_spawn_check_override: Some(enable_mcp),
+            mcp_spawn_timeout_ms: None,
+        })
+        .await?;
+        if !report.success {
+            return Err(StartupError::new(
+                "startup_preflight_failed",
+                "preflight checks failed",
+            )
+            .with_hint(
+                "Run `docdexd check` for the full report or disable preflight with --preflight-check=false.",
+            )
+            .into());
+        }
+    }
     daemon::serve(
         repo_root,
         host,
@@ -239,6 +266,16 @@ fn resolve_mcp_rate_limit(env_key: &str) -> u32 {
         .ok()
         .and_then(|value| value.trim().parse::<u32>().ok())
         .unwrap_or(0)
+}
+
+fn resolve_preflight_enabled(preflight_check: bool) -> bool {
+    if preflight_check {
+        return true;
+    }
+    if let Some(enabled) = env_boolish("DOCDEX_PREFLIGHT_CHECK") {
+        return enabled;
+    }
+    false
 }
 
 fn env_boolish(key: &str) -> Option<bool> {

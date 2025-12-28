@@ -21,6 +21,7 @@ pub const DEFAULT_DYNAMIC_IMPORT_SCAN_LIMIT: usize = 50_000;
 pub const DEFAULT_IMPORT_TRACES_ENABLED: bool = true;
 const IMPORT_MAP_FILE: &str = "docdex.import_map.json";
 const IMPORT_TRACES_FILE: &str = "docdex.import_traces.jsonl";
+const IMPORT_TRACES_STATE_FILE: &str = "import_traces.jsonl";
 const UNRESOLVED_IMPORT_SAMPLE_LIMIT: usize = 5;
 const IMPACT_GRAPH_SCHEMA_NAME: &str = "docdex.impact_graph";
 const IMPACT_GRAPH_SCHEMA_VERSION: u32 = 2;
@@ -895,14 +896,19 @@ fn migrate_impact_graph_v1_to_v2(entries: &mut Vec<ImpactGraphStoreEntry>) -> Re
     Ok(())
 }
 
-fn impact_graph_path(state_dir: &Path) -> PathBuf {
+fn impact_state_root(state_dir: &Path) -> PathBuf {
     if state_dir.file_name().and_then(|name| name.to_str()) == Some("index") {
-        return state_dir
-            .parent()
-            .unwrap_or(state_dir)
-            .join("impact_graph.json");
+        return state_dir.parent().unwrap_or(state_dir).to_path_buf();
     }
-    state_dir.join("impact_graph.json")
+    state_dir.to_path_buf()
+}
+
+fn impact_graph_path(state_dir: &Path) -> PathBuf {
+    impact_state_root(state_dir).join("impact_graph.json")
+}
+
+fn import_traces_state_path(state_dir: &Path) -> PathBuf {
+    impact_state_root(state_dir).join(IMPORT_TRACES_STATE_FILE)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1269,6 +1275,7 @@ pub fn traverse_impact_multi(
 
 pub(crate) fn extract_import_edges(
     repo_root: &Path,
+    state_dir: &Path,
     rel_path: &str,
     content: &str,
 ) -> ImpactEdgeBuildResult {
@@ -1284,11 +1291,11 @@ pub(crate) fn extract_import_edges(
             diagnostics: None,
         },
         SourceLanguage::Rust => extract_rust_import_edges(repo_root, rel_path, content),
-        SourceLanguage::Python => extract_python_import_edges(repo_root, rel_path, content),
+        SourceLanguage::Python => extract_python_import_edges(repo_root, state_dir, rel_path, content),
         SourceLanguage::JavaScript | SourceLanguage::TypeScript => {
-            extract_js_ts_import_edges(repo_root, rel_path, content, language)
+            extract_js_ts_import_edges(repo_root, state_dir, rel_path, content, language)
         }
-        SourceLanguage::Go => extract_go_import_edges(repo_root, rel_path, content),
+        SourceLanguage::Go => extract_go_import_edges(repo_root, state_dir, rel_path, content),
     }
 }
 
@@ -1465,18 +1472,22 @@ impl RepoFileIndex {
 #[derive(Debug, Default, Clone)]
 struct ImportHintCacheEntry {
     map_mtime: Option<SystemTime>,
-    trace_mtime: Option<SystemTime>,
+    repo_trace_mtime: Option<SystemTime>,
+    state_trace_mtime: Option<SystemTime>,
     traces_enabled: bool,
     hints: ImportHints,
 }
 
-static IMPORT_HINT_CACHE: Lazy<Mutex<HashMap<PathBuf, ImportHintCacheEntry>>> =
+type ImportHintCacheKey = (PathBuf, PathBuf);
+
+static IMPORT_HINT_CACHE: Lazy<Mutex<HashMap<ImportHintCacheKey, ImportHintCacheEntry>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 static REPO_FILE_CACHE: Lazy<Mutex<HashMap<PathBuf, RepoFileIndex>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 fn extract_js_ts_import_edges(
     repo_root: &Path,
+    state_dir: &Path,
     rel_path: &str,
     content: &str,
     language: SourceLanguage,
@@ -1492,11 +1503,12 @@ fn extract_js_ts_import_edges(
     let mut bindings: HashMap<String, StringEval> = HashMap::new();
     seed_js_ts_bindings(rel_path, &mut bindings);
     collect_js_ts_imports(content, root, language, &mut imports, &mut bindings);
-    build_edges(repo_root, rel_path, imports, resolve_js_ts_import)
+    build_edges(repo_root, state_dir, rel_path, imports, resolve_js_ts_import)
 }
 
 fn extract_python_import_edges(
     repo_root: &Path,
+    state_dir: &Path,
     rel_path: &str,
     content: &str,
 ) -> ImpactEdgeBuildResult {
@@ -1510,7 +1522,7 @@ fn extract_python_import_edges(
     let mut imports: Vec<ImportRef> = Vec::new();
     let mut bindings: HashMap<String, StringEval> = HashMap::new();
     collect_python_imports(content, root, &mut imports, &mut bindings);
-    build_edges(repo_root, rel_path, imports, resolve_python_import)
+    build_edges(repo_root, state_dir, rel_path, imports, resolve_python_import)
 }
 
 fn extract_rust_import_edges(
@@ -1535,6 +1547,7 @@ fn extract_rust_import_edges(
 
 fn extract_go_import_edges(
     repo_root: &Path,
+    state_dir: &Path,
     rel_path: &str,
     content: &str,
 ) -> ImpactEdgeBuildResult {
@@ -1550,6 +1563,7 @@ fn extract_go_import_edges(
     collect_go_imports(content, root, &mut imports);
     build_edges_with_context(
         repo_root,
+        state_dir,
         rel_path,
         imports,
         |root, file, import_path| resolve_go_import(root, file, import_path, module_path.as_deref()),
@@ -1849,6 +1863,7 @@ fn collect_go_imports(content: &str, node: Node, imports: &mut Vec<ImportRef>) {
 
 fn build_edges<F>(
     repo_root: &Path,
+    state_dir: &Path,
     rel_path: &str,
     imports: Vec<ImportRef>,
     resolver: F,
@@ -1856,11 +1871,12 @@ fn build_edges<F>(
 where
     F: Fn(&Path, &str, &str) -> Option<String>,
 {
-    build_edges_with_context(repo_root, rel_path, imports, resolver)
+    build_edges_with_context(repo_root, state_dir, rel_path, imports, resolver)
 }
 
 fn build_edges_with_context<F>(
     repo_root: &Path,
+    state_dir: &Path,
     rel_path: &str,
     imports: Vec<ImportRef>,
     resolver: F,
@@ -1869,7 +1885,7 @@ where
     F: Fn(&Path, &str, &str) -> Option<String>,
 {
     let mut edges: BTreeSet<ImpactGraphEdge> = BTreeSet::new();
-    let hints = import_hints_for_repo(repo_root);
+    let hints = import_hints_for_repo(repo_root, state_dir);
     let hint_edges = hint_edges_for_source(repo_root, rel_path, &hints, &resolver);
     for edge in hint_edges.edges {
         edges.insert(edge);
@@ -1958,11 +1974,11 @@ where
             }
         }
         ImportPath::Pattern(pattern) => {
-            if !fallbacks.is_empty() {
-                return Some(fallbacks);
-            }
             if let Some(target) = resolve_unique_match(repo_root, rel_path, import_ref, pattern) {
                 return Some(vec![ResolvedImportTarget { target, kind: None }]);
+            }
+            if !fallbacks.is_empty() {
+                return Some(fallbacks);
             }
         }
     }
@@ -2040,39 +2056,57 @@ where
     }
 }
 
-fn import_hints_for_repo(repo_root: &Path) -> ImportHints {
-    let key = canonical_repo_root(repo_root);
-    let map_path = key.join(IMPORT_MAP_FILE);
-    let trace_path = key.join(IMPORT_TRACES_FILE);
+fn import_hints_for_repo(repo_root: &Path, state_dir: &Path) -> ImportHints {
+    let (repo_key, state_key) = import_hint_cache_key(repo_root, state_dir);
+    let map_path = repo_key.join(IMPORT_MAP_FILE);
+    let repo_trace_path = repo_key.join(IMPORT_TRACES_FILE);
+    let state_trace_path = import_traces_state_path(&state_key);
     let map_mtime = file_mtime(&map_path);
-    let trace_mtime = file_mtime(&trace_path);
+    let repo_trace_mtime = file_mtime(&repo_trace_path);
+    let state_trace_mtime = file_mtime(&state_trace_path);
     let traces_enabled = import_traces_enabled();
     let mut cache = IMPORT_HINT_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let entry = cache.entry(key.clone()).or_default();
+    let entry = cache.entry((repo_key.clone(), state_key.clone())).or_default();
     if entry.map_mtime != map_mtime {
-        let map = load_import_map(&key, &map_path);
+        let map = load_import_map(&repo_key, &map_path);
         entry.hints.edges = map.edges;
         entry.hints.mappings = map.mappings;
         entry.map_mtime = map_mtime;
     }
     if entry.traces_enabled != traces_enabled {
         entry.hints.traces.clear();
-        entry.trace_mtime = None;
+        entry.repo_trace_mtime = None;
+        entry.state_trace_mtime = None;
         entry.traces_enabled = traces_enabled;
     }
-    if traces_enabled && entry.trace_mtime != trace_mtime {
-        entry.hints.traces = load_import_traces(&key, &trace_path);
-        entry.trace_mtime = trace_mtime;
+    if traces_enabled
+        && (entry.repo_trace_mtime != repo_trace_mtime
+            || entry.state_trace_mtime != state_trace_mtime)
+    {
+        let mut traces = load_import_traces(&repo_key, &state_trace_path);
+        traces.extend(load_import_traces(&repo_key, &repo_trace_path));
+        entry.hints.traces = traces;
+        entry.repo_trace_mtime = repo_trace_mtime;
+        entry.state_trace_mtime = state_trace_mtime;
     }
     entry.hints.clone()
 }
 
+fn import_hint_cache_key(repo_root: &Path, state_dir: &Path) -> ImportHintCacheKey {
+    let repo_key = canonical_path(repo_root);
+    let state_root = impact_state_root(state_dir);
+    let state_key = canonical_path(&state_root);
+    (repo_key, state_key)
+}
+
 fn canonical_repo_root(repo_root: &Path) -> PathBuf {
-    repo_root
-        .canonicalize()
-        .unwrap_or_else(|_| repo_root.to_path_buf())
+    canonical_path(repo_root)
+}
+
+fn canonical_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn file_mtime(path: &Path) -> Option<SystemTime> {
@@ -2453,6 +2487,19 @@ fn resolve_unique_match(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct MatchScoreKey {
+    primary: u8,
+    spec_len: usize,
+    target_len: usize,
+}
+
+#[derive(Debug, Clone)]
+struct MatchCandidate {
+    target: String,
+    score: MatchScoreKey,
+}
+
 fn resolve_unique_match_js_ts(
     repo_root: &Path,
     rel_path: &str,
@@ -2476,12 +2523,11 @@ fn resolve_unique_match_js_ts(
     }
     let mut matches = Vec::new();
     for target in &index.js_ts {
-        let specs = js_ts_candidate_specs(rel_path, target);
-        if specs
-            .iter()
-            .any(|spec| pattern_matches(pattern, spec.as_str()))
-        {
-            matches.push(target.clone());
+        if let Some(score) = js_ts_match_score(rel_path, target, pattern) {
+            matches.push(MatchCandidate {
+                target: target.clone(),
+                score,
+            });
         }
     }
     pick_unique_match(rel_path, pattern, matches, "js_ts")
@@ -2501,12 +2547,11 @@ fn resolve_unique_match_python(
     }
     let mut matches = Vec::new();
     for target in &index.python {
-        let specs = python_candidate_specs(rel_path, target);
-        if specs
-            .iter()
-            .any(|spec| pattern_matches(pattern, spec.as_str()))
-        {
-            matches.push(target.clone());
+        if let Some(score) = python_match_score(rel_path, target, pattern) {
+            matches.push(MatchCandidate {
+                target: target.clone(),
+                score,
+            });
         }
     }
     pick_unique_match(rel_path, pattern, matches, "python")
@@ -2515,18 +2560,22 @@ fn resolve_unique_match_python(
 fn pick_unique_match(
     rel_path: &str,
     pattern: &StringPattern,
-    mut matches: Vec<String>,
+    mut matches: Vec<MatchCandidate>,
     language: &str,
 ) -> Option<String> {
     if matches.is_empty() {
         return None;
     }
     if matches.len() == 1 {
-        return matches.pop();
+        return matches.pop().map(|entry| entry.target);
     }
-    matches.sort();
-    let chosen = matches.first().cloned();
-    if let Some(chosen) = &chosen {
+    matches.sort_by(|left, right| {
+        left.score
+            .cmp(&right.score)
+            .then_with(|| left.target.cmp(&right.target))
+    });
+    let chosen = matches.first().map(|entry| entry.target.clone());
+    if let Some(chosen) = chosen.as_ref() {
         info!(
             target: "docdexd",
             file = %rel_path,
@@ -2538,6 +2587,65 @@ fn pick_unique_match(
         );
     }
     chosen
+}
+
+fn js_ts_match_score(
+    rel_path: &str,
+    target: &str,
+    pattern: &StringPattern,
+) -> Option<MatchScoreKey> {
+    let specs = js_ts_candidate_specs(rel_path, target);
+    let mut best: Option<(u8, usize)> = None;
+    for spec in specs {
+        if !pattern_matches(pattern, spec.as_str()) {
+            continue;
+        }
+        let relative_rank = if spec.starts_with("./") || spec.starts_with("../") {
+            0
+        } else {
+            1
+        };
+        let candidate = (relative_rank, spec.len());
+        if best.map(|current| candidate < current).unwrap_or(true) {
+            best = Some(candidate);
+        }
+    }
+    let (primary, spec_len) = best?;
+    Some(MatchScoreKey {
+        primary,
+        spec_len,
+        target_len: target.len(),
+    })
+}
+
+fn python_match_score(
+    rel_path: &str,
+    target: &str,
+    pattern: &StringPattern,
+) -> Option<MatchScoreKey> {
+    let module_spec = python_module_name(target);
+    let specs = python_candidate_specs(rel_path, target);
+    let mut best_len: Option<usize> = None;
+    let mut matched_module = false;
+    for spec in specs {
+        if !pattern_matches(pattern, spec.as_str()) {
+            continue;
+        }
+        let is_module = module_spec.as_deref() == Some(spec.as_str());
+        if is_module {
+            matched_module = true;
+            best_len = Some(best_len.map_or(spec.len(), |len| len.min(spec.len())));
+        } else if !matched_module {
+            best_len = Some(best_len.map_or(spec.len(), |len| len.min(spec.len())));
+        }
+    }
+    let spec_len = best_len?;
+    let primary = if matched_module { 0 } else { 1 };
+    Some(MatchScoreKey {
+        primary,
+        spec_len,
+        target_len: target.len(),
+    })
 }
 
 fn pattern_matches(pattern: &StringPattern, candidate: &str) -> bool {
@@ -4367,9 +4475,17 @@ mod tests {
         std::fs::write(path, content).expect("write fixture");
     }
 
-    fn clear_import_hint_cache(repo_root: &Path) {
-        let key = canonical_repo_root(repo_root);
+    fn clear_import_hint_cache(repo_root: &Path, state_dir: &Path) {
+        let key = import_hint_cache_key(repo_root, state_dir);
         let mut cache = IMPORT_HINT_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cache.remove(&key);
+    }
+
+    fn clear_repo_file_cache(repo_root: &Path) {
+        let key = canonical_repo_root(repo_root);
+        let mut cache = REPO_FILE_CACHE
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         cache.remove(&key);
@@ -4386,6 +4502,7 @@ const name = "bar";
 import(`./${part}/${name}.ts`);
 "#;
         let result = extract_js_ts_import_edges(
+            repo_root,
             repo_root,
             "src/main.ts",
             content,
@@ -4414,6 +4531,7 @@ require(target);
 "#;
         let result = extract_js_ts_import_edges(
             repo_root,
+            repo_root,
             "src/main.ts",
             content,
             SourceLanguage::JavaScript,
@@ -4437,7 +4555,7 @@ from importlib.util import spec_from_file_location
 module_path = os.path.join("pkg", "mod.py")
 spec_from_file_location("mod", module_path)
 "#;
-        let result = extract_python_import_edges(repo_root, "main.py", content);
+        let result = extract_python_import_edges(repo_root, repo_root, "main.py", content);
         assert!(
             result.edges.iter().any(|edge| edge.source == "main.py" && edge.target == "pkg/mod.py"),
             "expected os.path.join to resolve in spec_from_file_location"
@@ -4458,6 +4576,7 @@ const target = path.resolve(base, "entry.js");
 require(target);
 "#;
         let result = extract_js_ts_import_edges(
+            repo_root,
             repo_root,
             "src/main.js",
             content,
@@ -4481,7 +4600,7 @@ import importlib
 BASE = "pkg"
 importlib.import_module(BASE + ".extra")
 "#;
-        let result = extract_python_import_edges(repo_root, "main.py", content);
+        let result = extract_python_import_edges(repo_root, repo_root, "main.py", content);
         assert!(
             result.edges.iter().any(|edge| edge.source == "main.py" && edge.target == "pkg/extra.py"),
             "expected importlib.import_module to resolve"
@@ -4499,6 +4618,7 @@ const choice = getChoice();
 require(`./tpl/${choice}.js`);
 "#;
         let result = extract_js_ts_import_edges(
+            repo_root,
             repo_root,
             "src/main.js",
             content,
@@ -4535,6 +4655,7 @@ require(target);
 "#;
         let result = extract_js_ts_import_edges(
             repo_root,
+            repo_root,
             "src/main.js",
             content,
             SourceLanguage::JavaScript,
@@ -4558,7 +4679,7 @@ name = "fmod"
 spec_path = f"pkg/{name}.py"
 importlib.util.spec_from_file_location(name, spec_path)
 "#;
-        let result = extract_python_import_edges(repo_root, "main.py", content);
+        let result = extract_python_import_edges(repo_root, repo_root, "main.py", content);
         assert!(
             result.edges.iter().any(|edge| edge.source == "main.py" && edge.target == "pkg/fmod.py"),
             "expected f-string path in spec_from_file_location to resolve"
@@ -4574,7 +4695,7 @@ importlib.util.spec_from_file_location(name, spec_path)
 import importlib.machinery
 importlib.machinery.SourceFileLoader("loader", "pkg/loader.py")
 "#;
-        let result = extract_python_import_edges(repo_root, "main.py", content);
+        let result = extract_python_import_edges(repo_root, repo_root, "main.py", content);
         assert!(
             result
                 .edges
@@ -4599,6 +4720,7 @@ import "./missing-7.js";
 "#;
         let result = extract_js_ts_import_edges(
             repo_root,
+            repo_root,
             "src/main.js",
             content,
             SourceLanguage::JavaScript,
@@ -4614,6 +4736,7 @@ import "./missing-7.js";
         let repo_root = dir.path();
         let content = r#"import "./missing.js";"#;
         let result = extract_js_ts_import_edges(
+            repo_root,
             repo_root,
             "src/main.ts",
             content,
@@ -4828,6 +4951,9 @@ import "./missing-7.js";
     fn import_traces_and_map_edges_merge_for_source() {
         let repo = TempDir::new().expect("tempdir");
         let repo_root = repo.path();
+        let state_root = repo_root.join(".docdex");
+        let state_dir = state_root.join("index");
+        fs::create_dir_all(&state_dir).expect("create state dir");
         fs::create_dir_all(repo_root.join("src")).expect("create src");
 
         fs::write(
@@ -4851,17 +4977,24 @@ import "./missing-7.js";
 "#,
         )
         .expect("write import traces");
+        fs::write(
+            state_root.join("import_traces.jsonl"),
+            r#"
+{ "source": "src/app.js", "target": "src/state-trace.js", "kind": "import" }
+"#,
+        )
+        .expect("write state import traces");
 
         apply_impact_settings(ImpactSettings {
             dynamic_import_scan_limit: 10_000,
             import_traces_enabled: true,
         });
-        clear_import_hint_cache(repo_root);
+        clear_import_hint_cache(repo_root, &state_dir);
 
-        let hints = import_hints_for_repo(repo_root);
+        let hints = import_hints_for_repo(repo_root, &state_dir);
         assert_eq!(hints.edges.len(), 1);
         assert_eq!(hints.mappings.len(), 1);
-        assert_eq!(hints.traces.len(), 1);
+        assert_eq!(hints.traces.len(), 2);
 
         let resolver = |root: &Path, _rel: &str, target: &str| normalize_hint_path(root, target);
         let merged = hint_edges_for_source(repo_root, "src/app.js", &hints, &resolver);
@@ -4873,6 +5006,10 @@ import "./missing-7.js";
             .edges
             .iter()
             .any(|edge| edge.target == "src/trace.js"));
+        assert!(merged
+            .edges
+            .iter()
+            .any(|edge| edge.target == "src/state-trace.js"));
         assert!(merged.override_targets.contains("src/hint.js"));
     }
 
@@ -4914,5 +5051,48 @@ import "./missing-7.js";
         assert_eq!(overrides[0].target, "src/override.js");
         assert_eq!(fallbacks.len(), 1);
         assert_eq!(fallbacks[0].target, "src/fallback.js");
+    }
+
+    #[test]
+    fn import_map_fallback_waits_for_unique_match() {
+        let repo = TempDir::new().expect("tempdir");
+        let repo_root = repo.path();
+        write_fixture(&repo_root.join("src/foo/a.js"), "export const a = 1;");
+        write_fixture(&repo_root.join("src/foo/b.js"), "export const b = 2;");
+        write_fixture(&repo_root.join("src/fallback.js"), "export const f = 3;");
+
+        let hints = ImportHints {
+            edges: Vec::new(),
+            mappings: vec![ImportMapMapping {
+                source: Some("src/main.js".to_string()),
+                spec: "./foo/*.js".to_string(),
+                targets: vec!["src/fallback.js".to_string()],
+                kind: Some("import".to_string()),
+                expand: false,
+                override_edge: false,
+            }],
+            traces: Vec::new(),
+        };
+        let import_ref = ImportRef {
+            path: ImportPath::Pattern(StringPattern {
+                parts: vec!["./foo/".to_string(), ".js".to_string()],
+                anchored_start: true,
+                anchored_end: true,
+            }),
+            kind: "import",
+            language: SourceLanguage::JavaScript,
+        };
+
+        apply_impact_settings(ImpactSettings {
+            dynamic_import_scan_limit: 10_000,
+            import_traces_enabled: false,
+        });
+        clear_repo_file_cache(repo_root);
+
+        let resolver = |root: &Path, _rel: &str, target: &str| normalize_hint_path(root, target);
+        let resolved = resolve_import_ref(repo_root, "src/main.js", &import_ref, &hints, &resolver)
+            .expect("missing resolution");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].target, "src/foo/a.js");
     }
 }

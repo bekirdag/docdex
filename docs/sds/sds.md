@@ -798,11 +798,11 @@ Verification Strategy
 
 ## Interfaces and Integrations {#interfaces-and-integrations}
 
-Docdex v2.0 exposes one local-first set of surfaces (CLI, HTTP, MCP) per machine, all enforcing explicit repo selection and operating through the single `docdexd` daemon. Integrations stay zero-cost and local by default (Ollama, Tantivy, DuckDuckGo HTML, headless Chrome, sqlite-vec), with strict scoping to prevent cross-repo contamination.
+Docdex v2.0 exposes local-first surfaces (CLI, HTTP, MCP) per repo, each served by a per-repo `docdexd` daemon. Integrations stay zero-cost and local by default (Ollama, Tantivy, DuckDuckGo HTML, headless Chrome, sqlite-vec), with strict scoping to prevent cross-repo contamination.
 
 ### CLI Commands
 
-- Surfaces: `check`, `index --repo <path>`, `chat --repo <path>`, `llm-list`, `llm-setup`, `web-search "<query>"`, `web-fetch <url>`, `web-rag "<q>" --repo`, `libs fetch --repo`, `dag view --repo <path> <session_id>`, `run-tests --repo <path> --target <file|dir>`, `mcp`, `tui`.  
+- Surfaces: `check`, `index --repo <path>`, `chat --repo <path> [--query <q>]`, `llm-list`, `llm-setup`, `web-search "<query>"`, `web-fetch <url>`, `web-rag "<q>" --repo`, `libs fetch --repo`, `dag view --repo <path> <session_id>`, `run-tests --repo <path> --target <file|dir>`, `mcp`, `tui`.  
 - Behavior: every operation requiring repo context mandates `--repo <path>`; unknown/unindexed repo returns a clear error. Waterfall (local → web → cognition) is triggered by `web-trigger-threshold` or explicit web commands.  
 - Token budgeting and streaming: CLI chat/web commands stream Ollama responses; budgets enforce priority (Memory \> Repo \> Lib/Web).  
 - Exposure: `--expose` (on daemon) requires token auth; otherwise bind is `127.0.0.1`.
@@ -815,9 +815,9 @@ Docdex v2.0 exposes one local-first set of surfaces (CLI, HTTP, MCP) per machine
 
 ### MCP Server
 
-- Single MCP server (`docdexd mcp`) serving all repos; tools require `project_root`/`repo_path` unless `initialize` sets a default.  
+- Per-repo MCP server (`docdexd mcp --repo <path>`) scoped to one repo; tools require `project_root`/`repo_path` unless `initialize` sets a default.  
 - Tools: `docdex_search`, `docdex_web_research`, `docdex_memory_save`, `docdex_memory_recall`; errors on unknown/unindexed repo.  
-- Lifecycle: runs alongside HTTP within the daemon; no per-repo servers.
+- Lifecycle: runs alongside HTTP within each per-repo daemon; no multi-repo server mode.
 
 ### Local Dependencies
 
@@ -846,19 +846,19 @@ Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper
 - **Command Surface & Scope**  
     
   - Core readiness: `docdexd check` validates config RW, state layout, repo registry, Ollama reachability/models, headless Chrome availability, HTTP bind, MCP enablement.  
-  - Repo indexing/chat: `index --repo <path>` builds Tantivy \+ symbols \+ dag/lib scaffolding; `chat --repo <path> [query]` runs Tier-1 local search, optional REPL if no query.  
+  - Repo indexing/chat: `index --repo <path>` builds Tantivy \+ symbols \+ dag/lib scaffolding; `chat --repo <path> [--query <q>]` runs Tier-1 local search, optional REPL if no query.  
   - LLM ops: `llm-list` (hardware-aware recommendations from `llm_list.json`); `llm-setup` (verify `ollama` presence, list/pull models, update `[llm]` config; no auto-install).  
   - Web waterfall: `web-search "<query>"`, `web-fetch <url>`, `web-rag "<question>" --repo <path>` triggering discovery→scrape→cache with rate limits.  
   - Library docs: `libs fetch --repo <path>` detects deps (Cargo/Node/Python), scrapes docs, caches under `cache/libs`, ingests into repo `libs_index`.  
   - DAG: `dag view --repo <path> <session_id>` renders text/DOT from `dag.db`.  
-  - Tests: `run-tests --repo <path> --target <file_or_dir>` executes configured test command; returns structured JSON.  
-  - MCP/TUI: `mcp` starts a per-repo MCP server; `tui` shells out to the `docdex-tui` binary (override with `DOCDEX_TUI_BIN`) and binds to the daemon.  
-  - HTTP alignment: CLI routes to daemon HTTP/MCP surfaces; enforces repo id/path on every call.
+  - Tests: `run-tests --repo <path> --target <file_or_dir>` executes configured test command locally; returns structured JSON.  
+  - MCP/TUI: `mcp` starts a per-repo MCP server; `tui` shells out to the `docdex-tui` binary (override with `DOCDEX_TUI_BIN`) as a local exception.  
+  - HTTP alignment: CLI routes to daemon HTTP/MCP surfaces; enforces repo id/path on every call (except local-only `run-tests`/`tui`).
 
 
 - **Interactions & Data Flow**  
     
-- Commands invoke daemon APIs; daemon resolves repo fingerprint → per-repo state dirs (`index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`, `impact_graph.json`).  
+- Commands invoke daemon APIs; daemon resolves repo fingerprint → per-repo state dirs (`index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`, `impact_graph.json`). Local-only exceptions: `run-tests` and `tui`.  
   - CLI base URL derives from `server.http_bind_addr` unless `DOCDEX_HTTP_BASE_URL` is set; `DOCDEX_CLI_LOCAL=1` forces legacy local execution when the daemon is unavailable.  
   - Waterfall commands share caches: `cache/web` (HTML \+ cleaned JSON) and `cache/libs`; ingestion is repo-scoped.  
   - Token budgeting for chat/web-rag enforced by daemon (not CLI); CLI streams outputs from Ollama via daemon.
@@ -896,7 +896,7 @@ Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper
 
 - **Assumptions**  
     
-  - CLI is a thin client; all heavy work in daemon.  
+  - CLI is a thin client; heavy work lives in the daemon except `run-tests` and `tui` local execution.  
   - HTTP and MCP endpoints already authenticated/authorized by daemon when exposed.  
   - Test command config provided per repo (outside scope here).
 
@@ -1012,7 +1012,7 @@ Docdex relies solely on locally managed, zero-cost components for LLM/embeddings
 - Headless Chrome: fetch and readability extraction for discovered URLs; guarded lifecycle to avoid zombie processes; respects per-domain ≥1s fetch delay and 15s page timeout defaults.  
 - Tree-sitter: language parsers (Rust, TS/JS, Python, Go) for symbol extraction during `index`; outputs stored in per-repo `symbols.db`.
 - Impact graph resolution (best-effort): import edges resolve static patterns including literal import strings, string concatenation with constant bindings, static path joins (`path.join`, `path.resolve`, `os.path.join`), template strings or f-strings with static bindings (multiple candidates use a deterministic tie-break), Python `importlib.import_module`, `importlib.util.spec_from_file_location`, `importlib.machinery.SourceFileLoader`, and Rust `mod`/`use`/`include!`. Unresolved dynamic imports are skipped and recorded in impact diagnostics.
-- Import hints: `docdex.import_map.json` supports mapping overrides and pattern expansions (`targets` + `expand`); `docdex.import_traces.jsonl` provides runtime traces (toggle with `[code_intelligence].import_traces_enabled` or `DOCDEX_ENABLE_IMPORT_TRACES`). Dynamic import scan limits can be tuned via `[code_intelligence].dynamic_import_scan_limit` or `DOCDEX_DYNAMIC_IMPORT_SCAN_LIMIT`.
+- Import hints: `docdex.import_map.json` supports mapping overrides and pattern expansions (`targets` + `expand`); runtime traces can be supplied via repo-root `docdex.import_traces.jsonl` or `<repo-state-root>/import_traces.jsonl` (toggle with `[code_intelligence].import_traces_enabled` or `DOCDEX_ENABLE_IMPORT_TRACES`). Dynamic import scan limits can be tuned via `[code_intelligence].dynamic_import_scan_limit` or `DOCDEX_DYNAMIC_IMPORT_SCAN_LIMIT`.
 - Parser drift policy: when stored Tree-sitter parser versions differ from the running build, Docdex invalidates symbols/AST, sets `symbols_reindex_required`, and `GET /v1/symbols`/`GET /v1/ast` return `409 stale_index` until reindex. Drift metadata is exposed via `GET /v1/symbols/status` and `docdexd symbols-status`.
 - AST search surface: `GET /v1/ast/search` accepts `kinds` (node kinds), `mode` (`any|all`), and `limit` to list files matching AST criteria for richer code intelligence queries.
 - AST query surface: `POST /v1/ast/query` accepts `kinds`, optional `name`/`field`/`pathPrefix`, and `mode`/`limit`/`sampleLimit` to return per-file match counts plus sample nodes.
@@ -1053,7 +1053,7 @@ Docdex relies solely on locally managed, zero-cost components for LLM/embeddings
 
 - Verification Strategy  
     
-  - `docdexd check` validates Ollama reachability/models, Chrome availability, and repo registry; fails clearly on missing dependencies.  
+  - `docdexd check` validates Ollama reachability/models, Chrome availability, repo registry, and bind availability; MCP spawn probe runs when `DOCDEX_CHECK_MCP_SPAWN=1` (timeout via `DOCDEX_CHECK_MCP_SPAWN_TIMEOUT_MS`).  
   - Rate-limit tests: assert ≥2s between DuckDuckGo queries and ≥1s between fetches; ensure errors/backoff on HTTP failures.  
   - Chrome lifecycle tests: start/stop under load and crash injection to confirm no lingering processes and lock cleanup.  
   - Tree-sitter extraction tests across supported languages to confirm symbols populated in `symbols.db` with correct spans.  
@@ -1065,7 +1065,7 @@ Docdex relies solely on locally managed, zero-cost components for LLM/embeddings
 
 ### Daemon Lifecycle and Binding
 
-- Startup runs `docdexd check`: validates config readability/writability, state dirs, Ollama reachability/models, headless Chrome availability, repo registry, HTTP bind, MCP enablement. Fails fast with actionable errors.  
+- Startup can run a preflight check (`--preflight-check` or `DOCDEX_PREFLIGHT_CHECK=1`): validates config readability/writability, state dirs, Ollama reachability/models, headless Chrome availability, repo registry, bind availability, and MCP readiness. Fails fast with actionable errors when enabled.  
 - Binding: default `127.0.0.1:3210`. `--expose` optional; when set, all HTTP/MCP surfaces require token auth (from env/config). No telemetry.  
 - Each per-repo daemon hosts one HTTP API and one MCP server; CLI and TUI connect locally. Run one daemon per repo.  
 - Chrome/browsers: headless lifecycle guarded; cleanup on exit/panic; locks under `state/locks/` to prevent concurrent zombie instances.
@@ -1085,7 +1085,7 @@ Docdex relies solely on locally managed, zero-cost components for LLM/embeddings
 
 ### Observability and Health
 
-- Health/readiness via `docdexd check` output; includes Chrome guard status, model availability, repo registry, and bind status.  
+- Health/readiness via `docdexd check` output; includes Chrome guard status, model availability, repo registry, and bind availability.  
 - Logging: honor `log_level` from config; log rate-limit decisions, waterfall escalations, and browser lifecycle events.  
 - DAG and memory are per repo; exposed via CLI/HTTP/MCP only where specified—no additional telemetry channels.
 
@@ -1105,7 +1105,7 @@ Docdex relies solely on locally managed, zero-cost components for LLM/embeddings
 
 **Verification Strategy**
 
-- Run `docdexd check` to validate config/state/Ollama/Chrome/bind/MCP before serving.  
+- Run `docdexd check` (or enable `--preflight-check`) to validate config/state/Ollama/Chrome/bind/MCP before serving.  
 - Concurrency tests: multiple per-repo daemons under load; ensure handles close on shutdown.  
 - Web safety: enforce DDG ≥2s interval and per-domain ≥1s delay; verify Chrome teardown and no zombie processes.  
 - Security: attempt exposed-mode calls without token → expect rejection; verify localhost-only bind by default.  
@@ -1119,7 +1119,7 @@ Per-repo `docdexd` processes expose one HTTP API and one MCP server each. Archit
 - **Process model**: One `docdexd` per repo; multi-repo access comes from running multiple daemons. No clustered multi-tenant mode (out of scope per PDR).  
 - **Default binding**: Bind to `127.0.0.1:3210` from `[server] http_bind_addr`. MCP enabled by default (`enable_mcp=true`), sharing the same bind/interface posture; override via `DOCDEX_ENABLE_MCP` or `--disable-mcp`.  
 - **Exposed mode**: `--expose` (or equivalent config override) permits non-localhost binding; requires token authentication provided via env/config. Token is enforced on HTTP and MCP requests when exposed; reject unauthenticated requests.  
-- **Startup validation**: `docdexd check` ensures the bind address is free, permissions on `global_state_dir` are valid, Ollama and headless Chrome are reachable, and MCP can start. Fails fast if port unavailable or dependencies missing.  
+- **Startup validation**: `docdexd check` ensures the bind address is free, permissions on `global_state_dir` are valid, Ollama and headless Chrome are reachable, and MCP can start when spawn checks are enabled (`DOCDEX_CHECK_MCP_SPAWN=1`). Preflight mode forces MCP spawn checks when MCP is enabled.  
 - **Shutdown/guard rails**: Browser guard ensures headless Chrome is started/stopped cleanly; lock directories under `~/.docdex/state/locks/` prevent zombie Chrome processes. On panic/exit, ensure teardown routines run to avoid lingering processes.  
 - **Resource limits (relevant here)**: DB/index handles are closed on shutdown; Chrome fetch concurrency is bounded; timeouts apply (page load \~15s).  
 - **Security posture**: Local-only by default; zero telemetry; no paid APIs. When exposed, token auth is mandatory; otherwise reject. No other authentication modes are specified in PDR.  

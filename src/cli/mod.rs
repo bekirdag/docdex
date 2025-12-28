@@ -123,6 +123,14 @@ pub(crate) enum Command {
         auth_token: Option<String>,
         #[arg(
             long,
+            env = "DOCDEX_PREFLIGHT_CHECK",
+            default_value_t = false,
+            action = ArgAction::Set,
+            help = "Run `docdexd check` before serving; fail fast on missing dependencies"
+        )]
+        preflight_check: bool,
+        #[arg(
+            long,
             env = "DOCDEX_MAX_LIMIT",
             default_value_t = 8,
             help = "Maximum allowed `limit` on search/snippet requests"
@@ -362,8 +370,13 @@ pub(crate) enum Command {
     Chat {
         #[command(flatten)]
         repo: RepoArgs,
-        #[arg(short, long)]
-        query: String,
+        #[arg(
+            short,
+            long,
+            value_parser = config::non_empty_string,
+            help = "Chat query (omit to start an interactive REPL)"
+        )]
+        query: Option<String>,
         #[arg(
             long,
             value_parser = config::non_empty_string,
@@ -612,6 +625,21 @@ pub(crate) enum Command {
     SymbolsStatus {
         #[command(flatten)]
         repo: RepoArgs,
+    },
+    /// List unresolved dynamic import diagnostics from the impact graph.
+    ImpactDiagnostics {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(
+            long,
+            value_parser = config::non_empty_string,
+            help = "Repo-relative file path to filter diagnostics"
+        )]
+        file: Option<String>,
+        #[arg(long, help = "Max diagnostics to return (default 200, max 1000)")]
+        limit: Option<usize>,
+        #[arg(long, help = "Offset into diagnostics list")]
+        offset: Option<usize>,
     },
     /// Manage explicit repo identity mappings for shared state dirs.
     Repo {

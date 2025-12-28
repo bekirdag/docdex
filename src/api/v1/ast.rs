@@ -1,7 +1,7 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Json, Query, State},
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Json, Response},
+    response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -13,16 +13,28 @@ use crate::error::{
     ERR_STALE_INDEX,
 };
 use crate::search::{json_error, resolve_repo_id, AppState};
-use crate::symbols::{AstSearchMode, SchemaCompatibleRange, SchemaInfo};
+use crate::symbols::{AstQuery as StoreAstQuery, AstSearchMode, SchemaCompatibleRange, SchemaInfo};
 
 const DEFAULT_MAX_AST_NODES: usize = 20_000;
 const HARD_MAX_AST_NODES: usize = 100_000;
 const DEFAULT_AST_SEARCH_LIMIT: usize = 50;
 const HARD_MAX_AST_SEARCH_LIMIT: usize = 500;
+const DEFAULT_AST_QUERY_LIMIT: usize = 50;
+const HARD_MAX_AST_QUERY_LIMIT: usize = 500;
+const DEFAULT_AST_QUERY_SAMPLE_LIMIT: usize = 25;
+const HARD_MAX_AST_QUERY_SAMPLE_LIMIT: usize = 500;
 
 fn default_ast_search_schema() -> SchemaInfo {
     SchemaInfo {
         name: "docdex.ast_search".to_string(),
+        version: 1,
+        compatible: SchemaCompatibleRange { min: 1, max: 1 },
+    }
+}
+
+fn default_ast_query_schema() -> SchemaInfo {
+    SchemaInfo {
+        name: "docdex.ast_query".to_string(),
         version: 1,
         compatible: SchemaCompatibleRange { min: 1, max: 1 },
     }
@@ -50,6 +62,27 @@ pub struct AstSearchQuery {
     pub repo_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AstQueryRequest {
+    #[serde(default, alias = "kind")]
+    pub kinds: Vec<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub field: Option<String>,
+    #[serde(default, alias = "path_prefix")]
+    pub path_prefix: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default, alias = "sample_limit")]
+    pub sample_limit: Option<usize>,
+    #[serde(default, alias = "repo_id")]
+    pub repo_id: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AstSearchMatchItem {
@@ -68,6 +101,34 @@ struct AstSearchResponseV1 {
     limit: usize,
     truncated: bool,
     matches: Vec<AstSearchMatchItem>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AstQueryMatchItem {
+    file: String,
+    match_count: usize,
+    samples: Vec<crate::symbols::AstNode>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AstQueryResponseV1 {
+    #[serde(default = "default_ast_query_schema")]
+    schema: SchemaInfo,
+    repo_id: String,
+    kinds: Vec<String>,
+    mode: String,
+    limit: usize,
+    sample_limit: usize,
+    truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    field: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path_prefix: Option<String>,
+    matches: Vec<AstQueryMatchItem>,
 }
 
 pub async fn ast_handler(
@@ -269,6 +330,166 @@ pub async fn ast_search_handler(
     Json(payload).into_response()
 }
 
+pub async fn ast_query_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(params): Json<AstQueryRequest>,
+) -> Response {
+    if let Err(err) = resolve_repo_id(
+        &headers,
+        params.repo_id.as_deref(),
+        None,
+        state.indexer.as_ref(),
+        false,
+    ) {
+        return json_error(err.status, err.code, err.message);
+    }
+
+    if !state.indexer.config().symbols_enabled() {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MISSING_DEPENDENCY,
+            "ast extraction is unavailable",
+        );
+    }
+    if let Ok(true) = state.indexer.symbols_reindex_required() {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_STALE_INDEX,
+            "ast data require reindex after parser version change; run `docdexd index --repo <path>`",
+        );
+    }
+
+    let kinds = normalize_kinds(params.kinds);
+    if kinds.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "kinds is required",
+        );
+    }
+
+    let mode = match params.mode.as_deref().map(str::trim) {
+        None | Some("") | Some("any") => AstSearchMode::Any,
+        Some("all") => AstSearchMode::All,
+        Some(other) => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                format!("unsupported match mode: {other}"),
+            )
+        }
+    };
+
+    let name = params
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    let field = params
+        .field
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+
+    let path_prefix = match params.path_prefix.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(value) => match normalize_path_prefix(value) {
+            Some(path) => Some(path),
+            None => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    ERR_INVALID_ARGUMENT,
+                    "path_prefix must be repo-relative",
+                )
+            }
+        },
+    };
+
+    let limit = params
+        .limit
+        .unwrap_or(DEFAULT_AST_QUERY_LIMIT)
+        .clamp(1, HARD_MAX_AST_QUERY_LIMIT);
+    let sample_limit = params
+        .sample_limit
+        .unwrap_or(DEFAULT_AST_QUERY_SAMPLE_LIMIT)
+        .clamp(1, HARD_MAX_AST_QUERY_SAMPLE_LIMIT);
+    let search_limit = limit.saturating_add(1);
+
+    let query = StoreAstQuery {
+        kinds: kinds.clone(),
+        name: name.clone(),
+        field: field.clone(),
+        path_prefix: path_prefix.clone(),
+        mode,
+        limit: search_limit,
+        sample_limit,
+    };
+
+    let mut matches = match state.indexer.query_ast(&query) {
+        Ok(matches) => matches,
+        Err(err) => {
+            state.metrics.inc_error();
+            warn!(target: "docdexd", error = ?err, "ast query failed");
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "ast query failed",
+            );
+        }
+    };
+
+    let truncated = matches.len() > limit;
+    if truncated {
+        matches.truncate(limit);
+    }
+
+    let repo_id = match crate::symbols::repo_id_for_root(state.indexer.repo_root()) {
+        Ok(repo_id) => repo_id,
+        Err(err) => {
+            warn!(
+                target: "docdexd",
+                error = ?err,
+                "ast query repo id lookup failed"
+            );
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "ast query failed",
+            );
+        }
+    };
+    let mode_label = match mode {
+        AstSearchMode::Any => "any",
+        AstSearchMode::All => "all",
+    };
+    let matches = matches
+        .into_iter()
+        .map(|entry| AstQueryMatchItem {
+            file: entry.file,
+            match_count: entry.match_count,
+            samples: entry.samples,
+        })
+        .collect();
+    let payload = AstQueryResponseV1 {
+        schema: default_ast_query_schema(),
+        repo_id,
+        kinds,
+        mode: mode_label.to_string(),
+        limit,
+        sample_limit,
+        truncated,
+        name,
+        field,
+        path_prefix,
+        matches,
+    };
+
+    Json(payload).into_response()
+}
+
 fn normalize_rel_path(input: &str) -> Option<String> {
     let path = Path::new(input);
     if path.is_absolute() {
@@ -288,6 +509,14 @@ fn normalize_rel_path(input: &str) -> Option<String> {
     } else {
         Some(clean_str)
     }
+}
+
+fn normalize_path_prefix(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    normalize_rel_path(trimmed)
 }
 
 fn normalize_kinds(raw: Vec<String>) -> Vec<String> {

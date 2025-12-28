@@ -149,6 +149,7 @@ pub async fn run_eval(options: EvalOptions) -> Result<()> {
                 plan,
                 tier2_limiter: None,
                 memory: None,
+                ranking_surface: crate::search::RankingSurface::Chat,
             };
             let mut run = EvalRunResult {
                 query_id: query.id.to_string(),

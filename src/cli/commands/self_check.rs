@@ -57,7 +57,9 @@ pub async fn run(
     }
     for term in all_terms {
         let search_limit = limit.saturating_add(1);
-        let hits = search::run_query(&indexer, None, &term, search_limit).await?;
+        let hits =
+            search::run_query(&indexer, None, &term, search_limit, search::RankingSurface::Search)
+                .await?;
         if !hits.hits.is_empty() {
             let more = hits.hits.len() > limit;
             let sample: Vec<String> = hits

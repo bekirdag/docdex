@@ -104,6 +104,12 @@ export const foo = 1;
 "#,
     )?;
     fs::write(
+        repo_root.join("web").join("override.js"),
+        r#"
+export const foo = 2;
+"#,
+    )?;
+    fs::write(
         repo_root.join("web").join("req.js"),
         r#"
 module.exports = {};
@@ -215,7 +221,8 @@ const X = 1
     { "source": "web/app.js", "target": "web/hints.js", "kind": "import" }
   ],
   "mappings": [
-    { "source": "web/app.js", "spec": "./opts/*.js", "target": "./opts/alpha.js", "kind": "require" }
+    { "source": "web/app.js", "spec": "./opts/*.js", "targets": ["./opts/*.js"], "expand": true, "kind": "require" },
+    { "source": "web/app.js", "spec": "./util", "target": "./override.js", "kind": "import", "override": true }
   ]
 }
 "#,
@@ -464,7 +471,7 @@ fn impact_graph_from_indexing_contains_import_edges() -> Result<(), Box<dyn Erro
         ("pkg/main.py", "pkg/dynamic.py"),
         ("pkg/main.py", "pkg/extra.py"),
         ("pkg/main.py", "pkg/spec.py"),
-        ("web/app.js", "web/util.js"),
+        ("web/app.js", "web/override.js"),
         ("web/app.js", "web/req.js"),
         ("web/app.js", "web/concat.js"),
         ("web/app.js", "web/var/extra.js"),
@@ -472,6 +479,7 @@ fn impact_graph_from_indexing_contains_import_edges() -> Result<(), Box<dyn Erro
         ("web/app.js", "web/dirfile.js"),
         ("web/app.js", "web/tpl/only.js"),
         ("web/app.js", "web/opts/alpha.js"),
+        ("web/app.js", "web/opts/beta.js"),
         ("web/app.js", "web/hints.js"),
         ("web/app.js", "web/trace.js"),
         ("web/app.js", "web/dyn.js"),
@@ -483,6 +491,9 @@ fn impact_graph_from_indexing_contains_import_edges() -> Result<(), Box<dyn Erro
         if !set.contains(&key) {
             return Err(format!("missing impact edge {source} -> {target}").into());
         }
+    }
+    if set.contains(&("web/app.js".to_string(), "web/util.js".to_string())) {
+        return Err("expected import map override to suppress web/app.js -> web/util.js".into());
     }
 
     assert_normalized_edge_kinds(&repo_state_root.join("impact_graph.json"))?;

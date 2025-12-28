@@ -613,6 +613,52 @@ paths:
           content:
             application/json:
               schema: *a3
+  /v1/ast/query:
+    post:
+      tags:
+        - Symbols
+      summary: Query AST nodes
+      description: |-
+        Query the repo-scoped AST store for files and matching nodes that satisfy kind/name/field filters.
+
+        Repo context may be provided via `x-docdex-repo-id` header or `repo_id` field in the request body.
+      operationId: queryAst
+      parameters:
+        - *a4
+        - *a5
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AstQueryRequest"
+      responses:
+        "200":
+          description: AST query response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AstQueryResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema: *a3
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: *a3
+        "409":
+          description: AST extraction disabled or stale after parser drift
+          content:
+            application/json:
+              schema: *a3
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: *a3
   /v1/symbols:
     get:
       tags:
@@ -1040,6 +1086,12 @@ components:
           minimum: 0
         kind:
           type: string
+        field:
+          type: string
+          description: Field name on the parent node, when available.
+        name:
+          type: string
+          description: Best-effort identifier name extracted from the node.
         is_named:
           type: boolean
         range:
@@ -1122,6 +1174,103 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AstSearchMatch"
+    AstQueryRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - kinds
+      properties:
+        kinds:
+          type: array
+          items:
+            type: string
+          description: Tree-sitter node kinds to match.
+        name:
+          type: string
+          description: Optional node name filter (exact match).
+        field:
+          type: string
+          description: Optional field-name filter (exact match).
+        pathPrefix:
+          type: string
+          description: Restrict results to files under this repo-relative prefix.
+        mode:
+          type: string
+          enum:
+            - any
+            - all
+          default: any
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 500
+        sampleLimit:
+          type: integer
+          minimum: 1
+          maximum: 500
+          description: Maximum number of sample nodes per file.
+        repoId:
+          $ref: "#/components/schemas/RepoId"
+    AstQueryMatch:
+      type: object
+      additionalProperties: false
+      required:
+        - file
+        - matchCount
+        - samples
+      properties:
+        file:
+          type: string
+          description: Repo-relative file path.
+        matchCount:
+          type: integer
+          minimum: 0
+          description: Number of matching AST nodes found in the file.
+        samples:
+          type: array
+          items:
+            $ref: "#/components/schemas/AstNode"
+    AstQueryResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - schema
+        - repo_id
+        - kinds
+        - mode
+        - limit
+        - sampleLimit
+        - truncated
+        - matches
+      properties:
+        schema:
+          $ref: "#/components/schemas/DocdexSchemaInfo"
+        repoId:
+          $ref: "#/components/schemas/RepoId"
+        kinds:
+          type: array
+          items:
+            type: string
+        mode:
+          type: string
+        limit:
+          type: integer
+          minimum: 1
+        sampleLimit:
+          type: integer
+          minimum: 1
+        truncated:
+          type: boolean
+        name:
+          type: string
+        field:
+          type: string
+        pathPrefix:
+          type: string
+        matches:
+          type: array
+          items:
+            $ref: "#/components/schemas/AstQueryMatch"
     ImpactGraphDiagnostics:
       type: object
       additionalProperties: false

@@ -24,7 +24,7 @@ use crate::orchestrator::web::{
     WebDiscoveryStatus, WebDiscoveryStatusCode, WebGateConfig, WebResearchResponse,
 };
 use crate::metrics;
-use crate::search::{MemoryState, SearchResponse};
+use crate::search::{MemoryState, RankingSurface, SearchResponse};
 use crate::tier2::{self, Tier2Limiter, Tier2Unavailable};
 use crate::dag::logging as dag_logging;
 use crate::diff;
@@ -49,6 +49,7 @@ pub struct WaterfallRequest<'a> {
     pub plan: WaterfallPlan,
     pub tier2_limiter: Option<&'a Tier2Limiter>,
     pub memory: Option<&'a MemoryState>,
+    pub ranking_surface: RankingSurface,
 }
 
 /// Result of running the waterfall through all tiers.
@@ -127,8 +128,14 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
             meta: None,
         }
     } else {
-        crate::search::run_query(request.indexer, request.libs_indexer, request.query, request.limit)
-            .await?
+        crate::search::run_query(
+            request.indexer,
+            request.libs_indexer,
+            request.query,
+            request.limit,
+            request.ranking_surface,
+        )
+        .await?
     };
     let repo_state_root = repo_state_root_from_state_dir(request.indexer.state_dir());
     let impact_context = collect_impact_context(
@@ -151,6 +158,15 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
             request.llm_agent,
         )
         .await;
+        if request.ranking_surface == RankingSurface::Chat {
+            crate::search::apply_ranking_deltas(
+                request.indexer,
+                &mut search_response.hits,
+                request.query,
+                request.limit,
+                request.ranking_surface,
+            )?;
+        }
         let mut top_score = search_response.hits.first().map(|hit| hit.score);
         let mut top_score_normalized = top_score.map(crate::search::normalize_score);
         let mut local_match_ratio = local_match_ratio(request.query, &search_response.hits);

@@ -5,6 +5,8 @@ use clap::{ArgAction, Args};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use crate::impact::{apply_impact_settings, ImpactSettings, DEFAULT_DYNAMIC_IMPORT_SCAN_LIMIT, DEFAULT_IMPORT_TRACES_ENABLED};
+
 const DEFAULT_CONFIG_FILE: &str = "config.toml";
 const DEFAULT_HTTP_BIND_ADDR: &str = "127.0.0.1:3210";
 const DEFAULT_LOG_LEVEL: &str = "info";
@@ -25,6 +27,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub search: SearchConfig,
     #[serde(default)]
+    pub code_intelligence: CodeIntelligenceConfig,
+    #[serde(default)]
     pub web: WebConfigSection,
     #[serde(default)]
     pub memory: MemoryConfig,
@@ -38,6 +42,7 @@ impl Default for AppConfig {
             core: CoreConfig::default(),
             llm: LlmConfig::default(),
             search: SearchConfig::default(),
+            code_intelligence: CodeIntelligenceConfig::default(),
             web: WebConfigSection::default(),
             memory: MemoryConfig::default(),
             server: ServerConfig::default(),
@@ -88,6 +93,13 @@ impl AppConfig {
                 "unknown memory backend; falling back to sqlite"
             );
             self.memory.backend = DEFAULT_MEMORY_BACKEND.to_string();
+        }
+        if self.code_intelligence.dynamic_import_scan_limit == 0 {
+            warn!(
+                target: "docdexd",
+                "dynamic_import_scan_limit must be > 0; using default"
+            );
+            self.code_intelligence.dynamic_import_scan_limit = default_dynamic_import_scan_limit();
         }
         if self.server.http_bind_addr.trim().is_empty() {
             self.server.http_bind_addr = DEFAULT_HTTP_BIND_ADDR.to_string();
@@ -154,6 +166,14 @@ pub struct SearchConfig {
     pub max_repo_hits: usize,
     #[serde(default = "default_max_web_hits")]
     pub max_web_hits: usize,
+    #[serde(default = "default_symbol_ranking_enabled")]
+    pub symbol_ranking_enabled: bool,
+    #[serde(default = "default_ast_ranking_enabled")]
+    pub ast_ranking_enabled: bool,
+    #[serde(default = "default_chat_symbol_ranking_enabled")]
+    pub chat_symbol_ranking_enabled: bool,
+    #[serde(default = "default_chat_ast_ranking_enabled")]
+    pub chat_ast_ranking_enabled: bool,
 }
 
 impl Default for SearchConfig {
@@ -164,6 +184,27 @@ impl Default for SearchConfig {
             local_relevance_threshold: default_local_relevance_threshold(),
             max_repo_hits: default_max_repo_hits(),
             max_web_hits: default_max_web_hits(),
+            symbol_ranking_enabled: default_symbol_ranking_enabled(),
+            ast_ranking_enabled: default_ast_ranking_enabled(),
+            chat_symbol_ranking_enabled: default_chat_symbol_ranking_enabled(),
+            chat_ast_ranking_enabled: default_chat_ast_ranking_enabled(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeIntelligenceConfig {
+    #[serde(default = "default_dynamic_import_scan_limit")]
+    pub dynamic_import_scan_limit: usize,
+    #[serde(default = "default_import_traces_enabled")]
+    pub import_traces_enabled: bool,
+}
+
+impl Default for CodeIntelligenceConfig {
+    fn default() -> Self {
+        Self {
+            dynamic_import_scan_limit: default_dynamic_import_scan_limit(),
+            import_traces_enabled: default_import_traces_enabled(),
         }
     }
 }
@@ -267,6 +308,10 @@ pub fn load_config_from_path(path: &Path) -> Result<AppConfig> {
     if !path.exists() {
         let config = default_config_with_paths()?;
         write_config(path, &config)?;
+        apply_impact_settings(ImpactSettings {
+            dynamic_import_scan_limit: config.code_intelligence.dynamic_import_scan_limit,
+            import_traces_enabled: config.code_intelligence.import_traces_enabled,
+        });
         return Ok(config);
     }
     let text = std::fs::read_to_string(path)
@@ -274,6 +319,10 @@ pub fn load_config_from_path(path: &Path) -> Result<AppConfig> {
     if text.trim().is_empty() {
         let config = default_config_with_paths()?;
         write_config(path, &config)?;
+        apply_impact_settings(ImpactSettings {
+            dynamic_import_scan_limit: config.code_intelligence.dynamic_import_scan_limit,
+            import_traces_enabled: config.code_intelligence.import_traces_enabled,
+        });
         return Ok(config);
     }
     let mut config: AppConfig =
@@ -286,6 +335,10 @@ pub fn load_config_from_path(path: &Path) -> Result<AppConfig> {
     if updated {
         write_config(path, &config)?;
     }
+    apply_impact_settings(ImpactSettings {
+        dynamic_import_scan_limit: config.code_intelligence.dynamic_import_scan_limit,
+        import_traces_enabled: config.code_intelligence.import_traces_enabled,
+    });
     Ok(config)
 }
 
@@ -357,6 +410,30 @@ fn default_max_repo_hits() -> usize {
 
 fn default_max_web_hits() -> usize {
     8
+}
+
+fn default_symbol_ranking_enabled() -> bool {
+    true
+}
+
+fn default_ast_ranking_enabled() -> bool {
+    true
+}
+
+fn default_chat_symbol_ranking_enabled() -> bool {
+    true
+}
+
+fn default_chat_ast_ranking_enabled() -> bool {
+    true
+}
+
+fn default_dynamic_import_scan_limit() -> usize {
+    DEFAULT_DYNAMIC_IMPORT_SCAN_LIMIT
+}
+
+fn default_import_traces_enabled() -> bool {
+    DEFAULT_IMPORT_TRACES_ENABLED
 }
 
 fn default_web_min_match_ratio() -> f32 {

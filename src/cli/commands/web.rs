@@ -196,6 +196,7 @@ pub async fn run_rag(
         plan,
         tier2_limiter: None,
         memory: memory_state.as_ref(),
+        ranking_surface: crate::search::RankingSurface::Search,
     };
     let waterfall = run_waterfall(request).await?;
     let _ = dag_logging::log_node(

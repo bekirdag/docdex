@@ -82,6 +82,8 @@ AST responses represent Tree-sitter node ranges for a repo file.
 - `id` (integer, required): unique per-file node id.
 - `parent_id` (integer, optional): parent node id.
 - `kind` (string, required): Tree-sitter node kind.
+- `field` (string, optional): field name on the parent node, when available.
+- `name` (string, optional): best-effort identifier name extracted from the node.
 - `is_named` (boolean, required)
 - `range` (object, required): 1-based positions within `file`.
   - `start_line`, `start_col`, `end_line`, `end_col` (integers)
@@ -89,6 +91,37 @@ AST responses represent Tree-sitter node ranges for a repo file.
 Notes:
 
 - `total_nodes` is the total node count for the file; responses may be truncated when a node limit is applied.
+
+## AST query response (`docdex.ast_query`)
+
+AST query responses return matching files with sample nodes that satisfy the query filters.
+
+**Required top-level fields**
+
+```json
+{
+  "schema": { "name": "docdex.ast_query", "version": 1, "compatible": { "min": 1, "max": 1 } },
+  "repoId": "<sha256 fingerprint>",
+  "kinds": ["function_item"],
+  "mode": "any",
+  "limit": 50,
+  "sampleLimit": 25,
+  "truncated": false,
+  "matches": []
+}
+```
+
+**Optional top-level fields**
+
+- `name` (string, optional): exact identifier filter used by the query.
+- `field` (string, optional): exact field-name filter used by the query.
+- `pathPrefix` (string, optional): repo-relative prefix filter used by the query.
+
+**Match item fields**
+
+- `file` (string, required): repo-relative file path.
+- `matchCount` (integer, required): number of matching nodes in the file.
+- `samples` (array, required): AST node samples that match the query.
 
 ## Impact graph response (`docdex.impact_graph`)
 
@@ -153,8 +186,8 @@ Impact edges are derived from static/heuristic import resolution. Supported patt
 - Literal import strings (`import "./foo"`, `require("./bar")`, `from pkg import x`)
 - String concatenation with literals and constant identifiers (`"./foo" + "/bar"`)
 - Static path joins (`path.join("./dir", "file")`, `path.resolve("./dir", "file")`, `os.path.join("pkg", "mod")`)
-- Template literals or f-strings when all substitutions resolve to static values; if the resulting pattern matches a unique repo file, emit an edge (`./dir/${name}.js`)
-- Python `importlib.import_module(...)` and `importlib.util.spec_from_file_location(..., path)`
+- Template literals or f-strings when all substitutions resolve to static values; if the resulting pattern matches repo files, emit an edge. When multiple candidates match, Docdex chooses a deterministic tie-break (lexicographically smallest path) and logs the ambiguity (`./dir/${name}.js`, `f"pkg/{name}.py"`).
+- Python `importlib.import_module(...)`, `importlib.util.spec_from_file_location(..., path)`, and `importlib.machinery.SourceFileLoader(..., path)` (including sourceless/extension loader variants).
 - Rust `mod`/`use` and `include!`/`include_str!`/`include_bytes!`
 
 Unresolved dynamic imports are **skipped** (no "unknown" edges are emitted). Counts/samples are surfaced in `diagnostics` and logs.
@@ -163,6 +196,29 @@ Optional import hints:
 
 - `docdex.import_map.json` at the repo root can provide explicit mappings or edges for dynamic imports.
 - `docdex.import_traces.jsonl` can supply resolved runtime traces (one JSON object per line).
+
+`docdex.import_map.json` fields (v1, backwards compatible):
+
+```json
+{
+  "edges": [
+    { "source": "web/app.js", "target": "web/hints.js", "kind": "import" },
+    { "source": "web/app.js", "target": "web/override.js", "kind": "import", "override": true }
+  ],
+  "mappings": [
+    { "source": "web/app.js", "spec": "./opts/*.js", "targets": ["./opts/*.js"], "expand": true, "kind": "require" },
+    { "source": "web/app.js", "spec": "./util", "target": "./override.js", "kind": "import", "override": true }
+  ]
+}
+```
+
+- `target` (string) or `targets` (string array) provide resolved paths or patterns to map.
+- `expand` (bool): when `true`, treat `target(s)` as glob-like patterns and emit edges for every repo file match.
+- `override` (bool):
+  - For `mappings`, prefer the mapping over auto-resolution when the spec matches.
+  - For `edges`, suppress auto-resolved edges with the same source/target.
+
+Runtime trace ingestion can be toggled via `[code_intelligence].import_traces_enabled` or `DOCDEX_ENABLE_IMPORT_TRACES`.
 
 ## Impact diagnostics response (`docdex.impact_diagnostics`)
 

@@ -408,7 +408,7 @@ mod tests {
         let repo = temp.path().join("repo_sqlite");
         fs::create_dir_all(&repo)?;
         let state_root = temp.path().join("state");
-        let repo_fp = fingerprint_repo(&repo)?;
+        let repo_fp = crate::repo_manager::repo_fingerprint_sha256(&repo)?;
         let repo_state = state_root.join("repos").join(repo_fp);
         fs::create_dir_all(&repo_state)?;
 

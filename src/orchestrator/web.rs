@@ -284,7 +284,7 @@ pub(crate) fn build_gate_meta(
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WebDiscoveryStatusCode {
     Skipped,
@@ -1155,7 +1155,9 @@ pub async fn run_web_research(
     let (hits, top_score, top_score_normalized, local_match_ratio) = if skip_local_search {
         (Vec::new(), None, None, None)
     } else {
-        let search_response = search::run_query(indexer, libs_indexer, query, limit).await?;
+        let search_response =
+            search::run_query(indexer, libs_indexer, query, limit, search::RankingSurface::Search)
+                .await?;
         let original_top_score_normalized = search_response.top_score_normalized;
         let mut hits = filter_local_hits_with_llm(
             query,

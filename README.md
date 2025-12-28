@@ -159,11 +159,23 @@ Docdex stores Tree-sitter parser versions in `symbols.db`. If the stored parser 
 - Skipped relative prefixes: `logs/`, `.docdex/`, `.docdex/logs/`, `.docdex/tmp/`, `.gpt-creator/logs/`, `.gpt-creator/tmp/`, `.mastercoda/logs/`, `.mastercoda/tmp/`, `docker/.data/`, `docker-data/`, `.docker/`.
 - Snippet sizing: summaries ~360 chars (up to 4 segments); snippets ~420 chars.
 
+## Ranking toggles
+
+AST/symbol ranking boosts are enabled by default for search and chat, and can be toggled via config or env:
+
+- Config (`~/.docdex/config.toml`): `[search].symbol_ranking_enabled`, `[search].ast_ranking_enabled`, `[search].chat_symbol_ranking_enabled`, `[search].chat_ast_ranking_enabled`.
+- Env overrides: `DOCDEX_ENABLE_SYMBOL_RANKING`, `DOCDEX_ENABLE_AST_RANKING`, `DOCDEX_ENABLE_CHAT_SYMBOL_RANKING`, `DOCDEX_ENABLE_CHAT_AST_RANKING` (truthy/falsey values).
+
 ## HTTP API
 - `GET /healthz` — returns `ok`; this endpoint is unauthenticated and not rate-limited (IP allowlist still applies).
 - `GET /search?q=<text>&limit=<n>&snippets=<bool>&max_tokens=<u64>&include_libs=<bool>` — returns `{ hits: [...] }` with doc id, rel path, summary, snippet, score, token estimate. Set `snippets=false` for summary-only responses; set `max_tokens` to drop hits above your budget. `include_libs` defaults to `true` when a libs index exists; set `include_libs=false` to search repo-only.
 - `GET /snippet/:doc_id?window=<lines>&q=<query>&text_only=<bool>&max_tokens=<u64>` — returns `{ doc, snippet }` with optional highlighted snippet; falls back to preview when query highlighting is empty (default window: 40 lines). Set `text_only=true` to drop HTML and shrink payloads; set `max_tokens` to omit the snippet if the doc exceeds your budget.
 - `GET /v1/graph/impact?file=<path>&repo_id=<id>` — returns inbound/outbound dependency edges; `file` is required, `repo_id` is optional (must match the daemon repo if provided). Optional controls: `maxEdges=<int>`, `maxDepth=<int>`, `edgeTypes=<comma-separated>`. Implemented in `src/api/v1/graph.rs` and routed from `src/search/mod.rs`.
+- `GET /v1/graph/impact/diagnostics` — returns unresolved import diagnostics; optional `file`, `limit`, `offset`.
+- `GET /v1/symbols?path=<repo-relative>` — returns symbols for a file (`docdex.symbols`).
+- `GET /v1/ast?path=<repo-relative>&maxNodes=<n>` — returns AST nodes for a file (`docdex.ast`).
+- `GET /v1/ast/search?kinds=<csv>&mode=<any|all>&limit=<n>` — returns files containing AST kinds.
+- `POST /v1/ast/query` — returns files with matching AST nodes (kinds + optional `name`, `field`, `pathPrefix`, `mode`, `limit`, `sampleLimit`).
 - `GET /ai-help` — returns a JSON quickstart for agents (endpoints, CLI commands, limits, best practices).
 - `GET /metrics` — returns Prometheus-style counters/gauges for rate-limit/auth/error and browser guard metrics (see `docs/ops/browser_guard.md`).
 - If `--auth-token` is set, include `Authorization: Bearer <token>` on HTTP calls (including `/ai-help`).

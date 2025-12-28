@@ -17,12 +17,75 @@ use walkdir::WalkDir;
 
 const HARD_MAX_EDGES: usize = 10_000;
 const HARD_MAX_DEPTH: usize = 100;
-const DYNAMIC_IMPORT_SCAN_LIMIT: usize = 50_000;
+pub const DEFAULT_DYNAMIC_IMPORT_SCAN_LIMIT: usize = 50_000;
+pub const DEFAULT_IMPORT_TRACES_ENABLED: bool = true;
 const IMPORT_MAP_FILE: &str = "docdex.import_map.json";
 const IMPORT_TRACES_FILE: &str = "docdex.import_traces.jsonl";
 const UNRESOLVED_IMPORT_SAMPLE_LIMIT: usize = 5;
 const IMPACT_GRAPH_SCHEMA_NAME: &str = "docdex.impact_graph";
 const IMPACT_GRAPH_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy)]
+pub struct ImpactSettings {
+    pub dynamic_import_scan_limit: usize,
+    pub import_traces_enabled: bool,
+}
+
+impl Default for ImpactSettings {
+    fn default() -> Self {
+        Self {
+            dynamic_import_scan_limit: DEFAULT_DYNAMIC_IMPORT_SCAN_LIMIT,
+            import_traces_enabled: DEFAULT_IMPORT_TRACES_ENABLED,
+        }
+    }
+}
+
+impl ImpactSettings {
+    fn with_env_overrides(mut self) -> Self {
+        if let Some(limit) = env_usize("DOCDEX_DYNAMIC_IMPORT_SCAN_LIMIT") {
+            if limit == 0 {
+                warn!(
+                    target: "docdexd",
+                    value = limit,
+                    "DOCDEX_DYNAMIC_IMPORT_SCAN_LIMIT must be > 0; using default"
+                );
+            } else {
+                self.dynamic_import_scan_limit = limit;
+            }
+        }
+        if let Some(enabled) = env_boolish("DOCDEX_ENABLE_IMPORT_TRACES") {
+            self.import_traces_enabled = enabled;
+        }
+        self
+    }
+}
+
+static IMPACT_SETTINGS: Lazy<Mutex<ImpactSettings>> = Lazy::new(|| {
+    Mutex::new(ImpactSettings::default().with_env_overrides())
+});
+
+pub fn apply_impact_settings(settings: ImpactSettings) {
+    let settings = settings.with_env_overrides();
+    let mut guard = IMPACT_SETTINGS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = settings;
+}
+
+fn impact_settings() -> ImpactSettings {
+    IMPACT_SETTINGS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+fn dynamic_import_scan_limit() -> usize {
+    impact_settings().dynamic_import_scan_limit.max(1)
+}
+
+fn import_traces_enabled() -> bool {
+    impact_settings().import_traces_enabled
+}
 
 fn default_impact_schema() -> SchemaInfo {
     SchemaInfo {
@@ -1236,6 +1299,12 @@ struct ImportRef {
 }
 
 #[derive(Debug, Clone)]
+struct ResolvedImportTarget {
+    target: String,
+    kind: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct ImpactEdgeBuildResult {
     pub(crate) edges: Vec<ImpactGraphEdge>,
     pub(crate) diagnostics: Option<ImpactDiagnostics>,
@@ -1271,6 +1340,11 @@ struct ImportHints {
     traces: Vec<ImportTraceEntry>,
 }
 
+struct HintEdgeSet {
+    edges: Vec<ImpactGraphEdge>,
+    override_targets: HashSet<String>,
+}
+
 #[derive(Debug, Default, Clone)]
 struct ImportMapFile {
     edges: Vec<ImportMapEdge>,
@@ -1291,6 +1365,7 @@ struct ImportMapEdge {
     source: String,
     target: String,
     kind: Option<String>,
+    override_edge: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1300,14 +1375,18 @@ struct ImportMapEdgeRaw {
     target: String,
     #[serde(default)]
     kind: Option<String>,
+    #[serde(default, rename = "override")]
+    override_edge: bool,
 }
 
 #[derive(Debug, Clone)]
 struct ImportMapMapping {
     source: Option<String>,
     spec: String,
-    target: String,
+    targets: Vec<String>,
     kind: Option<String>,
+    expand: bool,
+    override_edge: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1316,9 +1395,16 @@ struct ImportMapMappingRaw {
     #[serde(default)]
     source: Option<String>,
     spec: String,
-    target: String,
+    #[serde(default)]
+    target: Option<String>,
+    #[serde(default)]
+    targets: Vec<String>,
+    #[serde(default)]
+    expand: bool,
     #[serde(default)]
     kind: Option<String>,
+    #[serde(default, rename = "override")]
+    override_edge: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1330,16 +1416,36 @@ struct ImportTraceEntry {
     kind: Option<String>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 struct RepoFileIndex {
     js_ts: Vec<String>,
     python: Vec<String>,
+    all: Vec<String>,
+    js_ts_count: usize,
+    python_count: usize,
+    all_count: usize,
+    limit: usize,
+}
+
+impl RepoFileIndex {
+    fn js_ts_over_limit(&self) -> bool {
+        self.js_ts_count > self.limit
+    }
+
+    fn python_over_limit(&self) -> bool {
+        self.python_count > self.limit
+    }
+
+    fn all_over_limit(&self) -> bool {
+        self.all_count > self.limit
+    }
 }
 
 #[derive(Debug, Default, Clone)]
 struct ImportHintCacheEntry {
     map_mtime: Option<SystemTime>,
     trace_mtime: Option<SystemTime>,
+    traces_enabled: bool,
     hints: ImportHints,
 }
 
@@ -1743,19 +1849,31 @@ where
 {
     let mut edges: BTreeSet<ImpactGraphEdge> = BTreeSet::new();
     let hints = import_hints_for_repo(repo_root);
-    for edge in hint_edges_for_source(repo_root, rel_path, &hints, &resolver) {
+    let hint_edges = hint_edges_for_source(repo_root, rel_path, &hints, &resolver);
+    for edge in hint_edges.edges {
         edges.insert(edge);
     }
+    let override_targets = hint_edges.override_targets;
     let mut unresolved = Vec::new();
     for import_ref in imports {
-        if let Some(target) =
+        if let Some(targets) =
             resolve_import_ref(repo_root, rel_path, &import_ref, &hints, &resolver)
         {
-            if target != rel_path {
+            for resolved in targets {
+                if resolved.target == rel_path {
+                    continue;
+                }
+                if override_targets.contains(&resolved.target) {
+                    continue;
+                }
+                let kind = resolved
+                    .kind
+                    .clone()
+                    .or_else(|| Some(normalize_edge_kind(import_ref.kind).to_string()));
                 edges.insert(ImpactGraphEdge {
                     source: rel_path.to_string(),
-                    target,
-                    kind: Some(normalize_edge_kind(import_ref.kind).to_string()),
+                    target: resolved.target,
+                    kind,
                 });
             }
         } else if should_report_unresolved(&import_ref) {
@@ -1801,24 +1919,33 @@ fn resolve_import_ref<F>(
     import_ref: &ImportRef,
     hints: &ImportHints,
     resolver: &F,
-) -> Option<String>
+) -> Option<Vec<ResolvedImportTarget>>
 where
     F: Fn(&Path, &str, &str) -> Option<String>,
 {
+    let (overrides, fallbacks) = resolve_import_map_matches(repo_root, rel_path, import_ref, hints, resolver);
+    if !overrides.is_empty() {
+        return Some(overrides);
+    }
     match &import_ref.path {
         ImportPath::Exact(path) => {
             if let Some(target) = resolver(repo_root, rel_path, path) {
-                return Some(target);
+                return Some(vec![ResolvedImportTarget { target, kind: None }]);
             }
-            resolve_import_map_target(repo_root, rel_path, import_ref, hints, resolver)
+            if !fallbacks.is_empty() {
+                return Some(fallbacks);
+            }
         }
         ImportPath::Pattern(pattern) => {
-            if let Some(target) = resolve_import_map_target(repo_root, rel_path, import_ref, hints, resolver) {
-                return Some(target);
+            if !fallbacks.is_empty() {
+                return Some(fallbacks);
             }
-            resolve_unique_match(repo_root, rel_path, import_ref, pattern)
+            if let Some(target) = resolve_unique_match(repo_root, rel_path, import_ref, pattern) {
+                return Some(vec![ResolvedImportTarget { target, kind: None }]);
+            }
         }
     }
+    None
 }
 
 fn should_report_unresolved(import_ref: &ImportRef) -> bool {
@@ -1844,16 +1971,18 @@ fn hint_edges_for_source<F>(
     rel_path: &str,
     hints: &ImportHints,
     resolver: &F,
-) -> Vec<ImpactGraphEdge>
+) -> HintEdgeSet
 where
     F: Fn(&Path, &str, &str) -> Option<String>,
 {
     let mut edges = Vec::new();
+    let mut override_targets = HashSet::new();
     for edge in &hints.edges {
         if edge.source != rel_path {
             continue;
         }
         if let Some(target) = resolve_hint_target(repo_root, rel_path, &edge.target, resolver) {
+            let resolved_target = target.clone();
             edges.push(ImpactGraphEdge {
                 source: rel_path.to_string(),
                 target,
@@ -1863,6 +1992,9 @@ where
                     .map(normalize_edge_kind)
                     .map(|kind| kind.to_string()),
             });
+            if edge.override_edge {
+                override_targets.insert(resolved_target);
+            }
         }
     }
     for trace in &hints.traces {
@@ -1881,7 +2013,10 @@ where
             });
         }
     }
-    edges
+    HintEdgeSet {
+        edges,
+        override_targets,
+    }
 }
 
 fn import_hints_for_repo(repo_root: &Path) -> ImportHints {
@@ -1890,6 +2025,7 @@ fn import_hints_for_repo(repo_root: &Path) -> ImportHints {
     let trace_path = key.join(IMPORT_TRACES_FILE);
     let map_mtime = file_mtime(&map_path);
     let trace_mtime = file_mtime(&trace_path);
+    let traces_enabled = import_traces_enabled();
     let mut cache = IMPORT_HINT_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1900,7 +2036,12 @@ fn import_hints_for_repo(repo_root: &Path) -> ImportHints {
         entry.hints.mappings = map.mappings;
         entry.map_mtime = map_mtime;
     }
-    if entry.trace_mtime != trace_mtime {
+    if entry.traces_enabled != traces_enabled {
+        entry.hints.traces.clear();
+        entry.trace_mtime = None;
+        entry.traces_enabled = traces_enabled;
+    }
+    if traces_enabled && entry.trace_mtime != trace_mtime {
         entry.hints.traces = load_import_traces(&key, &trace_path);
         entry.trace_mtime = trace_mtime;
     }
@@ -1963,13 +2104,22 @@ fn normalize_import_map(repo_root: &Path, raw: ImportMapFileRaw) -> ImportMapFil
             source,
             target,
             kind: entry.kind,
+            override_edge: entry.override_edge,
         });
     }
     let mut mappings = Vec::new();
     for entry in raw.mappings {
         let spec = entry.spec.trim().to_string();
-        let target = entry.target.trim().to_string();
-        if spec.is_empty() || target.is_empty() {
+        let mut targets = entry.targets;
+        if let Some(target) = entry.target {
+            targets.push(target);
+        }
+        let targets: Vec<String> = targets
+            .into_iter()
+            .map(|target| target.trim().to_string())
+            .filter(|target| !target.is_empty())
+            .collect();
+        if spec.is_empty() || targets.is_empty() {
             continue;
         }
         let source = match entry.source.as_ref() {
@@ -1982,8 +2132,10 @@ fn normalize_import_map(repo_root: &Path, raw: ImportMapFileRaw) -> ImportMapFil
         mappings.push(ImportMapMapping {
             source,
             spec,
-            target,
             kind: entry.kind,
+            targets,
+            expand: entry.expand,
+            override_edge: entry.override_edge,
         });
     }
     ImportMapFile { edges, mappings }
@@ -2088,17 +2240,38 @@ where
     normalize_hint_path(repo_root, target)
 }
 
-fn resolve_import_map_target<F>(
+fn resolve_hint_pattern(repo_root: &Path, rel_path: &str, pattern: &str) -> Option<String> {
+    let trimmed = pattern.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = Path::new(trimmed);
+    if path.is_absolute() {
+        return normalize_hint_path(repo_root, trimmed);
+    }
+    if trimmed.starts_with("./") || trimmed.starts_with("../") {
+        let base_dir = Path::new(rel_path).parent().unwrap_or(Path::new(""));
+        let joined = base_dir.join(trimmed);
+        return normalize_hint_rel_path(&joined);
+    }
+    normalize_hint_rel_path(path)
+}
+
+fn resolve_import_map_matches<F>(
     repo_root: &Path,
     rel_path: &str,
     import_ref: &ImportRef,
     hints: &ImportHints,
     resolver: &F,
-) -> Option<String>
+) -> (Vec<ResolvedImportTarget>, Vec<ResolvedImportTarget>)
 where
     F: Fn(&Path, &str, &str) -> Option<String>,
 {
-    let spec = import_path_glob(&import_ref.path)?;
+    let mut overrides = Vec::new();
+    let mut fallbacks = Vec::new();
+    let Some(spec) = import_path_glob(&import_ref.path) else {
+        return (overrides, fallbacks);
+    };
     for mapping in &hints.mappings {
         if let Some(source) = &mapping.source {
             if source != rel_path {
@@ -2108,11 +2281,102 @@ where
         if !glob_matches(&mapping.spec, &spec) {
             continue;
         }
-        if let Some(target) = resolve_hint_target(repo_root, rel_path, &mapping.target, resolver) {
-            return Some(target);
+        let targets = resolve_mapping_targets(repo_root, rel_path, mapping, resolver);
+        if targets.is_empty() {
+            continue;
+        }
+        if mapping.override_edge {
+            overrides.extend(targets);
+        } else {
+            fallbacks.extend(targets);
         }
     }
-    None
+    (dedupe_resolved_targets(overrides), dedupe_resolved_targets(fallbacks))
+}
+
+fn resolve_mapping_targets<F>(
+    repo_root: &Path,
+    rel_path: &str,
+    mapping: &ImportMapMapping,
+    resolver: &F,
+) -> Vec<ResolvedImportTarget>
+where
+    F: Fn(&Path, &str, &str) -> Option<String>,
+{
+    let kind = mapping
+        .kind
+        .as_deref()
+        .map(normalize_edge_kind)
+        .map(|value| value.to_string());
+    let mut resolved = Vec::new();
+    for target in &mapping.targets {
+        if mapping.expand {
+            let matches = expand_import_map_target(repo_root, rel_path, target);
+            if matches.is_empty() {
+                warn!(
+                    target: "docdexd",
+                    file = %rel_path,
+                    spec = %mapping.spec,
+                    target = %target,
+                    "import map expansion produced no matches"
+                );
+            }
+            for entry in matches {
+                resolved.push(ResolvedImportTarget {
+                    target: entry,
+                    kind: kind.clone(),
+                });
+            }
+        } else if let Some(target) = resolve_hint_target(repo_root, rel_path, target, resolver) {
+            resolved.push(ResolvedImportTarget {
+                target,
+                kind: kind.clone(),
+            });
+        } else {
+            warn!(
+                target: "docdexd",
+                file = %rel_path,
+                spec = %mapping.spec,
+                target = %target,
+                "import map target could not be resolved"
+            );
+        }
+    }
+    resolved
+}
+
+fn expand_import_map_target(repo_root: &Path, rel_path: &str, pattern: &str) -> Vec<String> {
+    let Some(pattern) = resolve_hint_pattern(repo_root, rel_path, pattern) else {
+        return Vec::new();
+    };
+    let index = repo_file_index(repo_root);
+    if index.all_over_limit() {
+        warn!(
+            target: "docdexd",
+            repo = %repo_root.display(),
+            limit = index.limit,
+            "import map expansion skipped (repo too large)"
+        );
+        return Vec::new();
+    }
+    index
+        .all
+        .iter()
+        .filter(|candidate| glob_matches(&pattern, candidate.as_str()))
+        .cloned()
+        .collect()
+}
+
+fn dedupe_resolved_targets(targets: Vec<ResolvedImportTarget>) -> Vec<ResolvedImportTarget> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+    for target in targets {
+        let key = (target.target.clone(), target.kind.clone());
+        if seen.insert(key) {
+            deduped.push(target);
+        }
+    }
+    deduped
 }
 
 fn import_path_glob(path: &ImportPath) -> Option<String> {
@@ -2186,26 +2450,20 @@ fn resolve_unique_match_js_ts(
         return None;
     }
     let index = repo_file_index(repo_root);
-    if index.js_ts.len() > DYNAMIC_IMPORT_SCAN_LIMIT {
+    if index.js_ts_over_limit() {
         return None;
     }
-    let mut matched: Option<String> = None;
+    let mut matches = Vec::new();
     for target in &index.js_ts {
         let specs = js_ts_candidate_specs(rel_path, target);
         if specs
             .iter()
             .any(|spec| pattern_matches(pattern, spec.as_str()))
         {
-            if let Some(existing) = &matched {
-                if existing != target {
-                    return None;
-                }
-            } else {
-                matched = Some(target.clone());
-            }
+            matches.push(target.clone());
         }
     }
-    matched
+    pick_unique_match(rel_path, pattern, matches, "js_ts")
 }
 
 fn resolve_unique_match_python(
@@ -2217,26 +2475,48 @@ fn resolve_unique_match_python(
         return None;
     }
     let index = repo_file_index(repo_root);
-    if index.python.len() > DYNAMIC_IMPORT_SCAN_LIMIT {
+    if index.python_over_limit() {
         return None;
     }
-    let mut matched: Option<String> = None;
+    let mut matches = Vec::new();
     for target in &index.python {
         let specs = python_candidate_specs(rel_path, target);
         if specs
             .iter()
             .any(|spec| pattern_matches(pattern, spec.as_str()))
         {
-            if let Some(existing) = &matched {
-                if existing != target {
-                    return None;
-                }
-            } else {
-                matched = Some(target.clone());
-            }
+            matches.push(target.clone());
         }
     }
-    matched
+    pick_unique_match(rel_path, pattern, matches, "python")
+}
+
+fn pick_unique_match(
+    rel_path: &str,
+    pattern: &StringPattern,
+    mut matches: Vec<String>,
+    language: &str,
+) -> Option<String> {
+    if matches.is_empty() {
+        return None;
+    }
+    if matches.len() == 1 {
+        return matches.pop();
+    }
+    matches.sort();
+    let chosen = matches.first().cloned();
+    if let Some(chosen) = &chosen {
+        info!(
+            target: "docdexd",
+            file = %rel_path,
+            language = %language,
+            pattern = %pattern_to_glob(pattern).unwrap_or_else(|| "*".to_string()),
+            count = matches.len(),
+            chosen = %chosen,
+            "dynamic import resolved with deterministic tie-break"
+        );
+    }
+    chosen
 }
 
 fn pattern_matches(pattern: &StringPattern, candidate: &str) -> bool {
@@ -2271,19 +2551,30 @@ fn pattern_matches(pattern: &StringPattern, candidate: &str) -> bool {
 
 fn repo_file_index(repo_root: &Path) -> RepoFileIndex {
     let key = canonical_repo_root(repo_root);
+    let limit = dynamic_import_scan_limit();
     let mut cache = REPO_FILE_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(index) = cache.get(&key) {
-        return index.clone();
+        if index.limit == limit {
+            return index.clone();
+        }
     }
-    let index = collect_repo_file_index(&key);
+    let index = collect_repo_file_index(&key, limit);
     cache.insert(key, index.clone());
     index
 }
 
-fn collect_repo_file_index(repo_root: &Path) -> RepoFileIndex {
-    let mut index = RepoFileIndex::default();
+fn collect_repo_file_index(repo_root: &Path, limit: usize) -> RepoFileIndex {
+    let mut index = RepoFileIndex {
+        js_ts: Vec::new(),
+        python: Vec::new(),
+        all: Vec::new(),
+        js_ts_count: 0,
+        python_count: 0,
+        all_count: 0,
+        limit,
+    };
     let walker = WalkDir::new(repo_root).into_iter().filter_entry(|entry| {
         if entry.file_type().is_dir() {
             return !should_skip_repo_dir(entry);
@@ -2301,10 +2592,20 @@ fn collect_repo_file_index(repo_root: &Path) -> RepoFileIndex {
         };
         let rel_str = normalize_rel_path(rel);
         let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+        index.all_count += 1;
+        if index.all_count <= index.limit {
+            index.all.push(rel_str.clone());
+        }
         if matches!(ext, "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs") {
-            index.js_ts.push(rel_str);
+            index.js_ts_count += 1;
+            if index.js_ts_count <= index.limit {
+                index.js_ts.push(rel_str);
+            }
         } else if ext == "py" {
-            index.python.push(rel_str);
+            index.python_count += 1;
+            if index.python_count <= index.limit {
+                index.python.push(rel_str);
+            }
         }
     }
     index
@@ -2316,6 +2617,25 @@ fn should_skip_repo_dir(entry: &walkdir::DirEntry) -> bool {
         name.as_ref(),
         ".git" | ".docdex" | "node_modules" | "target" | ".idea" | ".vscode"
     )
+}
+
+fn env_boolish(key: &str) -> Option<bool> {
+    let raw = std::env::var(key).ok()?;
+    let trimmed = raw.trim().to_ascii_lowercase();
+    match trimmed.as_str() {
+        "1" | "true" | "t" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "f" | "no" | "n" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn env_usize(key: &str) -> Option<usize> {
+    let raw = std::env::var(key).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<usize>().ok()
 }
 
 fn js_ts_candidate_specs(importer_rel: &str, target_rel: &str) -> Vec<String> {
@@ -2624,6 +2944,9 @@ fn string_literal_eval(content: &str, node: Node) -> Option<StringEval> {
     if raw.is_empty() {
         return None;
     }
+    if is_f_string_literal(raw) && raw.contains('{') {
+        return parse_f_string_pattern(raw).map(StringEval::Pattern);
+    }
     if raw.starts_with('`') && raw.contains("${") {
         let pattern = parse_template_string_pattern(raw)?;
         return Some(StringEval::Pattern(pattern));
@@ -2673,6 +2996,79 @@ fn parse_template_string_pattern(raw: &str) -> Option<StringPattern> {
         return None;
     }
     if !current.is_empty() {
+        parts.push(current);
+    }
+    let anchored_end = !last_was_dynamic;
+    let pattern = StringPattern {
+        parts,
+        anchored_start,
+        anchored_end,
+    };
+    Some(pattern.normalize())
+}
+
+fn parse_f_string_pattern(raw: &str) -> Option<StringPattern> {
+    let raw = strip_string_literal_prefix(raw.trim());
+    let (inner, triple) = if raw.starts_with("\"\"\"") {
+        (raw.strip_prefix("\"\"\"")?.strip_suffix("\"\"\"")?, true)
+    } else if raw.starts_with("'''") {
+        (raw.strip_prefix("'''")?.strip_suffix("'''")?, true)
+    } else if raw.starts_with('"') {
+        (raw.strip_prefix('"')?.strip_suffix('"')?, false)
+    } else if raw.starts_with('\'') {
+        (raw.strip_prefix('\'')?.strip_suffix('\'')?, false)
+    } else {
+        return None;
+    };
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut chars = inner.chars().peekable();
+    let mut saw_dynamic = false;
+    let mut anchored_start = true;
+    let mut last_was_dynamic = false;
+    while let Some(ch) = chars.next() {
+        if ch == '{' {
+            if chars.peek() == Some(&'{') {
+                chars.next();
+                current.push('{');
+                last_was_dynamic = false;
+                continue;
+            }
+            if !saw_dynamic && current.is_empty() {
+                anchored_start = false;
+            }
+            if !current.is_empty() {
+                parts.push(current.clone());
+                current.clear();
+            }
+            saw_dynamic = true;
+            last_was_dynamic = true;
+            let mut depth = 1usize;
+            while let Some(next) = chars.next() {
+                if next == '{' {
+                    depth = depth.saturating_add(1);
+                } else if next == '}' {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if ch == '}' && chars.peek() == Some(&'}') {
+            chars.next();
+            current.push('}');
+            last_was_dynamic = false;
+            continue;
+        }
+        current.push(ch);
+        last_was_dynamic = false;
+    }
+    if !saw_dynamic {
+        return None;
+    }
+    if !current.is_empty() || triple {
         parts.push(current);
     }
     let anchored_end = !last_was_dynamic;
@@ -2756,13 +3152,32 @@ fn parse_rust_raw_string(raw: &str) -> Option<String> {
 }
 
 fn strip_string_literal_prefix(raw: &str) -> &str {
-    let raw = raw.strip_prefix("br").or_else(|| raw.strip_prefix("rb")).unwrap_or(raw);
-    let raw = raw.strip_prefix("Br").or_else(|| raw.strip_prefix("bR")).unwrap_or(raw);
-    let raw = raw.strip_prefix("BR").or_else(|| raw.strip_prefix("Rb")).unwrap_or(raw);
-    let raw = raw.strip_prefix('b').unwrap_or(raw);
-    let raw = raw.strip_prefix('B').unwrap_or(raw);
-    let raw = raw.strip_prefix('r').unwrap_or(raw);
-    raw.strip_prefix('R').unwrap_or(raw)
+    let mut idx = 0usize;
+    for ch in raw.chars() {
+        match ch {
+            'b' | 'B' | 'r' | 'R' | 'f' | 'F' | 'u' | 'U' => idx += ch.len_utf8(),
+            _ => break,
+        }
+    }
+    &raw[idx..]
+}
+
+fn is_f_string_literal(raw: &str) -> bool {
+    let mut saw_prefix = false;
+    for ch in raw.chars() {
+        match ch {
+            'f' | 'F' => return true,
+            'b' | 'B' | 'r' | 'R' | 'u' | 'U' => saw_prefix = true,
+            '"' | '\'' => break,
+            _ => {
+                if saw_prefix {
+                    break;
+                }
+                return false;
+            }
+        }
+    }
+    false
 }
 
 fn normalize_edge_kind(raw: &str) -> &'static str {
@@ -3122,6 +3537,8 @@ fn resolve_path_call_eval(name: &str, args: &[StringEval]) -> StringEval {
             | "os.path.abspath"
             | "pathlib.Path"
             | "Path"
+            | "pathlib.PurePath"
+            | "PurePath"
     );
     if !is_join && !is_resolve {
         return StringEval::Unknown;
@@ -3174,6 +3591,8 @@ fn resolve_path_call(name: &str, args: &[String]) -> Option<String> {
             | "os.path.abspath"
             | "pathlib.Path"
             | "Path"
+            | "pathlib.PurePath"
+            | "PurePath"
     );
     if !is_join && !is_resolve {
         return None;
@@ -3320,6 +3739,17 @@ fn python_dynamic_import_spec(name: &str) -> Option<(&'static str, usize)> {
     if matches!(
         trimmed,
         "importlib.util.spec_from_file_location" | "spec_from_file_location"
+    ) {
+        return Some(("import", 1));
+    }
+    if matches!(
+        trimmed,
+        "importlib.machinery.SourceFileLoader"
+            | "importlib.machinery.SourcelessFileLoader"
+            | "importlib.machinery.ExtensionFileLoader"
+            | "SourceFileLoader"
+            | "SourcelessFileLoader"
+            | "ExtensionFileLoader"
     ) {
         return Some(("import", 1));
     }
@@ -3595,6 +4025,7 @@ pub fn build_impact_diagnostics_response(
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    use std::fs;
     use tempfile::TempDir;
 
     fn fixture_edges() -> Vec<ImpactGraphEdge> {
@@ -3915,6 +4346,14 @@ mod tests {
         std::fs::write(path, content).expect("write fixture");
     }
 
+    fn clear_import_hint_cache(repo_root: &Path) {
+        let key = canonical_repo_root(repo_root);
+        let mut cache = IMPORT_HINT_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cache.remove(&key);
+    }
+
     #[test]
     fn js_template_literal_with_static_bindings_resolves() {
         let dir = TempDir::new().expect("tempdir");
@@ -4029,7 +4468,7 @@ importlib.import_module(BASE + ".extra")
     }
 
     #[test]
-    fn js_template_unique_match_requires_single_candidate() {
+    fn js_template_unique_match_uses_deterministic_tiebreak() {
         let dir = TempDir::new().expect("tempdir");
         let repo_root = dir.path();
         write_fixture(&repo_root.join("src/tpl/alpha.js"), "export const a = 1;");
@@ -4045,11 +4484,83 @@ require(`./tpl/${choice}.js`);
             SourceLanguage::JavaScript,
         );
         assert!(
-            result.edges.is_empty(),
-            "expected unique-match resolver to skip ambiguous template imports"
+            result
+                .edges
+                .iter()
+                .any(|edge| edge.source == "src/main.js" && edge.target == "src/tpl/alpha.js"),
+            "expected deterministic tie-break to choose the lexicographically first match"
         );
-        let diagnostics = result.diagnostics.expect("expected diagnostics");
-        assert_eq!(diagnostics.unresolved_imports_total, 1);
+        assert!(
+            !result
+                .edges
+                .iter()
+                .any(|edge| edge.source == "src/main.js" && edge.target == "src/tpl/beta.js"),
+            "expected tie-break to pick a single match"
+        );
+        assert!(result.diagnostics.is_none());
+    }
+
+    #[test]
+    fn js_path_posix_join_resolves() {
+        let dir = TempDir::new().expect("tempdir");
+        let repo_root = dir.path();
+        write_fixture(
+            &repo_root.join("src/posix/mod.js"),
+            "module.exports = {};",
+        );
+        let content = r#"
+const target = path.posix.join("./posix", "mod.js");
+require(target);
+"#;
+        let result = extract_js_ts_import_edges(
+            repo_root,
+            "src/main.js",
+            content,
+            SourceLanguage::JavaScript,
+        );
+        assert!(
+            result.edges.iter().any(|edge| {
+                edge.source == "src/main.js" && edge.target == "src/posix/mod.js"
+            }),
+            "expected path.posix.join import to resolve"
+        );
+    }
+
+    #[test]
+    fn python_f_string_spec_from_file_location_resolves() {
+        let dir = TempDir::new().expect("tempdir");
+        let repo_root = dir.path();
+        write_fixture(&repo_root.join("pkg/fmod.py"), "value = 42");
+        let content = r#"
+import importlib.util
+name = "fmod"
+spec_path = f"pkg/{name}.py"
+importlib.util.spec_from_file_location(name, spec_path)
+"#;
+        let result = extract_python_import_edges(repo_root, "main.py", content);
+        assert!(
+            result.edges.iter().any(|edge| edge.source == "main.py" && edge.target == "pkg/fmod.py"),
+            "expected f-string path in spec_from_file_location to resolve"
+        );
+    }
+
+    #[test]
+    fn python_source_file_loader_resolves() {
+        let dir = TempDir::new().expect("tempdir");
+        let repo_root = dir.path();
+        write_fixture(&repo_root.join("pkg/loader.py"), "value = 42");
+        let content = r#"
+import importlib.machinery
+importlib.machinery.SourceFileLoader("loader", "pkg/loader.py")
+"#;
+        let result = extract_python_import_edges(repo_root, "main.py", content);
+        assert!(
+            result
+                .edges
+                .iter()
+                .any(|edge| edge.source == "main.py" && edge.target == "pkg/loader.py"),
+            "expected SourceFileLoader to resolve"
+        );
     }
 
     #[test]
@@ -4256,5 +4767,97 @@ import "./missing-7.js";
             .expect("missing diagnostics");
         assert_eq!(diagnostics.unresolved_imports_total, 1);
         assert_eq!(diagnostics.unresolved_imports_sample, vec!["./dyn.js"]);
+    }
+
+    #[test]
+    fn import_traces_and_map_edges_merge_for_source() {
+        let repo = TempDir::new().expect("tempdir");
+        let repo_root = repo.path();
+        fs::create_dir_all(repo_root.join("src")).expect("create src");
+
+        fs::write(
+            repo_root.join("docdex.import_map.json"),
+            r#"
+{
+  "edges": [
+    { "source": "src/app.js", "target": "src/hint.js", "kind": "import", "override": true }
+  ],
+  "mappings": [
+    { "source": "src/app.js", "spec": "./util", "target": "src/override.js", "override": true }
+  ]
+}
+"#,
+        )
+        .expect("write import map");
+        fs::write(
+            repo_root.join("docdex.import_traces.jsonl"),
+            r#"
+{ "source": "src/app.js", "target": "src/trace.js", "kind": "import" }
+"#,
+        )
+        .expect("write import traces");
+
+        apply_impact_settings(ImpactSettings {
+            dynamic_import_scan_limit: 10_000,
+            import_traces_enabled: true,
+        });
+        clear_import_hint_cache(repo_root);
+
+        let hints = import_hints_for_repo(repo_root);
+        assert_eq!(hints.edges.len(), 1);
+        assert_eq!(hints.mappings.len(), 1);
+        assert_eq!(hints.traces.len(), 1);
+
+        let resolver = |root: &Path, _rel: &str, target: &str| normalize_hint_path(root, target);
+        let merged = hint_edges_for_source(repo_root, "src/app.js", &hints, &resolver);
+        assert!(merged
+            .edges
+            .iter()
+            .any(|edge| edge.target == "src/hint.js"));
+        assert!(merged
+            .edges
+            .iter()
+            .any(|edge| edge.target == "src/trace.js"));
+        assert!(merged.override_targets.contains("src/hint.js"));
+    }
+
+    #[test]
+    fn import_map_override_takes_priority_over_fallback() {
+        let repo = TempDir::new().expect("tempdir");
+        let repo_root = repo.path();
+        let hints = ImportHints {
+            edges: Vec::new(),
+            mappings: vec![
+                ImportMapMapping {
+                    source: Some("src/app.js".to_string()),
+                    spec: "./util".to_string(),
+                    targets: vec!["src/override.js".to_string()],
+                    kind: Some("import".to_string()),
+                    expand: false,
+                    override_edge: true,
+                },
+                ImportMapMapping {
+                    source: Some("src/app.js".to_string()),
+                    spec: "./util".to_string(),
+                    targets: vec!["src/fallback.js".to_string()],
+                    kind: Some("import".to_string()),
+                    expand: false,
+                    override_edge: false,
+                },
+            ],
+            traces: Vec::new(),
+        };
+        let import_ref = ImportRef {
+            path: ImportPath::Exact("./util".to_string()),
+            kind: "import",
+            language: SourceLanguage::JavaScript,
+        };
+        let resolver = |root: &Path, _rel: &str, target: &str| normalize_hint_path(root, target);
+        let (overrides, fallbacks) =
+            resolve_import_map_matches(repo_root, "src/app.js", &import_ref, &hints, &resolver);
+        assert_eq!(overrides.len(), 1);
+        assert_eq!(overrides[0].target, "src/override.js");
+        assert_eq!(fallbacks.len(), 1);
+        assert_eq!(fallbacks[0].target, "src/fallback.js");
     }
 }

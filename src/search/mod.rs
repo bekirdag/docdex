@@ -1,3 +1,4 @@
+use crate::config;
 use crate::error::{
     AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
@@ -49,14 +50,36 @@ const SYMBOL_SCORE_BASE: f32 = 0.1;
 const SYMBOL_SCORE_SCALE: f32 = 0.05;
 const SYMBOL_SCORE_PER_MATCH: f32 = 0.02;
 const SYMBOL_SCORE_MAX_BOOST: f32 = 0.2;
+const SYMBOL_NAME_MATCH_BONUS: f32 = 0.03;
+const SYMBOL_NAME_MATCH_MAX_BOOST: f32 = 0.12;
 const SYMBOL_SNIPPET_FALLBACK_LINES: usize = 60;
 const AST_MATCH_MAX_FILES: usize = 6;
 const AST_SCORE_BASE: f32 = 0.08;
 const AST_SCORE_SCALE: f32 = 0.03;
 const AST_SCORE_PER_MATCH: f32 = 0.015;
 const AST_SCORE_MAX_BOOST: f32 = 0.15;
+const RANKING_QUERY_TOKEN_LIMIT: usize = 6;
 
 // Rate limiting is shared with MCP and other surfaces via crate::ratelimit.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RankingSurface {
+    Search,
+    Chat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RankingMode {
+    IncludeNewHits,
+    BoostOnly,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RankingConfig {
+    symbol_enabled: bool,
+    ast_enabled: bool,
+    mode: RankingMode,
+}
 
 #[derive(Clone)]
 pub struct SecurityConfig {
@@ -238,6 +261,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/ast/search",
             get(crate::api::v1::ast::ast_search_handler),
+        )
+        .route(
+            "/v1/ast/query",
+            post(crate::api::v1::ast::ast_query_handler),
         )
         .route(
             "/v1/symbols/status",
@@ -784,6 +811,30 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             },
             AiHelpEndpoint {
                 method: "GET",
+                path: "/v1/ast/search",
+                description: "Search AST nodes by kind across the repo.",
+                params: &[
+                    "kinds=<comma-separated>",
+                    "mode=<any|all optional>",
+                    "limit=<int optional>",
+                ],
+            },
+            AiHelpEndpoint {
+                method: "POST",
+                path: "/v1/ast/query",
+                description: "Query AST nodes by kind/name/field and return sample nodes.",
+                params: &[
+                    "kinds=[...]",
+                    "name=<string optional>",
+                    "field=<string optional>",
+                    "pathPrefix=<string optional>",
+                    "mode=<any|all optional>",
+                    "limit=<int optional>",
+                    "sampleLimit=<int optional>",
+                ],
+            },
+            AiHelpEndpoint {
+                method: "GET",
                 path: "/v1/symbols",
                 description: "Read per-file symbol extraction output.",
                 params: &["path=<repo-relative path>"],
@@ -1154,6 +1205,7 @@ mod rate_limit_contract_tests {
 
 #[cfg(test)]
 mod latency_perf_tests {
+    use super::RankingSurface;
     use crate::{index, libs};
     use std::fs;
     use std::time::Instant;
@@ -1234,7 +1286,13 @@ mod latency_perf_tests {
         let limit = 8usize;
         for _ in 0..20usize {
             let _ = indexer.search_with_query_meta(query, limit)?;
-            let _ = super::search_with_optional_libs(&indexer, Some(&libs_indexer), query, limit)?;
+            let _ = super::search_with_optional_libs(
+                &indexer,
+                Some(&libs_indexer),
+                query,
+                limit,
+                RankingSurface::Search,
+            )?;
         }
 
         let iterations = 250usize;
@@ -1248,7 +1306,13 @@ mod latency_perf_tests {
         let mut combined_us = Vec::with_capacity(iterations);
         for _ in 0..iterations {
             let start = Instant::now();
-            let _ = super::search_with_optional_libs(&indexer, Some(&libs_indexer), query, limit)?;
+            let _ = super::search_with_optional_libs(
+                &indexer,
+                Some(&libs_indexer),
+                query,
+                limit,
+                RankingSurface::Search,
+            )?;
             combined_us.push(start.elapsed().as_micros());
         }
 
@@ -1286,8 +1350,10 @@ pub async fn run_query(
     libs_indexer: Option<&LibsIndexer>,
     query: &str,
     limit: usize,
+    surface: RankingSurface,
 ) -> Result<SearchResponse> {
-    let (hits, query_meta) = search_with_optional_libs(indexer, libs_indexer, query, limit)?;
+    let (hits, query_meta) =
+        search_with_optional_libs(indexer, libs_indexer, query, limit, surface)?;
     let top_score = hits.first().map(|hit| hit.score);
     let top_score_normalized = top_score.map(normalize_score);
     Ok(SearchResponse {
@@ -1310,10 +1376,12 @@ fn search_with_optional_libs(
     libs_indexer: Option<&LibsIndexer>,
     query: &str,
     limit: usize,
+    surface: RankingSurface,
 ) -> Result<(Vec<Hit>, SearchQueryMeta)> {
     let (mut repo_hits, query_meta) = indexer.search_with_query_meta(query, limit)?;
-    apply_symbol_matches(indexer, &mut repo_hits, query, limit)?;
-    apply_ast_matches(indexer, &mut repo_hits, query, limit)?;
+    if surface == RankingSurface::Search {
+        apply_ranking_deltas(indexer, &mut repo_hits, query, limit, surface)?;
+    }
     let Some(libs) = libs_indexer else {
         return Ok((repo_hits, query_meta));
     };
@@ -1327,11 +1395,41 @@ fn search_with_optional_libs(
     Ok((merge_hits(repo_hits, libs_hits, limit), query_meta))
 }
 
+pub(crate) fn apply_ranking_deltas(
+    indexer: &Indexer,
+    hits: &mut Vec<Hit>,
+    query: &str,
+    limit: usize,
+    surface: RankingSurface,
+) -> Result<()> {
+    let config = ranking_config_for_surface(surface);
+    if config.symbol_enabled {
+        apply_symbol_matches(indexer, hits, query, limit, config.mode)?;
+    }
+    if config.ast_enabled {
+        apply_ast_matches(indexer, hits, query, limit, config.mode)?;
+    }
+    Ok(())
+}
+
+fn ranking_config_for_surface(surface: RankingSurface) -> RankingConfig {
+    let mode = match surface {
+        RankingSurface::Search => RankingMode::IncludeNewHits,
+        RankingSurface::Chat => RankingMode::BoostOnly,
+    };
+    RankingConfig {
+        symbol_enabled: resolve_symbol_ranking_enabled(surface),
+        ast_enabled: resolve_ast_ranking_enabled(surface),
+        mode,
+    }
+}
+
 fn apply_symbol_matches(
     indexer: &Indexer,
     hits: &mut Vec<Hit>,
     query: &str,
     limit: usize,
+    mode: RankingMode,
 ) -> Result<()> {
     if !indexer.symbols_enabled() {
         return Ok(());
@@ -1350,21 +1448,26 @@ fn apply_symbol_matches(
     }
 
     let mut by_path: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let query_tokens = extract_query_tokens(query);
     for (idx, hit) in hits.iter().enumerate() {
         by_path.insert(hit.rel_path.clone(), idx);
     }
 
     for symbol_match in matches {
-        let match_count = symbol_match.symbols.len().max(1) as f32;
-        let boost = (match_count * SYMBOL_SCORE_PER_MATCH).min(SYMBOL_SCORE_MAX_BOOST);
+        let (weighted_count, name_matches) = symbol_match_score_details(&symbol_match, &query_tokens);
+        let base_boost = (weighted_count.max(1.0) * SYMBOL_SCORE_PER_MATCH).min(SYMBOL_SCORE_MAX_BOOST);
+        let name_boost = (name_matches as f32 * SYMBOL_NAME_MATCH_BONUS).min(SYMBOL_NAME_MATCH_MAX_BOOST);
+        let boost = base_boost + name_boost;
         if let Some(idx) = by_path.get(&symbol_match.file).copied() {
             let hit = &mut hits[idx];
             hit.score += hit.score * SYMBOL_SCORE_SCALE + boost;
             continue;
         }
-        if let Some(hit) = build_symbol_hit(indexer, &symbol_match, query, boost)? {
-            by_path.insert(hit.rel_path.clone(), hits.len());
-            hits.push(hit);
+        if mode == RankingMode::IncludeNewHits {
+            if let Some(hit) = build_symbol_hit(indexer, &symbol_match, query, boost)? {
+                by_path.insert(hit.rel_path.clone(), hits.len());
+                hits.push(hit);
+            }
         }
     }
 
@@ -1380,6 +1483,7 @@ fn apply_ast_matches(
     hits: &mut Vec<Hit>,
     query: &str,
     limit: usize,
+    mode: RankingMode,
 ) -> Result<()> {
     if !indexer.symbols_enabled() {
         return Ok(());
@@ -1409,16 +1513,20 @@ fn apply_ast_matches(
     }
 
     for ast_match in matches {
-        let match_count = ast_match.match_count.max(1) as f32;
-        let boost = (match_count * AST_SCORE_PER_MATCH).min(AST_SCORE_MAX_BOOST);
+        let weighted_count =
+            ast_weighted_match_count(indexer, &ast_match.file, &ast_query.kinds)
+                .unwrap_or_else(|_| ast_match.match_count.max(1) as f32);
+        let boost = (weighted_count.max(1.0) * AST_SCORE_PER_MATCH).min(AST_SCORE_MAX_BOOST);
         if let Some(idx) = by_path.get(&ast_match.file).copied() {
             let hit = &mut hits[idx];
             hit.score += hit.score * AST_SCORE_SCALE + boost;
             continue;
         }
-        if let Some(hit) = build_ast_hit(indexer, &ast_match, query, &ast_query.labels, boost)? {
-            by_path.insert(hit.rel_path.clone(), hits.len());
-            hits.push(hit);
+        if mode == RankingMode::IncludeNewHits {
+            if let Some(hit) = build_ast_hit(indexer, &ast_match, query, &ast_query.labels, boost)? {
+                by_path.insert(hit.rel_path.clone(), hits.len());
+                hits.push(hit);
+            }
         }
     }
 
@@ -1427,6 +1535,123 @@ fn apply_ast_matches(
         hits.truncate(limit);
     }
     Ok(())
+}
+
+fn symbol_match_score_details(
+    symbol_match: &SymbolSearchMatch,
+    query_tokens: &[String],
+) -> (f32, usize) {
+    if symbol_match.symbols.is_empty() {
+        return (0.0, 0);
+    }
+    let mut weighted_count = 0.0;
+    let mut matched_names = HashSet::new();
+    for symbol in &symbol_match.symbols {
+        weighted_count += symbol_kind_weight(&symbol.kind);
+        if !query_tokens.is_empty() && symbol_name_matches_query(&symbol.name, query_tokens) {
+            matched_names.insert(symbol.name.to_lowercase());
+        }
+    }
+    (weighted_count, matched_names.len())
+}
+
+fn symbol_name_matches_query(name: &str, tokens: &[String]) -> bool {
+    if tokens.is_empty() {
+        return false;
+    }
+    let lowered = name.to_lowercase();
+    if tokens.iter().any(|token| token == &lowered) {
+        return true;
+    }
+    for part in lowered.split(|ch: char| !ch.is_alphanumeric() && ch != '_') {
+        if part.len() < 2 {
+            continue;
+        }
+        if tokens.iter().any(|token| token == part) {
+            return true;
+        }
+    }
+    for token in tokens {
+        if token.len() < 3 {
+            continue;
+        }
+        if lowered.contains(token) {
+            return true;
+        }
+    }
+    false
+}
+
+fn symbol_kind_weight(kind: &str) -> f32 {
+    match kind.to_lowercase().as_str() {
+        "function" | "method" => 1.2,
+        "class" | "struct" | "trait" | "enum" | "interface" => 1.1,
+        "type" => 1.0,
+        "module" => 0.9,
+        "const" | "constant" => 0.7,
+        "variable" | "var" => 0.6,
+        _ => 1.0,
+    }
+}
+
+fn ast_kind_weight(kind: &str) -> f32 {
+    match kind {
+        "function_item"
+        | "function_definition"
+        | "function_declaration"
+        | "method_definition"
+        | "method_declaration"
+        | "arrow_function" => 1.2,
+        "class_definition" | "class_declaration" | "class_item" => 1.1,
+        "struct_item" | "struct_declaration" => 1.1,
+        "trait_item" => 1.1,
+        "enum_item" | "enum_declaration" => 1.0,
+        "interface_declaration" => 1.0,
+        "mod_item" | "module" => 0.9,
+        "import_statement"
+        | "import_declaration"
+        | "import_clause"
+        | "use_declaration"
+        | "include_macro_invocation" => 0.6,
+        _ => 1.0,
+    }
+}
+
+fn ast_weighted_match_count(
+    indexer: &Indexer,
+    rel_path: &str,
+    kinds: &[String],
+) -> Result<f32> {
+    let counts = indexer.ast_kind_counts_for_file(rel_path, kinds)?;
+    if counts.is_empty() {
+        return Ok(0.0);
+    }
+    let mut weighted = 0.0;
+    for (kind, count) in counts {
+        weighted += (count as f32) * ast_kind_weight(&kind);
+    }
+    Ok(weighted)
+}
+
+fn extract_query_tokens(query: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for raw in query.split_whitespace() {
+        for part in raw.split(|ch: char| !ch.is_alphanumeric() && ch != '_') {
+            let trimmed = part.trim();
+            if trimmed.len() < 2 {
+                continue;
+            }
+            let lowered = trimmed.to_lowercase();
+            if seen.insert(lowered.clone()) {
+                out.push(lowered);
+                if out.len() >= RANKING_QUERY_TOKEN_LIMIT {
+                    return out;
+                }
+            }
+        }
+    }
+    out
 }
 
 fn build_symbol_hit(
@@ -1662,6 +1887,64 @@ fn sort_hits_deterministically(hits: &mut [Hit]) {
     });
 }
 
+fn resolve_symbol_ranking_enabled(surface: RankingSurface) -> bool {
+    let env_key = match surface {
+        RankingSurface::Search => "DOCDEX_ENABLE_SYMBOL_RANKING",
+        RankingSurface::Chat => "DOCDEX_ENABLE_CHAT_SYMBOL_RANKING",
+    };
+    env_boolish(env_key)
+        .or_else(|| config_symbol_ranking_enabled(surface))
+        .unwrap_or(true)
+}
+
+fn resolve_ast_ranking_enabled(surface: RankingSurface) -> bool {
+    let env_key = match surface {
+        RankingSurface::Search => "DOCDEX_ENABLE_AST_RANKING",
+        RankingSurface::Chat => "DOCDEX_ENABLE_CHAT_AST_RANKING",
+    };
+    env_boolish(env_key)
+        .or_else(|| config_ast_ranking_enabled(surface))
+        .unwrap_or(true)
+}
+
+fn config_symbol_ranking_enabled(surface: RankingSurface) -> Option<bool> {
+    let search = load_search_config()?;
+    Some(match surface {
+        RankingSurface::Search => search.symbol_ranking_enabled,
+        RankingSurface::Chat => search.chat_symbol_ranking_enabled,
+    })
+}
+
+fn config_ast_ranking_enabled(surface: RankingSurface) -> Option<bool> {
+    let search = load_search_config()?;
+    Some(match surface {
+        RankingSurface::Search => search.ast_ranking_enabled,
+        RankingSurface::Chat => search.chat_ast_ranking_enabled,
+    })
+}
+
+fn load_search_config() -> Option<config::SearchConfig> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    Some(config.search)
+}
+
+fn env_boolish(key: &str) -> Option<bool> {
+    let raw = std::env::var(key).ok()?;
+    let trimmed = raw.trim().to_lowercase();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match trimmed.as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 pub(crate) fn normalize_score(score: f32) -> f32 {
     if !score.is_finite() {
         return 0.0;
@@ -1832,6 +2115,7 @@ async fn search_handler(
         plan,
         tier2_limiter: None,
         memory: state.memory.as_ref(),
+        ranking_surface: RankingSurface::Search,
     })
     .await
     {

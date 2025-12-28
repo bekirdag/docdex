@@ -276,6 +276,7 @@ pub(crate) async fn chat_completions_handler(
         plan,
         tier2_limiter: None,
         memory: state.memory.as_ref(),
+        ranking_surface: crate::search::RankingSurface::Chat,
     })
     .await
     {

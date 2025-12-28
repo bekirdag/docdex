@@ -8,14 +8,14 @@ use crate::error::{
 };
 use crate::impact::{extract_import_edges, ImpactGraphEdge};
 use crate::symbols::{
-    AstResponseV1, AstSearchMatch, AstSearchMode, SymbolSearchMatch, SymbolsParserStatus,
-    SymbolsResponseV1, SymbolsStore,
+    AstQuery, AstQueryMatch, AstResponseV1, AstSearchMatch, AstSearchMode, SymbolSearchMatch,
+    SymbolsParserStatus, SymbolsResponseV1, SymbolsStore,
 };
 use anyhow::{anyhow, Context, Result};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use regex::Regex;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read};
@@ -964,6 +964,30 @@ impl Indexer {
             return Ok(Vec::new());
         }
         store.search_ast_kinds_with_mode(kinds, max_files, mode)
+    }
+
+    pub fn ast_kind_counts_for_file(
+        &self,
+        rel_path: &str,
+        kinds: &[String],
+    ) -> Result<BTreeMap<String, usize>> {
+        let Some(store) = self.symbols_store.as_ref() else {
+            return Ok(BTreeMap::new());
+        };
+        if store.requires_reindex()? {
+            return Ok(BTreeMap::new());
+        }
+        store.ast_kind_counts_for_file(rel_path, kinds)
+    }
+
+    pub fn query_ast(&self, query: &AstQuery) -> Result<Vec<AstQueryMatch>> {
+        let Some(store) = self.symbols_store.as_ref() else {
+            return Ok(Vec::new());
+        };
+        if store.requires_reindex()? {
+            return Ok(Vec::new());
+        }
+        store.query_ast(query)
     }
 
     pub fn state_dir(&self) -> &Path {

@@ -14,6 +14,8 @@ const DEFAULT_LLM_PROVIDER: &str = "ollama";
 const DEFAULT_LLM_BASE_URL: &str = "http://127.0.0.1:11434";
 const DEFAULT_LLM_MODEL: &str = "phi3.5:3.8b";
 const DEFAULT_EMBED_MODEL: &str = "nomic-embed-text";
+const DEFAULT_PROFILE_EMBED_MODEL: &str = "nomic-embed-text-v1.5";
+const DEFAULT_PROFILE_EMBED_DIM: usize = 768;
 const DEFAULT_MEMORY_BACKEND: &str = "sqlite";
 const DEFAULT_DISCOVERY_PROVIDER: &str = "duckduckgo_html";
 const DEFAULT_WEB_ENGINE: &str = "chrome";
@@ -33,6 +35,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub memory: MemoryConfig,
     #[serde(default)]
+    pub features: FeatureFlagsConfig,
+    #[serde(default)]
     pub server: ServerConfig,
 }
 
@@ -45,6 +49,7 @@ impl Default for AppConfig {
             code_intelligence: CodeIntelligenceConfig::default(),
             web: WebConfigSection::default(),
             memory: MemoryConfig::default(),
+            features: FeatureFlagsConfig::default(),
             server: ServerConfig::default(),
         }
     }
@@ -94,6 +99,16 @@ impl AppConfig {
             );
             self.memory.backend = DEFAULT_MEMORY_BACKEND.to_string();
         }
+        if self.memory.profile.embedding_model.trim().is_empty() {
+            self.memory.profile.embedding_model = DEFAULT_PROFILE_EMBED_MODEL.to_string();
+        }
+        if self.memory.profile.embedding_dim == 0 {
+            warn!(
+                target: "docdexd",
+                "memory.profile.embedding_dim must be > 0; using default"
+            );
+            self.memory.profile.embedding_dim = DEFAULT_PROFILE_EMBED_DIM;
+        }
         if self.code_intelligence.dynamic_import_scan_limit == 0 {
             warn!(
                 target: "docdexd",
@@ -103,6 +118,9 @@ impl AppConfig {
         }
         if self.server.http_bind_addr.trim().is_empty() {
             self.server.http_bind_addr = DEFAULT_HTTP_BIND_ADDR.to_string();
+        }
+        if self.server.hook_socket_path.trim().is_empty() {
+            self.server.hook_socket_path = default_hook_socket_path();
         }
         Ok(())
     }
@@ -276,6 +294,8 @@ pub struct MemoryConfig {
     pub enabled: bool,
     #[serde(default = "default_memory_backend")]
     pub backend: String,
+    #[serde(default)]
+    pub profile: MemoryProfileConfig,
 }
 
 impl Default for MemoryConfig {
@@ -283,6 +303,47 @@ impl Default for MemoryConfig {
         Self {
             enabled: default_memory_enabled(),
             backend: default_memory_backend(),
+            profile: MemoryProfileConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryProfileConfig {
+    #[serde(default = "default_profile_embed_model")]
+    pub embedding_model: String,
+    #[serde(default = "default_profile_embed_dim")]
+    pub embedding_dim: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeatureFlagsConfig {
+    #[serde(default = "default_enable_hooks")]
+    pub hooks: bool,
+    #[serde(default = "default_enable_project_map")]
+    pub project_map: bool,
+    #[serde(default = "default_enable_tui_overlay")]
+    pub tui_overlay: bool,
+    #[serde(default = "default_enable_workflow_prompt")]
+    pub workflow_prompt: bool,
+}
+
+impl Default for FeatureFlagsConfig {
+    fn default() -> Self {
+        Self {
+            hooks: default_enable_hooks(),
+            project_map: default_enable_project_map(),
+            tui_overlay: default_enable_tui_overlay(),
+            workflow_prompt: default_enable_workflow_prompt(),
+        }
+    }
+}
+
+impl Default for MemoryProfileConfig {
+    fn default() -> Self {
+        Self {
+            embedding_model: default_profile_embed_model(),
+            embedding_dim: default_profile_embed_dim(),
         }
     }
 }
@@ -293,6 +354,10 @@ pub struct ServerConfig {
     pub http_bind_addr: String,
     #[serde(default = "default_enable_mcp")]
     pub enable_mcp: bool,
+    #[serde(default = "default_hook_socket_path")]
+    pub hook_socket_path: String,
+    #[serde(default = "default_server_default_agent_id")]
+    pub default_agent_id: String,
 }
 
 impl Default for ServerConfig {
@@ -300,6 +365,8 @@ impl Default for ServerConfig {
         Self {
             http_bind_addr: default_http_bind_addr(),
             enable_mcp: default_enable_mcp(),
+            hook_socket_path: default_hook_socket_path(),
+            default_agent_id: default_server_default_agent_id(),
         }
     }
 }
@@ -394,6 +461,38 @@ fn default_llm_model() -> String {
 
 fn default_embed_model() -> String {
     DEFAULT_EMBED_MODEL.to_string()
+}
+
+fn default_profile_embed_model() -> String {
+    DEFAULT_PROFILE_EMBED_MODEL.to_string()
+}
+
+fn default_profile_embed_dim() -> usize {
+    DEFAULT_PROFILE_EMBED_DIM
+}
+
+fn default_server_default_agent_id() -> String {
+    String::new()
+}
+
+fn default_hook_socket_path() -> String {
+    String::new()
+}
+
+fn default_enable_hooks() -> bool {
+    true
+}
+
+fn default_enable_project_map() -> bool {
+    true
+}
+
+fn default_enable_tui_overlay() -> bool {
+    true
+}
+
+fn default_enable_workflow_prompt() -> bool {
+    false
 }
 
 fn default_max_answer_tokens() -> u32 {

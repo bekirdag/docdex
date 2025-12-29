@@ -261,6 +261,14 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
         tool_names.contains(&"docdex_stats".to_string()),
         "tools/list should include docdex_stats"
     );
+    assert!(
+        tool_names.contains(&"docdex_save_preference".to_string()),
+        "tools/list should include docdex_save_preference"
+    );
+    assert!(
+        tool_names.contains(&"docdex_get_profile".to_string()),
+        "tools/list should include docdex_get_profile"
+    );
 
     // docdex_web_research without repo should return missing_repo
     send_line(
@@ -793,6 +801,55 @@ fn mcp_unknown_tool_returns_error() -> Result<(), Box<dyn Error>> {
         Some(-32601),
         "unknown tool should return method not found"
     );
+    harness.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_profile_tools_validate_args() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
+    let mut harness = McpHarness::spawn(state_root.path(), repo.path())?;
+
+    send_line(
+        &mut harness.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "initialize",
+            "params": {}
+        }),
+    )?;
+    let _ = read_line(&mut harness.reader)?;
+
+    send_line(
+        &mut harness.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 13,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_save_preference",
+                "arguments": {
+                    "agent_id": "agent-1",
+                    "content": "Use ripgrep for search",
+                    "category": "bad"
+                }
+            }
+        }),
+    )?;
+    let resp = read_line(&mut harness.reader)?;
+    let error_code = resp
+        .get("error")
+        .and_then(|value| value.get("data"))
+        .and_then(|value| value.get("code"))
+        .and_then(|value| value.as_str());
+    assert_eq!(
+        error_code,
+        Some("invalid_argument"),
+        "invalid category should return invalid_argument"
+    );
+
     harness.shutdown();
     Ok(())
 }

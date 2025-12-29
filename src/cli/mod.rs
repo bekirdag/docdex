@@ -197,6 +197,13 @@ pub(crate) enum Command {
         enable_memory: bool,
         #[arg(
             long,
+            env = "DOCDEX_DEFAULT_AGENT_ID",
+            value_parser = config::non_empty_string,
+            help = "Default profile agent id when requests omit agent_id"
+        )]
+        agent_id: Option<String>,
+        #[arg(
+            long,
             action = ArgAction::SetTrue,
             conflicts_with = "disable_mcp",
             help = "Enable MCP auto-start when serving (overrides config)"
@@ -389,6 +396,12 @@ pub(crate) enum Command {
             help = "Use a mcoda agent slug or id for LLM calls"
         )]
         agent: Option<String>,
+        #[arg(
+            long,
+            value_parser = config::non_empty_string,
+            help = "Profile agent id to load behavioral preferences"
+        )]
+        agent_id: Option<String>,
         #[arg(long, default_value_t = 8)]
         limit: usize,
         #[arg(
@@ -621,6 +634,16 @@ pub(crate) enum Command {
         )]
         embedding_timeout_ms: u64,
     },
+    /// Manage global agent profiles and preference memory.
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
+    /// Run semantic gatekeeper hooks against staged changes (HTTP or Unix socket).
+    Hook {
+        #[command(subcommand)]
+        command: HookCommand,
+    },
     /// Report Tree-sitter parser version status for symbols indexing.
     SymbolsStatus {
         #[command(flatten)]
@@ -801,6 +824,54 @@ pub(crate) enum AgentCommand {
             help = "Limit the number of eval queries to run"
         )]
         max_queries: Option<usize>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum ProfileCommand {
+    /// List profile agents and preferences.
+    List {
+        #[arg(long, value_parser = config::non_empty_string)]
+        agent_id: Option<String>,
+    },
+    /// Add a new preference (bypasses evolution).
+    Add {
+        #[arg(long, value_parser = config::non_empty_string)]
+        agent_id: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        category: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        content: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        role: Option<String>,
+    },
+    /// Search preferences by semantic similarity.
+    Search {
+        #[arg(long, value_parser = config::non_empty_string)]
+        agent_id: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        query: String,
+        #[arg(long, default_value_t = 8)]
+        top_k: usize,
+    },
+    /// Export preferences to a sync manifest.
+    Export {
+        #[arg(long, value_name = "PATH", default_value = "profile_sync.json")]
+        out: PathBuf,
+    },
+    /// Import preferences from a sync manifest.
+    Import {
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum HookCommand {
+    /// Validate staged files via the running daemon (fails open if unavailable).
+    PreCommit {
+        #[command(flatten)]
+        repo: RepoArgs,
     },
 }
 

@@ -147,6 +147,20 @@ pub struct AstResponseV1 {
     pub outcome: Option<SymbolOutcome>,
 }
 
+pub fn is_any_type_node(node: &AstNode) -> bool {
+    if node.kind == "any" {
+        return true;
+    }
+    if node.kind == "predefined_type" {
+        return node
+            .name
+            .as_deref()
+            .map(|value| value.eq_ignore_ascii_case("any"))
+            .unwrap_or(false);
+    }
+    false
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SymbolsParserStatus {
     #[serde(default = "default_symbols_status_schema")]

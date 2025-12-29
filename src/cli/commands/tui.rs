@@ -1,3 +1,4 @@
+use crate::config;
 use crate::error::{repo_resolution_details, AppError, ERR_MISSING_DEPENDENCY, ERR_MISSING_REPO_PATH};
 use anyhow::{Context, Result};
 use serde_json::json;
@@ -10,6 +11,7 @@ const TUI_BIN_NAME: &str = "docdex-tui";
 
 pub fn run(repo: Option<PathBuf>) -> Result<()> {
     let bin = resolve_tui_binary()?;
+    let config = config::AppConfig::load_default()?;
     let mut cmd = Command::new(&bin);
     if let Some(repo_root) = repo {
         let repo_root = repo_root
@@ -30,6 +32,10 @@ pub fn run(repo: Option<PathBuf>) -> Result<()> {
                 .into());
         }
         cmd.arg("--repo").arg(repo_root);
+    }
+
+    if !config.features.tui_overlay {
+        cmd.env("DOCDEX_TUI_OVERLAY", "0");
     }
 
     cmd.stdin(Stdio::inherit());

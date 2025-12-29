@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+- Add global profile memory (HTTP profile endpoints, CLI profile commands, MCP profile tools).
+- Add default profile agent selection via `server.default_agent_id`, `docdexd serve --agent-id`, and MCP initialize `agent_id`.
+- Add semantic gatekeeper hooks (`/v1/hooks/validate`, `docdexd hook pre-commit`) with optional Unix socket transport.
+- Add `reasoning_trace` metadata to chat completions and project map context injection.
+- Add profile import/export schema checks and sync compatibility validation.
+
 ## 0.1.11
 - Added glama support
 

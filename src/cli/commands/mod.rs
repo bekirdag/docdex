@@ -1,4 +1,5 @@
 pub mod help_all;
+pub mod hook;
 pub mod agent;
 pub mod check;
 pub mod dag;
@@ -10,6 +11,7 @@ pub mod mcoda_eval;
 pub mod mcp;
 pub mod mcp_add;
 pub mod memory;
+pub mod profile;
 pub mod query;
 pub mod repo;
 pub mod symbols;
@@ -47,6 +49,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             secure_mode,
             disable_snippet_text,
             enable_memory,
+            agent_id,
             enable_mcp,
             disable_mcp,
             embedding_base_url,
@@ -87,6 +90,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
                 secure_mode,
                 disable_snippet_text,
                 enable_memory,
+                agent_id,
                 enable_mcp,
                 disable_mcp,
                 embedding_base_url,
@@ -122,6 +126,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             query,
             model,
             agent,
+            agent_id,
             limit,
             max_web_results,
             repo_only,
@@ -140,6 +145,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
                 query,
                 model,
                 agent,
+                agent_id,
                 limit,
                 max_web_results,
                 repo_only,
@@ -213,6 +219,8 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             )
             .await
         }
+        super::Command::Profile { command } => profile::run(command).await,
+        super::Command::Hook { command } => hook::run(command).await,
         super::Command::SymbolsStatus { repo } => symbols::run_status(repo).await,
         super::Command::ImpactDiagnostics {
             repo,

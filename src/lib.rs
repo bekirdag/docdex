@@ -21,6 +21,8 @@ pub mod max_size;
 pub mod mcoda;
 pub mod ollama;
 pub mod orchestrator;
+pub mod profiles;
+pub mod project_map;
 pub mod ratelimit;
 pub mod repo_manager;
 pub mod search;

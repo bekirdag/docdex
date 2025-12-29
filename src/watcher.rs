@@ -1,6 +1,6 @@
 use crate::index::{self, Indexer};
 use anyhow::Result;
-use notify::event::{ModifyKind, RemoveKind};
+use notify::event::{CreateKind, ModifyKind, RemoveKind};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -134,6 +134,13 @@ fn handle_event(
     result: Result<Event, notify::Error>,
 ) -> Result<(), notify::Error> {
     let event = result?;
+    let invalidate_map = match &event.kind {
+        EventKind::Create(CreateKind::Folder)
+        | EventKind::Remove(RemoveKind::Folder)
+        | EventKind::Remove(RemoveKind::Any) => true,
+        EventKind::Modify(ModifyKind::Name(_)) => event.paths.iter().any(|path| path.is_dir()),
+        _ => false,
+    };
     match &event.kind {
         EventKind::Create(_) | EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Any) => {
             for path in &event.paths {
@@ -168,6 +175,16 @@ fn handle_event(
             }
         }
         _ => {}
+    }
+    if invalidate_map {
+        if let Err(err) = crate::project_map::invalidate_project_map_cache(config.state_dir()) {
+            warn!(
+                target: "docdexd",
+                error = ?err,
+                repo = %repo_root.display(),
+                "project map cache invalidation failed"
+            );
+        }
     }
     Ok(())
 }

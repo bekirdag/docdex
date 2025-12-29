@@ -26,6 +26,27 @@ pub struct Metrics {
     waterfall_memory_context_candidates: AtomicU64,
     waterfall_memory_context_kept: AtomicU64,
     waterfall_memory_context_dropped: AtomicU64,
+    profile_recall_requests: AtomicU64,
+    profile_recall_candidates: AtomicU64,
+    profile_recall_kept: AtomicU64,
+    profile_recall_dropped: AtomicU64,
+    profile_recall_latency_ms_total: AtomicU64,
+    profile_recall_latency_count: AtomicU64,
+    profile_budget_drops: AtomicU64,
+
+    profile_evolution_decisions: AtomicU64,
+    profile_evolution_retries: AtomicU64,
+    profile_evolution_invalid: AtomicU64,
+    profile_evolution_latency_ms_total: AtomicU64,
+    profile_evolution_latency_count: AtomicU64,
+
+    hook_checks: AtomicU64,
+    hook_failures: AtomicU64,
+    hook_latency_ms_total: AtomicU64,
+    hook_latency_count: AtomicU64,
+
+    project_map_cache_hits: AtomicU64,
+    project_map_cache_misses: AtomicU64,
 
     chrome_watchdog_reap_attempts: AtomicU64,
     chrome_watchdog_reaped: AtomicU64,
@@ -107,6 +128,82 @@ impl Metrics {
             .fetch_add(dropped as u64, Ordering::Relaxed);
     }
 
+    pub fn record_profile_recall(
+        &self,
+        candidates: usize,
+        kept: usize,
+        dropped: usize,
+        latency_ms: u128,
+    ) {
+        self.profile_recall_requests
+            .fetch_add(1, Ordering::Relaxed);
+        self.profile_recall_candidates
+            .fetch_add(candidates as u64, Ordering::Relaxed);
+        self.profile_recall_kept
+            .fetch_add(kept as u64, Ordering::Relaxed);
+        self.profile_recall_dropped
+            .fetch_add(dropped as u64, Ordering::Relaxed);
+        self.profile_recall_latency_ms_total
+            .fetch_add(latency_ms as u64, Ordering::Relaxed);
+        self.profile_recall_latency_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_profile_budget_drop(&self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        self.profile_budget_drops
+            .fetch_add(count as u64, Ordering::Relaxed);
+    }
+
+    pub fn inc_profile_evolution_decision(&self) {
+        self.profile_evolution_decisions
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_profile_evolution_retry(&self) {
+        self.profile_evolution_retries
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_profile_evolution_invalid(&self) {
+        self.profile_evolution_invalid
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_profile_evolution_latency(&self, latency_ms: u128) {
+        self.profile_evolution_latency_ms_total
+            .fetch_add(latency_ms as u64, Ordering::Relaxed);
+        self.profile_evolution_latency_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_hook_check(&self) {
+        self.hook_checks.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_hook_failure(&self) {
+        self.hook_failures.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_hook_latency(&self, latency_ms: u128) {
+        self.hook_latency_ms_total
+            .fetch_add(latency_ms as u64, Ordering::Relaxed);
+        self.hook_latency_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_project_map_cache_hit(&self) {
+        self.project_map_cache_hits
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_project_map_cache_miss(&self) {
+        self.project_map_cache_misses
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn inc_chrome_watchdog_reap_attempt(&self) {
         self.chrome_watchdog_reap_attempts
             .fetch_add(1, Ordering::Relaxed);
@@ -175,6 +272,60 @@ impl Metrics {
                 "# HELP docdex_waterfall_memory_context_dropped_total Memory context items dropped\n",
                 "# TYPE docdex_waterfall_memory_context_dropped_total counter\n",
                 "docdex_waterfall_memory_context_dropped_total {}\n",
+                "# HELP docdex_profile_recall_requests_total Profile recall requests\n",
+                "# TYPE docdex_profile_recall_requests_total counter\n",
+                "docdex_profile_recall_requests_total {}\n",
+                "# HELP docdex_profile_recall_candidates_total Profile recall candidates\n",
+                "# TYPE docdex_profile_recall_candidates_total counter\n",
+                "docdex_profile_recall_candidates_total {}\n",
+                "# HELP docdex_profile_recall_kept_total Profile recall items kept\n",
+                "# TYPE docdex_profile_recall_kept_total counter\n",
+                "docdex_profile_recall_kept_total {}\n",
+                "# HELP docdex_profile_recall_dropped_total Profile recall items dropped\n",
+                "# TYPE docdex_profile_recall_dropped_total counter\n",
+                "docdex_profile_recall_dropped_total {}\n",
+                "# HELP docdex_profile_recall_latency_ms_total Profile recall latency sum in ms\n",
+                "# TYPE docdex_profile_recall_latency_ms_total counter\n",
+                "docdex_profile_recall_latency_ms_total {}\n",
+                "# HELP docdex_profile_recall_latency_count_total Profile recall latency samples\n",
+                "# TYPE docdex_profile_recall_latency_count_total counter\n",
+                "docdex_profile_recall_latency_count_total {}\n",
+                "# HELP docdex_profile_budget_drops_total Profile context drops due to budget\n",
+                "# TYPE docdex_profile_budget_drops_total counter\n",
+                "docdex_profile_budget_drops_total {}\n",
+                "# HELP docdex_profile_evolution_decisions_total Evolution decisions processed\n",
+                "# TYPE docdex_profile_evolution_decisions_total counter\n",
+                "docdex_profile_evolution_decisions_total {}\n",
+                "# HELP docdex_profile_evolution_retries_total Evolution decision retries\n",
+                "# TYPE docdex_profile_evolution_retries_total counter\n",
+                "docdex_profile_evolution_retries_total {}\n",
+                "# HELP docdex_profile_evolution_invalid_total Invalid evolution decisions\n",
+                "# TYPE docdex_profile_evolution_invalid_total counter\n",
+                "docdex_profile_evolution_invalid_total {}\n",
+                "# HELP docdex_profile_evolution_latency_ms_total Evolution latency sum in ms\n",
+                "# TYPE docdex_profile_evolution_latency_ms_total counter\n",
+                "docdex_profile_evolution_latency_ms_total {}\n",
+                "# HELP docdex_profile_evolution_latency_count_total Evolution latency samples\n",
+                "# TYPE docdex_profile_evolution_latency_count_total counter\n",
+                "docdex_profile_evolution_latency_count_total {}\n",
+                "# HELP docdex_hook_checks_total Hook validation requests\n",
+                "# TYPE docdex_hook_checks_total counter\n",
+                "docdex_hook_checks_total {}\n",
+                "# HELP docdex_hook_failures_total Hook validation failures\n",
+                "# TYPE docdex_hook_failures_total counter\n",
+                "docdex_hook_failures_total {}\n",
+                "# HELP docdex_hook_latency_ms_total Hook validation latency sum in ms\n",
+                "# TYPE docdex_hook_latency_ms_total counter\n",
+                "docdex_hook_latency_ms_total {}\n",
+                "# HELP docdex_hook_latency_count_total Hook validation latency samples\n",
+                "# TYPE docdex_hook_latency_count_total counter\n",
+                "docdex_hook_latency_count_total {}\n",
+                "# HELP docdex_project_map_cache_hits_total Project map cache hits\n",
+                "# TYPE docdex_project_map_cache_hits_total counter\n",
+                "docdex_project_map_cache_hits_total {}\n",
+                "# HELP docdex_project_map_cache_misses_total Project map cache misses\n",
+                "# TYPE docdex_project_map_cache_misses_total counter\n",
+                "docdex_project_map_cache_misses_total {}\n",
             "# HELP docdex_chrome_watchdog_reap_attempts_total Chrome watchdog reap attempts\n",
             "# TYPE docdex_chrome_watchdog_reap_attempts_total counter\n",
             "docdex_chrome_watchdog_reap_attempts_total {}\n",
@@ -202,6 +353,27 @@ impl Metrics {
             self.waterfall_memory_context_candidates.load(Ordering::Relaxed),
             self.waterfall_memory_context_kept.load(Ordering::Relaxed),
             self.waterfall_memory_context_dropped.load(Ordering::Relaxed),
+            self.profile_recall_requests.load(Ordering::Relaxed),
+            self.profile_recall_candidates.load(Ordering::Relaxed),
+            self.profile_recall_kept.load(Ordering::Relaxed),
+            self.profile_recall_dropped.load(Ordering::Relaxed),
+            self.profile_recall_latency_ms_total
+                .load(Ordering::Relaxed),
+            self.profile_recall_latency_count.load(Ordering::Relaxed),
+            self.profile_budget_drops.load(Ordering::Relaxed),
+            self.profile_evolution_decisions.load(Ordering::Relaxed),
+            self.profile_evolution_retries.load(Ordering::Relaxed),
+            self.profile_evolution_invalid.load(Ordering::Relaxed),
+            self.profile_evolution_latency_ms_total
+                .load(Ordering::Relaxed),
+            self.profile_evolution_latency_count
+                .load(Ordering::Relaxed),
+            self.hook_checks.load(Ordering::Relaxed),
+            self.hook_failures.load(Ordering::Relaxed),
+            self.hook_latency_ms_total.load(Ordering::Relaxed),
+            self.hook_latency_count.load(Ordering::Relaxed),
+            self.project_map_cache_hits.load(Ordering::Relaxed),
+            self.project_map_cache_misses.load(Ordering::Relaxed),
             self.chrome_watchdog_reap_attempts.load(Ordering::Relaxed),
             self.chrome_watchdog_reaped.load(Ordering::Relaxed),
             self.chrome_watchdog_reap_failures.load(Ordering::Relaxed),

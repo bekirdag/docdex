@@ -116,6 +116,90 @@ pub struct ImpactGraphEdge {
     pub kind: Option<String>,
 }
 
+pub fn detect_cycles(edges: &[ImpactGraphEdge]) -> Vec<Vec<String>> {
+    let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+    for edge in edges {
+        graph
+            .entry(edge.source.clone())
+            .or_default()
+            .push(edge.target.clone());
+        graph.entry(edge.target.clone()).or_default();
+    }
+
+    fn canonicalize_cycle(cycle: &[String]) -> Vec<String> {
+        if cycle.is_empty() {
+            return Vec::new();
+        }
+        let len = cycle.len();
+        let mut best: Option<Vec<String>> = None;
+        for start in 0..len {
+            let rotated = (0..len)
+                .map(|offset| cycle[(start + offset) % len].clone())
+                .collect::<Vec<_>>();
+            if best.as_ref().map_or(true, |current| rotated < *current) {
+                best = Some(rotated);
+            }
+        }
+        best.unwrap_or_default()
+    }
+
+    fn dfs(
+        node: &str,
+        graph: &HashMap<String, Vec<String>>,
+        visited: &mut HashSet<String>,
+        stack: &mut Vec<String>,
+        in_stack: &mut HashSet<String>,
+        seen: &mut BTreeSet<String>,
+        cycles: &mut Vec<Vec<String>>,
+    ) {
+        visited.insert(node.to_string());
+        stack.push(node.to_string());
+        in_stack.insert(node.to_string());
+
+        if let Some(neighbors) = graph.get(node) {
+            for neighbor in neighbors {
+                if !visited.contains(neighbor) {
+                    dfs(neighbor, graph, visited, stack, in_stack, seen, cycles);
+                } else if in_stack.contains(neighbor) {
+                    if let Some(pos) = stack.iter().position(|item| item == neighbor) {
+                        let cycle = canonicalize_cycle(&stack[pos..].to_vec());
+                        let key = cycle.join("->");
+                        if seen.insert(key) {
+                            cycles.push(cycle);
+                        }
+                    }
+                }
+            }
+        }
+
+        stack.pop();
+        in_stack.remove(node);
+    }
+
+    let mut visited = HashSet::new();
+    let mut stack = Vec::new();
+    let mut in_stack = HashSet::new();
+    let mut seen = BTreeSet::new();
+    let mut cycles = Vec::new();
+
+    let mut nodes: Vec<String> = graph.keys().cloned().collect();
+    nodes.sort();
+    for node in nodes {
+        if !visited.contains(&node) {
+            dfs(
+                &node,
+                &graph,
+                &mut visited,
+                &mut stack,
+                &mut in_stack,
+                &mut seen,
+                &mut cycles,
+            );
+        }
+    }
+    cycles
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImpactQueryControlsRaw {
@@ -4185,6 +4269,31 @@ mod tests {
                 kind: None,
             },
         ]
+    }
+
+    #[test]
+    fn detect_cycles_finds_simple_cycle() {
+        let edges = vec![
+            ImpactGraphEdge {
+                source: "a.ts".into(),
+                target: "b.ts".into(),
+                kind: Some("import".into()),
+            },
+            ImpactGraphEdge {
+                source: "b.ts".into(),
+                target: "c.ts".into(),
+                kind: Some("import".into()),
+            },
+            ImpactGraphEdge {
+                source: "c.ts".into(),
+                target: "a.ts".into(),
+                kind: Some("import".into()),
+            },
+        ];
+
+        let cycles = detect_cycles(&edges);
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0], vec!["a.ts", "b.ts", "c.ts"]);
     }
 
     #[test]

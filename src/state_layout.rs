@@ -40,6 +40,8 @@ pub struct StatePathsDebug {
     pub dag_path: String,
     pub cache_web_dir: String,
     pub cache_libs_dir: String,
+    pub profiles_dir: String,
+    pub profiles_sync_dir: String,
     pub locks_dir: String,
     pub logs_dir: String,
 }
@@ -82,12 +84,22 @@ impl StateLayout {
         self.base_dir.join("logs")
     }
 
+    pub fn profiles_dir(&self) -> PathBuf {
+        self.base_dir.join("profiles")
+    }
+
+    pub fn profiles_sync_dir(&self) -> PathBuf {
+        self.profiles_dir().join("sync")
+    }
+
     pub fn ensure_global_dirs(&self) -> Result<()> {
         ensure_state_dir_secure(&self.base_dir)?;
         ensure_state_dir_secure(&self.repos_dir())?;
         ensure_state_dir_secure(&self.cache_dir())?;
         ensure_state_dir_secure(&self.cache_web_dir())?;
         ensure_state_dir_secure(&self.cache_libs_dir())?;
+        ensure_state_dir_secure(&self.profiles_dir())?;
+        ensure_state_dir_secure(&self.profiles_sync_dir())?;
         ensure_state_dir_secure(&self.locks_dir())?;
         ensure_state_dir_secure(&self.logs_dir())?;
         Ok(())
@@ -150,6 +162,8 @@ impl StatePaths {
             dag_path: self.dag_path.display().to_string(),
             cache_web_dir: self.layout.cache_web_dir().display().to_string(),
             cache_libs_dir: self.layout.cache_libs_dir().display().to_string(),
+            profiles_dir: self.layout.profiles_dir().display().to_string(),
+            profiles_sync_dir: self.layout.profiles_sync_dir().display().to_string(),
             locks_dir: self.layout.locks_dir().display().to_string(),
             logs_dir: self.layout.logs_dir().display().to_string(),
         }

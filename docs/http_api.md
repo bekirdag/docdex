@@ -19,7 +19,9 @@ Docdex runs a per-repo HTTP server (default `127.0.0.1:3210`). Secure mode is on
 - `POST /v1/index/ingest` - ingest a single file.
   - Body: `{ "file": "<path>" }`.
 - `POST /v1/chat/completions` - OpenAI-compatible chat completion with docdex context.
-  - Optional `docdex` object (`limit`, `force_web`, `skip_local_search`, `no_cache`, `include_libs`, `max_web_results`, `llm_filter_local_results`, `compress_results`, `diff`) plus `repo_id`.
+  - Optional `docdex` object (`limit`, `force_web`, `skip_local_search`, `no_cache`, `include_libs`, `max_web_results`, `llm_filter_local_results`, `compress_results`, `diff`, `agent_id`) plus `repo_id`.
+  - Header `x-docdex-agent-id` overrides `docdex.agent_id`.
+  - Response may include `reasoning_trace` (non-streaming) with `behavioral_truth` (style/workflow) and `technical_truth` (memory/repo/web).
 - `GET /v1/graph/impact` - impact graph edges for a file.
   - Query params: `file`, `repo_id`, `maxEdges`, `maxDepth`, `edgeTypes`.
 - `GET /v1/graph/impact/diagnostics` - unresolved import diagnostics.
@@ -38,6 +40,18 @@ Docdex runs a per-repo HTTP server (default `127.0.0.1:3210`). Secure mode is on
   - Body: `{ "text": "<string>", "metadata": { ... } }`.
 - `POST /v1/memory/recall` - recall memory items by embedding similarity.
   - Body: `{ "query": "<string>", "top_k": <int> }`.
+- `GET /v1/profile/list` - list agents and preferences (global profile memory).
+  - Query params: `agent_id` (optional).
+- `POST /v1/profile/add` - add a profile preference (immediate write).
+  - Body: `{ "agent_id": "<string>", "content": "<string>", "category": "<style|tooling|constraint|workflow>", "role": "<string optional>" }`.
+- `POST /v1/profile/save` - add a preference and trigger background evolution.
+  - Body: `{ "agent_id": "<string>", "content": "<string>", "category": "<style|tooling|constraint|workflow>", "role": "<string optional>" }`.
+- `POST /v1/profile/search` - semantic search across preferences for an agent.
+  - Body: `{ "agent_id": "<string>", "query": "<string>", "top_k": <int optional> }`.
+- `POST /v1/profile/export` - export all agents/preferences to a JSON manifest.
+- `POST /v1/profile/import` - import a JSON manifest with LWW merge.
+- `POST /v1/hooks/validate` - semantic hook validation (pre-commit).
+  - Body: `{ "files": ["<repo-relative path>", "..."] }`.
 - `POST /v1/web/search` - web discovery (requires `DOCDEX_WEB_ENABLED=1`).
 - `POST /v1/web/fetch` - fetch a single web URL (requires `DOCDEX_WEB_ENABLED=1`).
 - `POST /v1/web/cache/flush` - clear cached web entries.

@@ -36,6 +36,7 @@ pub async fn run(
     secure_mode: bool,
     disable_snippet_text: bool,
     enable_memory: bool,
+    agent_id: Option<String>,
     enable_mcp: bool,
     disable_mcp: bool,
     embedding_base_url: Option<String>,
@@ -57,6 +58,10 @@ pub async fn run(
         StartupError::new("startup_config_invalid", format!("failed to load config: {err}"))
             .with_hint("Ensure ~/.docdex is writable and config.toml is valid.")
     })?;
+    let mut config = config;
+    if let Some(agent_id) = agent_id {
+        config.server.default_agent_id = agent_id;
+    }
     let (host, port) = resolve_bind_addr(host, port, &config)?;
     if let Some(ref dir) = chroot_dir {
         daemon::enter_chroot(dir).map_err(|err| {
@@ -145,6 +150,22 @@ pub async fn run(
     } else {
         enable_memory || config.memory.enabled
     };
+    let hook_socket_path = {
+        let trimmed = config.server.hook_socket_path.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(trimmed))
+        }
+    };
+    let default_agent_id = {
+        let trimmed = config.server.default_agent_id.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    };
     let (enable_mcp, mcp_source) =
         resolve_mcp_enabled(enable_mcp, disable_mcp, config.server.enable_mcp);
     let mcp_max_results = resolve_mcp_max_results();
@@ -207,10 +228,16 @@ pub async fn run(
         config.llm.provider.clone(),
         embedding_base_url,
         embedding_model,
+        config.memory.profile.embedding_model.clone(),
+        config.memory.profile.embedding_dim,
         config.llm.max_answer_tokens,
         config.llm.base_url.clone(),
         config.llm.default_model.clone(),
         embedding_timeout_ms,
+        hook_socket_path,
+        config.features.clone(),
+        default_agent_id,
+        config.core.global_state_dir.clone(),
     )
     .await
 }

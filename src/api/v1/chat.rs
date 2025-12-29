@@ -20,11 +20,12 @@ use crate::dag::logging as dag_logging;
 use crate::diff;
 use crate::memory::repo_state_root_from_state_dir;
 use crate::orchestrator::{
-    memory_budget_from_max_answer_tokens, run_waterfall, SymbolContextAssembly, WaterfallPlan,
-    WaterfallRequest, WebGateConfig,
+    memory_budget_from_max_answer_tokens, run_waterfall, ProfileBudget, SymbolContextAssembly,
+    WaterfallPlan, WaterfallRequest, WebGateConfig,
 };
 use crate::orchestrator::web::web_context_from_status;
 use crate::ollama::OllamaClient;
+use crate::project_map;
 use crate::search::AppState;
 use crate::tier2::Tier2Config;
 use tracing::{info, warn};
@@ -33,6 +34,7 @@ const DEFAULT_LIMIT: usize = 8;
 const STREAM_CHUNK_CHARS: usize = 320;
 const CHAT_GENERATION_TIMEOUT_SECS: u64 = 30;
 const CHAT_SYSTEM_PROMPT: &str = "You are Docdex, a local-first assistant. Use the provided context when relevant. If the answer is not in the context, say so.";
+const PROJECT_MAP_TOKEN_CAP: usize = 500;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct ChatCompletionRequest {
@@ -58,6 +60,7 @@ struct DocdexOptions {
     max_web_results: Option<usize>,
     llm_filter_local_results: Option<bool>,
     compress_results: Option<bool>,
+    agent_id: Option<String>,
     diff: Option<diff::DiffOptions>,
 }
 
@@ -90,6 +93,8 @@ struct ChatCompletionResponse {
     model: String,
     choices: Vec<ChatChoice>,
     usage: Usage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_trace: Option<ReasoningTrace>,
 }
 
 #[derive(Serialize)]
@@ -110,6 +115,30 @@ struct Usage {
     prompt_tokens: u64,
     completion_tokens: u64,
     total_tokens: u64,
+}
+
+#[derive(Clone, Serialize)]
+struct ReasoningTrace {
+    behavioral_truth: BehavioralTruth,
+    technical_truth: TechnicalTruth,
+}
+
+#[derive(Clone, Serialize)]
+struct BehavioralTruth {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    style: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    workflow: Vec<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct TechnicalTruth {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    memory: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    repo: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    web: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -157,6 +186,19 @@ pub(crate) struct RepoIdQuery {
     repo_id: Option<String>,
 }
 
+pub fn resolve_profile_agent_id(
+    header_value: Option<&str>,
+    body_value: Option<&str>,
+) -> Option<String> {
+    let header = header_value
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty());
+    let body = body_value
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty());
+    header.or(body).map(str::to_string)
+}
+
 pub(crate) async fn chat_completions_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -202,6 +244,12 @@ pub(crate) async fn chat_completions_handler(
     }
 
     let docdex = payload.docdex.as_ref();
+    let header_agent_id = headers
+        .get("x-docdex-agent-id")
+        .and_then(|value| value.to_str().ok());
+    let body_agent_id = docdex.and_then(|opts| opts.agent_id.as_deref());
+    let profile_agent_id =
+        resolve_profile_agent_id(header_agent_id, body_agent_id).or_else(|| state.default_agent_id.clone());
     let limit = docdex
         .and_then(|opts| opts.limit)
         .unwrap_or(DEFAULT_LIMIT)
@@ -237,6 +285,7 @@ pub(crate) async fn chat_completions_handler(
         WebGateConfig::from_env(),
         Tier2Config::enabled(),
         memory_budget_from_max_answer_tokens(state.max_answer_tokens),
+        ProfileBudget::default(),
     );
     let request_id = Uuid::new_v4().to_string();
     let repo_state_root = repo_state_root_from_state_dir(state.indexer.state_dir());
@@ -251,6 +300,7 @@ pub(crate) async fn chat_completions_handler(
             "skip_local_search": skip_local_search,
             "max_web_results": max_web_results,
             "limit": limit,
+            "agent_id": profile_agent_id.as_deref(),
             "diff": docdex.and_then(|opts| opts.diff.as_ref()).map(|opts| json!(opts)),
         }),
     );
@@ -276,6 +326,8 @@ pub(crate) async fn chat_completions_handler(
         plan,
         tier2_limiter: None,
         memory: state.memory.as_ref(),
+        profile_state: state.profile_state.as_ref(),
+        profile_agent_id: profile_agent_id.as_deref(),
         ranking_surface: crate::search::RankingSurface::Chat,
     })
     .await
@@ -289,6 +341,69 @@ pub(crate) async fn chat_completions_handler(
                 .model
                 .clone()
                 .unwrap_or_else(|| state.llm_default_model.clone());
+            let project_map = if compress_results || !state.features.project_map {
+                None
+            } else {
+                match (profile_agent_id.as_deref(), state.profile_state.as_ref()) {
+                    (Some(agent_id), Some(profile_state)) => {
+                        project_map::load_cached_project_map(state.indexer.state_dir(), agent_id)
+                            .or_else(|| {
+                                match project_map::build_project_map(
+                                    state.indexer.as_ref(),
+                                    &profile_state.manager,
+                                    agent_id,
+                                ) {
+                                    Ok(map) => {
+                                        if let Err(err) = project_map::write_project_map_cache(
+                                            state.indexer.state_dir(),
+                                            &map,
+                                        ) {
+                                            warn!(
+                                                target: "docdexd",
+                                                error = ?err,
+                                                "project map cache write failed"
+                                            );
+                                        }
+                                        Some(map)
+                                    }
+                                    Err(err) => {
+                                        warn!(
+                                            target: "docdexd",
+                                            error = ?err,
+                                            "project map build failed"
+                                        );
+                                        None
+                                    }
+                                }
+                            })
+                    }
+                    _ => None,
+                }
+            };
+            let reasoning_trace = build_reasoning_trace(
+                result.profile_context.as_ref(),
+                result.memory_context.as_ref(),
+                &result.search_response.hits,
+                web_context.as_deref(),
+            );
+            if let Some(trace) = reasoning_trace.as_ref() {
+                queue_dag_log(
+                    repo_state_root.clone(),
+                    request_id.clone(),
+                    "ReasoningTrace",
+                    json!({
+                        "behavioral_truth": {
+                            "style": trace.behavioral_truth.style.clone(),
+                            "workflow": trace.behavioral_truth.workflow.clone(),
+                        },
+                        "technical_truth": {
+                            "memory": trace.technical_truth.memory.clone(),
+                            "repo": trace.technical_truth.repo.clone(),
+                            "web": trace.technical_truth.web.clone(),
+                        }
+                    }),
+                );
+            }
 
             if compress_results {
                 if model.trim().is_empty() {
@@ -298,6 +413,7 @@ pub(crate) async fn chat_completions_handler(
                     &result.search_response.hits,
                     result.search_response.symbols_context.as_ref(),
                     web_context.as_deref(),
+                    result.profile_context.as_ref(),
                     result.memory_context.as_ref(),
                     result.impact_context.as_ref(),
                     &budgets,
@@ -380,6 +496,7 @@ pub(crate) async fn chat_completions_handler(
                         finish_reason: "stop",
                     }],
                     usage,
+                    reasoning_trace: reasoning_trace.clone(),
                 }
             } else {
                 if model.trim().is_empty() {
@@ -395,6 +512,9 @@ pub(crate) async fn chat_completions_handler(
                     &result.search_response.hits,
                     result.search_response.symbols_context.as_ref(),
                     web_context.as_deref(),
+                    result.profile_context.as_ref(),
+                    project_map.as_ref(),
+                    state.features.workflow_prompt,
                     result.memory_context.as_ref(),
                     result.impact_context.as_ref(),
                     &budgets,
@@ -404,7 +524,16 @@ pub(crate) async fn chat_completions_handler(
                     state.indexer.repo_root(),
                     &context_trace,
                 );
-                let prompt = build_prompt(&query, &context, &budgets);
+                let history_budget = budgets
+                    .history_tokens
+                    .saturating_add(context_trace.repo_unused_tokens);
+                let prompt = build_prompt(
+                    &query,
+                    &context,
+                    &extracted.history,
+                    history_budget,
+                    &budgets,
+                );
                 let client = match OllamaClient::new(state.llm_base_url.clone()) {
                     Ok(client) => client,
                     Err(err) => {
@@ -513,6 +642,7 @@ pub(crate) async fn chat_completions_handler(
                         finish_reason: "stop",
                     }],
                     usage,
+                    reasoning_trace: reasoning_trace.clone(),
                 }
             }
         }
@@ -532,11 +662,14 @@ pub(crate) async fn chat_completions_handler(
 struct ChatQueryContext {
     query: String,
     context: String,
+    history: String,
 }
 
 fn extract_query_and_context(messages: &[ChatMessage]) -> Option<ChatQueryContext> {
     let mut context_parts: Vec<String> = Vec::new();
+    let mut history_parts: Vec<(String, String)> = Vec::new();
     let mut last_user: Option<String> = None;
+    let mut last_user_index: Option<usize> = None;
 
     for message in messages {
         let role = message.role.to_ascii_lowercase();
@@ -551,14 +684,42 @@ fn extract_query_and_context(messages: &[ChatMessage]) -> Option<ChatQueryContex
             continue;
         }
         context_parts.push(trimmed.to_string());
-        if role == "user" {
-            last_user = Some(trimmed.to_string());
+        if role == "user" || role == "assistant" {
+            if role == "user" {
+                last_user = Some(trimmed.to_string());
+                last_user_index = Some(history_parts.len());
+            }
+            history_parts.push((role, trimmed.to_string()));
         }
     }
 
     let query = last_user?;
     let context = context_parts.join("\n\n");
-    Some(ChatQueryContext { query, context })
+    let history = build_history_from_messages(&history_parts, last_user_index);
+    Some(ChatQueryContext {
+        query,
+        context,
+        history,
+    })
+}
+
+fn build_history_from_messages(
+    history_parts: &[(String, String)],
+    skip_index: Option<usize>,
+) -> String {
+    let mut lines = Vec::new();
+    for (idx, (role, content)) in history_parts.iter().enumerate() {
+        if Some(idx) == skip_index {
+            continue;
+        }
+        let label = if role.eq_ignore_ascii_case("assistant") {
+            "Assistant"
+        } else {
+            "User"
+        };
+        lines.push(format!("{label}: {content}"));
+    }
+    lines.join("\n")
 }
 
 fn extract_message_text(content: &MessageContent) -> Option<String> {
@@ -593,9 +754,33 @@ fn extract_message_text(content: &MessageContent) -> Option<String> {
 
 struct ChatContextBudgets {
     system_tokens: usize,
+    profile_tokens: usize,
+    map_tokens: usize,
     memory_tokens: usize,
     diff_tokens: usize,
     repo_tokens: usize,
+    history_tokens: usize,
+}
+
+struct ProfileSnippet {
+    content: String,
+    score: f32,
+    category: crate::profiles::PreferenceCategory,
+}
+
+struct ProfileSnippetTrace {
+    available: usize,
+    selected: usize,
+    truncated: usize,
+    budget_tokens: usize,
+    used_tokens: usize,
+}
+
+struct MapSnippetTrace {
+    available: usize,
+    selected: usize,
+    truncated: usize,
+    budget_tokens: usize,
 }
 
 struct MemorySnippet {
@@ -632,11 +817,14 @@ struct WebContextTrace {
 }
 
 struct ChatContextTrace {
+    profile: ProfileSnippetTrace,
+    map: MapSnippetTrace,
     memory: MemorySnippetTrace,
     diff: DiffContextTrace,
     repo: RepoContextTrace,
     symbols: SymbolContextTrace,
     web: WebContextTrace,
+    repo_unused_tokens: usize,
 }
 
 struct SymbolContextTrace {
@@ -652,18 +840,20 @@ fn chat_context_budgets(max_answer_tokens: u32) -> ChatContextBudgets {
     let system_tokens = total_tokens / 10;
     let memory_tokens = total_tokens / 5;
     let diff_tokens = total_tokens / 10;
-    let mut repo_tokens = total_tokens / 2;
-    let used = system_tokens + memory_tokens + diff_tokens + repo_tokens + generation_tokens;
-    if total_tokens > used {
-        repo_tokens = repo_tokens.saturating_add(total_tokens - used);
-    } else if used > total_tokens {
-        repo_tokens = repo_tokens.saturating_sub(used - total_tokens);
-    }
+    let history_tokens = 0;
+    let profile_cap = ProfileBudget::default().token_budget;
+    let base_used = system_tokens + memory_tokens + diff_tokens + generation_tokens + history_tokens;
+    let profile_tokens = profile_cap.min(total_tokens.saturating_sub(base_used));
+    let map_tokens = PROJECT_MAP_TOKEN_CAP.min(total_tokens.saturating_sub(base_used + profile_tokens));
+    let repo_tokens = total_tokens.saturating_sub(base_used + profile_tokens + map_tokens);
     ChatContextBudgets {
         system_tokens,
+        profile_tokens,
+        map_tokens,
         memory_tokens,
         diff_tokens,
         repo_tokens,
+        history_tokens,
     }
 }
 
@@ -717,6 +907,121 @@ fn select_memory_snippets(
             available,
             selected,
             truncated: truncated_count,
+            budget_tokens,
+        },
+    )
+}
+
+fn select_profile_snippets(
+    profile_context: Option<&crate::orchestrator::ProfileContextAssembly>,
+    budget_tokens: usize,
+    allowed_categories: Option<&[crate::profiles::PreferenceCategory]>,
+) -> (Vec<ProfileSnippet>, ProfileSnippetTrace) {
+    let Some(context) = profile_context else {
+        return (
+            Vec::new(),
+            ProfileSnippetTrace {
+                available: 0,
+                selected: 0,
+                truncated: 0,
+                budget_tokens,
+                used_tokens: 0,
+            },
+        );
+    };
+    let filtered: Vec<&crate::profiles::ProfileContextItem> = context
+        .items
+        .iter()
+        .filter(|item| {
+            allowed_categories
+                .map(|allowed| allowed.contains(&item.category))
+                .unwrap_or(true)
+        })
+        .collect();
+    let available = filtered.len();
+    let mut remaining = budget_tokens;
+    let mut snippets = Vec::new();
+    let mut truncated_count = 0usize;
+    for item in filtered {
+        if remaining == 0 {
+            break;
+        }
+        let item_tokens = item.token_estimate;
+        if item_tokens <= remaining {
+            snippets.push(ProfileSnippet {
+                content: item.content.clone(),
+                score: item.score,
+                category: item.category.clone(),
+            });
+            remaining = remaining.saturating_sub(item_tokens);
+        } else {
+            let (truncated_content, _used_tokens) = truncate_to_tokens(&item.content, remaining);
+            if truncated_content.is_empty() {
+                break;
+            }
+            snippets.push(ProfileSnippet {
+                content: truncated_content,
+                score: item.score,
+                category: item.category.clone(),
+            });
+            truncated_count += 1;
+            break;
+        }
+    }
+    let selected = snippets.len();
+    (
+        snippets,
+        ProfileSnippetTrace {
+            available,
+            selected,
+            truncated: truncated_count,
+            budget_tokens,
+            used_tokens: budget_tokens.saturating_sub(remaining),
+        },
+    )
+}
+
+fn select_project_map_snippet(
+    map: Option<&project_map::ProjectMap>,
+    budget_tokens: usize,
+) -> (Option<String>, MapSnippetTrace) {
+    let Some(map) = map else {
+        return (
+            None,
+            MapSnippetTrace {
+                available: 0,
+                selected: 0,
+                truncated: 0,
+                budget_tokens,
+            },
+        );
+    };
+    if map.nodes.is_empty() || budget_tokens == 0 {
+        return (
+            None,
+            MapSnippetTrace {
+                available: 0,
+                selected: 0,
+                truncated: 0,
+                budget_tokens,
+            },
+        );
+    }
+    let rendered = project_map::render_project_map(map);
+    let estimated_tokens = estimate_tokens(&rendered) as usize;
+    let (snippet, _) = truncate_to_tokens(&rendered, budget_tokens);
+    let selected = if snippet.is_empty() { 0 } else { 1 };
+    let truncated = if selected == 1 && estimated_tokens > budget_tokens {
+        1
+    } else {
+        0
+    };
+    (
+        if snippet.is_empty() { None } else { Some(snippet) },
+        MapSnippetTrace {
+            available: 1,
+            selected,
+            truncated,
             budget_tokens,
         },
     )
@@ -782,12 +1087,54 @@ fn build_context_summary(
     hits: &[crate::index::Hit],
     symbols_context: Option<&SymbolContextAssembly>,
     web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
+    profile_context: Option<&crate::orchestrator::ProfileContextAssembly>,
+    project_map: Option<&project_map::ProjectMap>,
+    include_workflow: bool,
     memory_context: Option<&crate::orchestrator::MemoryContextAssembly>,
     impact_context: Option<&crate::impact::ImpactContextAssembly>,
     budgets: &ChatContextBudgets,
 ) -> (String, ChatContextTrace) {
     let mut lines = Vec::new();
     let trimmed = query.trim();
+
+    let style_categories = [crate::profiles::PreferenceCategory::Style];
+    let (profile_snippets, profile_trace) = select_profile_snippets(
+        profile_context,
+        budgets.profile_tokens,
+        Some(&style_categories),
+    );
+    if !profile_snippets.is_empty() {
+        lines.push("Style preferences (advisory):".to_string());
+        for snippet in profile_snippets {
+            lines.push(format!("- {}", snippet.content));
+        }
+    }
+
+    if include_workflow {
+        let workflow_categories = [crate::profiles::PreferenceCategory::Workflow];
+        let workflow_budget = budgets
+            .profile_tokens
+            .saturating_sub(profile_trace.used_tokens);
+        let (workflow_snippets, _workflow_trace) = select_profile_snippets(
+            profile_context,
+            workflow_budget,
+            Some(&workflow_categories),
+        );
+        if !workflow_snippets.is_empty() {
+            lines.push("Workflow guidance (advisory):".to_string());
+            for snippet in workflow_snippets {
+                lines.push(format!("- {}", snippet.content));
+            }
+        }
+    }
+
+    let (map_snippet, map_trace) =
+        select_project_map_snippet(project_map, budgets.map_tokens);
+    if let Some(snippet) = map_snippet {
+        for line in snippet.lines() {
+            lines.push(line.to_string());
+        }
+    }
 
     let (memory_snippets, memory_trace) =
         select_memory_snippets(memory_context, budgets.memory_tokens);
@@ -910,7 +1257,7 @@ fn build_context_summary(
         lines.extend(symbol_lines);
     }
 
-    let (web_lines, web_trace) = if let Some(web_context) = web_context {
+    let (web_lines, web_trace, repo_remaining) = if let Some(web_context) = web_context {
         format_web_context_with_budget(web_context, repo_remaining)
     } else {
         (
@@ -921,6 +1268,7 @@ fn build_context_summary(
                 budget_tokens: repo_remaining,
                 budget_exhausted: false,
             },
+            repo_remaining,
         )
     };
     if !web_lines.is_empty() {
@@ -933,6 +1281,8 @@ fn build_context_summary(
     (
         lines.join("\n"),
         ChatContextTrace {
+            profile: profile_trace,
+            map: map_trace,
             memory: memory_trace,
             diff: diff_trace,
             repo: RepoContextTrace {
@@ -943,11 +1293,70 @@ fn build_context_summary(
             },
             symbols: symbol_trace,
             web: web_trace,
+            repo_unused_tokens: repo_remaining,
         },
     )
 }
 
-fn build_prompt(query: &str, context: &str, budgets: &ChatContextBudgets) -> String {
+fn build_reasoning_trace(
+    profile_context: Option<&crate::orchestrator::ProfileContextAssembly>,
+    memory_context: Option<&crate::orchestrator::MemoryContextAssembly>,
+    hits: &[crate::index::Hit],
+    web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
+) -> Option<ReasoningTrace> {
+    let mut style = Vec::new();
+    let mut workflow = Vec::new();
+    if let Some(context) = profile_context {
+        for item in &context.items {
+            match item.category {
+                crate::profiles::PreferenceCategory::Style => {
+                    style.push(truncate_compressed_text(&item.content));
+                }
+                crate::profiles::PreferenceCategory::Workflow => {
+                    workflow.push(truncate_compressed_text(&item.content));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut memory = Vec::new();
+    if let Some(context) = memory_context {
+        for item in &context.items {
+            memory.push(truncate_compressed_text(&item.content));
+        }
+    }
+
+    let repo = hits
+        .iter()
+        .take(8)
+        .map(|hit| hit.rel_path.clone())
+        .collect::<Vec<_>>();
+
+    let mut web = Vec::new();
+    if let Some(context) = web_context {
+        for item in context.iter().take(3) {
+            web.push(item.url.clone());
+        }
+    }
+
+    if style.is_empty() && workflow.is_empty() && memory.is_empty() && repo.is_empty() && web.is_empty() {
+        None
+    } else {
+        Some(ReasoningTrace {
+            behavioral_truth: BehavioralTruth { style, workflow },
+            technical_truth: TechnicalTruth { memory, repo, web },
+        })
+    }
+}
+
+fn build_prompt(
+    query: &str,
+    context: &str,
+    history: &str,
+    history_budget: usize,
+    budgets: &ChatContextBudgets,
+) -> String {
     let (system, _) = truncate_to_tokens(CHAT_SYSTEM_PROMPT, budgets.system_tokens.max(1));
     let mut prompt = String::new();
     if !system.trim().is_empty() {
@@ -961,6 +1370,14 @@ fn build_prompt(query: &str, context: &str, budgets: &ChatContextBudgets) -> Str
         prompt.push_str(context.trim());
         prompt.push_str("\n\n");
     }
+    if !history.trim().is_empty() && history_budget > 0 {
+        let (history_snippet, _) = truncate_to_tokens(history.trim(), history_budget);
+        if !history_snippet.trim().is_empty() {
+            prompt.push_str("Conversation history:\n");
+            prompt.push_str(history_snippet.trim());
+            prompt.push_str("\n\n");
+        }
+    }
     prompt.push_str("User question:\n");
     prompt.push_str(query.trim());
     prompt.push_str("\n\nAnswer:");
@@ -968,6 +1385,13 @@ fn build_prompt(query: &str, context: &str, budgets: &ChatContextBudgets) -> Str
 }
 
 fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace) {
+    let profile_dropped = trace
+        .profile
+        .available
+        .saturating_sub(trace.profile.selected);
+    let profile_truncated = trace.profile.truncated;
+    let map_dropped = trace.map.available.saturating_sub(trace.map.selected);
+    let map_truncated = trace.map.truncated;
     let memory_dropped = trace
         .memory
         .available
@@ -1005,8 +1429,16 @@ fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace
     } else {
         0
     };
+    let profile_drop_total = profile_dropped.saturating_add(profile_truncated);
+    if profile_drop_total > 0 {
+        crate::metrics::global().inc_profile_budget_drop(profile_drop_total);
+    }
 
-    if memory_dropped > 0
+    if profile_dropped > 0
+        || profile_truncated > 0
+        || map_dropped > 0
+        || map_truncated > 0
+        || memory_dropped > 0
         || memory_truncated > 0
         || diff_dropped > 0
         || repo_dropped > 0
@@ -1017,6 +1449,12 @@ fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace
             target: "docdexd",
             request_id = %request_id,
             repo_root = %repo_root.display(),
+            profile_dropped,
+            profile_truncated,
+            profile_budget_tokens = trace.profile.budget_tokens,
+            map_dropped,
+            map_truncated,
+            map_budget_tokens = trace.map.budget_tokens,
             memory_dropped,
             memory_truncated,
             memory_budget_tokens = trace.memory.budget_tokens,
@@ -1106,7 +1544,7 @@ fn format_symbol_label(symbol: &crate::orchestrator::SymbolContextSymbol) -> Str
 fn format_web_context_with_budget(
     web_context: &[crate::orchestrator::web::WebFetchResult],
     budget_tokens: usize,
-) -> (Vec<String>, WebContextTrace) {
+) -> (Vec<String>, WebContextTrace, usize) {
     const MAX_CONTEXT_DOCS: usize = 3;
     const MAX_CONTEXT_CHARS: usize = 800;
 
@@ -1156,6 +1594,7 @@ fn format_web_context_with_budget(
             budget_tokens,
             budget_exhausted,
         },
+        remaining,
     )
 }
 
@@ -1163,15 +1602,34 @@ fn format_compressed_results(
     hits: &[crate::index::Hit],
     symbols_context: Option<&SymbolContextAssembly>,
     web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
+    profile_context: Option<&crate::orchestrator::ProfileContextAssembly>,
     memory_context: Option<&crate::orchestrator::MemoryContextAssembly>,
     impact_context: Option<&crate::impact::ImpactContextAssembly>,
     budgets: &ChatContextBudgets,
 ) -> String {
+    const MAX_COMPRESSED_PROFILE_ITEMS: usize = 3;
     const MAX_COMPRESSED_MEMORY_ITEMS: usize = 3;
     const MAX_COMPRESSED_DIFF_ITEMS: usize = 4;
 
     let local = build_compressed_local(hits, symbols_context);
     let web = best_web_summary(web_context);
+    let (profile_snippets, _) =
+        select_profile_snippets(profile_context, budgets.profile_tokens, None);
+    let profile = if profile_snippets.is_empty() {
+        None
+    } else {
+        Some(
+            profile_snippets
+                .into_iter()
+                .take(MAX_COMPRESSED_PROFILE_ITEMS)
+                .map(|snippet| CompressedProfileItem {
+                    score: snippet.score,
+                    category: snippet.category.to_string(),
+                    content: truncate_compressed_text(snippet.content.trim()),
+                })
+                .collect(),
+        )
+    };
     let (memory_snippets, _) = select_memory_snippets(memory_context, budgets.memory_tokens);
     let memory = if memory_snippets.is_empty() {
         None
@@ -1207,6 +1665,7 @@ fn format_compressed_results(
         results: CompressedResults {
             local,
             web,
+            profile,
             memory,
             diff,
         },
@@ -1225,6 +1684,8 @@ struct CompressedResults {
     local: Option<CompressedLocal>,
     #[serde(skip_serializing_if = "Option::is_none")]
     web: Option<CompressedWeb>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile: Option<Vec<CompressedProfileItem>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     memory: Option<Vec<CompressedMemoryItem>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1252,6 +1713,13 @@ struct CompressedWeb {
 #[derive(Serialize)]
 struct CompressedMemoryItem {
     score: f32,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct CompressedProfileItem {
+    score: f32,
+    category: String,
     content: String,
 }
 
@@ -1493,6 +1961,8 @@ mod tests {
     use crate::index::{DocumentKind, Hit};
     use crate::memory::{MemoryContextItem, MemoryContextPruneTrace};
     use crate::orchestrator::MemoryContextAssembly;
+    use crate::orchestrator::ProfileContextAssembly;
+    use crate::profiles::{PreferenceCategory, ProfileContextItem, ProfileContextPruneTrace};
     use serde_json::json;
 
     #[test]
@@ -1549,9 +2019,12 @@ mod tests {
 
         let budgets = ChatContextBudgets {
             system_tokens: 0,
+            profile_tokens: 0,
+            map_tokens: 0,
             memory_tokens: 10,
             diff_tokens: 5,
             repo_tokens: 20,
+            history_tokens: 0,
         };
 
         let (context, trace) = build_context_summary(
@@ -1559,6 +2032,9 @@ mod tests {
             &hits,
             None,
             None,
+            None,
+            None,
+            false,
             Some(&memory_context),
             Some(&impact_context),
             &budgets,
@@ -1573,5 +2049,109 @@ mod tests {
         assert!(diff_pos < repo_pos);
         assert!(trace.diff.budget_exhausted);
         assert_eq!(trace.diff.selected, 1);
+    }
+
+    #[test]
+    fn profile_context_ordering_and_budgeting() {
+        let hits = vec![Hit {
+            doc_id: "doc-1".to_string(),
+            rel_path: "docs/readme.md".to_string(),
+            path: "docs/readme.md".to_string(),
+            kind: DocumentKind::Doc,
+            score: 1.0,
+            summary: "Repo summary text".to_string(),
+            snippet: String::new(),
+            token_estimate: 12,
+            snippet_origin: None,
+            snippet_truncated: None,
+            line_start: None,
+            line_end: None,
+        }];
+
+        let profile_context = ProfileContextAssembly {
+            items: vec![
+                ProfileContextItem {
+                    id: "pref-1".to_string(),
+                    agent_id: "agent-1".to_string(),
+                    category: PreferenceCategory::Style,
+                    last_updated: 0,
+                    score: 0.9,
+                    token_estimate: 3,
+                    truncated: false,
+                    content: "Keep responses concise".to_string(),
+                },
+                ProfileContextItem {
+                    id: "pref-2".to_string(),
+                    agent_id: "agent-1".to_string(),
+                    category: PreferenceCategory::Tooling,
+                    last_updated: 0,
+                    score: 0.8,
+                    token_estimate: 3,
+                    truncated: false,
+                    content: "Prefer ripgrep for search".to_string(),
+                },
+            ],
+            prune_trace: ProfileContextPruneTrace {
+                budget_tokens: 6,
+                max_items: 5,
+                candidates: 2,
+                kept: 2,
+                dropped: Vec::new(),
+            },
+        };
+
+        let memory_context = MemoryContextAssembly {
+            items: vec![MemoryContextItem {
+                id: "mem-1".to_string(),
+                created_at_ms: 0,
+                score: 0.9,
+                token_estimate: 3,
+                truncated: false,
+                content: "remember alpha".to_string(),
+                metadata: json!({ "source": "test" }),
+            }],
+            prune_trace: MemoryContextPruneTrace {
+                budget_tokens: 10,
+                max_items: 5,
+                candidates: 1,
+                kept: 1,
+                dropped: Vec::new(),
+            },
+        };
+
+        let budgets = ChatContextBudgets {
+            system_tokens: 0,
+            profile_tokens: 3,
+            map_tokens: 0,
+            memory_tokens: 10,
+            diff_tokens: 0,
+            repo_tokens: 20,
+            history_tokens: 0,
+        };
+
+        let (context, trace) = build_context_summary(
+            "hello",
+            &hits,
+            None,
+            None,
+            Some(&profile_context),
+            None,
+            false,
+            Some(&memory_context),
+            None,
+            &budgets,
+        );
+
+        let profile_pos = context
+            .find("Style preferences (advisory):")
+            .expect("profile context");
+        let memory_pos = context.find("Memory context:").expect("memory context");
+        let repo_pos = context
+            .find("Top local matches")
+            .expect("repo context");
+        assert!(profile_pos < memory_pos);
+        assert!(memory_pos < repo_pos);
+        assert_eq!(trace.profile.available, 1);
+        assert_eq!(trace.profile.selected, 1);
     }
 }

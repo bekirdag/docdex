@@ -7,6 +7,7 @@ use crate::mcp;
 use crate::memory::MemoryStore;
 use crate::metrics;
 use crate::ollama::OllamaEmbedder;
+use crate::profiles::{ProfileEmbedder, ProfileManager};
 use crate::search::{self, AppState, SecurityConfig};
 use crate::util;
 use crate::watcher;
@@ -22,12 +23,17 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::{io, sync::Arc};
 use tokio::net::TcpListener;
+#[cfg(unix)]
+use tokio::net::UnixListener;
 use tokio_rustls::{
     rustls::{self, pki_types::CertificateDer, pki_types::PrivateKeyDer},
     TlsAcceptor,
 };
 use tower::Service;
 use tracing::{error, info, warn};
+
+#[cfg(unix)]
+use std::fs;
 
 #[derive(Clone, Copy, Debug)]
 pub enum McpEnableSource {
@@ -271,10 +277,16 @@ pub async fn serve(
     llm_provider: String,
     ollama_base_url: String,
     embedding_model: String,
+    profile_embedding_model: String,
+    profile_embedding_dim: usize,
     max_answer_tokens: u32,
     llm_base_url: String,
     llm_default_model: String,
     embedding_timeout_ms: u64,
+    hook_socket_path: Option<PathBuf>,
+    feature_flags: crate::config::FeatureFlagsConfig,
+    default_agent_id: Option<String>,
+    global_state_dir: Option<PathBuf>,
 ) -> Result<()> {
     #[cfg(unix)]
     {
@@ -369,6 +381,37 @@ pub async fn serve(
     } else {
         None
     };
+    let profile_state = match global_state_dir.as_ref() {
+        Some(state_dir) => match ProfileManager::new(state_dir, profile_embedding_dim) {
+            Ok(manager) => {
+                let timeout = Duration::from_millis(embedding_timeout_ms);
+                let embedder = match ProfileEmbedder::new(
+                    ollama_base_url.clone(),
+                    profile_embedding_model.clone(),
+                    timeout,
+                    profile_embedding_dim,
+                ) {
+                    Ok(embedder) => Some(embedder),
+                    Err(err) => {
+                        warn!(
+                            error = ?err,
+                            "profile embedder initialization failed; profile memory disabled"
+                        );
+                        None
+                    }
+                };
+                embedder.map(|embedder| search::ProfileState { manager, embedder })
+            }
+            Err(err) => {
+                warn!(error = ?err, "profile manager initialization failed; profile memory disabled");
+                None
+            }
+        },
+        None => {
+            warn!("global_state_dir is missing; profile memory disabled");
+            None
+        }
+    };
     let mcp_auth_token = security.auth_token.clone();
     let metrics = Arc::new(metrics::Metrics::default());
     metrics::set_global(metrics.clone());
@@ -380,6 +423,9 @@ pub async fn serve(
         audit,
         metrics: metrics.clone(),
         memory,
+        profile_state,
+        features: feature_flags.clone(),
+        default_agent_id,
         max_answer_tokens,
         llm_base_url,
         llm_default_model,
@@ -444,6 +490,8 @@ pub async fn serve(
         }
     }
     let router = search::router(state);
+    #[cfg(unix)]
+    let unix_make_service = router.clone().into_make_service();
     let make_service = router.into_make_service_with_connect_info::<SocketAddr>();
     info!(
         target: "docdexd",
@@ -452,6 +500,92 @@ pub async fn serve(
         port,
         "listening on {addr}"
     );
+    #[cfg(unix)]
+    if let Some(socket_path) = hook_socket_path.clone() {
+        if let Some(parent) = socket_path.parent() {
+            fs::create_dir_all(parent).map_err(|err| {
+                StartupError::new(
+                    "startup_hook_socket_failed",
+                    format!(
+                        "failed to create hook socket directory {}: {err}",
+                        parent.display()
+                    ),
+                )
+            })?;
+        }
+        if socket_path.exists() {
+            fs::remove_file(&socket_path).map_err(|err| {
+                StartupError::new(
+                    "startup_hook_socket_failed",
+                    format!("failed to remove hook socket {}: {err}", socket_path.display()),
+                )
+            })?;
+        }
+        let unix_listener =
+            UnixListener::bind(&socket_path).map_err(|err| {
+                StartupError::new(
+                    "startup_hook_socket_failed",
+                    format!("failed to bind hook socket {}: {err}", socket_path.display()),
+                )
+            })?;
+        let unix_service = unix_make_service.clone();
+        info!(
+            target: "docdexd",
+            socket = %socket_path.display(),
+            "hook unix socket listening"
+        );
+        tokio::spawn(async move {
+            loop {
+                match unix_listener.accept().await {
+                    Ok((stream, _)) => {
+                        let mut make = unix_service.clone();
+                        tokio::spawn(async move {
+                            match make.call(()).await {
+                                Ok(service) => {
+                                    let io = TokioIo::new(stream);
+                                    let hyper_service = TowerToHyperService::new(service);
+                                    if let Err(err) = hyper_util::server::conn::auto::Builder::new(
+                                        TokioExecutor::new(),
+                                    )
+                                    .serve_connection(io, hyper_service)
+                                    .await
+                                    {
+                                        warn!(
+                                            target: "docdexd",
+                                            error = ?err,
+                                            "hook unix socket connection failed"
+                                        );
+                                    }
+                                }
+                                Err(err) => {
+                                    warn!(
+                                        target: "docdexd",
+                                        error = ?err,
+                                        "hook unix socket service build failed"
+                                    );
+                                }
+                            }
+                        });
+                    }
+                    Err(err) => {
+                        warn!(
+                            target: "docdexd",
+                            error = ?err,
+                            "hook unix socket accept failed"
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+    }
+    #[cfg(not(unix))]
+    if hook_socket_path.is_some() {
+        warn!(
+            target: "docdexd",
+            "hook_socket_path is configured but unix sockets are not supported on this platform"
+        );
+    }
     let mut mcp_child = if enable_mcp {
         let result = mcp::spawn_for_serve(
             mcp_repo_args,

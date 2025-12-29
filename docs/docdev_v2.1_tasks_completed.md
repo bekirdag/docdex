@@ -5,3 +5,181 @@ your new job is to work on the tasks under docdev_v2.1_tasks.md and implement al
   complete a task, add it to the docdev_v2.1_tasks_completed.md so we will know what is completed. This will take hours, when you have to renew the context, ensure you share this information with the new starting agent for it to remember what we are doing. do not stop until you
   complete all subtasks (around 179 sub tasks). review your code at the end of each sub task completion, fix the issues before you move to a new task.
 
+
+## Completed
+- P1-T1.1: Create `src/profiles/mod.rs` module skeleton and public reexports.
+- P1-T1.2: Define `Agent`, `Preference`, `PreferenceCategory`, and `ProfileMeta` types aligned to SDS.
+- P1-T1.3: Register the profiles module in `src/lib.rs`.
+- P1-T2.1: Add `profiles_dir()` and `profiles_sync_dir()` helpers to `StateLayout`.
+- P1-T2.2: Ensure global state initialization creates `profiles/` and `profiles/sync/`.
+- P1-T2.3: Surface profile paths in `StatePathsDebug` for diagnostics.
+- P1-T3.1: Implement profile DB open and WAL mode initialization.
+- P1-T3.2: Create schema for agents, preferences, and profile_meta tables.
+- P1-T3.3: Create preferences_vec vec0 table and backfill from preferences.
+- P1-T3.4: Persist and validate embedding_dim and schema_version.
+- P1-T4.1: Create `src/profiles/defaults.json` with baseline agents and preferences.
+- P1-T4.2: Add seed loader that parses embedded JSON into DB rows.
+- P1-T4.3: Enforce seed idempotency when agents table is non-empty.
+- P1-T5.1: Implement ProfileManager struct with RW lock and file lock path.
+- P1-T5.2: Add CRUD methods for agents and preferences.
+- P1-T5.3: Add vector search method `search_preferences` on preferences_vec.
+- P1-T6.1: Introduce `MemoryProfileConfig` with embedding_model and embedding_dim.
+- P1-T6.2: Extend config defaults and apply_defaults for profile settings.
+- P1-T6.3: Add validation for profile embedding settings.
+- P1-T7.1: Add ProfileState and include it in AppState.
+- P1-T7.2: Initialize ProfileManager on daemon startup using global state dir.
+- P1-T7.3: Plumb profile embedding config into daemon initialization.
+- P1-T8.1: Add profile_db check entry and status output in docdexd check.
+- P1-T8.2: Implement writable check using ProfileManager initialization.
+- P1-T9.1: Unit test schema creation and schema_version persistence.
+- P1-T9.2: Unit test embedding_dim mismatch errors.
+- P1-T9.3: Unit test seed idempotency with repeated init.
+- P1-T9.4: Integration test for profiles dir creation under state root.
+- P2-T1.1: Create ProfileEmbedder wrapper that delegates to OllamaEmbedder.
+- P2-T1.2: Enforce expected embedding dimension with explicit error.
+- P2-T1.3: Expose provider/model metadata for profile embeddings.
+- P2-T2.1: Add EvolutionAction enum and EvolutionDecision struct.
+- P2-T2.2: Add EvolutionOutcome struct for applied results.
+- P2-T2.3: Add validation helper for evolution decisions.
+- P2-T3.1: Implement EvolutionEngine struct with injected dependencies.
+- P2-T3.2: Add configuration fields for timeouts, retries, and recall_k.
+- P2-T4.1: Add search_preferences_for_evolution returning id/content/last_updated.
+- P2-T4.2: Ensure recall ordering by distance asc then last_updated desc.
+- P2-T4.3: Add unit test for recall ordering.
+- P2-T5.1: Implement evolution prompt template with JSON-only instruction.
+- P2-T5.2: Add recency calculation from last_updated timestamps.
+- P2-T5.3: Add snapshot test for evolution prompt output.
+- P2-T6.1: Implement LLM decision call with bounded timeout and token cap.
+- P2-T6.2: Strip code fences and extract JSON from LLM output.
+- P2-T6.3: Parse JSON into EvolutionDecision with validation hooks.
+- P2-T7.1: Implement retry loop for invalid JSON/validation failures.
+- P2-T7.2: Default to IGNORE after retries exhausted.
+- P2-T8.1: Re-embed new_content and insert preference row on ADD.
+- P2-T8.2: Insert new preference into preferences_vec on ADD.
+- P2-T9.1: Validate target preference id exists in recall set before UPDATE.
+- P2-T9.2: Update preference content and last_updated on UPDATE.
+- P2-T9.3: Update preferences_vec embedding on UPDATE.
+- P2-T10.1: Implement IGNORE path returning outcome with reasoning.
+- P2-T11.1: Add structured logs with action, agent_id, preference_id, latency.
+- P2-T11.2: Add counters for evolution decisions, retries, and invalid outputs.
+- P2-T12.1: Add stub LLM test for ADD decision and DB insertion.
+- P2-T12.2: Add tests for UPDATE and IGNORE outcomes.
+- P2-T12.3: Add test for invalid JSON retry leading to IGNORE.
+- P2-T13.1: Add test for mismatch dimension error in profile embedder.
+- P2-T13.2: Add test for correct dimension pass-through in profile embedder.
+- P2-T14.1: Verify ADD inserts preference and vector rows.
+- P2-T14.2: Verify UPDATE overwrites content and vector data.
+- P2-T14.3: Verify last_updated is monotonic on updates.
+- P3-T2.1: Implement prune_and_truncate_profile_context with score ordering.
+- P3-T2.2: Add token estimate and truncation logic for profile items.
+- P3-T2.3: Add unit tests for profile pruning and truncation.
+- P3-T1.1: Introduce ProfileBudget struct in orchestrator budget module.
+- P3-T1.2: Add ProfileContextAssembly and prune trace types.
+- P3-T1.3: Add profile_context to SearchResponse.
+- P3-T3.1: Add profile_state and profile_agent_id to WaterfallRequest.
+- P3-T3.2: Add profile_context to WaterfallResult.
+- P3-T3.3: Update callers to populate profile fields when available.
+- P3-T4.1: Embed query with profile embedder when profile_state exists.
+- P3-T4.2: Search profile DB and prune results to profile budget.
+- P3-T4.3: Add DAG logs for Tier 0 recall and pruning stats.
+- P3-T5.1: Extend ChatContextBudgets to include profile_tokens.
+- P3-T5.2: Allocate a fixed 1000-token cap for profile context.
+- P3-T5.3: Adjust budget balancing to keep total consistent.
+- P3-T6.1: Add profile block to build_context_summary ahead of repo memory.
+- P3-T6.2: Update log_budget_drops to include profile drops.
+- P3-T6.3: Update compressed results to include profile snippets.
+- P3-T7.1: Add header extraction for x-docdex-agent-id.
+- P3-T7.2: Add body extraction for docdex.agent_id.
+- P3-T7.3: Enforce precedence: header overrides body.
+- P3-T8.1: Define ProfileState with manager and embedder.
+- P3-T8.2: Initialize profile state in daemon when enabled.
+- P3-T14.1: Add profile section to compressed response structs.
+- P3-T14.2: Enforce max items and truncation rules for profile snippets.
+- P3-T9.1: Add --agent-id flag to query CLI.
+- P3-T9.2: Pass CLI agent id into WaterfallRequest.
+- P3-T10.1: Add profile subcommand with list/add/search/export/import.
+- P3-T10.2: Implement list/add/search commands in profile.rs.
+- P3-T10.3: Implement export/import commands with file IO.
+- P3-T11.1: Add routes for /v1/profile/list, /v1/profile/add, /v1/profile/search.
+- P3-T11.2: Add routes for /v1/profile/export and /v1/profile/import.
+- P3-T11.3: Apply auth/rate limits consistent with existing APIs.
+- P3-T12.1: Define tool schemas for docdex_save_preference and docdex_get_profile.
+- P3-T12.2: Implement handlers that call profile HTTP endpoints.
+- P3-T12.3: Decide and enforce repo scoping behavior for profile tools.
+- P3-T13.1: Add async spawn path for evolution pipeline on save.
+- P3-T13.2: Log background evolution execution status.
+- P3-T15.1: Test agent_id header/body precedence.
+- P3-T15.2: Test profile budget pruning and prompt order.
+- P3-T15.3: Test MCP tool registration and argument validation.
+- P4-T1.1: Add hook subcommand with pre-commit action.
+- P4-T1.2: Collect staged file paths using git diff --cached --name-only.
+- P4-T1.3: Send JSON payload to /v1/hooks/validate with timeout.
+- P4-T2.1: Define request/response structs for hook validation.
+- P4-T2.2: Register hook endpoint in router.
+- P4-T2.3: Implement handler to load constraint prefs and run checks.
+- P4-T3.1: Define constraint rule enum and registry mapping.
+- P4-T3.2: Add keyword/regex matchers for rule activation.
+- P4-T3.3: Add unit tests for rule matching.
+- P4-T4.1: Implement TS any-type detection using AST nodes.
+- P4-T4.2: Map AST violations to hook error format.
+- P4-T5.1: Add cycle detection using impact graph data.
+- P4-T5.2: Convert cycle results to hook violation errors.
+- P4-T6.1: Treat connection errors as warnings and exit 0.
+- P4-T6.2: Add explicit warning message on fail-open path.
+- P4-T7.1: Extract keywords from agent role and tooling prefs.
+- P4-T7.2: Query index for top N paths and build minimal tree.
+- P4-T7.3: Collapse non-selected directories into hidden node count.
+- P4-T8.1: Implement cache read/write to maps/<agent_id>.json.
+- P4-T8.2: Add cache invalidation on directory create/delete events.
+- P4-T9.1: Load cached map and inject into prompt after profile context.
+- P4-T9.2: Enforce 500-token cap for map context.
+- P4-T11.1: Add manager method to export agents and preferences.
+- P4-T11.2: Implement CLI export writing to file path.
+- P4-T12.1: Parse import manifest and validate schema.
+- P4-T12.2: Apply LWW merge by preference id and timestamp.
+- P4-T12.3: Acquire exclusive DB lock during import.
+- P4-T13.1: Check manifest schema_version compatibility.
+- P4-T13.2: Check manifest embedding_dim matches local profile DB.
+- P4-T14.1: Add config flags for hook checks, project map, TUI overlay.
+- P4-T14.2: Wire feature flags into hook, map, and TUI paths.
+- P4-T15.1: Test hook pass case with no violations.
+- P4-T15.2: Test hook fail case with constraint violation.
+- P4-T16.1: Create two manifests with same id and different timestamps.
+- P4-T16.2: Validate import rejects mismatched embedding_dim.
+- P5-T2.1: Add server.default_agent_id to config struct and defaults.
+- P5-T2.2: Add config serialization to config.toml output.
+- P5-T3.1: Add default_agent_id to AppState.
+- P5-T3.2: Use default agent when header/body agent id is missing.
+- P5-T4.1: Extend MCP initialize params to accept agent_id.
+- P5-T4.2: Use MCP default agent for profile tools without explicit agent_id.
+- P5-T1.1: Audit profile domain types for category coverage (style, tooling, constraint, workflow).
+- P5-T1.2: Add any missing fields required for reasoning trace metadata.
+- P5-T5.1: Filter profile context items by category=style.
+- P5-T5.2: Inject style block as non-blocking advice.
+- P5-T6.1: Extract workflow preferences into reasoning trace metadata.
+- P5-T6.2: Add optional flag to include workflow guidance in prompt.
+- P5-T7.1: Define reasoning trace structure with behavioral and technical sections.
+- P5-T7.2: Populate behavioral truth from profile context and workflow guidance.
+- P5-T7.3: Populate technical truth from repo memory and matches.
+- P5-T7.4: Add DAG log node for reasoning trace metadata.
+- P5-T8.1: Add config for hook Unix socket path.
+- P5-T8.2: Add Unix socket listener for hook validation requests.
+- P5-T8.3: Update hook client to prefer socket and fallback to HTTP.
+- P5-T9.1: Compute unused repo budget after context selection.
+- P5-T9.2: Reassign unused budget to chat history while keeping profile cap.
+- P5-T10.1: Document agent_id header/body and profile endpoints.
+- P5-T10.2: Document hook endpoint and reasoning trace fields.
+- P5-T11.1: Update CLI help strings for profile and hook commands.
+- P5-T11.2: Update README with profile, hook, and agent-id usage examples.
+- P5-T12.1: Add MCP tool docs for profile tools and defaults.
+- P5-T12.2: Document default agent selection in MCP initialize.
+- P5-T13.1: Document memory.profile.embedding_model and embedding_dim defaults.
+- P5-T13.2: Add example config snippet for profile memory.
+- P5-T14.1: Add metric definitions for profile recall latency and counts.
+- P5-T14.2: Increment metrics in profile recall and evolution flows.
+- P5-T15.1: Add counters for hook runs, failures, and latency.
+- P5-T15.2: Add cache hit/miss counters for project maps.
+- P5-T15.3: Add counter for profile budget drops.
+- P5-T16.1: Test default agent selection when no agent_id provided.
+- P5-T16.2: Test reasoning_trace presence and separation of truth blocks.
+- P5-T16.3: Test Unix socket hook path if enabled.

@@ -65,6 +65,8 @@ docdexd index --repo /path/to/repo
 docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 3210 --log info --secure-mode=false
 # for non-loopback binds, add --expose and --auth-token (or use TLS options)
 # docdexd serve --repo /path/to/repo --host 0.0.0.0 --port 3210 --expose --auth-token <token> --require-tls=false
+# set a default profile agent id for preference memory
+# docdexd serve --repo /path/to/repo --agent-id <agent-id>
 
 # ad-hoc search via CLI (JSON)
 docdexd chat --repo /path/to/repo --query "otp flow" --limit 5 --agent <slug>
@@ -118,6 +120,8 @@ Impact graph snapshots carry schema metadata and are migrated on read; reindex t
 - Sensitive-term scan: `docdexd self-check --repo <path>` writes `self_check_report.json` to the repo state dir (fails non-zero if matches are found).
 - Web fallback gate: set `DOCDEX_WEB_ENABLED=1` to allow Tier 2 web discovery, or `DOCDEX_OFFLINE=1` to force offline.
 - Web cache flush: `docdexd web-cache-flush` (clears `~/.docdex/state/cache/web`).
+- Profile memory: `docdexd profile list`, `docdexd profile add --agent-id <id> --category style --content \"Prefer X\"`, `docdexd profile export --out profile_sync.json`, `docdexd profile import profile_sync.json`.
+- Hook checks: `docdexd hook pre-commit --repo <path>` (fails open if the daemon is unavailable; can use a Unix socket when `server.hook_socket_path` is set).
 - Libs workflow: `docdexd libs discover --repo <path>` then `docdexd libs fetch --repo <path>` (or `docdexd libs ingest --repo <path> --sources <file>`; aliases: `libs-discover`, `libs-ingest`).
 - Repo mapping: `docdexd repo inspect --repo <path>` and `docdexd repo reassociate --repo <new_path> --state-dir <shared_state_dir> --old-path <old_path>`.
 - Test harness: `docdexd run-tests --repo <path> [--target <path>]` (see Run-tests config below).
@@ -233,6 +237,17 @@ AST/symbol ranking boosts are enabled by default for search and chat, and can be
 
 - Config (`~/.docdex/config.toml`): `[search].symbol_ranking_enabled`, `[search].ast_ranking_enabled`, `[search].chat_symbol_ranking_enabled`, `[search].chat_ast_ranking_enabled`.
 - Env overrides: `DOCDEX_ENABLE_SYMBOL_RANKING`, `DOCDEX_ENABLE_AST_RANKING`, `DOCDEX_ENABLE_CHAT_SYMBOL_RANKING`, `DOCDEX_ENABLE_CHAT_AST_RANKING` (truthy/falsey values).
+
+## Profile memory config
+- Config (`~/.docdex/config.toml`): `[memory.profile].embedding_model` (default `nomic-embed-text`), `[memory.profile].embedding_dim` (default `768`).
+- Optional defaults: `[server].default_agent_id` sets the fallback agent for profile recall; `[server].hook_socket_path` enables Unix socket hook transport.
+
+Example:
+```toml
+[memory.profile]
+embedding_model = "nomic-embed-text"
+embedding_dim = 768
+```
 
 ## HTTP API
 - `GET /healthz` — returns `ok`; this endpoint is unauthenticated and not rate-limited (IP allowlist still applies).
@@ -373,6 +388,7 @@ Docdex can run as an MCP tool provider over stdio; it does not replace the HTTP 
 - Auth: `docdexd mcp --auth-token <token>` (or `DOCDEX_AUTH_TOKEN`) requires clients to pass `auth_token` during `initialize`.
 - Rate limits: `--rate-limit-per-min` / `--rate-limit-burst` or `DOCDEX_MCP_RATE_LIMIT_PER_MIN` / `DOCDEX_MCP_RATE_LIMIT_BURST`.
 - Default repo: call `initialize` with `workspace_root` to set a default `project_root`; after that, tools may omit `project_root`/`repo_path`.
+- Default profile agent: include `agent_id` in `initialize` to set the default agent for profile tools; profile tool calls may omit `agent_id` after that.
 - Packaging: `docdexd mcp` launches the companion `docdex-mcp-server` binary; build/install it with `cargo build -p docdex-mcp-server` or set `DOCDEX_MCP_SERVER_BIN` to the binary path.
 - Registering with MCP clients: add a server named `docdex` that runs `docdexd mcp --repo <repo> --log warn`. Example Codex config snippet:
   ```json
@@ -404,6 +420,8 @@ Docdex can run as an MCP tool provider over stdio; it does not replace the HTTP 
   - `docdex_impact_diagnostics` — args: `{ "file": "<relative file optional>", "limit": <int>, "offset": <int>, "project_root": "<path>", "repo_path": "<path alias>" }`. Returns unresolved import diagnostics.
   - `docdex_memory_store` / `docdex_memory_save` — args: `{ "text": "<string>", "metadata": { ... }, "project_root": "<path>", "repo_path": "<path alias>" }`. Returns `{ "id", "created_at" }`.
   - `docdex_memory_recall` — args: `{ "query": "<string>", "top_k": <int>, "project_root": "<path>", "repo_path": "<path alias>" }`. Returns memory hits.
+  - `docdex_save_preference` — args: `{ "agent_id": "<string optional>", "content": "<string>", "category": "<style|tooling|constraint|workflow>", "role": "<string optional>" }`. Saves a preference and triggers evolution.
+  - `docdex_get_profile` — args: `{ "agent_id": "<string optional>" }`. Returns agents and preferences for the requested/default agent.
 - Example calls:
   - Initialize: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
   - Initialize with workspace root: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"workspace_root":"/path/to/repo"}}` (must match the server repo; sets default project_root for later calls)

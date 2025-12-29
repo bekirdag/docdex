@@ -24,10 +24,11 @@ use docdexd::symbols::SymbolsStore;
 use docdexd::tier2::Tier2Config;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
+use reqwest::{Client, Method};
 use tantivy::directory::error::LockError;
 use tantivy::TantivyError;
 use thiserror::Error;
@@ -345,6 +346,8 @@ struct InitializeParams {
     capabilities: Option<serde_json::Value>,
     #[serde(default, alias = "authToken")]
     auth_token: Option<String>,
+    #[serde(default, alias = "agentId")]
+    agent_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -530,6 +533,30 @@ struct MemoryRecallArgs {
 }
 
 #[derive(Deserialize)]
+struct ProfileSaveArgs {
+    #[serde(default)]
+    agent_id: Option<String>,
+    content: String,
+    category: String,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
+struct ProfileGetArgs {
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
 struct ResourceReadParams {
     uri: String,
 }
@@ -634,6 +661,7 @@ pub async fn serve(
         libs_indexer,
         max_results: max_results.max(1),
         default_project_root: None,
+        default_agent_id: None,
         memory,
         max_answer_tokens,
         tool_rate_limit,
@@ -655,6 +683,7 @@ struct McpServer {
     libs_indexer: Option<libs::LibsIndexer>,
     max_results: usize,
     default_project_root: Option<PathBuf>,
+    default_agent_id: Option<String>,
     memory: Option<McpMemoryState>,
     max_answer_tokens: u32,
     tool_rate_limit: Option<RateLimiter<()>>,
@@ -855,10 +884,18 @@ impl McpServer {
                         }
                     }
                 }
+                if let Some(agent_id) = init_params
+                    .agent_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    self.default_agent_id = Some(agent_id.to_string());
+                }
                 let protocol_version = init_params
                     .protocol_version
                     .unwrap_or_else(|| "2024-11-05".to_string());
-                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast and docdex_impact_diagnostics for unresolved imports.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
+                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast and docdex_impact_diagnostics for unresolved imports.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nProfile tools (docdex_save_preference/docdex_get_profile) use global profile memory and do not require project_root.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
                 let mut caps = json!({
                     "tools": { "listChanged": false },
                     "resources": { "listChanged": false },
@@ -1405,6 +1442,76 @@ impl McpServer {
                             }
                         }
                     }
+                    "docdex_save_preference" => {
+                        let args_res: Result<ProfileSaveArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_save_preference"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_save_preference" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_profile_save_preference(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_save_preference"))),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_get_profile" => {
+                        let args_res: Result<ProfileGetArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_get_profile"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_get_profile" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_profile_get_profile(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_get_profile"))),
+                                }))
+                            }
+                        }
+                    }
                     other => {
                         return Ok(Some(RpcResponse {
                             jsonrpc: JSONRPC_VERSION,
@@ -1430,7 +1537,9 @@ impl McpServer {
                                         "docdex_impact_diagnostics",
                                         "docdex_memory_save",
                                         "docdex_memory_store",
-                                        "docdex_memory_recall"
+                                        "docdex_memory_recall",
+                                        "docdex_save_preference",
+                                        "docdex_get_profile"
                                     ]
                                 })),
                             )),
@@ -1670,6 +1779,34 @@ impl McpServer {
                         "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
                     },
                     "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_save_preference",
+                description: "Store a global profile preference for an agent (profile memory, async evolution).",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "agent_id": { "type": "string", "minLength": 1, "description": "Profile agent id" },
+                        "content": { "type": "string", "minLength": 1, "description": "Preference content" },
+                        "category": { "type": "string", "enum": ["style", "tooling", "constraint", "workflow"], "description": "Preference category" },
+                        "role": { "type": "string", "description": "Optional agent role (used when creating a new agent)" },
+                        "project_root": { "type": "string", "description": "Optional repo root (ignored for global profile tools)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (ignored)" }
+                    },
+                    "required": ["content", "category"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_get_profile",
+                description: "Fetch profile preferences for an agent (profile memory).",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "agent_id": { "type": "string", "minLength": 1, "description": "Profile agent id" },
+                        "project_root": { "type": "string", "description": "Optional repo root (ignored for global profile tools)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (ignored)" }
+                    }
                 }),
             },
         ]
@@ -2298,6 +2435,102 @@ impl McpServer {
         }))
     }
 
+    async fn handle_profile_save_preference(
+        &self,
+        args: ProfileSaveArgs,
+    ) -> Result<serde_json::Value> {
+        let agent_id = args
+            .agent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .or_else(|| self.default_agent_id.as_deref());
+        let content = args.content.trim();
+        let category = args.category.trim().to_ascii_lowercase();
+        if agent_id.is_none() || content.is_empty() || category.is_empty() {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                "agent_id, content, and category are required",
+            )
+            .into());
+        }
+        if !matches!(
+            category.as_str(),
+            "style" | "tooling" | "constraint" | "workflow"
+        ) {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                "category must be one of: style, tooling, constraint, workflow",
+            )
+            .into());
+        }
+        let payload = json!({
+            "agent_id": agent_id.unwrap(),
+            "content": content,
+            "category": category,
+            "role": args.role,
+        });
+        self.call_profile_endpoint(Method::POST, "/v1/profile/save", None, Some(payload))
+            .await
+    }
+
+    async fn handle_profile_get_profile(&self, args: ProfileGetArgs) -> Result<serde_json::Value> {
+        let agent_id = args
+            .agent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .or_else(|| self.default_agent_id.as_deref());
+        let Some(agent_id) = agent_id else {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "agent_id must not be empty").into());
+        };
+        self.call_profile_endpoint(
+            Method::GET,
+            "/v1/profile/list",
+            Some(vec![("agent_id", agent_id.to_string())]),
+            None,
+        )
+        .await
+    }
+
+    async fn call_profile_endpoint(
+        &self,
+        method: Method,
+        path: &str,
+        query: Option<Vec<(&str, String)>>,
+        body: Option<Value>,
+    ) -> Result<Value> {
+        let base_url = resolve_docdexd_base_url()?;
+        let client = docdexd_http_client()?;
+        let url = format!(
+            "{}/{}",
+            base_url.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        );
+        let mut req = client.request(method, url);
+        if let Some(token) = env_non_empty("DOCDEX_AUTH_TOKEN") {
+            req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        if let Some(query) = query.as_ref() {
+            req = req.query(query);
+        }
+        if let Some(body) = body {
+            req = req.json(&body);
+        }
+        let resp = req.send().await.context("profile HTTP request failed")?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(AppError::new(
+                ERR_INTERNAL_ERROR,
+                format!("profile request failed ({status}): {text}"),
+            )
+            .into());
+        }
+        let payload = serde_json::from_str(&text).context("parse profile response")?;
+        Ok(payload)
+    }
+
     async fn handle_resource_read(&self, params: ResourceReadParams) -> Result<serde_json::Value> {
         // Expect uri like docdex://path
         let uri = params.uri.trim();
@@ -2417,6 +2650,49 @@ impl McpServer {
         };
         self.ensure_same_repo(path)
     }
+}
+
+fn docdexd_http_client() -> Result<Client> {
+    let timeout_ms = env_u64("DOCDEX_HTTP_TIMEOUT_MS").unwrap_or(30_000);
+    let client = Client::builder()
+        .timeout(Duration::from_millis(timeout_ms.max(1)))
+        .build()
+        .context("build docdexd http client")?;
+    Ok(client)
+}
+
+fn resolve_docdexd_base_url() -> Result<String> {
+    if let Some(raw) = env_non_empty("DOCDEX_HTTP_BASE_URL") {
+        return Ok(normalize_base_url(&raw));
+    }
+    let config = config::AppConfig::load_default()?;
+    let bind_addr = config.server.http_bind_addr.trim();
+    if bind_addr.is_empty() {
+        return Err(anyhow::anyhow!(
+            "server.http_bind_addr is empty; set it in ~/.docdex/config.toml"
+        ));
+    }
+    Ok(normalize_base_url(bind_addr))
+}
+
+fn normalize_base_url(raw: &str) -> String {
+    let trimmed = raw.trim_end_matches('/');
+    if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{trimmed}")
+    }
+}
+
+fn env_non_empty(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn env_u64(key: &str) -> Option<u64> {
+    env_non_empty(key)?.parse::<u64>().ok()
 }
 
 fn is_lock_busy(err: &anyhow::Error) -> bool {

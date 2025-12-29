@@ -7,8 +7,8 @@ use crate::libs;
 use crate::cli::commands::query;
 use crate::memory::repo_state_root_from_state_dir;
 use crate::orchestrator::{
-    memory_budget_from_max_answer_tokens, run_waterfall, WaterfallPlan, WaterfallRequest,
-    WebGateConfig,
+    memory_budget_from_max_answer_tokens, run_waterfall, ProfileBudget, WaterfallPlan,
+    WaterfallRequest, WebGateConfig,
 };
 use crate::tier2::Tier2Config;
 use crate::util;
@@ -133,6 +133,7 @@ pub async fn run_rag(
             &query,
             None,
             None,
+            None,
             limit,
             None,
             true,
@@ -158,6 +159,7 @@ pub async fn run_rag(
             false,
             false,
             false,
+            None,
             None,
             None,
             None,
@@ -196,6 +198,7 @@ pub async fn run_rag(
         web_gate,
         Tier2Config::enabled(),
         memory_budget_from_max_answer_tokens(max_answer_tokens),
+        ProfileBudget::default(),
     );
     let request_id = format!("cli-web-rag-{}", Uuid::new_v4());
     let repo_state_root = repo_state_root_from_state_dir(server.state_dir());
@@ -227,6 +230,8 @@ pub async fn run_rag(
         plan,
         tier2_limiter: None,
         memory: memory_state.as_ref(),
+        profile_state: None,
+        profile_agent_id: None,
         ranking_surface: crate::search::RankingSurface::Search,
     };
     let waterfall = run_waterfall(request).await?;

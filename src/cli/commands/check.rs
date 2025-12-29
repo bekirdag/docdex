@@ -2,6 +2,7 @@ use crate::config;
 use crate::dag::logging as dag_logging;
 use crate::hardware;
 use crate::memory::MemoryStore;
+use crate::profiles::ProfileManager;
 use crate::mcp;
 use crate::ollama;
 use crate::orchestrator::web;
@@ -588,6 +589,61 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
                 message: "skipped; memory disabled".to_string(),
                 details: None,
             });
+        }
+
+        match state_dir.as_ref() {
+            Some(state_dir) => {
+                let profile_db_path = StateLayout::new(state_dir.clone())
+                    .profiles_dir()
+                    .join("main.db");
+                match ProfileManager::new(state_dir, config.memory.profile.embedding_dim) {
+                    Ok(manager) => match manager.check_access() {
+                        Ok(()) => checks.push(CheckItem {
+                            name: "profile_db",
+                            status: "ok",
+                            message: "profile.db is writable".to_string(),
+                            details: Some(json!({
+                                "path": profile_db_path.to_string_lossy(),
+                                "embedding_dim": config.memory.profile.embedding_dim
+                            })),
+                        }),
+                        Err(err) => {
+                            checks.push(CheckItem {
+                                name: "profile_db",
+                                status: "fail",
+                                message: format!("profile.db check failed: {err}"),
+                                details: Some(json!({
+                                    "path": profile_db_path.to_string_lossy(),
+                                    "embedding_dim": config.memory.profile.embedding_dim
+                                })),
+                            });
+                            success = false;
+                        }
+                    },
+                    Err(err) => {
+                        checks.push(CheckItem {
+                            name: "profile_db",
+                            status: "fail",
+                            message: format!("profile.db check failed: {err}"),
+                            details: Some(json!({
+                                "path": profile_db_path.to_string_lossy(),
+                                "embedding_dim": config.memory.profile.embedding_dim
+                            })),
+                        });
+                        success = false;
+                    }
+                }
+            }
+            None => {
+                checks.push(CheckItem {
+                    name: "profile_db",
+                    status: "fail",
+                    message: "profile.db check failed: global_state_dir is not configured"
+                        .to_string(),
+                    details: None,
+                });
+                success = false;
+            }
         }
 
         match state_dir.as_ref() {

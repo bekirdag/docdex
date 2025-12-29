@@ -14,9 +14,10 @@ use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::orchestrator::web::{web_context_from_status, WebDiscoveryStatus, WebFetchResult};
 use crate::orchestrator::{
-    memory_budget_from_max_answer_tokens, run_waterfall, MemoryContextAssembly,
+    memory_budget_from_max_answer_tokens, run_waterfall, MemoryContextAssembly, ProfileBudget,
     SymbolContextAssembly, WaterfallPlan, WaterfallRequest, WebGateConfig,
 };
+use crate::profiles::{ProfileEmbedder, ProfileManager};
 use crate::repo_manager;
 use crate::ratelimit::RateLimiter;
 use crate::tier2::Tier2Config;
@@ -223,6 +224,9 @@ pub struct AppState {
     pub audit: Option<crate::audit::AuditLogger>,
     pub metrics: Arc<crate::metrics::Metrics>,
     pub memory: Option<MemoryState>,
+    pub profile_state: Option<ProfileState>,
+    pub features: crate::config::FeatureFlagsConfig,
+    pub default_agent_id: Option<String>,
     pub max_answer_tokens: u32,
     pub llm_base_url: String,
     pub llm_default_model: String,
@@ -237,6 +241,12 @@ pub struct MemoryState {
     pub embedder: OllamaEmbedder,
 }
 
+#[derive(Clone)]
+pub struct ProfileState {
+    pub manager: ProfileManager,
+    pub embedder: ProfileEmbedder,
+}
+
 pub fn router(state: AppState) -> Router {
     let mut router = Router::new()
         .route("/healthz", get(healthz))
@@ -245,6 +255,34 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/chat/completions",
             post(crate::api::v1::chat::chat_completions_handler),
+        )
+        .route(
+            "/v1/profile/list",
+            get(crate::api::v1::profile::profile_list_handler),
+        )
+        .route(
+            "/v1/profile/add",
+            post(crate::api::v1::profile::profile_add_handler),
+        )
+        .route(
+            "/v1/profile/search",
+            post(crate::api::v1::profile::profile_search_handler),
+        )
+        .route(
+            "/v1/profile/export",
+            get(crate::api::v1::profile::profile_export_handler),
+        )
+        .route(
+            "/v1/profile/save",
+            post(crate::api::v1::profile::profile_save_handler),
+        )
+        .route(
+            "/v1/profile/import",
+            post(crate::api::v1::profile::profile_import_handler),
+        )
+        .route(
+            "/v1/hooks/validate",
+            post(crate::api::v1::hooks::hook_validate_handler),
         )
         .route(
             "/v1/graph/impact",
@@ -838,8 +876,10 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                     "docdex.max_web_results=<int optional>",
                     "docdex.llm_filter_local_results=<bool optional>",
                     "docdex.compress_results=<bool optional>",
+                    "docdex.agent_id=<string optional>",
                     "docdex.diff=<{mode,base,head,paths}>",
                     "repo_id=<optional (query or body)>",
+                    "x-docdex-agent-id=<header optional>",
                 ],
             },
             AiHelpEndpoint {
@@ -933,6 +973,58 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 path: "/v1/memory/recall",
                 description: "Recall memory items by semantic similarity (requires memory enabled).",
                 params: &["query=<string>", "top_k=<int optional>", "repo_id=<optional>"],
+            },
+            AiHelpEndpoint {
+                method: "GET",
+                path: "/v1/profile/list",
+                description: "List profile agents and preferences (global memory).",
+                params: &["agent_id=<optional>"],
+            },
+            AiHelpEndpoint {
+                method: "POST",
+                path: "/v1/profile/add",
+                description: "Add a profile preference (immediate write).",
+                params: &[
+                    "agent_id=<string>",
+                    "content=<string>",
+                    "category=<style|tooling|constraint|workflow>",
+                    "role=<string optional>",
+                ],
+            },
+            AiHelpEndpoint {
+                method: "POST",
+                path: "/v1/profile/save",
+                description: "Add a profile preference and trigger evolution.",
+                params: &[
+                    "agent_id=<string>",
+                    "content=<string>",
+                    "category=<style|tooling|constraint|workflow>",
+                    "role=<string optional>",
+                ],
+            },
+            AiHelpEndpoint {
+                method: "POST",
+                path: "/v1/profile/search",
+                description: "Search profile preferences by semantic similarity.",
+                params: &["agent_id=<string>", "query=<string>", "top_k=<int optional>"],
+            },
+            AiHelpEndpoint {
+                method: "POST",
+                path: "/v1/profile/export",
+                description: "Export profile preferences to a JSON manifest.",
+                params: &[],
+            },
+            AiHelpEndpoint {
+                method: "POST",
+                path: "/v1/profile/import",
+                description: "Import profile preferences from a JSON manifest.",
+                params: &["manifest=<json body>"],
+            },
+            AiHelpEndpoint {
+                method: "POST",
+                path: "/v1/hooks/validate",
+                description: "Validate staged files against profile constraints.",
+                params: &["files=[\"<repo-relative>\", ...]"],
             },
             AiHelpEndpoint {
                 method: "GET",
@@ -1045,6 +1137,21 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 command: "docdexd memory-recall --repo <path> --query \"...\"",
                 description: "Recall memory items by semantic similarity.",
                 example: "docdexd memory-recall --repo /workspace --query \"release notes\"",
+            },
+            AiHelpCli {
+                command: "docdexd profile list [--agent-id <id>]",
+                description: "List profile agents/preferences (global memory).",
+                example: "docdexd profile list --agent-id agent-default",
+            },
+            AiHelpCli {
+                command: "docdexd profile add --agent-id <id> --category style --content \"...\"",
+                description: "Add a profile preference for an agent.",
+                example: "docdexd profile add --agent-id agent-default --category style --content \"Prefer ripgrep\"",
+            },
+            AiHelpCli {
+                command: "docdexd hook pre-commit --repo <path>",
+                description: "Run semantic gatekeeper checks for staged files.",
+                example: "docdexd hook pre-commit --repo /workspace",
             },
             AiHelpCli {
                 command: "docdexd web-search --query \"...\" [--limit 8]",
@@ -1235,6 +1342,23 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 args: &["query (string, required)", "top_k (int, optional)", "project_root or repo_path (string, optional)"],
                 returns: &["results[]"],
             },
+            AiHelpMcpTool {
+                name: "docdex_save_preference",
+                description: "Save a profile preference and trigger evolution.",
+                args: &[
+                    "agent_id (string, optional; defaults from initialize)",
+                    "content (string, required)",
+                    "category (style|tooling|constraint|workflow)",
+                    "role (string, optional)",
+                ],
+                returns: &["status", "request_id"],
+            },
+            AiHelpMcpTool {
+                name: "docdex_get_profile",
+                description: "Fetch profile agents and preferences.",
+                args: &["agent_id (string, optional; defaults from initialize)"],
+                returns: &["agents[]", "preferences[]"],
+            },
         ],
         best_practices: vec![
             "Prefer narrow queries (file names, headings, concepts) to keep snippets focused.",
@@ -1324,6 +1448,8 @@ pub struct SearchResponse {
     pub web_discovery: Option<WebDiscoveryStatus>,
     #[serde(rename = "impactContext", skip_serializing_if = "Option::is_none")]
     pub impact_context: Option<crate::impact::ImpactContextAssembly>,
+    #[serde(rename = "profileContext", skip_serializing_if = "Option::is_none")]
+    pub profile_context: Option<crate::orchestrator::ProfileContextAssembly>,
     #[serde(rename = "memoryContext", skip_serializing_if = "Option::is_none")]
     pub memory_context: Option<MemoryContextAssembly>,
     #[serde(rename = "symbolsContext", skip_serializing_if = "Option::is_none")]
@@ -1659,6 +1785,7 @@ pub async fn run_query(
         web_context: None,
         web_discovery: None,
         impact_context: None,
+        profile_context: None,
         memory_context: None,
         symbols_context: None,
         meta: Some(build_search_meta(indexer, Some(query_meta), None)?),
@@ -2410,6 +2537,7 @@ async fn search_handler(
         WebGateConfig::from_env(),
         Tier2Config::enabled(),
         memory_budget_from_max_answer_tokens(state.max_answer_tokens),
+        ProfileBudget::default(),
     );
     let force_web = params.force_web.unwrap_or(false);
     let skip_local_search = params.skip_local_search.unwrap_or(false);
@@ -2433,6 +2561,8 @@ async fn search_handler(
         plan,
         tier2_limiter: None,
         memory: state.memory.as_ref(),
+        profile_state: state.profile_state.as_ref(),
+        profile_agent_id: None,
         ranking_surface: RankingSurface::Search,
     })
     .await

@@ -12,6 +12,8 @@ stable JSON schemas across all clients.
 - Tools never aggregate across repos; responses are scoped to the server repo.
 - Web research tools require `DOCDEX_WEB_ENABLED=1`; memory tools are enabled
   by default but can be disabled in config or via `DOCDEX_ENABLE_MEMORY=0`.
+- Profile tools accept optional `agent_id`; `initialize.agent_id` sets the default
+  for profile calls that omit it.
 
 ## Enforcement semantics
 
@@ -42,6 +44,8 @@ stable JSON schemas across all clients.
 | `docdex_memory_save` | Single record | N/A | Rejects empty text (`invalid_argument`). |
 | `docdex_memory_store` | Alias for `docdex_memory_save` | N/A | Same limits/errors as `docdex_memory_save`. |
 | `docdex_memory_recall` | `top_k` clamped to `[1, 50]` | Returns stored text as-is | Clamp `top_k`; errors per `docs/mcp/errors.md`. |
+| `docdex_save_preference` | Single record | N/A | Rejects empty agent_id/content; requires category; uses default agent_id when configured. |
+| `docdex_get_profile` | Full profile list | N/A | Returns agents/preferences; filters by agent_id when provided. |
 
 ## Schema compatibility guarantees
 

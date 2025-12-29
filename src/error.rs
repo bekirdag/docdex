@@ -10,6 +10,7 @@ pub const ERR_EMBEDDING_TIMEOUT: &str = "embedding_timeout";
 pub const ERR_EMBEDDING_MODEL_NOT_FOUND: &str = "embedding_model_not_found";
 pub const ERR_EMBEDDING_FAILED: &str = "embedding_failed";
 pub const ERR_MEMORY_DISABLED: &str = "memory_disabled";
+pub const ERR_PROFILE_DISABLED: &str = "profile_disabled";
 pub const ERR_INVALID_ARGUMENT: &str = "invalid_argument";
 pub const ERR_MISSING_REPO: &str = "missing_repo";
 pub const ERR_MISSING_REPO_PATH: &str = "missing_repo_path";

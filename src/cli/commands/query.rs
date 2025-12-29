@@ -9,8 +9,8 @@ use crate::memory::MemoryStore;
 use crate::memory::repo_state_root_from_state_dir;
 use crate::ollama::OllamaEmbedder;
 use crate::orchestrator::{
-    memory_budget_from_max_answer_tokens, run_waterfall, WaterfallPlan, WaterfallRequest,
-    WaterfallResult, WebGateConfig,
+    memory_budget_from_max_answer_tokens, run_waterfall, ProfileBudget, WaterfallPlan,
+    WaterfallRequest, WaterfallResult, WebGateConfig,
 };
 use crate::repo_manager;
 use crate::search::MemoryState;
@@ -33,6 +33,7 @@ pub(crate) async fn run(
     query: Option<String>,
     model: Option<String>,
     agent: Option<String>,
+    agent_id: Option<String>,
     limit: usize,
     max_web_results: Option<usize>,
     repo_only: bool,
@@ -52,6 +53,7 @@ pub(crate) async fn run(
             query,
             model,
             agent,
+            agent_id,
             limit,
             max_web_results,
             repo_only,
@@ -71,6 +73,7 @@ pub(crate) async fn run(
         &repo,
         model,
         agent,
+        agent_id,
         limit,
         max_web_results,
         repo_only,
@@ -92,6 +95,7 @@ async fn run_single(
     query: String,
     model: Option<String>,
     agent: Option<String>,
+    agent_id: Option<String>,
     limit: usize,
     max_web_results: Option<usize>,
     repo_only: bool,
@@ -124,6 +128,7 @@ async fn run_single(
             &query,
             model.as_deref(),
             agent.as_deref(),
+            agent_id.as_deref(),
             limit,
             max_web_results,
             false,
@@ -145,6 +150,7 @@ async fn run_single(
             &query,
             model.as_deref(),
             agent.as_deref(),
+            agent_id.as_deref(),
             limit,
             max_web_results,
             !repo_only,
@@ -185,6 +191,7 @@ async fn run_single(
         web_gate,
         Tier2Config::enabled(),
         memory_budget_from_max_answer_tokens(max_answer_tokens),
+        ProfileBudget::default(),
     );
     let request_id = format!("cli-query-{}", Uuid::new_v4());
     let repo_state_root = repo_state_root_from_state_dir(server.state_dir());
@@ -217,6 +224,8 @@ async fn run_single(
         plan,
         tier2_limiter: None,
         memory: memory_state.as_ref(),
+        profile_state: None,
+        profile_agent_id: agent_id.as_deref(),
         ranking_surface: crate::search::RankingSurface::Search,
     };
     let waterfall = run_waterfall(request).await?;
@@ -257,6 +266,7 @@ async fn run_repl(
     repo: &RepoArgs,
     model: Option<String>,
     agent: Option<String>,
+    agent_id: Option<String>,
     limit: usize,
     max_web_results: Option<usize>,
     repo_only: bool,
@@ -293,6 +303,7 @@ async fn run_repl(
             trimmed.to_string(),
             model.clone(),
             agent.clone(),
+            agent_id.clone(),
             limit,
             max_web_results,
             repo_only,
@@ -316,6 +327,7 @@ async fn run_via_http(
     query: &str,
     model: Option<&str>,
     agent: Option<&str>,
+    agent_id: Option<&str>,
     limit: usize,
     max_web_results: Option<usize>,
     include_libs: bool,
@@ -340,6 +352,7 @@ async fn run_via_http(
         max_web_results,
         model,
         agent,
+        agent_id,
         diff_mode,
         diff_base,
         diff_head,
@@ -637,6 +650,7 @@ pub(crate) async fn search_via_http(
     max_web_results: Option<usize>,
     llm_model: Option<&str>,
     llm_agent: Option<&str>,
+    agent_id: Option<&str>,
     diff_mode: Option<diff::DiffMode>,
     diff_base: Option<String>,
     diff_head: Option<String>,
@@ -664,6 +678,9 @@ pub(crate) async fn search_via_http(
     };
     let mut req = client.request(Method::GET, "/search").query(&payload);
     req = client.with_repo(req, repo_root)?;
+    if let Some(agent_id) = agent_id {
+        req = req.header("x-docdex-agent-id", agent_id);
+    }
     let resp = req.send().await?;
     if !resp.status().is_success() {
         let status = resp.status();
@@ -712,6 +729,8 @@ struct DocdexOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     compress_results: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     diff: Option<diff::DiffOptions>,
 }
 
@@ -751,6 +770,7 @@ pub(crate) async fn stream_via_http(
     query: &str,
     model: Option<&str>,
     agent: Option<&str>,
+    agent_id: Option<&str>,
     limit: usize,
     max_web_results: Option<usize>,
     force_web: bool,
@@ -801,6 +821,7 @@ pub(crate) async fn stream_via_http(
             include_libs: Some(include_libs),
             llm_filter_local_results: Some(llm_filter_local_results),
             compress_results: Some(compress_results),
+            agent_id: agent_id.map(|value| value.to_string()),
             diff: diff_payload,
         }),
     };

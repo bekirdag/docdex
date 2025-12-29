@@ -2,6 +2,8 @@ pub mod chat;
 pub mod dag;
 pub mod graph;
 pub mod ast;
+pub mod hooks;
+pub mod profile;
 pub mod symbols;
 pub mod index;
 pub mod libs;

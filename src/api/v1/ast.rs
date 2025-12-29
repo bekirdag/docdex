@@ -16,7 +16,7 @@ use crate::error::{
 use crate::search::{json_error, resolve_repo_id, AppState};
 use crate::symbols::{AstQuery as StoreAstQuery, AstSearchMode, SchemaCompatibleRange, SchemaInfo};
 
-const DEFAULT_MAX_AST_NODES: usize = 20_000;
+pub(crate) const DEFAULT_MAX_AST_NODES: usize = 20_000;
 const HARD_MAX_AST_NODES: usize = 100_000;
 const DEFAULT_AST_SEARCH_LIMIT: usize = 50;
 const HARD_MAX_AST_SEARCH_LIMIT: usize = 500;

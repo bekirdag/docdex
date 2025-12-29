@@ -12,8 +12,8 @@ use crate::max_size::truncate_utf8_chars;
 use crate::mcoda::registry::{McodaAgent, McodaRegistry};
 use crate::orchestrator::web::web_context_from_status;
 use crate::orchestrator::{
-    memory_budget_from_max_answer_tokens, run_waterfall, WaterfallPlan, WaterfallRequest,
-    WebGateConfig,
+    memory_budget_from_max_answer_tokens, run_waterfall, ProfileBudget, WaterfallPlan,
+    WaterfallRequest, WebGateConfig,
 };
 use crate::config;
 use crate::tier2::Tier2Config;
@@ -162,6 +162,7 @@ pub async fn run_eval(options: EvalOptions) -> Result<()> {
                 WebGateConfig::from_env(),
                 Tier2Config::enabled(),
                 memory_budget_from_max_answer_tokens(max_answer_tokens),
+                ProfileBudget::default(),
             );
             let request_id = format!("agent-eval:{}:{}", agent_key, query.id);
             let start = Instant::now();
@@ -182,6 +183,8 @@ pub async fn run_eval(options: EvalOptions) -> Result<()> {
                 plan,
                 tier2_limiter: None,
                 memory: None,
+                profile_state: None,
+                profile_agent_id: None,
                 ranking_surface: crate::search::RankingSurface::Chat,
             };
             let mut run = EvalRunResult {

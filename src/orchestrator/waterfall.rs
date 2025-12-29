@@ -6,7 +6,7 @@ use std::time::Instant;
 use tokio::task;
 use tracing::{info, warn};
 
-use super::budget::MemoryBudget;
+use super::budget::{MemoryBudget, ProfileBudget};
 use super::plan::WaterfallPlan;
 use crate::impact::{
     assemble_impact_context, expand_impact_from_diff_files, ImpactContextAssembly,
@@ -18,13 +18,17 @@ use crate::memory::{
     prune_and_truncate_memory_context, repo_state_root_from_state_dir, MemoryContextItem,
     MemoryContextPruneTrace,
 };
+use crate::profiles::ops::{
+    prune_and_truncate_profile_context, ProfileCandidate, ProfileContextItem,
+    ProfileContextPruneTrace,
+};
 use crate::orchestrator::web::{
     build_gate_meta, detect_query_intent, evaluate_gate_status, filter_local_hits_with_llm,
     local_match_ratio, run_web_research, QueryIntent,
     WebDiscoveryStatus, WebDiscoveryStatusCode, WebGateConfig, WebResearchResponse,
 };
 use crate::metrics;
-use crate::search::{MemoryState, RankingSurface, SearchResponse};
+use crate::search::{MemoryState, ProfileState, RankingSurface, SearchResponse};
 use crate::tier2::{self, Tier2Limiter, Tier2Unavailable};
 use crate::dag::logging as dag_logging;
 use crate::diff;
@@ -49,6 +53,8 @@ pub struct WaterfallRequest<'a> {
     pub plan: WaterfallPlan,
     pub tier2_limiter: Option<&'a Tier2Limiter>,
     pub memory: Option<&'a MemoryState>,
+    pub profile_state: Option<&'a ProfileState>,
+    pub profile_agent_id: Option<&'a str>,
     pub ranking_surface: RankingSurface,
 }
 
@@ -58,6 +64,7 @@ pub struct WaterfallResult {
     pub tier2: Tier2Outcome,
     pub impact_context: Option<ImpactContextAssembly>,
     pub memory_context: Option<MemoryContextAssembly>,
+    pub profile_context: Option<ProfileContextAssembly>,
 }
 
 /// Tier-2 outcome: optional Tier-2 response plus discovery status and guardrail details.
@@ -72,6 +79,13 @@ pub struct Tier2Outcome {
 pub struct MemoryContextAssembly {
     pub items: Vec<MemoryContextItem>,
     pub prune_trace: MemoryContextPruneTrace,
+}
+
+/// Profile context assembly returned from Tier 0.
+#[derive(Clone, Debug, Serialize)]
+pub struct ProfileContextAssembly {
+    pub items: Vec<ProfileContextItem>,
+    pub prune_trace: ProfileContextPruneTrace,
 }
 
 /// Symbol context assembly returned alongside local search hits.
@@ -123,6 +137,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
             web_context: None,
             web_discovery: None,
             impact_context: None,
+            profile_context: None,
             memory_context: None,
             symbols_context: None,
             meta: None,
@@ -239,6 +254,99 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
         }
     };
 
+    let profile_context = if let (Some(profile_state), Some(agent_id)) =
+        (request.profile_state, request.profile_agent_id)
+    {
+        queue_dag_log(
+            &repo_state_root,
+            request.request_id,
+            "ToolCall",
+            json!({
+                "tool": "profile_recall",
+                "agent_id": agent_id,
+                "recall_candidates": request.plan.profile_budget.recall_candidates,
+                "max_items": request.plan.profile_budget.max_items,
+                "budget_tokens": request.plan.profile_budget.token_budget,
+            }),
+        );
+        let started = Instant::now();
+        let context = collect_profile_context(
+            profile_state,
+            agent_id,
+            request.query,
+            &request.plan.profile_budget,
+        )
+        .await?;
+        if let Some(ctx) = &context {
+            let latency_ms = started.elapsed().as_millis();
+            metrics::global().record_profile_recall(
+                ctx.prune_trace.candidates,
+                ctx.prune_trace.kept,
+                ctx.prune_trace.dropped.len(),
+                latency_ms,
+            );
+            info!(
+                target: "docdexd",
+                request_id = %request.request_id,
+                repo_root = %request.indexer.repo_root().display(),
+                agent_id = %agent_id,
+                candidates = ctx.prune_trace.candidates,
+                kept = ctx.prune_trace.kept,
+                dropped = ctx.prune_trace.dropped.len(),
+                latency_ms,
+                "profile_recall waterfall"
+            );
+            let truncated = ctx.items.iter().filter(|item| item.truncated).count();
+            let dropped_total = ctx.prune_trace.dropped.len();
+            if dropped_total > 0 || truncated > 0 {
+                if dropped_total > 0 {
+                    metrics::global().inc_profile_budget_drop(dropped_total);
+                }
+                let mut dropped_max_items = 0usize;
+                let mut dropped_budget = 0usize;
+                for dropped in &ctx.prune_trace.dropped {
+                    match dropped.reason {
+                        "max_items" => dropped_max_items += 1,
+                        "budget_exhausted" => dropped_budget += 1,
+                        _ => {}
+                    }
+                }
+                info!(
+                    target: "docdexd",
+                    request_id = %request.request_id,
+                    repo_root = %request.indexer.repo_root().display(),
+                    agent_id = %agent_id,
+                    budget_tokens = ctx.prune_trace.budget_tokens,
+                    max_items = ctx.prune_trace.max_items,
+                    dropped_total,
+                    dropped_max_items,
+                    dropped_budget,
+                    truncated,
+                    "profile_context pruned to fit token budget"
+                );
+            }
+            queue_dag_log(
+                &repo_state_root,
+                request.request_id,
+                "Observation",
+                json!({
+                    "tool": "profile_recall",
+                    "agent_id": agent_id,
+                    "candidates": ctx.prune_trace.candidates,
+                    "kept": ctx.prune_trace.kept,
+                    "dropped": ctx.prune_trace.dropped.len(),
+                    "truncated": truncated,
+                    "latency_ms": latency_ms,
+                }),
+            );
+        }
+        context
+    } else {
+        None
+    };
+
+    search_response.profile_context = profile_context.clone();
+
     let memory_context = if let Some(memory) = request.memory {
         queue_dag_log(
             &repo_state_root,
@@ -325,6 +433,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
         tier2,
         impact_context,
         memory_context,
+        profile_context,
     })
 }
 
@@ -586,6 +695,45 @@ async fn collect_memory_context(
         prune_and_truncate_memory_context(&recall, budget.max_items.max(1), budget.token_budget);
 
     Ok(Some(MemoryContextAssembly { items, prune_trace }))
+}
+
+async fn collect_profile_context(
+    profile_state: &ProfileState,
+    agent_id: &str,
+    query: &str,
+    budget: &ProfileBudget,
+) -> Result<Option<ProfileContextAssembly>> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    let embedding = profile_state.embedder.embed(trimmed).await?;
+    let recall_limit = budget.recall_candidates.max(1);
+    let manager = profile_state.manager.clone();
+    let agent_id = agent_id.to_string();
+    let recall = task::spawn_blocking(move || {
+        manager.search_preferences(&agent_id, &embedding, recall_limit)
+    })
+    .await
+    .map_err(|err| anyhow!("profile recall aborted: {err}"))?
+    .context("profile recall failed")?;
+
+    let candidates: Vec<ProfileCandidate> = recall
+        .into_iter()
+        .map(|result| ProfileCandidate {
+            id: result.preference.id,
+            agent_id: result.preference.agent_id,
+            content: result.preference.content,
+            category: result.preference.category,
+            score: result.score,
+            last_updated: result.preference.last_updated,
+        })
+        .collect();
+    let (items, prune_trace) =
+        prune_and_truncate_profile_context(&candidates, budget.max_items.max(1), budget.token_budget);
+
+    Ok(Some(ProfileContextAssembly { items, prune_trace }))
 }
 
 fn collect_symbol_context(indexer: &Indexer, hits: &[Hit]) -> Option<SymbolContextAssembly> {

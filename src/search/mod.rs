@@ -244,7 +244,7 @@ pub struct MemoryState {
 #[derive(Clone)]
 pub struct ProfileState {
     pub manager: ProfileManager,
-    pub embedder: ProfileEmbedder,
+    pub embedder: Option<ProfileEmbedder>,
 }
 
 pub fn router(state: AppState) -> Router {

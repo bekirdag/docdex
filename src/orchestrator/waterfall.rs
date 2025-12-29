@@ -708,7 +708,10 @@ async fn collect_profile_context(
         return Ok(None);
     }
 
-    let embedding = profile_state.embedder.embed(trimmed).await?;
+    let Some(embedder) = profile_state.embedder.as_ref() else {
+        return Ok(None);
+    };
+    let embedding = embedder.embed(trimmed).await?;
     let recall_limit = budget.recall_candidates.max(1);
     let manager = profile_state.manager.clone();
     let agent_id = agent_id.to_string();

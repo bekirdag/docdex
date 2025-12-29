@@ -191,7 +191,14 @@ pub async fn profile_add_handler(
             );
         }
     }
-    let embedding = match profile_state.embedder.embed(content).await {
+    let Some(embedder) = profile_state.embedder.as_ref() else {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ERR_EMBEDDING_FAILED,
+            "profile embedder unavailable",
+        );
+    };
+    let embedding = match embedder.embed(content).await {
         Ok(embedding) => embedding,
         Err(err) => {
             state.metrics.inc_error();
@@ -247,7 +254,14 @@ pub async fn profile_search_handler(
             "agent_id and query are required",
         );
     }
-    let embedding = match profile_state.embedder.embed(query).await {
+    let Some(embedder) = profile_state.embedder.as_ref() else {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ERR_EMBEDDING_FAILED,
+            "profile embedder unavailable",
+        );
+    };
+    let embedding = match embedder.embed(query).await {
         Ok(embedding) => embedding,
         Err(err) => {
             state.metrics.inc_error();
@@ -377,11 +391,14 @@ pub async fn profile_save_handler(
             );
         }
     };
-    let engine = EvolutionEngine::new(
-        profile_state.manager.clone(),
-        profile_state.embedder.clone(),
-        llm_client,
-    );
+    let Some(embedder) = profile_state.embedder.clone() else {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ERR_EMBEDDING_FAILED,
+            "profile embedder unavailable",
+        );
+    };
+    let engine = EvolutionEngine::new(profile_state.manager.clone(), embedder, llm_client);
     let request_id = Uuid::new_v4().to_string();
     let agent_id = agent_id.to_string();
     let content = content.to_string();
@@ -438,9 +455,16 @@ pub async fn profile_import_handler(
             "profile embedding_dim mismatch",
         );
     }
+    let Some(embedder) = profile_state.embedder.as_ref() else {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ERR_EMBEDDING_FAILED,
+            "profile embedder unavailable",
+        );
+    };
     let mut preferences = Vec::with_capacity(payload.preferences.len());
     for pref in payload.preferences {
-        let embedding = match profile_state.embedder.embed(pref.content.trim()).await {
+        let embedding = match embedder.embed(pref.content.trim()).await {
             Ok(embedding) => embedding,
             Err(err) => {
                 state.metrics.inc_error();

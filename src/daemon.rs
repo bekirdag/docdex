@@ -395,12 +395,12 @@ pub async fn serve(
                     Err(err) => {
                         warn!(
                             error = ?err,
-                            "profile embedder initialization failed; profile memory disabled"
+                            "profile embedder initialization failed; profile recall disabled"
                         );
                         None
                     }
                 };
-                embedder.map(|embedder| search::ProfileState { manager, embedder })
+                Some(search::ProfileState { manager, embedder })
             }
             Err(err) => {
                 warn!(error = ?err, "profile manager initialization failed; profile memory disabled");

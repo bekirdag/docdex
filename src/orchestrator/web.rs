@@ -29,11 +29,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 use which::which;
 
-const DEFAULT_WEB_TRIGGER_THRESHOLD: f32 = 0.45;
+const DEFAULT_WEB_TRIGGER_THRESHOLD: f32 = 0.7;
 const DEFAULT_WEB_MIN_MATCH_RATIO: f32 = 0.2;
 const DEFAULT_LOCAL_RELEVANCE_THRESHOLD: f32 = 0.7;
 const MAX_WEB_SUMMARY_TOKENS: u32 = 256;
 const WEB_SUMMARY_TIMEOUT_MS: u64 = 15_000;
+const DEFAULT_WEB_SUMMARY_INPUT_MAX_CHARS: usize = 6000;
 const MAX_QUERY_CATEGORY_TOKENS: u32 = 48;
 const QUERY_CATEGORY_TIMEOUT_MS: u64 = 4_000;
 const WEB_CONTEXT_MIN_RELEVANCE_SCORE: f32 = 0.2;
@@ -760,22 +761,12 @@ fn build_summary_prompt(
     let snippet = truncate_summary_input(content);
     let query = query.trim();
     let mut prompt = String::new();
-    if query.is_empty() {
-        prompt.push_str("User query: <empty>\n\n");
-    } else {
-        prompt.push_str("User query:\n");
-        prompt.push_str(query);
-        prompt.push_str("\n\n");
-    }
     prompt.push_str("Here is what I found online.\n");
     prompt.push_str("The answer to the user query is in the page text below.\n");
     prompt.push_str("The text below is the main content with headers/menus removed.\n");
     prompt.push_str("\nPage text (cleaned):\n");
     prompt.push_str(&snippet);
     prompt.push_str("\n\n");
-    prompt.push_str("Query category: ");
-    prompt.push_str(category.as_str());
-    prompt.push_str("\n");
     if code_blocks.is_empty() {
         prompt.push_str("Code blocks (verbatim): <none>\n");
     } else {
@@ -784,6 +775,14 @@ fn build_summary_prompt(
             prompt.push_str(&format!("[code {}]\n{}\n[/code {}]\n", idx + 1, block, idx + 1));
         }
     }
+    prompt.push_str("\nUser query:\n");
+    if query.is_empty() {
+        prompt.push_str("<empty>");
+    } else {
+        prompt.push_str(query);
+    }
+    prompt.push_str("\n\nQuery category: ");
+    prompt.push_str(category.as_str());
     prompt.push('\n');
     prompt.push_str(WEB_SUMMARY_INSTRUCTIONS);
     prompt
@@ -3015,7 +3014,8 @@ fn truncate_debug_text(text: &str) -> String {
 }
 
 fn truncate_summary_input(text: &str) -> String {
-    let limit = env_usize("DOCDEX_WEB_SUMMARY_INPUT_MAX_CHARS").unwrap_or(0);
+    let limit = env_usize("DOCDEX_WEB_SUMMARY_INPUT_MAX_CHARS")
+        .unwrap_or(DEFAULT_WEB_SUMMARY_INPUT_MAX_CHARS);
     if limit == 0 {
         return text.to_string();
     }

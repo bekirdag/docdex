@@ -162,6 +162,8 @@ pub async fn run_rag(
             None,
             None,
             None,
+            None,
+            None,
             Vec::new(),
         )
         .await?;

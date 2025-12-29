@@ -401,7 +401,7 @@ fn default_max_answer_tokens() -> u32 {
 }
 
 fn default_web_trigger_threshold() -> f32 {
-    0.45
+    0.7
 }
 
 fn default_max_repo_hits() -> usize {

@@ -143,6 +143,8 @@ async fn run_single(
         return run_via_http(
             &repo_root,
             &query,
+            model.as_deref(),
+            agent.as_deref(),
             limit,
             max_web_results,
             !repo_only,
@@ -312,6 +314,8 @@ async fn run_repl(
 async fn run_via_http(
     repo_root: &Path,
     query: &str,
+    model: Option<&str>,
+    agent: Option<&str>,
     limit: usize,
     max_web_results: Option<usize>,
     include_libs: bool,
@@ -334,6 +338,8 @@ async fn run_via_http(
         no_cache,
         llm_filter_local_results,
         max_web_results,
+        model,
+        agent,
         diff_mode,
         diff_base,
         diff_head,
@@ -606,6 +612,10 @@ struct SearchRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_web_results: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    llm_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    llm_agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     diff_mode: Option<diff::DiffMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     diff_base: Option<String>,
@@ -625,6 +635,8 @@ pub(crate) async fn search_via_http(
     no_cache: bool,
     llm_filter_local_results: bool,
     max_web_results: Option<usize>,
+    llm_model: Option<&str>,
+    llm_agent: Option<&str>,
     diff_mode: Option<diff::DiffMode>,
     diff_base: Option<String>,
     diff_head: Option<String>,
@@ -640,6 +652,8 @@ pub(crate) async fn search_via_http(
         no_cache,
         llm_filter_local_results,
         max_web_results,
+        llm_model: llm_model.map(|value| value.to_string()),
+        llm_agent: llm_agent.map(|value| value.to_string()),
         diff_mode,
         diff_base,
         diff_head,

@@ -1293,6 +1293,10 @@ struct SearchParams {
     #[serde(default)]
     llm_filter_local_results: Option<bool>,
     #[serde(default)]
+    llm_model: Option<String>,
+    #[serde(default)]
+    llm_agent: Option<String>,
+    #[serde(default)]
     diff_mode: Option<diff::DiffMode>,
     #[serde(default)]
     diff_base: Option<String>,
@@ -2422,8 +2426,8 @@ async fn search_handler(
         skip_local_search,
         disable_web_cache,
         llm_filter_local_results,
-        llm_model: None,
-        llm_agent: None,
+        llm_model: params.llm_model.as_deref(),
+        llm_agent: params.llm_agent.as_deref(),
         indexer: state.indexer.as_ref(),
         libs_indexer,
         plan,

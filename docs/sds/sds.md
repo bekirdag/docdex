@@ -55,7 +55,7 @@ Docdex v2.0 runs a per-repo local-first daemon (`docdexd serve`) per repo. Run o
 
 - Confirm shutdown behavior for active sessions: should in-flight requests be drained or rejected?  
 - How to handle simultaneous web-trigger requests across repos within rate limits without head-of-line blocking?  
-- Risk: confidence gating (`web_trigger_threshold` default 0.45) may under-trigger web enrichment for sparse repos.
+- Risk: confidence gating (`web_trigger_threshold` default 0.7) may under-trigger web enrichment for sparse repos.
 
 **Verification Strategy**
 
@@ -120,7 +120,7 @@ Components and flow
 - Tier 1 Local: Tantivy source index plus per-repo `libs_index`; cached library docs are treated as local. BM25 search with optional local rerank. Provides score used for gating.  
 - Tier 2 Web (fallback): DuckDuckGo HTML discovery (≥2s between searches, blocklist) → headless Chrome fetch with readability (≥1s per-domain delay, page timeout \~15s) → cache HTML/cleaned JSON under `cache/web` → ingest into repo context as needed. Guarded browser lifecycle to avoid zombies; locks under `~/.docdex/state/locks`.  
 - Tier 3 Cognition/Memory: Local Ollama for chat/embeddings; per-repo `memory.db` (sqlite-vec) prioritized in context assembly; DAG logging per session.  
-- Gating logic: If top local score ≥ `web_trigger_threshold` (default 0.45), stay in Tier 1; otherwise escalate to Tier 2 or when explicitly forced by user. Context assembly priority: Memory → Repo Code → Library/Web; token budget approx 10% system prompt, 20% memory, 50% repo/library/web, 20% generation buffer.  
+- Gating logic: If top local score ≥ `web_trigger_threshold` (default 0.7), stay in Tier 1; otherwise escalate to Tier 2 or when explicitly forced by user. Context assembly priority: Memory → Repo Code → Library/Web; token budget approx 10% system prompt, 20% memory, 50% repo/library/web, 20% generation buffer.  
 - Surfaces using waterfall: CLI (`chat --repo`, `web-rag --repo`), HTTP `/v1/chat/completions` (defaults to daemon repo; repo id optional), MCP tools (all require repo). Repo Manager enforces repo selection and isolation throughout.  
 - Data contracts (implied from PDR): search results carry score \+ snippet \+ source path; web fetch outputs cleaned text plus metadata (url, fetched\_at, cache key); memory rows carry `id, content, embedding, created_at, metadata`. No additional schemas beyond stated.
 
@@ -135,7 +135,7 @@ Scalability, reliability, security, observability, DevOps
 Assumptions
 
 - BM25 search is sufficient for Tier 1 initial ranking; rerank is optional/local only.  
-- `web_trigger_threshold` default 0.45 is configurable; same threshold used across surfaces unless overridden.  
+- `web_trigger_threshold` default 0.7 is configurable; same threshold used across surfaces unless overridden.  
 - Chrome availability and Ollama models are pre-installed or handled by setup flows; no auto-install.
 
 Open Questions & Risks
@@ -428,7 +428,7 @@ Routes each query through a tiered pipeline—local → web → cognition—base
 
 **Scope & Intent**
 
-- Enforce local-first retrieval with gated escalation to web and cognition when local confidence \< `web_trigger_threshold` (default 0.45) or when explicitly forced.  
+- Enforce local-first retrieval with gated escalation to web and cognition when local confidence \< `web_trigger_threshold` (default 0.7) or when explicitly forced.  
 - Keep repo isolation: all retrievals and caches are repo-scoped via Repo Manager fingerprints; no cross-repo bleed.  
 - Assemble context with fixed priority and budgeting: Memory \> Repo Code \> Library/Web, \~10% system prompt, 20% memory, 50% repo/library/web, 20% generation buffer.
 
@@ -494,7 +494,7 @@ The system provides zero-cost web enrichment as Tier 2 of the retrieval waterfal
 - `DiscoveryService`: issues DuckDuckGo HTML searches with ≥2s delay between queries; applies blocklist; respects global `[web]` config (user agent, cache TTL).  
 - `ScraperEngine`: headless Chrome (local binary) fetch with readability extraction; enforces request delay ≥1s per domain and page load timeout (\~15s default); guarded lifecycle with locks to prevent zombie processes; runs only when Tier 2 is triggered or explicitly requested.  
 - Cache: global `cache/web/` storing raw HTML and cleaned JSON; reused across repos but ingested per repo as needed.  
-- Waterfall Orchestrator: triggers discovery/fetch when local confidence \< `web_trigger_threshold` (default 0.45) or on explicit web commands; merges cleaned snippets into context after token budgeting (priority: Memory → Repo → Library/Web).
+- Waterfall Orchestrator: triggers discovery/fetch when local confidence \< `web_trigger_threshold` (default 0.7) or on explicit web commands; merges cleaned snippets into context after token budgeting (priority: Memory → Repo → Library/Web).
 
 **Interactions & Data Flow**
 
@@ -929,7 +929,7 @@ Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper
 - Repo scoping: HTTP defaults to the daemon repo; validate any provided repo id/path and reject unknown/unindexed repos.  
 - Token budgeting: fixed priority (Memory \> Repo \> Library/Web) with \~10% system prompt, 20% memory, 50% repo/library/web, 20% generation buffer; drop lowest-priority snippets first with logging.  
 - Streaming: mirror OpenAI stream semantics for chat responses (chunked events).  
-- Waterfall gating: web escalation only if top local score \< `web_trigger_threshold` (default 0.45) or explicitly requested.  
+- Waterfall gating: web escalation only if top local score \< `web_trigger_threshold` (default 0.7) or explicitly requested.  
 - State usage: per-repo dirs under `~/.docdex/state/repos/<fingerprint>/`; shared caches (`cache/web`, `cache/libs`) ingested per repo.  
 - Security: localhost by default; `--expose` requires token auth checked per request; no telemetry; no paid APIs.  
 - Performance targets: local search p95 \<50ms; typical \<20ms.  
@@ -1079,7 +1079,7 @@ Docdex relies solely on locally managed, zero-cost components for LLM/embeddings
 
 ### Security and Privacy
 
-- Local-first: offline by default; web escalation only on low confidence (`web_trigger_threshold`, default 0.45) or explicit request.  
+- Local-first: offline by default; web escalation only on low confidence (`web_trigger_threshold`, default 0.7) or explicit request.  
 - Authentication: token required when `--expose` is used; reject unauthenticated remote HTTP/MCP calls. No paid APIs or telemetry; only local/open components (Ollama, DuckDuckGo HTML, headless Chrome).  
 - Data isolation: per-repo state under `state/repos/<fingerprint>/`; no cross-repo memory/index/DAG bleed; global caches are read/ingest-only per repo.
 
@@ -1277,7 +1277,7 @@ Configuration ensures `docdexd` starts with safe, local-first defaults, validate
 
 Defaults and creation
 
-- Global config `~/.docdex/config.toml` auto-created on first run with localhost bind, Ollama-only LLM settings, and default thresholds (e.g., `web_trigger_threshold=0.45`).  
+- Global config `~/.docdex/config.toml` auto-created on first run with localhost bind, Ollama-only LLM settings, and default thresholds (e.g., `web_trigger_threshold=0.7`).  
 - State root `~/.docdex/state/` structured as in PDR (per-repo `index`, `libs_index`, `memory.db`, `symbols.db`, `dag.db`, `impact_graph.json`; shared `cache/web`, `cache/libs`, `locks`). Paths derived from SHA256 of normalized repo path; reject any path not under the fingerprinted root.
 
 Validation and safeguards

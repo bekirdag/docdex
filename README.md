@@ -164,7 +164,7 @@ Impact graph snapshots carry schema metadata and are migrated on read; reindex t
 - `DOCDEX_DYNAMIC_IMPORT_SCAN_LIMIT` / `DOCDEX_ENABLE_IMPORT_TRACES`: impact graph controls for dynamic import scanning and runtime import traces (`docdex.import_traces.jsonl`).
 - `DOCDEX_LLM_AGENT` / `DOCDEX_AGENT`: default LLM agent slug/id for daemon chat (also allows non-ollama providers when set).
 - `DOCDEX_WEB_ENABLED` / `DOCDEX_OFFLINE`: enable Tier 2 web discovery or force offline mode (default: disabled unless explicitly enabled).
-- `DOCDEX_WEB_TRIGGER_THRESHOLD` / `DOCDEX_WEB_MIN_MATCH_RATIO` / `DOCDEX_LOCAL_RELEVANCE_THRESHOLD`: web gate thresholds (defaults 0.45 / 0.2 / 0.7).
+- `DOCDEX_WEB_TRIGGER_THRESHOLD` / `DOCDEX_WEB_MIN_MATCH_RATIO` / `DOCDEX_LOCAL_RELEVANCE_THRESHOLD`: web gate thresholds (defaults 0.7 / 0.2 / 0.7).
 - `DOCDEX_WEB_MAX_HITS` / `DOCDEX_WEB_MAX_RESULTS`: clamp web hits (max hits defaults from config, max results default 20).
 - `DOCDEX_WEB_USER_AGENT` / `DOCDEX_DDG_BASE_URL` / `DOCDEX_WEB_BLOCKLIST`: override discovery user agent, DDG base URL, or blocklist.
 - `DOCDEX_WEB_MIN_SPACING_MS` / `DOCDEX_WEB_REQUEST_DELAY_MS` / `DOCDEX_WEB_REQUEST_TIMEOUT_MS`: discovery spacing, fetch delay, and request timeout.

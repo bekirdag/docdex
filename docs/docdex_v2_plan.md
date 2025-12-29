@@ -70,7 +70,7 @@ Based on the provided SDS and the current file structure of `docdex` v0.1.10, he
 * **Orchestrator (The Waterfall)**
 * **Current State:** `src/orchestrator` likely handles simple flow.
 * **Required Changes:**
-* **Gating Logic:** Implement the `web_trigger_threshold` check. Only trigger Web Tier if Local Tier score < 0.45.
+* **Gating Logic:** Implement the `web_trigger_threshold` check. Only trigger Web Tier if Local Tier score < 0.7.
 * **Context Assembly:** Enforce strict priority: `Memory > Repo Code > Library/Web`.
 * **Token Budgeting:** Implement the specific budget split (10% system, 20% memory, 50% context, 20% gen).
 
@@ -650,7 +650,7 @@ src
 ### Summary of the "Waterfall" Logic to be Implemented
 
 * **Tier 1 (Local):** Always runs first. Queries `index/` (source) and `libs_index/` (libraries).
-* **Gate:** Compares the top BM25 score from Tier 1 against `config.search.web_trigger_threshold` (default 0.45).
+* **Gate:** Compares the top BM25 score from Tier 1 against `config.search.web_trigger_threshold` (default 0.7).
 * **Tier 2 (Web):** Only runs if the Gate opens. Executes DuckDuckGo search + Chrome Fetch.
 * **Tier 3 (Cognition):** Always runs. Assembles the final prompt using `budget.rs` and calls Ollama.
 

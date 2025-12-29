@@ -256,7 +256,7 @@ pub async fn run_eval(options: EvalOptions) -> Result<()> {
         }
     }
 
-    let output_dir = std::env::current_dir()?.join("tmp");
+    let output_dir = std::env::current_dir()?.join(".tmp");
     fs::create_dir_all(&output_dir)
         .with_context(|| format!("create eval output dir {}", output_dir.display()))?;
     let results_path = output_dir.join(OUTPUT_RESULTS_FILE);

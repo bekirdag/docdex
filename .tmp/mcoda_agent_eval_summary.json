@@ -1,0 +1,2712 @@
+[
+  {
+    "agent_id": "b8fa9d97-30a1-425e-b744-aae437f3b6ea",
+    "agent_slug": "codellama-34b",
+    "adapter": "ollama-remote",
+    "model": "codellama:34b",
+    "runs": 15,
+    "success": 15,
+    "avg_latency_ms": 12612,
+    "local_hits": 15,
+    "web_hits": 15,
+    "avg_local_score": 16.337843,
+    "avg_web_score": 0.65747786,
+    "category_stats": [
+      {
+        "tag": "backend_logic",
+        "runs": 4,
+        "success": 4,
+        "avg_latency_ms": 16,
+        "local_hits": 4,
+        "web_hits": 4,
+        "avg_local_score": 16.708927,
+        "avg_web_score": 0.64400005
+      },
+      {
+        "tag": "code_review",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 122763,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.35009,
+        "avg_web_score": 0.578
+      },
+      {
+        "tag": "code_write",
+        "runs": 12,
+        "success": 12,
+        "avg_latency_ms": 5532,
+        "local_hits": 12,
+        "web_hits": 12,
+        "avg_local_score": 16.225113,
+        "avg_web_score": 0.6587473
+      },
+      {
+        "tag": "csv_parsing",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 17,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.198463,
+        "avg_web_score": 0.7990001
+      },
+      {
+        "tag": "debugging",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 16,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 14.859873,
+        "avg_web_score": 0.65800005
+      },
+      {
+        "tag": "integration_test_design",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 12,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.475185,
+        "avg_web_score": 0.74
+      },
+      {
+        "tag": "migration_assist",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 25717,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.001633,
+        "avg_web_score": 0.578
+      },
+      {
+        "tag": "migration_scripts",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 25717,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.001633,
+        "avg_web_score": 0.578
+      },
+      {
+        "tag": "older_language_support_java8_cpp98",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 20581,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.753441,
+        "avg_web_score": 0.5264
+      },
+      {
+        "tag": "pull_request_review",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 122763,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.35009,
+        "avg_web_score": 0.578
+      },
+      {
+        "tag": "security_hardening",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 19970,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 16.717258,
+        "avg_web_score": 0.7715676
+      },
+      {
+        "tag": "standard_compliance",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 122763,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.35009,
+        "avg_web_score": 0.578
+      },
+      {
+        "tag": "unit_test_generation",
+        "runs": 3,
+        "success": 3,
+        "avg_latency_ms": 11,
+        "local_hits": 3,
+        "web_hits": 3,
+        "avg_local_score": 16.303015,
+        "avg_web_score": 0.6157334
+      }
+    ]
+  },
+  {
+    "agent_id": "0ffaa093-b660-4320-8e02-e32acf173605",
+    "agent_slug": "codex-architect",
+    "adapter": "codex-cli",
+    "model": "gpt-5.2-codex",
+    "runs": 29,
+    "success": 29,
+    "avg_latency_ms": 8870,
+    "local_hits": 29,
+    "web_hits": 19,
+    "avg_local_score": 18.366552,
+    "avg_web_score": 0.7386701,
+    "category_stats": [
+      {
+        "tag": "alternative_architecture",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 23027,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 21.763205,
+        "avg_web_score": 0.55704
+      },
+      {
+        "tag": "backend_logic",
+        "runs": 4,
+        "success": 4,
+        "avg_latency_ms": 14,
+        "local_hits": 4,
+        "web_hits": 4,
+        "avg_local_score": 16.708927,
+        "avg_web_score": 0.8003
+      },
+      {
+        "tag": "code_review",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 4666,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.35009,
+        "avg_web_score": 0.75
+      },
+      {
+        "tag": "code_write",
+        "runs": 12,
+        "success": 12,
+        "avg_latency_ms": 2196,
+        "local_hits": 12,
+        "web_hits": 12,
+        "avg_local_score": 16.225113,
+        "avg_web_score": 0.7989902
+      },
+      {
+        "tag": "cross_file_dependency_mapping",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 5,
+        "local_hits": 1,
+        "web_hits": 0,
+        "avg_local_score": 22.910265,
+        "avg_web_score": null
+      },
+      {
+        "tag": "csv_parsing",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 16,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.198463,
+        "avg_web_score": 0.748
+      },
+      {
+        "tag": "database_normalization",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 25187,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 27.928513,
+        "avg_web_score": 0.5928
+      },
+      {
+        "tag": "debugging",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 16,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 14.859873,
+        "avg_web_score": 0.808
+      },
+      {
+        "tag": "dependency_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 13578,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.280458,
+        "avg_web_score": 0.8620701
+      },
+      {
+        "tag": "docdex_query",
+        "runs": 10,
+        "success": 10,
+        "avg_latency_ms": 5,
+        "local_hits": 10,
+        "web_hits": 0,
+        "avg_local_score": 21.065413,
+        "avg_web_score": null
+      },
+      {
+        "tag": "legacy_codebase_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 11,
+        "local_hits": 1,
+        "web_hits": 0,
+        "avg_local_score": 21.825457,
+        "avg_web_score": null
+      },
+      {
+        "tag": "migration_assist",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 6787,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.001633,
+        "avg_web_score": 0.7537143
+      },
+      {
+        "tag": "migration_scripts",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 6787,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.001633,
+        "avg_web_score": 0.7537143
+      },
+      {
+        "tag": "older_language_support_java8_cpp98",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 7557,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.753441,
+        "avg_web_score": 0.916
+      },
+      {
+        "tag": "plan",
+        "runs": 2,
+        "success": 2,
+        "avg_latency_ms": 61012,
+        "local_hits": 2,
+        "web_hits": 2,
+        "avg_local_score": 18.911655,
+        "avg_web_score": 0.586555
+      },
+      {
+        "tag": "pull_request_review",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 4666,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.35009,
+        "avg_web_score": 0.75
+      },
+      {
+        "tag": "security_hardening",
+        "runs": 3,
+        "success": 3,
+        "avg_latency_ms": 22606,
+        "local_hits": 3,
+        "web_hits": 3,
+        "avg_local_score": 13.042217,
+        "avg_web_score": 0.75695586
+      },
+      {
+        "tag": "security_scan",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 21520,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 14.0837345,
+        "avg_web_score": 0.51744
+      },
+      {
+        "tag": "standard_compliance",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 4666,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.35009,
+        "avg_web_score": 0.75
+      },
+      {
+        "tag": "system_architecture",
+        "runs": 3,
+        "success": 3,
+        "avg_latency_ms": 20597,
+        "local_hits": 3,
+        "web_hits": 3,
+        "avg_local_score": 22.324059,
+        "avg_web_score": 0.6706367
+      },
+      {
+        "tag": "task_triage",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 108446,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.54285,
+        "avg_web_score": 0.31103998
+      },
+      {
+        "tag": "unit_test_generation",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 9,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 15.892853,
+        "avg_web_score": 0.612
+      },
+      {
+        "tag": "vulnerability_check",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 21520,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 14.0837345,
+        "avg_web_score": 0.51744
+      }
+    ]
+  },
+  {
+    "agent_id": "4d552f42-cfef-48b0-ad52-4b2341537fc3",
+    "agent_slug": "codex-deputy",
+    "adapter": "openai-api",
+    "model": "gpt-5.1-codex-max",
+    "runs": 3,
+    "success": 3,
+    "avg_latency_ms": 21025,
+    "local_hits": 3,
+    "web_hits": 3,
+    "avg_local_score": 17.475386,
+    "avg_web_score": 0.6042978,
+    "category_stats": [
+      {
+        "tag": "code_review",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 6881,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.35009,
+        "avg_web_score": 0.58800006
+      },
+      {
+        "tag": "minimal_diff_generation",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 17568,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.997107,
+        "avg_web_score": 0.66933334
+      },
+      {
+        "tag": "pull_request_review",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 6881,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.35009,
+        "avg_web_score": 0.58800006
+      },
+      {
+        "tag": "refactor_verification",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 17568,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.997107,
+        "avg_web_score": 0.66933334
+      },
+      {
+        "tag": "standard_compliance",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 6881,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.35009,
+        "avg_web_score": 0.58800006
+      },
+      {
+        "tag": "syntax_checking",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 38628,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 21.078959,
+        "avg_web_score": 0.55556005
+      }
+    ]
+  },
+  {
+    "agent_id": "73afdfd5-ca51-451e-89e1-afddea07ad58",
+    "agent_slug": "codex-stabilizer",
+    "adapter": "codex-cli",
+    "model": "gpt-5.1-codex",
+    "runs": 13,
+    "success": 13,
+    "avg_latency_ms": 2265,
+    "local_hits": 13,
+    "web_hits": 13,
+    "avg_local_score": 16.053728,
+    "avg_web_score": 0.72552425,
+    "category_stats": [
+      {
+        "tag": "backend_logic",
+        "runs": 4,
+        "success": 4,
+        "avg_latency_ms": 14,
+        "local_hits": 4,
+        "web_hits": 4,
+        "avg_local_score": 16.708927,
+        "avg_web_score": 0.771
+      },
+      {
+        "tag": "code_write",
+        "runs": 12,
+        "success": 12,
+        "avg_latency_ms": 2221,
+        "local_hits": 12,
+        "web_hits": 12,
+        "avg_local_score": 16.225113,
+        "avg_web_score": 0.73920685
+      },
+      {
+        "tag": "csv_parsing",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 16,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.198463,
+        "avg_web_score": 0.78400004
+      },
+      {
+        "tag": "debugging",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 16,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 14.859873,
+        "avg_web_score": 0.808
+      },
+      {
+        "tag": "migration_assist",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 7733,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.001633,
+        "avg_web_score": 0.6997143
+      },
+      {
+        "tag": "migration_scripts",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 7733,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.001633,
+        "avg_web_score": 0.6997143
+      },
+      {
+        "tag": "minimal_diff_generation",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 2797,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.997107,
+        "avg_web_score": 0.56133336
+      },
+      {
+        "tag": "older_language_support_java8_cpp98",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 3791,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.753441,
+        "avg_web_score": 0.772
+      },
+      {
+        "tag": "refactor_verification",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 2797,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.997107,
+        "avg_web_score": 0.56133336
+      },
+      {
+        "tag": "security_hardening",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 15020,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 16.717258,
+        "avg_web_score": 0.8727676
+      },
+      {
+        "tag": "unit_test_generation",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 8,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 15.892853,
+        "avg_web_score": 0.648
+      }
+    ]
+  },
+  {
+    "agent_id": "36e94281-4595-4147-b984-badedddff8e0",
+    "agent_slug": "codex-test-lead",
+    "adapter": "openai-api",
+    "model": "gpt-5.1-codex",
+    "runs": 3,
+    "success": 3,
+    "avg_latency_ms": 25,
+    "local_hits": 3,
+    "web_hits": 3,
+    "avg_local_score": 18.708097,
+    "avg_web_score": 0.5855267,
+    "category_stats": [
+      {
+        "tag": "edge_case_identification",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 56,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 19.293066,
+        "avg_web_score": 0.6887001
+      },
+      {
+        "tag": "integration_test_design",
+        "runs": 2,
+        "success": 2,
+        "avg_latency_ms": 10,
+        "local_hits": 2,
+        "web_hits": 2,
+        "avg_local_score": 18.415613,
+        "avg_web_score": 0.53394
+      },
+      {
+        "tag": "test_plan_creation",
+        "runs": 2,
+        "success": 2,
+        "avg_latency_ms": 32,
+        "local_hits": 2,
+        "web_hits": 2,
+        "avg_local_score": 19.324554,
+        "avg_web_score": 0.59229004
+      },
+      {
+        "tag": "unit_test_generation",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 12,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.475185,
+        "avg_web_score": 0.572
+      }
+    ]
+  },
+  {
+    "agent_id": "8108d426-3d4c-409f-b4c9-a0a60ceb4be6",
+    "agent_slug": "deepseek-coder-33b",
+    "adapter": "ollama-remote",
+    "model": "deepseek-coder:33b",
+    "runs": 15,
+    "success": 15,
+    "avg_latency_ms": 6208,
+    "local_hits": 15,
+    "web_hits": 15,
+    "avg_local_score": 16.337843,
+    "avg_web_score": 0.89853334,
+    "category_stats": [
+      {
+        "tag": "backend_logic",
+        "runs": 4,
+        "success": 4,
+        "avg_latency_ms": 14,
+        "local_hits": 4,
+        "web_hits": 4,
+        "avg_local_score": 16.708927,
+        "avg_web_score": 0.95000005
+      },
+      {
+        "tag": "code_review",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 50252,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.35009,
+        "avg_web_score": 0.90000004
+      },
+      {
+        "tag": "code_write",
+        "runs": 12,
+        "success": 12,
+        "avg_latency_ms": 3570,
+        "local_hits": 12,
+        "web_hits": 12,
+        "avg_local_score": 16.225113,
+        "avg_web_score": 0.9031667
+      },
+      {
+        "tag": "csv_parsing",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 16,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.198463,
+        "avg_web_score": 0.94000006
+      },
+      {
+        "tag": "debugging",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 16,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 14.859873,
+        "avg_web_score": 1.0
+      },
+      {
+        "tag": "integration_test_design",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 12,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.475185,
+        "avg_web_score": 0.8
+      },
+      {
+        "tag": "migration_assist",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 24316,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.001633,
+        "avg_web_score": 0.53800005
+      },
+      {
+        "tag": "migration_scripts",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 24316,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.001633,
+        "avg_web_score": 0.53800005
+      },
+      {
+        "tag": "older_language_support_java8_cpp98",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 8662,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.753441,
+        "avg_web_score": 0.94000006
+      },
+      {
+        "tag": "pull_request_review",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 50252,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.35009,
+        "avg_web_score": 0.90000004
+      },
+      {
+        "tag": "security_hardening",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 9756,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 16.717258,
+        "avg_web_score": 1.0
+      },
+      {
+        "tag": "standard_compliance",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 50252,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.35009,
+        "avg_web_score": 0.90000004
+      },
+      {
+        "tag": "unit_test_generation",
+        "runs": 3,
+        "success": 3,
+        "avg_latency_ms": 10,
+        "local_hits": 3,
+        "web_hits": 3,
+        "avg_local_score": 16.303015,
+        "avg_web_score": 0.86
+      }
+    ]
+  },
+  {
+    "agent_id": "47c43e04-c71a-4530-a41c-0b9c7cf174b1",
+    "agent_slug": "deepseek-r1-32b",
+    "adapter": "ollama-remote",
+    "model": "deepseek-r1:32b",
+    "runs": 6,
+    "success": 6,
+    "avg_latency_ms": 73060,
+    "local_hits": 6,
+    "web_hits": 6,
+    "avg_local_score": 19.682903,
+    "avg_web_score": 0.60049087,
+    "category_stats": [
+      {
+        "tag": "bug_hunting",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 79903,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.128708,
+        "avg_web_score": 0.54029006
+      },
+      {
+        "tag": "debugging",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 58196,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 18.274239,
+        "avg_web_score": 0.7822834
+      },
+      {
+        "tag": "dependency_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 35543,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.280458,
+        "avg_web_score": 0.6853
+      },
+      {
+        "tag": "log_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 160589,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.803473,
+        "avg_web_score": 0.60431
+      },
+      {
+        "tag": "logic_debugging",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 79903,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.128708,
+        "avg_web_score": 0.54029006
+      },
+      {
+        "tag": "plan",
+        "runs": 2,
+        "success": 2,
+        "avg_latency_ms": 56289,
+        "local_hits": 2,
+        "web_hits": 2,
+        "avg_local_score": 18.911655,
+        "avg_web_score": 0.5323643
+      },
+      {
+        "tag": "problem_solving",
+        "runs": 4,
+        "success": 4,
+        "avg_latency_ms": 81446,
+        "local_hits": 4,
+        "web_hits": 4,
+        "avg_local_score": 20.06853,
+        "avg_web_score": 0.6345542
+      },
+      {
+        "tag": "root_cause_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 27096,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 21.067698,
+        "avg_web_score": 0.6113333
+      },
+      {
+        "tag": "system_architecture",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 35543,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.280458,
+        "avg_web_score": 0.6853
+      },
+      {
+        "tag": "task_triage",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 77036,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.54285,
+        "avg_web_score": 0.3794286
+      }
+    ]
+  },
+  {
+    "agent_id": "179961a6-f251-43da-9f13-2660c1908f2a",
+    "agent_slug": "deepseek-r1-7b",
+    "adapter": "ollama-remote",
+    "model": "deepseek-r1:7b",
+    "runs": 6,
+    "success": 6,
+    "avg_latency_ms": 9900,
+    "local_hits": 6,
+    "web_hits": 6,
+    "avg_local_score": 19.682903,
+    "avg_web_score": 0.80753654,
+    "category_stats": [
+      {
+        "tag": "bug_hunting",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 5767,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.128708,
+        "avg_web_score": 0.6260572
+      },
+      {
+        "tag": "debugging",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 6739,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 18.274239,
+        "avg_web_score": 0.814
+      },
+      {
+        "tag": "dependency_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 5590,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.280458,
+        "avg_web_score": 1.0
+      },
+      {
+        "tag": "log_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 27625,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.803473,
+        "avg_web_score": 0.97240007
+      },
+      {
+        "tag": "logic_debugging",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 5767,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.128708,
+        "avg_web_score": 0.6260572
+      },
+      {
+        "tag": "plan",
+        "runs": 2,
+        "success": 2,
+        "avg_latency_ms": 6340,
+        "local_hits": 2,
+        "web_hits": 2,
+        "avg_local_score": 18.911655,
+        "avg_web_score": 0.7497143
+      },
+      {
+        "tag": "problem_solving",
+        "runs": 4,
+        "success": 4,
+        "avg_latency_ms": 11680,
+        "local_hits": 4,
+        "web_hits": 4,
+        "avg_local_score": 20.06853,
+        "avg_web_score": 0.83644766
+      },
+      {
+        "tag": "root_cause_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 6589,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 21.067698,
+        "avg_web_score": 0.9333334
+      },
+      {
+        "tag": "system_architecture",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 5590,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.280458,
+        "avg_web_score": 1.0
+      },
+      {
+        "tag": "task_triage",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 7091,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.54285,
+        "avg_web_score": 0.4994286
+      }
+    ]
+  },
+  {
+    "agent_id": "f316dbd2-9b64-44ac-b8b1-c1eef99f0c13",
+    "agent_slug": "devstral-local",
+    "adapter": "ollama-remote",
+    "model": "devstral-small-2",
+    "runs": 16,
+    "success": 16,
+    "avg_latency_ms": 25309,
+    "local_hits": 16,
+    "web_hits": 16,
+    "avg_local_score": 16.453512,
+    "avg_web_score": 0.785673,
+    "category_stats": [
+      {
+        "tag": "backend_logic",
+        "runs": 4,
+        "success": 4,
+        "avg_latency_ms": 15,
+        "local_hits": 4,
+        "web_hits": 4,
+        "avg_local_score": 16.708927,
+        "avg_web_score": 0.90000004
+      },
+      {
+        "tag": "bash_scripting",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 8,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 16.962748,
+        "avg_web_score": 0.61800003
+      },
+      {
+        "tag": "code_write",
+        "runs": 12,
+        "success": 12,
+        "avg_latency_ms": 18336,
+        "local_hits": 12,
+        "web_hits": 12,
+        "avg_local_score": 16.225113,
+        "avg_web_score": 0.82923067
+      },
+      {
+        "tag": "comment_formatting",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 184887,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 18.575914,
+        "avg_web_score": 0.32200003
+      },
+      {
+        "tag": "csv_parsing",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 16,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.198463,
+        "avg_web_score": 0.94000006
+      },
+      {
+        "tag": "debugging",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 16,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 14.859873,
+        "avg_web_score": 0.94000006
+      },
+      {
+        "tag": "docstring_writing",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 184887,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 18.575914,
+        "avg_web_score": 0.32200003
+      },
+      {
+        "tag": "file_manipulation",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 8,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 16.962748,
+        "avg_web_score": 0.61800003
+      },
+      {
+        "tag": "integration_test_design",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 12,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.475185,
+        "avg_web_score": 0.74
+      },
+      {
+        "tag": "migration_assist",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 141435,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.001633,
+        "avg_web_score": 0.4
+      },
+      {
+        "tag": "migration_scripts",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 141435,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.001633,
+        "avg_web_score": 0.4
+      },
+      {
+        "tag": "older_language_support_java8_cpp98",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 63453,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.753441,
+        "avg_web_score": 0.65800005
+      },
+      {
+        "tag": "security_hardening",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 15028,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 16.717258,
+        "avg_web_score": 0.8727676
+      },
+      {
+        "tag": "unit_test_generation",
+        "runs": 3,
+        "success": 3,
+        "avg_latency_ms": 10,
+        "local_hits": 3,
+        "web_hits": 3,
+        "avg_local_score": 16.303015,
+        "avg_web_score": 0.82000005
+      }
+    ]
+  },
+  {
+    "agent_id": "bf48610a-084c-4165-ab0b-eaeafc322e76",
+    "agent_slug": "gateway-router",
+    "adapter": "openai-api",
+    "model": "gpt-5.2-codex",
+    "runs": 3,
+    "success": 3,
+    "avg_latency_ms": 24271,
+    "local_hits": 3,
+    "web_hits": 3,
+    "avg_local_score": 20.617662,
+    "avg_web_score": 0.6782058,
+    "category_stats": [
+      {
+        "tag": "agent_routing",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 25181,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 24.02968,
+        "avg_web_score": 0.6838858
+      },
+      {
+        "tag": "complexity_scoring",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 25181,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 24.02968,
+        "avg_web_score": 0.6838858
+      },
+      {
+        "tag": "dependency_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 4410,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.280458,
+        "avg_web_score": 0.98120004
+      },
+      {
+        "tag": "plan",
+        "runs": 2,
+        "success": 2,
+        "avg_latency_ms": 23816,
+        "local_hits": 2,
+        "web_hits": 2,
+        "avg_local_score": 18.911655,
+        "avg_web_score": 0.67536575
+      },
+      {
+        "tag": "system_architecture",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 4410,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.280458,
+        "avg_web_score": 0.98120004
+      },
+      {
+        "tag": "task_triage",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 43223,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.54285,
+        "avg_web_score": 0.36953148
+      }
+    ]
+  },
+  {
+    "agent_id": "717e57f2-9430-4f0d-9c5e-71c35a41fdc1",
+    "agent_slug": "gemini-architect",
+    "adapter": "gemini-cli",
+    "model": "gemini-3-flash-preview",
+    "runs": 11,
+    "success": 11,
+    "avg_latency_ms": 18295,
+    "local_hits": 11,
+    "web_hits": 1,
+    "avg_local_score": 21.310366,
+    "avg_web_score": 0.30083334,
+    "category_stats": [
+      {
+        "tag": "cross_file_dependency_mapping",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 4,
+        "local_hits": 1,
+        "web_hits": 0,
+        "avg_local_score": 22.910265,
+        "avg_web_score": null
+      },
+      {
+        "tag": "doc_generation",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 201206,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.7599,
+        "avg_web_score": 0.30083334
+      },
+      {
+        "tag": "docdex_query",
+        "runs": 10,
+        "success": 10,
+        "avg_latency_ms": 4,
+        "local_hits": 10,
+        "web_hits": 0,
+        "avg_local_score": 21.065413,
+        "avg_web_score": null
+      },
+      {
+        "tag": "legacy_codebase_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 9,
+        "local_hits": 1,
+        "web_hits": 0,
+        "avg_local_score": 21.825457,
+        "avg_web_score": null
+      },
+      {
+        "tag": "readme_cleanup",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 201206,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.7599,
+        "avg_web_score": 0.30083334
+      }
+    ]
+  },
+  {
+    "agent_id": "cc5a4d8f-8a9e-413c-8ebe-5f0a8fdd036f",
+    "agent_slug": "gemini-consultant",
+    "adapter": "gemini-cli",
+    "model": "gemini-2.5-pro",
+    "runs": 1,
+    "success": 1,
+    "avg_latency_ms": 15043,
+    "local_hits": 1,
+    "web_hits": 1,
+    "avg_local_score": 21.763205,
+    "avg_web_score": 0.49500003,
+    "category_stats": [
+      {
+        "tag": "alternative_architecture",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 15043,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 21.763205,
+        "avg_web_score": 0.49500003
+      },
+      {
+        "tag": "system_architecture",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 15043,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 21.763205,
+        "avg_web_score": 0.49500003
+      }
+    ]
+  },
+  {
+    "agent_id": "62d7fd6c-d982-496e-9909-2976c72beb86",
+    "agent_slug": "gemini-deep-read",
+    "adapter": "gemini-cli",
+    "model": "gemini-3-pro-preview",
+    "runs": 10,
+    "success": 10,
+    "avg_latency_ms": 4,
+    "local_hits": 10,
+    "web_hits": 0,
+    "avg_local_score": 21.065413,
+    "avg_web_score": null,
+    "category_stats": [
+      {
+        "tag": "cross_file_dependency_mapping",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 4,
+        "local_hits": 1,
+        "web_hits": 0,
+        "avg_local_score": 22.910265,
+        "avg_web_score": null
+      },
+      {
+        "tag": "docdex_query",
+        "runs": 10,
+        "success": 10,
+        "avg_latency_ms": 4,
+        "local_hits": 10,
+        "web_hits": 0,
+        "avg_local_score": 21.065413,
+        "avg_web_score": null
+      },
+      {
+        "tag": "legacy_codebase_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 7,
+        "local_hits": 1,
+        "web_hits": 0,
+        "avg_local_score": 21.825457,
+        "avg_web_score": null
+      }
+    ]
+  },
+  {
+    "agent_id": "efc33e81-d84e-4bf6-98af-86be0ab68056",
+    "agent_slug": "gemini-junior",
+    "adapter": "gemini-cli",
+    "model": "gemini-2.5-flash",
+    "runs": 3,
+    "success": 3,
+    "avg_latency_ms": 76296,
+    "local_hits": 3,
+    "web_hits": 3,
+    "avg_local_score": 16.41885,
+    "avg_web_score": 0.656,
+    "category_stats": [
+      {
+        "tag": "code_write",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 15,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.198463,
+        "avg_web_score": 0.94000006
+      },
+      {
+        "tag": "csv_parsing",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 15,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.198463,
+        "avg_web_score": 0.94000006
+      },
+      {
+        "tag": "json_formatting",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 208711,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.368858,
+        "avg_web_score": 0.28
+      },
+      {
+        "tag": "meeting_notes_cleanup",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 20162,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 15.689228,
+        "avg_web_score": 0.748
+      },
+      {
+        "tag": "summarization",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 20162,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 15.689228,
+        "avg_web_score": 0.748
+      },
+      {
+        "tag": "text_cleanup",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 208711,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.368858,
+        "avg_web_score": 0.28
+      },
+      {
+        "tag": "text_summarization",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 20162,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 15.689228,
+        "avg_web_score": 0.748
+      }
+    ]
+  },
+  {
+    "agent_id": "a019c4e7-1f6c-4068-802e-fb5f1fe720dc",
+    "agent_slug": "gemini-scribe",
+    "adapter": "gemini-cli",
+    "model": "gemini-2.5-flash",
+    "runs": 3,
+    "success": 3,
+    "avg_latency_ms": 109502,
+    "local_hits": 3,
+    "web_hits": 3,
+    "avg_local_score": 21.347853,
+    "avg_web_score": 0.34404448,
+    "category_stats": [
+      {
+        "tag": "comment_formatting",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 30115,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 18.575914,
+        "avg_web_score": 0.45000002
+      },
+      {
+        "tag": "doc_generation",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 119442,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.7599,
+        "avg_web_score": 0.30083334
+      },
+      {
+        "tag": "docstring_writing",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 30115,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 18.575914,
+        "avg_web_score": 0.45000002
+      },
+      {
+        "tag": "grammar_check",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 178950,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 21.707747,
+        "avg_web_score": 0.28130004
+      },
+      {
+        "tag": "readme_cleanup",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 119442,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.7599,
+        "avg_web_score": 0.30083334
+      },
+      {
+        "tag": "spelling_correction",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 178950,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 21.707747,
+        "avg_web_score": 0.28130004
+      },
+      {
+        "tag": "tone_adjustment",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 178950,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 21.707747,
+        "avg_web_score": 0.28130004
+      }
+    ]
+  },
+  {
+    "agent_id": "0ab85bf0-3575-4257-817b-8a0828623818",
+    "agent_slug": "gemini-stable",
+    "adapter": "gemini-cli",
+    "model": "gemini-3-pro-preview",
+    "runs": 1,
+    "success": 1,
+    "avg_latency_ms": 205684,
+    "local_hits": 1,
+    "web_hits": 1,
+    "avg_local_score": 15.483426,
+    "avg_web_score": 0.28,
+    "category_stats": [
+      {
+        "tag": "compliance_checking",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 205684,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 15.483426,
+        "avg_web_score": 0.28
+      },
+      {
+        "tag": "policy_verification",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 205684,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 15.483426,
+        "avg_web_score": 0.28
+      }
+    ]
+  },
+  {
+    "agent_id": "420d84c3-d745-46ce-b3dd-241ef0853496",
+    "agent_slug": "gemma3-27b",
+    "adapter": "ollama-remote",
+    "model": "gemma3:27b",
+    "runs": 3,
+    "success": 3,
+    "avg_latency_ms": 150993,
+    "local_hits": 3,
+    "web_hits": 3,
+    "avg_local_score": 16.8592,
+    "avg_web_score": 0.37125558,
+    "category_stats": [
+      {
+        "tag": "doc_generation",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 120080,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.7599,
+        "avg_web_score": 0.30083334
+      },
+      {
+        "tag": "keyword_extraction",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 146453,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 11.128474,
+        "avg_web_score": 0.21000001
+      },
+      {
+        "tag": "meeting_notes_cleanup",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 186448,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 15.689228,
+        "avg_web_score": 0.60293335
+      },
+      {
+        "tag": "readme_cleanup",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 120080,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.7599,
+        "avg_web_score": 0.30083334
+      },
+      {
+        "tag": "summarization",
+        "runs": 2,
+        "success": 2,
+        "avg_latency_ms": 166450,
+        "local_hits": 2,
+        "web_hits": 2,
+        "avg_local_score": 13.408852,
+        "avg_web_score": 0.40646666
+      },
+      {
+        "tag": "text_cleanup",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 146453,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 11.128474,
+        "avg_web_score": 0.21000001
+      },
+      {
+        "tag": "text_summarization",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 186448,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 15.689228,
+        "avg_web_score": 0.60293335
+      }
+    ]
+  },
+  {
+    "agent_id": "fcb0e11f-aede-41da-b9fb-0348b9c15310",
+    "agent_slug": "glm-hotfix",
+    "adapter": "zhipu-api",
+    "model": "glm-4.7",
+    "runs": 12,
+    "success": 12,
+    "avg_latency_ms": 24361,
+    "local_hits": 12,
+    "web_hits": 12,
+    "avg_local_score": 16.226343,
+    "avg_web_score": 0.4382862,
+    "category_stats": [
+      {
+        "tag": "backend_logic",
+        "runs": 4,
+        "success": 4,
+        "avg_latency_ms": 14,
+        "local_hits": 4,
+        "web_hits": 4,
+        "avg_local_score": 16.708927,
+        "avg_web_score": 0.4
+      },
+      {
+        "tag": "code_write",
+        "runs": 12,
+        "success": 12,
+        "avg_latency_ms": 24361,
+        "local_hits": 12,
+        "web_hits": 12,
+        "avg_local_score": 16.226343,
+        "avg_web_score": 0.4382862
+      },
+      {
+        "tag": "csv_parsing",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 16,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.198463,
+        "avg_web_score": 0.4
+      },
+      {
+        "tag": "debugging",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 16,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 14.859873,
+        "avg_web_score": 0.4
+      },
+      {
+        "tag": "migration_assist",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 57254,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.016384,
+        "avg_web_score": 0.4
+      },
+      {
+        "tag": "migration_scripts",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 57254,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.016384,
+        "avg_web_score": 0.4
+      },
+      {
+        "tag": "older_language_support_java8_cpp98",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 118956,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.753441,
+        "avg_web_score": 0.4
+      },
+      {
+        "tag": "security_hardening",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 4968,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 16.717258,
+        "avg_web_score": 0.8727676
+      },
+      {
+        "tag": "unit_test_generation",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 111055,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 15.892853,
+        "avg_web_score": 0.28
+      }
+    ]
+  },
+  {
+    "agent_id": "94591b0f-e6ac-4f3d-aff3-959b828f8385",
+    "agent_slug": "glm-worker",
+    "adapter": "zhipu-api",
+    "model": "glm-4.7",
+    "runs": 16,
+    "success": 16,
+    "avg_latency_ms": 21968,
+    "local_hits": 16,
+    "web_hits": 15,
+    "avg_local_score": 16.098518,
+    "avg_web_score": 0.4301845,
+    "category_stats": [
+      {
+        "tag": "backend_logic",
+        "runs": 6,
+        "success": 6,
+        "avg_latency_ms": 15,
+        "local_hits": 6,
+        "web_hits": 6,
+        "avg_local_score": 15.312895,
+        "avg_web_score": 0.39000002
+      },
+      {
+        "tag": "code_write",
+        "runs": 12,
+        "success": 12,
+        "avg_latency_ms": 13442,
+        "local_hits": 12,
+        "web_hits": 12,
+        "avg_local_score": 16.225943,
+        "avg_web_score": 0.4393973
+      },
+      {
+        "tag": "csv_parsing",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 16,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.198463,
+        "avg_web_score": 0.4
+      },
+      {
+        "tag": "debugging",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 17,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 14.859873,
+        "avg_web_score": 0.4
+      },
+      {
+        "tag": "dependency_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 118955,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.280458,
+        "avg_web_score": 0.44000003
+      },
+      {
+        "tag": "migration_assist",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 49860,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.016384,
+        "avg_web_score": 0.4
+      },
+      {
+        "tag": "migration_scripts",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 49860,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.016384,
+        "avg_web_score": 0.4
+      },
+      {
+        "tag": "older_language_support_java8_cpp98",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 57413,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.748648,
+        "avg_web_score": 0.4
+      },
+      {
+        "tag": "plan",
+        "runs": 2,
+        "success": 2,
+        "avg_latency_ms": 95075,
+        "local_hits": 2,
+        "web_hits": 1,
+        "avg_local_score": 18.911655,
+        "avg_web_score": 0.44000003
+      },
+      {
+        "tag": "security_hardening",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 5006,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 16.717258,
+        "avg_web_score": 0.8727676
+      },
+      {
+        "tag": "system_architecture",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 118955,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.280458,
+        "avg_web_score": 0.44000003
+      },
+      {
+        "tag": "task_triage",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 71195,
+        "local_hits": 1,
+        "web_hits": 0,
+        "avg_local_score": 20.54285,
+        "avg_web_score": null
+      },
+      {
+        "tag": "unit_test_generation",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 48920,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 15.892853,
+        "avg_web_score": 0.4
+      }
+    ]
+  },
+  {
+    "agent_id": "ccea8eee-41fa-4859-bd52-faf307a31d95",
+    "agent_slug": "gpt-oss-general",
+    "adapter": "ollama-remote",
+    "model": "gpt-oss:latest",
+    "runs": 3,
+    "success": 3,
+    "avg_latency_ms": 38050,
+    "local_hits": 3,
+    "web_hits": 3,
+    "avg_local_score": 16.8592,
+    "avg_web_score": 0.84694445,
+    "category_stats": [
+      {
+        "tag": "doc_generation",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 18264,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.7599,
+        "avg_web_score": 0.7505
+      },
+      {
+        "tag": "keyword_extraction",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 5664,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 11.128474,
+        "avg_web_score": 0.87
+      },
+      {
+        "tag": "meeting_notes_cleanup",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 90222,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 15.689228,
+        "avg_web_score": 0.9203334
+      },
+      {
+        "tag": "readme_cleanup",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 18264,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.7599,
+        "avg_web_score": 0.7505
+      },
+      {
+        "tag": "summarization",
+        "runs": 2,
+        "success": 2,
+        "avg_latency_ms": 47943,
+        "local_hits": 2,
+        "web_hits": 2,
+        "avg_local_score": 13.408852,
+        "avg_web_score": 0.8951667
+      },
+      {
+        "tag": "text_cleanup",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 5664,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 11.128474,
+        "avg_web_score": 0.87
+      },
+      {
+        "tag": "text_summarization",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 90222,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 15.689228,
+        "avg_web_score": 0.9203334
+      }
+    ]
+  },
+  {
+    "agent_id": "5a2733dc-074b-4345-86b0-8c75635efa23",
+    "agent_slug": "gpt-oss-qa",
+    "adapter": "ollama-remote",
+    "model": "gpt-oss:20b",
+    "runs": 5,
+    "success": 5,
+    "avg_latency_ms": 50537,
+    "local_hits": 5,
+    "web_hits": 5,
+    "avg_local_score": 17.371296,
+    "avg_web_score": 0.752996,
+    "category_stats": [
+      {
+        "tag": "bug_hunting",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 135897,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.128708,
+        "avg_web_score": 0.44038004
+      },
+      {
+        "tag": "code_review",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 47385,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.35009,
+        "avg_web_score": 0.81000006
+      },
+      {
+        "tag": "log_analysis",
+        "runs": 2,
+        "success": 2,
+        "avg_latency_ms": 27096,
+        "local_hits": 2,
+        "web_hits": 2,
+        "avg_local_score": 17.646973,
+        "avg_web_score": 0.7788
+      },
+      {
+        "tag": "logic_debugging",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 135897,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.128708,
+        "avg_web_score": 0.44038004
+      },
+      {
+        "tag": "problem_solving",
+        "runs": 2,
+        "success": 2,
+        "avg_latency_ms": 89447,
+        "local_hits": 2,
+        "web_hits": 2,
+        "avg_local_score": 20.466091,
+        "avg_web_score": 0.69869006
+      },
+      {
+        "tag": "pull_request_review",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 47385,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.35009,
+        "avg_web_score": 0.81000006
+      },
+      {
+        "tag": "security_hardening",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 15211,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 14.0837345,
+        "avg_web_score": 0.957
+      },
+      {
+        "tag": "security_scan",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 15211,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 14.0837345,
+        "avg_web_score": 0.957
+      },
+      {
+        "tag": "simple_classification",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 11196,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 14.490472,
+        "avg_web_score": 0.6006
+      },
+      {
+        "tag": "standard_compliance",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 47385,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.35009,
+        "avg_web_score": 0.81000006
+      },
+      {
+        "tag": "vulnerability_check",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 15211,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 14.0837345,
+        "avg_web_score": 0.957
+      }
+    ]
+  },
+  {
+    "agent_id": "78d3f15e-720a-4ccd-a272-f1dbcc5c7d83",
+    "agent_slug": "kimi-k2-thinking",
+    "adapter": "ollama-remote",
+    "model": "kimi-k2-thinking:cloud",
+    "runs": 6,
+    "success": 6,
+    "avg_latency_ms": 37482,
+    "local_hits": 6,
+    "web_hits": 5,
+    "avg_local_score": 19.682903,
+    "avg_web_score": 0.3715143,
+    "category_stats": [
+      {
+        "tag": "bug_hunting",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 1616,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.128708,
+        "avg_web_score": 0.33257145
+      },
+      {
+        "tag": "debugging",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 82632,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 18.274239,
+        "avg_web_score": 0.36666667
+      },
+      {
+        "tag": "dependency_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 2438,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.280458,
+        "avg_web_score": 0.44000003
+      },
+      {
+        "tag": "log_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 47724,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.803473,
+        "avg_web_score": 0.385
+      },
+      {
+        "tag": "logic_debugging",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 1616,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.128708,
+        "avg_web_score": 0.33257145
+      },
+      {
+        "tag": "plan",
+        "runs": 2,
+        "success": 2,
+        "avg_latency_ms": 2263,
+        "local_hits": 2,
+        "web_hits": 1,
+        "avg_local_score": 18.911655,
+        "avg_web_score": 0.44000003
+      },
+      {
+        "tag": "problem_solving",
+        "runs": 4,
+        "success": 4,
+        "avg_latency_ms": 55092,
+        "local_hits": 4,
+        "web_hits": 4,
+        "avg_local_score": 20.06853,
+        "avg_web_score": 0.35439286
+      },
+      {
+        "tag": "root_cause_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 88397,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 21.067698,
+        "avg_web_score": 0.33333334
+      },
+      {
+        "tag": "system_architecture",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 2438,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.280458,
+        "avg_web_score": 0.44000003
+      },
+      {
+        "tag": "task_triage",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 2089,
+        "local_hits": 1,
+        "web_hits": 0,
+        "avg_local_score": 20.54285,
+        "avg_web_score": null
+      }
+    ]
+  },
+  {
+    "agent_id": "a1b59dde-4d91-4787-8907-8d4ccbee2667",
+    "agent_slug": "llama3-1-8b",
+    "adapter": "ollama-remote",
+    "model": "llama3.1:8b",
+    "runs": 3,
+    "success": 3,
+    "avg_latency_ms": 6425,
+    "local_hits": 3,
+    "web_hits": 3,
+    "avg_local_score": 16.8592,
+    "avg_web_score": 0.6805445,
+    "category_stats": [
+      {
+        "tag": "doc_generation",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 11788,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.7599,
+        "avg_web_score": 0.5136334
+      },
+      {
+        "tag": "keyword_extraction",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 4329,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 11.128474,
+        "avg_web_score": 0.78000003
+      },
+      {
+        "tag": "meeting_notes_cleanup",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 3158,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 15.689228,
+        "avg_web_score": 0.748
+      },
+      {
+        "tag": "readme_cleanup",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 11788,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.7599,
+        "avg_web_score": 0.5136334
+      },
+      {
+        "tag": "summarization",
+        "runs": 2,
+        "success": 2,
+        "avg_latency_ms": 3743,
+        "local_hits": 2,
+        "web_hits": 2,
+        "avg_local_score": 13.408852,
+        "avg_web_score": 0.76400006
+      },
+      {
+        "tag": "text_cleanup",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 4329,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 11.128474,
+        "avg_web_score": 0.78000003
+      },
+      {
+        "tag": "text_summarization",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 3158,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 15.689228,
+        "avg_web_score": 0.748
+      }
+    ]
+  },
+  {
+    "agent_id": "1f975daa-464a-4a44-863a-408fdf356e9e",
+    "agent_slug": "qwen3-coder",
+    "adapter": "ollama-remote",
+    "model": "qwen3-coder:latest",
+    "runs": 16,
+    "success": 16,
+    "avg_latency_ms": 17728,
+    "local_hits": 16,
+    "web_hits": 16,
+    "avg_local_score": 16.45949,
+    "avg_web_score": 0.78163135,
+    "category_stats": [
+      {
+        "tag": "backend_logic",
+        "runs": 4,
+        "success": 4,
+        "avg_latency_ms": 15,
+        "local_hits": 4,
+        "web_hits": 4,
+        "avg_local_score": 16.708927,
+        "avg_web_score": 0.90000004
+      },
+      {
+        "tag": "code_review",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 146557,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.35009,
+        "avg_web_score": 0.3
+      },
+      {
+        "tag": "code_write",
+        "runs": 12,
+        "success": 12,
+        "avg_latency_ms": 5088,
+        "local_hits": 12,
+        "web_hits": 12,
+        "avg_local_score": 16.225943,
+        "avg_web_score": 0.84661955
+      },
+      {
+        "tag": "csv_parsing",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 16,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.198463,
+        "avg_web_score": 0.94000006
+      },
+      {
+        "tag": "debugging",
+        "runs": 2,
+        "success": 2,
+        "avg_latency_ms": 38015,
+        "local_hits": 2,
+        "web_hits": 2,
+        "avg_local_score": 16.567055,
+        "avg_web_score": 0.65333337
+      },
+      {
+        "tag": "integration_test_design",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 12,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.475185,
+        "avg_web_score": 0.74
+      },
+      {
+        "tag": "migration_assist",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 35587,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.016384,
+        "avg_web_score": 0.94000006
+      },
+      {
+        "tag": "migration_scripts",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 35587,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 23.016384,
+        "avg_web_score": 0.94000006
+      },
+      {
+        "tag": "older_language_support_java8_cpp98",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 5364,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 13.748648,
+        "avg_web_score": 0.94000006
+      },
+      {
+        "tag": "problem_solving",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 76014,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 18.274239,
+        "avg_web_score": 0.36666667
+      },
+      {
+        "tag": "pull_request_review",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 146557,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.35009,
+        "avg_web_score": 0.3
+      },
+      {
+        "tag": "security_hardening",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 15037,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 16.717258,
+        "avg_web_score": 0.8727676
+      },
+      {
+        "tag": "standard_compliance",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 146557,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.35009,
+        "avg_web_score": 0.3
+      },
+      {
+        "tag": "unit_test_generation",
+        "runs": 3,
+        "success": 3,
+        "avg_latency_ms": 1663,
+        "local_hits": 3,
+        "web_hits": 3,
+        "avg_local_score": 16.303015,
+        "avg_web_score": 0.82000005
+      }
+    ]
+  },
+  {
+    "agent_id": "05dc3f07-ff73-4552-993d-693e66c33c43",
+    "agent_slug": "qwq-reasoner",
+    "adapter": "ollama-remote",
+    "model": "qwq:latest",
+    "runs": 6,
+    "success": 6,
+    "avg_latency_ms": 62055,
+    "local_hits": 6,
+    "web_hits": 6,
+    "avg_local_score": 19.682903,
+    "avg_web_score": 0.6128278,
+    "category_stats": [
+      {
+        "tag": "bug_hunting",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 104842,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.128708,
+        "avg_web_score": 0.33257145
+      },
+      {
+        "tag": "debugging",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 25572,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 18.274239,
+        "avg_web_score": 0.814
+      },
+      {
+        "tag": "dependency_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 38535,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.280458,
+        "avg_web_score": 0.8633
+      },
+      {
+        "tag": "log_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 145940,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.803473,
+        "avg_web_score": 0.385
+      },
+      {
+        "tag": "logic_debugging",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 104842,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.128708,
+        "avg_web_score": 0.33257145
+      },
+      {
+        "tag": "plan",
+        "runs": 2,
+        "success": 2,
+        "avg_latency_ms": 34255,
+        "local_hits": 2,
+        "web_hits": 2,
+        "avg_local_score": 18.911655,
+        "avg_web_score": 0.66936433
+      },
+      {
+        "tag": "problem_solving",
+        "runs": 4,
+        "success": 4,
+        "avg_latency_ms": 75955,
+        "local_hits": 4,
+        "web_hits": 4,
+        "avg_local_score": 20.06853,
+        "avg_web_score": 0.58455956
+      },
+      {
+        "tag": "root_cause_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 27468,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 21.067698,
+        "avg_web_score": 0.80666673
+      },
+      {
+        "tag": "system_architecture",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 38535,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 17.280458,
+        "avg_web_score": 0.8633
+      },
+      {
+        "tag": "task_triage",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 29976,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.54285,
+        "avg_web_score": 0.47542858
+      }
+    ]
+  },
+  {
+    "agent_id": "213fd0c9-6ff6-499c-a13f-74cbdc80ca30",
+    "agent_slug": "smollm2-135m",
+    "adapter": "ollama-remote",
+    "model": "smollm2:135m",
+    "runs": 4,
+    "success": 4,
+    "avg_latency_ms": 1294,
+    "local_hits": 4,
+    "web_hits": 4,
+    "avg_local_score": 15.419258,
+    "avg_web_score": 0.54450005,
+    "category_stats": [
+      {
+        "tag": "json_formatting",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 1180,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 20.368858,
+        "avg_web_score": 0.56000006
+      },
+      {
+        "tag": "keyword_extraction",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 1704,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 11.128474,
+        "avg_web_score": 0.54
+      },
+      {
+        "tag": "log_analysis",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 164,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 14.490472,
+        "avg_web_score": 0.52800006
+      },
+      {
+        "tag": "meeting_notes_cleanup",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 2128,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 15.689228,
+        "avg_web_score": 0.55
+      },
+      {
+        "tag": "simple_classification",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 164,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 14.490472,
+        "avg_web_score": 0.52800006
+      },
+      {
+        "tag": "summarization",
+        "runs": 2,
+        "success": 2,
+        "avg_latency_ms": 1916,
+        "local_hits": 2,
+        "web_hits": 2,
+        "avg_local_score": 13.408852,
+        "avg_web_score": 0.545
+      },
+      {
+        "tag": "text_cleanup",
+        "runs": 2,
+        "success": 2,
+        "avg_latency_ms": 1442,
+        "local_hits": 2,
+        "web_hits": 2,
+        "avg_local_score": 15.748667,
+        "avg_web_score": 0.5500001
+      },
+      {
+        "tag": "text_summarization",
+        "runs": 1,
+        "success": 1,
+        "avg_latency_ms": 2128,
+        "local_hits": 1,
+        "web_hits": 1,
+        "avg_local_score": 15.689228,
+        "avg_web_score": 0.55
+      }
+    ]
+  }
+]

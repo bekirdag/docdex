@@ -97,6 +97,7 @@
 - tests/metrics_baseline.rs
 - tests/property_profile.rs
 - tests/property_memory.rs
+- tests/validation_artifacts.rs
 
 ## Rust Unit/Component Tests
 - src/config/tests.rs

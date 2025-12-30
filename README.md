@@ -144,6 +144,13 @@ Impact graph snapshots carry schema metadata and are migrated on read; reindex t
 - Or set `DOCDEX_RUN_TESTS_CMD` and optional `DOCDEX_RUN_TESTS_ARGS` (accepts JSON array or whitespace-split string).
 - Docdex injects `DOCDEX_REPO_ROOT` and (when `--target` is set) `DOCDEX_TEST_TARGET` into the test process.
 
+## Quality gates and audits
+- Quality targets: `docs/quality_gates.md` (latency, error rate, soak, security).
+- Run-all tests: `scripts/test_run_all.sh` (unit, integration, API scripts).
+- Load/soak: `scripts/load_test_http.sh`, `scripts/load_test_mcp.sh` (requires running daemon).
+- Indexing bench: `scripts/bench_indexing.sh` (criterion benchmark).
+- Security audit + SBOMs: `scripts/security_audit.sh` (cargo audit/sbom, npm audit).
+
 ## Versioning
 - Semantic versioning with tagged releases (`vX.Y.Z`). The Rust crate and npm package share the same version.
 - Conventional Commits drive release notes via Release Please; it opens release PRs that bump `Cargo.toml` and `npm/package.json`, update changelogs, and creates the tag/release on merge.

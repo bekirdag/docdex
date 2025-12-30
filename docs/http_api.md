@@ -18,6 +18,12 @@ Docdex runs a per-repo HTTP server (default `127.0.0.1:3210`). Secure mode is on
   - Body: `{ "libs_sources": "<path optional>" }`.
 - `POST /v1/index/ingest` - ingest a single file.
   - Body: `{ "file": "<path>" }`.
+- `POST /v1/libs/discover` - discover library documentation sources for a repo.
+  - Body: `{ "sources_path": "<path optional>", "repo_id": "<optional>" }`.
+- `POST /v1/libs/fetch` - discover + ingest library sources for a repo.
+  - Body: `{ "sources_path": "<path optional>", "repo_id": "<optional>" }`.
+- `POST /v1/libs/ingest` - ingest library sources from a sources file.
+  - Body: `{ "sources_path": "<path>", "repo_id": "<optional>" }`.
 - `POST /v1/chat/completions` - OpenAI-compatible chat completion with docdex context.
   - Optional `docdex` object (`limit`, `force_web`, `skip_local_search`, `no_cache`, `include_libs`, `max_web_results`, `llm_filter_local_results`, `compress_results`, `diff`, `agent_id`) plus `repo_id`.
   - Header `x-docdex-agent-id` overrides `docdex.agent_id`.
@@ -52,6 +58,8 @@ Docdex runs a per-repo HTTP server (default `127.0.0.1:3210`). Secure mode is on
 - `POST /v1/profile/import` - import a JSON manifest with LWW merge.
 - `POST /v1/hooks/validate` - semantic hook validation (pre-commit).
   - Body: `{ "files": ["<repo-relative path>", "..."] }`.
+- `GET /v1/dag/export` - export a reasoning DAG trace.
+  - Query params: `session_id`, `format` (`json|text|dot`), `max_nodes`, `repo_id`.
 - `POST /v1/web/search` - web discovery (requires `DOCDEX_WEB_ENABLED=1`).
 - `POST /v1/web/fetch` - fetch a single web URL (requires `DOCDEX_WEB_ENABLED=1`).
 - `POST /v1/web/cache/flush` - clear cached web entries.
@@ -61,3 +69,11 @@ Docdex runs a per-repo HTTP server (default `127.0.0.1:3210`). Secure mode is on
 ## Error envelope
 
 Most endpoints return `{ "error": { "code": "<docdex_code>", "message": "<string>" } }` on failure (see `docs/mcp/errors.md` for shared codes).
+
+## Config highlights
+
+- `[memory.profile]` controls profile embedding config:
+  - `embedding_model` (default `nomic-embed-text`)
+  - `embedding_dim` (default `768`)
+- `[server].default_agent_id` sets the fallback agent used when requests omit `agent_id` (also configurable via `DOCDEX_DEFAULT_AGENT_ID` / `docdexd serve --agent-id`).
+- `[server].hook_socket_path` enables Unix socket transport for `/v1/hooks/validate` (HTTP remains available).

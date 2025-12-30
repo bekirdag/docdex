@@ -6,6 +6,9 @@
 - Add semantic gatekeeper hooks (`/v1/hooks/validate`, `docdexd hook pre-commit`) with optional Unix socket transport.
 - Add `reasoning_trace` metadata to chat completions and project map context injection.
 - Add profile import/export schema checks and sync compatibility validation.
+- Add quality gates doc plus load/bench/audit scripts for release validation.
+- Add network fault, concurrency, property, and metrics baseline tests.
+- Add fuzz targets for libs, hooks, profile sync, and MCP payload parsing.
 
 ## 0.1.11
 - Added glama support

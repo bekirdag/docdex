@@ -183,3 +183,13 @@ your new job is to work on the tasks under docdev_v2.1_tasks.md and implement al
 - P5-T16.1: Test default agent selection when no agent_id provided.
 - P5-T16.2: Test reasoning_trace presence and separation of truth blocks.
 - P5-T16.3: Test Unix socket hook path if enabled.
+- P6-T1: Add docs/quality_gates.md with stability/perf/security thresholds.
+- P6-T2: Add release artifact validation scripts (test_release_artifacts, test_npm_install_matrix).
+- P6-T3: Add network fault coverage tests for web discovery failures.
+- P6-T4: Add load/soak scripts and large-repo soak test.
+- P6-T5: Add indexing benchmark harness and runner.
+- P6-T6: Add HTTP/MCP concurrency safety tests.
+- P6-T7: Add property-based tests for profile and memory pruning.
+- P6-T8: Add security audit script and threat model doc.
+- P6-T9: Add metrics baseline test for required counters.
+- P6-T10: Add fuzz targets for libs/hooks/profile sync/MCP payload parsing.

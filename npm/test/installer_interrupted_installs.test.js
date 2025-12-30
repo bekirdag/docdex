@@ -68,7 +68,7 @@ async function writeInstallMetadata({
 
 async function assertNoStagingArtifacts(distBaseDir) {
   const entries = await fs.promises.readdir(distBaseDir);
-  const leftovers = entries.filter((entry) => entry.includes(".staging.") || entry.includes(".backup."));
+  const leftovers = entries.filter((entry) => entry.includes(".stage.") || entry.includes(".backup."));
   assert.equal(leftovers.length, 0, `expected no staging/backup dirs, found: ${leftovers.join(", ")}`);
 }
 

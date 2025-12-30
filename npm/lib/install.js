@@ -26,6 +26,15 @@ const MAX_MANIFEST_BYTES = 1024 * 1024; // 1 MiB cap for safety
 const INVALID_JSON_ERROR = "invalid JSON";
 const INSTALL_METADATA_SCHEMA_VERSION = 1;
 const INSTALL_METADATA_FILENAME = "docdexd-install.json";
+const LEGACY_STAGING_SUFFIX = ".__docdexd_install_staging";
+const LEGACY_BACKUP_SUFFIX = ".__docdexd_install_backup";
+const LEGACY_INCOMING_SUFFIX = ".incoming";
+const LEGACY_BACKUP_SIMPLE_SUFFIX = ".backup";
+const INSTALLER_EVENT_PREFIX = "[docdex] event ";
+const DEFAULT_INTEGRITY_CONFIG = Object.freeze({
+  metadataSources: ["manifest", "checksums", "sidecar"],
+  missingPolicy: "fallback"
+});
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -325,6 +334,237 @@ function normalizeSha256Hex(value) {
   const trimmed = value.trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(trimmed)) return null;
   return trimmed;
+}
+
+function emitInstallerEvent(logger, payload) {
+  if (!logger || typeof logger.log !== "function") return;
+  try {
+    logger.log(`${INSTALLER_EVENT_PREFIX}${JSON.stringify(payload)}`);
+  } catch {
+    // Ignore telemetry failures to avoid blocking installs.
+  }
+}
+
+function buildInstallNonce() {
+  const rand = Math.random().toString(16).slice(2, 10);
+  return `${Date.now()}.${process.pid}.${rand}`;
+}
+
+function stagingDownloadDir({ distBaseDir, platformKey, pathModule }) {
+  return pathModule.join(distBaseDir, ".staging", platformKey);
+}
+
+function stageDirName({ distDir, nonce }) {
+  return `${distDir}.stage.${nonce}`;
+}
+
+function backupDirName({ distDir, nonce }) {
+  return `${distDir}.backup.${nonce}`;
+}
+
+function failedDirName({ distDir, nonce }) {
+  return `${distDir}.failed.${nonce}`;
+}
+
+async function removeDirSafe(fsModule, dirPath) {
+  if (!dirPath) return false;
+  try {
+    await fsModule.promises.rm(dirPath, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function listDirEntriesSafe(fsModule, dirPath) {
+  if (!fsModule?.promises?.readdir) return [];
+  try {
+    return await fsModule.promises.readdir(dirPath, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
+async function cleanupInstallArtifacts({
+  fsModule,
+  pathModule,
+  distBaseDir,
+  distDir,
+  platformKey,
+  stagingDir,
+  backupDir,
+  preserveBackups = false
+}) {
+  const paths = new Set();
+  const cleaned = [];
+
+  if (stagingDir) paths.add(stagingDir);
+  if (backupDir && !preserveBackups) paths.add(backupDir);
+
+  if (distDir) {
+    paths.add(`${distDir}${LEGACY_STAGING_SUFFIX}`);
+    if (!preserveBackups) paths.add(`${distDir}${LEGACY_BACKUP_SUFFIX}`);
+    paths.add(`${distDir}${LEGACY_INCOMING_SUFFIX}`);
+    if (!preserveBackups) paths.add(`${distDir}${LEGACY_BACKUP_SIMPLE_SUFFIX}`);
+  }
+
+  if (distBaseDir && platformKey) {
+    const entries = await listDirEntriesSafe(fsModule, distBaseDir);
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const name = entry.name;
+      if (
+        name.startsWith(`${platformKey}.stage.`) ||
+        name.startsWith(`${platformKey}.staging.`) ||
+        name.startsWith(`${platformKey}.staging-`) ||
+        (!preserveBackups && name.startsWith(`${platformKey}.backup.`)) ||
+        name.startsWith(`${platformKey}.failed.`)
+      ) {
+        paths.add(pathModule.join(distBaseDir, name));
+      }
+    }
+  }
+
+  for (const pathToRemove of paths) {
+    if (await removeDirSafe(fsModule, pathToRemove)) cleaned.push(pathToRemove);
+  }
+
+  if (distBaseDir && platformKey) {
+    const downloadRoot = stagingDownloadDir({ distBaseDir, platformKey, pathModule });
+    if (await removeDirSafe(fsModule, downloadRoot)) cleaned.push(downloadRoot);
+    const stagingRoot = pathModule.join(distBaseDir, ".staging");
+    if (fsModule?.promises?.rmdir) {
+      await fsModule.promises.rmdir(stagingRoot).catch(() => {});
+    }
+  }
+
+  return cleaned;
+}
+
+async function selectLatestCandidate(fsModule, candidates) {
+  let latest = candidates[0] || null;
+  let latestMtime = -1;
+  for (const candidate of candidates) {
+    try {
+      const stat = await fsModule.promises.stat(candidate.path);
+      const mtime = typeof stat.mtimeMs === "number" ? stat.mtimeMs : stat.mtime?.getTime?.() ?? 0;
+      if (mtime > latestMtime) {
+        latestMtime = mtime;
+        latest = candidate;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return latest;
+}
+
+async function recoverInterruptedInstall({ fsModule, pathModule, distDir, isWin32, logger }) {
+  const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+  const canStat = typeof fsModule?.promises?.stat === "function";
+  const distBaseDir = pathModule.dirname(distDir);
+  const platformKey = pathModule.basename(distDir);
+
+  const backups = [];
+  const stages = [];
+  const failed = [];
+
+  const addIfExists = async (list, candidatePath, label) => {
+    if (!canStat) return;
+    try {
+      const stat = await fsModule.promises.stat(candidatePath);
+      if (stat.isDirectory()) list.push({ path: candidatePath, label });
+    } catch {
+      // ignore missing paths
+    }
+  };
+
+  await addIfExists(backups, `${distDir}${LEGACY_BACKUP_SUFFIX}`, "legacy_backup_suffix");
+  await addIfExists(backups, `${distDir}${LEGACY_BACKUP_SIMPLE_SUFFIX}`, "legacy_backup_simple");
+  await addIfExists(stages, `${distDir}${LEGACY_STAGING_SUFFIX}`, "legacy_staging_suffix");
+  await addIfExists(stages, `${distDir}${LEGACY_INCOMING_SUFFIX}`, "legacy_incoming");
+
+  const entries = await listDirEntriesSafe(fsModule, distBaseDir);
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const name = entry.name;
+    const fullPath = pathModule.join(distBaseDir, name);
+    if (name.startsWith(`${platformKey}.backup.`)) {
+      backups.push({ path: fullPath, label: "backup" });
+    } else if (
+      name.startsWith(`${platformKey}.stage.`) ||
+      name.startsWith(`${platformKey}.staging.`) ||
+      name.startsWith(`${platformKey}.staging-`)
+    ) {
+      stages.push({ path: fullPath, label: "stage" });
+    } else if (name.startsWith(`${platformKey}.failed.`)) {
+      failed.push({ path: fullPath, label: "failed" });
+    }
+  }
+
+  const distDirExists = existsSync ? existsSync(distDir) : false;
+  let recoveredFrom = null;
+  let action = "not_needed";
+  let recoveryError = null;
+
+  if (!distDirExists && backups.length) {
+    const candidate = await selectLatestCandidate(fsModule, backups);
+    if (candidate) {
+      try {
+        await fsModule.promises.rename(candidate.path, distDir);
+        recoveredFrom = candidate.path;
+        action = "recovered";
+      } catch (err) {
+        recoveryError = err;
+        action = "recovery_failed";
+      }
+    }
+  }
+
+  const cleaned = [];
+
+  if (distDirExists || action === "recovered") {
+    for (const backup of backups) {
+      if (backup.path === recoveredFrom) continue;
+      if (await removeDirSafe(fsModule, backup.path)) cleaned.push(backup.path);
+    }
+  }
+
+  for (const stage of stages) {
+    if (await removeDirSafe(fsModule, stage.path)) cleaned.push(stage.path);
+  }
+  for (const entry of failed) {
+    if (await removeDirSafe(fsModule, entry.path)) cleaned.push(entry.path);
+  }
+
+  if (logger && typeof logger.log === "function" && action === "recovered") {
+    logger.log(`[docdex] recovered previous install from ${recoveredFrom}`);
+  }
+
+  return {
+    action,
+    recoveredFrom,
+    cleaned,
+    error: recoveryError,
+    isWin32
+  };
+}
+
+function resolveIntegrityConfig(integrityConfigFn) {
+  const raw = typeof integrityConfigFn === "function" ? integrityConfigFn() : null;
+  const configuredSources = Array.isArray(raw?.metadataSources) ? raw.metadataSources : null;
+  const metadataSources = (configuredSources && configuredSources.length
+    ? configuredSources
+    : DEFAULT_INTEGRITY_CONFIG.metadataSources
+  ).map((entry) => String(entry).toLowerCase());
+  const allowed = new Set(["manifest", "checksums", "sidecar"]);
+  const filteredSources = metadataSources.filter((entry) => allowed.has(entry));
+  const missingPolicy = raw?.missingPolicy === "abort" ? "abort" : DEFAULT_INTEGRITY_CONFIG.missingPolicy;
+
+  return {
+    metadataSources: filteredSources.length ? filteredSources : DEFAULT_INTEGRITY_CONFIG.metadataSources.slice(),
+    missingPolicy
+  };
 }
 
 function integrityUnverifiable(reason, { expectedSha256, actualSha256, expectedSource, error } = {}) {
@@ -877,49 +1117,88 @@ async function resolveInstallerDownloadPlan({
   artifactNameFn = artifactName,
   getDownloadBaseFn = getDownloadBase,
   manifestCandidateNamesFn = manifestCandidateNames,
-  checksumCandidateNamesFn = checksumCandidateNames
+  checksumCandidateNamesFn = checksumCandidateNames,
+  integrityConfigFn
 }) {
   let archive = null;
   let expectedSha256 = null;
   let source = "fallback";
+  let integrity = null;
 
-  let manifestAttempt;
-  try {
-    manifestAttempt = await tryResolveAssetViaManifest({
-      repoSlug,
-      version,
-      targetTriple,
-      downloadTextFn,
-      getDownloadBaseFn,
-      manifestCandidateNamesFn
-    });
-  } catch (err) {
-    if (err instanceof ManifestResolutionError) {
-      const expectedAsset = artifactNameFn(platformKey);
-      err.details = {
-        ...withBaseDetails(err.details),
-        platformKey,
-        expectedAsset,
-        expectedAssetPattern: assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset })
-      };
+  const integrityConfig = resolveIntegrityConfig(integrityConfigFn);
+  const attemptedSources = [];
+
+  let manifestAttempt = { resolved: null, errors: [], manifestName: null };
+
+  if (integrityConfig.metadataSources.includes("manifest")) {
+    attemptedSources.push("manifest");
+    try {
+      manifestAttempt = await tryResolveAssetViaManifest({
+        repoSlug,
+        version,
+        targetTriple,
+        downloadTextFn,
+        getDownloadBaseFn,
+        manifestCandidateNamesFn
+      });
+    } catch (err) {
+      if (err instanceof ManifestResolutionError) {
+        const expectedAsset = artifactNameFn(platformKey);
+        err.details = {
+          ...withBaseDetails(err.details),
+          platformKey,
+          expectedAsset,
+          expectedAssetPattern: assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAsset })
+        };
+      }
+      throw err;
     }
-    throw err;
-  }
 
-  if (manifestAttempt.resolved) {
-    archive = manifestAttempt.resolved.asset.name;
-    expectedSha256 = manifestAttempt.resolved.integrity.sha256;
-    source = `manifest:${manifestAttempt.manifestName}`;
-  } else if (manifestAttempt.errors && manifestAttempt.errors.length) {
-    logger.warn(`[docdex] Manifest unavailable; falling back. Details: ${manifestAttempt.errors.join(" | ")}`);
-  } else {
-    logger.log("[docdex] No manifest found; falling back to deterministic asset naming.");
+    if (manifestAttempt.resolved) {
+      archive = manifestAttempt.resolved.asset.name;
+      expectedSha256 = manifestAttempt.resolved.integrity.sha256;
+      source = `manifest:${manifestAttempt.manifestName}`;
+      integrity = { metadataSource: "manifest", metadataName: manifestAttempt.manifestName };
+    } else if (manifestAttempt.errors && manifestAttempt.errors.length) {
+      logger.warn(`[docdex] Manifest unavailable; falling back. Details: ${manifestAttempt.errors.join(" | ")}`);
+    } else {
+      logger.log("[docdex] No manifest found; falling back to deterministic asset naming.");
+    }
+
+    if (!manifestAttempt.resolved && integrityConfig.missingPolicy === "abort") {
+      const manifestCandidates = manifestCandidateNamesFn();
+      const checksumCandidates = checksumCandidateNamesFn();
+      throw new ChecksumResolutionError(
+        `Missing SHA-256 integrity metadata for ${artifactNameFn(platformKey)} (manifest fetch aborted)`,
+        {
+          platformKey,
+          targetTriple,
+          version,
+          repoSlug,
+          assetName: artifactNameFn(platformKey),
+          source: "fallback",
+          manifestName: manifestAttempt?.manifestName ?? null,
+          manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+          fallbackAttempted: true,
+          fallbackReason: manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found",
+          checksumCandidates,
+          checksumErrors: null,
+          checksumEvents: null,
+          integrityMissingPolicy: integrityConfig.missingPolicy,
+          integrityAttemptedSources: attemptedSources.slice()
+        }
+      );
+    }
   }
 
   if (!archive) {
     archive = artifactNameFn(platformKey);
+  }
 
-    const checksumAttempt = await tryResolveSha256ViaChecksumFiles({
+  let checksumAttempt = null;
+  if (!expectedSha256 && integrityConfig.metadataSources.includes("checksums")) {
+    attemptedSources.push("checksums");
+    checksumAttempt = await tryResolveSha256ViaChecksumFiles({
       repoSlug,
       version,
       archive,
@@ -927,27 +1206,16 @@ async function resolveInstallerDownloadPlan({
       getDownloadBaseFn,
       checksumCandidateNamesFn
     });
-
     if (checksumAttempt.sha256) {
       expectedSha256 = checksumAttempt.sha256;
-    } else {
-      // Legacy fallback: per-asset .sha256 sidecar.
-      const shaUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}.sha256`;
-      try {
-        const shaText = await downloadTextFn(shaUrl);
-        expectedSha256 = parseSha256File(shaText, archive);
-      } catch {
-        expectedSha256 = null;
-      }
-    }
-
-    if (!expectedSha256) {
-      const manifestCandidates = manifestCandidateNamesFn();
+      integrity = {
+        metadataSource: "checksums",
+        metadataName: checksumAttempt.checksumName
+      };
+    } else if (integrityConfig.missingPolicy === "abort") {
       const checksumCandidates = checksumCandidateNamesFn();
       throw new ChecksumResolutionError(
-        `Missing SHA-256 integrity metadata for ${archive} (tried manifest ${manifestCandidates.join(
-          ", "
-        )} and checksums ${checksumCandidates.join(", ")})`,
+        `Missing SHA-256 integrity metadata for ${archive} (checksums fetch aborted)`,
         {
           platformKey,
           targetTriple,
@@ -961,16 +1229,60 @@ async function resolveInstallerDownloadPlan({
           fallbackReason: manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found",
           checksumCandidates,
           checksumErrors: checksumAttempt?.errors ?? null,
-          checksumEvents: checksumAttempt?.events ?? null
+          checksumEvents: checksumAttempt?.events ?? null,
+          integrityMissingPolicy: integrityConfig.missingPolicy,
+          integrityAttemptedSources: attemptedSources.slice()
         }
       );
     }
+  }
+
+  if (!expectedSha256 && integrityConfig.metadataSources.includes("sidecar")) {
+    attemptedSources.push("sidecar");
+    const shaUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}.sha256`;
+    try {
+      const shaText = await downloadTextFn(shaUrl);
+      expectedSha256 = parseSha256File(shaText, archive);
+      if (expectedSha256) {
+        integrity = { metadataSource: "sidecar", metadataName: `${archive}.sha256` };
+      }
+    } catch {
+      expectedSha256 = null;
+    }
+  }
+
+  if (!expectedSha256) {
+    const manifestCandidates = manifestCandidateNamesFn();
+    const checksumCandidates = checksumCandidateNamesFn();
+    throw new ChecksumResolutionError(
+      `Missing SHA-256 integrity metadata for ${archive} (tried manifest ${manifestCandidates.join(
+        ", "
+      )} and checksums ${checksumCandidates.join(", ")})`,
+      {
+        platformKey,
+        targetTriple,
+        version,
+        repoSlug,
+        assetName: archive,
+        source: "fallback",
+        manifestName: manifestAttempt?.manifestName ?? null,
+        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+        fallbackAttempted: true,
+        fallbackReason: manifestAttempt?.errors?.length ? "manifest_unavailable" : "manifest_not_found",
+        checksumCandidates,
+        checksumErrors: checksumAttempt?.errors ?? null,
+        checksumEvents: checksumAttempt?.events ?? null,
+        integrityMissingPolicy: integrityConfig.missingPolicy,
+        integrityAttemptedSources: attemptedSources.slice()
+      }
+    );
   }
 
   return {
     archive,
     expectedSha256,
     source,
+    integrity,
     manifestAttempt: { ...manifestAttempt, fallbackAttempted: !manifestAttempt.resolved }
   };
 }
@@ -1009,6 +1321,8 @@ async function runInstaller(options) {
   const artifactNameFn = opts.artifactNameFn || artifactName;
   const assetPatternForPlatformKeyFn = opts.assetPatternForPlatformKeyFn || assetPatternForPlatformKey;
   const sha256FileFn = opts.sha256FileFn || sha256File;
+  const writeJsonFileAtomicFn = opts.writeJsonFileAtomicFn || writeJsonFileAtomic;
+  const restartFn = opts.restartFn;
 
   const detectedPlatform = opts.platform || process.platform;
   const detectedArch = opts.arch || process.arch;
@@ -1048,6 +1362,10 @@ async function runInstaller(options) {
   const distDir = pathModule.join(distBaseDir, platformKey);
   const isWin32 = detectedPlatform === "win32";
 
+  const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+
+  const preflight = await recoverInterruptedInstall({ fsModule, pathModule, distDir, isWin32, logger });
+
   const local = await determineLocalInstallerOutcome({
     fsModule,
     pathModule,
@@ -1058,9 +1376,34 @@ async function runInstaller(options) {
     sha256FileFn
   });
 
+  const priorRunnable = existsSync ? existsSync(local.binaryPath) : false;
+
   if (local.outcome === "no-op") {
     logger.log("[docdex] Install outcome: no-op");
-    return { binaryPath: local.binaryPath, outcome: local.outcome, integrityResult: local.integrityResult };
+    await cleanupInstallArtifacts({
+      fsModule,
+      pathModule,
+      distBaseDir,
+      distDir,
+      platformKey,
+      stagingDir: null,
+      backupDir: null
+    });
+    emitInstallerEvent(logger, {
+      code: "DOCDEX_INSTALL_OUTCOME",
+      details: {
+        outcome: local.outcome,
+        outcomeCode: "noop",
+        reason: local.reason,
+        downloadAttempted: false
+      }
+    });
+    return {
+      binaryPath: local.binaryPath,
+      outcome: local.outcome,
+      outcomeCode: "noop",
+      integrityResult: local.integrityResult
+    };
   }
 
   const repoSlug = parseRepoSlugFn();
@@ -1070,16 +1413,56 @@ async function runInstaller(options) {
     version,
     platformKey,
     targetTriple,
-    logger
+    logger,
+    integrityConfigFn: opts.integrityConfigFn
   });
 
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
-  const tmpDir = opts.tmpDir || osModule.tmpdir();
-  const tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
+  const nonce = buildInstallNonce();
+  const stagingDir = stageDirName({ distDir, nonce });
+  const backupDir = backupDirName({ distDir, nonce });
+  const failedDir = failedDirName({ distDir, nonce });
+  const tmpDir = opts.tmpDir || null;
+  let tmpFile = null;
+  if (tmpDir) {
+    tmpFile = pathModule.join(tmpDir, `${archive}.${process.pid}.tgz`);
+  } else {
+    const downloadRoot = stagingDownloadDir({ distBaseDir, platformKey, pathModule });
+    await fsModule.promises.mkdir(downloadRoot, { recursive: true });
+    tmpFile = pathModule.join(downloadRoot, `.docdex-download-staging-${nonce}.tgz`);
+  }
+
+  const installAttempt = {
+    stagingDir,
+    backupDir,
+    failedDir,
+    tmpDownloadPath: tmpFile,
+    distDir,
+    archive,
+    version
+  };
+
+  const installSafety = {
+    status: "in_progress",
+    preflightRecovery:
+      preflight?.action === "recovered"
+        ? "recovered backup"
+        : preflight?.action === "recovery_failed"
+          ? "recovery failed"
+          : "not needed",
+    priorRunnable: { before: priorRunnable, after: null },
+    rollback: "not needed",
+    cleanup: "none"
+  };
 
   logger.log(`[docdex] Fetching ${archive} for ${platformKey} (${targetTriple}) via ${source}...`);
+  let downloadAttempted = false;
+  let backupMoved = false;
+  let promoted = false;
+  let extractAttempted = false;
   try {
     try {
+      downloadAttempted = true;
       await downloadFn(downloadUrl, tmpFile);
     } catch (err) {
       if (err && typeof err.statusCode === "number" && err.statusCode === 404) {
@@ -1121,30 +1504,43 @@ async function runInstaller(options) {
       );
     }
 
-    await verifyDownloadedFileIntegrityFn({
-      filePath: tmpFile,
-      expectedSha256,
-      archiveName: archive,
-      details: {
-        platformKey,
-        targetTriple,
-        version,
-        repoSlug,
-        downloadUrl,
-        source,
-        manifestName: manifestAttempt?.manifestName ?? null,
-        manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
-        fallbackAttempted: source === "fallback"
+    try {
+      await verifyDownloadedFileIntegrityFn({
+        filePath: tmpFile,
+        expectedSha256,
+        archiveName: archive,
+        details: {
+          platformKey,
+          targetTriple,
+          version,
+          repoSlug,
+          downloadUrl,
+          source,
+          manifestName: manifestAttempt?.manifestName ?? null,
+          manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
+          fallbackAttempted: source === "fallback"
+        }
+      });
+    } catch (err) {
+      if (err instanceof IntegrityMismatchError) {
+        emitInstallerEvent(logger, {
+          code: "DOCDEX_INSTALL_INTEGRITY_ARCHIVE",
+          details: {
+            status: "mismatch",
+            expectedSha256: err.details?.expectedSha256 ?? null,
+            actualSha256: err.details?.actualSha256 ?? null
+          }
+        });
       }
-    });
+      throw err;
+    }
 
-    // Only replace an existing installation after we have successfully fetched + verified the archive.
-    await fsModule.promises.rm(distDir, { recursive: true, force: true });
-    await extractTarballFn(tmpFile, distDir);
+    extractAttempted = true;
+    await extractTarballFn(tmpFile, stagingDir);
 
-    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
-    if (!fsModule.existsSync(binaryPath)) {
-      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${binaryPath}`, {
+    const stagedBinaryPath = pathModule.join(stagingDir, isWin32 ? "docdexd.exe" : "docdexd");
+    if (existsSync && !existsSync(stagedBinaryPath)) {
+      throw new ArchiveInvalidError(`Downloaded archive missing binary at ${stagedBinaryPath}`, {
         platformKey,
         targetTriple,
         version,
@@ -1155,13 +1551,26 @@ async function runInstaller(options) {
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
         fallbackAttempted: source === "fallback",
-        binaryPath
+        binaryPath: stagedBinaryPath
       });
     }
 
-    await fsModule.promises.chmod(binaryPath, 0o755).catch(() => {});
-    logger.log(`[docdex] Installed binary to ${binaryPath}`);
+    await fsModule.promises.chmod(stagedBinaryPath, 0o755);
 
+    if (existsSync && existsSync(distDir)) {
+      await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+      await fsModule.promises.rename(distDir, backupDir);
+      backupMoved = true;
+    }
+
+    await fsModule.promises.rename(stagingDir, distDir);
+    promoted = true;
+
+    if (typeof restartFn === "function") {
+      await restartFn();
+    }
+
+    const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
     const binarySha256 = await sha256FileFn(binaryPath);
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
@@ -1181,15 +1590,98 @@ async function runInstaller(options) {
         downloadUrl
       }
     };
-    await writeJsonFileAtomic({
+    await writeJsonFileAtomicFn({
       fsModule,
       pathModule,
       filePath: installMetadataPath(distDir, pathModule),
       value: metadata
     });
 
+    if (backupMoved) {
+      await removeDirSafe(fsModule, backupDir);
+    }
+    await cleanupInstallArtifacts({
+      fsModule,
+      pathModule,
+      distBaseDir,
+      distDir,
+      platformKey,
+      stagingDir: null,
+      backupDir: null
+    });
+
     logger.log(`[docdex] Install outcome: ${local.outcome}`);
-    return { binaryPath, outcome: local.outcome };
+    const outcomeCode = local.outcome === "repair" ? "repair" : "replace";
+    emitInstallerEvent(logger, {
+      code: "DOCDEX_INSTALL_OUTCOME",
+      details: {
+        outcome: local.outcome,
+        outcomeCode,
+        reason: local.reason,
+        downloadAttempted
+      }
+    });
+    return { binaryPath, outcome: local.outcome, outcomeCode };
+  } catch (err) {
+    let rollbackStatus = "not needed";
+    let rollbackSucceeded = false;
+    try {
+      if (backupMoved && existsSync && existsSync(backupDir)) {
+        if (existsSync(distDir)) {
+          await fsModule.promises.rm(distDir, { recursive: true, force: true });
+        }
+        await fsModule.promises.rename(backupDir, distDir);
+        rollbackStatus = "restored previous installation";
+        rollbackSucceeded = true;
+      } else if (promoted && !backupMoved) {
+        if (existsSync && existsSync(distDir)) {
+          await fsModule.promises.rm(distDir, { recursive: true, force: true });
+        }
+        rollbackStatus = "removed partial installation";
+      }
+    } catch {
+      rollbackStatus = "failed";
+    }
+
+    let cleaned = [];
+    if (extractAttempted || backupMoved || promoted) {
+      await removeDirSafe(fsModule, stagingDir);
+      await removeDirSafe(fsModule, failedDir);
+      cleaned = await cleanupInstallArtifacts({
+        fsModule,
+        pathModule,
+        distBaseDir,
+        distDir,
+        platformKey,
+        stagingDir: null,
+        backupDir: null,
+        preserveBackups: !rollbackSucceeded && rollbackStatus === "failed"
+      });
+    }
+
+    installSafety.rollback = rollbackStatus;
+    if (rollbackStatus === "restored previous installation") {
+      installSafety.status = "rolled_back";
+    } else if (rollbackStatus === "removed partial installation") {
+      installSafety.status = "partial_removed";
+    } else if (rollbackStatus === "not needed") {
+      installSafety.status = "no_rollback_needed";
+    } else {
+      installSafety.status = "failed";
+    }
+    installSafety.cleanup = cleaned.length ? `removed ${cleaned.length} artifacts` : "none";
+    installSafety.priorRunnable.after = existsSync
+      ? existsSync(pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd"))
+      : null;
+
+    if (err && typeof err === "object") {
+      err.details = {
+        ...withBaseDetails(err.details),
+        installAttempt,
+        installSafety
+      };
+    }
+    throw err;
   } finally {
     await fsModule.promises.rm(tmpFile, { force: true }).catch(() => {});
   }
@@ -1197,6 +1689,32 @@ async function runInstaller(options) {
 
 async function main() {
   await runInstaller();
+}
+
+function appendInstallSafetyLines(lines, err) {
+  const safety = err?.details?.installSafety;
+  if (!safety) return lines;
+
+  const priorBefore = safety.priorRunnable?.before;
+  const priorAfter = safety.priorRunnable?.after;
+
+  lines.push(`[docdex] Install safety status: ${safety.status || "unknown"}`);
+  if (safety.preflightRecovery) {
+    lines.push(`[docdex] Preflight recovery: ${safety.preflightRecovery}`);
+  }
+  if (safety.rollback) {
+    lines.push(`[docdex] Rollback: ${safety.rollback}`);
+  }
+  if (priorBefore != null) {
+    lines.push(`[docdex] Prior docdexd runnable at start: ${priorBefore ? "yes" : "no"}`);
+  }
+  if (priorAfter != null) {
+    lines.push(`[docdex] Prior docdexd runnable after failure: ${priorAfter ? "yes" : "no"}`);
+  }
+  if (safety.cleanup) {
+    lines.push(`[docdex] Cleanup: ${safety.cleanup}`);
+  }
+  return lines;
 }
 
 function describeFatalError(err) {
@@ -1219,7 +1737,8 @@ function describeFatalError(err) {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
-      lines: [
+      lines: appendInstallSafetyLines(
+        [
         `[docdex] install failed: unsupported platform (${detected})`,
         `[docdex] error code: ${err.code}`,
         "[docdex] No download was attempted for this platform.",
@@ -1234,7 +1753,9 @@ function describeFatalError(err) {
         "[docdex] - Use a supported platform (see list above).",
         "[docdex] - Or build from source (requires Rust): `cargo build --release --locked`.",
         "[docdex] - If you are on Linux and unsure of libc, set `DOCDEX_LIBC=gnu` or `DOCDEX_LIBC=musl`."
-      ].filter(Boolean)
+      ].filter(Boolean),
+        err
+      )
     };
   }
 
@@ -1243,13 +1764,16 @@ function describeFatalError(err) {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
-      lines: [
+      lines: appendInstallSafetyLines(
+        [
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
         "[docdex] Next steps:",
         "[docdex] - Ensure you are installing a published npm package version (not a local folder missing metadata).",
         "[docdex] - If installing from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` to the repo that hosts the release assets."
-      ]
+      ],
+        err
+      )
     };
   }
 
@@ -1270,7 +1794,8 @@ function describeFatalError(err) {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
-      lines: [
+      lines: appendInstallSafetyLines(
+        [
         "[docdex] install failed: missing artifact/version sync issue (release asset not found)",
         `[docdex] error code: ${err.code}`,
         detected ? `[docdex] Detected platform: ${detected}` : null,
@@ -1290,7 +1815,9 @@ function describeFatalError(err) {
         "[docdex] - Confirm the GitHub Release for this version contains the expected asset for your target.",
         "[docdex] - If installing from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` to the repo that hosts the assets.",
         "[docdex] - Workaround: install a version with matching assets, or build from source (`cargo build --release --locked`)."
-      ].filter(Boolean)
+      ].filter(Boolean),
+        err
+      )
     };
   }
 
@@ -1300,7 +1827,8 @@ function describeFatalError(err) {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
-      lines: [
+      lines: appendInstallSafetyLines(
+        [
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
         err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
@@ -1315,7 +1843,9 @@ function describeFatalError(err) {
         "[docdex] - Ensure the GitHub Release includes `docdex-release-manifest.json` or `SHA256SUMS` with a line for this asset.",
         "[docdex] - If installing from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` to the repo that hosts the release assets.",
         "[docdex] - If you cannot publish checksums, build from source (`cargo build --release --locked`)."
-      ].filter(Boolean)
+      ].filter(Boolean),
+        err
+      )
     };
   }
 
@@ -1324,13 +1854,16 @@ function describeFatalError(err) {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
-      lines: [
+      lines: appendInstallSafetyLines(
+        [
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
         err.details?.downloadUrl ? `[docdex] URL tried: ${err.details.downloadUrl}` : null,
         err.details?.statusCode != null ? `[docdex] HTTP status: ${err.details.statusCode}` : null,
         err.cause?.message ? `[docdex] Cause: ${err.cause.message}` : null
-      ].filter(Boolean)
+      ].filter(Boolean),
+        err
+      )
     };
   }
 
@@ -1341,7 +1874,8 @@ function describeFatalError(err) {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
-      lines: [
+      lines: appendInstallSafetyLines(
+        [
         `[docdex] install failed: ${err.message}`,
         `[docdex] error code: ${err.code}`,
         err.details?.assetName ? `[docdex] Asset: ${err.details.assetName}` : null,
@@ -1357,7 +1891,9 @@ function describeFatalError(err) {
         "[docdex] - Ensure you are installing from the intended repo/version (DOCDEX_DOWNLOAD_REPO, DOCDEX_VERSION).",
         "[docdex] - If behind a proxy or cache, bypass it; integrity mismatches can indicate tampering.",
         "[docdex] - If it still fails, build from source (`cargo build --release --locked`)."
-      ].filter(Boolean)
+      ].filter(Boolean),
+        err
+      )
     };
   }
 
@@ -1366,11 +1902,14 @@ function describeFatalError(err) {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
-      lines: [
-        `[docdex] install failed: ${err.message}`,
-        `[docdex] error code: ${err.code}`,
-        err.details?.binaryPath ? `[docdex] Expected binary path: ${err.details.binaryPath}` : null
-      ].filter(Boolean)
+      lines: appendInstallSafetyLines(
+        [
+          `[docdex] install failed: ${err.message}`,
+          `[docdex] error code: ${err.code}`,
+          err.details?.binaryPath ? `[docdex] Expected binary path: ${err.details.binaryPath}` : null
+        ].filter(Boolean),
+        err
+      )
     };
   }
 
@@ -1407,7 +1946,7 @@ function describeFatalError(err) {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
-      lines
+      lines: appendInstallSafetyLines(lines, err)
     };
   }
 
@@ -1416,7 +1955,10 @@ function describeFatalError(err) {
     code,
     exitCode: (err && typeof err.exitCode === "number" && err.exitCode) || EXIT_CODE_BY_ERROR_CODE[code] || 1,
     details: withBaseDetails(err && err.details),
-    lines: [`[docdex] install failed: ${err?.message || "unknown error"}`, `[docdex] error code: ${code}`]
+    lines: appendInstallSafetyLines(
+      [`[docdex] install failed: ${err?.message || "unknown error"}`, `[docdex] error code: ${code}`],
+      err
+    )
   };
 }
 
@@ -1438,6 +1980,7 @@ module.exports = {
   resolveInstallerDownloadPlan,
   parseSha256File,
   sha256File,
+  recoverInterruptedInstall,
   verifyInstalledDocdexdIntegrity,
   decideInstallAction,
   determineLocalInstallerOutcome,

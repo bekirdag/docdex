@@ -134,7 +134,12 @@ impl DdgDiscovery {
                 Ok(resp) => {
                     let status = resp.status();
                     if status.is_success() {
-                        let body = resp.text().await.context("read ddg html")?;
+                        let body = resp.text().await.map_err(|err| {
+                            AppError::new(
+                                ERR_INTERNAL_ERROR,
+                                format!("duckduckgo discovery failed: {err}"),
+                            )
+                        })?;
                         let links = extract_links(&body);
                         let deduped = dedupe_urls(links);
                         let filtered = filter_blocked_urls(deduped, &self.blocklist);

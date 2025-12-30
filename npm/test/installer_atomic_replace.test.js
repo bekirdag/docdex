@@ -122,7 +122,7 @@ test("installer atomic replace: extraction failure leaves existing install untou
   assert.equal(binaryAfter, binaryBefore);
 
   const siblings = listSiblings(distBaseDir);
-  assert.ok(!siblings.some((name) => name.startsWith(`${platformKey}.staging-`)), "expected no leftover staging dirs");
+  assert.ok(!siblings.some((name) => name.startsWith(`${platformKey}.stage.`)), "expected no leftover staging dirs");
 });
 
 test("installer atomic replace: failed swap rolls back to the previous install", async (t) => {
@@ -157,7 +157,7 @@ test("installer atomic replace: failed swap rolls back to the previous install",
     promises: {
       ...fs.promises,
       rename: async (from, to) => {
-        if (to === distDir && typeof from === "string" && from.includes(`${platformKey}.staging-`)) {
+        if (to === distDir && typeof from === "string" && from.includes(`${platformKey}.stage.`)) {
           const e = new Error("EACCES: mocked swap failure");
           e.code = "EACCES";
           throw e;
@@ -208,7 +208,6 @@ test("installer atomic replace: failed swap rolls back to the previous install",
   assert.equal(binaryAfter, binaryBefore);
 
   const siblings = listSiblings(distBaseDir);
-  assert.ok(!siblings.some((name) => name.startsWith(`${platformKey}.staging-`)), "expected no leftover staging dirs");
+  assert.ok(!siblings.some((name) => name.startsWith(`${platformKey}.stage.`)), "expected no leftover staging dirs");
   assert.ok(!siblings.some((name) => name.startsWith(`${platformKey}.backup.`)), "expected no leftover backup dirs");
 });
-

@@ -76,7 +76,7 @@ function wrapFsRenameWithFault({ failRename }) {
   };
 }
 
-test("installer: extract failure preserves previous install and cleans temp/incoming", async (t) => {
+test("installer: extract failure preserves previous install and cleans temp/staging", async (t) => {
   const base = "https://example.test/releases/download";
   const expectedVersion = "0.0.2";
   const installedVersion = "0.0.1";
@@ -152,9 +152,13 @@ test("installer: extract failure preserves previous install and cleans temp/inco
   assert.ok(downloadDest, "expected download to run");
   assert.equal(fs.existsSync(downloadDest), false, "tmp download should be removed");
 
-  assert.equal(extractTargetDir, `${distDir}.incoming`);
-  assert.equal(fs.existsSync(`${distDir}.incoming`), false, "incoming dir should be cleaned");
-  assert.equal(fs.existsSync(`${distDir}.backup`), false, "backup dir should not be left behind");
+  assert.ok(extractTargetDir?.startsWith(`${distDir}.stage.`), `unexpected staging dir: ${extractTargetDir}`);
+  assert.equal(fs.existsSync(extractTargetDir), false, "staging dir should be cleaned");
+  const leftovers = await fs.promises.readdir(distBaseDir);
+  assert.ok(
+    leftovers.every((entry) => !entry.startsWith(`${platformKey}.stage.`) && !entry.startsWith(`${platformKey}.backup.`)),
+    `expected no staging/backup leftovers, saw: ${leftovers.join(", ")}`
+  );
 });
 
 test("installer: swap failure rolls back to previous install and cleans artifacts", async (t) => {
@@ -188,10 +192,10 @@ test("installer: swap failure rolls back to previous install and cleans artifact
   });
   const oldMetadataRaw = await fs.promises.readFile(oldMetadataPath, "utf8");
 
-  const incomingDir = `${distDir}.incoming`;
+  const stagePrefix = `${distDir}.stage.`;
 
   const fsWithFault = wrapFsRenameWithFault({
-    failRename: (from, to) => from === incomingDir && to === distDir
+    failRename: (from, to) => typeof from === "string" && from.startsWith(stagePrefix) && to === distDir
   });
 
   let downloadDest = null;
@@ -239,8 +243,11 @@ test("installer: swap failure rolls back to previous install and cleans artifact
   assert.ok(downloadDest, "expected download to run");
   assert.equal(fs.existsSync(downloadDest), false, "tmp download should be removed");
 
-  assert.equal(fs.existsSync(`${distDir}.incoming`), false, "incoming dir should be cleaned");
-  assert.equal(fs.existsSync(`${distDir}.backup`), false, "backup dir should be cleaned/rolled back");
+  const leftovers = await fs.promises.readdir(distBaseDir);
+  assert.ok(
+    leftovers.every((entry) => !entry.startsWith(`${platformKey}.stage.`) && !entry.startsWith(`${platformKey}.backup.`)),
+    `expected no staging/backup leftovers, saw: ${leftovers.join(", ")}`
+  );
 });
 
 test("installer: retry after interrupted swap cleans leftovers and succeeds", async (t) => {
@@ -259,8 +266,8 @@ test("installer: retry after interrupted swap cleans leftovers and succeeds", as
 
   const distBaseDir = path.join(tmpRoot, "dist");
   const distDir = path.join(distBaseDir, platformKey);
-  const backupDir = `${distDir}.backup`;
-  const incomingDir = `${distDir}.incoming`;
+  const backupDir = `${distDir}.backup.0.0`;
+  const stageDir = `${distDir}.stage.0.0`;
   const tmpDir = path.join(tmpRoot, "tmp");
   await ensureDir(tmpDir);
 
@@ -275,8 +282,8 @@ test("installer: retry after interrupted swap cleans leftovers and succeeds", as
     binarySha256: oldSha
   });
 
-  await ensureDir(incomingDir);
-  await fs.promises.writeFile(path.join(incomingDir, "docdexd"), "partial-new\n", "utf8");
+  await ensureDir(stageDir);
+  await fs.promises.writeFile(path.join(stageDir, "docdexd"), "partial-new\n", "utf8");
 
   let downloadDest = null;
 
@@ -316,11 +323,14 @@ test("installer: retry after interrupted swap cleans leftovers and succeeds", as
   assert.ok(downloadDest, "expected download to run");
   assert.equal(fs.existsSync(downloadDest), false, "tmp download should be removed");
 
-  assert.equal(fs.existsSync(incomingDir), false, "incoming dir should be cleaned");
-  assert.equal(fs.existsSync(backupDir), false, "backup dir should be cleaned");
+  const leftovers = await fs.promises.readdir(distBaseDir);
+  assert.ok(
+    leftovers.every((entry) => !entry.startsWith(`${platformKey}.stage.`) && !entry.startsWith(`${platformKey}.backup.`)),
+    `expected no staging/backup leftovers, saw: ${leftovers.join(", ")}`
+  );
 });
 
-test("installer: metadata write failure preserves previous install and cleans incoming", async (t) => {
+test("installer: metadata write failure preserves previous install and cleans staging", async (t) => {
   const base = "https://example.test/releases/download";
   const expectedVersion = "0.0.2";
   const installedVersion = "0.0.1";
@@ -395,6 +405,9 @@ test("installer: metadata write failure preserves previous install and cleans in
   assert.ok(downloadDest, "expected download to run");
   assert.equal(fs.existsSync(downloadDest), false, "tmp download should be removed");
 
-  assert.equal(fs.existsSync(`${distDir}.incoming`), false, "incoming dir should be cleaned");
-  assert.equal(fs.existsSync(`${distDir}.backup`), false, "backup dir should not be left behind");
+  const leftovers = await fs.promises.readdir(distBaseDir);
+  assert.ok(
+    leftovers.every((entry) => !entry.startsWith(`${platformKey}.stage.`) && !entry.startsWith(`${platformKey}.backup.`)),
+    `expected no staging/backup leftovers, saw: ${leftovers.join(", ")}`
+  );
 });

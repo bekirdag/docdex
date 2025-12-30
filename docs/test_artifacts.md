@@ -14,6 +14,12 @@
 - scripts/test_hooks_end_to_end.sh
 - scripts/test_mcp_http.sh
 - scripts/test_run_all.sh
+- scripts/test_release_artifacts.sh
+- scripts/test_npm_install_matrix.sh
+- scripts/load_test_http.sh
+- scripts/load_test_mcp.sh
+- scripts/bench_indexing.sh
+- scripts/security_audit.sh
 
 ## Rust Integration Tests
 - tests/profile_agent_header.rs
@@ -81,6 +87,16 @@
 - tests/cli_default_agent_config.rs
 - tests/cli_state_dir_override.rs
 - tests/cli_metrics.rs
+- tests/quality_gates_doc.rs
+- tests/release_artifact_scripts.rs
+- tests/upgrade_downgrade.rs
+- tests/network_faults.rs
+- tests/soak_large_repo.rs
+- tests/concurrency_http.rs
+- tests/concurrency_mcp.rs
+- tests/metrics_baseline.rs
+- tests/property_profile.rs
+- tests/property_memory.rs
 
 ## Rust Unit/Component Tests
 - src/config/tests.rs
@@ -92,6 +108,16 @@
 - src/ollama/tests.rs
 - src/cli/http_client/tests.rs
 - src/repo_manager/resolution/tests.rs
+
+## Benchmarks
+- benches/indexing_bench.rs
+
+## Fuzz Targets
+- fuzz/Cargo.toml
+- fuzz/fuzz_targets/libs_request.rs
+- fuzz/fuzz_targets/hook_validate_request.rs
+- fuzz/fuzz_targets/profile_sync_manifest.rs
+- fuzz/fuzz_targets/mcp_payload.rs
 
 ## Node Package Tests
 - npm/test/release_manifest.test.js

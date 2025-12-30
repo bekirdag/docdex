@@ -60,7 +60,7 @@ async function writeInstallMetadata({
 }
 
 function listTransientDirs({ baseDir, platformKey }) {
-  const prefixes = [`${platformKey}.staging.`, `${platformKey}.backup.`, `${platformKey}.failed.`];
+  const prefixes = [`${platformKey}.stage.`, `${platformKey}.backup.`, `${platformKey}.failed.`];
   return fs
     .readdirSync(baseDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && prefixes.some((p) => entry.name.startsWith(p)))
@@ -203,4 +203,3 @@ test("installer cleanup: chmod failure rolls back to prior install", async (t) =
   assert.equal(meta.version, installedVersion);
   assert.deepEqual(listTransientDirs({ baseDir: distBaseDir, platformKey }), []);
 });
-

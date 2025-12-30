@@ -27,7 +27,23 @@ require_tool() {
 
 log "running cargo audit"
 if require_tool "cargo-audit" "cargo audit --version"; then
-  cargo audit --json >"${LOG_DIR}/cargo_audit.json"
+  audit_ignore_args=()
+  if [[ -f "${ROOT_DIR}/audit.toml" ]]; then
+    ignores="$(python3 - <<'PY' 2>/dev/null || true
+import tomllib
+with open('audit.toml', 'rb') as f:
+    data = tomllib.load(f)
+for advisory_id in data.get('advisories', {}).get('ignore', []):
+    print(advisory_id)
+PY
+)"
+    if [[ -n "${ignores}" ]]; then
+      while read -r advisory_id; do
+        [[ -n "${advisory_id}" ]] && audit_ignore_args+=(--ignore "${advisory_id}")
+      done <<< "${ignores}"
+    fi
+  fi
+  cargo audit --json "${audit_ignore_args[@]}" >"${LOG_DIR}/cargo_audit.json"
   log "cargo audit written to ${LOG_DIR}/cargo_audit.json"
 fi
 
@@ -38,7 +54,7 @@ if command -v npm >/dev/null 2>&1 && [[ -f "${ROOT_DIR}/npm/package.json" ]]; th
 
   if npm sbom --version >/dev/null 2>&1; then
     log "generating npm sbom"
-    (cd "${ROOT_DIR}/npm" && npm sbom --json >"${LOG_DIR}/npm_sbom.json")
+    (cd "${ROOT_DIR}/npm" && npm sbom --package-lock-only --sbom-format cyclonedx >"${LOG_DIR}/npm_sbom.json")
     log "npm sbom written to ${LOG_DIR}/npm_sbom.json"
   elif [[ "${STRICT}" == "1" ]]; then
     log "npm sbom not available (upgrade npm or set DOCDEX_AUDIT_STRICT=0)"
@@ -52,7 +68,7 @@ fi
 
 log "generating Rust SBOM"
 if require_tool "cargo-sbom" "cargo sbom --version"; then
-  cargo sbom --output-format cyclonedx-json >"${LOG_DIR}/cargo_sbom.json"
+  cargo sbom --output-format cyclone_dx_json_1_6 >"${LOG_DIR}/cargo_sbom.json"
   log "cargo sbom written to ${LOG_DIR}/cargo_sbom.json"
 fi
 

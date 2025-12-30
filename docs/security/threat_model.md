@@ -29,6 +29,7 @@
 - Supply chain: checksum verification, manifest validation, and audit scripts.
 - Unauthorized access: localhost bind by default, auth token required on expose.
 - Data corruption: SQLite export/merge for network shares, atomic state writes.
+- Advisory exceptions: `RUSTSEC-2025-0009` ignored because Docdex does not enable QUIC; tracked in `audit.toml`.
 
 ## Assumptions
 - Daemon runs on trusted host with least privilege.

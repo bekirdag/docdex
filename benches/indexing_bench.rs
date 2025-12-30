@@ -1,7 +1,6 @@
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use docdexd::index::{IndexConfig, Indexer};
 use std::fs;
-use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -33,7 +32,8 @@ fn bench_indexing(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("indexing");
     group.warm_up_time(Duration::from_secs(2));
-    group.measurement_time(Duration::from_secs(5));
+    group.measurement_time(Duration::from_secs(30));
+    group.sample_size(10);
     group.bench_function("reindex_large_repo_1k", |b| {
         b.iter_batched(
             || TempDir::new().expect("create state tempdir"),

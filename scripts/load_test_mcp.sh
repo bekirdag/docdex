@@ -32,9 +32,11 @@ import os
 import subprocess
 import sys
 import time
+import select
 
 repo = os.environ["REPO_ROOT"]
 duration = float(os.environ.get("DOCDEX_LOAD_DURATION_SECS", "60"))
+timeout_secs = float(os.environ.get("DOCDEX_MCP_TIMEOUT_SECS", "10"))
 docdex_bin = os.environ.get("DOCDEX_BIN") or "docdexd"
 mcp_bin = os.environ.get("MCP_BIN")
 base_url = os.environ.get("BASE_URL")
@@ -59,22 +61,28 @@ def send(payload):
     proc.stdin.flush()
 
 def recv():
+    ready, _, _ = select.select([proc.stdout], [], [], timeout_secs)
+    if not ready:
+        return None
     line = proc.stdout.readline()
     if not line:
         raise RuntimeError(proc.stderr.read())
-    return json.loads(line)
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError:
+        return None
 
 ok = 0
 fail = 0
 try:
     send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"workspace_root": repo}})
     init_resp = recv()
-    if "result" not in init_resp:
+    if not init_resp or "result" not in init_resp:
         fail += 1
     else:
         send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
         tools_resp = recv()
-        if "result" not in tools_resp:
+        if not tools_resp or "result" not in tools_resp:
             fail += 1
         else:
             end = time.time() + duration
@@ -83,7 +91,7 @@ try:
                 send({"jsonrpc": "2.0", "id": counter, "method": "tools/list", "params": {}})
                 counter += 1
                 resp = recv()
-                if "result" in resp:
+                if resp and "result" in resp:
                     ok += 1
                 else:
                     fail += 1

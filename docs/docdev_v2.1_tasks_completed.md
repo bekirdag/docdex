@@ -193,3 +193,8 @@ your new job is to work on the tasks under docdev_v2.1_tasks.md and implement al
 - P6-T8: Add security audit script and threat model doc.
 - P6-T9: Add metrics baseline test for required counters.
 - P6-T10: Add fuzz targets for libs/hooks/profile sync/MCP payload parsing.
+- P7-T1: Validate load/soak tests (HTTP/MCP) against quality gates.
+- P7-T2: Validate indexing benchmark results via bench_indexing script.
+- P7-T3: Run security audit + SBOM generation with documented advisory ignore.
+- P7-T4: Run soak_large_repo test and fuzz targets (libs/hooks/profile/MCP).
+- P7-T5: Run scripts/test_run_all.sh for final verification.

@@ -67,8 +67,6 @@ fn soak_large_repo_index_and_query() -> Result<(), Box<dyn Error>> {
         repo_str.as_str(),
         "--state-dir",
         state_str.as_str(),
-        "--log",
-        "warn",
     ])?;
 
     for _ in 0..20 {

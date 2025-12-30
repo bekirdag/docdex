@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="${1:-$(pwd)}"
 MCP_BIN="${DOCDEX_MCP_SERVER_BIN:-}"
 BASE_URL="${DOCDEX_HTTP_BASE_URL:-}"
-DOCDEX_BIN="${DOCDEX_BIN:-docdexd}"
+if [[ -z "${DOCDEX_BIN:-}" && -x "${ROOT_DIR}/target/debug/docdexd" ]]; then
+  DOCDEX_BIN="${ROOT_DIR}/target/debug/docdexd"
+else
+  DOCDEX_BIN="${DOCDEX_BIN:-docdexd}"
+fi
 export REPO_ROOT MCP_BIN BASE_URL DOCDEX_BIN
 
 log() {

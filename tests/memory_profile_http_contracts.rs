@@ -133,7 +133,8 @@ fn profile_export_and_import_contracts() -> Result<(), Box<dyn Error>> {
     let agents = export_resp
         .get("agents")
         .and_then(|v| v.as_array())
-        .unwrap_or(&Vec::new());
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
     assert!(!agents.is_empty());
 
     let import_url = format!("http://{host}:{port}/v1/profile/import");

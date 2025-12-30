@@ -84,7 +84,8 @@ fn cli_profile_add_and_search() -> Result<(), Box<dyn Error>> {
     let results = search_resp
         .get("results")
         .and_then(|v| v.as_array())
-        .unwrap_or(&Vec::new());
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
     assert!(!results.is_empty(), "expected search results");
     Ok(())
 }

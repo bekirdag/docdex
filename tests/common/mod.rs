@@ -1,6 +1,8 @@
+#![allow(dead_code)]
+
 use std::error::Error;
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Once;
 use std::thread;

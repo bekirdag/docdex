@@ -148,7 +148,8 @@ fn cli_profile_add_is_visible_over_http() -> Result<(), Box<dyn Error>> {
     let preferences = resp
         .get("preferences")
         .and_then(|v| v.as_array())
-        .unwrap_or(&Vec::new());
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
     assert!(preferences.iter().any(|pref| {
         pref.get("content")
             .and_then(|v| v.as_str())

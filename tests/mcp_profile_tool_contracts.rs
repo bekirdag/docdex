@@ -255,7 +255,8 @@ fn mcp_profile_tools_validate_category_and_response() -> Result<(), Box<dyn Erro
     let agents = profile_payload
         .get("agents")
         .and_then(|v| v.as_array())
-        .unwrap_or(&Vec::new());
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
     assert!(agents.iter().any(|agent| {
         agent
             .get("id")

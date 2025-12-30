@@ -13,6 +13,7 @@
 - scripts/test_profile_evolution.sh
 - scripts/test_hooks_end_to_end.sh
 - scripts/test_mcp_http.sh
+- scripts/test_run_all.sh
 
 ## Rust Integration Tests
 - tests/profile_agent_header.rs

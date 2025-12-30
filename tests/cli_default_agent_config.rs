@@ -172,7 +172,8 @@ fn serve_agent_id_flag_sets_default_profile() -> Result<(), Box<dyn Error>> {
         .get("results")
         .and_then(|v| v.get("profile"))
         .and_then(|v| v.as_array())
-        .unwrap_or(&Vec::new());
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
     assert!(profile_items.iter().any(|item| {
         item.get("content")
             .and_then(|v| v.as_str())

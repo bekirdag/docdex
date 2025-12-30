@@ -80,17 +80,60 @@ fn spawn_server(
         .spawn()?)
 }
 
-fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
+fn wait_for_health_with_child(
+    host: &str,
+    port: u16,
+    child: &mut Child,
+    timeout: Duration,
+) -> Result<(), Box<dyn Error>> {
     let client = Client::builder().timeout(Duration::from_secs(1)).build()?;
     let url = format!("http://{host}:{port}/healthz");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
+        if let Some(status) = child.try_wait()? {
+            return Err(format!("docdexd exited before healthz ready: {status}").into());
+        }
         match client.get(&url).send() {
             Ok(resp) if resp.status().is_success() => return Ok(()),
             _ => thread::sleep(Duration::from_millis(200)),
         }
     }
     Err("docdexd healthz endpoint did not respond in time".into())
+}
+
+fn spawn_server_ready(
+    state_root: &Path,
+    repo_root: &Path,
+    host: &str,
+    ollama_base_url: &str,
+    embedding_model: &str,
+    embedding_timeout_ms: u64,
+) -> Result<Option<(Child, u16)>, Box<dyn Error>> {
+    const MAX_ATTEMPTS: usize = 4;
+    let mut last_err: Option<Box<dyn Error>> = None;
+    for _ in 0..MAX_ATTEMPTS {
+        let Some(port) = pick_free_port() else {
+            return Ok(None);
+        };
+        let mut child = spawn_server(
+            state_root,
+            repo_root,
+            host,
+            port,
+            ollama_base_url,
+            embedding_model,
+            embedding_timeout_ms,
+        )?;
+        match wait_for_health_with_child(host, port, &mut child, Duration::from_secs(20)) {
+            Ok(()) => return Ok(Some((child, port))),
+            Err(err) => {
+                last_err = Some(err);
+                child.kill().ok();
+                child.wait().ok();
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| "docdexd failed to start".into()))
 }
 
 struct MockOllama {
@@ -236,21 +279,19 @@ fn http_memory_store_timeout_returns_stable_code() -> Result<(), Box<dyn Error>>
         return Ok(());
     };
 
-    let Some(port) = pick_free_port() else {
-        return Ok(());
-    };
     let host = "127.0.0.1";
     let state_root = TempDir::new()?;
-    let mut server = spawn_server(
+    let Some((mut server, port)) = spawn_server_ready(
         state_root.path(),
         repo.path(),
         host,
-        port,
         &slow.base_url,
         "fake-embed",
         50,
-    )?;
-    wait_for_health(host, port)?;
+    )?
+    else {
+        return Ok(());
+    };
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/v1/memory/store");
@@ -331,36 +372,18 @@ fn invalid_model_is_explicit_and_daemon_stays_healthy() -> Result<(), Box<dyn Er
         return Ok(());
     };
 
-    let Some(port) = pick_free_port() else {
+    let host = "127.0.0.1";
+    let Some((mut server, port)) = spawn_server_ready(
+        state_root.path(),
+        repo.path(),
+        host,
+        mock.base_url.as_str(),
+        "definitely-not-installed",
+        200,
+    )?
+    else {
         return Ok(());
     };
-    let host = "127.0.0.1";
-    let mut server = Command::new(docdex_bin())
-        .env("DOCDEX_STATE_DIR", state_root.path())
-        .env("DOCDEX_ENABLE_MCP", "0")
-        .args([
-            "serve",
-            "--repo",
-            repo.path().to_string_lossy().as_ref(),
-            "--host",
-            host,
-            "--port",
-            &port.to_string(),
-            "--log",
-            "warn",
-            "--secure-mode=false",
-            "--enable-memory=true",
-            "--ollama-base-url",
-            mock.base_url.as_str(),
-            "--embedding-model",
-            "definitely-not-installed",
-            "--embedding-timeout-ms",
-            "200",
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let store_url = format!("http://{host}:{port}/v1/memory/store");
@@ -404,36 +427,18 @@ fn memory_metadata_includes_embedding_model() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
 
-    let Some(port) = pick_free_port() else {
+    let host = "127.0.0.1";
+    let Some((mut server, port)) = spawn_server_ready(
+        state_root.path(),
+        repo.path(),
+        host,
+        mock.base_url.as_str(),
+        "test-embed-model",
+        200,
+    )?
+    else {
         return Ok(());
     };
-    let host = "127.0.0.1";
-    let mut server = Command::new(docdex_bin())
-        .env("DOCDEX_STATE_DIR", state_root.path())
-        .env("DOCDEX_ENABLE_MCP", "0")
-        .args([
-            "serve",
-            "--repo",
-            repo.path().to_string_lossy().as_ref(),
-            "--host",
-            host,
-            "--port",
-            &port.to_string(),
-            "--log",
-            "warn",
-            "--secure-mode=false",
-            "--enable-memory=true",
-            "--ollama-base-url",
-            mock.base_url.as_str(),
-            "--embedding-model",
-            "test-embed-model",
-            "--embedding-timeout-ms",
-            "200",
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let store_url = format!("http://{host}:{port}/v1/memory/store");
@@ -529,34 +534,40 @@ fn memory_isolation_between_repos() -> Result<(), Box<dyn Error>> {
     else {
         return Ok(());
     };
-    let Some(port_a) = pick_free_port() else {
-        return Ok(());
-    };
-    let Some(port_b) = pick_free_port() else {
-        return Ok(());
-    };
     let host = "127.0.0.1";
     let state_root = TempDir::new()?;
-    let mut server_a = spawn_server(
+    let Some((mut server_a, port_a)) = spawn_server_ready(
         state_root.path(),
         repo_a.path(),
         host,
-        port_a,
         mock.base_url.as_str(),
         "test-embed-model",
         200,
-    )?;
-    let mut server_b = spawn_server(
+    )?
+    else {
+        return Ok(());
+    };
+    let server_b = spawn_server_ready(
         state_root.path(),
         repo_b.path(),
         host,
-        port_b,
         mock.base_url.as_str(),
         "test-embed-model",
         200,
-    )?;
-    wait_for_health(host, port_a)?;
-    wait_for_health(host, port_b)?;
+    );
+    let (mut server_b, port_b) = match server_b {
+        Ok(Some((server, port))) => (server, port),
+        Ok(None) => {
+            server_a.kill().ok();
+            server_a.wait().ok();
+            return Ok(());
+        }
+        Err(err) => {
+            server_a.kill().ok();
+            server_a.wait().ok();
+            return Err(err);
+        }
+    };
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let store_a = format!("http://{host}:{port_a}/v1/memory/store");

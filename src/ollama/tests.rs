@@ -35,7 +35,7 @@ fn parse_http_response_rejects_missing_headers() {
 
 #[test]
 fn ollama_error_message_prefers_error_field() {
-    let body = br#"{\"error\": \"model not found\"}"#;
+    let body = br#"{"error": "model not found"}"#;
     let message = ollama_error_message(body).expect("expected message");
     assert_eq!(message, "model not found");
 }

@@ -5,7 +5,7 @@ use reqwest::blocking::Client;
 use serde_json::Value;
 use std::error::Error;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tempfile::TempDir;

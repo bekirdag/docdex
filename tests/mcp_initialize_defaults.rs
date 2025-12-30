@@ -215,7 +215,10 @@ fn mcp_initialize_sets_default_project_and_agent() -> Result<(), Box<dyn Error>>
     )?;
     let inspect_resp = read_line(&mut mcp.reader)?;
     let inspect_payload = parse_tool_result(&inspect_resp)?;
-    assert!(inspect_payload.get("repo_root").is_some());
+    let repo_root = inspect_payload
+        .get("repoRoot")
+        .or_else(|| inspect_payload.get("repo_root"));
+    assert!(repo_root.is_some());
 
     send_line(
         &mut mcp.stdin,

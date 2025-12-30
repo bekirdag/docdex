@@ -115,3 +115,6 @@ static REPO_RESOLUTION_CACHE: Lazy<Mutex<RepoResolutionCache>> =
 pub fn resolve_repo_root(repo_root: &Path) -> RepoResolution {
     REPO_RESOLUTION_CACHE.lock().resolve(repo_root)
 }
+
+#[cfg(test)]
+mod tests;

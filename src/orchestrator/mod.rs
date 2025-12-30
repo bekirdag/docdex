@@ -7,6 +7,11 @@ pub mod web;
 pub mod web_policy;
 pub mod waterfall;
 
+#[cfg(test)]
+mod budget_tests;
+#[cfg(test)]
+mod plan_tests;
+
 pub use budget::*;
 pub use ddg_policy::*;
 pub use plan::*;

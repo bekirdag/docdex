@@ -569,3 +569,6 @@ fn is_ollama_model_not_found_error(text: &str) -> bool {
     let lowered = text.to_ascii_lowercase();
     lowered.contains("model") && (lowered.contains("not found") || lowered.contains("unknown"))
 }
+
+#[cfg(test)]
+mod tests;

@@ -408,3 +408,6 @@ pub fn global() -> Arc<Metrics> {
 pub fn set_global(metrics: Arc<Metrics>) {
     *GLOBAL_METRICS.write() = metrics;
 }
+
+#[cfg(test)]
+mod tests;

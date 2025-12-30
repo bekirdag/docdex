@@ -74,14 +74,16 @@ write_config() {
   local hook_socket="$3"
   local agent_id="$4"
   local embed_dim="${DOCDEX_PROFILE_EMBED_DIM:-768}"
+  local llm_model="${DOCDEX_LLM_MODEL:-${DOCDEX_LLM_DEFAULT_MODEL:-fake-model}}"
+  local llm_base_url="${DOCDEX_LLM_BASE_URL:-${DOCDEX_OLLAMA_BASE_URL:-http://127.0.0.1:11434}}"
   mkdir -p "$home_dir/.docdex"
   cat >"$home_dir/.docdex/config.toml" <<EOF
 [core]
 global_state_dir = "${global_state_dir}"
 
 [llm]
-base_url = "http://127.0.0.1:11434"
-default_model = "fake-model"
+base_url = "${llm_base_url}"
+default_model = "${llm_model}"
 
 [memory.profile]
 embedding_model = "nomic-embed-text"
@@ -201,6 +203,25 @@ run_hook_http() {
   "$DOCDEX_BIN" hook pre-commit --repo "$repo_root"
 }
 
+run_profile_save_http() {
+  local host="$1"
+  local port="$2"
+  log "profile save evolution (HTTP)"
+  local tmp
+  tmp="$(mktemp)"
+  local code
+  code=$(curl -sS -o "$tmp" -w "%{http_code}" -X POST "http://${host}:${port}/v1/profile/save" \
+    -H "content-type: application/json" \
+    -d '{"agent_id":"mcoda_frontend","category":"tooling","content":"Use Vitest"}')
+  if [[ "$code" -ge 400 ]]; then
+    log "profile save failed with HTTP ${code}"
+    cat "$tmp" >&2
+    rm -f "$tmp"
+    return 1
+  fi
+  rm -f "$tmp"
+}
+
 run_hook_unix() {
   local repo_root="$1"
   log "hook pre-commit (unix socket)"
@@ -216,11 +237,6 @@ run_profile_embedder_tests() {
   log "profile add/search/save (embedding required)"
   "$DOCDEX_BIN" profile add --agent-id "mcoda_frontend" --category style --content "Prefer concise answers" >/dev/null
   "$DOCDEX_BIN" profile search --agent-id "mcoda_frontend" --query "concise" >/dev/null
-  if [[ "${RUN_LLM:-0}" == "1" ]]; then
-    "$DOCDEX_BIN" profile save --agent-id "mcoda_frontend" --category tooling --content "Use Vitest" >/dev/null
-  else
-    log "skipping profile save evolution (set RUN_LLM=1 to enable)"
-  fi
 }
 
 run_profile_export() {
@@ -326,6 +342,11 @@ main() {
     start_daemon "$repo_root" "$host" "$port" "warn"
     run_http_smoke "$host" "$port"
     run_hook_http "$repo_root"
+    if [[ "${RUN_LLM:-0}" == "1" ]]; then
+      run_profile_save_http "$host" "$port"
+    else
+      log "skipping profile save evolution (set RUN_LLM=1 to enable)"
+    fi
     stop_daemon
   fi
   run_profile_export "$export_path"

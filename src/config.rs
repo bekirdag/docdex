@@ -559,6 +559,9 @@ fn default_web_cache_ttl_secs() -> u64 {
     2_592_000
 }
 
+#[cfg(test)]
+mod tests;
+
 fn default_web_engine() -> String {
     DEFAULT_WEB_ENGINE.to_string()
 }

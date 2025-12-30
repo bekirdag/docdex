@@ -221,6 +221,9 @@ fn annotate_hidden_counts(node: &mut TreeNode, path: &Path) {
     }
 }
 
+#[cfg(test)]
+mod tests;
+
 fn to_project_nodes(root: &TreeNode) -> Vec<ProjectMapNode> {
     root.children
         .iter()

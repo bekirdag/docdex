@@ -94,3 +94,6 @@ fn env_non_empty(key: &str) -> Option<String> {
 fn env_u64(key: &str) -> Option<u64> {
     env_non_empty(key)?.parse::<u64>().ok()
 }
+
+#[cfg(test)]
+mod tests;

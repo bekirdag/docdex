@@ -79,3 +79,6 @@ fn find_by_tier<'a>(catalog: &'a [LlmModel], tier: ModelTier) -> Option<&'a LlmM
     let id = tier.label();
     catalog.iter().find(|model| model.id == id)
 }
+
+#[cfg(test)]
+mod tests;

@@ -25,7 +25,7 @@ max_answer_tokens = 128
 
 [server]
 enable_mcp = {}
-http_bind_addr = "127.0.0.1:3210"
+http_bind_addr = "127.0.0.1:0"
 "#,
         state_root.display(),
         enable_mcp
@@ -58,6 +58,7 @@ fn check_skips_mcp_when_disabled() -> Result<(), Box<dyn Error>> {
     let output = Command::new(docdex_bin())
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env_remove("DOCDEX_ENABLE_MCP")
         .arg("check")
         .output()?;
@@ -79,6 +80,7 @@ fn check_fails_when_mcp_enabled_missing_binary() -> Result<(), Box<dyn Error>> {
     let output = Command::new(docdex_bin())
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_MCP_SERVER_BIN", &missing_bin)
         .env_remove("DOCDEX_ENABLE_MCP")
         .arg("check")
@@ -105,6 +107,7 @@ fn check_passes_when_mcp_enabled_binary_resolves() -> Result<(), Box<dyn Error>>
     let output = Command::new(docdex_bin())
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_MCP_SERVER_BIN", &bin_path)
         .env_remove("DOCDEX_ENABLE_MCP")
         .arg("check")
@@ -135,6 +138,7 @@ fn check_spawn_fails_when_mcp_binary_exits() -> Result<(), Box<dyn Error>> {
     let output = Command::new(docdex_bin())
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_MCP_SERVER_BIN", &bin_path)
         .env("DOCDEX_CHECK_MCP_SPAWN", "1")
         .env_remove("DOCDEX_ENABLE_MCP")
@@ -175,6 +179,7 @@ fn check_spawn_succeeds_when_mcp_binary_exits_zero() -> Result<(), Box<dyn Error
     let output = Command::new(docdex_bin())
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_MCP_SERVER_BIN", &bin_path)
         .env("DOCDEX_CHECK_MCP_SPAWN", "1")
         .env_remove("DOCDEX_ENABLE_MCP")
@@ -216,6 +221,7 @@ fn check_spawn_times_out_when_mcp_binary_hangs() -> Result<(), Box<dyn Error>> {
     let output = Command::new(docdex_bin())
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_MCP_SERVER_BIN", &bin_path)
         .env("DOCDEX_CHECK_MCP_SPAWN", "1")
         .env("DOCDEX_CHECK_MCP_SPAWN_TIMEOUT_MS", "50")

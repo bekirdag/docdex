@@ -843,9 +843,13 @@ fn chat_context_budgets(max_answer_tokens: u32) -> ChatContextBudgets {
     let history_tokens = 0;
     let profile_cap = ProfileBudget::default().token_budget;
     let base_used = system_tokens + memory_tokens + diff_tokens + generation_tokens + history_tokens;
-    let profile_tokens = profile_cap.min(total_tokens.saturating_sub(base_used));
-    let map_tokens = PROJECT_MAP_TOKEN_CAP.min(total_tokens.saturating_sub(base_used + profile_tokens));
-    let repo_tokens = total_tokens.saturating_sub(base_used + profile_tokens + map_tokens);
+    let remaining = total_tokens.saturating_sub(base_used);
+    let repo_floor = (total_tokens / 5).max(1);
+    let reserved_for_repo = repo_floor.min(remaining);
+    let max_non_repo = remaining.saturating_sub(reserved_for_repo);
+    let profile_tokens = profile_cap.min(max_non_repo);
+    let map_tokens = PROJECT_MAP_TOKEN_CAP.min(max_non_repo.saturating_sub(profile_tokens));
+    let repo_tokens = remaining.saturating_sub(profile_tokens + map_tokens);
     ChatContextBudgets {
         system_tokens,
         profile_tokens,

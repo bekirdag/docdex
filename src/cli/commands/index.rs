@@ -6,7 +6,6 @@ use crate::util;
 use anyhow::Result;
 use reqwest::Method;
 use std::path::PathBuf;
-use tracing::info;
 
 pub async fn run_index(repo: RepoArgs, libs_sources: Option<PathBuf>) -> Result<()> {
     if !crate::cli::cli_local_mode() {
@@ -21,8 +20,7 @@ pub async fn run_index(repo: RepoArgs, libs_sources: Option<PathBuf>) -> Result<
         repo.exclude_prefix_overrides(),
         repo.symbols_enabled(),
     )?;
-    util::init_logging("info")?;
-    info!("Rebuilding index for {}", repo_root.display());
+    util::init_logging("warn")?;
     let options = match libs_sources.as_ref() {
         Some(path) => indexer::IndexingOptions::from_sources_path(path)?,
         None => indexer::IndexingOptions::none(),

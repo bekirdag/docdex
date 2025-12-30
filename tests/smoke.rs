@@ -174,10 +174,6 @@ fn wait_for_health_with_token(
     Err("docdexd healthz endpoint did not respond in time".into())
 }
 
-fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
-    wait_for_health_with_token(host, port, None)
-}
-
 #[test]
 fn cli_index_and_query_smoke() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
@@ -566,47 +562,13 @@ fn http_server_smoke() -> Result<(), Box<dyn Error>> {
 #[test]
 fn http_search_missing_index_returns_error_code() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut child = spawn_server(repo.path(), host, port)?;
-    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
-    let url = format!("http://{host}:{port}/search");
-    let payload: Value = client
-        .get(&url)
-        .query(&[("q", "roadmap"), ("limit", "1")])
-        .send()?
-        .json()?;
-    let code = payload
-        .get("error")
-        .and_then(|value| value.get("code"))
-        .and_then(|value| value.as_str());
-    assert_eq!(code, Some("missing_index"));
-    let message = payload
-        .get("error")
-        .and_then(|value| value.get("message"))
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
-    assert!(
-        message.contains("docdexd index"),
-        "expected missing_index message to include index hint; got: {message}"
-    );
-    child.kill().ok();
-    child.wait().ok();
-    Ok(())
-}
-
-#[test]
-fn http_search_missing_index_returns_error_code() -> Result<(), Box<dyn Error>> {
-    let repo = setup_repo()?;
-
-    let Some(port) = pick_free_port() else {
-        return Ok(());
-    };
-    let host = "127.0.0.1";
-    let mut child = spawn_server(repo.path(), host, port)?;
+    let mut child = spawn_server(state_root.path(), repo.path(), host, port)?;
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/search");
     let payload: Value = client

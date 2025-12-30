@@ -50,11 +50,12 @@ fn symbols_schema_upgrades_from_v2() -> Result<(), Box<dyn Error>> {
     let _store = SymbolsStore::new(repo.path(), state_root.path())?;
 
     let conn = Connection::open(db_path)?;
-    let version: i64 = conn.query_row(
+    let version_raw: String = conn.query_row(
         "SELECT value FROM symbols_meta WHERE key = 'schema_version'",
         [],
         |row| row.get(0),
     )?;
+    let version: i64 = version_raw.parse()?;
     assert!(version > 2);
     Ok(())
 }
@@ -67,10 +68,10 @@ fn symbols_schema_rejects_newer_version() -> Result<(), Box<dyn Error>> {
 
     init_symbols_db(&db_path, 999)?;
 
-    let err = SymbolsStore::new(repo.path(), state_root.path())
-        .expect_err("expected newer schema version to fail");
-    assert!(err
-        .to_string()
-        .contains("newer than supported"));
+    let err = match SymbolsStore::new(repo.path(), state_root.path()) {
+        Ok(_) => return Err("expected newer schema version to fail".into()),
+        Err(err) => err,
+    };
+    assert!(err.to_string().contains("newer than supported"));
     Ok(())
 }

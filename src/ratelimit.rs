@@ -44,6 +44,10 @@ where
         (self.refill_per_sec * 60.0).round().max(0.0) as u32
     }
 
+    pub fn burst(&self) -> u32 {
+        self.capacity.round().max(0.0) as u32
+    }
+
     pub fn check(&self, key: K) -> Result<(), Duration>
     where
         K: Clone,

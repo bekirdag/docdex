@@ -60,6 +60,13 @@ fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<Value, Box<
 
 fn resolve_index_dir(state_root: &Path, repo_root: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let payload = inspect_repo_state(state_root, repo_root)?;
+    if let Some(resolved) = payload
+        .get("statePaths")
+        .and_then(|value| value.get("repoStateRoot"))
+        .and_then(|value| value.as_str())
+    {
+        return Ok(PathBuf::from(resolved));
+    }
     let resolved = payload
         .get("resolvedIndexStateDir")
         .and_then(|value| value.as_str())

@@ -153,16 +153,19 @@ fn libs_ingestion_is_partial_and_searchable() -> Result<(), Box<dyn Error>> {
     });
     assert!(any_libs_hit, "expected at least one libs:* hit");
 
-    let repo_only_out = run_docdex([
-        "query",
-        "--repo",
-        repo_str.as_str(),
-        "--repo-only",
-        "--query",
-        "LIBS_ONLY_TERM_123",
-        "--limit",
-        "5",
-    ])?;
+    let repo_only_out = run_docdex(
+        state_root.path(),
+        [
+            "query",
+            "--repo",
+            repo_str.as_str(),
+            "--repo-only",
+            "--query",
+            "LIBS_ONLY_TERM_123",
+            "--limit",
+            "5",
+        ],
+    )?;
     let repo_only_payload: Value = serde_json::from_slice(&repo_only_out)?;
     let repo_only_hits = repo_only_payload
         .get("hits")

@@ -53,6 +53,17 @@ impl ProfileEmbedder {
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {
         #[cfg(test)]
         if let Some(embedding) = self.test_embedding.as_ref() {
+            if embedding.len() != self.expected_dim {
+                return Err(AppError::new(
+                    ERR_EMBEDDING_FAILED,
+                    format!(
+                        "profile embedding dimension mismatch: expected {}, got {}",
+                        self.expected_dim,
+                        embedding.len()
+                    ),
+                )
+                .into());
+            }
             return Ok(embedding.clone());
         }
         let embedding = self.embedder.embed(text).await?;

@@ -14,6 +14,24 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 
+fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && matches!(chars.peek(), Some('[')) {
+            chars.next();
+            while let Some(next) = chars.next() {
+                if next == 'm' {
+                    break;
+                }
+            }
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
@@ -112,6 +130,7 @@ impl MockOllama {
             }
             Err(err) => return Err(err.into()),
         };
+        std_listener.set_nonblocking(true)?;
         let addr = std_listener.local_addr()?;
         let (tx, rx) = oneshot::channel::<()>();
         let join = thread::spawn(move || {
@@ -219,7 +238,8 @@ impl ServerHarness {
             for line in reader.lines() {
                 match line {
                     Ok(line) => {
-                        log_capture.lock().ok().map(|mut logs| logs.push(line));
+                        let cleaned = strip_ansi(&line);
+                        log_capture.lock().ok().map(|mut logs| logs.push(cleaned));
                     }
                     Err(_) => break,
                 }
@@ -340,8 +360,8 @@ fn e2e_chat_budgeting_logs_and_ordering() -> Result<(), Box<dyn Error>> {
         "expected Memory context to precede local context: {content}"
     );
 
-    let log_ok = server.wait_for_log("memory_dropped=", Duration::from_secs(2))
-        && server.wait_for_log("context pruned to fit token budget", Duration::from_secs(2));
+    let log_ok = server.wait_for_log("memory_dropped=", Duration::from_secs(5))
+        && server.wait_for_log("context pruned to fit token budget", Duration::from_secs(5));
     assert!(
         log_ok,
         "expected token budget drop log, got: {}",

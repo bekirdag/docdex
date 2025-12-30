@@ -1,4 +1,3 @@
-use assert_cmd::cargo::cargo_bin;
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::error::Error;
@@ -11,7 +10,7 @@ use tempfile::TempDir;
 
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
-    cargo_bin!("docdexd").to_path_buf()
+    assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
 fn pick_free_port() -> Option<u16> {

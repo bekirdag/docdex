@@ -30,7 +30,7 @@ use tokio_rustls::{
     TlsAcceptor,
 };
 use tower::Service;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[cfg(unix)]
 use std::fs;
@@ -611,7 +611,7 @@ pub async fn serve(
                 Some(child)
             }
             Err(err) => {
-                error!(
+                debug!(
                     target: "docdexd",
                     source = %mcp_enable_source.as_str(),
                     error = ?err,

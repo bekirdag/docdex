@@ -16,7 +16,7 @@ use crate::repo_manager;
 use crate::search::MemoryState;
 use crate::tier2::Tier2Config;
 use crate::util;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use reqwest::header::ACCEPT;
 use reqwest::Method;
@@ -372,9 +372,9 @@ pub(crate) fn resolve_memory_state(
     config: Option<&config::AppConfig>,
     state_dir: &Path,
 ) -> Result<Option<MemoryState>> {
-    let env_enabled = std::env::var_os("DOCDEX_ENABLE_MEMORY").is_some();
+    let env_enabled = env_boolish("DOCDEX_ENABLE_MEMORY");
     let config_enabled = config.map(|cfg| cfg.memory.enabled).unwrap_or(false);
-    if !env_enabled && !config_enabled {
+    if !env_enabled.unwrap_or(config_enabled) {
         return Ok(None);
     }
 
@@ -402,6 +402,15 @@ fn env_non_empty(key: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn env_boolish(key: &str) -> Option<bool> {
+    let raw = env_non_empty(key)?;
+    match raw.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "no" | "n" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 fn env_u64(key: &str) -> Option<u64> {
@@ -681,7 +690,15 @@ pub(crate) async fn search_via_http(
     if let Some(agent_id) = agent_id {
         req = req.header("x-docdex-agent-id", agent_id);
     }
-    let resp = req.send().await?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|err| {
+            anyhow!(
+                "docdexd search failed: {err}; ensure `docdexd serve --repo {}` is running",
+                repo_root.display()
+            )
+        })?;
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();

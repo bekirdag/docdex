@@ -864,10 +864,6 @@ impl SymbolsStore {
                  end_col INTEGER NOT NULL, \
                  signature TEXT \
              ); \
-             CREATE INDEX IF NOT EXISTS symbols_file_idx ON symbols(file_path); \
-             CREATE INDEX IF NOT EXISTS symbols_name_idx ON symbols(name); \
-             CREATE INDEX IF NOT EXISTS symbols_kind_idx ON symbols(kind); \
-             CREATE INDEX IF NOT EXISTS symbols_lang_idx ON symbols_files(file_lang); \
              CREATE TABLE IF NOT EXISTS ast_files ( \
                  file_path TEXT PRIMARY KEY, \
                  outcome_status TEXT, \
@@ -890,16 +886,11 @@ impl SymbolsStore {
                  line_end INTEGER NOT NULL, \
                  end_col INTEGER NOT NULL, \
                  PRIMARY KEY (file_path, node_id) \
-             ); \
-             CREATE INDEX IF NOT EXISTS ast_nodes_file_idx ON ast_nodes(file_path); \
-             CREATE INDEX IF NOT EXISTS ast_nodes_kind_idx ON ast_nodes(kind); \
-             CREATE INDEX IF NOT EXISTS ast_nodes_field_idx ON ast_nodes(field_name); \
-             CREATE INDEX IF NOT EXISTS ast_nodes_name_idx ON ast_nodes(name); \
-             CREATE INDEX IF NOT EXISTS ast_files_lang_idx ON ast_files(file_lang);",
+             );",
         )
         .context("init symbols schema")?;
         if self.read_schema_version(conn)?.is_none() {
-            self.store_schema_version(conn, SYMBOLS_SCHEMA_VERSION)?;
+            self.store_schema_version(conn, SYMBOLS_SCHEMA_MIN_VERSION)?;
         }
         Ok(())
     }
@@ -1101,7 +1092,8 @@ impl SymbolsStore {
 
     fn migrate_to_v3(&self, conn: &Connection) -> Result<()> {
         conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS symbols_name_idx ON symbols(name); \
+            "CREATE INDEX IF NOT EXISTS symbols_file_idx ON symbols(file_path); \
+             CREATE INDEX IF NOT EXISTS symbols_name_idx ON symbols(name); \
              CREATE INDEX IF NOT EXISTS symbols_kind_idx ON symbols(kind); \
              CREATE INDEX IF NOT EXISTS symbols_lang_idx ON symbols_files(file_lang);",
         )
@@ -1133,14 +1125,30 @@ impl SymbolsStore {
                 line_end INTEGER NOT NULL, \
                 end_col INTEGER NOT NULL, \
                 PRIMARY KEY (file_path, node_id) \
-            ); \
-            CREATE INDEX IF NOT EXISTS ast_nodes_file_idx ON ast_nodes(file_path); \
-            CREATE INDEX IF NOT EXISTS ast_nodes_kind_idx ON ast_nodes(kind); \
-            CREATE INDEX IF NOT EXISTS ast_nodes_field_idx ON ast_nodes(field_name); \
-            CREATE INDEX IF NOT EXISTS ast_nodes_name_idx ON ast_nodes(name); \
-            CREATE INDEX IF NOT EXISTS ast_files_lang_idx ON ast_files(file_lang);",
+            );",
         )
         .context("add ast tables")?;
+        if self.column_exists(conn, "ast_nodes", "file_path")? {
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS ast_nodes_file_idx ON ast_nodes(file_path)",
+                [],
+            )
+            .context("add ast_nodes.file_path index")?;
+        }
+        if self.column_exists(conn, "ast_nodes", "kind")? {
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS ast_nodes_kind_idx ON ast_nodes(kind)",
+                [],
+            )
+            .context("add ast_nodes.kind index")?;
+        }
+        if self.column_exists(conn, "ast_files", "file_lang")? {
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS ast_files_lang_idx ON ast_files(file_lang)",
+                [],
+            )
+            .context("add ast_files.file_lang index")?;
+        }
         Ok(())
     }
 

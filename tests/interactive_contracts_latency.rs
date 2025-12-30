@@ -25,23 +25,24 @@ impl Drop for Daemon {
     }
 }
 
-fn run_docdex<I, S>(args: I) -> Result<std::process::Output, Box<dyn Error>>
+fn run_docdex<I, S>(state_root: &Path, args: I) -> Result<std::process::Output, Box<dyn Error>>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
     Ok(Command::new(docdex_bin())
         .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+        .env("DOCDEX_STATE_DIR", state_root)
         .args(args)
         .output()?)
 }
 
-fn run_docdex_ok<I, S>(args: I) -> Result<Vec<u8>, Box<dyn Error>>
+fn run_docdex_ok<I, S>(state_root: &Path, args: I) -> Result<Vec<u8>, Box<dyn Error>>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let output = run_docdex(args)?;
+    let output = run_docdex(state_root, args)?;
     if !output.status.success() {
         return Err(format!(
             "docdexd exited with {}: {}",
@@ -124,9 +125,10 @@ fn assert_sha256_hex(value: &str, context: &str) {
 fn repo_inspect_fingerprint_is_stable_for_canonical_path() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let repo_str = repo.path().to_string_lossy().to_string();
+    let state_root = TempDir::new()?;
 
-    let first = run_docdex_ok(["repo", "inspect", "--repo", repo_str.as_str()])?;
-    let second = run_docdex_ok(["repo", "inspect", "--repo", repo_str.as_str()])?;
+    let first = run_docdex_ok(state_root.path(), ["repo", "inspect", "--repo", repo_str.as_str()])?;
+    let second = run_docdex_ok(state_root.path(), ["repo", "inspect", "--repo", repo_str.as_str()])?;
 
     let v1: Value = serde_json::from_slice(&first)?;
     let v2: Value = serde_json::from_slice(&second)?;
@@ -153,9 +155,10 @@ fn repo_inspect_fingerprint_is_stable_for_canonical_path() -> Result<(), Box<dyn
 fn cli_query_includes_repo_id_in_meta() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let repo_str = repo.path().to_string_lossy().to_string();
+    let state_root = TempDir::new()?;
 
-    run_docdex_ok(["index", "--repo", repo_str.as_str()])?;
-    let stdout = run_docdex_ok([
+    run_docdex_ok(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
+    let stdout = run_docdex_ok(state_root.path(), [
         "query",
         "--repo",
         repo_str.as_str(),
@@ -179,12 +182,14 @@ fn http_search_includes_repo_id_and_is_reasonably_fast() -> Result<(), Box<dyn E
     };
     let repo = setup_repo()?;
     let repo_str = repo.path().to_string_lossy().to_string();
+    let state_root = TempDir::new()?;
 
-    run_docdex_ok(["index", "--repo", repo_str.as_str()])?;
+    run_docdex_ok(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let port_str = port.to_string();
     let mut cmd = Command::new(docdex_bin());
     cmd.env("DOCDEX_ENABLE_MCP", "0");
+    cmd.env("DOCDEX_STATE_DIR", state_root.path());
     cmd.args([
         "serve",
         "--repo",

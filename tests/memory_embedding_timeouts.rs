@@ -109,6 +109,7 @@ impl MockOllama {
             }
             Err(err) => return Err(err.into()),
         };
+        std_listener.set_nonblocking(true)?;
         let addr = std_listener.local_addr()?;
         let (tx, rx) = oneshot::channel::<()>();
         let join = thread::spawn(move || {

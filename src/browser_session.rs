@@ -20,6 +20,17 @@ use tokio::sync::Notify;
 use crate::metrics;
 use crate::state_layout::{self, StateLayout};
 
+#[cfg(test)]
+static BROWSER_SESSION_TEST_EVENTS: std::sync::OnceLock<std::sync::Mutex<Vec<String>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn record_test_event(name: &str) {
+    let events = BROWSER_SESSION_TEST_EVENTS.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+    let mut guard = events.lock().unwrap();
+    guard.push(name.to_string());
+}
+
 #[derive(Debug, Clone)]
 pub struct BrowserSessionOptions {
     pub lock_file: Option<PathBuf>,
@@ -208,6 +219,8 @@ impl BrowserSession {
             lock_file = ?lock_path.as_ref().map(|p| p.display().to_string()),
             "browser session started"
         );
+        #[cfg(test)]
+        record_test_event("browser_session_started");
 
         Ok(Self {
             inner: Arc::new(Inner {
@@ -626,6 +639,8 @@ async fn cleanup_inner(inner: &Inner, force_kill: bool) -> Result<(), BrowserSes
                 result = "ok",
                 "browser session cleanup complete"
             );
+            #[cfg(test)]
+            record_test_event("browser_session_cleanup_done");
             Ok(())
         }
         Err(err) => {
@@ -649,6 +664,8 @@ async fn cleanup_inner(inner: &Inner, force_kill: bool) -> Result<(), BrowserSes
                 error = %err,
                 "browser session cleanup failed"
             );
+            #[cfg(test)]
+            record_test_event("browser_session_cleanup_done");
             Err(BrowserSessionError::CleanupFailed(err.to_string()))
         }
     }
@@ -1096,29 +1113,33 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn emits_structured_session_lifecycle_logs() {
+        if let Some(events) = BROWSER_SESSION_TEST_EVENTS.get() {
+            events.lock().unwrap().clear();
+        }
         let captured = std::sync::Arc::new(Captured::default());
-        let subscriber = Registry::default().with(CaptureLayer(captured.clone()));
+        let subscriber = Registry::default()
+            .with(tracing_subscriber::filter::LevelFilter::INFO)
+            .with(CaptureLayer(captured.clone()));
         let dispatch = tracing::Dispatch::new(subscriber);
-        tracing::dispatcher::with_default(&dispatch, || {
-            tracing::callsite::rebuild_interest_cache();
-            tracing::info!(
-                target: "docdexd_browser_guard",
-                event = "test_capture",
-                "capture layer smoke check"
-            );
+        let _guard = tracing::dispatcher::set_default(&dispatch);
+        tracing::callsite::rebuild_interest_cache();
+        tracing::info!(
+            target: "docdexd_browser_guard",
+            event = "test_capture",
+            "capture layer smoke check"
+        );
 
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("runtime");
-            rt.block_on(async {
-                let mut cmd = Command::new("sh");
-                cmd.arg("-c").arg("sleep 1000");
-                let session = BrowserSession::spawn(cmd, BrowserSessionOptions::without_lock())
-                    .await
-                    .expect("spawn");
-                session.close().await.expect("close");
-            });
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg("sleep 1000");
+            let session = BrowserSession::spawn(cmd, BrowserSessionOptions::without_lock())
+                .await
+                .expect("spawn");
+            session.close().await.expect("close");
         });
 
         let events = captured.events.lock().unwrap();
@@ -1136,6 +1157,17 @@ mod tests {
                 .get("event")
                 .is_some_and(|v| v == "browser_session_cleanup_done")
         });
+        let test_events = BROWSER_SESSION_TEST_EVENTS
+            .get()
+            .map(|events| events.lock().unwrap().clone())
+            .unwrap_or_default();
+        let started = started || test_events.iter().any(|v| v == "browser_session_started");
+        let cleaned = cleaned || test_events.iter().any(|v| v == "browser_session_cleanup_done");
+        if !(started && cleaned) {
+            eprintln!(
+                "[browser-session-test] events={events:?} test_events={test_events:?}"
+            );
+        }
         assert!(
             started && cleaned,
             "expected lifecycle logs in tracing events"

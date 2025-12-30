@@ -1,4 +1,3 @@
-use assert_cmd::cargo::cargo_bin;
 use docdexd::repo_manager;
 use rusqlite::Connection;
 use serde_json::Value;
@@ -11,7 +10,7 @@ use tempfile::TempDir;
 
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
-    cargo_bin!("docdexd").to_path_buf()
+    assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
 fn run_index(state_root: &Path, repo_root: &Path) -> Result<(), Box<dyn Error>> {

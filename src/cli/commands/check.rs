@@ -188,16 +188,32 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
                         })),
                     },
                     Err(err) => {
-                        success = false;
-                        CheckItem {
-                            name: "bind_available",
-                            status: "fail",
-                            message: err.message,
-                            details: Some(json!({
-                                "bind_addr": bind_addr_raw,
-                                "error_kind": err.kind,
-                                "error": err.error,
-                            })),
+                        if err.kind == "permission_denied"
+                            && (addr.port() == 0 || addr.port() >= 1024)
+                        {
+                            CheckItem {
+                                name: "bind_available",
+                                status: "skipped",
+                                message: "bind permission denied; skipping availability check"
+                                    .to_string(),
+                                details: Some(json!({
+                                    "bind_addr": bind_addr_raw,
+                                    "error_kind": err.kind,
+                                    "error": err.error,
+                                })),
+                            }
+                        } else {
+                            success = false;
+                            CheckItem {
+                                name: "bind_available",
+                                status: "fail",
+                                message: err.message,
+                                details: Some(json!({
+                                    "bind_addr": bind_addr_raw,
+                                    "error_kind": err.kind,
+                                    "error": err.error,
+                                })),
+                            }
                         }
                     }
                 };

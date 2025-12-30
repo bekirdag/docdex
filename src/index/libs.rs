@@ -718,17 +718,24 @@ fn resolve_source_path(
     if has_parent_dir(path) {
         return Err(anyhow::anyhow!(LIBS_SOURCE_TRAVERSAL_ERROR));
     }
+    let repo_root_canon = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
     let resolved = if path.is_absolute() {
         path.to_path_buf()
     } else {
         repo_root.join(path)
     };
-    if resolved.starts_with(repo_root) {
-        return Ok(resolved);
+    let resolved_canon = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
+    if resolved_canon.starts_with(&repo_root_canon) {
+        return Ok(resolved_canon);
     }
     if let Some(cache_dir) = cache_libs_dir {
-        if resolved.starts_with(cache_dir) {
-            return Ok(resolved);
+        let cache_canon = cache_dir
+            .canonicalize()
+            .unwrap_or_else(|_| cache_dir.to_path_buf());
+        if resolved_canon.starts_with(&cache_canon) {
+            return Ok(resolved_canon);
         }
     }
     Err(anyhow::anyhow!(LIBS_SOURCE_SCOPE_ERROR))

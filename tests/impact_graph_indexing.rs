@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -286,11 +286,14 @@ fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<Value, Box<
 fn resolve_repo_state_root(state_root: &Path, repo_root: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let payload = inspect_repo_state(state_root, repo_root)?;
     let root = payload
-        .get("statePaths")
-        .and_then(|value| value.get("repoStateRoot"))
+        .get("resolvedIndexStateDir")
         .and_then(|value| value.as_str())
-        .ok_or("missing statePaths.repoStateRoot")?;
-    Ok(PathBuf::from(root))
+        .ok_or("missing resolvedIndexStateDir")?;
+    let resolved = PathBuf::from(root);
+    if resolved.file_name().and_then(|name| name.to_str()) == Some("index") {
+        return Ok(resolved.parent().unwrap_or(&resolved).to_path_buf());
+    }
+    Ok(resolved)
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -339,7 +342,6 @@ fn load_edges(path: &Path) -> Result<Vec<ImpactEdge>, Box<dyn Error>> {
 
 struct ImpactDiagnostics {
     unresolved_total: i64,
-    unresolved_sample: Vec<String>,
 }
 
 fn read_diagnostics(
@@ -380,19 +382,8 @@ fn read_diagnostics(
             .get("unresolvedImportsTotal")
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
-        let unresolved_sample = diag
-            .get("unresolvedImportsSample")
-            .and_then(|v| v.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| item.as_str().map(|s| s.to_string()))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
         return Ok(Some(ImpactDiagnostics {
             unresolved_total,
-            unresolved_sample,
         }));
     }
     Ok(None)
@@ -461,8 +452,15 @@ fn impact_graph_from_indexing_contains_import_edges() -> Result<(), Box<dyn Erro
     let repo_state_root = resolve_repo_state_root(state_root.path(), repo.path())?;
     let edges = load_edges(&repo_state_root.join("impact_graph.json"))?;
     let mut set: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut by_source: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for edge in edges {
         set.insert((edge.source, edge.target));
+    }
+    for (source, target) in &set {
+        by_source
+            .entry(source.clone())
+            .or_default()
+            .insert(target.clone());
     }
 
     let expected = [
@@ -490,7 +488,14 @@ fn impact_graph_from_indexing_contains_import_edges() -> Result<(), Box<dyn Erro
     for (source, target) in expected {
         let key = (source.to_string(), target.to_string());
         if !set.contains(&key) {
-            return Err(format!("missing impact edge {source} -> {target}").into());
+            let available = by_source
+                .get(source)
+                .map(|targets| targets.iter().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            return Err(format!(
+                "missing impact edge {source} -> {target}; available targets for {source}: {available:?}"
+            )
+            .into());
         }
     }
     if set.contains(&("web/app.js".to_string(), "web/util.js".to_string())) {

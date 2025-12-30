@@ -13,8 +13,8 @@ use docdexd::libs;
 use docdexd::memory::{inject_embedding_metadata, repo_state_root_from_state_dir, MemoryStore};
 use docdexd::ollama::OllamaEmbedder;
 use docdexd::orchestrator::{
-    memory_budget_from_max_answer_tokens, run_waterfall, WaterfallPlan, WaterfallRequest,
-    WebGateConfig,
+    memory_budget_from_max_answer_tokens, ProfileBudget, run_waterfall, WaterfallPlan,
+    WaterfallRequest, WebGateConfig,
 };
 use docdexd::orchestrator::web::run_web_research;
 use docdexd::ratelimit::RateLimiter;
@@ -540,20 +540,12 @@ struct ProfileSaveArgs {
     category: String,
     #[serde(default)]
     role: Option<String>,
-    #[serde(default)]
-    project_root: Option<PathBuf>,
-    #[serde(default, alias = "repoPath")]
-    repo_path: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
 struct ProfileGetArgs {
     #[serde(default)]
     agent_id: Option<String>,
-    #[serde(default)]
-    project_root: Option<PathBuf>,
-    #[serde(default, alias = "repoPath")]
-    repo_path: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -1865,6 +1857,7 @@ impl McpServer {
             WebGateConfig::from_env(),
             Tier2Config::enabled(),
             memory_budget_from_max_answer_tokens(self.max_answer_tokens),
+            ProfileBudget::default(),
         );
         let memory_state = self.memory.as_ref().map(|state| search::MemoryState {
             store: state.store.clone(),
@@ -1888,6 +1881,8 @@ impl McpServer {
             plan,
             tier2_limiter: None,
             memory: memory_state.as_ref(),
+            profile_state: None,
+            profile_agent_id: None,
             ranking_surface: search::RankingSurface::Search,
         })
         .await?;
@@ -1914,10 +1909,14 @@ impl McpServer {
             generated_at_epoch_ms: 0,
             index_last_updated_epoch_ms: None,
             repo_root: self.repo_root.display().to_string(),
+            repo_id: None,
             query: None,
             context_assembly: None,
         });
         meta.repo_root = project_root_path.clone();
+        if meta.repo_id.is_none() {
+            meta.repo_id = docdexd::repo_manager::repo_fingerprint_sha256(&self.repo_root).ok();
+        }
         let mut payload = json!({
             "hits": hits_value.clone(),
             "results": hits_value,

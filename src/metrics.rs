@@ -58,6 +58,10 @@ impl Metrics {
         self.rate_limit_denies.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn rate_limit_denies(&self) -> u64 {
+        self.rate_limit_denies.load(Ordering::Relaxed)
+    }
+
     pub fn inc_auth_deny(&self) {
         self.auth_denies.fetch_add(1, Ordering::Relaxed);
     }

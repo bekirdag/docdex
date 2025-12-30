@@ -83,6 +83,8 @@ pub struct RepoInspectReport {
     pub computed_fingerprint: Option<String>,
     pub resolved_index_state_dir: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_paths: Option<crate::state_layout::StatePathsDebug>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub shared_state_base_dir: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state_key: Option<String>,
@@ -190,11 +192,18 @@ pub fn inspect_repo(
     let computed_fingerprint = repo_fingerprint_sha256(&repo_root).ok();
 
     let resolved = resolve_state_dir_for_inspect(&repo_root, state_dir_override);
+    let state_paths = Some(derive_state_paths_debug(
+        &resolved.resolved_index_dir,
+        resolved.shared_base_dir.as_deref(),
+        resolved.state_key.as_deref(),
+        computed_fingerprint.as_deref(),
+    ));
     let mut report = RepoInspectReport {
         repo_root: repo_root_str,
         normalized_path,
         computed_fingerprint: computed_fingerprint.clone(),
         resolved_index_state_dir: resolved.resolved_index_dir.display().to_string(),
+        state_paths,
         shared_state_base_dir: resolved
             .shared_base_dir
             .as_ref()
@@ -575,6 +584,52 @@ struct InspectStateDirResolution {
     state_key: Option<String>,
 }
 
+fn derive_state_paths_debug(
+    resolved_index_dir: &Path,
+    shared_base_dir: Option<&Path>,
+    state_key: Option<&str>,
+    fingerprint: Option<&str>,
+) -> crate::state_layout::StatePathsDebug {
+    let repo_state_root = match resolved_index_dir.file_name() {
+        Some(name) if name == "index" => resolved_index_dir
+            .parent()
+            .unwrap_or(resolved_index_dir)
+            .to_path_buf(),
+        _ => resolved_index_dir.to_path_buf(),
+    };
+    let base_dir = shared_base_dir.unwrap_or(&repo_state_root);
+    let fingerprint_value = fingerprint.unwrap_or_default().to_string();
+    let state_key_value = state_key
+        .map(str::to_string)
+        .or_else(|| {
+            if fingerprint_value.is_empty() {
+                None
+            } else {
+                Some(fingerprint_value.clone())
+            }
+        })
+        .unwrap_or_default();
+    let cache_dir = base_dir.join("cache");
+    let profiles_dir = base_dir.join("profiles");
+    crate::state_layout::StatePathsDebug {
+        fingerprint: fingerprint_value,
+        state_key: state_key_value,
+        base_dir: base_dir.display().to_string(),
+        repo_state_root: repo_state_root.display().to_string(),
+        index_dir: resolved_index_dir.display().to_string(),
+        libs_index_dir: repo_state_root.join("libs_index").display().to_string(),
+        memory_path: repo_state_root.join("memory.db").display().to_string(),
+        symbols_dir: repo_state_root.join("symbols.db").display().to_string(),
+        dag_path: repo_state_root.join("dag.db").display().to_string(),
+        cache_web_dir: cache_dir.join("web").display().to_string(),
+        cache_libs_dir: cache_dir.join("libs").display().to_string(),
+        profiles_dir: profiles_dir.display().to_string(),
+        profiles_sync_dir: profiles_dir.join("sync").display().to_string(),
+        locks_dir: base_dir.join("locks").display().to_string(),
+        logs_dir: base_dir.join("logs").display().to_string(),
+    }
+}
+
 fn resolve_state_dir_for_inspect(
     repo_root: &Path,
     state_dir_override: Option<&Path>,
@@ -584,9 +639,12 @@ fn resolve_state_dir_for_inspect(
             let repo_root_canon = repo_root
                 .canonicalize()
                 .unwrap_or_else(|_| repo_root.to_path_buf());
-            if custom.starts_with(&repo_root_canon) {
+            let custom_canon = custom
+                .canonicalize()
+                .unwrap_or_else(|_| custom.to_path_buf());
+            if custom.starts_with(&repo_root_canon) || custom_canon.starts_with(&repo_root_canon) {
                 return InspectStateDirResolution {
-                    resolved_index_dir: custom.to_path_buf(),
+                    resolved_index_dir: custom_canon,
                     shared_base_dir: None,
                     state_key: None,
                 };

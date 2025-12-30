@@ -3,7 +3,8 @@ use crate::diff;
 use crate::error::{
     AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
     ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    ERR_MISSING_REPO, ERR_RATE_LIMITED, ERR_UNKNOWN_REPO,
+    ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_MISSING_REPO_PATH,
+    ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
 };
 use crate::index::{
     DocSnapshot, Hit, Indexer, SearchError, SearchQueryMeta, SearchSnippetOrigin, SnippetOrigin,
@@ -58,8 +59,8 @@ const SYMBOL_SNIPPET_FALLBACK_LINES: usize = 60;
 const AST_MATCH_MAX_FILES: usize = 6;
 const AST_SCORE_BASE: f32 = 0.08;
 const AST_SCORE_SCALE: f32 = 0.03;
-const AST_SCORE_PER_MATCH: f32 = 0.015;
-const AST_SCORE_MAX_BOOST: f32 = 0.15;
+const AST_SCORE_PER_MATCH: f32 = 0.15;
+const AST_SCORE_MAX_BOOST: f32 = 0.3;
 const RANKING_QUERY_TOKEN_LIMIT: usize = 6;
 
 // Rate limiting is shared with MCP and other surfaces via crate::ratelimit.
@@ -142,6 +143,16 @@ impl SecurityConfig {
                 Some(trimmed.to_string())
             }
         });
+        if !secure_mode && rate_limit_per_min == 0 && rate_limit_burst > 0 {
+            return Err(StartupError::new(
+                "startup_config_invalid",
+                "rate limit burst requires a non-zero rate limit per minute",
+            )
+            .with_hint(
+                "Set --rate-limit-per-min (or omit --rate-limit-burst) when secure mode is disabled.",
+            )
+            .into());
+        }
         if require_auth_token && auth_token.is_none() {
             return Err(StartupError::new(
                 "startup_auth_required",
@@ -416,6 +427,13 @@ fn status_for_app_error(code: &str) -> StatusCode {
         ERR_EMBEDDING_FAILED => StatusCode::BAD_GATEWAY,
         ERR_INVALID_ARGUMENT => StatusCode::BAD_REQUEST,
         ERR_MEMORY_DISABLED => StatusCode::CONFLICT,
+        ERR_MISSING_DEPENDENCY => StatusCode::CONFLICT,
+        ERR_MISSING_INDEX => StatusCode::CONFLICT,
+        ERR_STALE_INDEX => StatusCode::CONFLICT,
+        ERR_REPO_STATE_MISMATCH => StatusCode::CONFLICT,
+        ERR_MISSING_REPO_PATH => StatusCode::NOT_FOUND,
+        ERR_UNKNOWN_REPO => StatusCode::NOT_FOUND,
+        ERR_UNAUTHORIZED => StatusCode::UNAUTHORIZED,
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -1465,6 +1483,8 @@ pub struct SearchMeta {
     pub index_last_updated_epoch_ms: Option<u128>,
     pub repo_root: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub query: Option<SearchQueryMeta>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_assembly: Option<ContextAssemblyMeta>,
@@ -1545,6 +1565,14 @@ struct ErrorDetail {
     limit_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resource_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit_per_min: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit_burst: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    denied_total: Option<u64>,
 }
 
 impl ErrorDetail {
@@ -1556,6 +1584,10 @@ impl ErrorDetail {
             retry_at: None,
             limit_key: None,
             scope: None,
+            resource_key: None,
+            limit_per_min: None,
+            limit_burst: None,
+            denied_total: None,
         }
     }
 
@@ -1567,7 +1599,26 @@ impl ErrorDetail {
             retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
             limit_key: Some(err.limit_key.clone()),
             scope: Some(err.scope.clone()),
+            resource_key: None,
+            limit_per_min: None,
+            limit_burst: None,
+            denied_total: None,
         }
+    }
+
+    fn rate_limited_with_context(
+        err: &RateLimited,
+        resource_key: Option<String>,
+        limit_per_min: Option<u32>,
+        limit_burst: Option<u32>,
+        denied_total: Option<u64>,
+    ) -> Self {
+        let mut detail = Self::rate_limited(err);
+        detail.resource_key = resource_key;
+        detail.limit_per_min = limit_per_min;
+        detail.limit_burst = limit_burst;
+        detail.denied_total = denied_total;
+        detail
     }
 }
 
@@ -2022,8 +2073,8 @@ fn ast_kind_weight(kind: &str) -> f32 {
         | "function_declaration"
         | "method_definition"
         | "method_declaration"
-        | "arrow_function" => 1.2,
-        "class_definition" | "class_declaration" | "class_item" => 1.1,
+        | "arrow_function" => 2.0,
+        "class_definition" | "class_declaration" | "class_item" => 1.0,
         "struct_item" | "struct_declaration" => 1.1,
         "trait_item" => 1.1,
         "enum_item" | "enum_declaration" => 1.0,
@@ -2455,10 +2506,12 @@ fn build_search_meta(
 ) -> Result<SearchMeta> {
     let generated_at_epoch_ms = now_epoch_ms()?;
     let last_updated = indexer.stats().ok().and_then(|s| s.last_updated_epoch_ms);
+    let repo_id = repo_manager::repo_fingerprint_sha256(indexer.repo_root()).ok();
     Ok(SearchMeta {
         generated_at_epoch_ms,
         index_last_updated_epoch_ms: last_updated,
         repo_root: indexer.repo_root().display().to_string(),
+        repo_id,
         query,
         context_assembly,
     })
@@ -2503,6 +2556,19 @@ async fn search_handler(
             .into_response();
     }
 
+    let skip_local_search = params.skip_local_search.unwrap_or(false);
+    if !skip_local_search && state.indexer.num_docs() == 0 {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MISSING_INDEX,
+            format!(
+                "index not found; run `docdexd index --repo {}`",
+                state.indexer.repo_root().display()
+            ),
+        )
+        .into_response();
+    }
+
     let include_libs = params.include_libs.unwrap_or(true);
     let libs_indexer = if include_libs {
         state.libs_indexer.as_deref()
@@ -2540,7 +2606,6 @@ async fn search_handler(
         ProfileBudget::default(),
     );
     let force_web = params.force_web.unwrap_or(false);
-    let skip_local_search = params.skip_local_search.unwrap_or(false);
     let disable_web_cache = params.no_cache.unwrap_or(false);
     let llm_filter_local_results = params.llm_filter_local_results.unwrap_or(false);
 
@@ -2661,6 +2726,10 @@ async fn search_handler(
                         error: ErrorDetail::new("invalid_query", reason.clone()),
                     }),
                 )
+                    .into_response();
+            }
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                return json_error(status_for_app_error(app.code), app.code, app.message.clone())
                     .into_response();
             }
             state.metrics.inc_error();
@@ -2812,11 +2881,14 @@ fn render_snippet(
 
 async fn security_middleware(
     State(state): State<AppState>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
     request: axum::http::Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, Response> {
+    let addr = connect_info
+        .map(|info| info.0)
+        .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)));
     let path = request.uri().path().to_string();
     let size_hint = request.body().size_hint();
     if !state.security.ip_allowed(addr.ip()) {
@@ -2838,6 +2910,7 @@ async fn security_middleware(
         if let Some(limiter) = state.security.rate_limit.as_ref() {
             if let Err(err) = limiter.check_or_rate_limited(addr.ip(), "http_ip", "ip") {
                 state.metrics.inc_rate_limit();
+                let denied_total = state.metrics.rate_limit_denies();
                 let mut headers = HeaderMap::new();
                 let retry_after_seconds = err.retry_after_ms.saturating_add(999) / 1000;
                 if let Ok(value) = HeaderValue::from_str(&retry_after_seconds.to_string()) {
@@ -2859,7 +2932,13 @@ async fn security_middleware(
                     StatusCode::TOO_MANY_REQUESTS,
                     headers,
                     Json(ErrorBody {
-                        error: ErrorDetail::rate_limited(&err),
+                        error: ErrorDetail::rate_limited_with_context(
+                            &err,
+                            Some(addr.ip().to_string()),
+                            Some(limiter.per_minute()),
+                            Some(limiter.burst()),
+                            Some(denied_total),
+                        ),
                     }),
                 )
                     .into_response());
@@ -2928,10 +3007,13 @@ async fn security_middleware(
 
 async fn access_log_middleware(
     State(state): State<AppState>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
     mut request: axum::http::Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, (StatusCode, HeaderMap)> {
+    let addr = connect_info
+        .map(|info| info.0)
+        .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)));
     let request_id = RequestId(Uuid::new_v4().to_string());
     let method = request.method().clone();
     let path = path_template(request.uri().path());

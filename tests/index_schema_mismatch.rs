@@ -57,7 +57,7 @@ fn create_incompatible_index(index_dir: &Path) -> Result<(), Box<dyn Error>> {
     let title = builder.add_text_field("legacy_title", TEXT | STORED);
     let schema = builder.build();
     let index = Index::create_in_dir(index_dir, schema)?;
-    let mut writer = index.writer(5_000_000)?;
+    let mut writer = index.writer(15_000_000)?;
     writer.add_document(doc!(title => "legacy"))?;
     writer.commit()?;
     Ok(())

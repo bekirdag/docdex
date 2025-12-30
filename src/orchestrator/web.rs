@@ -3680,7 +3680,7 @@ pub(crate) fn detect_query_intent(query: &str) -> QueryIntent {
     if query_lc.is_empty() {
         return QueryIntent::General;
     }
-    let tokens = tokenize_terms(&query_lc);
+    let tokens = tokenize_terms_with_filter(&query_lc, should_keep_category_token);
     let code_intent = tokens.iter().any(|token| {
         matches!(
             token.as_str(),
@@ -3776,7 +3776,14 @@ fn detect_query_category_heuristic(query: &str) -> QueryCategory {
     if query_lc.is_empty() {
         return QueryCategory::General;
     }
-    let tokens = tokenize_terms(&query_lc);
+    let tokens = tokenize_terms_with_filter(&query_lc, should_keep_category_token);
+    if cfg!(test)
+        && std::env::var("DOCDEX_DEBUG_QUERY_CATEGORY")
+            .map(|value| value.trim() == "1")
+            .unwrap_or(false)
+    {
+        eprintln!("[web] category tokens={tokens:?}");
+    }
     let has_token = |values: &[&str]| tokens.iter().any(|token| values.contains(&token.as_str()));
     let has_phrase = |phrase: &str| query_lc.contains(phrase);
 
@@ -4570,6 +4577,14 @@ fn should_keep_match_token(token: &str) -> bool {
         return false;
     }
     !MATCH_STOPWORDS.contains(token)
+}
+
+fn should_keep_category_token(token: &str) -> bool {
+    let token = token.trim();
+    if token.len() < 2 {
+        return false;
+    }
+    !COMMON_STOPWORDS.contains(&token)
 }
 
 #[cfg(test)]

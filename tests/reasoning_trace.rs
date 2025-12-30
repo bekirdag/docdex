@@ -137,7 +137,8 @@ impl MockOllama {
             }
             Err(err) => return Err(err.into()),
         };
-        let addr = std_listener.local_addr()?;
+                std_listener.set_nonblocking(true)?;
+                let addr = std_listener.local_addr()?;
         let (tx, rx) = oneshot::channel::<()>();
         let join = thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("tokio runtime");

@@ -86,10 +86,12 @@ impl ProfileManager {
         let _file_lock = self.lock_exclusive()?;
         let conn = self.conn.lock();
         conn.execute(
-            "INSERT OR REPLACE INTO agents (id, role, created_at) VALUES (?1, ?2, ?3)",
+            "INSERT INTO agents (id, role, created_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET role = excluded.role, created_at = excluded.created_at",
             params![id, role, created_at],
         )
-        .context("insert agent")?;
+        .context("upsert agent")?;
         Ok(())
     }
 
@@ -232,7 +234,9 @@ impl ProfileManager {
 
         for agent in agents {
             tx.execute(
-                "INSERT OR REPLACE INTO agents (id, role, created_at) VALUES (?1, ?2, ?3)",
+                "INSERT INTO agents (id, role, created_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET role = excluded.role, created_at = excluded.created_at",
                 params![agent.id, agent.role, agent.created_at],
             )
             .context("upsert agent during import")?;
@@ -398,7 +402,9 @@ impl ProfileManager {
                 "SELECT p.id, p.agent_id, p.content, p.category, p.last_updated, v.distance
                  FROM preferences_vec v
                  JOIN preferences p ON p.rowid = v.rowid
-                 WHERE p.agent_id = ?1 AND v.embedding MATCH ?2 AND k = ?3
+                 WHERE p.agent_id = ?1
+                   AND v.rowid IN (SELECT rowid FROM preferences WHERE agent_id = ?1)
+                   AND v.embedding MATCH ?2 AND k = ?3
                  ORDER BY v.distance ASC, p.last_updated DESC, p.id ASC",
             )
             .context("prepare preference search")?;
@@ -446,6 +452,10 @@ impl ProfileManager {
         query_embedding: &[f32],
         top_k: usize,
     ) -> Result<Vec<PreferenceRecall>> {
+        let debug_recall = cfg!(test)
+            && std::env::var("DOCDEX_DEBUG_PROFILE_RECALL")
+                .map(|value| value.trim() == "1")
+                .unwrap_or(false);
         if query_embedding.len() != self.embedding_dim {
             anyhow::bail!(
                 "embedding dimension mismatch: expected {}, got {}",
@@ -455,10 +465,29 @@ impl ProfileManager {
         }
         let _file_lock = self.lock_shared()?;
         let conn = self.conn.lock();
+        if debug_recall {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM preferences WHERE agent_id = ?1",
+                    params![agent_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            let vec_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM preferences_vec",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            eprintln!(
+                "[profiles] recall agent={agent_id} prefs={count} vecs={vec_count} k={top_k}"
+            );
+        }
         let query_json = embedding_to_json(query_embedding).context("serialize query embedding")?;
         let mut stmt = conn
             .prepare(
-                "SELECT p.id, p.content, p.last_updated, v.distance\n                 FROM preferences_vec v\n                 JOIN preferences p ON p.rowid = v.rowid\n                 WHERE p.agent_id = ?1 AND v.embedding MATCH ?2 AND k = ?3\n                 ORDER BY v.distance ASC, p.last_updated DESC, p.id ASC",
+                "SELECT p.id, p.content, p.last_updated, v.distance\n                 FROM preferences_vec v\n                 JOIN preferences p ON p.rowid = v.rowid\n                 WHERE p.agent_id = ?1\n                   AND v.rowid IN (SELECT rowid FROM preferences WHERE agent_id = ?1)\n                   AND v.embedding MATCH ?2 AND k = ?3\n                 ORDER BY v.distance ASC, p.last_updated DESC, p.id ASC",
             )
             .context("prepare preference recall")?;
         let rows = stmt.query_map(
@@ -482,6 +511,9 @@ impl ProfileManager {
                 content,
                 last_updated,
             });
+        }
+        if debug_recall {
+            eprintln!("[profiles] recall results={}", results.len());
         }
         results.truncate(top_k.max(1));
         Ok(results)
@@ -521,11 +553,19 @@ impl ProfileManager {
         )
         .context("update preference")?;
         let embedding_json = embedding_to_json(embedding).context("serialize embedding")?;
-        conn.execute(
-            "INSERT OR REPLACE INTO preferences_vec (rowid, embedding) VALUES (?1, ?2)",
-            params![rowid, embedding_json],
-        )
-        .context("update preference vector")?;
+        let updated = conn
+            .execute(
+                "UPDATE preferences_vec SET embedding = ?1 WHERE rowid = ?2",
+                params![embedding_json, rowid],
+            )
+            .context("update preference vector")?;
+        if updated == 0 {
+            conn.execute(
+                "INSERT INTO preferences_vec (rowid, embedding) VALUES (?1, ?2)",
+                params![rowid, embedding_json],
+            )
+            .context("insert preference vector")?;
+        }
         Ok(())
     }
 

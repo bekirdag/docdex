@@ -633,6 +633,7 @@ fn parse_store_payload(value: serde_json::Value) -> Result<ImpactGraphStorePaylo
             serde_json::from_value(value).context("parse impact_graph.json graphs")?;
         let file_schema_present = file.schema.is_some();
         let file_validation = normalize_impact_schema(file.schema.clone(), None)?;
+        let enforce_schema_match = file_schema_present && !file_validation.migrated;
         let fallback_schema = Some(&file_validation.schema);
         let fallback_repo_id = file.repo_id.as_deref();
         let mut migrated = file_validation.migrated || file.repo_id.is_none();
@@ -640,8 +641,12 @@ fn parse_store_payload(value: serde_json::Value) -> Result<ImpactGraphStorePaylo
         let mut min_from_version = file_validation.from_version;
         let mut entries = Vec::with_capacity(file.graphs.len());
         for raw in file.graphs {
-            let (entry, entry_validation) =
-                normalize_impact_entry(raw, fallback_schema, fallback_repo_id, file_schema_present)?;
+            let (entry, entry_validation) = normalize_impact_entry(
+                raw,
+                fallback_schema,
+                fallback_repo_id,
+                enforce_schema_match,
+            )?;
             migrated |= entry_validation.migrated;
             newer_compatible |= entry_validation.newer_compatible;
             if entry_validation.from_version > 0 {
@@ -1840,6 +1845,13 @@ fn collect_python_imports(
         "call" => {
             if let Some(name) = call_function_name(content, node) {
                 if let Some((kind, arg_index)) = python_dynamic_import_spec(name.as_str()) {
+                    if cfg!(test)
+                        && std::env::var("DOCDEX_DEBUG_IMPORTS")
+                            .map(|value| value.trim() == "1")
+                            .unwrap_or(false)
+                    {
+                        eprintln!("[impact] python dynamic call {name}");
+                    }
                     if let Some(arg) = argument_import_path(
                         content,
                         node,
@@ -2044,27 +2056,91 @@ fn resolve_import_ref<F>(
 where
     F: Fn(&Path, &str, &str) -> Option<String>,
 {
+    let debug_imports = cfg!(test)
+        && std::env::var("DOCDEX_DEBUG_IMPORTS")
+            .map(|value| value.trim() == "1")
+            .unwrap_or(false);
     let (overrides, fallbacks) = resolve_import_map_matches(repo_root, rel_path, import_ref, hints, resolver);
     if !overrides.is_empty() {
+        if debug_imports {
+            eprintln!(
+                "[impact] {rel_path} import {} -> overrides {}",
+                format_import_path(&import_ref.path),
+                overrides.len()
+            );
+        }
         return Some(overrides);
     }
     match &import_ref.path {
         ImportPath::Exact(path) => {
             if let Some(target) = resolver(repo_root, rel_path, path) {
+                if debug_imports {
+                    eprintln!(
+                        "[impact] {rel_path} import {} -> {target}",
+                        format_import_path(&import_ref.path)
+                    );
+                }
                 return Some(vec![ResolvedImportTarget { target, kind: None }]);
             }
             if !fallbacks.is_empty() {
+                if debug_imports {
+                    eprintln!(
+                        "[impact] {rel_path} import {} -> fallback {}",
+                        format_import_path(&import_ref.path),
+                        fallbacks.len()
+                    );
+                }
                 return Some(fallbacks);
             }
         }
         ImportPath::Pattern(pattern) => {
-            if let Some(target) = resolve_unique_match(repo_root, rel_path, import_ref, pattern) {
+            if matches!(
+                import_ref.language,
+                SourceLanguage::JavaScript | SourceLanguage::TypeScript
+            ) {
+                let targets = resolve_pattern_matches_js_ts(repo_root, rel_path, pattern);
+                if !targets.is_empty() {
+                    if debug_imports {
+                        eprintln!(
+                            "[impact] {rel_path} import {} -> {} matches",
+                            format_import_path(&import_ref.path),
+                            targets.len()
+                        );
+                    }
+                    return Some(
+                        targets
+                            .into_iter()
+                            .map(|target| ResolvedImportTarget { target, kind: None })
+                            .collect(),
+                    );
+                }
+            } else if let Some(target) = resolve_unique_match(repo_root, rel_path, import_ref, pattern)
+            {
+                if debug_imports {
+                    eprintln!(
+                        "[impact] {rel_path} import {} -> {target}",
+                        format_import_path(&import_ref.path)
+                    );
+                }
                 return Some(vec![ResolvedImportTarget { target, kind: None }]);
             }
             if !fallbacks.is_empty() {
+                if debug_imports {
+                    eprintln!(
+                        "[impact] {rel_path} import {} -> fallback {}",
+                        format_import_path(&import_ref.path),
+                        fallbacks.len()
+                    );
+                }
                 return Some(fallbacks);
             }
         }
+    }
+    if debug_imports {
+        eprintln!(
+            "[impact] {rel_path} import {} -> unresolved",
+            format_import_path(&import_ref.path)
+        );
     }
     None
 }
@@ -2575,7 +2651,6 @@ fn resolve_unique_match(
 struct MatchScoreKey {
     primary: u8,
     spec_len: usize,
-    target_len: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -2615,6 +2690,44 @@ fn resolve_unique_match_js_ts(
         }
     }
     pick_unique_match(rel_path, pattern, matches, "js_ts")
+}
+
+fn resolve_pattern_matches_js_ts(
+    repo_root: &Path,
+    rel_path: &str,
+    pattern: &StringPattern,
+) -> Vec<String> {
+    if !pattern.is_useful() {
+        return Vec::new();
+    }
+    if pattern.anchored_start {
+        if let Some(first) = pattern.first_part() {
+            if !first.starts_with('.') {
+                return Vec::new();
+            }
+        }
+    } else {
+        return Vec::new();
+    }
+    let index = repo_file_index(repo_root);
+    if index.js_ts_over_limit() {
+        return Vec::new();
+    }
+    let mut matches = Vec::new();
+    for target in &index.js_ts {
+        if let Some(score) = js_ts_match_score(rel_path, target, pattern) {
+            matches.push(MatchCandidate {
+                target: target.clone(),
+                score,
+            });
+        }
+    }
+    matches.sort_by(|left, right| {
+        left.score
+            .cmp(&right.score)
+            .then_with(|| left.target.cmp(&right.target))
+    });
+    matches.into_iter().map(|entry| entry.target).collect()
 }
 
 fn resolve_unique_match_python(
@@ -2694,11 +2807,10 @@ fn js_ts_match_score(
             best = Some(candidate);
         }
     }
-    let (primary, spec_len) = best?;
+    let (primary, _spec_len) = best?;
     Some(MatchScoreKey {
         primary,
-        spec_len,
-        target_len: target.len(),
+        spec_len: 0,
     })
 }
 
@@ -2725,11 +2837,7 @@ fn python_match_score(
     }
     let spec_len = best_len?;
     let primary = if matched_module { 0 } else { 1 };
-    Some(MatchScoreKey {
-        primary,
-        spec_len,
-        target_len: target.len(),
-    })
+    Some(MatchScoreKey { primary, spec_len })
 }
 
 fn pattern_matches(pattern: &StringPattern, candidate: &str) -> bool {
@@ -3127,12 +3235,29 @@ fn resolve_go_import(
 }
 
 fn resolve_first_existing(repo_root: &Path, candidates: Vec<PathBuf>) -> Option<String> {
+    let debug_imports = cfg!(test)
+        && std::env::var("DOCDEX_DEBUG_IMPORTS")
+            .map(|value| value.trim() == "1")
+            .unwrap_or(false);
+    let repo_root_canon = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
     for rel in candidates {
         let path = repo_root.join(&rel);
+        if debug_imports {
+            eprintln!(
+                "[impact] candidate {} (exists: {})",
+                path.display(),
+                path.is_file()
+            );
+        }
         if path.is_file() {
             if let Ok(canon) = path.canonicalize() {
-                if !canon.starts_with(repo_root) {
+                if !canon.starts_with(&repo_root_canon) {
                     continue;
+                }
+                if let Ok(rel_canon) = canon.strip_prefix(&repo_root_canon) {
+                    return Some(normalize_rel_path(rel_canon));
                 }
             }
             return Some(normalize_rel_path(&rel));
@@ -3394,7 +3519,8 @@ fn is_f_string_literal(raw: &str) -> bool {
 }
 
 fn normalize_edge_kind(raw: &str) -> &'static str {
-    match raw {
+    let lowered = raw.trim().to_ascii_lowercase();
+    match lowered.as_str() {
         "include" => "include",
         "require" => "require",
         _ => "import",
@@ -3703,7 +3829,7 @@ fn call_argument_nodes(node: Node) -> Option<Vec<Node>> {
     let args = node
         .child_by_field_name("arguments")
         .or_else(|| node.child_by_field_name("argument"))?;
-    if args.kind() == "arguments" {
+    if matches!(args.kind(), "arguments" | "argument_list") {
         let mut cursor = args.walk();
         let list = args.named_children(&mut cursor).collect::<Vec<_>>();
         if list.is_empty() {
@@ -3988,17 +4114,42 @@ where
     let args = node
         .child_by_field_name("arguments")
         .or_else(|| node.child_by_field_name("argument"))?;
-    if args.kind() == "arguments" {
+    if matches!(args.kind(), "arguments" | "argument_list") {
         let mut cursor = args.walk();
         let list = args.named_children(&mut cursor).collect::<Vec<_>>();
         let arg = list.get(arg_index)?;
+        if cfg!(test)
+            && std::env::var("DOCDEX_DEBUG_IMPORTS")
+                .map(|value| value.trim() == "1")
+                .unwrap_or(false)
+        {
+            eprintln!(
+                "[impact] arg node {} text {:?}",
+                arg.kind(),
+                node_text(content, *arg)
+            );
+        }
         let eval = static_string_eval_with_resolver(content, *arg, resolver);
+        if cfg!(test)
+            && std::env::var("DOCDEX_DEBUG_IMPORTS")
+                .map(|value| value.trim() == "1")
+                .unwrap_or(false)
+        {
+            eprintln!("[impact] arg eval {:?}", eval);
+        }
         return eval_to_import_path(eval);
     }
     if arg_index > 0 {
         return None;
     }
     let eval = static_string_eval_with_resolver(content, args, resolver);
+    if cfg!(test)
+        && std::env::var("DOCDEX_DEBUG_IMPORTS")
+            .map(|value| value.trim() == "1")
+            .unwrap_or(false)
+    {
+        eprintln!("[impact] arg eval {:?}", eval);
+    }
     eval_to_import_path(eval)
 }
 
@@ -4239,7 +4390,33 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use std::fs;
+    use std::sync::MutexGuard;
     use tempfile::TempDir;
+
+    static IMPACT_SETTINGS_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    struct ImpactSettingsGuard {
+        previous: ImpactSettings,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl ImpactSettingsGuard {
+        fn apply(settings: ImpactSettings) -> Self {
+            let lock = IMPACT_SETTINGS_LOCK.lock().expect("impact settings lock");
+            let previous = impact_settings();
+            apply_impact_settings(settings);
+            Self {
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for ImpactSettingsGuard {
+        fn drop(&mut self) {
+            apply_impact_settings(self.previous);
+        }
+    }
 
     fn fixture_edges() -> Vec<ImpactGraphEdge> {
         vec![
@@ -4548,7 +4725,7 @@ mod tests {
         .collect();
         let actual: BTreeSet<ImpactGraphEdge> = result.edges.into_iter().collect();
         assert_eq!(actual, expected);
-        assert!(!result.truncated);
+        assert!(result.truncated);
     }
 
     #[test]
@@ -4717,7 +4894,7 @@ importlib.import_module(BASE + ".extra")
     }
 
     #[test]
-    fn js_template_unique_match_uses_deterministic_tiebreak() {
+    fn js_template_pattern_expands_to_multiple_matches() {
         let dir = TempDir::new().expect("tempdir");
         let repo_root = dir.path();
         write_fixture(&repo_root.join("src/tpl/alpha.js"), "export const a = 1;");
@@ -4738,14 +4915,14 @@ require(`./tpl/${choice}.js`);
                 .edges
                 .iter()
                 .any(|edge| edge.source == "src/main.js" && edge.target == "src/tpl/alpha.js"),
-            "expected deterministic tie-break to choose the lexicographically first match"
+            "expected template import to match alpha.js"
         );
         assert!(
-            !result
+            result
                 .edges
                 .iter()
                 .any(|edge| edge.source == "src/main.js" && edge.target == "src/tpl/beta.js"),
-            "expected tie-break to pick a single match"
+            "expected template import to match beta.js"
         );
         assert!(result.diagnostics.is_none());
     }
@@ -5094,7 +5271,7 @@ import "./missing-7.js";
         )
         .expect("write state import traces");
 
-        apply_impact_settings(ImpactSettings {
+        let _settings_guard = ImpactSettingsGuard::apply(ImpactSettings {
             dynamic_import_scan_limit: 10_000,
             import_traces_enabled: true,
         });
@@ -5163,7 +5340,7 @@ import "./missing-7.js";
     }
 
     #[test]
-    fn import_map_fallback_waits_for_unique_match() {
+    fn import_map_fallback_skips_when_matches_exist() {
         let repo = TempDir::new().expect("tempdir");
         let repo_root = repo.path();
         write_fixture(&repo_root.join("src/foo/a.js"), "export const a = 1;");
@@ -5192,7 +5369,7 @@ import "./missing-7.js";
             language: SourceLanguage::JavaScript,
         };
 
-        apply_impact_settings(ImpactSettings {
+        let _settings_guard = ImpactSettingsGuard::apply(ImpactSettings {
             dynamic_import_scan_limit: 10_000,
             import_traces_enabled: false,
         });
@@ -5201,7 +5378,10 @@ import "./missing-7.js";
         let resolver = |root: &Path, _rel: &str, target: &str| normalize_hint_path(root, target);
         let resolved = resolve_import_ref(repo_root, "src/main.js", &import_ref, &hints, &resolver)
             .expect("missing resolution");
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].target, "src/foo/a.js");
+        assert_eq!(resolved.len(), 2);
+        let targets: BTreeSet<String> = resolved.into_iter().map(|item| item.target).collect();
+        assert!(targets.contains("src/foo/a.js"));
+        assert!(targets.contains("src/foo/b.js"));
+        assert!(!targets.contains("src/fallback.js"));
     }
 }

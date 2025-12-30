@@ -6,6 +6,7 @@ use crate::config::RepoArgs;
 use crate::error::StartupError;
 use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+use clap::error::ErrorKind;
 use serde_json::json;
 use std::path::PathBuf;
 use std::env;
@@ -65,7 +66,7 @@ pub(crate) enum Command {
             long,
             env = "DOCDEX_EXPOSE",
             default_value_t = false,
-            action = ArgAction::Set,
+            action = ArgAction::SetTrue,
             help = "Allow binding to non-loopback interfaces (requires --auth-token)"
         )]
         expose: bool,
@@ -191,6 +192,7 @@ pub(crate) enum Command {
             long,
             env = "DOCDEX_ENABLE_MEMORY",
             default_value_t = false,
+            value_parser = clap::builder::BoolishValueParser::new(),
             action = ArgAction::Set,
             help = "Enable repo-scoped memory endpoints (/v1/memory/store, /v1/memory/recall)"
         )]
@@ -380,7 +382,6 @@ pub(crate) enum Command {
         #[arg(
             short,
             long,
-            value_parser = config::non_empty_string,
             help = "Chat query (omit to start an interactive REPL)"
         )]
         query: Option<String>,
@@ -917,11 +918,21 @@ pub(crate) enum DagCommand {
 }
 
 pub async fn run() -> Result<()> {
-    let cli = Cli::try_parse().map_err(|err| {
-        StartupError::new("startup_config_invalid", err.to_string())
-            .with_hint("Run `docdexd help-all` for full usage.")
-    })?;
-    if !matches!(cli.command, Command::Check) {
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => {
+            if matches!(err.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) {
+                err.print().map_err(anyhow::Error::from)?;
+                return Ok(());
+            }
+            return Err(
+                StartupError::new("startup_config_invalid", err.to_string())
+                    .with_hint("Run `docdexd help-all` for full usage.")
+                    .into(),
+            );
+        }
+    };
+    if !matches!(cli.command, Command::Check | Command::HelpAll) {
         config::AppConfig::load_default().map_err(|err| {
             StartupError::new("startup_config_invalid", format!("failed to load config: {err}"))
                 .with_hint("Ensure ~/.docdex is writable and HOME is set correctly.")

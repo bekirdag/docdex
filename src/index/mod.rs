@@ -4,7 +4,7 @@ mod symbols;
 
 use crate::error::{
     repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
-    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
 };
 use crate::impact::{extract_import_edges, ImpactGraphEdge};
 use crate::symbols::{
@@ -20,7 +20,7 @@ use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
@@ -100,7 +100,6 @@ const DEFAULT_EXCLUDED_DIR_NAMES: &[&str] = &[
     ".cargo",
     // Go
     "bin",
-    "pkg",
     "go-build",
     // Java / Kotlin / JVM
     ".gradle",
@@ -434,13 +433,19 @@ impl Indexer {
             .into());
         }
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
-        ensure_state_dir_secure(config.state_dir())?;
+        let created_state_dir = !config.state_dir().exists();
+        if created_state_dir {
+            ensure_state_dir_secure(config.state_dir())?;
+        }
         let (schema, _, _, _, _, _, _) = build_schema();
         let index = if config.state_dir().join("meta.json").exists() {
-            Index::open_in_dir(config.state_dir())?
+            Index::open_in_dir(config.state_dir())
+                .map_err(|_| stale_index_error(config.state_dir()))?
         } else {
             Index::create_in_dir(config.state_dir(), schema.clone())?
         };
+        ensure_state_dir_secure(config.state_dir())?;
+        hold_after_state_dir_created();
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommit)
@@ -448,19 +453,19 @@ impl Indexer {
         let schema = index.schema();
         let doc_id_field = schema
             .get_field("doc_id")
-            .map_err(|_| anyhow!("index schema missing doc_id field"))?;
+            .map_err(|_| stale_index_error(config.state_dir()))?;
         let path_field = schema
             .get_field("rel_path")
-            .map_err(|_| anyhow!("index schema missing rel_path field"))?;
+            .map_err(|_| stale_index_error(config.state_dir()))?;
         let body_field = schema
             .get_field("body")
-            .map_err(|_| anyhow!("index schema missing body field"))?;
+            .map_err(|_| stale_index_error(config.state_dir()))?;
         let summary_field = schema
             .get_field("summary")
-            .map_err(|_| anyhow!("index schema missing summary field"))?;
+            .map_err(|_| stale_index_error(config.state_dir()))?;
         let token_field = schema
             .get_field("token_estimate")
-            .map_err(|_| anyhow!("index schema missing token_estimate field"))?;
+            .map_err(|_| stale_index_error(config.state_dir()))?;
         let kind_field = schema.get_field("kind").ok();
         let writer = index.writer(MAX_INDEX_RAM_BYTES)?;
         let symbols_store = if config.symbols_enabled() {
@@ -517,17 +522,28 @@ impl Indexer {
             )
             .into());
         }
-        let index = Index::open_in_dir(config.state_dir())?;
+        let index = Index::open_in_dir(config.state_dir())
+            .map_err(|_| stale_index_error(config.state_dir()))?;
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommit)
             .try_into()?;
         let schema = index.schema();
-        let doc_id_field = schema.get_field("doc_id").unwrap();
-        let path_field = schema.get_field("rel_path").unwrap();
-        let body_field = schema.get_field("body").unwrap();
-        let summary_field = schema.get_field("summary").unwrap();
-        let token_field = schema.get_field("token_estimate").unwrap();
+        let doc_id_field = schema
+            .get_field("doc_id")
+            .map_err(|_| stale_index_error(config.state_dir()))?;
+        let path_field = schema
+            .get_field("rel_path")
+            .map_err(|_| stale_index_error(config.state_dir()))?;
+        let body_field = schema
+            .get_field("body")
+            .map_err(|_| stale_index_error(config.state_dir()))?;
+        let summary_field = schema
+            .get_field("summary")
+            .map_err(|_| stale_index_error(config.state_dir()))?;
+        let token_field = schema
+            .get_field("token_estimate")
+            .map_err(|_| stale_index_error(config.state_dir()))?;
         let kind_field = schema.get_field("kind").ok();
         let symbols_store = if config.symbols_enabled() {
             symbols::open_symbols_store(&repo_root, config.state_dir(), false)
@@ -916,10 +932,14 @@ impl Indexer {
     }
 
     pub fn symbols_reindex_required(&self) -> Result<bool> {
-        match self.symbols_store.as_ref() {
-            Some(store) => store.requires_reindex(),
-            None => Ok(false),
-        }
+        let status = match self.symbols_store.as_ref() {
+            Some(store) => store.parser_status()?,
+            None => {
+                let store = SymbolsStore::new(self.repo_root(), self.config.state_dir())?;
+                store.parser_status()?
+            }
+        };
+        Ok(status.requires_reindex || status.drift)
     }
 
     pub fn search_symbols(
@@ -1012,17 +1032,25 @@ impl Indexer {
         self.config.symbols_enabled()
     }
 
-    pub fn stats(&self) -> Result<IndexStats> {
+    pub fn num_docs(&self) -> u64 {
         let searcher = self.reader.searcher();
         let mut num_docs: u64 = 0;
-        let mut segments: usize = 0;
         for segment_reader in searcher.segment_readers() {
-            segments += 1;
             let live_docs = segment_reader
                 .alive_bitset()
                 .map(|bits| bits.num_alive_docs() as u64)
                 .unwrap_or_else(|| segment_reader.max_doc() as u64);
             num_docs = num_docs.saturating_add(live_docs);
+        }
+        num_docs
+    }
+
+    pub fn stats(&self) -> Result<IndexStats> {
+        let searcher = self.reader.searcher();
+        let num_docs = self.num_docs();
+        let mut segments: usize = 0;
+        for _ in searcher.segment_readers() {
+            segments += 1;
         }
         let state_dir = self.config.state_dir().to_path_buf();
         let index_size_bytes = walkdir::WalkDir::new(&state_dir)
@@ -1638,6 +1666,20 @@ mod file_decision_tests {
     }
 }
 
+fn hold_after_state_dir_created() {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    let Ok(value) = std::env::var("DOCDEX_TEST_HOLD_AFTER_STATE_DIR_CREATED_MS") else {
+        return;
+    };
+    let Ok(ms) = value.trim().parse::<u64>() else {
+        return;
+    };
+    static HOLD_ONCE: Once = Once::new();
+    HOLD_ONCE.call_once(|| std::thread::sleep(std::time::Duration::from_millis(ms)));
+}
+
 pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -1660,13 +1702,6 @@ pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
     #[cfg(not(unix))]
     {
         fs::create_dir_all(path)?;
-    }
-    if cfg!(debug_assertions) {
-        if let Ok(value) = std::env::var("DOCDEX_TEST_HOLD_AFTER_STATE_DIR_CREATED_MS") {
-            if let Ok(ms) = value.trim().parse::<u64>() {
-                std::thread::sleep(std::time::Duration::from_millis(ms));
-            }
-        }
     }
     Ok(())
 }
@@ -1727,6 +1762,16 @@ fn missing_repo_path_error(repo_root: &Path) -> AppError {
                 .to_string(),
         ],
     ))
+}
+
+fn stale_index_error(state_dir: &Path) -> AppError {
+    AppError::new(
+        ERR_STALE_INDEX,
+        format!(
+            "index schema mismatch at {}; reindex with `docdexd index --repo <repo>`",
+            state_dir.display()
+        ),
+    )
 }
 
 fn repo_state_mismatch_error(

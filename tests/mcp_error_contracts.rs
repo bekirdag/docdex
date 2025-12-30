@@ -23,12 +23,31 @@ struct McpHarness {
     reader: BufReader<std::process::ChildStdout>,
 }
 
-impl McpHarness {
-    fn spawn(repo: &Path) -> Result<Self, Box<dyn Error>> {
-        Self::spawn_with_env(repo, &[])
+struct RepoFixture {
+    repo: TempDir,
+    state_root: TempDir,
+}
+
+impl RepoFixture {
+    fn repo_root(&self) -> &Path {
+        self.repo.path()
     }
 
-    fn spawn_with_env(repo: &Path, envs: &[(&str, &str)]) -> Result<Self, Box<dyn Error>> {
+    fn state_root(&self) -> &Path {
+        self.state_root.path()
+    }
+}
+
+impl McpHarness {
+    fn spawn(repo: &Path, state_root: &Path) -> Result<Self, Box<dyn Error>> {
+        Self::spawn_with_env(repo, state_root, &[])
+    }
+
+    fn spawn_with_env(
+        repo: &Path,
+        state_root: &Path,
+        envs: &[(&str, &str)],
+    ) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo.to_string_lossy().to_string();
         let mut cmd = Command::new(docdex_bin());
         cmd.args([
@@ -40,6 +59,7 @@ impl McpHarness {
             "--max-results",
             "4",
         ]);
+        cmd.env("DOCDEX_STATE_DIR", state_root);
         for (key, value) in envs {
             cmd.env(key, value);
         }
@@ -96,12 +116,22 @@ fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
     Ok(temp)
 }
 
-fn run_docdex<I, S>(args: I) -> Result<std::process::Output, Box<dyn Error>>
+fn setup_fixture() -> Result<RepoFixture, Box<dyn Error>> {
+    Ok(RepoFixture {
+        repo: setup_repo()?,
+        state_root: TempDir::new()?,
+    })
+}
+
+fn run_docdex<I, S>(state_root: &Path, args: I) -> Result<std::process::Output, Box<dyn Error>>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    Ok(Command::new(docdex_bin()).args(args).output()?)
+    Ok(Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root)
+        .args(args)
+        .output()?)
 }
 
 fn send_line(
@@ -155,13 +185,16 @@ fn mcp_error_data_code(resp: &Value) -> Option<&str> {
 
 #[test]
 fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
-    let repo = setup_repo()?;
-    let repo_str = repo.path().to_string_lossy().to_string();
-    let project_root = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    let fixture = setup_fixture()?;
+    let repo_root = fixture.repo_root();
+    let state_root = fixture.state_root();
+    let repo_str = repo_root.to_string_lossy().to_string();
+    let project_root = repo_root.to_string_lossy().to_string();
+    run_docdex(state_root, ["index", "--repo", repo_str.as_str()])?;
 
     let mut mcp = McpHarness::spawn_with_env(
-        repo.path(),
+        repo_root,
+        state_root,
         &[
             // 1 request/sec refill + burst=1 lets us deterministically rate-limit
             // multiple tools within a short test window.
@@ -302,9 +335,15 @@ fn pick_free_port() -> Option<u16> {
     }
 }
 
-fn spawn_server(repo_root: &Path, host: &str, port: u16) -> Result<Child, Box<dyn Error>> {
+fn spawn_server(
+    repo_root: &Path,
+    state_root: &Path,
+    host: &str,
+    port: u16,
+) -> Result<Child, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     Ok(Command::new(docdex_bin())
+        .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MCP", "0")
         .args([
             "serve",
@@ -338,16 +377,18 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn mcp_error_codes_match_http_invalid_query() -> Result<(), Box<dyn Error>> {
-    let repo = setup_repo()?;
-    let repo_str = repo.path().to_string_lossy().to_string();
-    let project_root = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    let fixture = setup_fixture()?;
+    let repo_root = fixture.repo_root();
+    let state_root = fixture.state_root();
+    let repo_str = repo_root.to_string_lossy().to_string();
+    let project_root = repo_root.to_string_lossy().to_string();
+    run_docdex(state_root, ["index", "--repo", repo_str.as_str()])?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = spawn_server(repo.path(), host, port)?;
+    let mut server = spawn_server(repo_root, state_root, host, port)?;
     wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
@@ -366,7 +407,7 @@ fn mcp_error_codes_match_http_invalid_query() -> Result<(), Box<dyn Error>> {
         "HTTP invalid query should return machine code invalid_query"
     );
 
-    let mut mcp = McpHarness::spawn(repo.path())?;
+    let mut mcp = McpHarness::spawn(repo_root, state_root)?;
     send_line(
         &mut mcp.stdin,
         json!({
@@ -392,9 +433,11 @@ fn mcp_error_codes_match_http_invalid_query() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>> {
-    let repo = setup_repo()?;
-    let mut mcp = McpHarness::spawn(repo.path())?;
-    let project_root = repo.path().to_string_lossy().to_string();
+    let fixture = setup_fixture()?;
+    let repo_root = fixture.repo_root();
+    let state_root = fixture.state_root();
+    let mut mcp = McpHarness::spawn(repo_root, state_root)?;
+    let project_root = repo_root.to_string_lossy().to_string();
 
     send_line(
         &mut mcp.stdin,
@@ -454,10 +497,9 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
         .and_then(|v| v.get("data"))
         .and_then(|v| v.get("details"))
         .ok_or("mismatch error should include details")?;
-    let expected = repo
-        .path()
+    let expected = repo_root
         .canonicalize()
-        .unwrap_or_else(|_| repo.path().to_path_buf())
+        .unwrap_or_else(|_| repo_root.to_path_buf())
         .to_string_lossy()
         .replace('\\', "/");
     assert_eq!(
@@ -487,10 +529,12 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
 
 #[test]
 fn mcp_missing_project_root_path_is_missing_repo_path() -> Result<(), Box<dyn Error>> {
-    let repo = setup_repo()?;
-    let mut mcp = McpHarness::spawn(repo.path())?;
+    let fixture = setup_fixture()?;
+    let repo_root = fixture.repo_root();
+    let state_root = fixture.state_root();
+    let mut mcp = McpHarness::spawn(repo_root, state_root)?;
 
-    let missing = repo.path().join("does-not-exist");
+    let missing = repo_root.join("does-not-exist");
     send_line(
         &mut mcp.stdin,
         json!({
@@ -526,12 +570,14 @@ fn mcp_missing_project_root_path_is_missing_repo_path() -> Result<(), Box<dyn Er
 
 #[test]
 fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn Error>> {
-    let repo = setup_repo()?;
-    let repo_str = repo.path().to_string_lossy().to_string();
-    let project_root = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_str.as_str()])?;
+    let fixture = setup_fixture()?;
+    let repo_root = fixture.repo_root();
+    let state_root = fixture.state_root();
+    let repo_str = repo_root.to_string_lossy().to_string();
+    let project_root = repo_root.to_string_lossy().to_string();
+    run_docdex(state_root, ["index", "--repo", repo_str.as_str()])?;
 
-    let mut mcp = McpHarness::spawn(repo.path())?;
+    let mut mcp = McpHarness::spawn(repo_root, state_root)?;
 
     // Clamp docdex_search to max-results (4).
     send_line(
@@ -585,7 +631,7 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
     );
 
     // docdex_open should fail with a structured max-content error.
-    let big_path = repo.path().join("docs").join("big.md");
+    let big_path = repo_root.join("docs").join("big.md");
     std::fs::write(&big_path, "x".repeat(600_000))?;
     send_line(
         &mut mcp.stdin,
@@ -616,16 +662,18 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
 
 #[test]
 fn cli_invalid_query_error_matches_machine_reason() -> Result<(), Box<dyn Error>> {
-    let repo = setup_repo()?;
-    let repo_str = repo.path().to_string_lossy().to_string();
-    let index_out = run_docdex(["index", "--repo", repo_str.as_str()])?;
+    let fixture = setup_fixture()?;
+    let repo_root = fixture.repo_root();
+    let state_root = fixture.state_root();
+    let repo_str = repo_root.to_string_lossy().to_string();
+    let index_out = run_docdex(state_root, ["index", "--repo", repo_str.as_str()])?;
     assert!(
         index_out.status.success(),
         "index should succeed: {}",
         String::from_utf8_lossy(&index_out.stderr)
     );
 
-    let query_out = run_docdex([
+    let query_out = run_docdex(state_root, [
         "query",
         "--repo",
         repo_str.as_str(),

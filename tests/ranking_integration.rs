@@ -1,4 +1,3 @@
-use assert_cmd::cargo::cargo_bin;
 use serde_json::Value;
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -7,7 +6,7 @@ use tempfile::TempDir;
 
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
-    cargo_bin!("docdexd").to_path_buf()
+    assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
 fn run_docdex<I, S>(

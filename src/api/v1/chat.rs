@@ -2158,4 +2158,40 @@ mod tests {
         assert_eq!(trace.profile.available, 1);
         assert_eq!(trace.profile.selected, 1);
     }
+
+    #[test]
+    fn history_budget_reuses_repo_unused_tokens() {
+        let budgets = ChatContextBudgets {
+            system_tokens: 0,
+            profile_tokens: 0,
+            map_tokens: 0,
+            memory_tokens: 0,
+            diff_tokens: 0,
+            repo_tokens: 20,
+            history_tokens: 0,
+        };
+
+        let (context, trace) = build_context_summary(
+            "hello",
+            &[],
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+            &budgets,
+        );
+
+        assert!(trace.repo_unused_tokens > 0);
+        let history = "user: one two three four five six seven eight nine ten";
+        let history_budget = budgets
+            .history_tokens
+            .saturating_add(trace.repo_unused_tokens);
+        let prompt = build_prompt("hello", &context, history, history_budget, &budgets);
+
+        assert!(prompt.contains("Conversation history:"));
+        assert!(prompt.contains("one"));
+    }
 }

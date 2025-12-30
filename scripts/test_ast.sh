@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DOCDEX_BIN="$HOME/.cargo/bin/docdexd"
+DOCDEX_BIN="${DOCDEX_BIN:-${DOCDEXD_BIN:-}}"
+if [[ -z "$DOCDEX_BIN" ]]; then
+  if [[ -x "$PWD/target/debug/docdexd" ]]; then
+    DOCDEX_BIN="$PWD/target/debug/docdexd"
+  elif [[ -x "$PWD/target/release/docdexd" ]]; then
+    DOCDEX_BIN="$PWD/target/release/docdexd"
+  elif [[ -x "$HOME/.cargo/bin/docdexd" ]]; then
+    DOCDEX_BIN="$HOME/.cargo/bin/docdexd"
+  fi
+fi
 
 if [[ ! -x "$DOCDEX_BIN" ]]; then
   echo "docdexd not found at $DOCDEX_BIN" >&2

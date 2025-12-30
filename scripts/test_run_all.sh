@@ -61,6 +61,24 @@ else
   FAILURES=$((FAILURES + 4))
 fi
 
+if [[ "${DOCDEX_RUN_EXTENDED_TESTS:-0}" == "1" ]]; then
+  if [[ -x "${ROOT_DIR}/scripts/test_v2_1.sh" ]]; then
+    run_step "extended_v2_1" env DOCDEX_BIN="${DOCDEX_BIN}" "${ROOT_DIR}/scripts/test_v2_1.sh"
+  fi
+  if [[ -x "${ROOT_DIR}/scripts/test_e2e.sh" ]]; then
+    run_step "extended_e2e" env DOCDEXD_BIN="${DOCDEX_BIN}" "${ROOT_DIR}/scripts/test_e2e.sh"
+  fi
+  if [[ -x "${ROOT_DIR}/scripts/test_ast.sh" ]]; then
+    run_step "extended_ast" env DOCDEX_BIN="${DOCDEX_BIN}" "${ROOT_DIR}/scripts/test_ast.sh"
+  fi
+  if [[ "${DOCDEX_RUN_MEMORY_DAG:-0}" == "1" && -x "${ROOT_DIR}/scripts/test_memory_dag.sh" ]]; then
+    run_step "extended_memory_dag" env DOCDEXD_BIN="${DOCDEX_BIN}" "${ROOT_DIR}/scripts/test_memory_dag.sh"
+  fi
+  if command -v npm >/dev/null 2>&1 && [[ -f "${ROOT_DIR}/npm/package.json" ]]; then
+    run_step "extended_node" bash -c "cd \"${ROOT_DIR}/npm\" && npm test"
+  fi
+fi
+
 log "summary:"
 for entry in "${RESULTS[@]}"; do
   IFS='|' read -r name status location <<<"${entry}"

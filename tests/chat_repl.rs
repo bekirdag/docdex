@@ -30,6 +30,7 @@ where
 {
     let output = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .args(args)
         .output()?;
     if !output.status.success() {
@@ -59,6 +60,7 @@ fn chat_repl_accepts_queries() -> Result<(), Box<dyn Error>> {
 
     let mut child = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "chat",
             "--repo",

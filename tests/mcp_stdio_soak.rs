@@ -47,7 +47,7 @@ fn mcp_stdio_soak_no_timeouts() -> Result<(), Box<dyn Error>> {
     let repo = TempDir::new()?;
     write_fixture(repo.path())?;
 
-    let mut cmd = Command::new(common::docdex_bin());
+    let mut cmd = Command::new(common::docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0");
     cmd.args([
         "mcp",
         "--repo",

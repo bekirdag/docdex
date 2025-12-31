@@ -44,7 +44,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    Ok(Command::new(docdex_bin())
+    Ok(Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .args(args)
         .output()?)
@@ -69,7 +69,7 @@ fn spawn_server_with_args(
     extra_args: &[&str],
 ) -> Result<Child, BoxError> {
     let repo_str = repo.to_string_lossy().to_string();
-    let mut cmd = Command::new(docdex_bin());
+    let mut cmd = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0");
     cmd.args([
         "serve",
         "--repo",

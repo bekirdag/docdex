@@ -270,7 +270,7 @@ fn chat_uses_agent_adapter() -> Result<(), Box<dyn Error>> {
 
     let repo_str = repo_dir.to_string_lossy().to_string();
     let state_str = state_dir.to_string_lossy().to_string();
-    let status = Command::new(docdex_bin())
+    let status = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", &home_dir)
         .env("DOCDEX_WEB_ENABLED", "0")
         .arg("index")
@@ -281,7 +281,7 @@ fn chat_uses_agent_adapter() -> Result<(), Box<dyn Error>> {
         .status()?;
     assert!(status.success(), "docdexd index failed");
 
-    let output = Command::new(docdex_bin())
+    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", &home_dir)
         .env("DOCDEX_WEB_ENABLED", "0")
         .arg("chat")

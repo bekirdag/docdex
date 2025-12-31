@@ -26,7 +26,7 @@ struct McpHarness {
 impl McpHarness {
     fn spawn(repo: &Path) -> Result<Self, BoxError> {
         let repo_str = repo.to_string_lossy().to_string();
-        let mut cmd = Command::new(docdex_bin());
+        let mut cmd = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0");
         cmd.env("DOCDEX_ENABLE_MEMORY", "0")
             .args(["mcp", "--repo", repo_str.as_str(), "--log", "warn"]);
     let mut child = cmd
@@ -61,7 +61,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let output = Command::new(docdex_bin())
+    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .args(args)
         .output()?;

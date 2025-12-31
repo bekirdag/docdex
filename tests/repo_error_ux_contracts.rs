@@ -44,7 +44,7 @@ fn cli_missing_repo_path_includes_move_hint_and_details() -> Result<(), Box<dyn 
     let base = TempDir::new()?;
     let missing_repo = base.path().join("missing-repo");
 
-    let output = Command::new(docdex_bin())
+    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "query",
             "--repo",
@@ -102,7 +102,7 @@ fn cli_repo_state_mismatch_fast_fails_with_fingerprint_and_guidance() -> Result<
     write_repo(&repo_a, "a.md", "repo_a_token")?;
     write_repo(&repo_b, "b.md", "repo_b_token")?;
 
-    let out_a = Command::new(docdex_bin())
+    let out_a = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "index",
             "--repo",
@@ -113,7 +113,7 @@ fn cli_repo_state_mismatch_fast_fails_with_fingerprint_and_guidance() -> Result<
         .output()?;
     assert!(out_a.status.success(), "index repo-a failed: {:?}", out_a);
 
-    let out_b = Command::new(docdex_bin())
+    let out_b = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "index",
             "--repo",
@@ -156,7 +156,7 @@ fn cli_repo_state_mismatch_fast_fails_with_fingerprint_and_guidance() -> Result<
     meta_b["fingerprint_sha256"] = Value::String(fp_a.clone());
     fs::write(&meta_path_b, serde_json::to_string_pretty(&meta_b)?)?;
 
-    let query_out = Command::new(docdex_bin())
+    let query_out = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "query",
             "--repo",

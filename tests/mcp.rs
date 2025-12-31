@@ -32,7 +32,7 @@ impl McpHarness {
         enable_symbols: bool,
     ) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo.to_string_lossy().to_string();
-        let mut cmd = Command::new(docdex_bin());
+        let mut cmd = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0");
         cmd.args([
             "mcp",
             "--repo",
@@ -98,7 +98,7 @@ fn inspect_repo_state(
 ) -> Result<serde_json::Value, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
-    let output = Command::new(docdex_bin())
+    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "repo",
             "inspect",

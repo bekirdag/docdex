@@ -22,7 +22,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let output = Command::new(docdex_bin())
+    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
         .args(args)
         .output()?;
@@ -247,7 +247,7 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
     let (fp_a, state_key) = registry_entry_for_path(&state_root, &canon_a)?;
 
     fs::rename(&repo_a, &repo_b)?;
-    let moved_out = Command::new(docdex_bin())
+    let moved_out = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
         .args([
             "index",
@@ -426,7 +426,7 @@ fn reassociate_fails_closed_when_fingerprint_mismatches() -> Result<(), Box<dyn 
     let canon_a = normalize_path(&repo_a);
     let (fp_a, _state_key_a) = registry_entry_for_path(&state_root, &canon_a)?;
 
-    let output = Command::new(docdex_bin())
+    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
         .args([
             "repo",
@@ -527,7 +527,7 @@ fn never_cross_associates_repo_requests_via_other_repo_scoped_state_dir(
 
     // Querying repo-a with repo-b's scoped state dir must not return repo-b hits.
     // Repo-a is unindexed, so the only safe outcome is a missing_index error.
-    let output = Command::new(docdex_bin())
+    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
         .args([
             "query",

@@ -19,7 +19,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let output = Command::new(docdex_bin())
+    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .args(args)
@@ -81,7 +81,7 @@ fn spawn_server(
         "warn",
         "--secure-mode=false",
     ];
-    let child = Command::new(docdex_bin())
+    let child = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MCP", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")

@@ -61,7 +61,7 @@ fn spawn_server(
     missing_mcp_bin: &Path,
 ) -> Result<Child, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
-    Ok(Command::new(docdex_bin())
+    Ok(Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home_dir)
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_MCP_SERVER_BIN", missing_mcp_bin)
@@ -132,7 +132,7 @@ fn mcp_cli_enable_requires_binary() -> Result<(), Box<dyn Error>> {
     };
     let missing_bin = home.path().join("missing-mcp-server");
     let repo_str = repo.path().to_string_lossy().to_string();
-    let output = Command::new(docdex_bin())
+    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home.path())
         .env("DOCDEX_STATE_DIR", state_root.path())
         .env("DOCDEX_MCP_SERVER_BIN", &missing_bin)

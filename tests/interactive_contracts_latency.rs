@@ -30,7 +30,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    Ok(Command::new(docdex_bin())
+    Ok(Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
@@ -197,7 +197,7 @@ fn http_search_includes_repo_id_and_is_reasonably_fast() -> Result<(), Box<dyn E
     run_docdex_ok(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     let port_str = port.to_string();
-    let mut cmd = Command::new(docdex_bin());
+    let mut cmd = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0");
     cmd.env("DOCDEX_ENABLE_MCP", "0");
     cmd.env("DOCDEX_ENABLE_MEMORY", "0");
     cmd.env("DOCDEX_STATE_DIR", state_root.path());

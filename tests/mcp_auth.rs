@@ -21,7 +21,7 @@ fn write_fixture_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_index(state_root: &Path, repo_root: &Path) -> Result<(), Box<dyn Error>> {
-    let output = Command::new(docdex_bin())
+    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .args(["index", "--repo", repo_root.to_string_lossy().as_ref()])
         .output()?;
@@ -42,7 +42,7 @@ fn mcp_initialize_requires_auth_token_when_configured() -> Result<(), Box<dyn Er
     let state_root = TempDir::new()?;
     run_index(state_root.path(), repo.path())?;
 
-    let mut child = Command::new(docdex_bin())
+    let mut child = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
         .env("DOCDEX_AUTH_TOKEN", "secret-token")
         .args([

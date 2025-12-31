@@ -34,7 +34,7 @@ mod unix_tests {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let output = Command::new(docdex_bin())
+        let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
             .env("DOCDEX_STATE_DIR", state_root)
             .env("HOME", home_dir)
             .args(args)
@@ -111,7 +111,7 @@ mod unix_tests {
             port: u16,
         ) -> Result<Self, Box<dyn Error>> {
             let repo_str = repo_root.to_string_lossy().to_string();
-            let child = Command::new(docdex_bin())
+            let child = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
                 .env("DOCDEX_STATE_DIR", state_root)
                 .env("DOCDEX_ENABLE_MCP", "0")
                 .env("HOME", home_dir)

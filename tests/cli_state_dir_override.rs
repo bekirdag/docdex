@@ -20,7 +20,7 @@ fn cli_state_dir_override_scopes_index() -> Result<(), Box<dyn Error>> {
     write_repo(repo.path())?;
     let state_base = TempDir::new()?;
 
-    let output = Command::new(docdex_bin())
+    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "index",
             "--repo",
@@ -37,7 +37,7 @@ fn cli_state_dir_override_scopes_index() -> Result<(), Box<dyn Error>> {
         .into());
     }
 
-    let inspect_out = Command::new(docdex_bin())
+    let inspect_out = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "repo",
             "inspect",

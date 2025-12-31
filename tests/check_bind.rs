@@ -68,7 +68,7 @@ fn check_fails_when_bind_in_use() -> Result<(), Box<dyn Error>> {
     let port = listener.local_addr()?.port();
     write_config(home.path(), state_root.path(), &format!("127.0.0.1:{port}"))?;
 
-    let output = Command::new(docdex_bin())
+    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
         .env("DOCDEX_ENABLE_MCP", "0")
@@ -102,7 +102,7 @@ fn check_reports_permission_denied_on_privileged_port() -> Result<(), Box<dyn Er
     let state_root = TempDir::new()?;
     write_config(home.path(), state_root.path(), "127.0.0.1:1")?;
 
-    let output = Command::new(docdex_bin())
+    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
         .env("DOCDEX_ENABLE_MCP", "0")

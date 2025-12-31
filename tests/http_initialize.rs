@@ -31,7 +31,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let output = Command::new(docdex_bin())
+    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MCP", "0")
         .env("DOCDEX_CLI_LOCAL", "1")
@@ -81,7 +81,7 @@ fn write_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 fn start_daemon(state_root: &Path, repo_root: &Path, port: u16) -> Result<Daemon, Box<dyn Error>> {
-    let child = Command::new(docdex_bin())
+    let child = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MCP", "0")
         .args([

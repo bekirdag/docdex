@@ -27,12 +27,13 @@ impl McpHarness {
     fn spawn(repo: &Path) -> Result<Self, BoxError> {
         let repo_str = repo.to_string_lossy().to_string();
         let mut cmd = Command::new(docdex_bin());
-        cmd.args(["mcp", "--repo", repo_str.as_str(), "--log", "warn"]);
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
+        cmd.env("DOCDEX_ENABLE_MEMORY", "0")
+            .args(["mcp", "--repo", repo_str.as_str(), "--log", "warn"]);
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
 
         let stdin = child
             .stdin
@@ -60,7 +61,10 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let output = Command::new(docdex_bin()).args(args).output()?;
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
+        .args(args)
+        .output()?;
     if !output.status.success() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::Other,

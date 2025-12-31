@@ -34,6 +34,7 @@ where
     let output = Command::new(docdex_bin())
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_CLI_LOCAL", "1")
         .args(args)
         .output()?;
@@ -95,6 +96,7 @@ fn start_daemon(
     let child = Command::new(docdex_bin())
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_DAEMON_LOCK_PATH", lock_path)
         .args([
             "daemon",

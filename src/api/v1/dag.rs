@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::dag::view as dag_view;
 use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT};
-use crate::search::{json_error, resolve_repo_id, AppState};
+use crate::search::{json_error, resolve_repo_context, AppState};
 
 #[derive(Deserialize)]
 pub struct DagExportQuery {
@@ -22,15 +22,11 @@ pub async fn dag_export_handler(
     headers: HeaderMap,
     Query(params): Query<DagExportQuery>,
 ) -> Response {
-    if let Err(err) = resolve_repo_id(
-        &headers,
-        params.repo_id.as_deref(),
-        None,
-        state.indexer.as_ref(),
-        false,
-    ) {
-        return json_error(err.status, err.code, err.message);
-    }
+    let repo = match resolve_repo_context(&state, &headers, params.repo_id.as_deref(), None, false)
+    {
+        Ok(repo) => repo,
+        Err(err) => return json_error(err.status, err.code, err.message),
+    };
 
     let session_id = match params.session_id.as_deref().map(str::trim) {
         Some(id) if !id.is_empty() => id.to_string(),
@@ -55,9 +51,9 @@ pub async fn dag_export_handler(
 
     match format.as_str() {
         "json" => match dag_view::export_session(
-            state.indexer.repo_root(),
+            repo.indexer.repo_root(),
             &session_id,
-            Some(state.indexer.state_dir().to_path_buf()),
+            Some(repo.indexer.state_dir().to_path_buf()),
             max_nodes,
         ) {
             Ok(payload) => axum::Json(payload).into_response(),
@@ -68,9 +64,9 @@ pub async fn dag_export_handler(
             ),
         },
         "text" => match dag_view::render_session_as_text(
-            state.indexer.repo_root(),
+            repo.indexer.repo_root(),
             &session_id,
-            Some(state.indexer.state_dir().to_path_buf()),
+            Some(repo.indexer.state_dir().to_path_buf()),
             max_nodes,
         ) {
             Ok(output) => text_response(output),
@@ -81,9 +77,9 @@ pub async fn dag_export_handler(
             ),
         },
         "dot" => match dag_view::render_session_as_dot(
-            state.indexer.repo_root(),
+            repo.indexer.repo_root(),
             &session_id,
-            Some(state.indexer.state_dir().to_path_buf()),
+            Some(repo.indexer.state_dir().to_path_buf()),
             max_nodes,
         ) {
             Ok(output) => text_response(output),

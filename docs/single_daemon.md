@@ -20,6 +20,7 @@ with multi-repo mounting, shared MCP transport, and automated config injection.
   - Ping `GET /healthz`.
   - If not reachable, spawn detached daemon (Windows: hidden window).
 - Record daemon metadata (pid, port, started_at) in lockfile or companion file.
+- Allow a test override via `DOCDEX_DAEMON_LOCK_PATH` to avoid global lock contention in CI.
 
 ## Phase 2: Context-Aware Multi-Repo Mounting
 
@@ -40,7 +41,7 @@ with multi-repo mounting, shared MCP transport, and automated config injection.
 ## Phase 3: Dynamic Lifecycle + Re-indexing
 
 - Use Rust `notify` watchers for active repos.
-- `.docdexignore` support, optional `.gitignore` parse.
+- `.docdexignore` support alongside `.gitignore` rules.
 - LRU lifecycle:
   - Active: repo accessed recently, watcher live.
   - Idle (<=2h): watcher stays, reduced activity.
@@ -49,7 +50,7 @@ with multi-repo mounting, shared MCP transport, and automated config injection.
 ## Phase 4: Shared MCP Transport
 
 - Add shared MCP transport:
-  - HTTP/SSE endpoint, e.g. `http://127.0.0.1:3210/sse` (port configurable).
+  - HTTP/SSE endpoint, e.g. `http://127.0.0.1:3210/sse` (auto-select 3000 if free, fallback 3210).
   - Unix socket listener, e.g. `docdex-mcp-server --listen-unix ~/.docdex/mcp.sock`.
 - Multi-client JSON-RPC; each request includes `rootUri` or `repo_id`.
 - Add stdio proxy:
@@ -67,6 +68,7 @@ with multi-repo mounting, shared MCP transport, and automated config injection.
   - Linux: systemd --user.
   - Windows: Task Scheduler entry.
 - CLI commands should auto-start daemon when invoked.
+- Startup registration uses a lightweight daemon root under `~/.docdex/daemon_root` to avoid indexing arbitrary home directories.
 - Automatic port selection:
   - If the preferred port is busy, pick the next available port.
   - Inject the chosen port into client configs.
@@ -128,7 +130,7 @@ append the docdex HTTP entry (`http://localhost:3000/sse`) where `mcpServers` is
 - Check OS via `process.platform`.
 - Locate candidate config files from the lists above.
 - Read and parse JSON/TOML/YAML.
-- Inject `mcpServers.docdex = { url: "http://localhost:3000/sse" }` if missing.
+- Inject `mcpServers.docdex = { url: "http://localhost:<port>/sse" }` if missing (port auto-selected and written to `~/.docdex/config.toml`).
 - Write back to disk without duplicating entries.
 
 Note: the daemon default port remains 3210; if you use `http://localhost:3000/sse`,

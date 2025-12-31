@@ -1,15 +1,28 @@
 # Docdex HTTP API
 
-Docdex runs a per-repo HTTP server (default `127.0.0.1:3210`). Secure mode is on by default; include `Authorization: Bearer <token>` when `--auth-token` is set.
+Docdex runs a per-repo HTTP server by default (default `127.0.0.1:3210`). Secure mode is on by default; include `Authorization: Bearer <token>` when `--auth-token` is set.
+
+When running the singleton daemon (`docdexd daemon`), the server can mount multiple repos. Call `POST /v1/initialize` with `rootUri` to mount a repo and then pass its `repo_id` on subsequent requests.
 
 ## Repo scoping
 
-- The daemon is per-repo; `repo_id` is optional but must match the daemon repo when provided.
+- The daemon is per-repo by default; `repo_id` is optional but must match the daemon repo when provided.
+- In singleton mode, `repo_id` selects the mounted repo returned by `/v1/initialize`.
 - Pass `repo_id` in the query/body or set `x-docdex-repo-id` for endpoints that support it.
+- MCP initialize (`/sse` + `/v1/mcp/message`) with `rootUri`/`workspace_root` triggers `/v1/initialize` and binds the MCP session to that repo. Per-request `project_root`/`repo_path` can override the bound repo for `/v1/mcp`.
 
 ## Endpoints
 
 - `GET /healthz` - basic health check.
+- `POST /v1/initialize` - validate repo context and return repo metadata.
+  - Body: `{ "rootUri": "<file://... or absolute path optional>" }`.
+  - Response: `{ "repo_id": "<sha256>", "status": "ready", "repo_root": "<path>" }`.
+- `POST /v1/mcp` - MCP JSON-RPC over HTTP (single request/response).
+  - Body: JSON-RPC request (`initialize`, `tools/list`, `tools/call`, ...).
+- `GET /v1/mcp/sse` (alias `GET /sse`) - MCP SSE stream.
+  - Response header `x-docdex-mcp-session` provides the session id.
+- `POST /v1/mcp/message` - enqueue MCP JSON-RPC to an SSE session.
+  - Header `x-docdex-mcp-session` or `?session_id=` required.
 - `GET /search` - full-text search.
   - Query params: `q`, `limit`, `snippets`, `max_tokens`, `include_libs`, `force_web`, `skip_local_search`, `no_cache`, `max_web_results`, `llm_filter_local_results`, `diff_mode`, `diff_base`, `diff_head`, `diff_path`, `repo_id`.
 - `GET /snippet/:doc_id` - snippet for a document.

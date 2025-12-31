@@ -13,7 +13,7 @@ use crate::error::{
     ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX,
     ERR_STALE_INDEX,
 };
-use crate::search::{json_error, resolve_repo_id, AppState};
+use crate::search::{json_error, resolve_repo_context, AppState};
 use crate::symbols::{AstQuery as StoreAstQuery, AstSearchMode, SchemaCompatibleRange, SchemaInfo};
 
 pub(crate) const DEFAULT_MAX_AST_NODES: usize = 20_000;
@@ -137,24 +137,20 @@ pub async fn ast_handler(
     headers: HeaderMap,
     Query(params): Query<AstQuery>,
 ) -> Response {
-    if let Err(err) = resolve_repo_id(
-        &headers,
-        params.repo_id.as_deref(),
-        None,
-        state.indexer.as_ref(),
-        false,
-    ) {
-        return json_error(err.status, err.code, err.message);
-    }
+    let repo = match resolve_repo_context(&state, &headers, params.repo_id.as_deref(), None, false)
+    {
+        Ok(repo) => repo,
+        Err(err) => return json_error(err.status, err.code, err.message),
+    };
 
-    if !state.indexer.config().symbols_enabled() {
+    if !repo.indexer.config().symbols_enabled() {
         return json_error(
             StatusCode::CONFLICT,
             ERR_MISSING_DEPENDENCY,
             "ast extraction is unavailable",
         );
     }
-    if let Ok(true) = state.indexer.symbols_reindex_required() {
+    if let Ok(true) = repo.indexer.symbols_reindex_required() {
         return json_error(
             StatusCode::CONFLICT,
             ERR_STALE_INDEX,
@@ -190,7 +186,7 @@ pub async fn ast_handler(
         .min(HARD_MAX_AST_NODES)
         .max(1);
 
-    match state.indexer.read_ast(&rel_path, max_nodes) {
+    match repo.indexer.read_ast(&rel_path, max_nodes) {
         Ok(Some(payload)) => Json(payload).into_response(),
         Ok(None) => json_error(
             StatusCode::NOT_FOUND,
@@ -219,24 +215,20 @@ pub async fn ast_search_handler(
     headers: HeaderMap,
     Query(params): Query<AstSearchQuery>,
 ) -> Response {
-    if let Err(err) = resolve_repo_id(
-        &headers,
-        params.repo_id.as_deref(),
-        None,
-        state.indexer.as_ref(),
-        false,
-    ) {
-        return json_error(err.status, err.code, err.message);
-    }
+    let repo = match resolve_repo_context(&state, &headers, params.repo_id.as_deref(), None, false)
+    {
+        Ok(repo) => repo,
+        Err(err) => return json_error(err.status, err.code, err.message),
+    };
 
-    if !state.indexer.config().symbols_enabled() {
+    if !repo.indexer.config().symbols_enabled() {
         return json_error(
             StatusCode::CONFLICT,
             ERR_MISSING_DEPENDENCY,
             "ast extraction is unavailable",
         );
     }
-    if let Ok(true) = state.indexer.symbols_reindex_required() {
+    if let Ok(true) = repo.indexer.symbols_reindex_required() {
         return json_error(
             StatusCode::CONFLICT,
             ERR_STALE_INDEX,
@@ -299,7 +291,7 @@ pub async fn ast_search_handler(
         })
         .collect::<Vec<_>>();
 
-    let repo_id = match crate::symbols::repo_id_for_root(state.indexer.repo_root()) {
+    let repo_id = match crate::symbols::repo_id_for_root(repo.indexer.repo_root()) {
         Ok(repo_id) => repo_id,
         Err(err) => {
             warn!(
@@ -336,24 +328,20 @@ pub async fn ast_query_handler(
     headers: HeaderMap,
     Json(params): Json<AstQueryRequest>,
 ) -> Response {
-    if let Err(err) = resolve_repo_id(
-        &headers,
-        params.repo_id.as_deref(),
-        None,
-        state.indexer.as_ref(),
-        false,
-    ) {
-        return json_error(err.status, err.code, err.message);
-    }
+    let repo = match resolve_repo_context(&state, &headers, params.repo_id.as_deref(), None, false)
+    {
+        Ok(repo) => repo,
+        Err(err) => return json_error(err.status, err.code, err.message),
+    };
 
-    if !state.indexer.config().symbols_enabled() {
+    if !repo.indexer.config().symbols_enabled() {
         return json_error(
             StatusCode::CONFLICT,
             ERR_MISSING_DEPENDENCY,
             "ast extraction is unavailable",
         );
     }
-    if let Ok(true) = state.indexer.symbols_reindex_required() {
+    if let Ok(true) = repo.indexer.symbols_reindex_required() {
         return json_error(
             StatusCode::CONFLICT,
             ERR_STALE_INDEX,
@@ -429,7 +417,7 @@ pub async fn ast_query_handler(
         sample_limit,
     };
 
-    let mut matches = match state.indexer.query_ast(&query) {
+    let mut matches = match repo.indexer.query_ast(&query) {
         Ok(matches) => matches,
         Err(err) => {
             state.metrics.inc_error();
@@ -447,7 +435,7 @@ pub async fn ast_query_handler(
         matches.truncate(limit);
     }
 
-    let repo_id = match crate::symbols::repo_id_for_root(state.indexer.repo_root()) {
+    let repo_id = match crate::symbols::repo_id_for_root(repo.indexer.repo_root()) {
         Ok(repo_id) => repo_id,
         Err(err) => {
             warn!(

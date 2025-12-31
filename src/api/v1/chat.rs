@@ -26,7 +26,7 @@ use crate::orchestrator::{
 use crate::orchestrator::web::web_context_from_status;
 use crate::ollama::OllamaClient;
 use crate::project_map;
-use crate::search::AppState;
+use crate::search::{resolve_repo_context, AppState};
 use crate::tier2::Tier2Config;
 use tracing::{info, warn};
 
@@ -205,15 +205,18 @@ pub(crate) async fn chat_completions_handler(
     Query(repo_id): Query<RepoIdQuery>,
     Json(payload): Json<ChatCompletionRequest>,
 ) -> Response {
-    if let Err(err) = crate::search::resolve_repo_id(
+    let repo = match resolve_repo_context(
+        &state,
         &headers,
         repo_id.repo_id.as_deref(),
         payload.repo_id.as_deref(),
-        state.indexer.as_ref(),
         false,
     ) {
-        return error_response(err.status, "invalid_request_error", err.code, &err.message);
-    }
+        Ok(repo) => repo,
+        Err(err) => {
+            return error_response(err.status, "invalid_request_error", err.code, &err.message);
+        }
+    };
     let extracted = match extract_query_and_context(&payload.messages) {
         Some(value) => value,
         None => {
@@ -276,7 +279,7 @@ pub(crate) async fn chat_completions_handler(
         }
     };
     let libs_indexer = if include_libs {
-        state.libs_indexer.as_deref()
+        repo.libs_indexer.as_deref()
     } else {
         None
     };
@@ -288,7 +291,7 @@ pub(crate) async fn chat_completions_handler(
         ProfileBudget::default(),
     );
     let request_id = Uuid::new_v4().to_string();
-    let repo_state_root = repo_state_root_from_state_dir(state.indexer.state_dir());
+    let repo_state_root = repo_state_root_from_state_dir(repo.indexer.state_dir());
     queue_dag_log(
         repo_state_root.clone(),
         request_id.clone(),
@@ -321,11 +324,11 @@ pub(crate) async fn chat_completions_handler(
         llm_filter_local_results,
         llm_model: payload.model.as_deref(),
         llm_agent: payload.agent.as_deref(),
-        indexer: state.indexer.as_ref(),
+        indexer: repo.indexer.as_ref(),
         libs_indexer,
         plan,
         tier2_limiter: None,
-        memory: state.memory.as_ref(),
+        memory: repo.memory.as_ref(),
         profile_state: state.profile_state.as_ref(),
         profile_agent_id: profile_agent_id.as_deref(),
         ranking_surface: crate::search::RankingSurface::Chat,
@@ -346,16 +349,16 @@ pub(crate) async fn chat_completions_handler(
             } else {
                 match (profile_agent_id.as_deref(), state.profile_state.as_ref()) {
                     (Some(agent_id), Some(profile_state)) => {
-                        project_map::load_cached_project_map(state.indexer.state_dir(), agent_id)
+                        project_map::load_cached_project_map(repo.indexer.state_dir(), agent_id)
                             .or_else(|| {
                                 match project_map::build_project_map(
-                                    state.indexer.as_ref(),
+                                    repo.indexer.as_ref(),
                                     &profile_state.manager,
                                     agent_id,
                                 ) {
                                     Ok(map) => {
                                         if let Err(err) = project_map::write_project_map_cache(
-                                            state.indexer.state_dir(),
+                                            repo.indexer.state_dir(),
                                             &map,
                                         ) {
                                             warn!(
@@ -521,7 +524,7 @@ pub(crate) async fn chat_completions_handler(
                 );
                 log_budget_drops(
                     &request_id,
-                    state.indexer.repo_root(),
+                    repo.indexer.repo_root(),
                     &context_trace,
                 );
                 let history_budget = budgets

@@ -1,7 +1,9 @@
 pub(crate) mod libs;
+mod ignore_rules;
 mod impact;
 mod symbols;
 
+use ignore_rules::{build_ignore_matcher, IgnoreMatcher};
 use crate::error::{
     repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
     ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
@@ -192,6 +194,7 @@ pub struct IndexConfig {
     excluded_dir_names: Vec<String>,
     excluded_relative_prefixes: Vec<String>,
     symbols_enabled: bool,
+    ignore_matcher: Option<Arc<IgnoreMatcher>>,
 }
 
 #[derive(Clone)]
@@ -378,11 +381,13 @@ impl IndexConfig {
                 excluded_relative_prefixes.push(normalized);
             }
         }
+        let ignore_matcher = build_ignore_matcher(repo_root, &excluded_dir_names).map(Arc::new);
         Ok(Self {
             state_dir,
             excluded_dir_names,
             excluded_relative_prefixes,
             symbols_enabled: true,
+            ignore_matcher,
         })
     }
 
@@ -400,6 +405,10 @@ impl IndexConfig {
 
     pub fn symbols_enabled(&self) -> bool {
         self.symbols_enabled
+    }
+
+    pub fn ignore_matcher(&self) -> Option<&IgnoreMatcher> {
+        self.ignore_matcher.as_deref()
     }
 }
 
@@ -1386,6 +1395,7 @@ pub enum FileDecisionReason {
     NotAFile,
     ExcludedPrefix { prefix: String },
     ExcludedDirName { name: String },
+    IgnoredByPattern,
     MissingExtension,
     UnsupportedExtension { extension: String },
     BinaryTooLarge { bytes: u64 },
@@ -1462,6 +1472,13 @@ pub(crate) fn decide_file(path: &Path, repo_root: &Path, config: &IndexConfig) -
         .trim_start_matches('/')
         .to_string()
         .to_lowercase();
+
+    if let Some(matcher) = config.ignore_matcher() {
+        let is_dir = path.is_dir();
+        if matcher.is_ignored(path, is_dir) {
+            return FileDecision::exclude(FileDecisionReason::IgnoredByPattern);
+        }
+    }
 
     let mut best_prefix: Option<&String> = None;
     for prefix in config.excluded_relative_prefixes().iter() {
@@ -1664,6 +1681,39 @@ mod file_decision_tests {
                 extension: ".txt".to_string()
             }
         );
+    }
+
+    #[test]
+    fn decide_file_respects_gitignore() {
+        let repo = TempDir::new().expect("temp repo");
+        let repo_root = repo.path().canonicalize().expect("canonical repo root");
+        let ignore_path = repo_root.join(".gitignore");
+        fs::write(&ignore_path, "ignored.md\n").expect("write gitignore");
+        let file = repo_root.join("ignored.md");
+        fs::write(&file, "ignore me\n").expect("write file");
+
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
+            .expect("config");
+        let decision = decide_file(&file, &repo_root, &config);
+        assert_eq!(decision.decision, FileDecisionOutcome::Exclude);
+        assert_eq!(decision.reason, FileDecisionReason::IgnoredByPattern);
+    }
+
+    #[test]
+    fn decide_file_respects_docdexignore() {
+        let repo = TempDir::new().expect("temp repo");
+        let repo_root = repo.path().canonicalize().expect("canonical repo root");
+        let ignore_path = repo_root.join(".docdexignore");
+        fs::write(&ignore_path, "docs/private/\n").expect("write docdexignore");
+        let file = repo_root.join("docs/private/notes.md");
+        fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
+        fs::write(&file, "ignore me\n").expect("write file");
+
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
+            .expect("config");
+        let decision = decide_file(&file, &repo_root, &config);
+        assert_eq!(decision.decision, FileDecisionOutcome::Exclude);
+        assert_eq!(decision.reason, FileDecisionReason::IgnoredByPattern);
     }
 }
 

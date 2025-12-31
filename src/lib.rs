@@ -15,6 +15,7 @@ pub mod libs;
 pub mod libs_source_resolver;
 pub mod llm;
 pub mod mcp;
+pub mod mcp_proxy;
 pub mod memory;
 pub mod metrics;
 pub mod max_size;

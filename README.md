@@ -6,7 +6,7 @@ Docdex is a local-first indexer/search daemon for docs and source code. It runs 
 
 ## Introduction
 Docdex indexes docs + code for a repo and serves search, chat, and code intelligence locally over HTTP/CLI/MCP.
-Install it with npm (preferred) or build from source, then run `docdexd index --repo .`, `docdexd serve --repo .`, and `docdexd chat --repo . --query "..."` (omit `--query` for the REPL).
+Install it with npm (preferred) or build from source, then run `docdexd index --repo .`, `docdexd serve --repo .` (or `docdexd daemon` for singleton mode), and `docdexd chat --repo . --query "..."` (omit `--query` for the REPL).
 
 ## Install
 ### npm
@@ -30,6 +30,7 @@ Install it with npm (preferred) or build from source, then run `docdexd index --
 
 ## Features at a glance
 - Per-repo daemon (`docdexd serve`) with HTTP API and optional MCP; defaults to `127.0.0.1:3210` and per-repo state under `~/.docdex/state/repos/<fingerprint>/`.
+- Singleton daemon (`docdexd daemon`) with a lockfile at `~/.docdex/daemon.lock`; CLI commands auto-spawn it unless `DOCDEX_DISABLE_DAEMON_AUTO=1` or `DOCDEX_CLI_LOCAL=1` is set.
 - Local-first waterfall retrieval: repo index + libs, optional web fallback, memory enabled by default (Ollama embeddings).
 - Search + chat surfaces: `/search`, `/v1/chat/completions`, CLI `chat` (CLI proxies to HTTP by default; `DOCDEX_CLI_LOCAL=1` for in-process).
 - Code intelligence: symbols, AST, impact graph and diagnostics (`/v1/symbols`, `/v1/ast`, `/v1/graph/impact`).
@@ -49,6 +50,7 @@ Install it with npm (preferred) or build from source, then run `docdexd index --
 ## How it works
 1) `docdexd index` builds the repo index (docs + code, plus symbols/impact data) under `~/.docdex/state/repos/<fingerprint>/` and can ingest libs sources.  
 2) `docdexd serve` opens the repo index, starts a file watcher, optionally auto-starts MCP, and serves the HTTP API.  
+   `docdexd daemon` starts the same service in singleton mode with a daemon lock.  
 3) CLI commands use HTTP by default; override with `DOCDEX_HTTP_BASE_URL` or `DOCDEX_CLI_LOCAL=1` for in-process.  
 4) Waterfall retrieval uses local index first; web fallback is gated (enable with `DOCDEX_WEB_ENABLED=1`); memory is enabled by default but configurable.
 
@@ -62,12 +64,15 @@ npx docdex --version
 # full index for a repo/workspace
 docdexd index --repo /path/to/repo
 
-# serve HTTP API with live file watching
+# serve HTTP API with live file watching (per-repo)
 docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 3210 --log info --secure-mode=false
 # for non-loopback binds, add --expose and --auth-token (or use TLS options)
 # docdexd serve --repo /path/to/repo --host 0.0.0.0 --port 3210 --expose --auth-token <token> --require-tls=false
 # set a default profile agent id for preference memory
 # docdexd serve --repo /path/to/repo --agent-id <agent-id>
+
+# singleton daemon (same flags, uses daemon lock)
+docdexd daemon --repo /path/to/repo --host 127.0.0.1 --port 3210 --log info --secure-mode=false
 
 # ad-hoc search via CLI (JSON)
 docdexd chat --repo /path/to/repo --query "otp flow" --limit 5 --agent <slug>
@@ -77,9 +82,10 @@ docdexd chat --repo /path/to/repo
 ```
 
 ## TL;DR for agents
-- Use Docdex for repo docs: run `docdexd index --repo .` once, then either `docdexd serve --repo . --host 127.0.0.1 --port 3210` for HTTP (auto-starts MCP when enabled; use `--disable-mcp` to skip), or `docdexd mcp --repo . --log warn` for MCP-only.
+- Use Docdex for repo docs: run `docdexd index --repo .` once, then start the singleton daemon with `docdexd daemon --repo . --host 127.0.0.1 --port 3210` (shared MCP over `/sse`), or run legacy stdio MCP with `docdexd mcp --repo . --log warn`.
 - Add `.docdex/` to `.gitignore` so indexes aren't committed.
-- When MCP-aware, register a server named `docdex` that runs `docdexd mcp --repo . --log warn --max-results 8`, then call `docdex_search` before coding, `docdex_web_research` for web fallback, and `docdex_index` when stale.
+- Use `.docdexignore` (gitignore syntax) to exclude files/dirs from indexing; `.gitignore` is honored too.
+- When MCP-aware, register a server named `docdex` that points to `http://localhost:<port>/sse` (shared MCP) or, for stdio-only clients, runs `docdexd mcp --repo . --log warn --max-results 8`.
 - Prefer summary-first (snippets=false), fetch specific snippets only when needed, keep queries short, and respect token estimates.
 
 ## Smithery local usage
@@ -109,6 +115,7 @@ Impact graph snapshots carry schema metadata and are migrated on read; reindex t
 ## Usage cheat sheet
 - Build index: `docdexd index --repo <path>` (add `--exclude-*` to skip paths).
 - Serve with watcher: `docdexd serve --repo <path> --host 127.0.0.1 --port 3210 --log warn --secure-mode=false` (use `--expose --auth-token <token>` for non-loopback binds; secure mode adds default rate limits and loopback allowlist).
+- Singleton daemon: `docdexd daemon --repo <path>` (uses the same flags as `serve`, plus a daemon lock to ensure one instance).
 - MCP auto-start: `docdexd serve --repo <path>` spawns MCP when enabled (default); set `--disable-mcp` or `DOCDEX_ENABLE_MCP=0` to skip, or `--enable-mcp` to force on.
 - MCP auth: `docdexd mcp --auth-token <token>` (or `DOCDEX_AUTH_TOKEN`) requires clients to pass `auth_token` in `initialize`.
 - Secure serving: use `--auth-token <token>` for non-loopback binds; use TLS with `--tls-cert/--tls-key` or `--certbot-domain <domain>`.
@@ -402,32 +409,32 @@ Docdex is tool-agnostic. Drop-in recipe for agents/codegen tools:
 "You are building features for this repo. Use the following documentation snippets for context. If a snippet cites a path, keep that path in your response. Snippets:\n<insert docdex snippets here>\nQuestion: <your question>"
 ```
 
-### MCP (optional stdio server for MCP-aware clients)
-Docdex can run as an MCP tool provider over stdio; it does not replace the HTTP daemon—pick whichever fits your agent/editor. If your MCP client supports resource templates, Docdex advertises a `docdex_file` template (`docdex://{path}`) which delegates to `docdex_open`.
-- Run: `docdexd mcp --repo /path/to/repo --log warn --max-results 8` (alias: `--mcp-max-results 8`).
-- Auto-start: `docdexd serve --repo /path/to/repo` spawns MCP when enabled (config/default); override with `--enable-mcp` or `--disable-mcp`.
+### MCP (shared HTTP/SSE + legacy stdio)
+Docdex exposes MCP over the singleton daemon (`/sse`, `/v1/mcp`, `/v1/mcp/message`) so multiple clients can share one service. Legacy stdio MCP (`docdexd mcp`) remains available for local-only tooling. If your MCP client supports resource templates, Docdex advertises a `docdex_file` template (`docdex://{path}`) which delegates to `docdex_open`.
+- Shared MCP: `docdexd daemon --repo /path/to/repo --host 127.0.0.1 --port 3210` then point clients at `http://localhost:3210/sse`.
+- npm install: the npm installer auto-selects a port (prefers 3000, fallback 3210), updates `~/.docdex/config.toml`, and injects the MCP URL into supported client configs.
+- Legacy stdio: `docdexd mcp --repo /path/to/repo --log warn --max-results 8` (alias: `--mcp-max-results 8`).
+- Auto-start: `docdexd daemon` starts the shared MCP proxy when enabled (config/default); `docdexd serve` still spawns stdio MCP when enabled.
 - Env override: `DOCDEX_MCP_MAX_RESULTS` clamps `docdex_search` results (min 1).
 - Auth: `docdexd mcp --auth-token <token>` (or `DOCDEX_AUTH_TOKEN`) requires clients to pass `auth_token` during `initialize`.
 - Rate limits: `--rate-limit-per-min` / `--rate-limit-burst` or `DOCDEX_MCP_RATE_LIMIT_PER_MIN` / `DOCDEX_MCP_RATE_LIMIT_BURST`.
 - Default repo: call `initialize` with `workspace_root` to set a default `project_root`; after that, tools may omit `project_root`/`repo_path`.
 - Default profile agent: include `agent_id` in `initialize` to set the default agent for profile tools; profile tool calls may omit `agent_id` after that.
 - Packaging: `docdexd mcp` launches the companion `docdex-mcp-server` binary; build/install it with `cargo build -p docdex-mcp-server` or set `DOCDEX_MCP_SERVER_BIN` to the binary path.
-- Registering with MCP clients: add a server named `docdex` that runs `docdexd mcp --repo <repo> --log warn`. Example Codex config snippet:
+- Registering with MCP clients (shared HTTP/SSE): add a server named `docdex` that points to `http://localhost:<port>/sse`. Example JSON config snippet:
   ```json
   {
     "mcpServers": {
       "docdex": {
-        "command": "docdexd",
-        "args": ["mcp", "--repo", ".", "--log", "warn", "--max-results", "8"],
-        "env": {}
+        "url": "http://localhost:3210/sse"
       }
     }
   }
   ```
 - MCP quick add commands (popular agents):
-  - Docdex helper: `docdex mcp-add --repo /path/to/repo --log warn --max-results 8` auto-detects supported agents; add `--all` to attempt every known client and print manual steps for UI-only ones, or `--remove` to uninstall.
-  - Codex CLI: `codex mcp add docdex -- docdexd mcp --repo /path/to/repo --log warn --max-results 8`.
-  - Generic JSON config (Cursor, Continue, Windsurf, Cline, Claude Desktop devtools): add the `mcpServers.docdex` block above to your MCP config file (paths vary by client; most accept the `command`/`args` schema shown).
+  - Docdex helper (stdio): `docdex mcp-add --repo /path/to/repo --log warn --max-results 8` auto-detects supported agents; add `--all` to attempt every known client and print manual steps for UI-only ones, or `--remove` to uninstall.
+  - Codex CLI (stdio): `codex mcp add docdex -- docdexd mcp --repo /path/to/repo --log warn --max-results 8`.
+  - Generic JSON config (Cursor, Continue, Windsurf, Cline, Claude Desktop devtools): add the `mcpServers.docdex` block above to your MCP config file (paths vary by client; most accept the `url` schema shown).
   - Manual/stdio-only clients: start `docdexd mcp --repo /path/to/repo --log warn --max-results 8` yourself and point the client at that command/binary.
 - Tools exposed (CallToolResult content: result.content[0].text contains JSON):
   - `docdex_search` — args: `{ "query": "<text>", "limit": <int optional>, "force_web": <bool>, "diff": { "mode": "...", "base": "...", "head": "...", "paths": [...] }, "project_root": "<path required unless initialize set default>", "repo_path": "<path optional alias>" }`. Returns local hits + metadata.

@@ -1,6 +1,7 @@
 use crate::audit;
 use crate::cli::commands::check::{build_report, CheckOptions};
-use crate::config::{self, RepoArgs};
+use crate::cli::ServeArgs;
+use crate::config;
 use crate::daemon;
 use crate::error::StartupError;
 use crate::hardware;
@@ -12,48 +13,56 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing::info;
 
-#[allow(clippy::too_many_arguments)]
-pub async fn run(
-    repo: RepoArgs,
-    host: Option<String>,
-    port: Option<u16>,
-    expose: bool,
-    log: String,
-    tls_cert: Option<PathBuf>,
-    tls_key: Option<PathBuf>,
-    certbot_domain: Option<String>,
-    certbot_live_dir: Option<PathBuf>,
-    insecure: bool,
-    require_tls: bool,
-    auth_token: Option<String>,
-    preflight_check: bool,
-    max_limit: usize,
-    max_query_bytes: usize,
-    max_request_bytes: usize,
-    rate_limit_per_min: u32,
-    rate_limit_burst: u32,
-    strip_snippet_html: bool,
-    secure_mode: bool,
-    disable_snippet_text: bool,
-    enable_memory: bool,
-    agent_id: Option<String>,
-    enable_mcp: bool,
-    disable_mcp: bool,
-    embedding_base_url: Option<String>,
-    ollama_base_url: String,
-    embedding_model: String,
-    embedding_timeout_ms: u64,
-    access_log: bool,
-    audit_log_path: Option<PathBuf>,
-    audit_max_bytes: u64,
-    audit_max_files: u32,
-    audit_disable: bool,
-    run_as_uid: Option<u32>,
-    run_as_gid: Option<u32>,
-    chroot_dir: Option<PathBuf>,
-    unshare_net: bool,
-    allow_ip: Vec<String>,
-) -> Result<()> {
+pub(crate) async fn run(args: ServeArgs) -> Result<()> {
+    run_with_mode(args, false).await
+}
+
+pub(crate) async fn run_daemon(args: ServeArgs) -> Result<()> {
+    run_with_mode(args, true).await
+}
+
+async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
+    let ServeArgs {
+        repo,
+        host,
+        port,
+        expose,
+        log,
+        tls_cert,
+        tls_key,
+        certbot_domain,
+        certbot_live_dir,
+        insecure,
+        require_tls,
+        auth_token,
+        preflight_check,
+        max_limit,
+        max_query_bytes,
+        max_request_bytes,
+        rate_limit_per_min,
+        rate_limit_burst,
+        strip_snippet_html,
+        secure_mode,
+        disable_snippet_text,
+        enable_memory,
+        agent_id,
+        enable_mcp,
+        disable_mcp,
+        embedding_base_url,
+        ollama_base_url,
+        embedding_model,
+        embedding_timeout_ms,
+        access_log,
+        audit_log_path,
+        audit_max_bytes,
+        audit_max_files,
+        audit_disable,
+        run_as_uid,
+        run_as_gid,
+        chroot_dir,
+        unshare_net,
+        allow_ip,
+    } = args;
     let config = config::AppConfig::load_default().map_err(|err| {
         StartupError::new("startup_config_invalid", format!("failed to load config: {err}"))
             .with_hint("Ensure ~/.docdex is writable and config.toml is valid.")
@@ -238,6 +247,7 @@ pub async fn run(
         config.features.clone(),
         default_agent_id,
         config.core.global_state_dir.clone(),
+        daemon_mode,
     )
     .await
 }

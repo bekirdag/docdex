@@ -215,17 +215,18 @@ pub(crate) async fn impact_graph_handler(
         }
     };
 
-    if let Err(err) = crate::search::resolve_repo_id(
+    let repo = match crate::search::resolve_repo_context(
+        &state,
         &headers,
         repo_id.repo_id.as_deref(),
         None,
-        state.indexer.as_ref(),
         false,
     ) {
-        return json_error(err.status, err.code, err.message);
-    }
+        Ok(repo) => repo,
+        Err(err) => return json_error(err.status, err.code, err.message),
+    };
 
-    let repo_id = match crate::symbols::repo_id_for_root(state.indexer.repo_root()) {
+    let repo_id = match crate::symbols::repo_id_for_root(repo.indexer.repo_root()) {
         Ok(value) => value,
         Err(err) => {
             state.metrics.inc_error();
@@ -243,7 +244,7 @@ pub(crate) async fn impact_graph_handler(
                 .into_response();
         }
     };
-    let store = crate::impact::ImpactGraphStore::new(state.indexer.state_dir());
+    let store = crate::impact::ImpactGraphStore::new(repo.indexer.state_dir());
     let all_edges = match store.read_edges() {
         Ok(edges) => edges,
         Err(err) => {
@@ -282,17 +283,18 @@ pub(crate) async fn impact_diagnostics_handler(
     Query(params): Query<ImpactDiagnosticsQuery>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(err) = crate::search::resolve_repo_id(
+    let repo = match crate::search::resolve_repo_context(
+        &state,
         &headers,
         params.repo_id.as_deref(),
         None,
-        state.indexer.as_ref(),
         false,
     ) {
-        return json_error(err.status, err.code, err.message);
-    }
+        Ok(repo) => repo,
+        Err(err) => return json_error(err.status, err.code, err.message),
+    };
 
-    let repo_id = match crate::symbols::repo_id_for_root(state.indexer.repo_root()) {
+    let repo_id = match crate::symbols::repo_id_for_root(repo.indexer.repo_root()) {
         Ok(value) => value,
         Err(err) => {
             state.metrics.inc_error();
@@ -332,7 +334,7 @@ pub(crate) async fn impact_diagnostics_handler(
         None => None,
     };
 
-    let store = crate::impact::ImpactGraphStore::new(state.indexer.state_dir());
+    let store = crate::impact::ImpactGraphStore::new(repo.indexer.state_dir());
     let diagnostics_map = match store.read_diagnostics_map() {
         Ok(map) => map,
         Err(err) => {

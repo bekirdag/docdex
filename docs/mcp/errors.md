@@ -1,6 +1,6 @@
 # MCP Error Envelope + Code Taxonomy (Docdex)
 
-Docdex’s MCP server (`docdexd mcp`) reports failures as JSON-RPC errors. The **machine-readable** error code is carried in `error.data.code` (and duplicated under `error.data.error.code`) so clients can reliably branch on it.
+Docdex’s MCP server reports failures as JSON-RPC errors over both stdio (`docdexd mcp`) and HTTP/SSE (`/sse`, `/v1/mcp`). The **machine-readable** error code is carried in `error.data.code` (and duplicated under `error.data.error.code`) so clients can reliably branch on it.
 
 This document defines the **canonical MCP error envelope**, a **stable code taxonomy**, and a **parity mapping** to Docdex’s HTTP daemon responses and CLI error output.
 

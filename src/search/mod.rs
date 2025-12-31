@@ -12,6 +12,7 @@ use crate::index::{
 };
 use crate::libs::LibsIndexer;
 use crate::memory::{inject_embedding_metadata, MemoryStore};
+use crate::mcp::McpProxyRouter;
 use crate::ollama::OllamaEmbedder;
 use crate::orchestrator::web::{web_context_from_status, WebDiscoveryStatus, WebFetchResult};
 use crate::orchestrator::{
@@ -228,6 +229,8 @@ impl SecurityConfig {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub repo_id: String,
+    pub legacy_repo_id: String,
     pub indexer: Arc<Indexer>,
     pub libs_indexer: Option<Arc<LibsIndexer>>,
     pub security: SecurityConfig,
@@ -241,6 +244,24 @@ pub struct AppState {
     pub max_answer_tokens: u32,
     pub llm_base_url: String,
     pub llm_default_model: String,
+    pub repos: Option<Arc<crate::daemon::multi_repo::RepoManager>>,
+    pub multi_repo: bool,
+    pub mcp_router: Option<Arc<McpProxyRouter>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct RepoContext {
+    pub repo_id: String,
+    pub legacy_repo_id: String,
+    pub indexer: Arc<Indexer>,
+    pub libs_indexer: Option<Arc<LibsIndexer>>,
+    pub memory: Option<MemoryState>,
+}
+
+impl RepoContext {
+    fn matches_id(&self, candidate: &str) -> bool {
+        candidate == self.repo_id || candidate == self.legacy_repo_id
+    }
 }
 
 #[derive(Clone)]
@@ -290,6 +311,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/profile/import",
             post(crate::api::v1::profile::profile_import_handler),
+        )
+        .route(
+            "/v1/initialize",
+            post(crate::api::v1::initialize::initialize_handler),
         )
         .route(
             "/v1/hooks/validate",
@@ -362,6 +387,19 @@ pub fn router(state: AppState) -> Router {
             "/v1/gates/status",
             get(crate::api::v1::gates::gates_status_handler),
         )
+        .route(
+            "/v1/mcp",
+            post(crate::api::mcp_http::mcp_request_handler),
+        )
+        .route(
+            "/v1/mcp/message",
+            post(crate::api::mcp_http::mcp_message_handler),
+        )
+        .route(
+            "/v1/mcp/sse",
+            get(crate::api::mcp_http::mcp_sse_handler),
+        )
+        .route("/sse", get(crate::api::mcp_http::mcp_sse_handler))
         .route("/ai-help", get(ai_help_handler))
         .route("/metrics", get(metrics_handler))
         .route_layer(middleware::from_fn_with_state(
@@ -428,7 +466,7 @@ struct MemoryRecallItem {
     metadata: serde_json::Value,
 }
 
-fn status_for_app_error(code: &str) -> StatusCode {
+pub(crate) fn status_for_app_error(code: &str) -> StatusCode {
     match code {
         ERR_EMBEDDING_TIMEOUT => StatusCode::GATEWAY_TIMEOUT,
         ERR_EMBEDDING_MODEL_NOT_FOUND => StatusCode::BAD_REQUEST,
@@ -467,11 +505,71 @@ pub(crate) struct RepoIdError {
     pub message: String,
 }
 
-pub(crate) fn resolve_repo_id(
+pub(crate) fn resolve_repo_context(
+    state: &AppState,
     headers: &HeaderMap,
     query_repo_id: Option<&str>,
     body_repo_id: Option<&str>,
-    indexer: &Indexer,
+    require: bool,
+) -> Result<RepoContext, RepoIdError> {
+    let selected = parse_repo_id(headers, query_repo_id, body_repo_id, require)?;
+    let default_repo = RepoContext {
+        repo_id: state.repo_id.clone(),
+        legacy_repo_id: state.legacy_repo_id.clone(),
+        indexer: state.indexer.clone(),
+        libs_indexer: state.libs_indexer.clone(),
+        memory: state.memory.clone(),
+    };
+    let Some(candidate) = selected else {
+        if state.multi_repo {
+            if let Some(manager) = state.repos.as_ref() {
+                let _ = manager.get_by_id(&state.repo_id);
+            }
+        }
+        return Ok(default_repo);
+    };
+    if default_repo.matches_id(&candidate) {
+        if state.multi_repo {
+            if let Some(manager) = state.repos.as_ref() {
+                let _ = manager.get_by_id(&state.repo_id);
+            }
+        }
+        return Ok(default_repo);
+    }
+    if !state.multi_repo {
+        return Err(RepoIdError {
+            status: StatusCode::NOT_FOUND,
+            code: ERR_UNKNOWN_REPO,
+            message: "unknown repo".to_string(),
+        });
+    }
+    let Some(manager) = state.repos.as_ref() else {
+        return Err(RepoIdError {
+            status: StatusCode::NOT_FOUND,
+            code: ERR_UNKNOWN_REPO,
+            message: "unknown repo".to_string(),
+        });
+    };
+    if let Some(repo) = manager.get_by_id(&candidate) {
+        return Ok(RepoContext {
+            repo_id: repo.repo_id.clone(),
+            legacy_repo_id: repo.legacy_repo_id.clone(),
+            indexer: repo.indexer.clone(),
+            libs_indexer: repo.libs_indexer.clone(),
+            memory: repo.memory.clone(),
+        });
+    }
+    Err(RepoIdError {
+        status: StatusCode::NOT_FOUND,
+        code: ERR_UNKNOWN_REPO,
+        message: "unknown repo".to_string(),
+    })
+}
+
+fn parse_repo_id(
+    headers: &HeaderMap,
+    query_repo_id: Option<&str>,
+    body_repo_id: Option<&str>,
     require: bool,
 ) -> Result<Option<String>, RepoIdError> {
     let mut selected: Option<String> = None;
@@ -528,27 +626,6 @@ pub(crate) fn resolve_repo_id(
             Ok(None)
         };
     };
-
-    let repo_root = indexer.repo_root();
-    let fingerprint =
-        repo_manager::repo_fingerprint_sha256(repo_root).map_err(|_| RepoIdError {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            code: ERR_INTERNAL_ERROR,
-            message: "repo identity unavailable".to_string(),
-        })?;
-    let legacy = repo_manager::fingerprint::legacy_repo_id_for_root(repo_root);
-    let mut expected = HashSet::new();
-    expected.insert(fingerprint);
-    expected.insert(legacy);
-
-    if !expected.contains(&candidate) {
-        return Err(RepoIdError {
-            status: StatusCode::NOT_FOUND,
-            code: ERR_UNKNOWN_REPO,
-            message: "unknown repo".to_string(),
-        });
-    }
-
     Ok(Some(candidate))
 }
 
@@ -559,22 +636,23 @@ async fn memory_store_handler(
     Query(repo_id): Query<RepoIdQuery>,
     Json(req): Json<MemoryStoreRequest>,
 ) -> impl IntoResponse {
-    let Some(memory) = state.memory.clone() else {
+    let repo = match resolve_repo_context(
+        &state,
+        &headers,
+        repo_id.repo_id.as_deref(),
+        req.repo_id.as_deref(),
+        false,
+    ) {
+        Ok(repo) => repo,
+        Err(err) => return json_error(err.status, err.code, err.message),
+    };
+    let Some(memory) = repo.memory.clone() else {
         return json_error(
             StatusCode::CONFLICT,
             ERR_MEMORY_DISABLED,
             "memory is disabled; start the daemon with --enable-memory=true",
         );
     };
-    if let Err(err) = resolve_repo_id(
-        &headers,
-        repo_id.repo_id.as_deref(),
-        req.repo_id.as_deref(),
-        state.indexer.as_ref(),
-        false,
-    ) {
-        return json_error(err.status, err.code, err.message);
-    }
 
     let text = req.text.trim();
     if text.is_empty() {
@@ -586,7 +664,7 @@ async fn memory_store_handler(
     }
 
     let started = Instant::now();
-    let repo_root = state.indexer.repo_root().display().to_string();
+    let repo_root = repo.indexer.repo_root().display().to_string();
     let embedding = match memory.embedder.embed(text).await {
         Ok(value) => value,
         Err(err) => {
@@ -683,22 +761,23 @@ async fn memory_recall_handler(
     Query(repo_id): Query<RepoIdQuery>,
     Json(req): Json<MemoryRecallRequest>,
 ) -> impl IntoResponse {
-    let Some(memory) = state.memory.clone() else {
+    let repo = match resolve_repo_context(
+        &state,
+        &headers,
+        repo_id.repo_id.as_deref(),
+        req.repo_id.as_deref(),
+        false,
+    ) {
+        Ok(repo) => repo,
+        Err(err) => return json_error(err.status, err.code, err.message),
+    };
+    let Some(memory) = repo.memory.clone() else {
         return json_error(
             StatusCode::CONFLICT,
             ERR_MEMORY_DISABLED,
             "memory is disabled; start the daemon with --enable-memory=true",
         );
     };
-    if let Err(err) = resolve_repo_id(
-        &headers,
-        repo_id.repo_id.as_deref(),
-        req.repo_id.as_deref(),
-        state.indexer.as_ref(),
-        false,
-    ) {
-        return json_error(err.status, err.code, err.message);
-    }
 
     let query = req.query.trim();
     if query.is_empty() {
@@ -711,7 +790,7 @@ async fn memory_recall_handler(
     let top_k = req.top_k.unwrap_or(5).max(1).min(50);
 
     let started = Instant::now();
-    let repo_root = state.indexer.repo_root().display().to_string();
+    let repo_root = repo.indexer.repo_root().display().to_string();
     let query_embedding = match memory.embedder.embed(query).await {
         Ok(value) => value,
         Err(err) => {
@@ -2537,15 +2616,13 @@ async fn search_handler(
     headers: HeaderMap,
     Query(params): Query<SearchParams>,
 ) -> impl IntoResponse {
-    if let Err(err) = resolve_repo_id(
-        &headers,
-        params.repo_id.as_deref(),
-        None,
-        state.indexer.as_ref(),
-        false,
-    ) {
-        return json_error(err.status, err.code, err.message).into_response();
-    }
+    let repo = match resolve_repo_context(&state, &headers, params.repo_id.as_deref(), None, false)
+    {
+        Ok(repo) => repo,
+        Err(err) => {
+            return json_error(err.status, err.code, err.message).into_response();
+        }
+    };
     let limit = params.limit.unwrap_or(8).min(state.security.max_limit);
     let raw = match params.q.as_deref() {
         Some(value) => value,
@@ -2571,13 +2648,13 @@ async fn search_handler(
     }
 
     let skip_local_search = params.skip_local_search.unwrap_or(false);
-    if !skip_local_search && state.indexer.num_docs() == 0 {
+    if !skip_local_search && repo.indexer.num_docs() == 0 {
         return json_error(
             StatusCode::CONFLICT,
             ERR_MISSING_INDEX,
             format!(
                 "index not found; run `docdexd index --repo {}`",
-                state.indexer.repo_root().display()
+                repo.indexer.repo_root().display()
             ),
         )
         .into_response();
@@ -2585,7 +2662,7 @@ async fn search_handler(
 
     let include_libs = params.include_libs.unwrap_or(true);
     let libs_indexer = if include_libs {
-        state.libs_indexer.as_deref()
+        repo.libs_indexer.as_deref()
     } else {
         None
     };
@@ -2635,11 +2712,11 @@ async fn search_handler(
         llm_filter_local_results,
         llm_model: params.llm_model.as_deref(),
         llm_agent: params.llm_agent.as_deref(),
-        indexer: state.indexer.as_ref(),
+        indexer: repo.indexer.as_ref(),
         libs_indexer,
         plan,
         tier2_limiter: None,
-        memory: state.memory.as_ref(),
+        memory: repo.memory.as_ref(),
         profile_state: state.profile_state.as_ref(),
         profile_agent_id: None,
         ranking_surface: RankingSurface::Search,
@@ -2716,7 +2793,7 @@ async fn search_handler(
                 pruned,
                 selected_sources,
             };
-            let meta = build_search_meta(&state.indexer, query_meta, Some(context_assembly)).ok();
+            let meta = build_search_meta(&repo.indexer, query_meta, Some(context_assembly)).ok();
             let top_score_normalized = top_score.map(normalize_score);
             let web_context = web_context_from_status(&waterfall_result.tier2.status);
             response.hits = hits;
@@ -2799,15 +2876,13 @@ async fn snippet_handler(
     headers: HeaderMap,
     Query(params): Query<SnippetParams>,
 ) -> impl IntoResponse {
-    if let Err(err) = resolve_repo_id(
-        &headers,
-        params.repo_id.as_deref(),
-        None,
-        state.indexer.as_ref(),
-        false,
-    ) {
-        return json_error(err.status, err.code, err.message).into_response();
-    }
+    let repo = match resolve_repo_context(&state, &headers, params.repo_id.as_deref(), None, false)
+    {
+        Ok(repo) => repo,
+        Err(err) => {
+            return json_error(err.status, err.code, err.message).into_response();
+        }
+    };
     let window = params
         .window
         .unwrap_or(DEFAULT_SNIPPET_WINDOW)
@@ -2816,13 +2891,12 @@ async fn snippet_handler(
         | params.text_only.unwrap_or(false)
         | state.security.strip_snippet_html;
     let snapshot = if doc_id.starts_with("libs:") {
-        match state.libs_indexer.as_deref() {
+        match repo.libs_indexer.as_deref() {
             Some(libs) => libs.snapshot_with_snippet(&doc_id, params.q.as_deref(), window),
             None => Ok(None),
         }
     } else {
-        state
-            .indexer
+        repo.indexer
             .snapshot_with_snippet(&doc_id, params.q.as_deref(), window)
     };
     match snapshot {

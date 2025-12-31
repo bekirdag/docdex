@@ -18,6 +18,8 @@ tags:
     description: Repo-scoped symbol lookup APIs.
   - name: Memory
     description: Repo-scoped semantic memory operations.
+  - name: Repo
+    description: Repo initialization and discovery endpoints.
   - name: Observability
     description: Status and quality-gate visibility endpoints.
 paths:
@@ -260,6 +262,168 @@ paths:
                       denied_total:
                         type: integer
                         minimum: 0
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: *a3
+  /v1/initialize:
+    post:
+      tags:
+        - Repo
+      summary: Initialize repo context
+      description: |-
+        Validates the requested repo root and returns the resolved repo fingerprint.
+
+        `rootUri` may be a file:// URI or an absolute path. When omitted, the daemon uses its configured repo.
+      operationId: initializeRepo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                rootUri:
+                  type: string
+                  description: file:// URI or absolute path for the repo root.
+      responses:
+        "200":
+          description: Initialize response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - repo_id
+                  - status
+                  - repo_root
+                properties:
+                  repo_id: *a1
+                  status:
+                    type: string
+                    enum:
+                      - ready
+                      - indexing
+                      - stale
+                  repo_root:
+                    type: string
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema: *a3
+        "404":
+          description: Unknown repo
+          content:
+            application/json:
+              schema: *a3
+  /v1/mcp:
+    post:
+      tags:
+        - MCP
+      summary: MCP JSON-RPC request
+      description: Submit a single MCP JSON-RPC request over HTTP.
+      operationId: mcpRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: MCP JSON-RPC response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "503":
+          description: MCP proxy unavailable
+          content:
+            application/json:
+              schema: *a3
+  /v1/mcp/message:
+    post:
+      tags:
+        - MCP
+      summary: MCP JSON-RPC request (SSE session)
+      description: Submit a JSON-RPC request to an existing MCP SSE session.
+      operationId: mcpMessage
+      parameters:
+        - name: x-docdex-mcp-session
+          in: header
+          required: false
+          schema:
+            type: string
+          description: MCP session id from /v1/mcp/sse.
+        - name: session_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: MCP session id from /v1/mcp/sse.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: Missing session id
+          content:
+            application/json:
+              schema: *a3
+        "503":
+          description: MCP proxy unavailable
+          content:
+            application/json:
+              schema: *a3
+  /v1/mcp/sse:
+    get:
+      tags:
+        - MCP
+      summary: MCP SSE stream
+      description: Opens an MCP SSE stream and returns a session id in the response header.
+      operationId: mcpSse
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "503":
+          description: MCP proxy unavailable
+          content:
+            application/json:
+              schema: *a3
+  /sse:
+    get:
+      tags:
+        - MCP
+      summary: MCP SSE stream (alias)
+      operationId: mcpSseAlias
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
         "500":
           description: Server error
           content:

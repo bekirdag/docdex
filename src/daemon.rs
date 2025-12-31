@@ -1,3 +1,6 @@
+pub mod lock;
+pub mod multi_repo;
+
 use crate::audit::AuditLogger;
 use crate::config::RepoArgs;
 use crate::error::StartupError;
@@ -7,6 +10,7 @@ use crate::mcp;
 use crate::memory::MemoryStore;
 use crate::metrics;
 use crate::ollama::OllamaEmbedder;
+use crate::repo_manager;
 use crate::profiles::{ProfileEmbedder, ProfileManager};
 use crate::search::{self, AppState, SecurityConfig};
 use crate::util;
@@ -287,6 +291,7 @@ pub async fn serve(
     feature_flags: crate::config::FeatureFlagsConfig,
     default_agent_id: Option<String>,
     global_state_dir: Option<PathBuf>,
+    daemon_mode: bool,
 ) -> Result<()> {
     #[cfg(unix)]
     {
@@ -317,6 +322,35 @@ pub async fn serve(
             warn!("llm provider `{provider}` may disable LLM features without an agent override");
         }
     }
+
+    let _daemon_lock = if daemon_mode {
+        let lock_path = lock::default_lock_path().ok();
+        let lock = lock::DaemonLock::acquire(port).map_err(|err| {
+            let mut error = StartupError::new(
+                "startup_daemon_locked",
+                format!("docdex daemon already running or lock unavailable: {err}"),
+            );
+            if let Some(ref path) = lock_path {
+                if let Ok(Some(metadata)) = lock::read_metadata(path) {
+                    error = error.with_hint(format!(
+                        "Existing daemon pid={} port={} (lock: {}). Stop it or remove the lock file.",
+                        metadata.pid,
+                        metadata.port,
+                        path.display()
+                    ));
+                } else {
+                    error = error.with_hint(format!(
+                        "Check lock file at {} or stop the running daemon.",
+                        path.display()
+                    ));
+                }
+            }
+            error
+        })?;
+        Some(lock)
+    } else {
+        None
+    };
 
     let tls_config = match tls {
         Some(tls) => Some(Arc::new(tls.to_rustls().map_err(|err| {
@@ -355,7 +389,7 @@ pub async fn serve(
             .flatten()
             .map(Arc::new)
     };
-    let memory = if enable_memory {
+    let memory_embedder = if enable_memory {
         let model = embedding_model.trim().to_string();
         if model.is_empty() {
             return Err(StartupError::new(
@@ -374,13 +408,14 @@ pub async fn serve(
                 )
                 .with_hint("Expected a URL like http://127.0.0.1:11434")
             })?;
-        Some(search::MemoryState {
-            store: MemoryStore::new(indexer.state_dir()),
-            embedder,
-        })
+        Some(embedder)
     } else {
         None
     };
+    let memory = memory_embedder.clone().map(|embedder| search::MemoryState {
+        store: MemoryStore::new(indexer.state_dir()),
+        embedder,
+    });
     let profile_state = match global_state_dir.as_ref() {
         Some(state_dir) => match ProfileManager::new(state_dir, profile_embedding_dim) {
             Ok(manager) => {
@@ -415,7 +450,148 @@ pub async fn serve(
     let mcp_auth_token = security.auth_token.clone();
     let metrics = Arc::new(metrics::Metrics::default());
     metrics::set_global(metrics.clone());
+    let repo_id = repo_manager::repo_fingerprint_sha256(indexer.repo_root()).map_err(|err| {
+        StartupError::new(
+            "startup_state_invalid",
+            format!("failed to resolve repo identity: {err}"),
+        )
+        .with_hint("Verify the repo path is accessible and writable.")
+    })?;
+    let legacy_repo_id =
+        repo_manager::fingerprint::legacy_repo_id_for_root(indexer.repo_root());
+    let shared_state_dir = repo_manager::split_scoped_state_dir(indexer.state_dir())
+        .map(|(base_dir, _, _)| base_dir);
+    let repo_manager = if daemon_mode {
+        let manager = Arc::new(crate::daemon::multi_repo::RepoManager::new(
+            memory_embedder.clone(),
+            shared_state_dir,
+        ));
+        let default_repo = Arc::new(crate::daemon::multi_repo::RepoRuntime {
+            repo_id: repo_id.clone(),
+            legacy_repo_id: legacy_repo_id.clone(),
+            repo_root: indexer.repo_root().to_path_buf(),
+            indexer: indexer.clone(),
+            libs_indexer: libs_indexer.clone(),
+            memory: memory.clone(),
+        });
+        manager.pin_repo(repo_id.clone());
+        let watcher = match watcher::spawn(indexer.clone()) {
+            Ok(handle) => Some(handle),
+            Err(err) => {
+                warn!(
+                    error = ?err,
+                    "failed to start file watcher"
+                );
+                None
+            }
+        };
+        manager.insert_repo(default_repo, watcher);
+        manager.start_housekeeping();
+        Some(manager)
+    } else {
+        None
+    };
+
+    let mut mcp_child = None;
+    let mut mcp_router = None;
+    if enable_mcp {
+        if daemon_mode {
+            let result = mcp::spawn_proxy_for_serve(
+                mcp_repo_args,
+                log_level.clone(),
+                mcp_max_results,
+                mcp_rate_limit_per_min,
+                mcp_rate_limit_burst,
+                enable_memory,
+                ollama_base_url.clone(),
+                embedding_model.clone(),
+                embedding_timeout_ms,
+                mcp_auth_token.clone(),
+            )
+            .await;
+            match result {
+                Ok(router) => {
+                    info!(
+                        target: "docdexd",
+                        source = %mcp_enable_source.as_str(),
+                        "mcp proxy started"
+                    );
+                    mcp_router = Some(router);
+                }
+                Err(err) => {
+                    debug!(
+                        target: "docdexd",
+                        source = %mcp_enable_source.as_str(),
+                        error = ?err,
+                        "mcp proxy failed to start"
+                    );
+                    return Err(StartupError::new(
+                        "startup_mcp_failed",
+                        format!("mcp proxy failed to start: {err}"),
+                    )
+                    .with_hint("Install/build the docdex-mcp-server binary or disable MCP auto-start.")
+                    .with_remediation(vec![
+                        "Build the MCP server: `cargo build -p docdex-mcp-server`.".to_string(),
+                        "Or disable MCP auto-start: `docdexd serve --disable-mcp` (or set DOCDEX_ENABLE_MCP=0).".to_string(),
+                    ])
+                    .into());
+                }
+            }
+        } else {
+            let result = mcp::spawn_for_serve(
+                mcp_repo_args,
+                log_level.clone(),
+                mcp_max_results,
+                mcp_rate_limit_per_min,
+                mcp_rate_limit_burst,
+                enable_memory,
+                ollama_base_url.clone(),
+                embedding_model.clone(),
+                embedding_timeout_ms,
+                mcp_auth_token.clone(),
+            )
+            .await;
+            match result {
+                Ok(child) => {
+                    info!(
+                        target: "docdexd",
+                        source = %mcp_enable_source.as_str(),
+                        pid = child.id().unwrap_or(0),
+                        "mcp server started"
+                    );
+                    mcp_child = Some(child);
+                }
+                Err(err) => {
+                    debug!(
+                        target: "docdexd",
+                        source = %mcp_enable_source.as_str(),
+                        error = ?err,
+                        "mcp server failed to start"
+                    );
+                    return Err(StartupError::new(
+                        "startup_mcp_failed",
+                        format!("mcp server failed to start: {err}"),
+                    )
+                    .with_hint("Install/build the docdex-mcp-server binary or disable MCP auto-start.")
+                    .with_remediation(vec![
+                        "Build the MCP server: `cargo build -p docdex-mcp-server`.".to_string(),
+                        "Or disable MCP auto-start: `docdexd serve --disable-mcp` (or set DOCDEX_ENABLE_MCP=0).".to_string(),
+                    ])
+                    .into());
+                }
+            }
+        }
+    } else {
+        info!(
+            target: "docdexd",
+            source = %mcp_enable_source.as_str(),
+            "mcp auto-start disabled"
+        );
+    }
+
     let state = AppState {
+        repo_id,
+        legacy_repo_id,
         indexer: indexer.clone(),
         libs_indexer,
         security,
@@ -429,14 +605,19 @@ pub async fn serve(
         max_answer_tokens,
         llm_base_url,
         llm_default_model,
+        repos: repo_manager,
+        multi_repo: daemon_mode,
+        mcp_router,
     };
-    watcher::spawn(indexer.clone()).map_err(|err| {
-        StartupError::new(
-            "startup_state_invalid",
-            format!("failed to start file watcher: {err}"),
-        )
-        .with_hint("Verify the repo path is accessible and not on an unsupported filesystem.")
-    })?;
+    if !daemon_mode {
+        let _watcher = watcher::spawn(indexer.clone()).map_err(|err| {
+            StartupError::new(
+                "startup_state_invalid",
+                format!("failed to start file watcher: {err}"),
+            )
+            .with_hint("Verify the repo path is accessible and not on an unsupported filesystem.")
+        })?;
+    }
 
     let ip = if host.eq_ignore_ascii_case("localhost") {
         IpAddr::V4(Ipv4Addr::LOCALHOST)
@@ -586,57 +767,6 @@ pub async fn serve(
             "hook_socket_path is configured but unix sockets are not supported on this platform"
         );
     }
-    let mut mcp_child = if enable_mcp {
-        let result = mcp::spawn_for_serve(
-            mcp_repo_args,
-            log_level.clone(),
-            mcp_max_results,
-            mcp_rate_limit_per_min,
-            mcp_rate_limit_burst,
-            enable_memory,
-            ollama_base_url.clone(),
-            embedding_model.clone(),
-            embedding_timeout_ms,
-            mcp_auth_token.clone(),
-        )
-        .await;
-        match result {
-            Ok(child) => {
-                info!(
-                    target: "docdexd",
-                    source = %mcp_enable_source.as_str(),
-                    pid = child.id().unwrap_or(0),
-                    "mcp server started"
-                );
-                Some(child)
-            }
-            Err(err) => {
-                debug!(
-                    target: "docdexd",
-                    source = %mcp_enable_source.as_str(),
-                    error = ?err,
-                    "mcp server failed to start"
-                );
-                return Err(StartupError::new(
-                    "startup_mcp_failed",
-                    format!("mcp server failed to start: {err}"),
-                )
-                .with_hint("Install/build the docdex-mcp-server binary or disable MCP auto-start.")
-                .with_remediation(vec![
-                    "Build the MCP server: `cargo build -p docdex-mcp-server`.".to_string(),
-                    "Or disable MCP auto-start: `docdexd serve --disable-mcp` (or set DOCDEX_ENABLE_MCP=0).".to_string(),
-                ])
-                .into());
-            }
-        }
-    } else {
-        info!(
-            target: "docdexd",
-            source = %mcp_enable_source.as_str(),
-            "mcp auto-start disabled"
-        );
-        None
-    };
     if let Some(tls_config) = tls_config.clone() {
         let tls_acceptor = TlsAcceptor::from(tls_config);
         loop {

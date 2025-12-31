@@ -347,6 +347,9 @@ To provide the LLM with architectural context without blowing the token budget, 
   * **Collapsing:** All other directories are collapsed into a single leaf node ... \[N hidden files\].  
 * **Caching Strategy:**  
   * Because the project structure changes slowly, this "Mental Map" is generated once per session and cached in \~/.docdex/state/repos/\<hash\>/maps/\<agent\_id\>.json. It is invalidated only when the file watcher detects a directory creation/deletion event.
+* **Indexing & Watcher Rules:**  
+  * The indexer and watcher honor `.docdexignore` (first-party) alongside existing `.gitignore` rules to avoid ingesting unwanted files.  
+  * Singleton daemons apply an LRU watcher lifecycle (stop after ~2h idle, hibernate after ~24h) while keeping state on disk for fast remounts.
 
 ### **5.3 Visual Impact Explorer (TUI/GUI)**
 
@@ -408,9 +411,23 @@ The Chat API is updated to accept an agent\_id context, enabling the **Waterfall
   * When this parameter is present, the system queries profile.db for preferences matching the agent\_id \+ user query.  
   * These retrieved preferences are then filtered by the **Token Budgeting Strategy** (Section 2.3) and prepended to the System Prompt, enforcing the "Hierarchy of Truth."
 
+**Singleton Daemon Initialize (Install-and-Forget):**
+
+* **Endpoint:** POST /v1/initialize  
+* **Input:** { "rootUri": "file:///path/to/repo" }  
+* **Behavior:**  
+  * The singleton daemon resolves the repo fingerprint and mounts the repo state.  
+  * If new or stale, it starts an async index crawl and returns status "indexing" or "stale".  
+  * If ready, returns status "ready" and the repo_id for subsequent requests.
+  * The singleton daemon runs as `docdexd daemon` and uses a lockfile at `~/.docdex/daemon.lock`; CLI entrypoints auto-start it when missing.
+  * The npm installer auto-selects a port (prefers 3000, fallback 3210), updates `~/.docdex/config.toml`, injects MCP config into supported clients, and attempts OS startup registration (with a one-time warning if blocked).
+
 ### **6.3 MCP Tooling**
 
 New tools are exposed to Mcoda agents via the Model Context Protocol (MCP), allowing them to self-manage their memory.
+
+* **Transport:** Singleton daemons expose MCP over HTTP/SSE (`/sse`, `/v1/mcp`, `/v1/mcp/message`). Stdio MCP (`docdexd mcp`) remains for legacy/local-only clients.
+* **Repo routing:** MCP `initialize` with `rootUri`/`workspace_root` calls `/v1/initialize` and binds the MCP session to that repo; per-request `project_root`/`repo_path` can override the bound repo for `/v1/mcp`.
 
 * **docdex\_save\_preference**  
   * **Input Schema:**  
@@ -556,4 +573,3 @@ New tools are exposed to Mcoda agents via the Model Context Protocol (MCP), allo
   * The "Project Map" (Section 5.2) is expensive to generate. We strictly cache this JSON object. It is only regenerated if the file watcher detects a directory structure change (Create/Delete), never on simple file edits.
 
 ---
-

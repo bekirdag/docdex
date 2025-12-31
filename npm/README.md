@@ -56,9 +56,10 @@ docdexd chat --repo /path/to/repo --query "otp flow" --limit 5
 ```
 
 ## TL;DR for agents
-- Use Docdex for repo docs + code: run `docdexd index --repo .` once, then either `docdexd serve --repo . --host 127.0.0.1 --port 3210` for HTTP, or `docdexd mcp --repo . --log warn` for MCP.
+- Use Docdex for repo docs + code: run `docdexd index --repo .` once, then start the singleton daemon with `docdexd daemon --repo . --host 127.0.0.1 --port 3210` (shared MCP over `/sse`), or run legacy stdio MCP with `docdexd mcp --repo . --log warn`.
 - Add `.docdex/` to `.gitignore` so indexes aren’t committed.
-- When MCP-aware, register a server named `docdex` that runs `docdexd mcp --repo . --log warn --max-results 8`, then call `docdex_search` (or `docdex_web_research`) before coding and `docdex_index` when stale.
+- npm install: the installer auto-selects a port (prefers 3000, fallback 3210), updates `~/.docdex/config.toml`, and injects the MCP URL into supported client configs.
+- When MCP-aware, register a server named `docdex` that points to `http://localhost:<port>/sse` (shared MCP) or, for stdio-only clients, runs `docdexd mcp --repo . --log warn --max-results 8`.
 - Prefer summary-first (snippets=false), fetch specific snippets only when needed, keep queries short, and respect token estimates.
 
 ## Usage cheat sheet
@@ -231,27 +232,26 @@ Docdex is tool-agnostic. Drop-in recipe for agents/codegen tools:
 "You are building features for this repo. Use the following documentation snippets for context. If a snippet cites a path, keep that path in your response. Snippets:\n<insert docdex snippets here>\nQuestion: <your question>"
 ```
 
-### MCP (optional stdio server for MCP-aware clients)
-Docdex can run as an MCP tool provider over stdio; it does not replace the HTTP daemon—pick whichever fits your agent/editor. If your MCP client supports resource templates, Docdex advertises a `docdex_file` template (`docdex://{path}`) which delegates to `docdex_open`.
-- Run: `docdexd mcp --repo /path/to/repo --log warn --max-results 8` (alias: `--mcp-max-results 8`).
+### MCP (shared HTTP/SSE + legacy stdio)
+Docdex exposes MCP over the singleton daemon (`/sse`, `/v1/mcp`, `/v1/mcp/message`) so multiple clients can share one service. Legacy stdio MCP (`docdexd mcp`) remains available for local-only tooling. If your MCP client supports resource templates, Docdex advertises a `docdex_file` template (`docdex://{path}`) which delegates to `docdex_open`.
+- Shared MCP: `docdexd daemon --repo /path/to/repo --host 127.0.0.1 --port 3210` then point clients at `http://localhost:3210/sse`.
+- Legacy stdio: `docdexd mcp --repo /path/to/repo --log warn --max-results 8` (alias: `--mcp-max-results 8`).
 - Env override: `DOCDEX_MCP_MAX_RESULTS` clamps `docdex_search` results (min 1).
 - Packaging: `docdexd mcp` launches the companion `docdex-mcp-server` binary; build it with `cargo build -p docdex-mcp-server` or set `DOCDEX_MCP_SERVER_BIN` to the binary path.
-- Registering with MCP clients: add a server named `docdex` that runs `docdexd mcp --repo <repo> --log warn`. Example Codex config snippet:
+- Registering with MCP clients (shared HTTP/SSE): add a server named `docdex` that points to `http://localhost:<port>/sse`. Example JSON config snippet:
   ```json
   {
     "mcpServers": {
       "docdex": {
-        "command": "docdexd",
-        "args": ["mcp", "--repo", ".", "--log", "warn", "--max-results", "8"],
-        "env": {}
+        "url": "http://localhost:3210/sse"
       }
     }
   }
   ```
 - MCP quick add commands (popular agents):
-  - Docdex helper: `docdex mcp-add --repo /path/to/repo --log warn --max-results 8` auto-detects supported agents; add `--all` to attempt every known client and print manual steps for UI-only ones, or `--remove` to uninstall.
-  - Codex CLI: `codex mcp add docdex -- docdexd mcp --repo /path/to/repo --log warn --max-results 8`.
-  - Generic JSON config (Cursor, Continue, Windsurf, Cline, Claude Desktop devtools): add the `mcpServers.docdex` block above to your MCP config file (paths vary by client; most accept the `command`/`args` schema shown).
+  - Docdex helper (stdio): `docdex mcp-add --repo /path/to/repo --log warn --max-results 8` auto-detects supported agents; add `--all` to attempt every known client and print manual steps for UI-only ones, or `--remove` to uninstall.
+  - Codex CLI (stdio): `codex mcp add docdex -- docdexd mcp --repo /path/to/repo --log warn --max-results 8`.
+  - Generic JSON config (Cursor, Continue, Windsurf, Cline, Claude Desktop devtools): add the `mcpServers.docdex` block above to your MCP config file (paths vary by client; most accept the `url` schema shown).
   - Manual/stdio-only clients: start `docdexd mcp --repo /path/to/repo --log warn --max-results 8` yourself and point the client at that command/binary.
 - Tools exposed (CallToolResult content: result.content[0].text contains JSON):
   - `docdex_search` — args: `{ "query": "<text>", "limit": <int>, "force_web": <bool>, "diff": {...}, "project_root": "<path>", "repo_path": "<path alias>" }`.

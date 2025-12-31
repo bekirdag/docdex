@@ -11,7 +11,7 @@ use crate::error::{
     ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX,
     ERR_STALE_INDEX,
 };
-use crate::search::{json_error, resolve_repo_id, AppState};
+use crate::search::{json_error, resolve_repo_context, AppState};
 
 #[derive(Deserialize)]
 pub struct SymbolsQuery {
@@ -32,24 +32,20 @@ pub async fn symbols_handler(
     headers: HeaderMap,
     Query(params): Query<SymbolsQuery>,
 ) -> Response {
-    if let Err(err) = resolve_repo_id(
-        &headers,
-        params.repo_id.as_deref(),
-        None,
-        state.indexer.as_ref(),
-        false,
-    ) {
-        return json_error(err.status, err.code, err.message);
-    }
+    let repo = match resolve_repo_context(&state, &headers, params.repo_id.as_deref(), None, false)
+    {
+        Ok(repo) => repo,
+        Err(err) => return json_error(err.status, err.code, err.message),
+    };
 
-    if !state.indexer.config().symbols_enabled() {
+    if !repo.indexer.config().symbols_enabled() {
         return json_error(
             StatusCode::CONFLICT,
             ERR_MISSING_DEPENDENCY,
             "symbol extraction is unavailable",
         );
     }
-    if let Ok(true) = state.indexer.symbols_reindex_required() {
+    if let Ok(true) = repo.indexer.symbols_reindex_required() {
         return json_error(
             StatusCode::CONFLICT,
             ERR_STALE_INDEX,
@@ -79,7 +75,7 @@ pub async fn symbols_handler(
         }
     };
 
-    match state.indexer.read_symbols(&rel_path) {
+    match repo.indexer.read_symbols(&rel_path) {
         Ok(Some(payload)) => Json(payload).into_response(),
         Ok(None) => json_error(
             StatusCode::NOT_FOUND,
@@ -108,17 +104,13 @@ pub async fn symbols_status_handler(
     headers: HeaderMap,
     Query(params): Query<SymbolsStatusQuery>,
 ) -> Response {
-    if let Err(err) = resolve_repo_id(
-        &headers,
-        params.repo_id.as_deref(),
-        None,
-        state.indexer.as_ref(),
-        false,
-    ) {
-        return json_error(err.status, err.code, err.message);
-    }
+    let repo = match resolve_repo_context(&state, &headers, params.repo_id.as_deref(), None, false)
+    {
+        Ok(repo) => repo,
+        Err(err) => return json_error(err.status, err.code, err.message),
+    };
 
-    if !state.indexer.config().symbols_enabled() {
+    if !repo.indexer.config().symbols_enabled() {
         return json_error(
             StatusCode::CONFLICT,
             ERR_MISSING_DEPENDENCY,
@@ -126,7 +118,7 @@ pub async fn symbols_status_handler(
         );
     }
 
-    match state.indexer.symbols_parser_status() {
+    match repo.indexer.symbols_parser_status() {
         Ok(payload) => Json(payload).into_response(),
         Err(err) => {
             state.metrics.inc_error();

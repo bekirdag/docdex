@@ -9,3 +9,4 @@ pub mod index;
 pub mod libs;
 pub mod web;
 pub mod gates;
+pub mod initialize;

@@ -13,7 +13,7 @@ use crate::profiles::{
     check_any_type_usage, check_circular_dependencies, match_constraint_rules, ConstraintRule,
     PreferenceCategory,
 };
-use crate::search::{json_error, resolve_repo_id, AppState};
+use crate::search::{json_error, resolve_repo_context, AppState};
 
 #[derive(Deserialize)]
 pub struct HookValidateRequest {
@@ -61,11 +61,10 @@ pub async fn hook_validate_handler(
             false,
         );
     }
-    if let Err(err) =
-        resolve_repo_id(&headers, None, None, state.indexer.as_ref(), true)
-    {
-        return finalize(json_error(err.status, err.code, err.message), true);
-    }
+    let repo = match resolve_repo_context(&state, &headers, None, None, true) {
+        Ok(repo) => repo,
+        Err(err) => return finalize(json_error(err.status, err.code, err.message), true),
+    };
 
     let Some(profile_state) = state.profile_state.as_ref() else {
         return finalize(
@@ -123,7 +122,7 @@ pub async fn hook_validate_handler(
 
     let mut violations = Vec::new();
     if rules.contains(&ConstraintRule::NoAnyTypes) {
-        match check_any_type_usage(state.indexer.as_ref(), &files) {
+        match check_any_type_usage(repo.indexer.as_ref(), &files) {
             Ok(found) => violations.extend(found),
             Err(err) => {
                 state.metrics.inc_error();
@@ -141,7 +140,7 @@ pub async fn hook_validate_handler(
     }
 
     if rules.contains(&ConstraintRule::NoCircularDependencies) {
-        let store = crate::impact::ImpactGraphStore::new(state.indexer.state_dir());
+        let store = crate::impact::ImpactGraphStore::new(repo.indexer.state_dir());
         match store.read_edges() {
             Ok(edges) => {
                 violations.extend(check_circular_dependencies(&edges, &files));

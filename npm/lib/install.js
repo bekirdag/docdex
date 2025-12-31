@@ -19,6 +19,7 @@ const {
   UnsupportedPlatformError
 } = require("./platform");
 const { ManifestResolutionError, resolveCanonicalAssetForTargetTriple } = require("./release_manifest");
+const { runPostInstallSetup } = require("./postinstall_setup");
 
 const MAX_REDIRECTS = 5;
 const USER_AGENT = "docdex-installer";
@@ -1712,7 +1713,12 @@ async function runInstaller(options) {
 }
 
 async function main() {
-  await runInstaller();
+  const result = await runInstaller();
+  try {
+    await runPostInstallSetup({ binaryPath: result?.binaryPath });
+  } catch (err) {
+    console.warn(`[docdex] postinstall setup skipped: ${err?.message || err}`);
+  }
 }
 
 function appendInstallSafetyLines(lines, err) {

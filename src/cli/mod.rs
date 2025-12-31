@@ -1,11 +1,12 @@
 pub mod commands;
+pub(crate) mod daemon_spawn;
 pub(crate) mod http_client;
 
 use crate::config;
 use crate::config::RepoArgs;
 use crate::error::StartupError;
 use anyhow::Result;
-use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use clap::error::ErrorKind;
 use serde_json::json;
 use std::path::PathBuf;
@@ -32,6 +33,269 @@ pub(crate) enum CliDiffMode {
     Range,
 }
 
+#[derive(Args, Debug, Clone)]
+pub(crate) struct ServeArgs {
+    #[command(flatten)]
+    pub repo: RepoArgs,
+    #[arg(
+        long,
+        value_parser = config::non_empty_string,
+        help = "Bind host (defaults to server.http_bind_addr in config)"
+    )]
+    pub host: Option<String>,
+    #[arg(long, help = "Bind port (defaults to server.http_bind_addr in config)")]
+    pub port: Option<u16>,
+    #[arg(
+        long,
+        env = "DOCDEX_EXPOSE",
+        default_value_t = false,
+        action = ArgAction::SetTrue,
+        help = "Allow binding to non-loopback interfaces (requires --auth-token)"
+    )]
+    pub expose: bool,
+    #[arg(long, default_value = "info")]
+    pub log: String,
+    #[arg(
+        long,
+        env = "DOCDEX_TLS_CERT",
+        requires = "tls_key",
+        help = "TLS certificate PEM file for HTTPS (requires --tls-key)"
+    )]
+    pub tls_cert: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "DOCDEX_TLS_KEY",
+        requires = "tls_cert",
+        help = "TLS private key PEM file for HTTPS (requires --tls-cert)"
+    )]
+    pub tls_key: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "DOCDEX_CERTBOT_DOMAIN",
+        conflicts_with_all = ["tls_cert", "tls_key", "certbot_live_dir"],
+        help = "Use certbot live dir at /etc/letsencrypt/live/<domain> for TLS (implies HTTPS)"
+    )]
+    pub certbot_domain: Option<String>,
+    #[arg(
+        long,
+        env = "DOCDEX_CERTBOT_LIVE_DIR",
+        value_name = "PATH",
+        conflicts_with_all = ["tls_cert", "tls_key", "certbot_domain"],
+        help = "Use explicit certbot live dir containing fullchain.pem and privkey.pem (implies HTTPS)"
+    )]
+    pub certbot_live_dir: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "DOCDEX_INSECURE_HTTP",
+        default_value_t = false,
+        help = "Allow plain HTTP on non-loopback binds (use only behind a trusted proxy)"
+    )]
+    pub insecure: bool,
+    #[arg(
+        long,
+        env = "DOCDEX_REQUIRE_TLS",
+        default_value_t = true,
+        action = ArgAction::Set,
+        help = "Require TLS for non-loopback binds (set to false when TLS is already terminated by a trusted proxy)"
+    )]
+    pub require_tls: bool,
+    #[arg(
+        long,
+        env = "DOCDEX_AUTH_TOKEN",
+        help = "Optional bearer token required on HTTP requests (Authorization: Bearer ...)"
+    )]
+    pub auth_token: Option<String>,
+    #[arg(
+        long,
+        env = "DOCDEX_PREFLIGHT_CHECK",
+        default_value_t = false,
+        action = ArgAction::Set,
+        help = "Run `docdexd check` before serving; fail fast on missing dependencies"
+    )]
+    pub preflight_check: bool,
+    #[arg(
+        long,
+        env = "DOCDEX_MAX_LIMIT",
+        default_value_t = 8,
+        help = "Maximum allowed `limit` on search/snippet requests"
+    )]
+    pub max_limit: usize,
+    #[arg(
+        long,
+        env = "DOCDEX_MAX_QUERY_BYTES",
+        default_value_t = 4096,
+        help = "Maximum allowed query string size in bytes"
+    )]
+    pub max_query_bytes: usize,
+    #[arg(
+        long,
+        env = "DOCDEX_MAX_REQUEST_BYTES",
+        default_value_t = 16384,
+        help = "Maximum allowed request size (Content-Length or body hint) in bytes"
+    )]
+    pub max_request_bytes: usize,
+    #[arg(
+        long,
+        env = "DOCDEX_RATE_LIMIT_PER_MIN",
+        default_value_t = 0u32,
+        help = "Optional per-IP request rate limit per minute (0 disables rate limiting; defaults on in secure mode)"
+    )]
+    pub rate_limit_per_min: u32,
+    #[arg(
+        long,
+        env = "DOCDEX_RATE_LIMIT_BURST",
+        default_value_t = 0u32,
+        help = "Optional burst size for rate limiting (defaults to per-minute limit when unset/0; defaults on in secure mode)"
+    )]
+    pub rate_limit_burst: u32,
+    #[arg(
+        long,
+        env = "DOCDEX_STRIP_SNIPPET_HTML",
+        default_value_t = false,
+        action = ArgAction::SetTrue,
+        help = "Omit snippet HTML in responses (serves text-only snippets)"
+    )]
+    pub strip_snippet_html: bool,
+    #[arg(
+        long,
+        env = "DOCDEX_SECURE_MODE",
+        default_value_t = true,
+        action = ArgAction::Set,
+        help = "Secure defaults: enable default rate limits (loopback-only access is enforced unless --expose)"
+    )]
+    pub secure_mode: bool,
+    #[arg(
+        long,
+        env = "DOCDEX_DISABLE_SNIPPET_TEXT",
+        default_value_t = false,
+        help = "Omit snippet text/html from responses (only doc metadata is returned)"
+    )]
+    pub disable_snippet_text: bool,
+    #[arg(
+        long,
+        env = "DOCDEX_ENABLE_MEMORY",
+        default_value_t = false,
+        value_parser = clap::builder::BoolishValueParser::new(),
+        action = ArgAction::Set,
+        help = "Enable repo-scoped memory endpoints (/v1/memory/store, /v1/memory/recall)"
+    )]
+    pub enable_memory: bool,
+    #[arg(
+        long,
+        env = "DOCDEX_AGENT_ID",
+        value_name = "AGENT_ID",
+        help = "Default agent id for profile memory (used when requests omit agent_id)"
+    )]
+    pub agent_id: Option<String>,
+    #[arg(
+        long,
+        env = "DOCDEX_ENABLE_MCP",
+        default_value_t = false,
+        value_parser = clap::builder::BoolishValueParser::new(),
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        help = "Enable MCP server auto-start (default on unless disabled in config)"
+    )]
+    pub enable_mcp: bool,
+    #[arg(
+        long,
+        env = "DOCDEX_DISABLE_MCP",
+        default_value_t = false,
+        value_parser = clap::builder::BoolishValueParser::new(),
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        help = "Disable MCP server auto-start"
+    )]
+    pub disable_mcp: bool,
+    #[arg(
+        long,
+        env = "DOCDEX_EMBEDDING_BASE_URL",
+        help = "Embedding base URL (preferred over --ollama-base-url)"
+    )]
+    pub embedding_base_url: Option<String>,
+    #[arg(
+        long,
+        env = "DOCDEX_OLLAMA_BASE_URL",
+        default_value = "http://127.0.0.1:11434",
+        help = "Legacy embedding base URL (deprecated; use --embedding-base-url)"
+    )]
+    pub ollama_base_url: String,
+    #[arg(
+        long,
+        env = "DOCDEX_EMBEDDING_MODEL",
+        default_value = "nomic-embed-text",
+        help = "Embedding model identifier"
+    )]
+    pub embedding_model: String,
+    #[arg(
+        long,
+        env = "DOCDEX_EMBEDDING_TIMEOUT_MS",
+        default_value_t = 0u64,
+        help = "Embedding timeout in milliseconds (0 disables)"
+    )]
+    pub embedding_timeout_ms: u64,
+    #[arg(
+        long,
+        env = "DOCDEX_ACCESS_LOG",
+        default_value_t = true,
+        action = ArgAction::Set,
+        help = "Enable structured access logs"
+    )]
+    pub access_log: bool,
+    #[arg(
+        long,
+        env = "DOCDEX_AUDIT_LOG_PATH",
+        value_name = "PATH",
+        help = "Audit log path (defaults to <state-dir>/audit.log)"
+    )]
+    pub audit_log_path: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "DOCDEX_AUDIT_MAX_BYTES",
+        default_value_t = 5_000_000,
+        help = "Audit log max size before rotation"
+    )]
+    pub audit_max_bytes: u64,
+    #[arg(
+        long,
+        env = "DOCDEX_AUDIT_MAX_FILES",
+        default_value_t = 5,
+        help = "Audit log max rotated files"
+    )]
+    pub audit_max_files: u32,
+    #[arg(
+        long,
+        env = "DOCDEX_AUDIT_DISABLE",
+        default_value_t = false,
+        action = ArgAction::SetTrue,
+        help = "Disable audit logging"
+    )]
+    pub audit_disable: bool,
+    #[arg(long, env = "DOCDEX_RUN_AS_UID")]
+    pub run_as_uid: Option<u32>,
+    #[arg(long, env = "DOCDEX_RUN_AS_GID")]
+    pub run_as_gid: Option<u32>,
+    #[arg(long, env = "DOCDEX_CHROOT_DIR")]
+    pub chroot_dir: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "DOCDEX_UNSHARE_NET",
+        default_value_t = false,
+        action = ArgAction::SetTrue,
+        help = "Unshare network namespace (Linux-only)"
+    )]
+    pub unshare_net: bool,
+    #[arg(
+        long,
+        env = "DOCDEX_ALLOW_IPS",
+        value_delimiter = ',',
+        help = "Comma-separated IPs/CIDRs allowed to access the API"
+    )]
+    pub allow_ip: Vec<String>,
+}
+
 pub(crate) fn cli_local_mode() -> bool {
     match env::var("DOCDEX_CLI_LOCAL").ok().map(|v| v.trim().to_ascii_lowercase()) {
         Some(value)
@@ -53,269 +317,12 @@ pub(crate) enum Command {
     /// Serve HTTP API for search/snippets.
     Serve {
         #[command(flatten)]
-        repo: RepoArgs,
-        #[arg(
-            long,
-            value_parser = config::non_empty_string,
-            help = "Bind host (defaults to server.http_bind_addr in config)"
-        )]
-        host: Option<String>,
-        #[arg(long, help = "Bind port (defaults to server.http_bind_addr in config)")]
-        port: Option<u16>,
-        #[arg(
-            long,
-            env = "DOCDEX_EXPOSE",
-            default_value_t = false,
-            action = ArgAction::SetTrue,
-            help = "Allow binding to non-loopback interfaces (requires --auth-token)"
-        )]
-        expose: bool,
-        #[arg(long, default_value = "info")]
-        log: String,
-        #[arg(
-            long,
-            env = "DOCDEX_TLS_CERT",
-            requires = "tls_key",
-            help = "TLS certificate PEM file for HTTPS (requires --tls-key)"
-        )]
-        tls_cert: Option<PathBuf>,
-        #[arg(
-            long,
-            env = "DOCDEX_TLS_KEY",
-            requires = "tls_cert",
-            help = "TLS private key PEM file for HTTPS (requires --tls-cert)"
-        )]
-        tls_key: Option<PathBuf>,
-        #[arg(
-            long,
-            env = "DOCDEX_CERTBOT_DOMAIN",
-            conflicts_with_all = ["tls_cert", "tls_key", "certbot_live_dir"],
-            help = "Use certbot live dir at /etc/letsencrypt/live/<domain> for TLS (implies HTTPS)"
-        )]
-        certbot_domain: Option<String>,
-        #[arg(
-            long,
-            env = "DOCDEX_CERTBOT_LIVE_DIR",
-            value_name = "PATH",
-            conflicts_with_all = ["tls_cert", "tls_key", "certbot_domain"],
-            help = "Use explicit certbot live dir containing fullchain.pem and privkey.pem (implies HTTPS)"
-        )]
-        certbot_live_dir: Option<PathBuf>,
-        #[arg(
-            long,
-            env = "DOCDEX_INSECURE_HTTP",
-            default_value_t = false,
-            help = "Allow plain HTTP on non-loopback binds (use only behind a trusted proxy)"
-        )]
-        insecure: bool,
-        #[arg(
-            long,
-            env = "DOCDEX_REQUIRE_TLS",
-            default_value_t = true,
-            action = ArgAction::Set,
-            help = "Require TLS for non-loopback binds (set to false when TLS is already terminated by a trusted proxy)"
-        )]
-        require_tls: bool,
-        #[arg(
-            long,
-            env = "DOCDEX_AUTH_TOKEN",
-            help = "Optional bearer token required on HTTP requests (Authorization: Bearer ...)"
-        )]
-        auth_token: Option<String>,
-        #[arg(
-            long,
-            env = "DOCDEX_PREFLIGHT_CHECK",
-            default_value_t = false,
-            action = ArgAction::Set,
-            help = "Run `docdexd check` before serving; fail fast on missing dependencies"
-        )]
-        preflight_check: bool,
-        #[arg(
-            long,
-            env = "DOCDEX_MAX_LIMIT",
-            default_value_t = 8,
-            help = "Maximum allowed `limit` on search/snippet requests"
-        )]
-        max_limit: usize,
-        #[arg(
-            long,
-            env = "DOCDEX_MAX_QUERY_BYTES",
-            default_value_t = 4096,
-            help = "Maximum allowed query string size in bytes"
-        )]
-        max_query_bytes: usize,
-        #[arg(
-            long,
-            env = "DOCDEX_MAX_REQUEST_BYTES",
-            default_value_t = 16384,
-            help = "Maximum allowed request size (Content-Length or body hint) in bytes"
-        )]
-        max_request_bytes: usize,
-        #[arg(
-            long,
-            env = "DOCDEX_RATE_LIMIT_PER_MIN",
-            default_value_t = 0u32,
-            help = "Optional per-IP request rate limit per minute (0 disables rate limiting; defaults on in secure mode)"
-        )]
-        rate_limit_per_min: u32,
-        #[arg(
-            long,
-            env = "DOCDEX_RATE_LIMIT_BURST",
-            default_value_t = 0u32,
-            help = "Optional burst size for rate limiting (defaults to per-minute limit when unset/0; defaults on in secure mode)"
-        )]
-        rate_limit_burst: u32,
-        #[arg(
-            long,
-            env = "DOCDEX_STRIP_SNIPPET_HTML",
-            default_value_t = false,
-            action = ArgAction::SetTrue,
-            help = "Omit snippet HTML in responses (serves text-only snippets)"
-        )]
-        strip_snippet_html: bool,
-        #[arg(
-            long,
-            env = "DOCDEX_SECURE_MODE",
-            default_value_t = true,
-            action = ArgAction::Set,
-            help = "Secure defaults: enable default rate limits (loopback-only access is enforced unless --expose)"
-        )]
-        secure_mode: bool,
-        #[arg(
-            long,
-            env = "DOCDEX_DISABLE_SNIPPET_TEXT",
-            default_value_t = false,
-            help = "Omit snippet text/html from responses (only doc metadata is returned)"
-        )]
-        disable_snippet_text: bool,
-        #[arg(
-            long,
-            env = "DOCDEX_ENABLE_MEMORY",
-            default_value_t = false,
-            value_parser = clap::builder::BoolishValueParser::new(),
-            action = ArgAction::Set,
-            help = "Enable repo-scoped memory endpoints (/v1/memory/store, /v1/memory/recall)"
-        )]
-        enable_memory: bool,
-        #[arg(
-            long,
-            env = "DOCDEX_DEFAULT_AGENT_ID",
-            value_parser = config::non_empty_string,
-            help = "Default profile agent id when requests omit agent_id"
-        )]
-        agent_id: Option<String>,
-        #[arg(
-            long,
-            action = ArgAction::SetTrue,
-            conflicts_with = "disable_mcp",
-            help = "Enable MCP auto-start when serving (overrides config)"
-        )]
-        enable_mcp: bool,
-        #[arg(
-            long,
-            action = ArgAction::SetTrue,
-            conflicts_with = "enable_mcp",
-            help = "Disable MCP auto-start when serving (overrides config)"
-        )]
-        disable_mcp: bool,
-        #[arg(
-            long,
-            env = "DOCDEX_EMBEDDING_BASE_URL",
-            value_parser = config::non_empty_string,
-            help = "Ollama base URL for embedding calls (memory); takes precedence over --ollama-base-url when both are set"
-        )]
-        embedding_base_url: Option<String>,
-        #[arg(
-            long,
-            env = "DOCDEX_OLLAMA_BASE_URL",
-            default_value = "http://127.0.0.1:11434",
-            value_parser = config::non_empty_string,
-            help = "Ollama base URL for embedding calls (memory) (legacy; prefer --embedding-base-url / DOCDEX_EMBEDDING_BASE_URL)"
-        )]
-        ollama_base_url: String,
-        #[arg(
-            long,
-            env = "DOCDEX_EMBEDDING_MODEL",
-            default_value = "nomic-embed-text",
-            help = "Ollama embedding model identifier"
-        )]
-        embedding_model: String,
-        #[arg(
-            long,
-            env = "DOCDEX_EMBEDDING_TIMEOUT_MS",
-            default_value_t = 0u64,
-            help = "Embedding request timeout in milliseconds (0 disables)"
-        )]
-        embedding_timeout_ms: u64,
-        #[arg(
-            long,
-            env = "DOCDEX_ACCESS_LOG",
-            default_value_t = true,
-            action = ArgAction::Set,
-            help = "Emit structured access logs (redacts query values; disable with --access-log=false)"
-        )]
-        access_log: bool,
-        #[arg(
-            long,
-            env = "DOCDEX_AUDIT_LOG_PATH",
-            help = "Optional path to write audit log entries (defaults to <state-dir>/audit.log)"
-        )]
-        audit_log_path: Option<PathBuf>,
-        #[arg(
-            long,
-            env = "DOCDEX_AUDIT_MAX_BYTES",
-            default_value_t = 5_000_000,
-            help = "Max size of an audit log file before rotation"
-        )]
-        audit_max_bytes: u64,
-        #[arg(
-            long,
-            env = "DOCDEX_AUDIT_MAX_FILES",
-            default_value_t = 5,
-            help = "Number of audit log files to retain"
-        )]
-        audit_max_files: u32,
-        #[arg(
-            long,
-            env = "DOCDEX_AUDIT_DISABLE",
-            default_value_t = false,
-            help = "Disable audit logging"
-        )]
-        audit_disable: bool,
-        #[arg(
-            long,
-            env = "DOCDEX_RUN_AS_UID",
-            help = "(Unix only) Drop privileges to this numeric UID after startup preparation"
-        )]
-        run_as_uid: Option<u32>,
-        #[arg(
-            long,
-            env = "DOCDEX_RUN_AS_GID",
-            help = "(Unix only) Drop privileges to this numeric GID after startup preparation"
-        )]
-        run_as_gid: Option<u32>,
-        #[arg(
-            long,
-            env = "DOCDEX_CHROOT",
-            value_name = "PATH",
-            help = "(Unix only) chroot to PATH before serving; repo/state paths must be reachable inside the jail"
-        )]
-        chroot_dir: Option<PathBuf>,
-        #[arg(
-            long,
-            env = "DOCDEX_UNSHARE_NET",
-            default_value_t = false,
-            help = "(Linux only) unshare network namespace before serving (requires CAP_SYS_ADMIN/root; no-op elsewhere)"
-        )]
-        unshare_net: bool,
-        #[arg(
-            long,
-            env = "DOCDEX_ALLOW_IPS",
-            value_delimiter = ',',
-            value_parser = config::non_empty_string,
-            help = "Optional comma-separated IPs/CIDRs allowed to access the HTTP API (default: loopback-only unless --expose; allow all when list is empty in exposed mode)"
-        )]
-        allow_ip: Vec<String>,
+        args: ServeArgs,
+    },
+    /// Run singleton daemon service (multi-repo).
+    Daemon {
+        #[command(flatten)]
+        args: ServeArgs,
     },
     /// Print help for all commands and flags.
     HelpAll,
@@ -932,13 +939,60 @@ pub async fn run() -> Result<()> {
             );
         }
     };
-    if !matches!(cli.command, Command::Check | Command::HelpAll) {
-        config::AppConfig::load_default().map_err(|err| {
-            StartupError::new("startup_config_invalid", format!("failed to load config: {err}"))
-                .with_hint("Ensure ~/.docdex is writable and HOME is set correctly.")
-        })?;
+    let config = if !matches!(cli.command, Command::HelpAll) {
+        Some(
+            config::AppConfig::load_default().map_err(|err| {
+                StartupError::new("startup_config_invalid", format!("failed to load config: {err}"))
+                    .with_hint("Ensure ~/.docdex is writable and HOME is set correctly.")
+            })?,
+        )
+    } else {
+        None
+    };
+    if should_ensure_daemon(&cli.command) && !cli_local_mode() {
+        if let Some(config) = config.as_ref() {
+            let repo_hint = repo_hint_for_command(&cli.command);
+            daemon_spawn::ensure_daemon_running(config, repo_hint)?;
+        }
     }
     commands::dispatch(cli.command).await
+}
+
+fn should_ensure_daemon(command: &Command) -> bool {
+    !matches!(command, Command::Serve { .. } | Command::Daemon { .. } | Command::HelpAll)
+}
+
+fn repo_hint_for_command(command: &Command) -> Option<PathBuf> {
+    match command {
+        Command::SelfCheck { repo, .. } => Some(repo.repo_root()),
+        Command::Index { repo, .. } => Some(repo.repo_root()),
+        Command::Ingest { repo, .. } => Some(repo.repo_root()),
+        Command::Chat { repo, .. } => Some(repo.repo_root()),
+        Command::LibsIngest { repo, .. } => Some(repo.repo_root()),
+        Command::LibsDiscover { repo, .. } => Some(repo.repo_root()),
+        Command::Libs { command } => match command {
+            LibsCommand::Discover { repo, .. } => Some(repo.repo_root()),
+            LibsCommand::Fetch { repo, .. } => Some(repo.repo_root()),
+        },
+        Command::Dag { command } => match command {
+            DagCommand::View { repo, .. } => Some(repo.repo_root()),
+        },
+        Command::SymbolsStatus { repo } => Some(repo.repo_root()),
+        Command::ImpactDiagnostics { repo, .. } => Some(repo.repo_root()),
+        Command::RunTests { repo, .. } => Some(repo.repo_root()),
+        Command::Tui { repo } => repo.as_ref().map(|root| {
+            root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
+        }),
+        Command::MemoryStore { repo, .. } => Some(repo.repo_root()),
+        Command::MemoryRecall { repo, .. } => Some(repo.repo_root()),
+        Command::WebRag { repo, .. } => Some(repo.repo_root()),
+        Command::Repo { command } => match command {
+            RepoCommand::Inspect { repo, .. } => Some(repo.repo_root()),
+            RepoCommand::Reassociate { repo, .. } => Some(repo.repo_root()),
+        },
+        Command::Mcp { repo, .. } => Some(repo.repo_root()),
+        _ => None,
+    }
 }
 
 pub fn render_error_and_exit(err: anyhow::Error) -> ! {
@@ -985,3 +1039,6 @@ pub fn render_error_and_exit(err: anyhow::Error) -> ! {
     eprintln!("{err}");
     std::process::exit(1);
 }
+
+#[cfg(test)]
+mod tests;

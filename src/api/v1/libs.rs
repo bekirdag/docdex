@@ -11,7 +11,7 @@ use tracing::warn;
 use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT};
 use crate::libs;
 use crate::libs_source_resolver;
-use crate::search::{json_error, resolve_repo_id, AppState};
+use crate::search::{json_error, resolve_repo_context, AppState};
 
 #[derive(Deserialize)]
 pub struct LibsRequest {
@@ -26,15 +26,11 @@ pub async fn libs_discover_handler(
     headers: HeaderMap,
     axum::Json(payload): axum::Json<LibsRequest>,
 ) -> Response {
-    if let Err(err) = resolve_repo_id(
-        &headers,
-        payload.repo_id.as_deref(),
-        None,
-        state.indexer.as_ref(),
-        false,
-    ) {
-        return json_error(err.status, err.code, err.message);
-    }
+    let repo = match resolve_repo_context(&state, &headers, payload.repo_id.as_deref(), None, false)
+    {
+        Ok(repo) => repo,
+        Err(err) => return json_error(err.status, err.code, err.message),
+    };
 
     let explicit = match payload.sources_path.as_deref().map(str::trim) {
         Some(value) if value.is_empty() => {
@@ -57,7 +53,8 @@ pub async fn libs_discover_handler(
         None => None,
     };
 
-    let resolver = libs_source_resolver::LibsSourceResolver::new(state.indexer.repo_root().to_path_buf());
+    let resolver =
+        libs_source_resolver::LibsSourceResolver::new(repo.indexer.repo_root().to_path_buf());
     match resolver.resolve(explicit.as_ref()) {
         Ok(resolution) => Json(resolution).into_response(),
         Err(err) => {
@@ -77,15 +74,11 @@ pub async fn libs_fetch_handler(
     headers: HeaderMap,
     axum::Json(payload): axum::Json<LibsRequest>,
 ) -> Response {
-    if let Err(err) = resolve_repo_id(
-        &headers,
-        payload.repo_id.as_deref(),
-        None,
-        state.indexer.as_ref(),
-        false,
-    ) {
-        return json_error(err.status, err.code, err.message);
-    }
+    let repo = match resolve_repo_context(&state, &headers, payload.repo_id.as_deref(), None, false)
+    {
+        Ok(repo) => repo,
+        Err(err) => return json_error(err.status, err.code, err.message),
+    };
 
     let explicit = match payload.sources_path.as_deref().map(str::trim) {
         Some(value) if value.is_empty() => {
@@ -108,7 +101,8 @@ pub async fn libs_fetch_handler(
         None => None,
     };
 
-    let resolver = libs_source_resolver::LibsSourceResolver::new(state.indexer.repo_root().to_path_buf());
+    let resolver =
+        libs_source_resolver::LibsSourceResolver::new(repo.indexer.repo_root().to_path_buf());
     let resolution = match resolver.resolve(explicit.as_ref()) {
         Ok(resolution) => resolution,
         Err(err) => {
@@ -136,7 +130,7 @@ pub async fn libs_fetch_handler(
         );
     }
 
-    let libs_dir = libs::libs_state_dir_from_index_state_dir(state.indexer.state_dir());
+    let libs_dir = libs::libs_state_dir_from_index_state_dir(repo.indexer.state_dir());
     let indexer = match libs::LibsIndexer::open_or_create(libs_dir) {
         Ok(indexer) => indexer,
         Err(err) => {
@@ -149,7 +143,7 @@ pub async fn libs_fetch_handler(
             );
         }
     };
-    match indexer.ingest_sources(state.indexer.repo_root(), &sources_file.sources) {
+    match indexer.ingest_sources(repo.indexer.repo_root(), &sources_file.sources) {
         Ok(report) => Json(report).into_response(),
         Err(err) => {
             state.metrics.inc_error();
@@ -168,15 +162,11 @@ pub async fn libs_ingest_handler(
     headers: HeaderMap,
     axum::Json(payload): axum::Json<LibsRequest>,
 ) -> Response {
-    if let Err(err) = resolve_repo_id(
-        &headers,
-        payload.repo_id.as_deref(),
-        None,
-        state.indexer.as_ref(),
-        false,
-    ) {
-        return json_error(err.status, err.code, err.message);
-    }
+    let repo = match resolve_repo_context(&state, &headers, payload.repo_id.as_deref(), None, false)
+    {
+        Ok(repo) => repo,
+        Err(err) => return json_error(err.status, err.code, err.message),
+    };
 
     let sources_path = match payload.sources_path.as_deref().map(str::trim) {
         Some(value) if !value.is_empty() => value,
@@ -200,7 +190,7 @@ pub async fn libs_ingest_handler(
         }
     };
 
-    let libs_dir = libs::libs_state_dir_from_index_state_dir(state.indexer.state_dir());
+    let libs_dir = libs::libs_state_dir_from_index_state_dir(repo.indexer.state_dir());
     let indexer = match libs::LibsIndexer::open_or_create(libs_dir) {
         Ok(indexer) => indexer,
         Err(err) => {
@@ -213,7 +203,7 @@ pub async fn libs_ingest_handler(
             );
         }
     };
-    match indexer.ingest_sources(state.indexer.repo_root(), &sources_file.sources) {
+    match indexer.ingest_sources(repo.indexer.repo_root(), &sources_file.sources) {
         Ok(report) => Json(report).into_response(),
         Err(err) => {
             state.metrics.inc_error();

@@ -14,6 +14,7 @@
 - scripts/test_hooks_end_to_end.sh
 - scripts/test_mcp_http.sh
 - scripts/test_run_all.sh
+- scripts/test_single_daemon.sh
 - scripts/test_release_artifacts.sh
 - scripts/test_npm_install_matrix.sh
 - scripts/load_test_http.sh
@@ -69,6 +70,8 @@
 - tests/mcp_check.rs
 - tests/mcp.rs
 - tests/interactive_contracts_latency.rs
+- tests/http_initialize.rs
+- tests/http_multi_repo.rs
 - tests/profile_http_save.rs
 - tests/profile_http_list_search.rs
 - tests/profile_http_errors.rs
@@ -81,6 +84,7 @@
 - tests/memory_profile_http_contracts.rs
 - tests/mcp_initialize_defaults.rs
 - tests/mcp_profile_tool_contracts.rs
+- tests/mcp_http_sse.rs
 - tests/cli_profile_add_search.rs
 - tests/cli_profile_import_export.rs
 - tests/cli_profile_save_http.rs
@@ -111,6 +115,10 @@
 - src/ollama/tests.rs
 - src/cli/http_client/tests.rs
 - src/repo_manager/resolution/tests.rs
+- src/cli/tests.rs
+- src/daemon/lock.rs
+- src/daemon/multi_repo.rs
+- src/index/mod.rs
 
 ## Benchmarks
 - benches/indexing_bench.rs
@@ -153,6 +161,7 @@
 - npm/test/installer_recovery.test.js
 - npm/test/platform.test.js
 - npm/test/installer_interrupted_installs.test.js
+- npm/test/postinstall_setup.test.js
 
 ## Test Fixtures
 - npm/test/fixtures/archive/fake-archive.bin

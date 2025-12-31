@@ -10,7 +10,7 @@ use tracing::warn;
 use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT};
 use crate::indexer;
 use crate::libs;
-use crate::search::{json_error, resolve_repo_id, AppState};
+use crate::search::{json_error, resolve_repo_context, AppState};
 
 #[derive(Deserialize)]
 pub struct IndexRebuildRequest {
@@ -32,15 +32,11 @@ pub async fn index_rebuild_handler(
     headers: HeaderMap,
     axum::Json(payload): axum::Json<IndexRebuildRequest>,
 ) -> Response {
-    if let Err(err) = resolve_repo_id(
-        &headers,
-        payload.repo_id.as_deref(),
-        None,
-        state.indexer.as_ref(),
-        false,
-    ) {
-        return json_error(err.status, err.code, err.message);
-    }
+    let repo = match resolve_repo_context(&state, &headers, payload.repo_id.as_deref(), None, false)
+    {
+        Ok(repo) => repo,
+        Err(err) => return json_error(err.status, err.code, err.message),
+    };
 
     let options = match payload.libs_sources.as_deref().map(str::trim) {
         Some(value) if value.is_empty() => {
@@ -66,7 +62,7 @@ pub async fn index_rebuild_handler(
         None => indexer::IndexingOptions::none(),
     };
 
-    if let Err(err) = state.indexer.reindex_all().await {
+    if let Err(err) = repo.indexer.reindex_all().await {
         state.metrics.inc_error();
         warn!(target: "docdexd", error = ?err, "index rebuild failed");
         return json_error(
@@ -79,7 +75,7 @@ pub async fn index_rebuild_handler(
     let libs_report = match options.libs_sources {
         None => None,
         Some(sources) => {
-            let libs_dir = libs::libs_state_dir_from_index_state_dir(state.indexer.state_dir());
+            let libs_dir = libs::libs_state_dir_from_index_state_dir(repo.indexer.state_dir());
             let libs_indexer = match libs::LibsIndexer::open_or_create(libs_dir) {
                 Ok(indexer) => indexer,
                 Err(err) => {
@@ -92,7 +88,7 @@ pub async fn index_rebuild_handler(
                     );
                 }
             };
-            match libs_indexer.ingest_sources(state.indexer.repo_root(), &sources.sources) {
+            match libs_indexer.ingest_sources(repo.indexer.repo_root(), &sources.sources) {
                 Ok(report) => Some(report),
                 Err(err) => {
                     state.metrics.inc_error();
@@ -107,10 +103,10 @@ pub async fn index_rebuild_handler(
         }
     };
 
-    let docs_indexed = state.indexer.stats().ok().map(|stats| stats.num_docs);
+    let docs_indexed = repo.indexer.stats().ok().map(|stats| stats.num_docs);
     let report = indexer::IndexingReport {
-        repo_root: state.indexer.repo_root().to_path_buf(),
-        state_dir: state.indexer.state_dir().to_path_buf(),
+        repo_root: repo.indexer.repo_root().to_path_buf(),
+        state_dir: repo.indexer.state_dir().to_path_buf(),
         docs_indexed,
         libs_report,
     };
@@ -122,15 +118,11 @@ pub async fn index_ingest_handler(
     headers: HeaderMap,
     axum::Json(payload): axum::Json<IndexIngestRequest>,
 ) -> Response {
-    if let Err(err) = resolve_repo_id(
-        &headers,
-        payload.repo_id.as_deref(),
-        None,
-        state.indexer.as_ref(),
-        false,
-    ) {
-        return json_error(err.status, err.code, err.message);
-    }
+    let repo = match resolve_repo_context(&state, &headers, payload.repo_id.as_deref(), None, false)
+    {
+        Ok(repo) => repo,
+        Err(err) => return json_error(err.status, err.code, err.message),
+    };
 
     let file = payload.file.trim();
     if file.is_empty() {
@@ -143,8 +135,8 @@ pub async fn index_ingest_handler(
     let file_path = PathBuf::from(file);
 
     match indexer::ingest_file(
-        state.indexer.repo_root().to_path_buf(),
-        state.indexer.config().clone(),
+        repo.indexer.repo_root().to_path_buf(),
+        repo.indexer.config().clone(),
         file_path,
     )
     .await

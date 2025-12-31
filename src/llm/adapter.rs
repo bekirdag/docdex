@@ -85,11 +85,9 @@ pub fn resolve_agent_adapter(agent: &McodaAgent) -> Result<LlmAdapter> {
     let model = resolve_model(agent);
     let config = agent.config.as_ref();
     let adapter = match adapter_type.as_str() {
-        "ollama-remote" => LlmAdapter::OllamaRemote(OllamaRemoteClient::new(
-            model,
-            adapter_type,
-            config,
-        )?),
+        "ollama-remote" => {
+            LlmAdapter::OllamaRemote(OllamaRemoteClient::new(model, adapter_type, config)?)
+        }
         "ollama-cli" => LlmAdapter::OllamaCli(OllamaCliClient::new(model, adapter_type)),
         "codex-cli" => LlmAdapter::CodexCli(CodexCliClient::new(model, adapter_type)),
         "openai-cli" => LlmAdapter::OpenAiCli(CodexCliClient::new(model, adapter_type)),
@@ -515,7 +513,10 @@ impl LlmClient for OpenAiApiClient {
             let output = data
                 .pointer("/choices/0/message/content")
                 .and_then(|value| value.as_str())
-                .or_else(|| data.pointer("/choices/0/text").and_then(|value| value.as_str()))
+                .or_else(|| {
+                    data.pointer("/choices/0/text")
+                        .and_then(|value| value.as_str())
+                })
                 .unwrap_or_default()
                 .trim()
                 .to_string();
@@ -551,9 +552,7 @@ impl ZhipuApiClient {
         let base_url = normalize_base_url(config_string(config, "baseUrl"))
             .unwrap_or_else(|| DEFAULT_ZHIPU_BASE_URL.to_string());
         if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
-            return Err(anyhow!(
-                "Zhipu baseUrl must start with http:// or https://"
-            ));
+            return Err(anyhow!("Zhipu baseUrl must start with http:// or https://"));
         }
         let verify_tls = config_bool(config, "verifyTls");
         Ok(Self {
@@ -618,7 +617,10 @@ impl LlmClient for ZhipuApiClient {
             let output = data
                 .pointer("/choices/0/message/content")
                 .and_then(|value| value.as_str())
-                .or_else(|| data.pointer("/choices/0/message/reasoning_content").and_then(|value| value.as_str()))
+                .or_else(|| {
+                    data.pointer("/choices/0/message/reasoning_content")
+                        .and_then(|value| value.as_str())
+                })
                 .or_else(|| data.get("output_text").and_then(|value| value.as_str()))
                 .unwrap_or_default()
                 .trim()
@@ -643,8 +645,12 @@ fn extract_codex_message(raw: &str) -> Option<String> {
         if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
             let event_type = value.get("type").and_then(|val| val.as_str());
             let item = value.get("item");
-            let item_type = item.and_then(|val| val.get("type")).and_then(|val| val.as_str());
-            let item_text = item.and_then(|val| val.get("text")).and_then(|val| val.as_str());
+            let item_type = item
+                .and_then(|val| val.get("type"))
+                .and_then(|val| val.as_str());
+            let item_text = item
+                .and_then(|val| val.get("text"))
+                .and_then(|val| val.as_str());
             if event_type == Some("item.completed") && item_type == Some("agent_message") {
                 if let Some(text) = item_text {
                     message = Some(text.to_string());
@@ -711,10 +717,7 @@ fn config_headers(config: Option<&Value>) -> HashMap<String, String> {
     headers
 }
 
-fn build_auth_headers(
-    headers: &HashMap<String, String>,
-    api_key: &str,
-) -> HashMap<String, String> {
+fn build_auth_headers(headers: &HashMap<String, String>, api_key: &str) -> HashMap<String, String> {
     let mut out = headers.clone();
     out.entry("Authorization".to_string())
         .or_insert_with(|| format!("Bearer {api_key}"));
@@ -728,15 +731,17 @@ fn to_header_map(headers: &HashMap<String, String>) -> Result<reqwest::header::H
     for (key, value) in headers {
         let name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
             .context("invalid header name")?;
-        let value = reqwest::header::HeaderValue::from_str(value)
-            .context("invalid header value")?;
+        let value =
+            reqwest::header::HeaderValue::from_str(value).context("invalid header value")?;
         map.insert(name, value);
     }
     Ok(map)
 }
 
 fn normalize_base_url(value: Option<String>) -> Option<String> {
-    value.map(|raw| raw.trim().trim_end_matches('/').to_string()).filter(|raw| !raw.is_empty())
+    value
+        .map(|raw| raw.trim().trim_end_matches('/').to_string())
+        .filter(|raw| !raw.is_empty())
 }
 
 fn merge_extra_body(target: &mut Map<String, Value>, extra: Option<&Value>) {

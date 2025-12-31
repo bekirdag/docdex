@@ -75,14 +75,19 @@ impl RepoManager {
             Duration::from_secs(seconds)
         }
 
-        let idle_timeout = duration_from_env("DOCDEX_REPO_IDLE_SECONDS", Duration::from_secs(2 * 60 * 60));
-        let mut hibernate_timeout =
-            duration_from_env("DOCDEX_REPO_HIBERNATE_SECONDS", Duration::from_secs(24 * 60 * 60));
+        let idle_timeout =
+            duration_from_env("DOCDEX_REPO_IDLE_SECONDS", Duration::from_secs(2 * 60 * 60));
+        let mut hibernate_timeout = duration_from_env(
+            "DOCDEX_REPO_HIBERNATE_SECONDS",
+            Duration::from_secs(24 * 60 * 60),
+        );
         if hibernate_timeout < idle_timeout {
             hibernate_timeout = idle_timeout + Duration::from_secs(60);
         }
-        let cleanup_interval =
-            duration_from_env("DOCDEX_REPO_CLEANUP_INTERVAL_SECONDS", Duration::from_secs(600));
+        let cleanup_interval = duration_from_env(
+            "DOCDEX_REPO_CLEANUP_INTERVAL_SECONDS",
+            Duration::from_secs(600),
+        );
         Self {
             repos: RwLock::new(HashMap::new()),
             legacy_repos: RwLock::new(HashMap::new()),
@@ -249,13 +254,9 @@ impl RepoManager {
         }
 
         let config = match self.shared_state_dir.clone() {
-            Some(base) => IndexConfig::with_overrides(
-                &repo_root,
-                Some(base),
-                Vec::new(),
-                Vec::new(),
-                true,
-            )?,
+            Some(base) => {
+                IndexConfig::with_overrides(&repo_root, Some(base), Vec::new(), Vec::new(), true)?
+            }
             None => IndexConfig::for_repo(&repo_root)?,
         };
         let has_index = config.state_dir().join("meta.json").exists();

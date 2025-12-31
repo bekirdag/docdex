@@ -257,12 +257,10 @@ impl BrowserSession {
 
     pub async fn wait_for_output(self, timeout: Duration) -> Result<Output, BrowserSessionError> {
         let _ = self.inner.cleanup_started.swap(true, Ordering::AcqRel);
-        let mut child = self
-            .inner
-            .child
-            .lock()
-            .take()
-            .ok_or_else(|| BrowserSessionError::CleanupFailed("child already taken".to_string()))?;
+        let mut child =
+            self.inner.child.lock().take().ok_or_else(|| {
+                BrowserSessionError::CleanupFailed("child already taken".to_string())
+            })?;
         let mut stdout_task = None;
         let mut stderr_task = None;
         if let Some(stdout) = child.stdout.take() {
@@ -355,17 +353,13 @@ impl BrowserSession {
     }
 }
 
-async fn read_all<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
-    mut reader: R,
-) -> Vec<u8> {
+async fn read_all<R: tokio::io::AsyncRead + Unpin + Send + 'static>(mut reader: R) -> Vec<u8> {
     let mut buf = Vec::new();
     let _ = reader.read_to_end(&mut buf).await;
     buf
 }
 
-async fn join_bytes(
-    handle: Option<tokio::task::JoinHandle<Vec<u8>>>,
-) -> Vec<u8> {
+async fn join_bytes(handle: Option<tokio::task::JoinHandle<Vec<u8>>>) -> Vec<u8> {
     match handle {
         Some(handle) => handle.await.unwrap_or_default(),
         None => Vec::new(),
@@ -1162,11 +1156,12 @@ mod tests {
             .map(|events| events.lock().unwrap().clone())
             .unwrap_or_default();
         let started = started || test_events.iter().any(|v| v == "browser_session_started");
-        let cleaned = cleaned || test_events.iter().any(|v| v == "browser_session_cleanup_done");
+        let cleaned = cleaned
+            || test_events
+                .iter()
+                .any(|v| v == "browser_session_cleanup_done");
         if !(started && cleaned) {
-            eprintln!(
-                "[browser-session-test] events={events:?} test_events={test_events:?}"
-            );
+            eprintln!("[browser-session-test] events={events:?} test_events={test_events:?}");
         }
         assert!(
             started && cleaned,

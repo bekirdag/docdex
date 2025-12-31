@@ -170,13 +170,17 @@ impl StatePaths {
     }
 }
 
-pub fn resolve_state_paths(repo_root: &Path, state_dir_override: Option<PathBuf>) -> Result<StatePaths> {
+pub fn resolve_state_paths(
+    repo_root: &Path,
+    state_dir_override: Option<PathBuf>,
+) -> Result<StatePaths> {
     let repo_root = canonical_repo_root(repo_root)?;
     let base_resolution = resolve_state_base(&repo_root, state_dir_override)?;
 
     let fingerprint = crate::repo_manager::repo_fingerprint_sha256(&repo_root)?;
-    let state_key = crate::repo_manager::resolve_shared_state_key(&repo_root, &base_resolution.base_dir)?
-        .state_key;
+    let state_key =
+        crate::repo_manager::resolve_shared_state_key(&repo_root, &base_resolution.base_dir)?
+            .state_key;
 
     if let Some(scoped_key) = base_resolution.scoped_state_key {
         if scoped_key != state_key {
@@ -190,7 +194,9 @@ pub fn resolve_state_paths(repo_root: &Path, state_dir_override: Option<PathBuf>
                 existing_state_key: scoped_key,
                 requested_state_key: state_key.clone(),
             };
-            return Err(repo_state_mismatch_error(&repo_root, Some(hint.as_path()), &identity).into());
+            return Err(
+                repo_state_mismatch_error(&repo_root, Some(hint.as_path()), &identity).into(),
+            );
         }
     }
 
@@ -217,8 +223,11 @@ pub(crate) fn resolve_state_paths_for_inspect(
     let base_resolution = resolve_state_base(&repo_root, state_dir_override)?;
 
     let fingerprint = crate::repo_manager::repo_fingerprint_sha256(&repo_root)?;
-    let state_key = crate::repo_manager::resolve_shared_state_key_lenient(&repo_root, &base_resolution.base_dir)?
-        .state_key;
+    let state_key = crate::repo_manager::resolve_shared_state_key_lenient(
+        &repo_root,
+        &base_resolution.base_dir,
+    )?
+    .state_key;
 
     let layout = StateLayout::new(base_resolution.base_dir);
     let repo_state_root = layout.repos_dir().join(&state_key);
@@ -235,7 +244,10 @@ pub(crate) fn resolve_state_paths_for_inspect(
     })
 }
 
-fn resolve_state_base(repo_root: &Path, state_dir_override: Option<PathBuf>) -> Result<StateBaseResolution> {
+fn resolve_state_base(
+    repo_root: &Path,
+    state_dir_override: Option<PathBuf>,
+) -> Result<StateBaseResolution> {
     let resolved = match state_dir_override {
         Some(custom) => {
             if custom.is_absolute() {
@@ -247,7 +259,8 @@ fn resolve_state_base(repo_root: &Path, state_dir_override: Option<PathBuf>) -> 
         None => default_state_root()?,
     };
 
-    if let Some((base_dir, scoped_key, _)) = crate::repo_manager::split_scoped_state_dir(&resolved) {
+    if let Some((base_dir, scoped_key, _)) = crate::repo_manager::split_scoped_state_dir(&resolved)
+    {
         return Ok(StateBaseResolution {
             base_dir,
             scoped_state_key: scoped_key,
@@ -383,7 +396,10 @@ pub(crate) fn repo_state_mismatch_error(
     if known_canonical_path.is_none() {
         known_canonical_path = canonical_path_from_repo_meta(repo_root);
     }
-    if let crate::repo_manager::RepoIdentityError::CanonicalPathCollision { canonical_path, .. } = identity {
+    if let crate::repo_manager::RepoIdentityError::CanonicalPathCollision {
+        canonical_path, ..
+    } = identity
+    {
         known_canonical_path = Some(canonical_path.clone());
     }
     if let crate::repo_manager::RepoIdentityError::ReassociationRequired {
@@ -480,9 +496,7 @@ mod tests {
             .join(paths_a.state_key())
             .join("index");
         let err = resolve_state_paths(repo_b.path(), Some(scoped)).unwrap_err();
-        let app = err
-            .downcast_ref::<AppError>()
-            .expect("expected AppError");
+        let app = err.downcast_ref::<AppError>().expect("expected AppError");
         assert_eq!(app.code, ERR_REPO_STATE_MISMATCH);
         Ok(())
     }

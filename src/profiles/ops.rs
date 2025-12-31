@@ -140,12 +140,7 @@ fn truncate_to_tokens(text: &str, max_tokens: usize) -> (String, bool) {
 mod tests {
     use super::*;
 
-    fn candidate(
-        id: &str,
-        score: f32,
-        last_updated: i64,
-        content: &str,
-    ) -> ProfileCandidate {
+    fn candidate(id: &str, score: f32, last_updated: i64, content: &str) -> ProfileCandidate {
         ProfileCandidate {
             id: id.to_string(),
             agent_id: "agent".to_string(),

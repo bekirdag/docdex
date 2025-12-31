@@ -32,7 +32,12 @@ fn index_repo(state_root: &Path, home: &Path, repo_root: &Path) -> Result<(), Bo
     let output = run_docdex(
         state_root,
         home,
-        ["index", "--repo", repo_str.as_str(), "--enable-symbol-extraction=true"],
+        [
+            "index",
+            "--repo",
+            repo_str.as_str(),
+            "--enable-symbol-extraction=true",
+        ],
     )?;
     if !output.status.success() {
         return Err(format!(
@@ -90,10 +95,7 @@ fn symbol_ranking_prefers_struct_over_const() -> Result<(), Box<dyn Error>> {
         .and_then(|hit| hit.get("path").and_then(|v| v.as_str()))
         .ok_or("missing path in first hit")?;
     if first_path != "src/struct.rs" {
-        return Err(format!(
-            "expected struct.rs to rank first, got {first_path}"
-        )
-        .into());
+        return Err(format!("expected struct.rs to rank first, got {first_path}").into());
     }
     Ok(())
 }
@@ -105,10 +107,7 @@ fn ast_ranking_prefers_function_over_class() -> Result<(), Box<dyn Error>> {
     let home = TempDir::new()?;
     let src_dir = repo.path().join("src");
     std::fs::create_dir_all(&src_dir)?;
-    std::fs::write(
-        src_dir.join("func.rs"),
-        "// function class\nfn run() {}\n",
-    )?;
+    std::fs::write(src_dir.join("func.rs"), "// function class\nfn run() {}\n")?;
     std::fs::write(
         src_dir.join("class.ts"),
         "// function class\nclass Widget {}\n",
@@ -150,10 +149,7 @@ fn ast_ranking_prefers_function_over_class() -> Result<(), Box<dyn Error>> {
         .and_then(|hit| hit.get("path").and_then(|v| v.as_str()))
         .ok_or("missing path in first hit")?;
     if first_path != "src/func.rs" {
-        return Err(format!(
-            "expected func.rs to rank first, got {first_path}"
-        )
-        .into());
+        return Err(format!("expected func.rs to rank first, got {first_path}").into());
     }
     Ok(())
 }

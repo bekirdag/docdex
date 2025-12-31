@@ -129,9 +129,7 @@ fn build_config(base_url: Url, request_timeout: Duration) -> WebConfig {
 }
 
 fn assert_app_error(err: &anyhow::Error, expected_code: &str, message_contains: &str) {
-    let app = err
-        .downcast_ref::<AppError>()
-        .expect("expected AppError");
+    let app = err.downcast_ref::<AppError>().expect("expected AppError");
     assert_eq!(app.code, expected_code);
     assert!(
         app.message.contains(message_contains),

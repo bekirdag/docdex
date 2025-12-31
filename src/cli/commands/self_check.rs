@@ -1,6 +1,6 @@
 use crate::audit;
-use crate::hardware;
 use crate::config::RepoArgs;
+use crate::hardware;
 use crate::index;
 use crate::search;
 use crate::util;
@@ -28,10 +28,7 @@ pub async fn run(
         "hardware summary: {}",
         hardware::format_hardware_summary(&profile)
     );
-    println!(
-        "hardware recommendation: {}",
-        profile.recommended_tier()
-    );
+    println!("hardware recommendation: {}", profile.recommended_tier());
     let repo_root = repo.repo_root();
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
@@ -57,9 +54,14 @@ pub async fn run(
     }
     for term in all_terms {
         let search_limit = limit.saturating_add(1);
-        let hits =
-            search::run_query(&indexer, None, &term, search_limit, search::RankingSurface::Search)
-                .await?;
+        let hits = search::run_query(
+            &indexer,
+            None,
+            &term,
+            search_limit,
+            search::RankingSurface::Search,
+        )
+        .await?;
         if !hits.hits.is_empty() {
             let more = hits.hits.len() > limit;
             let sample: Vec<String> = hits
@@ -80,7 +82,10 @@ pub async fn run(
             "findings": empty,
         });
         let _ = fs::write(&report_path, serde_json::to_string_pretty(&report)?);
-        println!("no sensitive terms found (report: {})", report_path.display());
+        println!(
+            "no sensitive terms found (report: {})",
+            report_path.display()
+        );
         let _ = audit::AuditLogger::new(index_config.state_dir().join("audit.log"), 5_000_000, 5)
             .map(|logger| logger.log("self_check", "pass", None, None, None, None, None, None));
         return Ok(());
@@ -112,8 +117,8 @@ pub async fn run(
         }
         eprintln!("{line}");
     }
-    let _ = audit::AuditLogger::new(index_config.state_dir().join("audit.log"), 5_000_000, 5)
-        .map(|logger| {
+    let _ = audit::AuditLogger::new(index_config.state_dir().join("audit.log"), 5_000_000, 5).map(
+        |logger| {
             logger.log(
                 "self_check",
                 "fail",
@@ -124,6 +129,7 @@ pub async fn run(
                 None,
                 Some("sensitive terms found"),
             )
-        });
+        },
+    );
     Err(anyhow!("sensitive terms detected in index"))
 }

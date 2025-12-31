@@ -221,7 +221,11 @@ pub fn resolve_state_root(global_state_dir: Option<PathBuf>) -> Result<PathBuf> 
     Ok(Path::new(&home).join(".docdex").join("state"))
 }
 
-fn load_from_sqlite(repo_state_root: &Path, path: &Path, session_id: &str) -> Result<Option<Vec<DagNode>>> {
+fn load_from_sqlite(
+    repo_state_root: &Path,
+    path: &Path,
+    session_id: &str,
+) -> Result<Option<Vec<DagNode>>> {
     let lock_path = dag_repo::dag_lock_path(repo_state_root);
     let lock_dir = dag_repo::locks_dir_from_repo_state_root(repo_state_root);
     crate::state_layout::ensure_state_dir_secure(&lock_dir)?;
@@ -315,12 +319,14 @@ fn parse_nodes_from_value(value: &Value, session_id: Option<&str>) -> Vec<DagNod
         .collect()
 }
 
-fn parse_node_value(value: &Value, session_id: Option<&str>, fallback_idx: usize) -> Option<DagNode> {
+fn parse_node_value(
+    value: &Value,
+    session_id: Option<&str>,
+    fallback_idx: usize,
+) -> Option<DagNode> {
     let obj = value.as_object()?;
     if let Some(filter) = session_id {
-        let session_value = obj
-            .get("session_id")
-            .or_else(|| obj.get("sessionId"));
+        let session_value = obj.get("session_id").or_else(|| obj.get("sessionId"));
         let Some(session_value) = session_value.and_then(value_as_string) else {
             return None;
         };
@@ -460,5 +466,4 @@ mod tests {
         assert!(result.warnings.iter().any(|w| w.contains("Offline cache")));
         Ok(())
     }
-
 }

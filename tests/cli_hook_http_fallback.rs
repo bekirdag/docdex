@@ -21,7 +21,11 @@ fn write_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn write_config(home_dir: &Path, global_state_dir: &Path, socket_path: &Path) -> Result<(), Box<dyn Error>> {
+fn write_config(
+    home_dir: &Path,
+    global_state_dir: &Path,
+    socket_path: &Path,
+) -> Result<(), Box<dyn Error>> {
     let config_dir = home_dir.join(".docdex");
     fs::create_dir_all(&config_dir)?;
     let config_path = config_dir.join("config.toml");
@@ -39,7 +43,13 @@ struct ServerHarness {
 }
 
 impl ServerHarness {
-    fn spawn(state_root: &Path, home_dir: &Path, repo_root: &Path, host: &str, port: u16) -> Result<Self, Box<dyn Error>> {
+    fn spawn(
+        state_root: &Path,
+        home_dir: &Path,
+        repo_root: &Path,
+        host: &str,
+        port: u16,
+    ) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo_root.to_string_lossy().to_string();
         let child = Command::new(docdex_bin())
             .env("DOCDEX_STATE_DIR", state_root)
@@ -86,7 +96,8 @@ fn cli_hook_falls_back_to_http_when_socket_missing() -> Result<(), Box<dyn Error
     };
     let host = "127.0.0.1";
     let base_url = format!("http://{host}:{port}");
-    let mut server = ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port)?;
+    let mut server =
+        ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port)?;
 
     let status = Command::new(docdex_bin())
         .env("HOME", home_dir.path())
@@ -98,7 +109,10 @@ fn cli_hook_falls_back_to_http_when_socket_missing() -> Result<(), Box<dyn Error
             repo.path().to_string_lossy().as_ref(),
         ])
         .status()?;
-    assert!(status.success(), "expected hook to succeed via HTTP fallback");
+    assert!(
+        status.success(),
+        "expected hook to succeed via HTTP fallback"
+    );
 
     server.shutdown();
     Ok(())

@@ -3,8 +3,8 @@ use anyhow::Result;
 use notify::event::{CreateKind, ModifyKind, RemoveKind};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -39,12 +39,7 @@ pub fn spawn(indexer: Arc<Indexer>) -> Result<WatcherHandle> {
     let config = indexer.config().clone();
     let stop_flag = Arc::new(AtomicBool::new(false));
     let (tx, mut rx) = mpsc::unbounded_channel::<WatchAction>();
-    let watcher_thread = start_blocking_watcher(
-        repo_root.clone(),
-        config,
-        tx,
-        stop_flag.clone(),
-    )?;
+    let watcher_thread = start_blocking_watcher(repo_root.clone(), config, tx, stop_flag.clone())?;
     info!(
         target: "docdexd",
         repo = %repo_root.display(),

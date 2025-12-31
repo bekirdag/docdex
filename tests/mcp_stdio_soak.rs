@@ -62,14 +62,8 @@ fn mcp_stdio_soak_no_timeouts() -> Result<(), Box<dyn Error>> {
         .stderr(Stdio::null())
         .spawn()?;
 
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or("failed to open MCP stdin")?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("failed to open MCP stdout")?;
+    let mut stdin = child.stdin.take().ok_or("failed to open MCP stdin")?;
+    let stdout = child.stdout.take().ok_or("failed to open MCP stdout")?;
 
     let (tx, rx) = mpsc::channel::<String>();
     thread::spawn(move || {

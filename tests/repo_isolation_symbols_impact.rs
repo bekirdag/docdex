@@ -120,10 +120,7 @@ fn write_repo_a(root: &Path) -> Result<(), Box<dyn Error>> {
         root.join("src").join("lib.rs"),
         "mod util;\npub fn alpha() {}\n",
     )?;
-    fs::write(
-        root.join("src").join("util.rs"),
-        "pub fn util() {}\n",
-    )?;
+    fs::write(root.join("src").join("util.rs"), "pub fn util() {}\n")?;
     Ok(())
 }
 

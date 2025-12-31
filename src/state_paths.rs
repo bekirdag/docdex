@@ -140,7 +140,8 @@ impl RepoStatePaths {
 }
 
 pub fn default_state_base_dir() -> Result<PathBuf> {
-    let home = home_dir().ok_or_else(|| anyhow!("unable to resolve home directory for state dir"))?;
+    let home =
+        home_dir().ok_or_else(|| anyhow!("unable to resolve home directory for state dir"))?;
     Ok(home.join(".docdex").join("state"))
 }
 

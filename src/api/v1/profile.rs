@@ -6,9 +6,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::error::{ERR_EMBEDDING_FAILED, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_PROFILE_DISABLED};
-use crate::profiles::{Agent, Preference, PreferenceCategory};
+use crate::error::{
+    ERR_EMBEDDING_FAILED, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_PROFILE_DISABLED,
+};
 use crate::profiles::evolution::{build_ollama_evolution_client, EvolutionEngine};
+use crate::profiles::{Agent, Preference, PreferenceCategory};
 use crate::search::{json_error, AppState};
 use uuid::Uuid;
 
@@ -153,7 +155,10 @@ pub async fn profile_list_handler(
     };
     Json(ProfileListResponse {
         agents,
-        preferences: preferences.into_iter().map(PreferenceRecord::from).collect(),
+        preferences: preferences
+            .into_iter()
+            .map(PreferenceRecord::from)
+            .collect(),
     })
     .into_response()
 }
@@ -338,7 +343,10 @@ pub async fn profile_export_handler(State(state): State<AppState>) -> Response {
         schema_version: profile_state.manager.schema_version(),
         embedding_dim: profile_state.manager.embedding_dim(),
         agents,
-        preferences: preferences.into_iter().map(PreferenceRecord::from).collect(),
+        preferences: preferences
+            .into_iter()
+            .map(PreferenceRecord::from)
+            .collect(),
     })
     .into_response()
 }
@@ -376,21 +384,19 @@ pub async fn profile_save_handler(
             );
         }
     }
-    let llm_client = match build_ollama_evolution_client(
-        &state.llm_base_url,
-        &state.llm_default_model,
-    ) {
-        Ok(client) => client,
-        Err(err) => {
-            state.metrics.inc_error();
-            warn!(target: "docdexd", error = ?err, "profile evolution LLM unavailable");
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                ERR_INTERNAL_ERROR,
-                "profile evolution unavailable",
-            );
-        }
-    };
+    let llm_client =
+        match build_ollama_evolution_client(&state.llm_base_url, &state.llm_default_model) {
+            Ok(client) => client,
+            Err(err) => {
+                state.metrics.inc_error();
+                warn!(target: "docdexd", error = ?err, "profile evolution LLM unavailable");
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ERR_INTERNAL_ERROR,
+                    "profile evolution unavailable",
+                );
+            }
+        };
     let Some(embedder) = profile_state.embedder.clone() else {
         return json_error(
             StatusCode::SERVICE_UNAVAILABLE,

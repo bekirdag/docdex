@@ -1,5 +1,7 @@
 use crate::config;
-use crate::error::{repo_resolution_details, AppError, ERR_MISSING_DEPENDENCY, ERR_MISSING_REPO_PATH};
+use crate::error::{
+    repo_resolution_details, AppError, ERR_MISSING_DEPENDENCY, ERR_MISSING_REPO_PATH,
+};
 use anyhow::{Context, Result};
 use serde_json::json;
 use std::env;
@@ -42,7 +44,9 @@ pub fn run(repo: Option<PathBuf>) -> Result<()> {
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
 
-    let status = cmd.status().with_context(|| format!("launch {TUI_BIN_NAME}"));
+    let status = cmd
+        .status()
+        .with_context(|| format!("launch {TUI_BIN_NAME}"));
     let status = match status {
         Ok(status) => status,
         Err(err)
@@ -68,7 +72,9 @@ pub fn run(repo: Option<PathBuf>) -> Result<()> {
     if status.success() {
         Ok(())
     } else {
-        Err(anyhow::anyhow!("{TUI_BIN_NAME} exited with status {status}"))
+        Err(anyhow::anyhow!(
+            "{TUI_BIN_NAME} exited with status {status}"
+        ))
     }
 }
 

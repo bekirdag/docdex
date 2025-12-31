@@ -150,7 +150,10 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
     assert!(init_ack.status().is_success());
 
     let init_resp = read_next_sse(&mut reader).ok_or("missing initialize response")?;
-    assert!(init_resp.get("result").is_some(), "initialize result missing");
+    assert!(
+        init_resp.get("result").is_some(),
+        "initialize result missing"
+    );
 
     let tools_payload = json!({
         "jsonrpc": "2.0",
@@ -166,7 +169,10 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
     assert!(tools_ack.status().is_success());
 
     let tools_resp = read_next_sse(&mut reader).ok_or("missing tools/list response")?;
-    assert!(tools_resp.get("result").is_some(), "tools/list result missing");
+    assert!(
+        tools_resp.get("result").is_some(),
+        "tools/list result missing"
+    );
 
     let stats_payload = json!({
         "jsonrpc": "2.0",
@@ -241,7 +247,10 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         .send()?;
     assert!(direct_resp.status().is_success());
     let direct_body: serde_json::Value = direct_resp.json()?;
-    assert!(direct_body.get("result").is_some(), "direct initialize result missing");
+    assert!(
+        direct_body.get("result").is_some(),
+        "direct initialize result missing"
+    );
 
     Ok(())
 }

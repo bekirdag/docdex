@@ -166,7 +166,11 @@ impl DomainPacer {
         let now = Instant::now();
         let mut state = self.next_allowed.lock();
         let next_allowed = state.get(host).copied().unwrap_or(now);
-        let scheduled = if next_allowed > now { next_allowed } else { now };
+        let scheduled = if next_allowed > now {
+            next_allowed
+        } else {
+            now
+        };
         let next = scheduled + min_delay;
         if scheduled > now {
             wait = scheduled.duration_since(now);

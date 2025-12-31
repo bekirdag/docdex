@@ -66,7 +66,10 @@ fn check_skips_mcp_when_disabled() -> Result<(), Box<dyn Error>> {
     assert!(output.status.success(), "docdexd check should succeed");
     let report = parse_report(&output.stdout)?;
     let check = find_check(&report, "mcp_ready").ok_or("missing mcp_ready check")?;
-    assert_eq!(check.get("status").and_then(|v| v.as_str()), Some("skipped"));
+    assert_eq!(
+        check.get("status").and_then(|v| v.as_str()),
+        Some("skipped")
+    );
     Ok(())
 }
 

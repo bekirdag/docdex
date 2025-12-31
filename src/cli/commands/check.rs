@@ -1,13 +1,13 @@
 use crate::config;
 use crate::dag::logging as dag_logging;
 use crate::hardware;
-use crate::memory::MemoryStore;
-use crate::profiles::ProfileManager;
 use crate::mcp;
+use crate::memory::MemoryStore;
 use crate::ollama;
 use crate::orchestrator::web;
-use crate::symbols::SymbolsStore;
+use crate::profiles::ProfileManager;
 use crate::state_layout::StateLayout;
+use crate::symbols::SymbolsStore;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -286,7 +286,11 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
                             "spawn_error": probe.error,
                         }));
                     }
-                    let status = if spawn_ok == Some(false) { "fail" } else { "ok" };
+                    let status = if spawn_ok == Some(false) {
+                        "fail"
+                    } else {
+                        "ok"
+                    };
                     let message = if spawn_ok == Some(false) {
                         "mcp server binary resolved but spawn check failed".to_string()
                     } else if mcp_spawn_check {
@@ -335,8 +339,7 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
         let provider = config.llm.provider.trim();
         let provider_is_ollama = provider.eq_ignore_ascii_case("ollama");
         let agent_override = env_agent_override();
-        let memory_enabled =
-            env_boolish("DOCDEX_ENABLE_MEMORY").unwrap_or(config.memory.enabled);
+        let memory_enabled = env_boolish("DOCDEX_ENABLE_MEMORY").unwrap_or(config.memory.enabled);
         let allow_non_ollama = agent_override.is_some();
         let max_answer_tokens = config.llm.max_answer_tokens;
         if max_answer_tokens == 0 {
@@ -412,14 +415,11 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
                 }
                 match ollama::list_models(base_url, timeout).await {
                     Ok(installed) => {
-                        if !default_model.is_empty()
-                            && !model_installed(&installed, default_model)
+                        if !default_model.is_empty() && !model_installed(&installed, default_model)
                         {
                             missing.push(default_model.to_string());
                         }
-                        if !embed_model.is_empty()
-                            && !model_installed(&installed, embed_model)
-                        {
+                        if !embed_model.is_empty() && !model_installed(&installed, embed_model) {
                             missing.push(embed_model.to_string());
                         }
                         if missing.is_empty() {
@@ -554,10 +554,8 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
                                 Err(err) => {
                                     fail_count += 1;
                                     if failures.len() < 5 {
-                                        failures.push(format!(
-                                            "{}: {err}",
-                                            repo_state_root.display()
-                                        ));
+                                        failures
+                                            .push(format!("{}: {err}", repo_state_root.display()));
                                     }
                                 }
                             }
@@ -567,9 +565,7 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
                         let message = if fail_count == 0 {
                             format!("memory.db writable for {ok_count}/{total} repos")
                         } else {
-                            format!(
-                                "memory.db check failed for {fail_count}/{total} repos"
-                            )
+                            format!("memory.db check failed for {fail_count}/{total} repos")
                         };
                         checks.push(CheckItem {
                             name: "memory_db",
@@ -723,10 +719,7 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
                             Err(err) => {
                                 fail_count += 1;
                                 if failures.len() < 5 {
-                                    failures.push(format!(
-                                        "{}: {err}",
-                                        repo_state_root.display()
-                                    ));
+                                    failures.push(format!("{}: {err}", repo_state_root.display()));
                                 }
                             }
                         }
@@ -758,8 +751,7 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
                 checks.push(CheckItem {
                     name: "dag_db",
                     status: "fail",
-                    message: "dag.db check failed: global_state_dir is not configured"
-                        .to_string(),
+                    message: "dag.db check failed: global_state_dir is not configured".to_string(),
                     details: None,
                 });
                 success = false;
@@ -943,16 +935,11 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
                             Err(err) => {
                                 fail_count += 1;
                                 if failures.len() < 5 {
-                                    failures.push(format!(
-                                        "{}: {err}",
-                                        repo_state_root.display()
-                                    ));
+                                    failures.push(format!("{}: {err}", repo_state_root.display()));
                                 }
                                 if parser_failures.len() < 5 {
-                                    parser_failures.push(format!(
-                                        "{}: {err}",
-                                        repo_state_root.display()
-                                    ));
+                                    parser_failures
+                                        .push(format!("{}: {err}", repo_state_root.display()));
                                 }
                             }
                         }
@@ -1094,10 +1081,7 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
                             Err(err) => {
                                 fail_count += 1;
                                 if failures.len() < 5 {
-                                    failures.push(format!(
-                                        "{}: {err}",
-                                        repo_state_root.display()
-                                    ));
+                                    failures.push(format!("{}: {err}", repo_state_root.display()));
                                 }
                             }
                         }
@@ -1107,9 +1091,7 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
                     let message = if fail_count == 0 {
                         format!("impact_graph.json writable for {ok_count}/{total} repos")
                     } else {
-                        format!(
-                            "impact_graph.json check failed for {fail_count}/{total} repos"
-                        )
+                        format!("impact_graph.json check failed for {fail_count}/{total} repos")
                     };
                     checks.push(CheckItem {
                         name: "impact_graph",
@@ -1216,22 +1198,19 @@ fn load_repo_state_entries(state_dir: &Path) -> Result<Vec<RepoStateEntry>> {
     let mut entries = Vec::new();
     match fs::read_to_string(&registry_path) {
         Ok(raw) => {
-            let parsed: RepoRegistryFile =
-                serde_json::from_str(&raw).with_context(|| format!("parse {}", registry_path.display()))?;
+            let parsed: RepoRegistryFile = serde_json::from_str(&raw)
+                .with_context(|| format!("parse {}", registry_path.display()))?;
             for entry in parsed.repos.values() {
                 let trimmed = entry.state_key.trim();
                 if !trimmed.is_empty() {
-                    let canonical_path = entry
-                        .canonical_path
-                        .as_deref()
-                        .and_then(|value| {
-                            let trimmed = value.trim();
-                            if trimmed.is_empty() {
-                                None
-                            } else {
-                                Some(PathBuf::from(trimmed))
-                            }
-                        });
+                    let canonical_path = entry.canonical_path.as_deref().and_then(|value| {
+                        let trimmed = value.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(PathBuf::from(trimmed))
+                        }
+                    });
                     entries.push(RepoStateEntry {
                         state_key: trimmed.to_string(),
                         canonical_path,
@@ -1397,11 +1376,7 @@ fn probe_mcp_spawn(path: &Path, timeout: Duration) -> McpSpawnProbe {
                         ok: false,
                         status: "timeout",
                         exit_code: None,
-                        timeout_ms: Some(
-                            timeout
-                                .as_millis()
-                                .min(u128::from(u64::MAX)) as u64,
-                        ),
+                        timeout_ms: Some(timeout.as_millis().min(u128::from(u64::MAX)) as u64),
                         error: None,
                     };
                 }

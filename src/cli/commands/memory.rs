@@ -1,5 +1,5 @@
-use crate::config::{self, RepoArgs};
 use crate::cli::http_client::CliHttpClient;
+use crate::config::{self, RepoArgs};
 use crate::error;
 use crate::index;
 use crate::memory;
@@ -47,16 +47,17 @@ pub async fn run_store(
     let embedding = embedder.embed(&text).await?;
     let user_metadata = match metadata {
         None => None,
-        Some(raw) => Some(serde_json::from_str::<serde_json::Value>(&raw).map_err(
-            |err| {
+        Some(raw) => Some(
+            serde_json::from_str::<serde_json::Value>(&raw).map_err(|err| {
                 error::AppError::new(
                     error::ERR_INVALID_ARGUMENT,
                     format!("invalid --metadata JSON: {err}"),
                 )
-            },
-        )?),
+            })?,
+        ),
     };
-    let metadata = memory::inject_embedding_metadata(user_metadata, embedder.provider(), embedder.model());
+    let metadata =
+        memory::inject_embedding_metadata(user_metadata, embedder.provider(), embedder.model());
     let store = memory::MemoryStore::new(index_config.state_dir());
     let created_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
@@ -131,29 +132,27 @@ pub async fn run_recall(
     Ok(())
 }
 
-async fn run_store_via_http(
-    repo: RepoArgs,
-    text: String,
-    metadata: Option<String>,
-) -> Result<()> {
+async fn run_store_via_http(repo: RepoArgs, text: String, metadata: Option<String>) -> Result<()> {
     let repo_root = repo.repo_root();
     let user_metadata = match metadata {
         None => None,
-        Some(raw) => Some(serde_json::from_str::<serde_json::Value>(&raw).map_err(
-            |err| {
+        Some(raw) => Some(
+            serde_json::from_str::<serde_json::Value>(&raw).map_err(|err| {
                 error::AppError::new(
                     error::ERR_INVALID_ARGUMENT,
                     format!("invalid --metadata JSON: {err}"),
                 )
-            },
-        )?),
+            })?,
+        ),
     };
     let payload = serde_json::json!({
         "text": text,
         "metadata": user_metadata,
     });
     let client = CliHttpClient::new()?;
-    let mut req = client.request(Method::POST, "/v1/memory/store").json(&payload);
+    let mut req = client
+        .request(Method::POST, "/v1/memory/store")
+        .json(&payload);
     req = client.with_repo(req, &repo_root)?;
     let resp = req.send().await?;
     emit_json_or_error(resp, "memory store").await?;
@@ -167,7 +166,9 @@ async fn run_recall_via_http(repo: RepoArgs, query: String, top_k: usize) -> Res
         "top_k": top_k,
     });
     let client = CliHttpClient::new()?;
-    let mut req = client.request(Method::POST, "/v1/memory/recall").json(&payload);
+    let mut req = client
+        .request(Method::POST, "/v1/memory/recall")
+        .json(&payload);
     req = client.with_repo(req, &repo_root)?;
     let resp = req.send().await?;
     emit_json_or_error(resp, "memory recall").await?;

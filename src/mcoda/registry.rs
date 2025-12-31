@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Context, Result};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
+use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::STANDARD as Base64Engine;
 use base64::Engine;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
@@ -199,7 +199,9 @@ fn load_capabilities(conn: &Connection) -> Result<HashMap<String, Vec<String>>> 
          FROM agent_capabilities
          ORDER BY capability ASC",
     )?;
-    let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
     for row in rows {
         let (agent_id, capability) = row?;
@@ -229,7 +231,9 @@ fn load_models(conn: &Connection) -> Result<HashMap<String, Vec<McodaAgentModel>
     for row in rows {
         let (agent_id, model_name, is_default, config_raw) = row?;
         let config = match config_raw {
-            Some(raw) => Some(serde_json::from_str(&raw).context("parse agent_models.config_json")?),
+            Some(raw) => {
+                Some(serde_json::from_str(&raw).context("parse agent_models.config_json")?)
+            }
             None => None,
         };
         let model = McodaAgentModel {
@@ -264,7 +268,9 @@ fn load_auth(conn: &Connection, key_path: &Path) -> Result<HashMap<String, Mcoda
         raw.push(row?);
     }
 
-    let needs_key = raw.iter().any(|(_, secret, _, _)| !secret.trim().is_empty());
+    let needs_key = raw
+        .iter()
+        .any(|(_, secret, _, _)| !secret.trim().is_empty());
     let key = if needs_key {
         match load_mcoda_key(key_path) {
             Ok(key) => Some(key),

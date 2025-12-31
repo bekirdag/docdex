@@ -9,7 +9,10 @@ fn docdex_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
-fn run_docdex<I, S>(state_root: &std::path::Path, args: I) -> Result<std::process::Output, Box<dyn Error>>
+fn run_docdex<I, S>(
+    state_root: &std::path::Path,
+    args: I,
+) -> Result<std::process::Output, Box<dyn Error>>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,

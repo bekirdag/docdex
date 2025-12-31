@@ -113,9 +113,7 @@ pub fn run_setup(ollama_path: Option<PathBuf>) -> Result<()> {
             );
         }
     } else {
-        println!(
-            "no recommended model fits detected hardware; keeping existing config defaults"
-        );
+        println!("no recommended model fits detected hardware; keeping existing config defaults");
     }
 
     let installed = match list_installed_models(&bin) {

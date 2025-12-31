@@ -49,15 +49,15 @@ pub async fn index_rebuild_handler(
         Some(value) => {
             let path = PathBuf::from(value);
             match indexer::IndexingOptions::from_sources_path(path.as_path()) {
-            Ok(options) => options,
-            Err(err) => {
-                return json_error(
-                    StatusCode::BAD_REQUEST,
-                    ERR_INVALID_ARGUMENT,
-                    format!("invalid libs_sources: {err}"),
-                )
+                Ok(options) => options,
+                Err(err) => {
+                    return json_error(
+                        StatusCode::BAD_REQUEST,
+                        ERR_INVALID_ARGUMENT,
+                        format!("invalid libs_sources: {err}"),
+                    )
+                }
             }
-        }
         }
         None => indexer::IndexingOptions::none(),
     };

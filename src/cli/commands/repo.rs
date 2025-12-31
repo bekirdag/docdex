@@ -93,9 +93,7 @@ pub(crate) fn run(command: super::super::RepoCommand) -> Result<()> {
                             known_canonical,
                             steps,
                         );
-                        if let (Some(extra), Some(obj)) =
-                            (extra_details, details.as_object_mut())
-                        {
+                        if let (Some(extra), Some(obj)) = (extra_details, details.as_object_mut()) {
                             if let Some(extra_obj) = extra.as_object() {
                                 for (k, v) in extra_obj {
                                     obj.insert(k.clone(), v.clone());

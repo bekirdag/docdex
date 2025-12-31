@@ -111,9 +111,7 @@ fn ast_search_supports_any_and_all_modes() -> Result<(), Box<dyn Error>> {
         wait_for_health("127.0.0.1", port)?;
         let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
 
-        let url_any = format!(
-            "http://127.0.0.1:{port}/v1/ast/search?kinds=function_item&limit=10"
-        );
+        let url_any = format!("http://127.0.0.1:{port}/v1/ast/search?kinds=function_item&limit=10");
         let resp_any = client.get(&url_any).send()?;
         if !resp_any.status().is_success() {
             return Err(format!("ast search any failed: {}", resp_any.status()).into());

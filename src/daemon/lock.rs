@@ -1,11 +1,11 @@
 use anyhow::{anyhow, Context, Result};
 use fs4::FileExt;
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::env;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonLockMetadata {
@@ -83,7 +83,9 @@ pub fn read_metadata(path: &Path) -> Result<Option<DaemonLockMetadata>> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err.into()),
     };
-    read_metadata_from_file(&file).map(Some).or_else(|_| Ok(None))
+    read_metadata_from_file(&file)
+        .map(Some)
+        .or_else(|_| Ok(None))
 }
 
 fn read_metadata_from_file(file: &File) -> Result<DaemonLockMetadata> {

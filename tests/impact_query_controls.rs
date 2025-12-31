@@ -679,11 +679,7 @@ fn impact_diagnostics_filters_by_file() -> Result<(), Box<dyn Error>> {
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/v1/graph/impact/diagnostics");
-    let resp: Value = client
-        .get(&url)
-        .query(&[("file", "a.ts")])
-        .send()?
-        .json()?;
+    let resp: Value = client.get(&url).query(&[("file", "a.ts")]).send()?.json()?;
     let diagnostics = resp
         .get("diagnostics")
         .and_then(|v| v.as_array())

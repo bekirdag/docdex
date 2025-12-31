@@ -10,8 +10,8 @@ use crate::mcp;
 use crate::memory::MemoryStore;
 use crate::metrics;
 use crate::ollama::OllamaEmbedder;
-use crate::repo_manager;
 use crate::profiles::{ProfileEmbedder, ProfileManager};
+use crate::repo_manager;
 use crate::search::{self, AppState, SecurityConfig};
 use crate::util;
 use crate::watcher;
@@ -400,8 +400,8 @@ pub async fn serve(
             .into());
         }
         let timeout = Duration::from_millis(embedding_timeout_ms);
-        let embedder =
-            OllamaEmbedder::new(ollama_base_url.clone(), model.clone(), timeout).map_err(|err| {
+        let embedder = OllamaEmbedder::new(ollama_base_url.clone(), model.clone(), timeout)
+            .map_err(|err| {
                 StartupError::new(
                     "startup_config_invalid",
                     format!("invalid embedding base URL: {err}"),
@@ -457,10 +457,9 @@ pub async fn serve(
         )
         .with_hint("Verify the repo path is accessible and writable.")
     })?;
-    let legacy_repo_id =
-        repo_manager::fingerprint::legacy_repo_id_for_root(indexer.repo_root());
-    let shared_state_dir = repo_manager::split_scoped_state_dir(indexer.state_dir())
-        .map(|(base_dir, _, _)| base_dir);
+    let legacy_repo_id = repo_manager::fingerprint::legacy_repo_id_for_root(indexer.repo_root());
+    let shared_state_dir =
+        repo_manager::split_scoped_state_dir(indexer.state_dir()).map(|(base_dir, _, _)| base_dir);
     let repo_manager = if daemon_mode {
         let manager = Arc::new(crate::daemon::multi_repo::RepoManager::new(
             memory_embedder.clone(),
@@ -698,17 +697,22 @@ pub async fn serve(
             fs::remove_file(&socket_path).map_err(|err| {
                 StartupError::new(
                     "startup_hook_socket_failed",
-                    format!("failed to remove hook socket {}: {err}", socket_path.display()),
+                    format!(
+                        "failed to remove hook socket {}: {err}",
+                        socket_path.display()
+                    ),
                 )
             })?;
         }
-        let unix_listener =
-            UnixListener::bind(&socket_path).map_err(|err| {
-                StartupError::new(
-                    "startup_hook_socket_failed",
-                    format!("failed to bind hook socket {}: {err}", socket_path.display()),
-                )
-            })?;
+        let unix_listener = UnixListener::bind(&socket_path).map_err(|err| {
+            StartupError::new(
+                "startup_hook_socket_failed",
+                format!(
+                    "failed to bind hook socket {}: {err}",
+                    socket_path.display()
+                ),
+            )
+        })?;
         let unix_service = unix_make_service.clone();
         info!(
             target: "docdexd",

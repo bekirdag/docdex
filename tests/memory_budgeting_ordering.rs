@@ -37,11 +37,7 @@ fn docdex_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
-fn run_docdex<I, S>(
-    state_root: &Path,
-    home_dir: &Path,
-    args: I,
-) -> Result<Vec<u8>, Box<dyn Error>>
+fn run_docdex<I, S>(state_root: &Path, home_dir: &Path, args: I) -> Result<Vec<u8>, Box<dyn Error>>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -181,7 +177,10 @@ async fn mock_generate(Json(payload): Json<Value>) -> (axum::http::StatusCode, J
         .and_then(|value| value.as_str())
         .unwrap_or("")
         .to_string();
-    (axum::http::StatusCode::OK, Json(json!({ "response": prompt })))
+    (
+        axum::http::StatusCode::OK,
+        Json(json!({ "response": prompt })),
+    )
 }
 
 struct ServerHarness {
@@ -325,7 +324,10 @@ fn e2e_chat_budgeting_logs_and_ordering() -> Result<(), Box<dyn Error>> {
         "remember budget beta context",
     ];
     for text in texts {
-        let resp = client.post(&store_url).json(&json!({ "text": text })).send()?;
+        let resp = client
+            .post(&store_url)
+            .json(&json!({ "text": text }))
+            .send()?;
         assert!(
             resp.status().is_success(),
             "memory store failed with status {}",

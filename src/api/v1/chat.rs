@@ -19,12 +19,12 @@ use uuid::Uuid;
 use crate::dag::logging as dag_logging;
 use crate::diff;
 use crate::memory::repo_state_root_from_state_dir;
+use crate::ollama::OllamaClient;
+use crate::orchestrator::web::web_context_from_status;
 use crate::orchestrator::{
     memory_budget_from_max_answer_tokens, run_waterfall, ProfileBudget, SymbolContextAssembly,
     WaterfallPlan, WaterfallRequest, WebGateConfig,
 };
-use crate::orchestrator::web::web_context_from_status;
-use crate::ollama::OllamaClient;
 use crate::project_map;
 use crate::search::{resolve_repo_context, AppState};
 use crate::tier2::Tier2Config;
@@ -251,33 +251,37 @@ pub(crate) async fn chat_completions_handler(
         .get("x-docdex-agent-id")
         .and_then(|value| value.to_str().ok());
     let body_agent_id = docdex.and_then(|opts| opts.agent_id.as_deref());
-    let profile_agent_id =
-        resolve_profile_agent_id(header_agent_id, body_agent_id).or_else(|| state.default_agent_id.clone());
+    let profile_agent_id = resolve_profile_agent_id(header_agent_id, body_agent_id)
+        .or_else(|| state.default_agent_id.clone());
     let limit = docdex
         .and_then(|opts| opts.limit)
         .unwrap_or(DEFAULT_LIMIT)
         .min(state.security.max_limit);
     let max_web_results = docdex.and_then(|opts| opts.max_web_results);
     let force_web = docdex.and_then(|opts| opts.force_web).unwrap_or(false);
-    let skip_local_search = docdex.and_then(|opts| opts.skip_local_search).unwrap_or(false);
+    let skip_local_search = docdex
+        .and_then(|opts| opts.skip_local_search)
+        .unwrap_or(false);
     let disable_web_cache = docdex.and_then(|opts| opts.no_cache).unwrap_or(false);
     let include_libs = docdex.and_then(|opts| opts.include_libs).unwrap_or(true);
-    let llm_filter_local_results =
-        docdex.and_then(|opts| opts.llm_filter_local_results).unwrap_or(false);
-    let compress_results = docdex.and_then(|opts| opts.compress_results).unwrap_or(false);
-    let diff_request = match diff::resolve_diff_request_from_options(
-        docdex.and_then(|opts| opts.diff.as_ref()),
-    ) {
-        Ok(value) => value,
-        Err(err) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_request_error",
-                "invalid_diff",
-                &err.to_string(),
-            );
-        }
-    };
+    let llm_filter_local_results = docdex
+        .and_then(|opts| opts.llm_filter_local_results)
+        .unwrap_or(false);
+    let compress_results = docdex
+        .and_then(|opts| opts.compress_results)
+        .unwrap_or(false);
+    let diff_request =
+        match diff::resolve_diff_request_from_options(docdex.and_then(|opts| opts.diff.as_ref())) {
+            Ok(value) => value,
+            Err(err) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request_error",
+                    "invalid_diff",
+                    &err.to_string(),
+                );
+            }
+        };
     let libs_indexer = if include_libs {
         repo.libs_indexer.as_deref()
     } else {
@@ -522,11 +526,7 @@ pub(crate) async fn chat_completions_handler(
                     result.impact_context.as_ref(),
                     &budgets,
                 );
-                log_budget_drops(
-                    &request_id,
-                    repo.indexer.repo_root(),
-                    &context_trace,
-                );
+                log_budget_drops(&request_id, repo.indexer.repo_root(), &context_trace);
                 let history_budget = budgets
                     .history_tokens
                     .saturating_add(context_trace.repo_unused_tokens);
@@ -845,7 +845,8 @@ fn chat_context_budgets(max_answer_tokens: u32) -> ChatContextBudgets {
     let diff_tokens = total_tokens / 10;
     let history_tokens = 0;
     let profile_cap = ProfileBudget::default().token_budget;
-    let base_used = system_tokens + memory_tokens + diff_tokens + generation_tokens + history_tokens;
+    let base_used =
+        system_tokens + memory_tokens + diff_tokens + generation_tokens + history_tokens;
     let remaining = total_tokens.saturating_sub(base_used);
     let repo_floor = (total_tokens / 5).max(1);
     let reserved_for_repo = repo_floor.min(remaining);
@@ -1024,7 +1025,11 @@ fn select_project_map_snippet(
         0
     };
     (
-        if snippet.is_empty() { None } else { Some(snippet) },
+        if snippet.is_empty() {
+            None
+        } else {
+            Some(snippet)
+        },
         MapSnippetTrace {
             available: 1,
             selected,
@@ -1122,11 +1127,8 @@ fn build_context_summary(
         let workflow_budget = budgets
             .profile_tokens
             .saturating_sub(profile_trace.used_tokens);
-        let (workflow_snippets, _workflow_trace) = select_profile_snippets(
-            profile_context,
-            workflow_budget,
-            Some(&workflow_categories),
-        );
+        let (workflow_snippets, _workflow_trace) =
+            select_profile_snippets(profile_context, workflow_budget, Some(&workflow_categories));
         if !workflow_snippets.is_empty() {
             lines.push("Workflow guidance (advisory):".to_string());
             for snippet in workflow_snippets {
@@ -1135,8 +1137,7 @@ fn build_context_summary(
         }
     }
 
-    let (map_snippet, map_trace) =
-        select_project_map_snippet(project_map, budgets.map_tokens);
+    let (map_snippet, map_trace) = select_project_map_snippet(project_map, budgets.map_tokens);
     if let Some(snippet) = map_snippet {
         for line in snippet.lines() {
             lines.push(line.to_string());
@@ -1241,21 +1242,21 @@ fn build_context_summary(
         }
     }
 
-    let (symbol_lines, symbol_trace, repo_remaining) = if let Some(symbols_context) = symbols_context
-    {
-        format_symbol_context_with_budget(symbols_context, repo_remaining)
-    } else {
-        (
-            Vec::new(),
-            SymbolContextTrace {
-                candidates: 0,
-                selected: 0,
-                budget_tokens: repo_remaining,
-                budget_exhausted: false,
-            },
-            repo_remaining,
-        )
-    };
+    let (symbol_lines, symbol_trace, repo_remaining) =
+        if let Some(symbols_context) = symbols_context {
+            format_symbol_context_with_budget(symbols_context, repo_remaining)
+        } else {
+            (
+                Vec::new(),
+                SymbolContextTrace {
+                    candidates: 0,
+                    selected: 0,
+                    budget_tokens: repo_remaining,
+                    budget_exhausted: false,
+                },
+                repo_remaining,
+            )
+        };
     if !symbol_lines.is_empty() {
         if !lines.is_empty() {
             lines.push(String::new());
@@ -1347,7 +1348,12 @@ fn build_reasoning_trace(
         }
     }
 
-    if style.is_empty() && workflow.is_empty() && memory.is_empty() && repo.is_empty() && web.is_empty() {
+    if style.is_empty()
+        && workflow.is_empty()
+        && memory.is_empty()
+        && repo.is_empty()
+        && web.is_empty()
+    {
         None
     } else {
         Some(ReasoningTrace {
@@ -1399,24 +1405,15 @@ fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace
     let profile_truncated = trace.profile.truncated;
     let map_dropped = trace.map.available.saturating_sub(trace.map.selected);
     let map_truncated = trace.map.truncated;
-    let memory_dropped = trace
-        .memory
-        .available
-        .saturating_sub(trace.memory.selected);
+    let memory_dropped = trace.memory.available.saturating_sub(trace.memory.selected);
     let memory_truncated = trace.memory.truncated;
     let diff_dropped = if trace.diff.budget_exhausted {
-        trace
-            .diff
-            .candidates
-            .saturating_sub(trace.diff.selected)
+        trace.diff.candidates.saturating_sub(trace.diff.selected)
     } else {
         0
     };
     let repo_dropped = if trace.repo.budget_exhausted {
-        trace
-            .repo
-            .candidates
-            .saturating_sub(trace.repo.selected)
+        trace.repo.candidates.saturating_sub(trace.repo.selected)
     } else {
         0
     };
@@ -1429,10 +1426,7 @@ fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace
         0
     };
     let web_dropped = if trace.web.budget_exhausted {
-        trace
-            .web
-            .candidates
-            .saturating_sub(trace.web.selected)
+        trace.web.candidates.saturating_sub(trace.web.selected)
     } else {
         0
     };
@@ -1565,10 +1559,7 @@ fn format_web_context_with_budget(
             budget_exhausted = true;
             break;
         }
-        let content = item
-            .ai_digested_content
-            .as_ref()
-            .or(item.content.as_ref());
+        let content = item.ai_digested_content.as_ref().or(item.content.as_ref());
         let Some(content) = content else {
             continue;
         };
@@ -1802,9 +1793,7 @@ fn best_web_summary(
         }
         match best {
             Some(current) => {
-                if item.relevance_score.unwrap_or(0.0)
-                    > current.relevance_score.unwrap_or(0.0)
-                {
+                if item.relevance_score.unwrap_or(0.0) > current.relevance_score.unwrap_or(0.0) {
                     best = Some(item);
                 }
             }
@@ -1860,7 +1849,9 @@ fn truncate_to_tokens(text: &str, max_tokens: usize) -> (String, usize) {
 }
 
 fn estimate_tokens(text: &str) -> u64 {
-    text.split_whitespace().filter(|token| !token.is_empty()).count() as u64
+    text.split_whitespace()
+        .filter(|token| !token.is_empty())
+        .count() as u64
 }
 
 fn now_epoch_seconds() -> u64 {
@@ -1898,10 +1889,9 @@ where
         .chain(std::iter::once(Ok(Bytes::from("data: [DONE]\n\n"))));
     let body = Body::from_stream(stream::iter(frames));
     let mut response = Response::new(body);
-    response.headers_mut().insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("text/event-stream"),
-    );
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
     response
         .headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
@@ -2049,9 +2039,7 @@ mod tests {
 
         let memory_pos = context.find("Memory context:").expect("memory context");
         let diff_pos = context.find("Diff context:").expect("diff context");
-        let repo_pos = context
-            .find("Top local matches")
-            .expect("repo context");
+        let repo_pos = context.find("Top local matches").expect("repo context");
         assert!(memory_pos < diff_pos);
         assert!(diff_pos < repo_pos);
         assert!(trace.diff.budget_exhausted);
@@ -2153,9 +2141,7 @@ mod tests {
             .find("Style preferences (advisory):")
             .expect("profile context");
         let memory_pos = context.find("Memory context:").expect("memory context");
-        let repo_pos = context
-            .find("Top local matches")
-            .expect("repo context");
+        let repo_pos = context.find("Top local matches").expect("repo context");
         assert!(profile_pos < memory_pos);
         assert!(memory_pos < repo_pos);
         assert_eq!(trace.profile.available, 1);

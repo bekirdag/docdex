@@ -1,12 +1,12 @@
+pub mod ast;
 pub mod chat;
 pub mod dag;
+pub mod gates;
 pub mod graph;
-pub mod ast;
 pub mod hooks;
+pub mod index;
+pub mod initialize;
+pub mod libs;
 pub mod profile;
 pub mod symbols;
-pub mod index;
-pub mod libs;
 pub mod web;
-pub mod gates;
-pub mod initialize;

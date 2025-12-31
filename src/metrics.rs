@@ -200,8 +200,7 @@ impl Metrics {
         dropped: usize,
         latency_ms: u128,
     ) {
-        self.profile_recall_requests
-            .fetch_add(1, Ordering::Relaxed);
+        self.profile_recall_requests.fetch_add(1, Ordering::Relaxed);
         self.profile_recall_candidates
             .fetch_add(candidates as u64, Ordering::Relaxed);
         self.profile_recall_kept
@@ -255,13 +254,11 @@ impl Metrics {
     pub fn record_hook_latency(&self, latency_ms: u128) {
         self.hook_latency_ms_total
             .fetch_add(latency_ms as u64, Ordering::Relaxed);
-        self.hook_latency_count
-            .fetch_add(1, Ordering::Relaxed);
+        self.hook_latency_count.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn inc_project_map_cache_hit(&self) {
-        self.project_map_cache_hits
-            .fetch_add(1, Ordering::Relaxed);
+        self.project_map_cache_hits.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn inc_project_map_cache_miss(&self) {

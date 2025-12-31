@@ -355,12 +355,14 @@ pub(crate) async fn impact_diagnostics_handler(
     };
 
     let (entries, total, limit, offset) = if let Some(file) = file {
-        let entry = diagnostics_map.get(&file).cloned().map(|diag| {
-            crate::impact::ImpactDiagnosticsEntry {
-                file: file.clone(),
-                diagnostics: diag,
-            }
-        });
+        let entry =
+            diagnostics_map
+                .get(&file)
+                .cloned()
+                .map(|diag| crate::impact::ImpactDiagnosticsEntry {
+                    file: file.clone(),
+                    diagnostics: diag,
+                });
         let diagnostics = entry.into_iter().collect::<Vec<_>>();
         let count = diagnostics.len();
         (diagnostics, count, 1, 0)

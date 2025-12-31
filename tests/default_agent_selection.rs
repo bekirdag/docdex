@@ -18,11 +18,7 @@ fn docdex_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
-fn run_docdex<I, S>(
-    state_root: &Path,
-    home_dir: &Path,
-    args: I,
-) -> Result<Vec<u8>, Box<dyn Error>>
+fn run_docdex<I, S>(state_root: &Path, home_dir: &Path, args: I) -> Result<Vec<u8>, Box<dyn Error>>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -181,7 +177,10 @@ async fn mock_generate(Json(payload): Json<Value>) -> (axum::http::StatusCode, J
         .and_then(|value| value.as_str())
         .unwrap_or("")
         .to_string();
-    (axum::http::StatusCode::OK, Json(json!({ "response": prompt })))
+    (
+        axum::http::StatusCode::OK,
+        Json(json!({ "response": prompt })),
+    )
 }
 
 struct ServerHarness {
@@ -264,8 +263,14 @@ fn default_agent_fallback_includes_profile_context() -> Result<(), Box<dyn Error
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server =
-        ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port, &mock.base_url)?;
+    let mut server = ServerHarness::spawn(
+        state_root.path(),
+        home_dir.path(),
+        repo.path(),
+        host,
+        port,
+        &mock.base_url,
+    )?;
 
     let client = Client::builder().timeout(Duration::from_secs(3)).build()?;
     let chat_url = format!("http://{host}:{port}/v1/chat/completions");
@@ -295,7 +300,10 @@ fn default_agent_fallback_includes_profile_context() -> Result<(), Box<dyn Error
             .map(|text| text.contains("Use tabs for indentation"))
             .unwrap_or(false)
     });
-    assert!(found, "expected default agent profile preference in context");
+    assert!(
+        found,
+        "expected default agent profile preference in context"
+    );
 
     server.shutdown();
     Ok(())

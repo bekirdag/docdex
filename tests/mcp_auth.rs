@@ -23,11 +23,7 @@ fn write_fixture_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
 fn run_index(state_root: &Path, repo_root: &Path) -> Result<(), Box<dyn Error>> {
     let output = Command::new(docdex_bin())
         .env("DOCDEX_STATE_DIR", state_root)
-        .args([
-            "index",
-            "--repo",
-            repo_root.to_string_lossy().as_ref(),
-        ])
+        .args(["index", "--repo", repo_root.to_string_lossy().as_ref()])
         .output()?;
     if !output.status.success() {
         return Err(format!(
@@ -61,14 +57,8 @@ fn mcp_initialize_requires_auth_token_when_configured() -> Result<(), Box<dyn Er
         .stderr(Stdio::null())
         .spawn()?;
 
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or("failed to take MCP stdin")?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("failed to take MCP stdout")?;
+    let mut stdin = child.stdin.take().ok_or("failed to take MCP stdin")?;
+    let stdout = child.stdout.take().ok_or("failed to take MCP stdout")?;
     let mut reader = BufReader::new(stdout);
 
     let init_missing = json!({
@@ -100,7 +90,10 @@ fn mcp_initialize_requires_auth_token_when_configured() -> Result<(), Box<dyn Er
     line.clear();
     reader.read_line(&mut line)?;
     let resp_ok: serde_json::Value = serde_json::from_str(line.trim())?;
-    assert!(resp_ok.get("result").is_some(), "expected initialize success");
+    assert!(
+        resp_ok.get("result").is_some(),
+        "expected initialize success"
+    );
 
     child.kill().ok();
     child.wait().ok();

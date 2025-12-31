@@ -1,5 +1,7 @@
 use crate::config::RepoArgs;
-use crate::error::{repo_resolution_details, AppError, ERR_INVALID_ARGUMENT, ERR_MISSING_REPO_PATH};
+use crate::error::{
+    repo_resolution_details, AppError, ERR_INVALID_ARGUMENT, ERR_MISSING_REPO_PATH,
+};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::json;
@@ -95,19 +97,11 @@ pub fn run(repo: RepoArgs, target: Option<PathBuf>) -> Result<()> {
     let mut child = cmd
         .spawn()
         .with_context(|| format!("run test command `{}`", config.command))?;
-    let stdout_reader = child
-        .stdout
-        .take()
-        .context("capture run-tests stdout")?;
-    let stderr_reader = child
-        .stderr
-        .take()
-        .context("capture run-tests stderr")?;
+    let stdout_reader = child.stdout.take().context("capture run-tests stdout")?;
+    let stderr_reader = child.stderr.take().context("capture run-tests stderr")?;
 
-    let stdout_handle =
-        thread::spawn(move || read_limited(stdout_reader, MAX_CAPTURE_BYTES));
-    let stderr_handle =
-        thread::spawn(move || read_limited(stderr_reader, MAX_CAPTURE_BYTES));
+    let stdout_handle = thread::spawn(move || read_limited(stdout_reader, MAX_CAPTURE_BYTES));
+    let stderr_handle = thread::spawn(move || read_limited(stderr_reader, MAX_CAPTURE_BYTES));
 
     let status = child.wait().context("wait for run-tests command")?;
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
@@ -179,10 +173,7 @@ fn load_run_tests_config(repo_root: &Path) -> Result<RunTestsConfig> {
     let config_path = repo_root.join(RUN_TESTS_CONFIG_PATH);
     if config_path.exists() {
         let raw = std::fs::read_to_string(&config_path).with_context(|| {
-            format!(
-                "read run-tests config at {}",
-                config_path.to_string_lossy()
-            )
+            format!("read run-tests config at {}", config_path.to_string_lossy())
         })?;
         let parsed: RunTestsConfigFile = serde_json::from_str(&raw).with_context(|| {
             format!(
@@ -192,9 +183,11 @@ fn load_run_tests_config(repo_root: &Path) -> Result<RunTestsConfig> {
         })?;
         let command = parsed.command.trim().to_string();
         if command.is_empty() {
-            return Err(AppError::new(ERR_INVALID_ARGUMENT, "run-tests config missing command")
-                .with_details(json!({ "config_path": config_path }))
-                .into());
+            return Err(
+                AppError::new(ERR_INVALID_ARGUMENT, "run-tests config missing command")
+                    .with_details(json!({ "config_path": config_path }))
+                    .into(),
+            );
         }
         return Ok(RunTestsConfig {
             command,
@@ -225,7 +218,9 @@ fn parse_args_env(raw: &str) -> Vec<String> {
             return args;
         }
     }
-    raw.split_whitespace().map(|part| part.to_string()).collect()
+    raw.split_whitespace()
+        .map(|part| part.to_string())
+        .collect()
 }
 
 fn resolve_target(repo_root: &Path, target: &Path) -> Result<PathBuf> {
@@ -241,12 +236,14 @@ fn resolve_target(repo_root: &Path, target: &Path) -> Result<PathBuf> {
         .canonicalize()
         .with_context(|| format!("resolve target {}", resolved.display()))?;
     if !canonical_target.starts_with(&canonical_repo) {
-        return Err(AppError::new(ERR_INVALID_ARGUMENT, "target must be within repo")
-            .with_details(json!({
-                "repo_root": canonical_repo.to_string_lossy(),
-                "target": canonical_target.to_string_lossy()
-            }))
-            .into());
+        return Err(
+            AppError::new(ERR_INVALID_ARGUMENT, "target must be within repo")
+                .with_details(json!({
+                    "repo_root": canonical_repo.to_string_lossy(),
+                    "target": canonical_target.to_string_lossy()
+                }))
+                .into(),
+        );
     }
     let rel = canonical_target
         .strip_prefix(&canonical_repo)

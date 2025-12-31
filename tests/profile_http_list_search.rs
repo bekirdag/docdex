@@ -97,7 +97,12 @@ fn profile_list_and_search_round_trip() -> Result<(), Box<dyn Error>> {
 
     let embedding_dim = 4;
     let global_state_dir = home_dir.path().join(".docdex").join("state");
-    write_config(home_dir.path(), &global_state_dir, &mock.base_url, embedding_dim)?;
+    write_config(
+        home_dir.path(),
+        &global_state_dir,
+        &mock.base_url,
+        embedding_dim,
+    )?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());

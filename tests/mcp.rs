@@ -119,10 +119,7 @@ fn inspect_repo_state(
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 
-fn resolve_repo_state_root(
-    state_root: &Path,
-    repo_root: &Path,
-) -> Result<PathBuf, Box<dyn Error>> {
+fn resolve_repo_state_root(state_root: &Path, repo_root: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let payload = inspect_repo_state(state_root, repo_root)?;
     let root = payload
         .get("statePaths")

@@ -94,13 +94,20 @@ impl McpProxy {
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(key, tx);
         if let Err(err) = self.send_request(&request).await {
-            self.pending.lock().await.remove(&id_key(&id).unwrap_or_default());
+            self.pending
+                .lock()
+                .await
+                .remove(&id_key(&id).unwrap_or_default());
             return Err(err);
         }
-        let resp = match tokio::time::timeout(Duration::from_secs(MCP_PROXY_TIMEOUT_SECS), rx).await {
+        let resp = match tokio::time::timeout(Duration::from_secs(MCP_PROXY_TIMEOUT_SECS), rx).await
+        {
             Ok(result) => result.context("mcp proxy response dropped")?,
             Err(_) => {
-                self.pending.lock().await.remove(&id_key(&id).unwrap_or_default());
+                self.pending
+                    .lock()
+                    .await
+                    .remove(&id_key(&id).unwrap_or_default());
                 return Err(anyhow!("mcp proxy timeout"));
             }
         };
@@ -116,11 +123,7 @@ impl McpProxy {
         }
     }
 
-    pub async fn enqueue_for_session(
-        &self,
-        session_id: &str,
-        mut request: Value,
-    ) -> Result<Value> {
+    pub async fn enqueue_for_session(&self, session_id: &str, mut request: Value) -> Result<Value> {
         let id = ensure_id(&mut request, &self.next_id)?;
         let key = id_key(&id).ok_or_else(|| anyhow!("invalid JSON-RPC id"))?;
         self.session_pending
@@ -179,7 +182,9 @@ impl McpProxy {
     async fn cleanup_sessions(&self) {
         let mut sessions = self.sessions.write().await;
         let now = Instant::now();
-        sessions.retain(|_, entry| now.duration_since(entry.last_active) < Duration::from_secs(SESSION_IDLE_TIMEOUT_SECS));
+        sessions.retain(|_, entry| {
+            now.duration_since(entry.last_active) < Duration::from_secs(SESSION_IDLE_TIMEOUT_SECS)
+        });
     }
 }
 

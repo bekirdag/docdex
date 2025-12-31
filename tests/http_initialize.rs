@@ -80,11 +80,7 @@ fn write_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn start_daemon(
-    state_root: &Path,
-    repo_root: &Path,
-    port: u16,
-) -> Result<Daemon, Box<dyn Error>> {
+fn start_daemon(state_root: &Path, repo_root: &Path, port: u16) -> Result<Daemon, Box<dyn Error>> {
     let child = Command::new(docdex_bin())
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MCP", "0")
@@ -118,7 +114,10 @@ fn initialize_returns_repo_id_and_status() -> Result<(), Box<dyn Error>> {
     let repo = TempDir::new()?;
     write_repo(repo.path())?;
     let state_dir = TempDir::new()?;
-    run_docdex(state_dir.path(), ["index", "--repo", repo.path().to_str().unwrap()])?;
+    run_docdex(
+        state_dir.path(),
+        ["index", "--repo", repo.path().to_str().unwrap()],
+    )?;
 
     let port = match pick_free_port() {
         Some(port) => port,
@@ -132,7 +131,11 @@ fn initialize_returns_repo_id_and_status() -> Result<(), Box<dyn Error>> {
         .post(format!("http://127.0.0.1:{port}/v1/initialize"))
         .json(&json!({ "rootUri": file_uri(repo.path()) }))
         .send()?;
-    assert!(resp.status().is_success(), "initialize failed: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "initialize failed: {}",
+        resp.status()
+    );
     let payload: serde_json::Value = resp.json()?;
     let repo_id = payload
         .get("repo_id")
@@ -140,10 +143,7 @@ fn initialize_returns_repo_id_and_status() -> Result<(), Box<dyn Error>> {
         .ok_or("missing repo_id")?;
     assert_eq!(repo_id.len(), 64);
     assert!(repo_id.chars().all(|c| c.is_ascii_hexdigit()));
-    let status = payload
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let status = payload.get("status").and_then(|v| v.as_str()).unwrap_or("");
     assert_eq!(status, "ready");
 
     Ok(())
@@ -154,7 +154,10 @@ fn initialize_rejects_unknown_repo() -> Result<(), Box<dyn Error>> {
     let repo = TempDir::new()?;
     write_repo(repo.path())?;
     let state_dir = TempDir::new()?;
-    run_docdex(state_dir.path(), ["index", "--repo", repo.path().to_str().unwrap()])?;
+    run_docdex(
+        state_dir.path(),
+        ["index", "--repo", repo.path().to_str().unwrap()],
+    )?;
 
     let port = match pick_free_port() {
         Some(port) => port,

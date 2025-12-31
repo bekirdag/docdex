@@ -129,7 +129,12 @@ pub fn resolve_diff_request_from_options(
         .iter()
         .map(|path| PathBuf::from(path))
         .collect::<Vec<_>>();
-    resolve_diff_request(options.mode, options.base.clone(), options.head.clone(), paths)
+    resolve_diff_request(
+        options.mode,
+        options.base.clone(),
+        options.head.clone(),
+        paths,
+    )
 }
 
 pub fn collect_git_diff(repo_root: &Path, request: &DiffRequest) -> Result<Vec<DiffFileChange>> {
@@ -296,7 +301,10 @@ fn parse_hunk_range(line: &str) -> Option<DiffLineRange> {
     let spec = &rest[..end_idx];
     let mut parts = spec.split(',');
     let start: u32 = parts.next()?.parse().ok()?;
-    let count: u32 = parts.next().and_then(|value| value.parse().ok()).unwrap_or(1);
+    let count: u32 = parts
+        .next()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1);
     if count == 0 {
         return None;
     }
@@ -308,11 +316,7 @@ fn merge_ranges(mut ranges: Vec<DiffLineRange>) -> Vec<DiffLineRange> {
     if ranges.len() <= 1 {
         return ranges;
     }
-    ranges.sort_by(|a, b| {
-        a.start
-            .cmp(&b.start)
-            .then_with(|| a.end.cmp(&b.end))
-    });
+    ranges.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
     let mut merged: Vec<DiffLineRange> = Vec::with_capacity(ranges.len());
     for range in ranges {
         if let Some(last) = merged.last_mut() {

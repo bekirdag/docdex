@@ -79,6 +79,9 @@ fn apply_defaults_sets_profile_embedding_dim() -> Result<(), Box<dyn std::error:
     config.memory.profile.embedding_dim = 0;
     config.apply_defaults()?;
 
-    assert_eq!(config.memory.profile.embedding_dim, DEFAULT_PROFILE_EMBED_DIM);
+    assert_eq!(
+        config.memory.profile.embedding_dim,
+        DEFAULT_PROFILE_EMBED_DIM
+    );
     Ok(())
 }

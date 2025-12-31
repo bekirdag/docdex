@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+pub mod constraints;
 pub mod db;
 pub mod embedder;
 pub mod evolution;
-pub mod constraints;
 pub mod manager;
 pub mod ops;
 
@@ -42,16 +42,16 @@ pub struct ProfileMeta {
     pub schema_version: u32,
 }
 
-pub use manager::ProfileManager;
-pub use manager::ProfileImportSummary;
-pub use manager::ProfileExportManifest;
 pub use constraints::{
     check_any_type_usage, check_circular_dependencies, match_constraint_rules, ConstraintRule,
     ConstraintViolation,
 };
+pub use embedder::ProfileEmbedder;
+pub use evolution::{EvolutionAction, EvolutionDecision, EvolutionOutcome};
+pub use manager::ProfileExportManifest;
+pub use manager::ProfileImportSummary;
+pub use manager::ProfileManager;
 pub use ops::{
     prune_and_truncate_profile_context, ProfileCandidate, ProfileContextDropped,
     ProfileContextItem, ProfileContextPruneTrace,
 };
-pub use embedder::ProfileEmbedder;
-pub use evolution::{EvolutionAction, EvolutionDecision, EvolutionOutcome};

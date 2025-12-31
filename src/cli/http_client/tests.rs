@@ -38,7 +38,10 @@ impl Drop for EnvGuard {
 
 #[test]
 fn normalize_base_url_adds_scheme() {
-    assert_eq!(normalize_base_url("127.0.0.1:3210"), "http://127.0.0.1:3210");
+    assert_eq!(
+        normalize_base_url("127.0.0.1:3210"),
+        "http://127.0.0.1:3210"
+    );
     assert_eq!(
         normalize_base_url("http://localhost:3210"),
         "http://localhost:3210"

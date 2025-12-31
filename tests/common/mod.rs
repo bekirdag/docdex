@@ -37,10 +37,7 @@ pub fn mcp_server_bin() -> PathBuf {
             .args(["build", "-p", "docdex-mcp-server"])
             .status()
             .expect("failed to run cargo build -p docdex-mcp-server");
-        assert!(
-            status.success(),
-            "cargo build -p docdex-mcp-server failed"
-        );
+        assert!(status.success(), "cargo build -p docdex-mcp-server failed");
     });
     if candidate.exists() {
         return candidate;
@@ -155,5 +152,8 @@ async fn mock_generate(Json(payload): Json<Value>) -> (axum::http::StatusCode, J
         .and_then(|value| value.as_str())
         .unwrap_or("")
         .to_string();
-    (axum::http::StatusCode::OK, Json(serde_json::json!({ "response": prompt })))
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({ "response": prompt })),
+    )
 }

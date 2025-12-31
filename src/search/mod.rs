@@ -11,8 +11,8 @@ use crate::index::{
     SnippetResult,
 };
 use crate::libs::LibsIndexer;
-use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::mcp::McpProxyRouter;
+use crate::memory::{inject_embedding_metadata, MemoryStore};
 use crate::ollama::OllamaEmbedder;
 use crate::orchestrator::web::{web_context_from_status, WebDiscoveryStatus, WebFetchResult};
 use crate::orchestrator::{
@@ -20,10 +20,10 @@ use crate::orchestrator::{
     SymbolContextAssembly, WaterfallPlan, WaterfallRequest, WebGateConfig,
 };
 use crate::profiles::{ProfileEmbedder, ProfileManager};
-use crate::repo_manager;
 use crate::ratelimit::RateLimiter;
-use crate::tier2::Tier2Config;
+use crate::repo_manager;
 use crate::symbols::SymbolSearchMatch;
+use crate::tier2::Tier2Config;
 use anyhow::Result;
 use axum::body::HttpBody;
 use axum::{
@@ -328,10 +328,7 @@ pub fn router(state: AppState) -> Router {
             "/v1/graph/impact/diagnostics",
             get(crate::api::v1::graph::impact_diagnostics_handler),
         )
-        .route(
-            "/v1/symbols",
-            get(crate::api::v1::symbols::symbols_handler),
-        )
+        .route("/v1/symbols", get(crate::api::v1::symbols::symbols_handler))
         .route("/v1/ast", get(crate::api::v1::ast::ast_handler))
         .route(
             "/v1/ast/search",
@@ -387,18 +384,12 @@ pub fn router(state: AppState) -> Router {
             "/v1/gates/status",
             get(crate::api::v1::gates::gates_status_handler),
         )
-        .route(
-            "/v1/mcp",
-            post(crate::api::mcp_http::mcp_request_handler),
-        )
+        .route("/v1/mcp", post(crate::api::mcp_http::mcp_request_handler))
         .route(
             "/v1/mcp/message",
             post(crate::api::mcp_http::mcp_message_handler),
         )
-        .route(
-            "/v1/mcp/sse",
-            get(crate::api::mcp_http::mcp_sse_handler),
-        )
+        .route("/v1/mcp/sse", get(crate::api::mcp_http::mcp_sse_handler))
         .route("/sse", get(crate::api::mcp_http::mcp_sse_handler))
         .route("/ai-help", get(ai_help_handler))
         .route("/metrics", get(metrics_handler))
@@ -428,7 +419,6 @@ struct RepoIdQuery {
     #[serde(default)]
     repo_id: Option<String>,
 }
-
 
 #[derive(Deserialize)]
 struct MemoryStoreRequest {
@@ -2019,9 +2009,12 @@ fn apply_symbol_matches(
     }
 
     for symbol_match in matches {
-        let (weighted_count, name_matches) = symbol_match_score_details(&symbol_match, &query_tokens);
-        let base_boost = (weighted_count.max(1.0) * SYMBOL_SCORE_PER_MATCH).min(SYMBOL_SCORE_MAX_BOOST);
-        let name_boost = (name_matches as f32 * SYMBOL_NAME_MATCH_BONUS).min(SYMBOL_NAME_MATCH_MAX_BOOST);
+        let (weighted_count, name_matches) =
+            symbol_match_score_details(&symbol_match, &query_tokens);
+        let base_boost =
+            (weighted_count.max(1.0) * SYMBOL_SCORE_PER_MATCH).min(SYMBOL_SCORE_MAX_BOOST);
+        let name_boost =
+            (name_matches as f32 * SYMBOL_NAME_MATCH_BONUS).min(SYMBOL_NAME_MATCH_MAX_BOOST);
         let boost = base_boost + name_boost;
         if let Some(idx) = by_path.get(&symbol_match.file).copied() {
             let hit = &mut hits[idx];
@@ -2078,9 +2071,8 @@ fn apply_ast_matches(
     }
 
     for ast_match in matches {
-        let weighted_count =
-            ast_weighted_match_count(indexer, &ast_match.file, &ast_query.kinds)
-                .unwrap_or_else(|_| ast_match.match_count.max(1) as f32);
+        let weighted_count = ast_weighted_match_count(indexer, &ast_match.file, &ast_query.kinds)
+            .unwrap_or_else(|_| ast_match.match_count.max(1) as f32);
         let boost = (weighted_count.max(1.0) * AST_SCORE_PER_MATCH).min(AST_SCORE_MAX_BOOST);
         if let Some(idx) = by_path.get(&ast_match.file).copied() {
             let hit = &mut hits[idx];
@@ -2088,7 +2080,8 @@ fn apply_ast_matches(
             continue;
         }
         if mode == RankingMode::IncludeNewHits {
-            if let Some(hit) = build_ast_hit(indexer, &ast_match, query, &ast_query.labels, boost)? {
+            if let Some(hit) = build_ast_hit(indexer, &ast_match, query, &ast_query.labels, boost)?
+            {
                 by_path.insert(hit.rel_path.clone(), hits.len());
                 hits.push(hit);
             }
@@ -2182,11 +2175,7 @@ fn ast_kind_weight(kind: &str) -> f32 {
     }
 }
 
-fn ast_weighted_match_count(
-    indexer: &Indexer,
-    rel_path: &str,
-    kinds: &[String],
-) -> Result<f32> {
+fn ast_weighted_match_count(indexer: &Indexer, rel_path: &str, kinds: &[String]) -> Result<f32> {
     let counts = indexer.ast_kind_counts_for_file(rel_path, kinds)?;
     if counts.is_empty() {
         return Ok(0.0);
@@ -2294,13 +2283,7 @@ fn build_ast_hit(
     };
     let (snippet_text, snippet_origin, snippet_truncated, line_start, line_end) =
         if !ast_snippet.is_empty() {
-            (
-                ast_snippet,
-                SearchSnippetOrigin::Summary,
-                false,
-                None,
-                None,
-            )
+            (ast_snippet, SearchSnippetOrigin::Summary, false, None, None)
         } else if let Some(snippet) = snippet {
             (
                 snippet.text,
@@ -2415,11 +2398,7 @@ fn ast_kinds_for_token(token: &str) -> Option<&'static [&'static str]> {
             "method_declaration",
             "arrow_function",
         ]),
-        "class" => Some(&[
-            "class_definition",
-            "class_declaration",
-            "class_item",
-        ]),
+        "class" => Some(&["class_definition", "class_declaration", "class_item"]),
         "struct" => Some(&["struct_item", "struct_declaration"]),
         "enum" => Some(&["enum_item", "enum_declaration"]),
         "interface" => Some(&["interface_declaration"]),
@@ -2726,10 +2705,7 @@ async fn search_handler(
         Ok(waterfall_result) => {
             let mut response = waterfall_result.search_response;
             let mut hits = std::mem::take(&mut response.hits);
-            let query_meta = response
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.query.clone());
+            let query_meta = response.meta.as_ref().and_then(|meta| meta.query.clone());
             let max_tokens = params.max_tokens;
             let snippet_policy = if state.security.disable_snippet_text {
                 SnippetPolicy::Disabled
@@ -2806,8 +2782,7 @@ async fn search_handler(
             response.impact_context = waterfall_result.impact_context;
             response.memory_context = waterfall_result.memory_context;
             response.meta = meta;
-            Json(response)
-            .into_response()
+            Json(response).into_response()
         }
         Err(err) => {
             if let Some(SearchError::InvalidQuery { reason }) = err.downcast_ref::<SearchError>() {
@@ -2820,8 +2795,12 @@ async fn search_handler(
                     .into_response();
             }
             if let Some(app) = err.downcast_ref::<AppError>() {
-                return json_error(status_for_app_error(app.code), app.code, app.message.clone())
-                    .into_response();
+                return json_error(
+                    status_for_app_error(app.code),
+                    app.code,
+                    app.message.clone(),
+                )
+                .into_response();
             }
             state.metrics.inc_error();
             warn!(

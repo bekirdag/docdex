@@ -85,18 +85,14 @@ pub async fn fetch_dom(url: &Url, config: &ChromeFetchConfig) -> Result<ChromeFe
         .map_err(|err| anyhow!("chrome launch failed: {err}"))?;
     let target_url = url.clone();
     let cdp_result = session
-        .run_scoped(
-            timeout,
-            std::future::pending::<()>(),
-            async move {
-                let _guard = user_data_dir;
-                let deadline = Instant::now() + timeout;
-                let port = wait_for_devtools_port(_guard.path(), remaining(deadline)).await?;
-                let ws_url = create_cdp_target(port, remaining(deadline)).await?;
-                let result = fetch_dom_via_cdp(&ws_url, &target_url, remaining(deadline)).await?;
-                Ok(result)
-            },
-        )
+        .run_scoped(timeout, std::future::pending::<()>(), async move {
+            let _guard = user_data_dir;
+            let deadline = Instant::now() + timeout;
+            let port = wait_for_devtools_port(_guard.path(), remaining(deadline)).await?;
+            let ws_url = create_cdp_target(port, remaining(deadline)).await?;
+            let result = fetch_dom_via_cdp(&ws_url, &target_url, remaining(deadline)).await?;
+            Ok(result)
+        })
         .await;
     match cdp_result {
         Ok(result) => Ok(result),
@@ -171,9 +167,7 @@ async fn wait_for_devtools_port(dir: &Path, timeout: Duration) -> Result<u16> {
             }
         }
         if start.elapsed() >= timeout {
-            return Err(anyhow!(
-                "devtools port not available within {timeout:?}"
-            ));
+            return Err(anyhow!("devtools port not available within {timeout:?}"));
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -216,13 +210,12 @@ async fn create_cdp_target(port: u16, timeout: Duration) -> Result<String> {
     if let Some(err) = last_err.take() {
         return Err(err);
     }
-    Err(anyhow!("devtools websocket not available within {timeout:?}"))
+    Err(anyhow!(
+        "devtools websocket not available within {timeout:?}"
+    ))
 }
 
-async fn fetch_devtools_ws_url(
-    client: &reqwest::Client,
-    endpoint: &str,
-) -> Result<Option<String>> {
+async fn fetch_devtools_ws_url(client: &reqwest::Client, endpoint: &str) -> Result<Option<String>> {
     let resp = client
         .get(endpoint)
         .send()
@@ -246,18 +239,12 @@ async fn fetch_devtools_ws_url(
 }
 
 fn extract_ws_url(value: &Value) -> Option<String> {
-    if let Some(url) = value
-        .get("webSocketDebuggerUrl")
-        .and_then(Value::as_str)
-    {
+    if let Some(url) = value.get("webSocketDebuggerUrl").and_then(Value::as_str) {
         return Some(url.to_string());
     }
     if let Some(items) = value.as_array() {
         for item in items {
-            if let Some(url) = item
-                .get("webSocketDebuggerUrl")
-                .and_then(Value::as_str)
-            {
+            if let Some(url) = item.get("webSocketDebuggerUrl").and_then(Value::as_str) {
                 return Some(url.to_string());
             }
         }
@@ -305,19 +292,16 @@ impl CdpClient {
                 .ok_or_else(|| anyhow!("devtools websocket closed"))??;
             let text = match msg {
                 Message::Text(text) => text,
-                Message::Binary(bin) => String::from_utf8(bin)
-                    .context("decode devtools binary message")?,
+                Message::Binary(bin) => {
+                    String::from_utf8(bin).context("decode devtools binary message")?
+                }
                 _ => continue,
             };
-            let value: Value = serde_json::from_str(&text)
-                .context("parse devtools message")?;
+            let value: Value = serde_json::from_str(&text).context("parse devtools message")?;
             if let Some(resp_id) = value.get("id").and_then(Value::as_u64) {
                 if resp_id == id {
                     if let Some(err) = value.get("error") {
-                        return Err(anyhow!(
-                            "devtools error for {method}: {}",
-                            err
-                        ));
+                        return Err(anyhow!("devtools error for {method}: {}", err));
                     }
                     return Ok(value.get("result").cloned().unwrap_or(Value::Null));
                 }
@@ -359,12 +343,13 @@ impl CdpClient {
                 Ok(Some(Ok(msg))) => {
                     let text = match msg {
                         Message::Text(text) => text,
-                        Message::Binary(bin) => String::from_utf8(bin)
-                            .context("decode devtools binary message")?,
+                        Message::Binary(bin) => {
+                            String::from_utf8(bin).context("decode devtools binary message")?
+                        }
                         _ => continue,
                     };
-                    let value: Value = serde_json::from_str(&text)
-                        .context("parse devtools message")?;
+                    let value: Value =
+                        serde_json::from_str(&text).context("parse devtools message")?;
                     if let Some(method) = value.get("method").and_then(Value::as_str) {
                         tracker.handle(method, value.get("params"));
                     }
@@ -445,13 +430,9 @@ async fn fetch_dom_via_cdp(
     timeout: Duration,
 ) -> Result<ChromeFetchResult> {
     let mut client = CdpClient::connect(ws_url).await?;
-    client
-        .call("Network.enable", json!({}), None)
-        .await?;
+    client.call("Network.enable", json!({}), None).await?;
     client.call("Page.enable", json!({}), None).await?;
-    client
-        .call("Runtime.enable", json!({}), None)
-        .await?;
+    client.call("Runtime.enable", json!({}), None).await?;
 
     let mut tracker = NetworkIdleTracker::new();
     let nav_result = client
@@ -461,15 +442,10 @@ async fn fetch_dom_via_cdp(
             Some(&mut tracker),
         )
         .await?;
-    if let Some(error_text) = nav_result
-        .get("errorText")
-        .and_then(Value::as_str)
-    {
+    if let Some(error_text) = nav_result.get("errorText").and_then(Value::as_str) {
         return Err(anyhow!("navigation failed: {error_text}"));
     }
-    client
-        .wait_for_network_idle(&mut tracker, timeout)
-        .await?;
+    client.wait_for_network_idle(&mut tracker, timeout).await?;
 
     let mut html = String::new();
     let mut final_url = tracker.document_url.clone();
@@ -487,8 +463,7 @@ async fn fetch_dom_via_cdp(
             "document.body ? document.body.innerText.length : 0",
         )
         .await?;
-        let html_value =
-            eval_string(&mut client, "document.documentElement.outerHTML").await?;
+        let html_value = eval_string(&mut client, "document.documentElement.outerHTML").await?;
         if !html_value.trim().is_empty() {
             html = html_value;
         }
@@ -505,10 +480,8 @@ async fn fetch_dom_via_cdp(
     if html.trim().is_empty() {
         return Err(anyhow!("devtools returned empty HTML"));
     }
-    let inner_text =
-        capture_dom_text(&mut client, timeout, poll_interval, true).await?;
-    let text_content =
-        capture_dom_text(&mut client, timeout, poll_interval, false).await?;
+    let inner_text = capture_dom_text(&mut client, timeout, poll_interval, true).await?;
+    let text_content = capture_dom_text(&mut client, timeout, poll_interval, false).await?;
     Ok(ChromeFetchResult {
         html,
         inner_text: if inner_text.is_empty() {

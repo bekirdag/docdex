@@ -1,8 +1,8 @@
-pub mod help_all;
-pub mod hook;
 pub mod agent;
 pub mod check;
 pub mod dag;
+pub mod help_all;
+pub mod hook;
 pub mod impact;
 pub mod index;
 pub mod libs;
@@ -14,10 +14,10 @@ pub mod memory;
 pub mod profile;
 pub mod query;
 pub mod repo;
-pub mod symbols;
+pub mod run_tests;
 pub mod self_check;
 pub mod serve;
-pub mod run_tests;
+pub mod symbols;
 pub mod tui;
 pub mod web;
 

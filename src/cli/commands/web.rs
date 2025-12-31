@@ -1,10 +1,10 @@
-use crate::config::RepoArgs;
+use crate::cli::commands::query;
 use crate::cli::http_client::CliHttpClient;
+use crate::config::RepoArgs;
 use crate::dag::logging as dag_logging;
 use crate::error::{AppError, ERR_INVALID_ARGUMENT};
 use crate::index;
 use crate::libs;
-use crate::cli::commands::query;
 use crate::memory::repo_state_root_from_state_dir;
 use crate::orchestrator::{
     memory_budget_from_max_answer_tokens, run_waterfall, ProfileBudget, WaterfallPlan,
@@ -18,12 +18,12 @@ use crate::web::readability::extract_readable_text;
 use crate::web::status::fetch_status;
 use anyhow::Context;
 use anyhow::Result;
+use reqwest::Method;
 use serde_json::json;
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
 use uuid::Uuid;
-use reqwest::Method;
 
 pub async fn run_search(query: String, limit: usize) -> Result<()> {
     if !crate::cli::cli_local_mode() {
@@ -43,9 +43,8 @@ pub async fn run_fetch(url: String) -> Result<()> {
     }
     util::init_logging("warn")?;
     let config = web::WebConfig::from_env();
-    let url = Url::parse(url.trim()).map_err(|err| {
-        AppError::new(ERR_INVALID_ARGUMENT, format!("invalid url: {err}"))
-    })?;
+    let url = Url::parse(url.trim())
+        .map_err(|err| AppError::new(ERR_INVALID_ARGUMENT, format!("invalid url: {err}")))?;
     let layout = web::cache::cache_layout_from_config();
     if let Some(layout) = layout.as_ref() {
         if let Ok(Some(payload)) =
@@ -61,18 +60,14 @@ pub async fn run_fetch(url: String) -> Result<()> {
             }
         }
     }
-    if !config
-        .scraper_engine
-        .trim()
-        .eq_ignore_ascii_case("chrome")
-    {
+    if !config.scraper_engine.trim().eq_ignore_ascii_case("chrome") {
         anyhow::bail!(
             "web fetch engine is {}; only chrome is supported",
             config.scraper_engine
         );
     }
-    let chrome_config = ChromeFetchConfig::from_web_config(&config)
-        .context("chrome binary not configured")?;
+    let chrome_config =
+        ChromeFetchConfig::from_web_config(&config).context("chrome binary not configured")?;
     web::fetch::enforce_domain_delay(&url, config.fetch_delay).await;
     let status_probe = fetch_status(&url, &config.user_agent, config.request_timeout).await;
     let fetch_result = fetch_dom(&url, &chrome_config).await?;

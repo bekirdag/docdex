@@ -191,11 +191,11 @@ impl MemoryStore {
             );
         }
         if count > MEMORY_WARN_ROWS {
-            let target_rows = MEMORY_PRUNE_TARGET_ROWS
-                .min(MEMORY_WARN_ROWS)
-                .max(1);
+            let target_rows = MEMORY_PRUNE_TARGET_ROWS.min(MEMORY_WARN_ROWS).max(1);
             let to_delete = count.saturating_sub(target_rows).max(1);
-            let tx = conn.transaction().context("start memory prune transaction")?;
+            let tx = conn
+                .transaction()
+                .context("start memory prune transaction")?;
             tx.execute(
                 "DELETE FROM memories
                  WHERE rowid IN (
@@ -393,7 +393,9 @@ fn load_embedding_dim(conn: &Connection) -> Result<Option<usize>> {
 
 fn infer_embedding_dim(conn: &Connection) -> Result<Option<usize>> {
     let maybe_blob: Option<Vec<u8>> = conn
-        .query_row("SELECT embedding FROM memories LIMIT 1", [], |row| row.get(0))
+        .query_row("SELECT embedding FROM memories LIMIT 1", [], |row| {
+            row.get(0)
+        })
         .optional()
         .context("inspect existing embeddings")?;
     let Some(blob) = maybe_blob else {

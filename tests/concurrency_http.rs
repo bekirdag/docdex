@@ -67,12 +67,7 @@ fn pick_free_port() -> Option<u16> {
     }
 }
 
-fn spawn_server(
-    state_root: &Path,
-    repo: &Path,
-    host: &str,
-    port: u16,
-) -> Result<Child, BoxError> {
+fn spawn_server(state_root: &Path, repo: &Path, host: &str, port: u16) -> Result<Child, BoxError> {
     let repo_str = repo.to_string_lossy().to_string();
     Ok(Command::new(docdex_bin())
         .env("DOCDEX_STATE_DIR", state_root)
@@ -108,11 +103,7 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), BoxError> {
     Err("docdexd healthz endpoint did not respond in time".into())
 }
 
-fn search(
-    client: &Client,
-    base_url: &str,
-    query: &str,
-) -> Result<Value, BoxError> {
+fn search(client: &Client, base_url: &str, query: &str) -> Result<Value, BoxError> {
     let resp = client
         .get(format!("{base_url}/search"))
         .query(&[("q", query), ("limit", "5")])
@@ -147,11 +138,10 @@ fn http_concurrency_is_isolated() -> Result<(), BoxError> {
     write_repo(repo.path())?;
     let state_root = TempDir::new()?;
 
-    run_docdex(state_root.path(), [
-        "index",
-        "--repo",
-        repo.path().to_string_lossy().as_ref(),
-    ])?;
+    run_docdex(
+        state_root.path(),
+        ["index", "--repo", repo.path().to_string_lossy().as_ref()],
+    )?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());

@@ -101,14 +101,8 @@ impl McpHarness {
             .stderr(Stdio::null())
             .spawn()?;
 
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or("failed to take mcp stdin")?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or("failed to take mcp stdout")?;
+        let stdin = child.stdin.take().ok_or("failed to take mcp stdin")?;
+        let stdout = child.stdout.take().ok_or("failed to take mcp stdout")?;
         Ok(Self {
             child,
             stdin,
@@ -237,7 +231,10 @@ fn mcp_initialize_sets_default_project_and_agent() -> Result<(), Box<dyn Error>>
     )?;
     let save_resp = read_line(&mut mcp.reader)?;
     let save_payload: Value = parse_tool_result(&save_resp)?;
-    assert_eq!(save_payload.get("status").and_then(|v| v.as_str()), Some("queued"));
+    assert_eq!(
+        save_payload.get("status").and_then(|v| v.as_str()),
+        Some("queued")
+    );
 
     mcp.shutdown();
     server.shutdown();

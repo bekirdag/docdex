@@ -127,8 +127,14 @@ fn repo_inspect_fingerprint_is_stable_for_canonical_path() -> Result<(), Box<dyn
     let repo_str = repo.path().to_string_lossy().to_string();
     let state_root = TempDir::new()?;
 
-    let first = run_docdex_ok(state_root.path(), ["repo", "inspect", "--repo", repo_str.as_str()])?;
-    let second = run_docdex_ok(state_root.path(), ["repo", "inspect", "--repo", repo_str.as_str()])?;
+    let first = run_docdex_ok(
+        state_root.path(),
+        ["repo", "inspect", "--repo", repo_str.as_str()],
+    )?;
+    let second = run_docdex_ok(
+        state_root.path(),
+        ["repo", "inspect", "--repo", repo_str.as_str()],
+    )?;
 
     let v1: Value = serde_json::from_slice(&first)?;
     let v2: Value = serde_json::from_slice(&second)?;
@@ -158,15 +164,18 @@ fn cli_query_includes_repo_id_in_meta() -> Result<(), Box<dyn Error>> {
     let state_root = TempDir::new()?;
 
     run_docdex_ok(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
-    let stdout = run_docdex_ok(state_root.path(), [
-        "query",
-        "--repo",
-        repo_str.as_str(),
-        "--query",
-        "INTERACTIVE_NEEDLE",
-        "--limit",
-        "2",
-    ])?;
+    let stdout = run_docdex_ok(
+        state_root.path(),
+        [
+            "query",
+            "--repo",
+            repo_str.as_str(),
+            "--query",
+            "INTERACTIVE_NEEDLE",
+            "--limit",
+            "2",
+        ],
+    )?;
 
     let payload: Value = serde_json::from_slice(&stdout)?;
     let repo_id = repo_id_from_payload(&payload)?;

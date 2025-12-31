@@ -364,7 +364,9 @@ pub fn record_repo_opened(repo_root: &Path, index_state_dir: &Path) -> Result<()
     validate_repo_meta(
         repo_root,
         &fingerprint,
-        maybe_state.as_ref().map(|(_, state_key)| state_key.as_str()),
+        maybe_state
+            .as_ref()
+            .map(|(_, state_key)| state_key.as_str()),
     )?;
 
     let Some((base_dir, state_key)) = maybe_state else {

@@ -34,9 +34,21 @@ fn metrics_baseline_includes_required_counters() -> Result<(), Box<dyn Error>> {
     let budget_drops = metric_value(&body, "docdex_profile_budget_drops_total")?;
 
     assert!(recall > 0.0, "expected profile recall counter to increment");
-    assert!(evolution > 0.0, "expected profile evolution counter to increment");
-    assert!(hook_checks > 0.0, "expected hook check counter to increment");
-    assert!(map_hits > 0.0, "expected map cache hit counter to increment");
-    assert!(budget_drops > 0.0, "expected profile budget drop counter to increment");
+    assert!(
+        evolution > 0.0,
+        "expected profile evolution counter to increment"
+    );
+    assert!(
+        hook_checks > 0.0,
+        "expected hook check counter to increment"
+    );
+    assert!(
+        map_hits > 0.0,
+        "expected map cache hit counter to increment"
+    );
+    assert!(
+        budget_drops > 0.0,
+        "expected profile budget drop counter to increment"
+    );
     Ok(())
 }

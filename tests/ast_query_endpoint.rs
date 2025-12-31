@@ -100,10 +100,7 @@ fn ast_query_filters_name_and_path_prefix() -> Result<(), Box<dyn Error>> {
     let other_dir = repo.path().join("other");
     std::fs::create_dir_all(&src_dir)?;
     std::fs::create_dir_all(&other_dir)?;
-    std::fs::write(
-        src_dir.join("lib.rs"),
-        "fn greet() { println!(\"hi\"); }\n",
-    )?;
+    std::fs::write(src_dir.join("lib.rs"), "fn greet() { println!(\"hi\"); }\n")?;
     std::fs::write(other_dir.join("lib.rs"), "fn greet() {}\n")?;
 
     run_index(state_root.path(), repo.path())?;

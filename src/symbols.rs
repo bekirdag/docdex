@@ -1,19 +1,19 @@
 use anyhow::{anyhow, Context, Result};
 use once_cell::sync::Lazy;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use tracing::warn;
 use tree_sitter::{Language, Node, Parser};
 use tree_sitter_go as ts_go;
 use tree_sitter_javascript as ts_javascript;
 use tree_sitter_python as ts_python;
 use tree_sitter_rust as ts_rust;
 use tree_sitter_typescript as ts_typescript;
-use tracing::warn;
 
 const SYMBOLS_SCHEMA_VERSION: u32 = 5;
 const SYMBOLS_SCHEMA_MIN_VERSION: u32 = 1;
@@ -280,22 +280,17 @@ pub struct SymbolsStore {
 
 impl SymbolsStore {
     pub fn new(repo_root: &Path, state_dir: &Path) -> Result<Self> {
-        fs::create_dir_all(state_dir)
-            .with_context(|| format!("create {}", state_dir.display()))?;
-        let (db_path, legacy_db_path) = if state_dir.file_name().and_then(|s| s.to_str())
-            == Some("index")
-        {
-            let repo_state_root = state_dir
-                .parent()
-                .unwrap_or(state_dir)
-                .to_path_buf();
-            (
-                repo_state_root.join("symbols.db"),
-                Some(state_dir.join("symbols.db")),
-            )
-        } else {
-            (state_dir.join("symbols.db"), None)
-        };
+        fs::create_dir_all(state_dir).with_context(|| format!("create {}", state_dir.display()))?;
+        let (db_path, legacy_db_path) =
+            if state_dir.file_name().and_then(|s| s.to_str()) == Some("index") {
+                let repo_state_root = state_dir.parent().unwrap_or(state_dir).to_path_buf();
+                (
+                    repo_state_root.join("symbols.db"),
+                    Some(state_dir.join("symbols.db")),
+                )
+            } else {
+                (state_dir.join("symbols.db"), None)
+            };
         let store = Self {
             repo_id: repo_id_for_root(repo_root)?,
             db_path,
@@ -369,12 +364,13 @@ impl SymbolsStore {
                 let line_end: u32 = row.get::<_, i64>(5)? as u32;
                 let end_col: u32 = row.get::<_, i64>(6)? as u32;
                 let signature: Option<String> = row.get(7)?;
-                Ok((symbol_id, name, kind, line_start, start_col, line_end, end_col, signature))
+                Ok((
+                    symbol_id, name, kind, line_start, start_col, line_end, end_col, signature,
+                ))
             })
             .context("query symbols rows")?;
         for row in rows {
-            let (symbol_id, name, kind, line_start, start_col, line_end, end_col, signature) =
-                row?;
+            let (symbol_id, name, kind, line_start, start_col, line_end, end_col, signature) = row?;
             let range = SymbolRange {
                 start_line: line_start,
                 start_col,
@@ -482,28 +478,23 @@ impl SymbolsStore {
             return Ok(None);
         }
 
-        let (outcome, total_nodes, truncated, language) = if let Some((
-            status,
-            reason,
-            error_summary,
-            node_count,
-            truncated,
-            file_lang,
-        )) = outcome_row
-        {
-            let outcome = outcome_status_from_str(&status).map(|status| SymbolOutcome {
-                status,
-                reason,
-                error_summary,
-            });
-            let total_nodes = node_count.unwrap_or(nodes.len() as i64).max(0) as usize;
-            let truncated_flag = truncated.unwrap_or(0) != 0;
-            let truncated = truncated_flag || total_nodes > nodes.len();
-            (outcome, total_nodes, truncated, file_lang)
-        } else {
-            let total_nodes = nodes.len();
-            (None, total_nodes, false, None)
-        };
+        let (outcome, total_nodes, truncated, language) =
+            if let Some((status, reason, error_summary, node_count, truncated, file_lang)) =
+                outcome_row
+            {
+                let outcome = outcome_status_from_str(&status).map(|status| SymbolOutcome {
+                    status,
+                    reason,
+                    error_summary,
+                });
+                let total_nodes = node_count.unwrap_or(nodes.len() as i64).max(0) as usize;
+                let truncated_flag = truncated.unwrap_or(0) != 0;
+                let truncated = truncated_flag || total_nodes > nodes.len();
+                (outcome, total_nodes, truncated, file_lang)
+            } else {
+                let total_nodes = nodes.len();
+                (None, total_nodes, false, None)
+            };
 
         Ok(Some(AstResponseV1 {
             schema: default_ast_schema(),
@@ -522,9 +513,11 @@ impl SymbolsStore {
         let current_parser_versions = current_parser_versions();
         let stored_parser_versions = self.read_meta_json(&conn, "parser_versions")?;
         let parser_versions_previous = self.read_meta_json(&conn, "parser_versions_previous")?;
-        let parser_versions_changed_at_ms = self.read_meta_i64(&conn, "parser_versions_changed_at_ms")?;
+        let parser_versions_changed_at_ms =
+            self.read_meta_i64(&conn, "parser_versions_changed_at_ms")?;
         let symbols_invalidated_at_ms = self.read_meta_i64(&conn, "symbols_invalidated_at_ms")?;
-        let symbols_invalidation_reason = self.read_meta_text(&conn, "symbols_invalidation_reason")?;
+        let symbols_invalidation_reason =
+            self.read_meta_text(&conn, "symbols_invalidation_reason")?;
         let docdex_version = self.read_meta_text(&conn, "docdex_version")?;
         let requires_reindex = self
             .read_meta_bool(&conn, "symbols_reindex_required")?
@@ -568,9 +561,7 @@ impl SymbolsStore {
         if tokens.is_empty() || max_files == 0 || max_symbols_per_file == 0 {
             return Ok(Vec::new());
         }
-        let max_rows = max_files
-            .saturating_mul(max_symbols_per_file)
-            .max(1);
+        let max_rows = max_files.saturating_mul(max_symbols_per_file).max(1);
         let mut clauses = Vec::new();
         for idx in 0..tokens.len() {
             let param = idx + 1;
@@ -585,9 +576,7 @@ impl SymbolsStore {
             max_rows
         );
         let conn = self.connection()?;
-        let mut stmt = conn
-            .prepare(&sql)
-            .context("prepare symbols search")?;
+        let mut stmt = conn.prepare(&sql).context("prepare symbols search")?;
         let patterns = tokens
             .iter()
             .map(|token| format!("%{}%", escape_like_token(token)));
@@ -603,14 +592,7 @@ impl SymbolsStore {
                 let end_col: u32 = row.get::<_, i64>(7)? as u32;
                 let signature: Option<String> = row.get(8)?;
                 Ok((
-                    file_path,
-                    symbol_id,
-                    name,
-                    kind,
-                    line_start,
-                    start_col,
-                    line_end,
-                    end_col,
+                    file_path, symbol_id, name, kind, line_start, start_col, line_end, end_col,
                     signature,
                 ))
             })
@@ -692,9 +674,7 @@ impl SymbolsStore {
         let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(kinds.len() + 1);
         params.push(rel_path.to_string().into());
         params.extend(kinds.iter().cloned().map(Into::into));
-        let mut stmt = conn
-            .prepare(&sql)
-            .context("prepare ast kind counts")?;
+        let mut stmt = conn.prepare(&sql).context("prepare ast kind counts")?;
         let mut rows = stmt
             .query(params_from_iter(params.iter()))
             .context("query ast kind counts")?;
@@ -716,8 +696,9 @@ impl SymbolsStore {
             return Ok(Vec::new());
         }
         let conn = self.connection()?;
-        let mut sql =
-            String::from("SELECT file_path, COUNT(*) as match_count FROM ast_nodes WHERE kind IN (");
+        let mut sql = String::from(
+            "SELECT file_path, COUNT(*) as match_count FROM ast_nodes WHERE kind IN (",
+        );
         for idx in 0..kinds.len() {
             if idx > 0 {
                 sql.push(',');
@@ -737,9 +718,7 @@ impl SymbolsStore {
             params.push((kinds.len() as i64).into());
         }
         params.push((max_files as i64).into());
-        let mut stmt = conn
-            .prepare(&sql)
-            .context("prepare ast kind search")?;
+        let mut stmt = conn.prepare(&sql).context("prepare ast kind search")?;
         let mut rows = stmt
             .query(params_from_iter(params.iter()))
             .context("query ast kind matches")?;
@@ -793,15 +772,21 @@ impl SymbolsStore {
 
     pub fn delete_symbols(&self, rel_path: &str) -> Result<()> {
         let conn = self.connection()?;
-        conn.execute("DELETE FROM symbols WHERE file_path = ?1", params![rel_path])
-            .context("delete symbols rows")?;
+        conn.execute(
+            "DELETE FROM symbols WHERE file_path = ?1",
+            params![rel_path],
+        )
+        .context("delete symbols rows")?;
         conn.execute(
             "DELETE FROM symbols_files WHERE file_path = ?1",
             params![rel_path],
         )
         .context("delete symbols outcome")?;
-        conn.execute("DELETE FROM ast_nodes WHERE file_path = ?1", params![rel_path])
-            .context("delete ast nodes")?;
+        conn.execute(
+            "DELETE FROM ast_nodes WHERE file_path = ?1",
+            params![rel_path],
+        )
+        .context("delete ast nodes")?;
         conn.execute(
             "DELETE FROM ast_files WHERE file_path = ?1",
             params![rel_path],
@@ -838,8 +823,7 @@ impl SymbolsStore {
     }
 
     fn connection(&self) -> Result<Connection> {
-        Connection::open(&self.db_path)
-            .with_context(|| format!("open {}", self.db_path.display()))
+        Connection::open(&self.db_path).with_context(|| format!("open {}", self.db_path.display()))
     }
 
     fn init_schema(&self, conn: &Connection) -> Result<()> {
@@ -954,7 +938,10 @@ impl SymbolsStore {
             None => Ok(None),
             Some(value) => {
                 let trimmed = value.trim().to_lowercase();
-                Ok(Some(matches!(trimmed.as_str(), "1" | "true" | "yes" | "on")))
+                Ok(Some(matches!(
+                    trimmed.as_str(),
+                    "1" | "true" | "yes" | "on"
+                )))
             }
         }
     }
@@ -980,8 +967,7 @@ impl SymbolsStore {
 
     fn ensure_parser_versions(&self, conn: &Connection) -> Result<()> {
         let current = current_parser_versions();
-        let current_str =
-            serde_json::to_string(&current).context("serialize parser versions")?;
+        let current_str = serde_json::to_string(&current).context("serialize parser versions")?;
         if let Some(prev) = self.read_meta_text(conn, "parser_versions")? {
             if prev != current_str {
                 warn!(
@@ -1028,9 +1014,7 @@ impl SymbolsStore {
         while current < to {
             let next = current + 1;
             let Some(step) = steps.get(&next) else {
-                return Err(anyhow!(
-                    "missing symbols schema migration step for v{next}"
-                ));
+                return Err(anyhow!("missing symbols schema migration step for v{next}"));
             };
             step(self, conn)?;
             current = next;
@@ -1216,8 +1200,7 @@ impl SymbolsStore {
         } else {
             legacy_path
         };
-        fs::rename(path, &target)
-            .with_context(|| format!("move legacy {}", path.display()))?;
+        fs::rename(path, &target).with_context(|| format!("move legacy {}", path.display()))?;
         Ok(target)
     }
 
@@ -1226,8 +1209,8 @@ impl SymbolsStore {
         if !files_dir.exists() {
             return Ok(());
         }
-        for entry in fs::read_dir(&files_dir)
-            .with_context(|| format!("read {}", files_dir.display()))?
+        for entry in
+            fs::read_dir(&files_dir).with_context(|| format!("read {}", files_dir.display()))?
         {
             let entry = entry?;
             let path = entry.path();
@@ -1267,8 +1250,11 @@ impl SymbolsStore {
         rel_path: &str,
         payload: &SymbolsResponseV1,
     ) -> Result<()> {
-        conn.execute("DELETE FROM symbols WHERE file_path = ?1", params![rel_path])
-            .context("clear symbols rows")?;
+        conn.execute(
+            "DELETE FROM symbols WHERE file_path = ?1",
+            params![rel_path],
+        )
+        .context("clear symbols rows")?;
 
         if let Some(outcome) = payload.outcome.as_ref() {
             let file_lang = language_for_path(rel_path).map(|lang| lang.as_str().to_string());
@@ -1332,8 +1318,11 @@ impl SymbolsStore {
         rel_path: &str,
         payload: &AstResponseV1,
     ) -> Result<()> {
-        conn.execute("DELETE FROM ast_nodes WHERE file_path = ?1", params![rel_path])
-            .context("clear ast nodes")?;
+        conn.execute(
+            "DELETE FROM ast_nodes WHERE file_path = ?1",
+            params![rel_path],
+        )
+        .context("clear ast nodes")?;
         if let Some(outcome) = payload.outcome.as_ref() {
             conn.execute(
                 "INSERT OR REPLACE INTO ast_files \
@@ -1872,69 +1861,27 @@ fn symbol_from_node(
                 "function",
                 Some(&['{']),
             ),
-            "struct_item" => symbol_from_named_node(
-                repo_id,
-                rel_path,
-                content,
-                node,
-                "name",
-                "struct",
-                None,
-            ),
-            "enum_item" => symbol_from_named_node(
-                repo_id,
-                rel_path,
-                content,
-                node,
-                "name",
-                "enum",
-                None,
-            ),
-            "trait_item" => symbol_from_named_node(
-                repo_id,
-                rel_path,
-                content,
-                node,
-                "name",
-                "trait",
-                None,
-            ),
-            "type_item" => symbol_from_named_node(
-                repo_id,
-                rel_path,
-                content,
-                node,
-                "name",
-                "type",
-                None,
-            ),
-            "mod_item" => symbol_from_named_node(
-                repo_id,
-                rel_path,
-                content,
-                node,
-                "name",
-                "module",
-                None,
-            ),
-            "const_item" | "static_item" => symbol_from_named_node(
-                repo_id,
-                rel_path,
-                content,
-                node,
-                "name",
-                "variable",
-                None,
-            ),
-            "macro_definition" => symbol_from_named_node(
-                repo_id,
-                rel_path,
-                content,
-                node,
-                "name",
-                "macro",
-                None,
-            ),
+            "struct_item" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "struct", None)
+            }
+            "enum_item" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "enum", None)
+            }
+            "trait_item" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "trait", None)
+            }
+            "type_item" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "type", None)
+            }
+            "mod_item" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "module", None)
+            }
+            "const_item" | "static_item" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "variable", None)
+            }
+            "macro_definition" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "macro", None)
+            }
             _ => None,
         },
         SourceLanguage::Python => match node.kind() {
@@ -1947,15 +1894,9 @@ fn symbol_from_node(
                 "function",
                 Some(&[':']),
             ),
-            "class_definition" => symbol_from_named_node(
-                repo_id,
-                rel_path,
-                content,
-                node,
-                "name",
-                "class",
-                None,
-            ),
+            "class_definition" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "class", None)
+            }
             _ => None,
         },
         SourceLanguage::JavaScript | SourceLanguage::TypeScript => match node.kind() {
@@ -1968,15 +1909,9 @@ fn symbol_from_node(
                 "function",
                 Some(&['{']),
             ),
-            "class_declaration" => symbol_from_named_node(
-                repo_id,
-                rel_path,
-                content,
-                node,
-                "name",
-                "class",
-                None,
-            ),
+            "class_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "class", None)
+            }
             "method_definition" => symbol_from_named_node(
                 repo_id,
                 rel_path,
@@ -1986,33 +1921,15 @@ fn symbol_from_node(
                 "method",
                 Some(&['{']),
             ),
-            "interface_declaration" => symbol_from_named_node(
-                repo_id,
-                rel_path,
-                content,
-                node,
-                "name",
-                "interface",
-                None,
-            ),
-            "type_alias_declaration" => symbol_from_named_node(
-                repo_id,
-                rel_path,
-                content,
-                node,
-                "name",
-                "type",
-                None,
-            ),
-            "enum_declaration" => symbol_from_named_node(
-                repo_id,
-                rel_path,
-                content,
-                node,
-                "name",
-                "enum",
-                None,
-            ),
+            "interface_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "interface", None)
+            }
+            "type_alias_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "type", None)
+            }
+            "enum_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "enum", None)
+            }
             _ => None,
         },
         SourceLanguage::Go => match node.kind() {
@@ -2046,15 +1963,7 @@ fn symbol_from_node(
                 };
                 let (start_line, start_col, end_line, end_col) = node_range(node);
                 Some(make_symbol(
-                    repo_id,
-                    rel_path,
-                    name,
-                    kind,
-                    start_line,
-                    start_col,
-                    end_line,
-                    end_col,
-                    None,
+                    repo_id, rel_path, name, kind, start_line, start_col, end_line, end_col, None,
                 ))
             }
             _ => None,
@@ -2076,15 +1985,7 @@ fn symbol_from_named_node(
     let (start_line, start_col, end_line, end_col) = node_range(node);
     let signature = signature_terms.and_then(|terms| signature_from_node(content, node, terms));
     Some(make_symbol(
-        repo_id,
-        rel_path,
-        name,
-        kind,
-        start_line,
-        start_col,
-        end_line,
-        end_col,
-        signature,
+        repo_id, rel_path, name, kind, start_line, start_col, end_line, end_col, signature,
     ))
 }
 

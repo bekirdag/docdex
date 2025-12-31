@@ -3,8 +3,7 @@ use proptest::prelude::*;
 use serde_json::json;
 
 fn candidate_strategy() -> impl Strategy<Value = MemoryCandidate> {
-    let content = prop::collection::vec("[a-z]{1,8}", 0..12)
-        .prop_map(|parts| parts.join(" "));
+    let content = prop::collection::vec("[a-z]{1,8}", 0..12).prop_map(|parts| parts.join(" "));
     (any::<u32>(), content, 0.0f32..1.0f32, any::<i64>()).prop_map(
         |(id, content, score, created_at_ms)| MemoryCandidate {
             id: id.to_string(),

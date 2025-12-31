@@ -106,7 +106,13 @@ fn mcp_disabled_in_config_skips_missing_binary() -> Result<(), Box<dyn Error>> {
     };
     let missing_bin = home.path().join("missing-mcp-server");
 
-    let mut child = spawn_server(state_root.path(), home.path(), repo.path(), port, &missing_bin)?;
+    let mut child = spawn_server(
+        state_root.path(),
+        home.path(),
+        repo.path(),
+        port,
+        &missing_bin,
+    )?;
     wait_for_health("127.0.0.1", port)?;
     let _ = child.kill();
     let _ = child.wait();

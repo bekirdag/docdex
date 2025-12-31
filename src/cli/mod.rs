@@ -6,11 +6,11 @@ use crate::config;
 use crate::config::RepoArgs;
 use crate::error::StartupError;
 use anyhow::Result;
-use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use clap::error::ErrorKind;
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use serde_json::json;
-use std::path::PathBuf;
 use std::env;
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -297,15 +297,11 @@ pub(crate) struct ServeArgs {
 }
 
 pub(crate) fn cli_local_mode() -> bool {
-    match env::var("DOCDEX_CLI_LOCAL").ok().map(|v| v.trim().to_ascii_lowercase()) {
-        Some(value)
-            if matches!(
-                value.as_str(),
-                "1" | "true" | "t" | "yes" | "y" | "on"
-            ) =>
-        {
-            true
-        }
+    match env::var("DOCDEX_CLI_LOCAL")
+        .ok()
+        .map(|v| v.trim().to_ascii_lowercase())
+    {
+        Some(value) if matches!(value.as_str(), "1" | "true" | "t" | "yes" | "y" | "on") => true,
         _ => false,
     }
 }
@@ -386,11 +382,7 @@ pub(crate) enum Command {
     Chat {
         #[command(flatten)]
         repo: RepoArgs,
-        #[arg(
-            short,
-            long,
-            help = "Chat query (omit to start an interactive REPL)"
-        )]
+        #[arg(short, long, help = "Chat query (omit to start an interactive REPL)")]
         query: Option<String>,
         #[arg(
             long,
@@ -558,7 +550,11 @@ pub(crate) enum Command {
     RunTests {
         #[command(flatten)]
         repo: RepoArgs,
-        #[arg(long, value_name = "PATH", help = "Optional file or directory to scope tests")]
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Optional file or directory to scope tests"
+        )]
         target: Option<PathBuf>,
     },
     /// Launch the local TUI client.
@@ -928,24 +924,26 @@ pub async fn run() -> Result<()> {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => {
-            if matches!(err.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) {
+            if matches!(
+                err.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) {
                 err.print().map_err(anyhow::Error::from)?;
                 return Ok(());
             }
-            return Err(
-                StartupError::new("startup_config_invalid", err.to_string())
-                    .with_hint("Run `docdexd help-all` for full usage.")
-                    .into(),
-            );
+            return Err(StartupError::new("startup_config_invalid", err.to_string())
+                .with_hint("Run `docdexd help-all` for full usage.")
+                .into());
         }
     };
     let config = if !matches!(cli.command, Command::HelpAll) {
-        Some(
-            config::AppConfig::load_default().map_err(|err| {
-                StartupError::new("startup_config_invalid", format!("failed to load config: {err}"))
-                    .with_hint("Ensure ~/.docdex is writable and HOME is set correctly.")
-            })?,
-        )
+        Some(config::AppConfig::load_default().map_err(|err| {
+            StartupError::new(
+                "startup_config_invalid",
+                format!("failed to load config: {err}"),
+            )
+            .with_hint("Ensure ~/.docdex is writable and HOME is set correctly.")
+        })?)
     } else {
         None
     };
@@ -959,7 +957,10 @@ pub async fn run() -> Result<()> {
 }
 
 fn should_ensure_daemon(command: &Command) -> bool {
-    !matches!(command, Command::Serve { .. } | Command::Daemon { .. } | Command::HelpAll)
+    !matches!(
+        command,
+        Command::Serve { .. } | Command::Daemon { .. } | Command::HelpAll
+    )
 }
 
 fn repo_hint_for_command(command: &Command) -> Option<PathBuf> {
@@ -980,9 +981,9 @@ fn repo_hint_for_command(command: &Command) -> Option<PathBuf> {
         Command::SymbolsStatus { repo } => Some(repo.repo_root()),
         Command::ImpactDiagnostics { repo, .. } => Some(repo.repo_root()),
         Command::RunTests { repo, .. } => Some(repo.repo_root()),
-        Command::Tui { repo } => repo.as_ref().map(|root| {
-            root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
-        }),
+        Command::Tui { repo } => repo
+            .as_ref()
+            .map(|root| root.canonicalize().unwrap_or_else(|_| root.to_path_buf())),
         Command::MemoryStore { repo, .. } => Some(repo.repo_root()),
         Command::MemoryRecall { repo, .. } => Some(repo.repo_root()),
         Command::WebRag { repo, .. } => Some(repo.repo_root()),

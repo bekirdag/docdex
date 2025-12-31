@@ -8,6 +8,8 @@ use tracing::{info, warn};
 
 use super::budget::{MemoryBudget, ProfileBudget};
 use super::plan::WaterfallPlan;
+use crate::dag::logging as dag_logging;
+use crate::diff;
 use crate::impact::{
     assemble_impact_context, expand_impact_from_diff_files, ImpactContextAssembly,
     ImpactQueryControlsRaw,
@@ -18,20 +20,18 @@ use crate::memory::{
     prune_and_truncate_memory_context, repo_state_root_from_state_dir, MemoryContextItem,
     MemoryContextPruneTrace,
 };
+use crate::metrics;
+use crate::orchestrator::web::{
+    build_gate_meta, detect_query_intent, evaluate_gate_status, filter_local_hits_with_llm,
+    local_match_ratio, run_web_research, QueryIntent, WebDiscoveryStatus, WebDiscoveryStatusCode,
+    WebGateConfig, WebResearchResponse,
+};
 use crate::profiles::ops::{
     prune_and_truncate_profile_context, ProfileCandidate, ProfileContextItem,
     ProfileContextPruneTrace,
 };
-use crate::orchestrator::web::{
-    build_gate_meta, detect_query_intent, evaluate_gate_status, filter_local_hits_with_llm,
-    local_match_ratio, run_web_research, QueryIntent,
-    WebDiscoveryStatus, WebDiscoveryStatusCode, WebGateConfig, WebResearchResponse,
-};
-use crate::metrics;
 use crate::search::{MemoryState, ProfileState, RankingSurface, SearchResponse};
 use crate::tier2::{self, Tier2Limiter, Tier2Unavailable};
-use crate::dag::logging as dag_logging;
-use crate::diff;
 use std::env;
 
 /// Description of the waterfall request.
@@ -451,7 +451,10 @@ fn collect_impact_context(
         return Ok(None);
     }
     let diff_file_count = diff_changes.len();
-    let diff_ranges = diff_changes.iter().map(|change| change.ranges.len()).sum::<usize>();
+    let diff_ranges = diff_changes
+        .iter()
+        .map(|change| change.ranges.len())
+        .sum::<usize>();
     let diff_lines = diff_changes
         .iter()
         .flat_map(|change| change.ranges.iter())
@@ -733,8 +736,11 @@ async fn collect_profile_context(
             last_updated: result.preference.last_updated,
         })
         .collect();
-    let (items, prune_trace) =
-        prune_and_truncate_profile_context(&candidates, budget.max_items.max(1), budget.token_budget);
+    let (items, prune_trace) = prune_and_truncate_profile_context(
+        &candidates,
+        budget.max_items.max(1),
+        budget.token_budget,
+    );
 
     Ok(Some(ProfileContextAssembly { items, prune_trace }))
 }

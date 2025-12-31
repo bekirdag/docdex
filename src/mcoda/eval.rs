@@ -5,6 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use crate::config;
 use crate::config::RepoArgs;
 use crate::index;
 use crate::libs;
@@ -15,7 +16,6 @@ use crate::orchestrator::{
     memory_budget_from_max_answer_tokens, run_waterfall, ProfileBudget, WaterfallPlan,
     WaterfallRequest, WebGateConfig,
 };
-use crate::config;
 use crate::tier2::Tier2Config;
 use crate::util;
 
@@ -121,9 +121,8 @@ pub struct EvalOptions {
 }
 
 pub async fn run_eval(options: EvalOptions) -> Result<()> {
-    let registry = McodaRegistry::load_default()?.ok_or_else(|| {
-        anyhow!("mcoda registry not found (expected ~/.mcoda/mcoda.db)")
-    })?;
+    let registry = McodaRegistry::load_default()?
+        .ok_or_else(|| anyhow!("mcoda registry not found (expected ~/.mcoda/mcoda.db)"))?;
     let mut agents = registry.agents.clone();
     agents.sort_by(|a, b| a.slug.cmp(&b.slug));
     if agents.is_empty() {
@@ -208,7 +207,8 @@ pub async fn run_eval(options: EvalOptions) -> Result<()> {
                 Ok(result) => {
                     run.ok = true;
                     run.elapsed_ms = start.elapsed().as_millis();
-                    run.web_status = Some(format!("{:?}", result.tier2.status.status).to_lowercase());
+                    run.web_status =
+                        Some(format!("{:?}", result.tier2.status.status).to_lowercase());
                     run.web_reason = result.tier2.status.reason.clone();
 
                     if let Some(hit) = result.search_response.hits.first() {
@@ -493,7 +493,11 @@ fn eval_queries(max_queries: Option<usize>) -> Vec<EvalQuery> {
             id: "q36",
             text: "rewrite release notes into 5 bullet summary",
             force_web: true,
-            tags: &["summarization", "meeting_notes_cleanup", "text_summarization"],
+            tags: &[
+                "summarization",
+                "meeting_notes_cleanup",
+                "text_summarization",
+            ],
         },
         EvalQuery {
             id: "q37",
@@ -686,8 +690,14 @@ fn write_results(path: &PathBuf, results: &[EvalRunResult]) -> Result<()> {
 }
 
 fn write_summary(path: &PathBuf, results: &[EvalRunResult]) -> Result<()> {
-    let mut buckets: HashMap<String, (AgentSummary, ScoreAggregate, HashMap<String, ScoreAggregate>)> =
-        HashMap::new();
+    let mut buckets: HashMap<
+        String,
+        (
+            AgentSummary,
+            ScoreAggregate,
+            HashMap<String, ScoreAggregate>,
+        ),
+    > = HashMap::new();
     for run in results {
         let entry = buckets.entry(run.agent_id.clone()).or_insert_with(|| {
             (
@@ -711,11 +721,7 @@ fn write_summary(path: &PathBuf, results: &[EvalRunResult]) -> Result<()> {
         });
         entry.1.record(run);
         for tag in &run.query_tags {
-            entry
-                .2
-                .entry(tag.clone())
-                .or_default()
-                .record(run);
+            entry.2.entry(tag.clone()).or_default().record(run);
         }
     }
 

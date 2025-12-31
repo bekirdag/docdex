@@ -2,31 +2,31 @@ use crate::cli::http_client::CliHttpClient;
 use crate::config::{self, RepoArgs};
 use crate::repo_manager;
 use anyhow::{Context, Result};
-use hyper::http::StatusCode;
-use reqwest::Method;
+#[cfg(unix)]
+use http_body_util::{BodyExt, Full};
 #[cfg(unix)]
 use hyper::body::Bytes;
 #[cfg(unix)]
 use hyper::client::conn::http1;
 #[cfg(unix)]
 use hyper::header::{AUTHORIZATION, CONTENT_TYPE};
+use hyper::http::StatusCode;
 #[cfg(unix)]
 use hyper::Method as HyperMethod;
 #[cfg(unix)]
 use hyper::Request;
 #[cfg(unix)]
-use http_body_util::{BodyExt, Full};
-#[cfg(unix)]
 use hyper_util::rt::TokioIo;
-#[cfg(unix)]
-use tokio::net::UnixStream;
-#[cfg(unix)]
-use tokio::time::timeout;
+use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(unix)]
 use std::time::Duration;
+#[cfg(unix)]
+use tokio::net::UnixStream;
+#[cfg(unix)]
+use tokio::time::timeout;
 
 #[derive(Serialize)]
 struct HookValidateRequest {

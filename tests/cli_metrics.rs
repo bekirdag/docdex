@@ -20,11 +20,17 @@ struct ServerHarness {
 }
 
 impl ServerHarness {
-    fn spawn(state_root: &Path, repo_root: &Path, host: &str, port: u16) -> Result<Self, Box<dyn Error>> {
+    fn spawn(
+        state_root: &Path,
+        repo_root: &Path,
+        host: &str,
+        port: u16,
+    ) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo_root.to_string_lossy().to_string();
         let child = Command::new(docdex_bin())
             .env("DOCDEX_STATE_DIR", state_root)
             .env("DOCDEX_ENABLE_MCP", "0")
+            .env("DOCDEX_ENABLE_MEMORY", "0")
             .args([
                 "serve",
                 "--repo",
@@ -66,6 +72,7 @@ fn cli_query_http_and_metrics_endpoint() -> Result<(), Box<dyn Error>> {
     let query_out = Command::new(docdex_bin())
         .env("DOCDEX_HTTP_BASE_URL", &base_url)
         .env("DOCDEX_CLI_LOCAL", "0")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "query",
             "--repo",
@@ -80,10 +87,7 @@ fn cli_query_http_and_metrics_endpoint() -> Result<(), Box<dyn Error>> {
     assert!(query_out.status.success());
 
     let client = Client::builder().timeout(Duration::from_secs(3)).build()?;
-    let metrics = client
-        .get(format!("{base_url}/metrics"))
-        .send()?
-        .text()?;
+    let metrics = client.get(format!("{base_url}/metrics")).send()?.text()?;
     assert!(metrics.contains("docdex_rate_limit_denies_total"));
 
     server.shutdown();

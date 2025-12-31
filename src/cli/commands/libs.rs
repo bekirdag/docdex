@@ -23,10 +23,7 @@ pub async fn run_fetch(repo: RepoArgs, sources: Option<PathBuf>) -> Result<()> {
     if !crate::cli::cli_local_mode() {
         return run_fetch_via_http(repo, sources).await;
     }
-    let explicit = sources
-        .as_ref()
-        .map(read_sources_file)
-        .transpose()?;
+    let explicit = sources.as_ref().map(read_sources_file).transpose()?;
     let resolver = libs_source_resolver::LibsSourceResolver::new(repo.repo_root());
     let resolution = resolver.resolve(explicit.as_ref())?;
     let mut sources_file =

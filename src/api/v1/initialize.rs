@@ -41,9 +41,10 @@ pub(crate) fn resolve_initialize(
     }
 
     if state.multi_repo {
-        let manager = state.repos.as_ref().ok_or_else(|| {
-            AppError::new(ERR_INTERNAL_ERROR, "repo manager unavailable")
-        })?;
+        let manager = state
+            .repos
+            .as_ref()
+            .ok_or_else(|| AppError::new(ERR_INTERNAL_ERROR, "repo manager unavailable"))?;
         let mount = manager.mount_repo(&resolved_repo).map_err(|err| {
             if let Some(app) = err.downcast_ref::<AppError>() {
                 return app.clone();

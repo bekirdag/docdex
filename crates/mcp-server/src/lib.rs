@@ -1,3 +1,7 @@
+use anyhow::{Context, Result};
+use docdexd::config;
+use docdexd::dag::logging as dag_logging;
+use docdexd::diff;
 use docdexd::error::{
     repo_resolution_details, AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
     ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
@@ -5,30 +9,28 @@ use docdexd::error::{
     ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
     ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
 };
-use docdexd::config;
-use docdexd::dag::logging as dag_logging;
-use docdexd::diff;
+use docdexd::impact::{
+    build_impact_diagnostics_response, ImpactDiagnosticsEntry, ImpactGraphStore,
+};
 use docdexd::index::{IndexConfig, Indexer};
 use docdexd::libs;
 use docdexd::memory::{inject_embedding_metadata, repo_state_root_from_state_dir, MemoryStore};
 use docdexd::ollama::OllamaEmbedder;
+use docdexd::orchestrator::web::run_web_research;
 use docdexd::orchestrator::{
-    memory_budget_from_max_answer_tokens, ProfileBudget, run_waterfall, WaterfallPlan,
+    memory_budget_from_max_answer_tokens, run_waterfall, ProfileBudget, WaterfallPlan,
     WaterfallRequest, WebGateConfig,
 };
-use docdexd::orchestrator::web::run_web_research;
 use docdexd::ratelimit::RateLimiter;
 use docdexd::search;
-use docdexd::impact::{build_impact_diagnostics_response, ImpactDiagnosticsEntry, ImpactGraphStore};
 use docdexd::symbols::SymbolsStore;
 use docdexd::tier2::Tier2Config;
-use anyhow::{Context, Result};
+use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
-use reqwest::{Client, Method};
 use tantivy::directory::error::LockError;
 use tantivy::TantivyError;
 use thiserror::Error;
@@ -590,7 +592,10 @@ pub async fn serve(
     let memory_enabled = if std::env::var_os("DOCDEX_ENABLE_MEMORY").is_some() {
         env_flag_enabled("DOCDEX_ENABLE_MEMORY")
     } else {
-        config.as_ref().map(|cfg| cfg.memory.enabled).unwrap_or(false)
+        config
+            .as_ref()
+            .map(|cfg| cfg.memory.enabled)
+            .unwrap_or(false)
     };
     let memory = if memory_enabled {
         let base_url = std::env::var("DOCDEX_EMBEDDING_BASE_URL")
@@ -1381,9 +1386,7 @@ impl McpServer {
                                         "invalid_params",
                                         Some(err.to_string()),
                                         Some(tool_name),
-                                        Some(
-                                            json!({ "validation": "serde", "tool": tool_name }),
-                                        ),
+                                        Some(json!({ "validation": "serde", "tool": tool_name })),
                                     )),
                                 }))
                             }
@@ -1465,7 +1468,10 @@ impl McpServer {
                                     jsonrpc: JSONRPC_VERSION,
                                     id: id.clone(),
                                     result: None,
-                                    error: Some(rpc_tool_error(&err, Some("docdex_save_preference"))),
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_save_preference"),
+                                    )),
                                 }))
                             }
                         }
@@ -2268,19 +2274,21 @@ impl McpServer {
                 return Err(AppError::new(ERR_INVALID_ARGUMENT, "file must not be empty").into());
             }
             Some(value) => {
-                let rel = normalize_rel_path(value)
-                    .ok_or_else(|| AppError::new(ERR_INVALID_ARGUMENT, "file must be repo-relative"))?;
+                let rel = normalize_rel_path(value).ok_or_else(|| {
+                    AppError::new(ERR_INVALID_ARGUMENT, "file must be repo-relative")
+                })?;
                 Some(rel.to_string_lossy().replace('\\', "/"))
             }
         };
 
         let (entries, total, limit, offset) = if let Some(file) = file {
-            let entry = diagnostics_map.get(&file).cloned().map(|diag| {
-                ImpactDiagnosticsEntry {
+            let entry = diagnostics_map
+                .get(&file)
+                .cloned()
+                .map(|diag| ImpactDiagnosticsEntry {
                     file: file.clone(),
                     diagnostics: diag,
-                }
-            });
+                });
             let diagnostics = entry.into_iter().collect::<Vec<_>>();
             let count = diagnostics.len();
             (diagnostics, count, 1, 0)
@@ -2305,8 +2313,7 @@ impl McpServer {
             (diagnostics, total, limit, offset)
         };
 
-        let payload =
-            build_impact_diagnostics_response(&repo_id, entries, total, limit, offset);
+        let payload = build_impact_diagnostics_response(&repo_id, entries, total, limit, offset);
         Ok(serde_json::to_value(payload).context("serialize impact diagnostics")?)
     }
 
@@ -2605,10 +2612,12 @@ impl McpServer {
     ) -> Result<Option<PathBuf>> {
         match (project_root, repo_path) {
             (Some(project_root), Some(repo_path)) => {
-                let normalized_project =
-                    project_root.canonicalize().unwrap_or_else(|_| project_root.clone());
-                let normalized_repo =
-                    repo_path.canonicalize().unwrap_or_else(|_| repo_path.clone());
+                let normalized_project = project_root
+                    .canonicalize()
+                    .unwrap_or_else(|_| project_root.clone());
+                let normalized_repo = repo_path
+                    .canonicalize()
+                    .unwrap_or_else(|_| repo_path.clone());
                 if normalized_project != normalized_repo {
                     let details = json!({
                         "project_root": project_root.to_string_lossy().replace('\\', "/"),

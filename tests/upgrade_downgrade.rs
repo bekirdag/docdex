@@ -76,7 +76,9 @@ fn memory_schema_newer_is_rejected() {
     .unwrap();
 
     let store = MemoryStore::new(&state_dir);
-    let err = store.check_access().expect_err("expected schema version error");
+    let err = store
+        .check_access()
+        .expect_err("expected schema version error");
     assert!(
         err.to_string()
             .contains("memory schema version 99 is newer than supported"),

@@ -38,29 +38,21 @@ pub async fn mcp_request_handler(
     let repo_root = match method {
         Some(method) if method == "initialize" => {
             match resolve_repo_for_mcp(&state, extract_init_root(&payload)) {
-            Ok(root) => {
-                router.set_default_repo(root.clone()).await;
-                Some(root)
+                Ok(root) => {
+                    router.set_default_repo(root.clone()).await;
+                    Some(root)
+                }
+                Err(err) => {
+                    return json_error(status_for_app_error(err.code), err.code, err.message);
+                }
             }
-            Err(err) => {
-                return json_error(
-                    status_for_app_error(err.code),
-                    err.code,
-                    err.message,
-                );
-            }
-        }
         }
         _ => {
             if let Some(root_uri) = extract_project_root(&payload) {
                 match resolve_repo_for_mcp(&state, Some(root_uri)) {
                     Ok(root) => Some(root),
                     Err(err) => {
-                        return json_error(
-                            status_for_app_error(err.code),
-                            err.code,
-                            err.message,
-                        );
+                        return json_error(status_for_app_error(err.code), err.code, err.message);
                     }
                 }
             } else {
@@ -116,9 +108,7 @@ pub async fn mcp_message_handler(
             "mcp proxy is not enabled",
         );
     };
-    let session_id = query
-        .session_id
-        .or_else(|| header_session_id(&headers));
+    let session_id = query.session_id.or_else(|| header_session_id(&headers));
     let Some(session_id) = session_id else {
         return json_error(
             StatusCode::BAD_REQUEST,
@@ -132,11 +122,7 @@ pub async fn mcp_message_handler(
         let repo_root = match resolve_repo_for_mcp(&state, extract_init_root(&payload)) {
             Ok(root) => root,
             Err(err) => {
-                return json_error(
-                    status_for_app_error(err.code),
-                    err.code,
-                    err.message,
-                );
+                return json_error(status_for_app_error(err.code), err.code, err.message);
             }
         };
         if let Err(err) = router.bind_session(&session_id, &repo_root).await {
@@ -158,11 +144,7 @@ pub async fn mcp_message_handler(
                 }
             }
             Err(err) => {
-                return json_error(
-                    status_for_app_error(err.code),
-                    err.code,
-                    err.message,
-                );
+                return json_error(status_for_app_error(err.code), err.code, err.message);
             }
         }
     } else if router.session_repo_root(&session_id).await.is_none() {
@@ -221,7 +203,10 @@ fn extract_project_root(payload: &Value) -> Option<String> {
 }
 
 fn normalize_initialize_payload(payload: &mut Value) {
-    let Some(params) = payload.get_mut("params").and_then(|value| value.as_object_mut()) else {
+    let Some(params) = payload
+        .get_mut("params")
+        .and_then(|value| value.as_object_mut())
+    else {
         return;
     };
     let root_uri = params

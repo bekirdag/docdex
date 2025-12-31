@@ -25,7 +25,10 @@ pub fn init_logging(level: &str) -> Result<()> {
                     file: Arc::clone(&file),
                     stderr: io::stderr(),
                 };
-                let _ = fmt().with_env_filter(filter).with_writer(make_writer).try_init();
+                let _ = fmt()
+                    .with_env_filter(filter)
+                    .with_writer(make_writer)
+                    .try_init();
                 return Ok(());
             }
             Err(err) => {
@@ -33,7 +36,10 @@ pub fn init_logging(level: &str) -> Result<()> {
             }
         }
     }
-    let _ = fmt().with_env_filter(filter).with_writer(io::stderr).try_init();
+    let _ = fmt()
+        .with_env_filter(filter)
+        .with_writer(io::stderr)
+        .try_init();
     Ok(())
 }
 
@@ -166,18 +172,20 @@ struct StateLogWriter {
 
 impl Write for StateLogWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut file = self.file.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "state log file lock poisoned")
-        })?;
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "state log file lock poisoned"))?;
         let _ = self.stderr.write_all(buf);
         file.write_all(buf)?;
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        let mut file = self.file.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "state log file lock poisoned")
-        })?;
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "state log file lock poisoned"))?;
         let _ = self.stderr.flush();
         file.flush()
     }

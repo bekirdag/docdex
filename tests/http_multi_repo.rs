@@ -123,8 +123,14 @@ fn daemon_routes_requests_by_repo_id() -> Result<(), Box<dyn Error>> {
     write_repo(repo_two.path(), "bravo")?;
 
     let state_dir = TempDir::new()?;
-    run_docdex_ok(state_dir.path(), ["index", "--repo", repo_one.path().to_str().unwrap()])?;
-    run_docdex_ok(state_dir.path(), ["index", "--repo", repo_two.path().to_str().unwrap()])?;
+    run_docdex_ok(
+        state_dir.path(),
+        ["index", "--repo", repo_one.path().to_str().unwrap()],
+    )?;
+    run_docdex_ok(
+        state_dir.path(),
+        ["index", "--repo", repo_two.path().to_str().unwrap()],
+    )?;
 
     let port = match pick_free_port() {
         Some(port) => port,

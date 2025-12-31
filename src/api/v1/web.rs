@@ -114,11 +114,7 @@ pub async fn web_fetch_handler(
         }
     }
 
-    if !config
-        .scraper_engine
-        .trim()
-        .eq_ignore_ascii_case("chrome")
-    {
+    if !config.scraper_engine.trim().eq_ignore_ascii_case("chrome") {
         return json_error(
             StatusCode::BAD_REQUEST,
             ERR_INVALID_ARGUMENT,
@@ -175,9 +171,7 @@ pub async fn web_fetch_handler(
     Json(entry).into_response()
 }
 
-pub async fn web_cache_flush_handler(
-    State(state): State<AppState>,
-) -> Response {
+pub async fn web_cache_flush_handler(State(state): State<AppState>) -> Response {
     let Some(layout) = web::cache::cache_layout_from_config() else {
         return Json(serde_json::json!({
             "status": "skipped",

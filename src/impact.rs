@@ -61,9 +61,8 @@ impl ImpactSettings {
     }
 }
 
-static IMPACT_SETTINGS: Lazy<Mutex<ImpactSettings>> = Lazy::new(|| {
-    Mutex::new(ImpactSettings::default().with_env_overrides())
-});
+static IMPACT_SETTINGS: Lazy<Mutex<ImpactSettings>> =
+    Lazy::new(|| Mutex::new(ImpactSettings::default().with_env_overrides()));
 
 pub fn apply_impact_settings(settings: ImpactSettings) {
     let settings = settings.with_env_overrides();
@@ -1380,7 +1379,9 @@ pub(crate) fn extract_import_edges(
             diagnostics: None,
         },
         SourceLanguage::Rust => extract_rust_import_edges(repo_root, rel_path, content),
-        SourceLanguage::Python => extract_python_import_edges(repo_root, state_dir, rel_path, content),
+        SourceLanguage::Python => {
+            extract_python_import_edges(repo_root, state_dir, rel_path, content)
+        }
         SourceLanguage::JavaScript | SourceLanguage::TypeScript => {
             extract_js_ts_import_edges(repo_root, state_dir, rel_path, content, language)
         }
@@ -1592,7 +1593,13 @@ fn extract_js_ts_import_edges(
     let mut bindings: HashMap<String, StringEval> = HashMap::new();
     seed_js_ts_bindings(rel_path, &mut bindings);
     collect_js_ts_imports(content, root, language, &mut imports, &mut bindings);
-    build_edges(repo_root, state_dir, rel_path, imports, resolve_js_ts_import)
+    build_edges(
+        repo_root,
+        state_dir,
+        rel_path,
+        imports,
+        resolve_js_ts_import,
+    )
 }
 
 fn extract_python_import_edges(
@@ -1611,7 +1618,13 @@ fn extract_python_import_edges(
     let mut imports: Vec<ImportRef> = Vec::new();
     let mut bindings: HashMap<String, StringEval> = HashMap::new();
     collect_python_imports(content, root, &mut imports, &mut bindings);
-    build_edges(repo_root, state_dir, rel_path, imports, resolve_python_import)
+    build_edges(
+        repo_root,
+        state_dir,
+        rel_path,
+        imports,
+        resolve_python_import,
+    )
 }
 
 fn extract_rust_import_edges(
@@ -1655,7 +1668,9 @@ fn extract_go_import_edges(
         state_dir,
         rel_path,
         imports,
-        |root, file, import_path| resolve_go_import(root, file, import_path, module_path.as_deref()),
+        |root, file, import_path| {
+            resolve_go_import(root, file, import_path, module_path.as_deref())
+        },
     )
 }
 
@@ -1664,8 +1679,14 @@ fn seed_js_ts_bindings(rel_path: &str, bindings: &mut HashMap<String, StringEval
         bindings.insert("__dirname".to_string(), StringEval::Exact(".".to_string()));
     }
     if !bindings.contains_key("__filename") {
-        if let Some(file_name) = Path::new(rel_path).file_name().and_then(|name| name.to_str()) {
-            bindings.insert("__filename".to_string(), StringEval::Exact(file_name.to_string()));
+        if let Some(file_name) = Path::new(rel_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+        {
+            bindings.insert(
+                "__filename".to_string(),
+                StringEval::Exact(file_name.to_string()),
+            );
         }
     }
 }
@@ -1681,10 +1702,7 @@ fn parse_tree(
     parser.parse(content, None)
 }
 
-fn tree_sitter_language(
-    language: SourceLanguage,
-    rel_path: &str,
-) -> Option<tree_sitter::Language> {
+fn tree_sitter_language(language: SourceLanguage, rel_path: &str) -> Option<tree_sitter::Language> {
     match language {
         SourceLanguage::Rust => Some(ts_rust::language()),
         SourceLanguage::Python => Some(ts_python::language()),
@@ -1753,11 +1771,9 @@ fn collect_js_ts_imports(
             if let Some(name_node) = node.child_by_field_name("name") {
                 if name_node.kind() == "identifier" {
                     if let Some(value_node) = node.child_by_field_name("value") {
-                        let eval = static_string_eval_with_resolver(
-                            content,
-                            value_node,
-                            &|id| bindings.get(id).cloned(),
-                        );
+                        let eval = static_string_eval_with_resolver(content, value_node, &|id| {
+                            bindings.get(id).cloned()
+                        });
                         if is_meaningful_eval(&eval) {
                             if let Some(name) = node_text(content, name_node)
                                 .map(|text| text.trim().to_string())
@@ -1775,11 +1791,9 @@ fn collect_js_ts_imports(
                 if let Some(left) = node.child_by_field_name("left") {
                     if left.kind() == "identifier" {
                         if let Some(right) = node.child_by_field_name("right") {
-                            let eval = static_string_eval_with_resolver(
-                                content,
-                                right,
-                                &|id| bindings.get(id).cloned(),
-                            );
+                            let eval = static_string_eval_with_resolver(content, right, &|id| {
+                                bindings.get(id).cloned()
+                            });
                             if is_meaningful_eval(&eval) {
                                 if let Some(name) = node_text(content, left)
                                     .map(|text| text.trim().to_string())
@@ -1852,12 +1866,9 @@ fn collect_python_imports(
                     {
                         eprintln!("[impact] python dynamic call {name}");
                     }
-                    if let Some(arg) = argument_import_path(
-                        content,
-                        node,
-                        arg_index,
-                        &|id| bindings.get(id).cloned(),
-                    ) {
+                    if let Some(arg) = argument_import_path(content, node, arg_index, &|id| {
+                        bindings.get(id).cloned()
+                    }) {
                         imports.push(ImportRef {
                             path: arg,
                             kind,
@@ -1869,11 +1880,9 @@ fn collect_python_imports(
         }
         "assignment" => {
             if let Some((name, value_node)) = python_assignment_parts(content, node) {
-                let eval = static_string_eval_with_resolver(
-                    content,
-                    value_node,
-                    &|id| bindings.get(id).cloned(),
-                );
+                let eval = static_string_eval_with_resolver(content, value_node, &|id| {
+                    bindings.get(id).cloned()
+                });
                 if is_meaningful_eval(&eval) {
                     bindings.insert(name, eval);
                 }
@@ -2060,7 +2069,8 @@ where
         && std::env::var("DOCDEX_DEBUG_IMPORTS")
             .map(|value| value.trim() == "1")
             .unwrap_or(false);
-    let (overrides, fallbacks) = resolve_import_map_matches(repo_root, rel_path, import_ref, hints, resolver);
+    let (overrides, fallbacks) =
+        resolve_import_map_matches(repo_root, rel_path, import_ref, hints, resolver);
     if !overrides.is_empty() {
         if debug_imports {
             eprintln!(
@@ -2114,7 +2124,8 @@ where
                             .collect(),
                     );
                 }
-            } else if let Some(target) = resolve_unique_match(repo_root, rel_path, import_ref, pattern)
+            } else if let Some(target) =
+                resolve_unique_match(repo_root, rel_path, import_ref, pattern)
             {
                 if debug_imports {
                     eprintln!(
@@ -2228,7 +2239,9 @@ fn import_hints_for_repo(repo_root: &Path, state_dir: &Path) -> ImportHints {
     let mut cache = IMPORT_HINT_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let entry = cache.entry((repo_key.clone(), state_key.clone())).or_default();
+    let entry = cache
+        .entry((repo_key.clone(), state_key.clone()))
+        .or_default();
     if entry.map_mtime != map_mtime {
         let map = load_import_map(&repo_key, &map_path);
         entry.hints.edges = map.edges;
@@ -2270,7 +2283,9 @@ fn canonical_path(path: &Path) -> PathBuf {
 }
 
 fn file_mtime(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|meta| meta.modified()).ok()
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
 }
 
 fn load_import_map(repo_root: &Path, path: &Path) -> ImportMapFile {
@@ -2424,7 +2439,10 @@ fn normalize_hint_path(repo_root: &Path, value: &str) -> Option<String> {
 fn normalize_hint_rel_path(path: &Path) -> Option<String> {
     use std::path::Component;
 
-    if path.components().any(|comp| matches!(comp, Component::ParentDir | Component::Prefix(_))) {
+    if path
+        .components()
+        .any(|comp| matches!(comp, Component::ParentDir | Component::Prefix(_)))
+    {
         return None;
     }
     let mut rel = normalize_rel_path(path);
@@ -2506,7 +2524,10 @@ where
             fallbacks.extend(targets);
         }
     }
-    (dedupe_resolved_targets(overrides), dedupe_resolved_targets(fallbacks))
+    (
+        dedupe_resolved_targets(overrides),
+        dedupe_resolved_targets(fallbacks),
+    )
 }
 
 fn resolve_mapping_targets<F>(
@@ -3166,11 +3187,12 @@ fn resolve_python_import(repo_root: &Path, rel_path: &str, import_path: &str) ->
         let candidate = base_dir.join("__init__.py");
         return resolve_first_existing(repo_root, vec![candidate]);
     }
-    let module_path = if remainder.contains('/') || remainder.contains('\\') || remainder.ends_with(".py") {
-        PathBuf::from(remainder)
-    } else {
-        PathBuf::from(remainder.replace('.', "/"))
-    };
+    let module_path =
+        if remainder.contains('/') || remainder.contains('\\') || remainder.ends_with(".py") {
+            PathBuf::from(remainder)
+        } else {
+            PathBuf::from(remainder.replace('.', "/"))
+        };
     let base = base_dir.join(module_path);
     if base.extension().is_some() {
         return resolve_first_existing(repo_root, vec![base]);
@@ -3538,7 +3560,10 @@ where
         return eval;
     }
     if node.kind() == "identifier" {
-        let name = node_text(content, node).unwrap_or_default().trim().to_string();
+        let name = node_text(content, node)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         if name.is_empty() {
             return StringEval::Unknown;
         }
@@ -4177,10 +4202,7 @@ fn first_string_literal_in_node(content: &str, node: Node) -> Option<String> {
     let kind = node.kind();
     if matches!(
         kind,
-        "string_literal"
-            | "raw_string_literal"
-            | "byte_string_literal"
-            | "raw_byte_string_literal"
+        "string_literal" | "raw_string_literal" | "byte_string_literal" | "raw_byte_string_literal"
     ) {
         return string_literal_value(content, node);
     }
@@ -4218,11 +4240,7 @@ fn extract_rust_use_paths(text: &str) -> Vec<String> {
     }
     if let Some(idx) = trimmed.find('{') {
         let prefix = trimmed[..idx].trim_end_matches("::").trim();
-        let suffix = trimmed[idx + 1..]
-            .split('}')
-            .next()
-            .unwrap_or("")
-            .trim();
+        let suffix = trimmed[idx + 1..].split('}').next().unwrap_or("").trim();
         let mut paths = Vec::new();
         for entry in suffix.split(',') {
             let entry = entry.trim();
@@ -4795,9 +4813,10 @@ import(`./${part}/${name}.ts`);
             SourceLanguage::TypeScript,
         );
         assert!(
-            result.edges.iter().any(|edge| {
-                edge.source == "src/main.ts" && edge.target == "src/foo/bar.ts"
-            }),
+            result
+                .edges
+                .iter()
+                .any(|edge| { edge.source == "src/main.ts" && edge.target == "src/foo/bar.ts" }),
             "expected template literal import to resolve"
         );
     }
@@ -4823,9 +4842,10 @@ require(target);
             SourceLanguage::JavaScript,
         );
         assert!(
-            result.edges.iter().any(|edge| {
-                edge.source == "src/main.ts" && edge.target == "src/util/index.ts"
-            }),
+            result
+                .edges
+                .iter()
+                .any(|edge| { edge.source == "src/main.ts" && edge.target == "src/util/index.ts" }),
             "expected path.join import to resolve"
         );
     }
@@ -4843,7 +4863,10 @@ spec_from_file_location("mod", module_path)
 "#;
         let result = extract_python_import_edges(repo_root, repo_root, "main.py", content);
         assert!(
-            result.edges.iter().any(|edge| edge.source == "main.py" && edge.target == "pkg/mod.py"),
+            result
+                .edges
+                .iter()
+                .any(|edge| edge.source == "main.py" && edge.target == "pkg/mod.py"),
             "expected os.path.join to resolve in spec_from_file_location"
         );
     }
@@ -4852,10 +4875,7 @@ spec_from_file_location("mod", module_path)
     fn js_path_resolve_with_bindings_resolves() {
         let dir = TempDir::new().expect("tempdir");
         let repo_root = dir.path();
-        write_fixture(
-            &repo_root.join("src/dir/entry.js"),
-            "module.exports = {};",
-        );
+        write_fixture(&repo_root.join("src/dir/entry.js"), "module.exports = {};");
         let content = r#"
 const base = "./dir";
 const target = path.resolve(base, "entry.js");
@@ -4869,9 +4889,10 @@ require(target);
             SourceLanguage::JavaScript,
         );
         assert!(
-            result.edges.iter().any(|edge| {
-                edge.source == "src/main.js" && edge.target == "src/dir/entry.js"
-            }),
+            result
+                .edges
+                .iter()
+                .any(|edge| { edge.source == "src/main.js" && edge.target == "src/dir/entry.js" }),
             "expected path.resolve import to resolve"
         );
     }
@@ -4888,7 +4909,10 @@ importlib.import_module(BASE + ".extra")
 "#;
         let result = extract_python_import_edges(repo_root, repo_root, "main.py", content);
         assert!(
-            result.edges.iter().any(|edge| edge.source == "main.py" && edge.target == "pkg/extra.py"),
+            result
+                .edges
+                .iter()
+                .any(|edge| edge.source == "main.py" && edge.target == "pkg/extra.py"),
             "expected importlib.import_module to resolve"
         );
     }
@@ -4931,10 +4955,7 @@ require(`./tpl/${choice}.js`);
     fn js_path_posix_join_resolves() {
         let dir = TempDir::new().expect("tempdir");
         let repo_root = dir.path();
-        write_fixture(
-            &repo_root.join("src/posix/mod.js"),
-            "module.exports = {};",
-        );
+        write_fixture(&repo_root.join("src/posix/mod.js"), "module.exports = {};");
         let content = r#"
 const target = path.posix.join("./posix", "mod.js");
 require(target);
@@ -4947,9 +4968,10 @@ require(target);
             SourceLanguage::JavaScript,
         );
         assert!(
-            result.edges.iter().any(|edge| {
-                edge.source == "src/main.js" && edge.target == "src/posix/mod.js"
-            }),
+            result
+                .edges
+                .iter()
+                .any(|edge| { edge.source == "src/main.js" && edge.target == "src/posix/mod.js" }),
             "expected path.posix.join import to resolve"
         );
     }
@@ -4967,7 +4989,10 @@ importlib.util.spec_from_file_location(name, spec_path)
 "#;
         let result = extract_python_import_edges(repo_root, repo_root, "main.py", content);
         assert!(
-            result.edges.iter().any(|edge| edge.source == "main.py" && edge.target == "pkg/fmod.py"),
+            result
+                .edges
+                .iter()
+                .any(|edge| edge.source == "main.py" && edge.target == "pkg/fmod.py"),
             "expected f-string path in spec_from_file_location to resolve"
         );
     }
@@ -5013,7 +5038,10 @@ import "./missing-7.js";
         );
         let diagnostics = result.diagnostics.expect("expected diagnostics");
         assert_eq!(diagnostics.unresolved_imports_total, 7);
-        assert_eq!(diagnostics.unresolved_imports_sample.len(), UNRESOLVED_IMPORT_SAMPLE_LIMIT);
+        assert_eq!(
+            diagnostics.unresolved_imports_sample.len(),
+            UNRESOLVED_IMPORT_SAMPLE_LIMIT
+        );
     }
 
     #[test]
@@ -5118,7 +5146,9 @@ import "./missing-7.js";
         .expect("write impact_graph.json");
 
         let store = ImpactGraphStore::new(&state_dir);
-        let err = store.read_edges().expect_err("expected schema version error");
+        let err = store
+            .read_edges()
+            .expect_err("expected schema version error");
         assert!(
             err.to_string()
                 .contains("impact graph schema version 99 is not compatible with current"),
@@ -5284,10 +5314,7 @@ import "./missing-7.js";
 
         let resolver = |root: &Path, _rel: &str, target: &str| normalize_hint_path(root, target);
         let merged = hint_edges_for_source(repo_root, "src/app.js", &hints, &resolver);
-        assert!(merged
-            .edges
-            .iter()
-            .any(|edge| edge.target == "src/hint.js"));
+        assert!(merged.edges.iter().any(|edge| edge.target == "src/hint.js"));
         assert!(merged
             .edges
             .iter()

@@ -1,9 +1,8 @@
-pub(crate) mod libs;
 mod ignore_rules;
 mod impact;
+pub(crate) mod libs;
 mod symbols;
 
-use ignore_rules::{build_ignore_matcher, IgnoreMatcher};
 use crate::error::{
     repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
     ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
@@ -14,11 +13,12 @@ use crate::symbols::{
     SymbolsParserStatus, SymbolsResponseV1, SymbolsStore,
 };
 use anyhow::{anyhow, Context, Result};
+use ignore_rules::{build_ignore_matcher, IgnoreMatcher};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use regex::Regex;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
@@ -326,13 +326,7 @@ impl IndexConfig {
                 "symbol + impact extraction are always enabled; ignoring DOCDEX_ENABLE_SYMBOL_EXTRACTION=0"
             );
         }
-        Self::with_overrides(
-            repo_root,
-            None,
-            Vec::new(),
-            Vec::new(),
-            true,
-        )
+        Self::with_overrides(repo_root, None, Vec::new(), Vec::new(), true)
     }
 
     pub fn with_overrides(
@@ -642,7 +636,11 @@ impl Indexer {
         writer.commit()?;
         self.reader.reload()?;
         if self.symbols_store.is_some() {
-            self.update_impact_graph_for_file(&rel, &ingest.impact_edges, ingest.impact_diagnostics)?;
+            self.update_impact_graph_for_file(
+                &rel,
+                &ingest.impact_edges,
+                ingest.impact_diagnostics,
+            )?;
         }
         Ok(decision)
     }
@@ -1642,14 +1640,8 @@ mod file_decision_tests {
     fn decide_file_excludes_large_binary() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(
-            &repo_root,
-            None,
-            Vec::new(),
-            Vec::new(),
-            true,
-        )
-        .expect("config");
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
+            .expect("config");
         let binary_path = repo_root.join("large.md");
         let blob = vec![0u8; (MAX_BINARY_FILE_BYTES as usize) + 1];
         fs::write(&binary_path, blob).expect("write binary");
@@ -1718,9 +1710,6 @@ mod file_decision_tests {
 }
 
 fn hold_after_state_dir_created() {
-    if !cfg!(debug_assertions) {
-        return;
-    }
     let Ok(value) = std::env::var("DOCDEX_TEST_HOLD_AFTER_STATE_DIR_CREATED_MS") else {
         return;
     };

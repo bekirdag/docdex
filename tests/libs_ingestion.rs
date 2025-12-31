@@ -240,15 +240,15 @@ fn repo_hits_precede_libs_hits_in_query() -> Result<(), Box<dyn Error>> {
         .get("hits")
         .and_then(|value| value.as_array())
         .expect("hits array missing");
-    assert!(
-        !hits.is_empty(),
-        "expected hits for shared term query"
-    );
+    assert!(!hits.is_empty(), "expected hits for shared term query");
 
     let mut first_lib_idx = None;
     let mut last_repo_idx = None;
     for (idx, hit) in hits.iter().enumerate() {
-        let doc_id = hit.get("doc_id").and_then(|v| v.as_str()).unwrap_or_default();
+        let doc_id = hit
+            .get("doc_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
         let rel_path = hit
             .get("rel_path")
             .and_then(|v| v.as_str())

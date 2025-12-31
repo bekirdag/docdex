@@ -104,7 +104,9 @@ pub fn write_project_map_cache(state_dir: &Path, map: &ProjectMap) -> Result<()>
 
 pub fn project_map_path(state_dir: &Path, agent_id: &str) -> PathBuf {
     let repo_root = repo_state_root_from_state_dir(state_dir);
-    repo_root.join(MAP_DIR_NAME).join(format!("{agent_id}.json"))
+    repo_root
+        .join(MAP_DIR_NAME)
+        .join(format!("{agent_id}.json"))
 }
 
 pub fn render_project_map(map: &ProjectMap) -> String {

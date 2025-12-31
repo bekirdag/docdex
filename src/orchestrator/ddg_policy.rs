@@ -157,8 +157,7 @@ impl DdgDiscoveryPacer {
                 obj.insert("retry_at".to_string(), json!(retry_at));
             }
         }
-        AppError::new(ERR_BACKOFF_REQUIRED, "ddg discovery backoff required")
-            .with_details(details)
+        AppError::new(ERR_BACKOFF_REQUIRED, "ddg discovery backoff required").with_details(details)
     }
 }
 

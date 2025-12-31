@@ -103,11 +103,17 @@ impl OllamaClient {
                 .write_all(headers.as_bytes())
                 .await
                 .context("write request headers")?;
-            stream.write_all(&body).await.context("write request body")?;
+            stream
+                .write_all(&body)
+                .await
+                .context("write request body")?;
             stream.flush().await.ok();
 
             let mut raw = Vec::new();
-            stream.read_to_end(&mut raw).await.context("read response")?;
+            stream
+                .read_to_end(&mut raw)
+                .await
+                .context("read response")?;
             let (status_code, response_body) = parse_http_response(&raw)?;
 
             if let Some(error_message) = ollama_error_message(&response_body) {
@@ -155,11 +161,12 @@ impl OllamaClient {
                 embedding: Vec<f32>,
             }
 
-            let parsed: EmbeddingResponse =
-                serde_json::from_slice(&response_body).context("parse ollama embeddings response")?;
+            let parsed: EmbeddingResponse = serde_json::from_slice(&response_body)
+                .context("parse ollama embeddings response")?;
             if parsed.embedding.is_empty() {
-                return Err(AppError::new(ERR_EMBEDDING_FAILED, "ollama returned empty embedding")
-                    .into());
+                return Err(
+                    AppError::new(ERR_EMBEDDING_FAILED, "ollama returned empty embedding").into(),
+                );
             }
             Ok(parsed.embedding)
         };
@@ -341,15 +348,16 @@ pub async fn list_models(
                 .context("write request headers")?;
             stream.flush().await.ok();
             let mut raw = Vec::new();
-            stream.read_to_end(&mut raw).await.context("read response")?;
+            stream
+                .read_to_end(&mut raw)
+                .await
+                .context("read response")?;
             let (status_code, response_body) = parse_http_response(&raw)?;
             if let Some(error_message) = ollama_error_message(&response_body) {
                 return Err(anyhow!("ollama tags request failed: {error_message}"));
             }
             if !(200..300).contains(&status_code) {
-                return Err(anyhow!(
-                    "ollama tags request failed (status {status_code})"
-                ));
+                return Err(anyhow!("ollama tags request failed (status {status_code})"));
             }
 
             #[derive(Deserialize)]
@@ -391,7 +399,9 @@ fn llm_debug_enabled() -> bool {
 }
 
 fn llm_debug_max_chars() -> usize {
-    env_usize("DOCDEX_LLM_DEBUG_MAX_CHARS").unwrap_or(2000).max(1)
+    env_usize("DOCDEX_LLM_DEBUG_MAX_CHARS")
+        .unwrap_or(2000)
+        .max(1)
 }
 
 fn env_boolish(key: &str) -> Option<bool> {

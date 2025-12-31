@@ -222,7 +222,9 @@ fn config_boilerplate_phrases_path() -> Option<PathBuf> {
     if path.is_absolute() {
         return Some(path);
     }
-    let base = config_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let base = config_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
     Some(base.join(path))
 }
 

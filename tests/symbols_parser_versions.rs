@@ -53,11 +53,9 @@ fn init_symbols_db(path: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 fn count_rows(conn: &Connection, table: &str) -> Result<i64, Box<dyn Error>> {
-    let value: i64 = conn.query_row(
-        &format!("SELECT COUNT(*) FROM {table}"),
-        [],
-        |row| row.get(0),
-    )?;
+    let value: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+        row.get(0)
+    })?;
     Ok(value)
 }
 

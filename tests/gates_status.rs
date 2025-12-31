@@ -74,13 +74,8 @@ fn gates_status_payload_has_expected_shape() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = ServerHarness::spawn(
-        state_root.path(),
-        home_dir.path(),
-        repo.path(),
-        host,
-        port,
-    )?;
+    let mut server =
+        ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port)?;
 
     let body = http_get(host, port, "/v1/gates/status")?;
     let payload: Value = serde_json::from_str(&body)?;
@@ -127,10 +122,7 @@ fn wait_for_health(host: &str, port: u16, child: &mut Child) -> Result<(), Box<d
     if let Some(mut pipe) = child.stderr.take() {
         let _ = pipe.read_to_string(&mut stderr);
     }
-    Err(format!(
-        "docdexd healthz endpoint did not respond in time; stderr: {stderr}"
-    )
-    .into())
+    Err(format!("docdexd healthz endpoint did not respond in time; stderr: {stderr}").into())
 }
 
 fn http_get(host: &str, port: u16, path: &str) -> Result<String, Box<dyn Error>> {
@@ -138,9 +130,7 @@ fn http_get(host: &str, port: u16, path: &str) -> Result<String, Box<dyn Error>>
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(1))?;
     stream.set_read_timeout(Some(Duration::from_secs(1)))?;
     stream.set_write_timeout(Some(Duration::from_secs(1)))?;
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
-    );
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
     stream.write_all(request.as_bytes())?;
     let mut buf = Vec::new();
     stream.read_to_end(&mut buf)?;
@@ -161,9 +151,7 @@ fn try_health_check(host: &str, port: u16) -> Result<bool, Box<dyn Error>> {
     };
     stream.set_read_timeout(Some(Duration::from_millis(500)))?;
     stream.set_write_timeout(Some(Duration::from_millis(500)))?;
-    let request = format!(
-        "GET /healthz HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
-    );
+    let request = format!("GET /healthz HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
     if stream.write_all(request.as_bytes()).is_err() {
         return Ok(false);
     }

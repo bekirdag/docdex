@@ -90,8 +90,10 @@ where
     Ok(output.stdout)
 }
 
-fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<serde_json::Value, Box<dyn Error>>
-{
+fn inspect_repo_state(
+    state_root: &Path,
+    repo_root: &Path,
+) -> Result<serde_json::Value, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
     let output = Command::new(docdex_bin())

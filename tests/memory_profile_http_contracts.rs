@@ -139,7 +139,10 @@ fn profile_export_and_import_contracts() -> Result<(), Box<dyn Error>> {
 
     let import_url = format!("http://{host}:{port}/v1/profile/import");
     let mut manifest = export_resp.clone();
-    if let Some(prefs) = manifest.get_mut("preferences").and_then(|v| v.as_array_mut()) {
+    if let Some(prefs) = manifest
+        .get_mut("preferences")
+        .and_then(|v| v.as_array_mut())
+    {
         for (idx, pref) in prefs.iter_mut().enumerate() {
             if let Some(obj) = pref.as_object_mut() {
                 obj.insert("id".to_string(), Value::String(format!("import-{}", idx)));

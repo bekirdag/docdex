@@ -66,11 +66,7 @@ fn check_fails_when_bind_in_use() -> Result<(), Box<dyn Error>> {
         Err(err) => return Err(err.into()),
     };
     let port = listener.local_addr()?.port();
-    write_config(
-        home.path(),
-        state_root.path(),
-        &format!("127.0.0.1:{port}"),
-    )?;
+    write_config(home.path(), state_root.path(), &format!("127.0.0.1:{port}"))?;
 
     let output = Command::new(docdex_bin())
         .env("HOME", home.path())

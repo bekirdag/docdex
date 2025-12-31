@@ -5,7 +5,10 @@ use clap::{ArgAction, Args};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::impact::{apply_impact_settings, ImpactSettings, DEFAULT_DYNAMIC_IMPORT_SCAN_LIMIT, DEFAULT_IMPORT_TRACES_ENABLED};
+use crate::impact::{
+    apply_impact_settings, ImpactSettings, DEFAULT_DYNAMIC_IMPORT_SCAN_LIMIT,
+    DEFAULT_IMPORT_TRACES_ENABLED,
+};
 
 const DEFAULT_CONFIG_FILE: &str = "config.toml";
 const DEFAULT_HTTP_BIND_ADDR: &str = "127.0.0.1:3210";
@@ -91,7 +94,11 @@ impl AppConfig {
         }
         if self.memory.backend.trim().is_empty() {
             self.memory.backend = DEFAULT_MEMORY_BACKEND.to_string();
-        } else if !self.memory.backend.eq_ignore_ascii_case(DEFAULT_MEMORY_BACKEND) {
+        } else if !self
+            .memory
+            .backend
+            .eq_ignore_ascii_case(DEFAULT_MEMORY_BACKEND)
+        {
             warn!(
                 target: "docdexd",
                 backend = %self.memory.backend,
@@ -381,8 +388,8 @@ pub fn load_config_from_path(path: &Path) -> Result<AppConfig> {
         });
         return Ok(config);
     }
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("read config {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("read config {}", path.display()))?;
     if text.trim().is_empty() {
         let config = default_config_with_paths()?;
         write_config(path, &config)?;
@@ -411,9 +418,12 @@ pub fn load_config_from_path(path: &Path) -> Result<AppConfig> {
 
 pub fn default_config_path() -> Result<PathBuf> {
     let state_dir = default_state_dir()?;
-    let base = state_dir
-        .parent()
-        .ok_or_else(|| anyhow!("unable to resolve config directory from {}", state_dir.display()))?;
+    let base = state_dir.parent().ok_or_else(|| {
+        anyhow!(
+            "unable to resolve config directory from {}",
+            state_dir.display()
+        )
+    })?;
     Ok(base.join(DEFAULT_CONFIG_FILE))
 }
 

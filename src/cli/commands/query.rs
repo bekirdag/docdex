@@ -1,12 +1,13 @@
-use crate::config::{self, RepoArgs};
 use crate::cli::http_client::CliHttpClient;
-use crate::diff;
+use crate::cli::CliDiffMode;
+use crate::config::{self, RepoArgs};
 use crate::dag::logging as dag_logging;
+use crate::diff;
 use crate::index;
-use crate::libs;
 use crate::index::Hit;
-use crate::memory::MemoryStore;
+use crate::libs;
 use crate::memory::repo_state_root_from_state_dir;
+use crate::memory::MemoryStore;
 use crate::ollama::OllamaEmbedder;
 use crate::orchestrator::{
     memory_budget_from_max_answer_tokens, run_waterfall, ProfileBudget, WaterfallPlan,
@@ -26,7 +27,6 @@ use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::time::Duration;
 use uuid::Uuid;
-use crate::cli::CliDiffMode;
 
 pub(crate) async fn run(
     repo: RepoArgs,
@@ -525,7 +525,11 @@ fn compressed_local_from_value(payload: &Value) -> Option<CompressedLocal> {
                 .filter(|value| !value.is_empty())
                 .map(truncate_compressed_text)
         });
-    Some(CompressedLocal { score, path, summary })
+    Some(CompressedLocal {
+        score,
+        path,
+        summary,
+    })
 }
 
 fn best_web_summary(
@@ -539,9 +543,7 @@ fn best_web_summary(
         }
         match best {
             Some(current) => {
-                if item.relevance_score.unwrap_or(0.0)
-                    > current.relevance_score.unwrap_or(0.0)
-                {
+                if item.relevance_score.unwrap_or(0.0) > current.relevance_score.unwrap_or(0.0) {
                     best = Some(item);
                 }
             }
@@ -690,15 +692,12 @@ pub(crate) async fn search_via_http(
     if let Some(agent_id) = agent_id {
         req = req.header("x-docdex-agent-id", agent_id);
     }
-    let resp = req
-        .send()
-        .await
-        .map_err(|err| {
-            anyhow!(
-                "docdexd search failed: {err}; ensure `docdexd serve --repo {}` is running",
-                repo_root.display()
-            )
-        })?;
+    let resp = req.send().await.map_err(|err| {
+        anyhow!(
+            "docdexd search failed: {err}; ensure `docdexd serve --repo {}` is running",
+            repo_root.display()
+        )
+    })?;
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
@@ -876,7 +875,10 @@ pub(crate) async fn stream_via_http(
                     return Ok(());
                 }
                 let value: serde_json::Value = serde_json::from_str(trimmed)?;
-                if let Some(content) = value.pointer("/choices/0/delta/content").and_then(|v| v.as_str()) {
+                if let Some(content) = value
+                    .pointer("/choices/0/delta/content")
+                    .and_then(|v| v.as_str())
+                {
                     write!(stdout, "{content}")?;
                     stdout.flush()?;
                 }

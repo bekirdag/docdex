@@ -25,7 +25,12 @@ pub(crate) async fn run(command: super::super::DagCommand) -> Result<()> {
                 let output = if format == "dot" {
                     dag::view::render_session_as_dot(&repo_root, &session_id, state_dir, max_nodes)?
                 } else {
-                    dag::view::render_session_as_text(&repo_root, &session_id, state_dir, max_nodes)?
+                    dag::view::render_session_as_text(
+                        &repo_root,
+                        &session_id,
+                        state_dir,
+                        max_nodes,
+                    )?
                 };
                 println!("{output}");
             }
@@ -44,10 +49,8 @@ async fn run_via_http(
     let format = format.trim().to_ascii_lowercase();
     let client = CliHttpClient::new()?;
     let mut req = client.request(Method::GET, "/v1/dag/export");
-    let mut params: Vec<(&str, String)> = vec![
-        ("session_id", session_id),
-        ("format", format.clone()),
-    ];
+    let mut params: Vec<(&str, String)> =
+        vec![("session_id", session_id), ("format", format.clone())];
     if let Some(max_nodes) = max_nodes {
         params.push(("max_nodes", max_nodes.to_string()));
     }

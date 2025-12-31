@@ -180,7 +180,9 @@ fn load_embedding_dim(conn: &Connection) -> Result<Option<usize>> {
 
 fn infer_embedding_dim(conn: &Connection) -> Result<Option<usize>> {
     let maybe_blob: Option<Vec<u8>> = conn
-        .query_row("SELECT embedding FROM preferences LIMIT 1", [], |row| row.get(0))
+        .query_row("SELECT embedding FROM preferences LIMIT 1", [], |row| {
+            row.get(0)
+        })
         .optional()
         .context("inspect existing embeddings")?;
     let Some(blob) = maybe_blob else {
@@ -311,7 +313,9 @@ fn seed_defaults(conn: &mut Connection, embedding_dim: usize) -> Result<()> {
     let embedding_blob = encode_embedding(&embedding);
     let embedding_json = embedding_to_json(&embedding).context("serialize seed embedding")?;
 
-    let tx = conn.transaction().context("start profile seed transaction")?;
+    let tx = conn
+        .transaction()
+        .context("start profile seed transaction")?;
     for agent in &manifest.agents {
         tx.execute(
             "INSERT INTO agents (id, role, created_at) VALUES (?1, ?2, ?3)",
@@ -401,7 +405,8 @@ mod tests {
         let dir = tempdir()?;
         let path = dir.path().join("profile.db");
         let ProfileDbInit { conn, .. } = init_profile_db(&path, Some(4))?;
-        let agents_first: i64 = conn.query_row("SELECT COUNT(*) FROM agents", [], |row| row.get(0))?;
+        let agents_first: i64 =
+            conn.query_row("SELECT COUNT(*) FROM agents", [], |row| row.get(0))?;
         let prefs_first: i64 =
             conn.query_row("SELECT COUNT(*) FROM preferences", [], |row| row.get(0))?;
         drop(conn);

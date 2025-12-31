@@ -46,10 +46,8 @@ fn bench_indexing(c: &mut Criterion) {
                     true,
                 )
                 .expect("index config");
-                let indexer =
-                    Indexer::with_config(repo_root.clone(), config).expect("indexer");
-                rt.block_on(indexer.reindex_all())
-                    .expect("reindex");
+                let indexer = Indexer::with_config(repo_root.clone(), config).expect("indexer");
+                rt.block_on(indexer.reindex_all()).expect("reindex");
             },
             BatchSize::SmallInput,
         );

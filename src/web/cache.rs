@@ -90,7 +90,9 @@ fn cache_entry_is_fresh(path: &Path, ttl: Duration) -> Result<bool> {
     let modified = metadata
         .modified()
         .with_context(|| format!("read mtime for {}", path.display()))?;
-    let age = SystemTime::now().duration_since(modified).unwrap_or_default();
+    let age = SystemTime::now()
+        .duration_since(modified)
+        .unwrap_or_default();
     Ok(age <= ttl)
 }
 

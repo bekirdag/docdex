@@ -1,15 +1,14 @@
 use crate::config;
-use anyhow::Context;
 use crate::index::Hit;
 use crate::index::Indexer;
 use crate::libs::LibsIndexer;
 use crate::llm::adapter::{resolve_agent_adapter, LlmClient, LlmCompletion, LlmFuture};
+use crate::max_size::truncate_utf8_chars;
 use crate::mcoda::registry::McodaRegistry;
 use crate::ollama::OllamaClient;
 use crate::search;
 use crate::state_layout::StateLayout;
 use crate::tier2::{Tier2Unavailable, Tier2UnavailableReason};
-use crate::max_size::truncate_utf8_chars;
 use crate::util;
 use crate::web::cache;
 use crate::web::chrome::{fetch_dom, ChromeFetchConfig};
@@ -18,6 +17,7 @@ use crate::web::normalize::{dedupe_urls, unwrap_ddg_redirect};
 use crate::web::readability::extract_readable_text;
 use crate::web::status::fetch_status;
 use crate::web::WebConfig;
+use anyhow::Context;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -62,26 +62,52 @@ const WEB_QUALITY_COOLDOWN_SECS: u64 = 600;
 const WEB_QUALITY_TTL_SECS: u64 = 86_400;
 
 const COMMON_STOPWORDS: &[&str] = &[
-    "a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for", "from",
-    "how", "i", "if", "in", "is", "it", "of", "on", "or", "the", "to", "use",
-    "using", "was", "we", "what", "when", "where", "who", "why", "with", "you",
-    "your",
+    "a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for", "from", "how", "i", "if",
+    "in", "is", "it", "of", "on", "or", "the", "to", "use", "using", "was", "we", "what", "when",
+    "where", "who", "why", "with", "you", "your",
 ];
 
-const MATCH_STOPWORDS_EXTRA: &[&str] = &[
-    "add", "append", "build", "create", "insert", "make",
-];
+const MATCH_STOPWORDS_EXTRA: &[&str] = &["add", "append", "build", "create", "insert", "make"];
 
 const MATCH_STOPWORDS_GENERIC: &[&str] = &[
-    "code", "sample", "samples", "example", "examples", "snippet", "snippets",
-    "tutorial", "tutorials", "guide", "guides", "docs", "documentation",
-    "reference", "references",
+    "code",
+    "sample",
+    "samples",
+    "example",
+    "examples",
+    "snippet",
+    "snippets",
+    "tutorial",
+    "tutorials",
+    "guide",
+    "guides",
+    "docs",
+    "documentation",
+    "reference",
+    "references",
 ];
 
 const DOMAIN_STOPWORDS: &[&str] = &[
-    "code", "sample", "samples", "example", "examples", "tutorial", "tutorials",
-    "guide", "guides", "docs", "documentation", "reference", "references",
-    "overview", "intro", "introduction", "getting", "started", "learn", "learning",
+    "code",
+    "sample",
+    "samples",
+    "example",
+    "examples",
+    "tutorial",
+    "tutorials",
+    "guide",
+    "guides",
+    "docs",
+    "documentation",
+    "reference",
+    "references",
+    "overview",
+    "intro",
+    "introduction",
+    "getting",
+    "started",
+    "learn",
+    "learning",
 ];
 
 static STOPWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
@@ -110,13 +136,11 @@ struct CachedQueryCategory {
 static QUERY_CATEGORY_CACHE: Lazy<Mutex<HashMap<String, CachedQueryCategory>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-static ANSI_ESCAPE_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").expect("valid ansi escape regex")
-});
+static ANSI_ESCAPE_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").expect("valid ansi escape regex"));
 
-static HEADING_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"([a-z0-9])#([A-Za-z])").expect("valid heading join regex")
-});
+static HEADING_JOIN_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"([a-z0-9])#([A-Za-z])").expect("valid heading join regex"));
 
 static TAG_ATTR_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r"(<[A-Za-z]+)([a-z]{2,})(=)").expect("valid tag attr join regex")
@@ -127,13 +151,11 @@ static TLD_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
         .expect("valid tld join regex")
 });
 
-static LOWER_UPPER_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"([a-z])([A-Z])").expect("valid lower upper join regex")
-});
+static LOWER_UPPER_JOIN_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"([a-z])([A-Z])").expect("valid lower upper join regex"));
 
-static AND_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"([a-z])and([A-Z])").expect("valid and join regex")
-});
+static AND_JOIN_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"([a-z])and([A-Z])").expect("valid and join regex"));
 
 static AND_LOWER_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r"([a-z]{3,})and([a-z]{3,})").expect("valid and lower join regex")
@@ -143,13 +165,11 @@ static CAPITAL_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r"([A-Z][a-z]{2,})([A-Z][a-z]{2,})").expect("valid capital join regex")
 });
 
-static BRACKET_LEFT_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"([A-Za-z])\[").expect("valid bracket left join regex")
-});
+static BRACKET_LEFT_JOIN_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"([A-Za-z])\[").expect("valid bracket left join regex"));
 
-static BRACKET_RIGHT_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"\]([A-Za-z])").expect("valid bracket right join regex")
-});
+static BRACKET_RIGHT_JOIN_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"\]([A-Za-z])").expect("valid bracket right join regex"));
 
 static LOWER_JOIN_STOPWORD_RE: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r"([A-Za-z]{3,})(and|of|in|to|with|by|as|for|from|its|is)([A-Za-z]{3,})")
@@ -157,8 +177,7 @@ static LOWER_JOIN_STOPWORD_RE: Lazy<regex::Regex> = Lazy::new(|| {
 });
 
 static TITLE_AND_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"([A-Z][a-z]{2,})and(\s+[a-z]{3,})")
-        .expect("valid title and join regex")
+    regex::Regex::new(r"([A-Z][a-z]{2,})and(\s+[a-z]{3,})").expect("valid title and join regex")
 });
 
 static PREFIX_COMMON_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
@@ -173,25 +192,21 @@ static LONG_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
         .expect("valid long join regex")
 });
 
-static PUNCT_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"([.!?])([A-Z])").expect("valid punctuation join regex")
-});
+static PUNCT_JOIN_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"([.!?])([A-Z])").expect("valid punctuation join regex"));
 
-static COMMA_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"([,])([A-Za-z])").expect("valid comma join regex")
-});
+static COMMA_JOIN_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"([,])([A-Za-z])").expect("valid comma join regex"));
 
-static COLON_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"([:;])([A-Za-z])").expect("valid colon join regex")
-});
+static COLON_JOIN_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"([:;])([A-Za-z])").expect("valid colon join regex"));
 
 static WORD_METHOD_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r"([A-Za-z]{2,})([a-z]{2,}\()").expect("valid word method join regex")
 });
 
-static PAREN_WORD_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"(\))([A-Za-z])").expect("valid paren word join regex")
-});
+static PAREN_WORD_JOIN_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"(\))([A-Za-z])").expect("valid paren word join regex"));
 
 static LABEL_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(
@@ -205,14 +220,11 @@ static CODE_KEYWORD_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
         .expect("valid code keyword join regex")
 });
 
-static ALLCAPS_JOIN_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"([a-z])([A-Z]{2,})").expect("valid allcaps join regex")
-});
+static ALLCAPS_JOIN_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"([a-z])([A-Z]{2,})").expect("valid allcaps join regex"));
 
-static CAMEL_BREAK_RE: Lazy<regex::Regex> = Lazy::new(|| {
-    regex::Regex::new(r"([a-z])([A-Z])").expect("valid camel break regex")
-});
-
+static CAMEL_BREAK_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"([a-z])([A-Z])").expect("valid camel break regex"));
 
 #[derive(Clone, Debug)]
 pub struct WebGateConfig {
@@ -339,10 +351,7 @@ pub fn web_context_from_status(status: &WebDiscoveryStatus) -> Option<Vec<WebFet
         {
             continue;
         }
-        let content = item
-            .ai_digested_content
-            .as_ref()
-            .or(item.content.as_ref());
+        let content = item.ai_digested_content.as_ref().or(item.content.as_ref());
         let Some(content) = content else {
             continue;
         };
@@ -772,7 +781,12 @@ fn build_summary_prompt(
     } else {
         prompt.push_str("Code blocks (verbatim):\n");
         for (idx, block) in code_blocks.iter().enumerate() {
-            prompt.push_str(&format!("[code {}]\n{}\n[/code {}]\n", idx + 1, block, idx + 1));
+            prompt.push_str(&format!(
+                "[code {}]\n{}\n[/code {}]\n",
+                idx + 1,
+                block,
+                idx + 1
+            ));
         }
     }
     prompt.push_str("\nUser query:\n");
@@ -1162,9 +1176,14 @@ pub async fn run_web_research(
     let (hits, top_score, top_score_normalized, local_match_ratio) = if skip_local_search {
         (Vec::new(), None, None, None)
     } else {
-        let search_response =
-            search::run_query(indexer, libs_indexer, query, limit, search::RankingSurface::Search)
-                .await?;
+        let search_response = search::run_query(
+            indexer,
+            libs_indexer,
+            query,
+            limit,
+            search::RankingSurface::Search,
+        )
+        .await?;
         let original_top_score_normalized = search_response.top_score_normalized;
         let mut hits = filter_local_hits_with_llm(
             query,
@@ -1321,7 +1340,11 @@ pub(crate) async fn filter_local_hits_with_llm(
             }
             filtered.push(adjusted);
         }
-        filtered.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        filtered.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         return filtered;
     };
     let all_hits = hits;
@@ -1338,7 +1361,8 @@ pub(crate) async fn filter_local_hits_with_llm(
                 let Some((matched, ratio)) = hit_match_stats(&query_tokens, query_len, hit) else {
                     continue;
                 };
-                let overlap_ok = matched >= min_required && min_ratio.map_or(true, |min| ratio >= min);
+                let overlap_ok =
+                    matched >= min_required && min_ratio.map_or(true, |min| ratio >= min);
                 let has_code = hit_has_code_markers(hit);
                 let specific_match = hit_matches_specific_token(&query_tokens, hit);
                 if code_intent {
@@ -1381,10 +1405,18 @@ pub(crate) async fn filter_local_hits_with_llm(
             }
             fallback.push(adjusted);
         }
-        fallback.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        fallback.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         return fallback;
     }
-    filtered.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    filtered.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     if !filtered.is_empty() {
         return filtered;
     }
@@ -1409,7 +1441,11 @@ pub(crate) async fn filter_local_hits_with_llm(
         }
         fallback.push(adjusted);
     }
-    fallback.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    fallback.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     if !fallback.is_empty() {
         return fallback;
     }
@@ -1566,36 +1602,36 @@ async fn run_web_discovery(
                 if entry.url.trim().is_empty() {
                     // Ignore legacy phrase cache entries without a source URL.
                 } else {
-                let result = WebFetchResult {
-                    url: entry.url.clone(),
-                    status: None,
-                    fetched_at_epoch_ms: Some(entry.fetched_at_epoch_ms),
-                    cached: true,
-                    content: None,
-                    ai_digested_content: Some(entry.ai_digested_content),
-                    ai_digested_kind: Some(entry.ai_digested_kind),
-                    relevance_score: Some(entry.relevance_score.unwrap_or(1.0)),
-                    debug_html: None,
-                    debug_dom_text: None,
-                    error: None,
-                    debug: None,
-                };
-                return WebDiscoveryStatus {
-                    status: WebDiscoveryStatusCode::Served,
-                    reason: Some("phrase_cache".to_string()),
-                    message: Some("web discovery served from exact phrase cache".to_string()),
-                    unavailable: None,
-                    discovery: None,
-                    fetches: Some(vec![result]),
-                    debug: None,
-                    gate: build_gate_meta(
-                        gate,
-                        top_score,
-                        top_score_normalized,
-                        local_match_ratio,
-                        force_web,
-                    ),
-                };
+                    let result = WebFetchResult {
+                        url: entry.url.clone(),
+                        status: None,
+                        fetched_at_epoch_ms: Some(entry.fetched_at_epoch_ms),
+                        cached: true,
+                        content: None,
+                        ai_digested_content: Some(entry.ai_digested_content),
+                        ai_digested_kind: Some(entry.ai_digested_kind),
+                        relevance_score: Some(entry.relevance_score.unwrap_or(1.0)),
+                        debug_html: None,
+                        debug_dom_text: None,
+                        error: None,
+                        debug: None,
+                    };
+                    return WebDiscoveryStatus {
+                        status: WebDiscoveryStatusCode::Served,
+                        reason: Some("phrase_cache".to_string()),
+                        message: Some("web discovery served from exact phrase cache".to_string()),
+                        unavailable: None,
+                        discovery: None,
+                        fetches: Some(vec![result]),
+                        debug: None,
+                        gate: build_gate_meta(
+                            gate,
+                            top_score,
+                            top_score_normalized,
+                            local_match_ratio,
+                            force_web,
+                        ),
+                    };
                 }
             }
         }
@@ -1655,7 +1691,8 @@ async fn run_web_discovery(
     };
 
     let debug_enabled = env_boolish("DOCDEX_WEB_DEBUG").unwrap_or(false);
-    let (query_category, category_source) = classify_query_category(query, llm_model, llm_agent).await;
+    let (query_category, category_source) =
+        classify_query_category(query, llm_model, llm_agent).await;
 
     let mut discovery_limit = (web_limit * WEB_DISCOVERY_MULTIPLIER)
         .max(web_limit)
@@ -1682,21 +1719,19 @@ async fn run_web_discovery(
                     if !fallback_query.eq_ignore_ascii_case(query) {
                         match discovery.discover(&fallback_query, discovery_limit).await {
                             Ok(fallback_response) => {
-                                let normalized =
-                                    normalize_discovery_response(
-                                        fallback_response,
-                                        &config,
-                                        web_limit,
-                                        query_category,
-                                    );
+                                let normalized = normalize_discovery_response(
+                                    fallback_response,
+                                    &config,
+                                    web_limit,
+                                    query_category,
+                                );
                                 discovery_response = normalized.0;
                                 urls = normalized.1;
-                                debug.push(format!(
-                                    "fallback discovery query: {}",
-                                    fallback_query
-                                ));
+                                debug.push(format!("fallback discovery query: {}", fallback_query));
                                 if urls.is_empty() {
-                                    debug.push("fallback discovery returned empty results".to_string());
+                                    debug.push(
+                                        "fallback discovery returned empty results".to_string(),
+                                    );
                                 }
                             }
                             Err(err) => {
@@ -1756,7 +1791,11 @@ async fn run_web_discovery(
                 message,
                 unavailable: None,
                 discovery: Some(discovery_response),
-                fetches: if fetches.is_empty() { None } else { Some(fetches) },
+                fetches: if fetches.is_empty() {
+                    None
+                } else {
+                    Some(fetches)
+                },
                 debug: if debug.is_empty() { None } else { Some(debug) },
                 gate: build_gate_meta(
                     gate,
@@ -1896,19 +1935,35 @@ fn sort_urls_for_category(urls: &mut Vec<String>, category: QueryCategory) {
 fn score_url_for_category(url: &str, category: QueryCategory) -> i32 {
     let url_lc = url.trim().to_ascii_lowercase();
     let parsed = url::Url::parse(&url_lc).ok();
-    let host = parsed.as_ref().and_then(|item| item.host_str()).unwrap_or("");
+    let host = parsed
+        .as_ref()
+        .and_then(|item| item.host_str())
+        .unwrap_or("");
     let mut score = 0;
     match category {
         QueryCategory::CodeExample => {
             if url_contains_any(
                 host,
-                &["github.com", "gitlab.com", "bitbucket.org", "gist.github.com"],
+                &[
+                    "github.com",
+                    "gitlab.com",
+                    "bitbucket.org",
+                    "gist.github.com",
+                ],
             ) {
                 score += 6;
             }
             if url_contains_any(
                 &url_lc,
-                &["example", "examples", "sample", "snippet", "code", "repository", "repo"],
+                &[
+                    "example",
+                    "examples",
+                    "sample",
+                    "snippet",
+                    "code",
+                    "repository",
+                    "repo",
+                ],
             ) {
                 score += 3;
             }
@@ -1933,7 +1988,14 @@ fn score_url_for_category(url: &str, category: QueryCategory) -> i32 {
         QueryCategory::HowToGuide => {
             if url_contains_any(
                 &url_lc,
-                &["how-to", "howto", "tutorial", "guide", "walkthrough", "getting-started"],
+                &[
+                    "how-to",
+                    "howto",
+                    "tutorial",
+                    "guide",
+                    "walkthrough",
+                    "getting-started",
+                ],
             ) {
                 score += 3;
             }
@@ -1980,7 +2042,15 @@ fn score_url_for_category(url: &str, category: QueryCategory) -> i32 {
         QueryCategory::ComparisonOpinion => {
             if url_contains_any(
                 &url_lc,
-                &["compare", "comparison", "-vs-", "/vs/", "versus", "best", "top"],
+                &[
+                    "compare",
+                    "comparison",
+                    "-vs-",
+                    "/vs/",
+                    "versus",
+                    "best",
+                    "top",
+                ],
             ) {
                 score += 3;
             }
@@ -1991,7 +2061,14 @@ fn score_url_for_category(url: &str, category: QueryCategory) -> i32 {
         QueryCategory::NewsRelease => {
             if url_contains_any(
                 &url_lc,
-                &["blog", "news", "release", "changelog", "announcement", "press"],
+                &[
+                    "blog",
+                    "news",
+                    "release",
+                    "changelog",
+                    "announcement",
+                    "press",
+                ],
             ) {
                 score += 3;
             }
@@ -2122,8 +2199,7 @@ fn record_domain_failure(
         || entry.blocked_count >= WEB_QUALITY_BLOCK_THRESHOLD
         || entry.challenge_count >= WEB_QUALITY_CHALLENGE_THRESHOLD
     {
-        entry.cooldown_until_epoch_ms =
-            now_ms.saturating_add(WEB_QUALITY_COOLDOWN_SECS * 1000);
+        entry.cooldown_until_epoch_ms = now_ms.saturating_add(WEB_QUALITY_COOLDOWN_SECS * 1000);
     }
     write_domain_quality(layout, &entry);
 }
@@ -2222,11 +2298,7 @@ fn read_phrase_cache(
     serde_json::from_slice::<WebPhraseCacheEntry>(&payload).ok()
 }
 
-fn write_phrase_cache(
-    layout: &StateLayout,
-    query_hash: &str,
-    entry: &WebPhraseCacheEntry,
-) {
+fn write_phrase_cache(layout: &StateLayout, query_hash: &str, entry: &WebPhraseCacheEntry) {
     if let Ok(payload) = serde_json::to_vec(entry) {
         let _ = cache::write_cache_entry(layout, &phrase_cache_key(query_hash), &payload);
     }
@@ -2271,7 +2343,11 @@ fn write_summary_cache(
         output: evaluation.output.clone(),
     };
     if let Ok(payload) = serde_json::to_vec(&entry) {
-        let _ = cache::write_cache_entry(layout, &summary_cache_key(query_hash, content_hash), &payload);
+        let _ = cache::write_cache_entry(
+            layout,
+            &summary_cache_key(query_hash, content_hash),
+            &payload,
+        );
     }
 }
 
@@ -2294,11 +2370,7 @@ async fn fetch_web_documents(
     let summary_client = load_web_summary_client(llm_model, llm_agent);
     let debug_enabled = env_boolish("DOCDEX_WEB_DEBUG").unwrap_or(false);
     let early_stop_score = early_stop_score.clamp(0.0, 1.0);
-    if !config
-        .scraper_engine
-        .trim()
-        .eq_ignore_ascii_case("chrome")
-    {
+    if !config.scraper_engine.trim().eq_ignore_ascii_case("chrome") {
         return vec![WebFetchResult {
             url: String::new(),
             status: None,
@@ -2479,11 +2551,7 @@ async fn fetch_web_documents(
                         let html = fetch_result.html;
                         let readable_opt = extract_readable_text(&html, &url);
                         if debug_enabled {
-                            info!(
-                                "web fetch dom ok url={} status={:?}",
-                                url.as_str(),
-                                status
-                            );
+                            info!("web fetch dom ok url={} status={:?}", url.as_str(), status);
                         }
                         if debug_enabled {
                             debug_html = Some(truncate_debug_html(&html));
@@ -2494,7 +2562,9 @@ async fn fetch_web_documents(
                         if debug_enabled {
                             if let Some(final_url) = fetch_result.final_url.as_ref() {
                                 if final_url == "about:blank" {
-                                    debug_notes.push("chrome navigation stayed on about:blank".to_string());
+                                    debug_notes.push(
+                                        "chrome navigation stayed on about:blank".to_string(),
+                                    );
                                 }
                             } else {
                                 debug_notes.push("chrome final_url missing".to_string());
@@ -2509,7 +2579,8 @@ async fn fetch_web_documents(
                             } else if !formatted_html.trim().is_empty() {
                                 debug_notes.push("readability failed; using html2text".to_string());
                             } else {
-                                debug_notes.push("readability failed; using html tag strip".to_string());
+                                debug_notes
+                                    .push("readability failed; using html tag strip".to_string());
                             }
                         }
                         let mut readable = if let Some(readable) = readable_opt {
@@ -2528,7 +2599,10 @@ async fn fetch_web_documents(
                                 now_ms,
                             );
                             if debug_enabled {
-                                debug_notes.push("js challenge detected (multiple signals + short text)".to_string());
+                                debug_notes.push(
+                                    "js challenge detected (multiple signals + short text)"
+                                        .to_string(),
+                                );
                                 info!("web fetch blocked by js challenge url={}", url.as_str());
                             }
                             push_result!(WebFetchResult {
@@ -2537,14 +2611,14 @@ async fn fetch_web_documents(
                                 fetched_at_epoch_ms,
                                 cached: false,
                                 content: None,
-                            ai_digested_content: None,
-                            ai_digested_kind: None,
-                            relevance_score: None,
-                            debug_html: debug_html.clone(),
-                            debug_dom_text: debug_dom_text.clone(),
-                            error: Some("web fetch blocked by JS challenge".to_string()),
-                            debug: if debug_enabled && !debug_notes.is_empty() {
-                                Some(debug_notes.clone())
+                                ai_digested_content: None,
+                                ai_digested_kind: None,
+                                relevance_score: None,
+                                debug_html: debug_html.clone(),
+                                debug_dom_text: debug_dom_text.clone(),
+                                error: Some("web fetch blocked by JS challenge".to_string()),
+                                debug: if debug_enabled && !debug_notes.is_empty() {
+                                    Some(debug_notes.clone())
                                 } else {
                                     None
                                 },
@@ -2568,7 +2642,8 @@ async fn fetch_web_documents(
                             content = None;
                         } else {
                             if debug_enabled && readable.trim().is_empty() {
-                                debug_notes.push("text extraction empty after fallback".to_string());
+                                debug_notes
+                                    .push("text extraction empty after fallback".to_string());
                             }
                             let boiler_ratio = boilerplate_ratio(&readable, boilerplate_phrases);
                             let penalty = quality_penalty(boiler_ratio, ad_markers);
@@ -2582,14 +2657,16 @@ async fn fetch_web_documents(
                                     fetched_at_epoch_ms,
                                     cached: false,
                                     content: None,
-                        ai_digested_content: None,
-                        ai_digested_kind: None,
-                        relevance_score: None,
-                        debug_html: debug_html.clone(),
-                        debug_dom_text: debug_dom_text.clone(),
-                        error: Some("web fetch skipped due to boilerplate noise".to_string()),
-                        debug: None,
-                    });
+                                    ai_digested_content: None,
+                                    ai_digested_kind: None,
+                                    relevance_score: None,
+                                    debug_html: debug_html.clone(),
+                                    debug_dom_text: debug_dom_text.clone(),
+                                    error: Some(
+                                        "web fetch skipped due to boilerplate noise".to_string()
+                                    ),
+                                    debug: None,
+                                });
                                 continue;
                             }
                             quality_scale = penalty;
@@ -2616,14 +2693,15 @@ async fn fetch_web_documents(
                             let trimmed = truncate_content_output(&readable);
                             if trimmed.trim().is_empty() {
                                 if debug_enabled {
-                                    debug_notes.push("extracted text empty after cleanup".to_string());
+                                    debug_notes
+                                        .push("extracted text empty after cleanup".to_string());
                                 }
                                 content = None;
                             } else {
                                 let char_count = trimmed.chars().count();
                                 let word_count = trimmed.split_whitespace().count();
-                                let allow_short = matches!(intent, QueryIntent::Code)
-                                    && !code_blocks.is_empty();
+                                let allow_short =
+                                    matches!(intent, QueryIntent::Code) && !code_blocks.is_empty();
                                 if !allow_short
                                     && char_count < WEB_MIN_CONTENT_CHARS
                                     && word_count < WEB_MIN_CONTENT_WORDS
@@ -2641,8 +2719,8 @@ async fn fetch_web_documents(
                         }
                     }
                     Err(err) => {
-                        let failure_kind =
-                            classify_status_failure(status_probe).unwrap_or(DomainFailureKind::Fetch);
+                        let failure_kind = classify_status_failure(status_probe)
+                            .unwrap_or(DomainFailureKind::Fetch);
                         record_domain_failure(layout.as_ref(), &host, failure_kind, now_ms);
                         if debug_enabled {
                             info!(
@@ -2658,21 +2736,23 @@ async fn fetch_web_documents(
                             fetched_at_epoch_ms,
                             cached: false,
                             content: None,
-                                ai_digested_content: None,
-                                ai_digested_kind: None,
-                                relevance_score: None,
-                                debug_html: debug_html.clone(),
-                                debug_dom_text: debug_dom_text.clone(),
-                                error: Some(format!("web fetch failed: {err}")),
-                                debug: None,
-                            });
+                            ai_digested_content: None,
+                            ai_digested_kind: None,
+                            relevance_score: None,
+                            debug_html: debug_html.clone(),
+                            debug_dom_text: debug_dom_text.clone(),
+                            error: Some(format!("web fetch failed: {err}")),
+                            debug: None,
+                        });
                         continue;
                     }
                 };
             }
 
             let Some(content_text) = content.as_ref() else {
-                let empty_error = content_error.clone().unwrap_or_else(|| "content empty".to_string());
+                let empty_error = content_error
+                    .clone()
+                    .unwrap_or_else(|| "content empty".to_string());
                 push_result!(WebFetchResult {
                     url: url.to_string(),
                     status,
@@ -2697,8 +2777,7 @@ async fn fetch_web_documents(
             if !skip_summary {
                 let char_count = content_text.chars().count();
                 let word_count = content_text.split_whitespace().count();
-                let allow_short =
-                    matches!(intent, QueryIntent::Code) && !code_blocks.is_empty();
+                let allow_short = matches!(intent, QueryIntent::Code) && !code_blocks.is_empty();
                 if !allow_short
                     && char_count < WEB_MIN_CONTENT_CHARS
                     && word_count < WEB_MIN_CONTENT_WORDS
@@ -2714,7 +2793,9 @@ async fn fetch_web_documents(
             }
 
             if skip_summary {
-                let error = content_error.clone().unwrap_or_else(|| "low_content".to_string());
+                let error = content_error
+                    .clone()
+                    .unwrap_or_else(|| "low_content".to_string());
                 push_result!(WebFetchResult {
                     url: url.to_string(),
                     status,
@@ -2745,16 +2826,9 @@ async fn fetch_web_documents(
             };
             let (summary_query_hash, content_hash) =
                 summary_cache_entry(query_hash, content_text, &summary_blocks);
-            let cached_summary = layout
-                .as_ref()
-                .and_then(|layout| {
-                    read_summary_cache(
-                        layout,
-                        &summary_query_hash,
-                        &content_hash,
-                        config.cache_ttl,
-                    )
-                });
+            let cached_summary = layout.as_ref().and_then(|layout| {
+                read_summary_cache(layout, &summary_query_hash, &content_hash, config.cache_ttl)
+            });
             let used_cached_summary = cached_summary.is_some();
             let llm_available = summary_client.is_some();
             let evaluation = if let Some(summary) = cached_summary {
@@ -2772,18 +2846,18 @@ async fn fetch_web_documents(
                 None => {
                     let wants_code = matches!(intent, QueryIntent::Code)
                         || matches!(query_category, QueryCategory::CodeExample);
-                if wants_code && !code_blocks.is_empty() {
-                    let selected = select_best_code_block(query, &code_blocks)
-                        .unwrap_or_else(|| code_blocks.join("\n\n"));
-                    WebEvalOutput {
-                        relevance_score: 0.5,
-                        kind: "code".to_string(),
-                        output: selected,
-                    }
-                } else {
-                    WebEvalOutput {
-                        relevance_score: 0.0,
-                        kind: "summary".to_string(),
+                    if wants_code && !code_blocks.is_empty() {
+                        let selected = select_best_code_block(query, &code_blocks)
+                            .unwrap_or_else(|| code_blocks.join("\n\n"));
+                        WebEvalOutput {
+                            relevance_score: 0.5,
+                            kind: "code".to_string(),
+                            output: selected,
+                        }
+                    } else {
+                        WebEvalOutput {
+                            relevance_score: 0.0,
+                            kind: "summary".to_string(),
                             output: if llm_available {
                                 String::new()
                             } else {
@@ -2859,7 +2933,12 @@ async fn fetch_web_documents(
             if !used_cached_summary {
                 if let Some(layout) = layout.as_ref() {
                     if config.cache_ttl.as_secs() > 0 {
-                        write_summary_cache(layout, &summary_query_hash, &content_hash, &evaluation);
+                        write_summary_cache(
+                            layout,
+                            &summary_query_hash,
+                            &content_hash,
+                            &evaluation,
+                        );
                     }
                 }
             }
@@ -2947,12 +3026,12 @@ async fn fetch_web_documents(
     });
     if let Some(best) = all_results.first() {
         if !config.cache_ttl.is_zero() && !query.trim().is_empty() {
-            if let (Some(content), Some(kind)) =
-                (best.ai_digested_content.as_ref(), best.ai_digested_kind.as_ref())
-            {
+            if let (Some(content), Some(kind)) = (
+                best.ai_digested_content.as_ref(),
+                best.ai_digested_kind.as_ref(),
+            ) {
                 if let Some(layout) = cache::cache_layout_from_config() {
-                    let fetched_at_epoch_ms =
-                        best.fetched_at_epoch_ms.unwrap_or_else(now_epoch_ms);
+                    let fetched_at_epoch_ms = best.fetched_at_epoch_ms.unwrap_or_else(now_epoch_ms);
                     let entry = WebPhraseCacheEntry {
                         query_hash: query_hash.to_string(),
                         fetched_at_epoch_ms,
@@ -2991,8 +3070,7 @@ fn format_html_text(html: &str) -> String {
     if cleaned.trim().is_empty() {
         return String::new();
     }
-    html2text::from_read(cleaned.as_bytes(), WEB_HTML2TEXT_WRAP_COLS)
-        .unwrap_or_default()
+    html2text::from_read(cleaned.as_bytes(), WEB_HTML2TEXT_WRAP_COLS).unwrap_or_default()
 }
 
 fn truncate_debug_html(html: &str) -> String {
@@ -3043,34 +3121,53 @@ fn normalize_text_spacing(text: &str) -> String {
             continue;
         }
         let mut updated = trimmed.to_string();
-        updated = TAG_ATTR_JOIN_RE.replace_all(&updated, "$1 $2$3").to_string();
+        updated = TAG_ATTR_JOIN_RE
+            .replace_all(&updated, "$1 $2$3")
+            .to_string();
         updated = HEADING_JOIN_RE.replace_all(&updated, "$1\n#$2").to_string();
         updated = COLON_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
         updated = COMMA_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
         updated = LABEL_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
         updated = TLD_JOIN_RE.replace_all(&updated, ".$1 $2").to_string();
-        updated = BRACKET_LEFT_JOIN_RE.replace_all(&updated, "$1 [").to_string();
-        updated = BRACKET_RIGHT_JOIN_RE.replace_all(&updated, "] $1").to_string();
-        updated = LOWER_JOIN_STOPWORD_RE.replace_all(&updated, "$1 $2 $3").to_string();
-        updated = TITLE_AND_JOIN_RE.replace_all(&updated, "$1 and$2").to_string();
+        updated = BRACKET_LEFT_JOIN_RE
+            .replace_all(&updated, "$1 [")
+            .to_string();
+        updated = BRACKET_RIGHT_JOIN_RE
+            .replace_all(&updated, "] $1")
+            .to_string();
+        updated = LOWER_JOIN_STOPWORD_RE
+            .replace_all(&updated, "$1 $2 $3")
+            .to_string();
+        updated = TITLE_AND_JOIN_RE
+            .replace_all(&updated, "$1 and$2")
+            .to_string();
         updated = AND_JOIN_RE.replace_all(&updated, "$1 and $2").to_string();
-        updated = AND_LOWER_JOIN_RE.replace_all(&updated, "$1 and $2").to_string();
-        updated = PREFIX_COMMON_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
+        updated = AND_LOWER_JOIN_RE
+            .replace_all(&updated, "$1 and $2")
+            .to_string();
+        updated = PREFIX_COMMON_JOIN_RE
+            .replace_all(&updated, "$1 $2")
+            .to_string();
         updated = LONG_JOIN_RE.replace_all(&updated, "$1 $2 $3").to_string();
-        updated = LOWER_UPPER_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
+        updated = LOWER_UPPER_JOIN_RE
+            .replace_all(&updated, "$1 $2")
+            .to_string();
         updated = CAPITAL_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
-        updated = WORD_METHOD_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
-        updated = PAREN_WORD_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
+        updated = WORD_METHOD_JOIN_RE
+            .replace_all(&updated, "$1 $2")
+            .to_string();
+        updated = PAREN_WORD_JOIN_RE
+            .replace_all(&updated, "$1 $2")
+            .to_string();
         updated = PUNCT_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
         updated = ALLCAPS_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
         updated = CAMEL_BREAK_RE.replace_all(&updated, "$1 $2").to_string();
         if looks_codeish(&updated) {
-            updated = CODE_KEYWORD_JOIN_RE.replace_all(&updated, "$1 $2").to_string();
+            updated = CODE_KEYWORD_JOIN_RE
+                .replace_all(&updated, "$1 $2")
+                .to_string();
         }
-        let normalized = updated
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let normalized = updated.split_whitespace().collect::<Vec<_>>().join(" ");
         if is_strict_code_line(trimmed) {
             lines.push(trimmed.to_string());
         } else {
@@ -3222,7 +3319,10 @@ fn is_strict_code_line(line: &str) -> bool {
     let symbols = ['{', '}', ';', '=', '<', '>', '[', ']', '(', ')'];
     let symbol_hits = trimmed.chars().filter(|ch| symbols.contains(ch)).count();
     let hard_symbols = ['{', '}', ';', '=', '<', '>'];
-    let hard_hits = trimmed.chars().filter(|ch| hard_symbols.contains(ch)).count();
+    let hard_hits = trimmed
+        .chars()
+        .filter(|ch| hard_symbols.contains(ch))
+        .count();
     let len = trimmed.len();
     if hard_hits >= 1 && symbol_hits >= 3 {
         return true;
@@ -3298,8 +3398,10 @@ fn block_has_code_shape(lines: &[String]) -> bool {
             indented += 1;
         }
         for ch in trimmed.chars() {
-            if matches!(ch, '{' | '}' | ';' | '=' | '<' | '>' | '[' | ']' | '(' | ')' | ':' | ',')
-            {
+            if matches!(
+                ch,
+                '{' | '}' | ';' | '=' | '<' | '>' | '[' | ']' | '(' | ')' | ':' | ','
+            ) {
                 symbol_hits += 1;
             }
         }
@@ -3549,11 +3651,7 @@ pub(crate) fn local_match_ratio(query: &str, hits: &[Hit]) -> Option<f32> {
     Some(best_ratio)
 }
 
-fn hit_match_stats(
-    query_tokens: &[String],
-    query_len: usize,
-    hit: &Hit,
-) -> Option<(usize, f32)> {
+fn hit_match_stats(query_tokens: &[String], query_len: usize, hit: &Hit) -> Option<(usize, f32)> {
     if query_tokens.is_empty() {
         return None;
     }
@@ -3572,7 +3670,11 @@ fn hit_match_stats(
 }
 
 fn min_required_matches(query_len: usize) -> usize {
-    if query_len >= 3 { 2 } else { 1 }
+    if query_len >= 3 {
+        2
+    } else {
+        1
+    }
 }
 
 fn tokenize_terms(text: &str) -> Vec<String> {
@@ -3722,13 +3824,7 @@ pub(crate) fn detect_query_intent(query: &str) -> QueryIntent {
     let definition_intent = tokens.iter().any(|token| {
         matches!(
             token.as_str(),
-            "define"
-                | "definition"
-                | "meaning"
-                | "explain"
-                | "overview"
-                | "concept"
-                | "what"
+            "define" | "definition" | "meaning" | "explain" | "overview" | "concept" | "what"
         )
     }) || query_lc.starts_with("what is ")
         || query_lc.starts_with("what's ");
@@ -3788,21 +3884,52 @@ fn detect_query_category_heuristic(query: &str) -> QueryCategory {
     let has_phrase = |phrase: &str| query_lc.contains(phrase);
 
     if has_token(&[
-        "error", "issue", "issues", "bug", "bugs", "debug", "debugging", "fix", "fixed", "failure",
-        "failed", "panic", "exception", "stacktrace", "stack", "trace",
+        "error",
+        "issue",
+        "issues",
+        "bug",
+        "bugs",
+        "debug",
+        "debugging",
+        "fix",
+        "fixed",
+        "failure",
+        "failed",
+        "panic",
+        "exception",
+        "stacktrace",
+        "stack",
+        "trace",
     ]) {
         return QueryCategory::Troubleshooting;
     }
 
     if has_token(&[
-        "spec", "specs", "standard", "standards", "rfc", "eip", "eips", "erc", "ercs", "draft",
+        "spec",
+        "specs",
+        "standard",
+        "standards",
+        "rfc",
+        "eip",
+        "eips",
+        "erc",
+        "ercs",
+        "draft",
     ]) {
         return QueryCategory::SpecStandard;
     }
 
     if has_token(&[
-        "code", "example", "examples", "sample", "samples", "snippet", "snippets", "implementation",
-        "template", "boilerplate",
+        "code",
+        "example",
+        "examples",
+        "sample",
+        "samples",
+        "snippet",
+        "snippets",
+        "implementation",
+        "template",
+        "boilerplate",
     ]) {
         return QueryCategory::CodeExample;
     }
@@ -3810,29 +3937,65 @@ fn detect_query_category_heuristic(query: &str) -> QueryCategory {
     if has_phrase("how to ") || has_phrase("how-to") || has_phrase("getting started") {
         return QueryCategory::HowToGuide;
     }
-    if has_token(&["how", "guide", "guides", "tutorial", "tutorials", "walkthrough"]) {
+    if has_token(&[
+        "how",
+        "guide",
+        "guides",
+        "tutorial",
+        "tutorials",
+        "walkthrough",
+    ]) {
         return QueryCategory::HowToGuide;
     }
 
-    if has_token(&["api", "reference", "docs", "documentation", "sdk", "endpoint", "schema"]) {
+    if has_token(&[
+        "api",
+        "reference",
+        "docs",
+        "documentation",
+        "sdk",
+        "endpoint",
+        "schema",
+    ]) {
         return QueryCategory::ApiReference;
     }
 
     if has_token(&[
-        "vs", "versus", "compare", "comparison", "best", "top", "pros", "cons", "alternatives",
+        "vs",
+        "versus",
+        "compare",
+        "comparison",
+        "best",
+        "top",
+        "pros",
+        "cons",
+        "alternatives",
     ]) {
         return QueryCategory::ComparisonOpinion;
     }
 
     if has_token(&[
-        "release", "releases", "changelog", "announcement", "news", "roadmap", "version",
+        "release",
+        "releases",
+        "changelog",
+        "announcement",
+        "news",
+        "roadmap",
+        "version",
     ]) {
         return QueryCategory::NewsRelease;
     }
 
     if has_phrase("what is ")
         || has_phrase("what's ")
-        || has_token(&["define", "definition", "meaning", "overview", "concept", "intro"])
+        || has_token(&[
+            "define",
+            "definition",
+            "meaning",
+            "overview",
+            "concept",
+            "intro",
+        ])
     {
         return QueryCategory::ConceptDefinition;
     }
@@ -3881,13 +4044,7 @@ async fn classify_query_category(
         source = QueryCategorySource::Heuristic;
     }
     if let Ok(mut cache) = QUERY_CATEGORY_CACHE.lock() {
-        cache.insert(
-            query_key,
-            CachedQueryCategory {
-                category,
-                source,
-            },
-        );
+        cache.insert(query_key, CachedQueryCategory { category, source });
     }
     (category, source)
 }
@@ -4356,7 +4513,11 @@ fn blend_relevance_score(model_score: f32, stats: &WebMatchStats) -> f32 {
     let penalty = if stats.query_len <= 1 {
         1.0
     } else if stats.query_len == 2 {
-        if stats.matched <= 1 { 0.75 } else { 1.0 }
+        if stats.matched <= 1 {
+            0.75
+        } else {
+            1.0
+        }
     } else if stats.matched <= 1 {
         0.5
     } else if stats.overlap_ratio < 0.5 {
@@ -4398,7 +4559,14 @@ fn category_relevance_multiplier(
         QueryCategory::HowToGuide => {
             if url_contains_any(
                 &url_lc,
-                &["how-to", "howto", "tutorial", "guide", "walkthrough", "getting-started"],
+                &[
+                    "how-to",
+                    "howto",
+                    "tutorial",
+                    "guide",
+                    "walkthrough",
+                    "getting-started",
+                ],
             ) {
                 1.1
             } else {
@@ -4442,7 +4610,15 @@ fn category_relevance_multiplier(
         QueryCategory::ComparisonOpinion => {
             if url_contains_any(
                 &url_lc,
-                &["compare", "comparison", "-vs-", "/vs/", "versus", "best", "top"],
+                &[
+                    "compare",
+                    "comparison",
+                    "-vs-",
+                    "/vs/",
+                    "versus",
+                    "best",
+                    "top",
+                ],
             ) {
                 1.1
             } else {
@@ -4452,7 +4628,14 @@ fn category_relevance_multiplier(
         QueryCategory::NewsRelease => {
             if url_contains_any(
                 &url_lc,
-                &["blog", "news", "release", "changelog", "announcement", "press"],
+                &[
+                    "blog",
+                    "news",
+                    "release",
+                    "changelog",
+                    "announcement",
+                    "press",
+                ],
             ) {
                 1.1
             } else {
@@ -4618,7 +4801,8 @@ mod tests {
             browser_hint: None,
             browser_available: true,
         };
-        let status = evaluate_gate_status("req", &gate, Some(0.8), Some(0.8), Some(0.9), false, false);
+        let status =
+            evaluate_gate_status("req", &gate, Some(0.8), Some(0.8), Some(0.9), false, false);
         assert_eq!(status.status, WebDiscoveryStatusCode::Skipped);
         assert_eq!(status.reason.as_deref(), Some("confidence_above_threshold"));
     }

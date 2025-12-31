@@ -54,7 +54,10 @@ pub fn supports(profile: &HardwareProfile, model: &LlmModel) -> bool {
 }
 
 pub fn filter_catalog<'a>(profile: &HardwareProfile, catalog: &'a [LlmModel]) -> Vec<&'a LlmModel> {
-    catalog.iter().filter(|model| supports(profile, model)).collect()
+    catalog
+        .iter()
+        .filter(|model| supports(profile, model))
+        .collect()
 }
 
 pub fn recommended_model<'a>(

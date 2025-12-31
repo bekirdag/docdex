@@ -90,11 +90,7 @@ impl DdgDiscovery {
         }
 
         let limit = limit.clamp(1, MAX_DDG_RESULTS);
-        let cache_limit = self
-            .config
-            .max_results
-            .max(limit)
-            .min(MAX_DDG_RESULTS);
+        let cache_limit = self.config.max_results.max(limit).min(MAX_DDG_RESULTS);
         let attempts = self.config.policy.max_attempts.max(1);
         let url = build_ddg_url(&self.config.ddg_base_url, query)?;
         let cache_key = ddg_cache_key(&self.config.ddg_base_url, query);
@@ -104,7 +100,11 @@ impl DdgDiscovery {
                 cache::read_cache_entry_with_ttl(layout, &cache_key, self.config.cache_ttl)
             {
                 if let Ok(cached) = serde_json::from_slice::<WebDiscoveryResponse>(&payload) {
-                    let urls = cached.results.into_iter().map(|result| result.url).collect();
+                    let urls = cached
+                        .results
+                        .into_iter()
+                        .map(|result| result.url)
+                        .collect();
                     return Ok(build_response_for_limit(
                         query,
                         filter_blocked_urls(dedupe_urls(urls), &self.blocklist),
@@ -158,8 +158,7 @@ impl DdgDiscovery {
                         if let Some(layout) = self.cache_layout.as_ref() {
                             if self.config.cache_ttl.as_secs() > 0 {
                                 if let Ok(payload) = serde_json::to_vec(&response_for_cache) {
-                                    let _ =
-                                        cache::write_cache_entry(layout, &cache_key, &payload);
+                                    let _ = cache::write_cache_entry(layout, &cache_key, &payload);
                                 }
                             }
                         }
@@ -189,10 +188,11 @@ impl DdgDiscovery {
                         continue;
                     }
                     if should_retry(status) {
-                        return Err(
-                            backoff_with_message(backoff_error, format!("duckduckgo discovery blocked ({status})"))
-                                .into(),
-                        );
+                        return Err(backoff_with_message(
+                            backoff_error,
+                            format!("duckduckgo discovery blocked ({status})"),
+                        )
+                        .into());
                     }
                     return Err(AppError::new(
                         ERR_INTERNAL_ERROR,
@@ -241,11 +241,7 @@ fn ddg_cache_key(base: &Url, query: &str) -> String {
     format!("ddg:{}:{}:{}", PROVIDER, base.as_str(), query)
 }
 
-fn build_response_for_limit(
-    query: &str,
-    urls: Vec<String>,
-    limit: usize,
-) -> WebDiscoveryResponse {
+fn build_response_for_limit(query: &str, urls: Vec<String>, limit: usize) -> WebDiscoveryResponse {
     let mut results: Vec<WebDiscoveryResult> = urls
         .into_iter()
         .map(|url| WebDiscoveryResult { url })

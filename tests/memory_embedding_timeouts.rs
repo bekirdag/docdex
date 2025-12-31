@@ -597,11 +597,15 @@ fn memory_isolation_between_repos() -> Result<(), Box<dyn Error>> {
         .cloned()
         .unwrap_or_default();
     assert!(
-        results_a.iter().any(|item| item.get("content") == Some(&json!("alpha memory"))),
+        results_a
+            .iter()
+            .any(|item| item.get("content") == Some(&json!("alpha memory"))),
         "repo A recall missing expected content: {recall_a}"
     );
     assert!(
-        results_a.iter().all(|item| item.get("content") != Some(&json!("beta memory"))),
+        results_a
+            .iter()
+            .all(|item| item.get("content") != Some(&json!("beta memory"))),
         "repo A recall leaked repo B content: {recall_a}"
     );
 
@@ -616,11 +620,15 @@ fn memory_isolation_between_repos() -> Result<(), Box<dyn Error>> {
         .cloned()
         .unwrap_or_default();
     assert!(
-        results_b.iter().any(|item| item.get("content") == Some(&json!("beta memory"))),
+        results_b
+            .iter()
+            .any(|item| item.get("content") == Some(&json!("beta memory"))),
         "repo B recall missing expected content: {recall_b}"
     );
     assert!(
-        results_b.iter().all(|item| item.get("content") != Some(&json!("alpha memory"))),
+        results_b
+            .iter()
+            .all(|item| item.get("content") != Some(&json!("alpha memory"))),
         "repo B recall leaked repo A content: {recall_b}"
     );
 

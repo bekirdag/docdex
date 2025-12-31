@@ -1,3 +1,4 @@
+use crate::mcp_proxy::McpProxy;
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -5,9 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, RwLock};
 use tokio::process::{Child, Command};
-use crate::mcp_proxy::McpProxy;
+use tokio::sync::{mpsc, RwLock};
 use which::which;
 
 const MCP_SERVER_BIN_ENV: &str = "DOCDEX_MCP_SERVER_BIN";
@@ -46,9 +46,7 @@ pub async fn serve(
     if status.success() {
         Ok(())
     } else {
-        Err(anyhow!(
-            "{MCP_SERVER_BIN_NAME} exited with status {status}"
-        ))
+        Err(anyhow!("{MCP_SERVER_BIN_NAME} exited with status {status}"))
     }
 }
 
@@ -211,7 +209,9 @@ impl McpProxyRouter {
         tokio::spawn(async move {
             let mut rx = rx;
             while let Some(payload) = rx.recv().await {
-                router.forward_to_session(&session_id, &sender, payload).await;
+                router
+                    .forward_to_session(&session_id, &sender, payload)
+                    .await;
             }
         });
         Ok(())
@@ -287,7 +287,12 @@ impl McpProxyRouter {
             .read()
             .await
             .get(session_id)
-            .and_then(|entry| entry.binding.as_ref().map(|binding| binding.repo_root.clone()))
+            .and_then(|entry| {
+                entry
+                    .binding
+                    .as_ref()
+                    .map(|binding| binding.repo_root.clone())
+            })
     }
 
     async fn ensure_child(&self, repo_root: &Path) -> Result<Arc<McpProxy>> {
@@ -361,7 +366,8 @@ impl McpProxyRouter {
         let mut sessions = self.sessions.write().await;
         let now = Instant::now();
         sessions.retain(|_, entry| {
-            now.duration_since(entry.last_active) < Duration::from_secs(MCP_ROUTER_SESSION_IDLE_SECS)
+            now.duration_since(entry.last_active)
+                < Duration::from_secs(MCP_ROUTER_SESSION_IDLE_SECS)
         });
     }
 }
@@ -441,14 +447,8 @@ async fn spawn_mcp_proxy(options: McpSpawnOptions) -> Result<Arc<McpProxy>> {
     let mut child = cmd
         .spawn()
         .with_context(|| format!("launch {MCP_SERVER_BIN_NAME}"))?;
-    let stdin = child
-        .stdin
-        .take()
-        .context("capture mcp stdin")?;
-    let stdout = child
-        .stdout
-        .take()
-        .context("capture mcp stdout")?;
+    let stdin = child.stdin.take().context("capture mcp stdin")?;
+    let stdout = child.stdout.take().context("capture mcp stdout")?;
     Ok(McpProxy::new(child, stdin, stdout))
 }
 

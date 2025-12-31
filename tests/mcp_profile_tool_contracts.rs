@@ -117,14 +117,8 @@ impl McpHarness {
             .stderr(Stdio::null())
             .spawn()?;
 
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or("failed to take mcp stdin")?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or("failed to take mcp stdout")?;
+        let stdin = child.stdin.take().ok_or("failed to take mcp stdin")?;
+        let stdout = child.stdout.take().ok_or("failed to take mcp stdout")?;
         Ok(Self {
             child,
             stdin,

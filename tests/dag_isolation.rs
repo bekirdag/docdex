@@ -37,8 +37,16 @@ fn dag_isolation_between_repos() -> Result<(), Box<dyn Error>> {
         &json!({ "repo": "b" }),
     )?;
 
-    let dag_a = load_session_dag(repo_a.path(), session_id, Some(state_root.path().to_path_buf()))?;
-    let dag_b = load_session_dag(repo_b.path(), session_id, Some(state_root.path().to_path_buf()))?;
+    let dag_a = load_session_dag(
+        repo_a.path(),
+        session_id,
+        Some(state_root.path().to_path_buf()),
+    )?;
+    let dag_b = load_session_dag(
+        repo_b.path(),
+        session_id,
+        Some(state_root.path().to_path_buf()),
+    )?;
 
     assert_eq!(dag_a.status, DagStatus::Found);
     assert_eq!(dag_b.status, DagStatus::Found);

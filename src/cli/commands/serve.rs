@@ -64,8 +64,11 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         allow_ip,
     } = args;
     let config = config::AppConfig::load_default().map_err(|err| {
-        StartupError::new("startup_config_invalid", format!("failed to load config: {err}"))
-            .with_hint("Ensure ~/.docdex is writable and config.toml is valid.")
+        StartupError::new(
+            "startup_config_invalid",
+            format!("failed to load config: {err}"),
+        )
+        .with_hint("Ensure ~/.docdex is writable and config.toml is valid.")
     })?;
     let mut config = config;
     if let Some(agent_id) = agent_id {
@@ -109,9 +112,10 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         Some(
             audit::AuditLogger::new(path, audit_max_bytes, audit_max_files as usize).map_err(
                 |err| {
-                StartupError::new("startup_state_invalid", err.to_string())
-                    .with_hint("Verify the state dir is writable or set --audit-disable.")
-            })?,
+                    StartupError::new("startup_state_invalid", err.to_string())
+                        .with_hint("Verify the state dir is writable or set --audit-disable.")
+                },
+            )?,
         )
     };
     let ip = if host.eq_ignore_ascii_case("localhost") {

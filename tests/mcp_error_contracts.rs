@@ -673,15 +673,18 @@ fn cli_invalid_query_error_matches_machine_reason() -> Result<(), Box<dyn Error>
         String::from_utf8_lossy(&index_out.stderr)
     );
 
-    let query_out = run_docdex(state_root, [
-        "query",
-        "--repo",
-        repo_str.as_str(),
-        "--query",
-        "",
-        "--limit",
-        "1",
-    ])?;
+    let query_out = run_docdex(
+        state_root,
+        [
+            "query",
+            "--repo",
+            repo_str.as_str(),
+            "--query",
+            "",
+            "--limit",
+            "1",
+        ],
+    )?;
     assert!(
         !query_out.status.success(),
         "empty query should fail in CLI query command"

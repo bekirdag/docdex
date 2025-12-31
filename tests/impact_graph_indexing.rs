@@ -382,9 +382,7 @@ fn read_diagnostics(
             .get("unresolvedImportsTotal")
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
-        return Ok(Some(ImpactDiagnostics {
-            unresolved_total,
-        }));
+        return Ok(Some(ImpactDiagnostics { unresolved_total }));
     }
     Ok(None)
 }

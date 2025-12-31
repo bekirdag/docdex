@@ -298,7 +298,7 @@ fn handle_mcp_add(
         }
         "claude" => {
             if remove {
-            println!("Claude Desktop: remove the docdex entry from Developer -> MCP Servers.");
+                println!("Claude Desktop: remove the docdex entry from Developer -> MCP Servers.");
             } else {
                 println!(
                     "Claude Desktop: Developer -> MCP Servers -> Add, command: docdexd mcp --repo {} --log {} --max-results {}",

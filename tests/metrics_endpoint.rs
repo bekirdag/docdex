@@ -1,7 +1,7 @@
 mod common;
 
-use common::{docdex_bin, pick_free_port, wait_for_health};
 use axum::{routing::post, Json, Router};
+use common::{docdex_bin, pick_free_port, wait_for_health};
 use docdexd::profiles::{PreferenceCategory, ProfileManager};
 use docdexd::repo_manager::repo_fingerprint_sha256;
 use reqwest::blocking::Client;
@@ -29,7 +29,12 @@ struct ServerHarness {
 }
 
 impl ServerHarness {
-    fn spawn(state_root: &Path, repo_root: &Path, host: &str, port: u16) -> Result<Self, Box<dyn Error>> {
+    fn spawn(
+        state_root: &Path,
+        repo_root: &Path,
+        host: &str,
+        port: u16,
+    ) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo_root.to_string_lossy().to_string();
         let child = Command::new(docdex_bin())
             .env("DOCDEX_STATE_DIR", state_root)
@@ -179,11 +184,7 @@ fn seed_profile(
     Ok(())
 }
 
-fn run_index(
-    state_root: &Path,
-    home_dir: &Path,
-    repo_root: &Path,
-) -> Result<(), Box<dyn Error>> {
+fn run_index(state_root: &Path, home_dir: &Path, repo_root: &Path) -> Result<(), Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     let output = Command::new(docdex_bin())
         .env("DOCDEX_STATE_DIR", state_root)
@@ -314,7 +315,12 @@ fn metrics_counters_increment_for_profile_hooks_and_map() -> Result<(), Box<dyn 
 
     let embedding_dim = 4;
     let global_state_dir = home_dir.path().join(".docdex").join("state");
-    write_config(home_dir.path(), &global_state_dir, &mock.base_url, embedding_dim)?;
+    write_config(
+        home_dir.path(),
+        &global_state_dir,
+        &mock.base_url,
+        embedding_dim,
+    )?;
     seed_profile(&global_state_dir, embedding_dim, "agent-metrics")?;
 
     run_index(state_root.path(), home_dir.path(), repo.path())?;
@@ -366,9 +372,24 @@ fn metrics_counters_increment_for_profile_hooks_and_map() -> Result<(), Box<dyn 
         .send()?;
     assert!(resp.status().is_success());
 
-    wait_for_metric(&client, &metrics_url, "docdex_profile_recall_requests_total", 1.0)?;
-    wait_for_metric(&client, &metrics_url, "docdex_project_map_cache_misses_total", 1.0)?;
-    wait_for_metric(&client, &metrics_url, "docdex_project_map_cache_hits_total", 1.0)?;
+    wait_for_metric(
+        &client,
+        &metrics_url,
+        "docdex_profile_recall_requests_total",
+        1.0,
+    )?;
+    wait_for_metric(
+        &client,
+        &metrics_url,
+        "docdex_project_map_cache_misses_total",
+        1.0,
+    )?;
+    wait_for_metric(
+        &client,
+        &metrics_url,
+        "docdex_project_map_cache_hits_total",
+        1.0,
+    )?;
     wait_for_metric(&client, &metrics_url, "docdex_hook_checks_total", 1.0)?;
     wait_for_metric(
         &client,

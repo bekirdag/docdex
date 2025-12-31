@@ -9,7 +9,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use super::db::{
-    distance_to_score, embedding_to_json, init_profile_db, encode_embedding, ProfileDbInit,
+    distance_to_score, embedding_to_json, encode_embedding, init_profile_db, ProfileDbInit,
 };
 
 #[derive(Debug, Clone)]
@@ -57,8 +57,7 @@ impl ProfileManager {
             conn,
             embedding_dim: stored_dim,
             schema_version,
-        } =
-            init_profile_db(&db_path, Some(embedding_dim))?;
+        } = init_profile_db(&db_path, Some(embedding_dim))?;
         let resolved = stored_dim.unwrap_or(embedding_dim);
         Ok(Self {
             conn: Arc::new(parking_lot::Mutex::new(conn)),
@@ -408,19 +407,16 @@ impl ProfileManager {
                  ORDER BY v.distance ASC, p.last_updated DESC, p.id ASC",
             )
             .context("prepare preference search")?;
-        let rows = stmt.query_map(
-            params![agent_id, query_json, top_k as i64],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, f64>(5)?,
-                ))
-            },
-        )?;
+        let rows = stmt.query_map(params![agent_id, query_json, top_k as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, f64>(5)?,
+            ))
+        })?;
         let mut results = Vec::new();
         for row in rows {
             let (id, agent_id, content, category_raw, last_updated, distance) = match row {
@@ -474,11 +470,7 @@ impl ProfileManager {
                 )
                 .unwrap_or(0);
             let vec_count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM preferences_vec",
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT COUNT(*) FROM preferences_vec", [], |row| row.get(0))
                 .unwrap_or(0);
             eprintln!(
                 "[profiles] recall agent={agent_id} prefs={count} vecs={vec_count} k={top_k}"
@@ -490,16 +482,13 @@ impl ProfileManager {
                 "SELECT p.id, p.content, p.last_updated, v.distance\n                 FROM preferences_vec v\n                 JOIN preferences p ON p.rowid = v.rowid\n                 WHERE p.agent_id = ?1\n                   AND v.rowid IN (SELECT rowid FROM preferences WHERE agent_id = ?1)\n                   AND v.embedding MATCH ?2 AND k = ?3\n                 ORDER BY v.distance ASC, p.last_updated DESC, p.id ASC",
             )
             .context("prepare preference recall")?;
-        let rows = stmt.query_map(
-            params![agent_id, query_json, top_k as i64],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            },
-        )?;
+        let rows = stmt.query_map(params![agent_id, query_json, top_k as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
         let mut results = Vec::new();
         for row in rows {
             let (id, content, last_updated) = match row {

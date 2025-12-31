@@ -97,7 +97,12 @@ fn profile_save_returns_queued_status() -> Result<(), Box<dyn Error>> {
 
     let embedding_dim = 4;
     let global_state_dir = home_dir.path().join(".docdex").join("state");
-    write_config(home_dir.path(), &global_state_dir, &mock.base_url, embedding_dim)?;
+    write_config(
+        home_dir.path(),
+        &global_state_dir,
+        &mock.base_url,
+        embedding_dim,
+    )?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
@@ -124,13 +129,18 @@ fn profile_save_returns_queued_status() -> Result<(), Box<dyn Error>> {
         .send()?;
     assert!(resp.status().is_success());
     let payload: Value = resp.json()?;
-    assert_eq!(payload.get("status").and_then(|v| v.as_str()), Some("queued"));
-    assert!(payload
-        .get("request_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .len()
-        > 4);
+    assert_eq!(
+        payload.get("status").and_then(|v| v.as_str()),
+        Some("queued")
+    );
+    assert!(
+        payload
+            .get("request_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .len()
+            > 4
+    );
 
     server.shutdown();
     Ok(())

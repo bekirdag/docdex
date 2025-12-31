@@ -17,11 +17,7 @@ fn docdex_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
-fn run_docdex<I, S>(
-    state_root: &Path,
-    home_dir: &Path,
-    args: I,
-) -> Result<Vec<u8>, Box<dyn Error>>
+fn run_docdex<I, S>(state_root: &Path, home_dir: &Path, args: I) -> Result<Vec<u8>, Box<dyn Error>>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -69,14 +65,15 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
 fn write_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
     let src_dir = repo_root.join("src");
     fs::create_dir_all(&src_dir)?;
-    fs::write(
-        src_dir.join("unsafe.ts"),
-        "const value: any = 42;\n",
-    )?;
+    fs::write(src_dir.join("unsafe.ts"), "const value: any = 42;\n")?;
     Ok(())
 }
 
-fn write_config(home_dir: &Path, global_state_dir: &Path, embedding_dim: usize) -> Result<(), Box<dyn Error>> {
+fn write_config(
+    home_dir: &Path,
+    global_state_dir: &Path,
+    embedding_dim: usize,
+) -> Result<(), Box<dyn Error>> {
     let config_dir = home_dir.join(".docdex");
     fs::create_dir_all(&config_dir)?;
     let config_path = config_dir.join("config.toml");
@@ -165,13 +162,8 @@ fn hook_validate_fails_on_any_type() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = ServerHarness::spawn(
-        state_root.path(),
-        home_dir.path(),
-        repo.path(),
-        host,
-        port,
-    )?;
+    let mut server =
+        ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port)?;
     wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(3)).build()?;

@@ -88,7 +88,8 @@ fn hook_validate_is_rate_limited() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port)?;
+    let mut server =
+        ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port)?;
 
     let repo_id = repo_fingerprint_sha256(repo.path())?;
     let client = Client::builder().timeout(Duration::from_secs(3)).build()?;

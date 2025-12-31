@@ -84,7 +84,8 @@ fn hook_validate_returns_pass_for_empty_files() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port)?;
+    let mut server =
+        ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port)?;
 
     let repo_id = repo_fingerprint_sha256(repo.path())?;
     let client = Client::builder().timeout(Duration::from_secs(3)).build()?;
@@ -115,7 +116,8 @@ fn hook_validate_requires_repo_id() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port)?;
+    let mut server =
+        ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(3)).build()?;
     let url = format!("http://{host}:{port}/v1/hooks/validate");

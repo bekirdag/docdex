@@ -322,7 +322,10 @@ fn symbols_enabled_creates_symbols_store_records() -> Result<(), Box<dyn Error>>
     let repo_state_root = resolve_repo_state_root(state_root.path(), repo_root)?;
     let db_path = symbols_db_path(&repo_state_root);
     assert!(db_path.exists(), "expected symbols.db to exist");
-    assert!(symbols_has_rows(&repo_state_root, rel_path)?, "expected symbols rows for {rel_path}");
+    assert!(
+        symbols_has_rows(&repo_state_root, rel_path)?,
+        "expected symbols rows for {rel_path}"
+    );
     assert_eq!(
         symbols_outcome_status(&repo_state_root, rel_path)?.as_deref(),
         Some("ok"),
@@ -438,7 +441,14 @@ fn spawn_server(
     host: &str,
     port: u16,
 ) -> Result<Child, Box<dyn Error>> {
-    spawn_server_with_args(state_root, repo_root, host, port, &["--secure-mode=false"], None)
+    spawn_server_with_args(
+        state_root,
+        repo_root,
+        host,
+        port,
+        &["--secure-mode=false"],
+        None,
+    )
 }
 
 fn spawn_server_with_args(

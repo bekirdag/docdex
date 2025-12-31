@@ -32,5 +32,8 @@ fn waterfall_plan_stores_inputs() {
     assert_eq!(plan.web_gate.trigger_threshold, web_gate.trigger_threshold);
     assert_eq!(plan.tier2_config.enabled, tier2.enabled);
     assert_eq!(plan.memory_budget.max_items, memory_budget.max_items);
-    assert_eq!(plan.profile_budget.token_budget, profile_budget.token_budget);
+    assert_eq!(
+        plan.profile_budget.token_budget,
+        profile_budget.token_budget
+    );
 }

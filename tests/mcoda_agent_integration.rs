@@ -20,8 +20,8 @@ use tempfile::TempDir;
 
 use docdexd::llm::adapter::resolve_agent_adapter;
 use docdexd::llm::adapter::LlmAdapter;
-use docdexd::mcoda::registry::McodaRegistry;
 use docdexd::mcoda::registry::McodaAgent;
+use docdexd::mcoda::registry::McodaRegistry;
 
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
@@ -132,7 +132,12 @@ fn create_mcoda_db(
 
 fn start_stub_openai_server(
     response_body: String,
-) -> std::io::Result<(SocketAddr, Arc<AtomicUsize>, Arc<AtomicBool>, thread::JoinHandle<()>)> {
+) -> std::io::Result<(
+    SocketAddr,
+    Arc<AtomicUsize>,
+    Arc<AtomicBool>,
+    thread::JoinHandle<()>,
+)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
     let addr = listener.local_addr()?;
@@ -193,7 +198,10 @@ fn mcoda_registry_loads_and_decrypts() -> Result<(), Box<dyn Error>> {
     assert_eq!(agent.adapter, "openai-api");
     assert_eq!(agent.default_model.as_deref(), Some("gpt-test"));
     let config = agent.config.as_ref().expect("config");
-    assert_eq!(config.get("baseUrl").and_then(|v| v.as_str()), Some("http://localhost"));
+    assert_eq!(
+        config.get("baseUrl").and_then(|v| v.as_str()),
+        Some("http://localhost")
+    );
     let auth = agent.auth.as_ref().expect("auth");
     assert_eq!(auth.decrypted_secret.as_deref(), Some("secret-value"));
     assert_eq!(agent.capabilities, vec!["chat".to_string()]);
@@ -221,7 +229,8 @@ fn adapter_falls_back_to_cli_when_secret_missing() -> Result<(), Box<dyn Error>>
 
 #[test]
 fn chat_uses_agent_adapter() -> Result<(), Box<dyn Error>> {
-    let response_body = r#"{"choices":[{"message":{"content":"{\"relevant\":true,\"score\":0.9}"}}]}"#;
+    let response_body =
+        r#"{"choices":[{"message":{"content":"{\"relevant\":true,\"score\":0.9}"}}]}"#;
     let (addr, count, stop, handle) = match start_stub_openai_server(response_body.to_string()) {
         Ok(parts) => parts,
         Err(err) if err.kind() == ErrorKind::PermissionDenied => {

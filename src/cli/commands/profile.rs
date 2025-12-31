@@ -1,5 +1,7 @@
 use crate::config;
-use crate::profiles::{Agent, Preference, PreferenceCategory, ProfileEmbedder, ProfileImportSummary, ProfileManager};
+use crate::profiles::{
+    Agent, Preference, PreferenceCategory, ProfileEmbedder, ProfileImportSummary, ProfileManager,
+};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -35,7 +37,10 @@ async fn run_list(agent_id: Option<String>) -> Result<()> {
     let preferences = manager.list_preferences(agent_id.as_deref())?;
     let response = ProfileListResponse {
         agents,
-        preferences: preferences.into_iter().map(PreferenceRecord::from).collect(),
+        preferences: preferences
+            .into_iter()
+            .map(PreferenceRecord::from)
+            .collect(),
     };
     println!("{}", serde_json::to_string_pretty(&response)?);
     Ok(())
@@ -60,13 +65,7 @@ async fn run_add(
     }
 
     let embedding = embedder.embed(&content).await?;
-    let preference = manager.add_preference(
-        &agent_id,
-        &content,
-        &embedding,
-        category,
-        now_ms,
-    )?;
+    let preference = manager.add_preference(&agent_id, &content, &embedding, category, now_ms)?;
     let response = ProfileAddResponse {
         preference: PreferenceRecord::from(preference),
     };
@@ -105,7 +104,10 @@ async fn run_export(out: PathBuf) -> Result<()> {
         schema_version: manager.schema_version(),
         embedding_dim: manager.embedding_dim(),
         agents: agents.clone(),
-        preferences: preferences.into_iter().map(PreferenceRecord::from).collect(),
+        preferences: preferences
+            .into_iter()
+            .map(PreferenceRecord::from)
+            .collect(),
     };
     let payload = serde_json::to_string_pretty(&manifest)?;
     std::fs::write(&out, payload).with_context(|| format!("write {}", out.display()))?;

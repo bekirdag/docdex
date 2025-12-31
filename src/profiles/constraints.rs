@@ -86,7 +86,9 @@ pub fn check_circular_dependencies(
     let staged: HashSet<&str> = staged_files.iter().map(|path| path.as_str()).collect();
     crate::impact::detect_cycles(edges)
         .into_iter()
-        .filter(|cycle| staged.is_empty() || cycle.iter().any(|node| staged.contains(node.as_str())))
+        .filter(|cycle| {
+            staged.is_empty() || cycle.iter().any(|node| staged.contains(node.as_str()))
+        })
         .map(|cycle| {
             let mut cycle_path = cycle.clone();
             if let Some(first) = cycle.first() {

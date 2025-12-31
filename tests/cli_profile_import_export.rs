@@ -86,11 +86,7 @@ fn cli_profile_export_and_import() -> Result<(), Box<dyn Error>> {
 
     let import_resp = run_docdex(
         home_dst.path(),
-        [
-            "profile",
-            "import",
-            export_path.to_string_lossy().as_ref(),
-        ],
+        ["profile", "import", export_path.to_string_lossy().as_ref()],
     )?;
     let inserted = import_resp
         .get("inserted")

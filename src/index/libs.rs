@@ -21,10 +21,8 @@ use tracing::warn;
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
 const MAX_LIB_DOC_BYTES: u64 = 512 * 1024;
 const MAX_LIB_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
-const LIBS_SOURCE_SCOPE_ERROR: &str =
-    "libs source path must be under repo root or cache/libs";
-const LIBS_SOURCE_TRAVERSAL_ERROR: &str =
-    "libs source path must not contain parent traversal";
+const LIBS_SOURCE_SCOPE_ERROR: &str = "libs source path must be under repo root or cache/libs";
+const LIBS_SOURCE_TRAVERSAL_ERROR: &str = "libs source path must not contain parent traversal";
 
 pub fn libs_state_dir_from_index_state_dir(index_state_dir: &Path) -> PathBuf {
     index_state_dir
@@ -541,11 +539,7 @@ impl LibsIndexer {
         let mut prepared: Vec<PreparedSource> = Vec::with_capacity(normalized_sources.len());
         for source in normalized_sources.iter().cloned() {
             let key = source_key_for(&source);
-            let resolved = resolve_source_path(
-                &repo_root,
-                cache_libs_dir.as_deref(),
-                &source.path,
-            );
+            let resolved = resolve_source_path(&repo_root, cache_libs_dir.as_deref(), &source.path);
             let read = match resolved {
                 Ok(path) => read_text_limited(&path, MAX_LIB_DOC_BYTES),
                 Err(err) => Err(err),

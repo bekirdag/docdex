@@ -119,7 +119,9 @@ pub async fn libs_fetch_handler(
     let mut sources_file =
         libs_source_resolver::resolution_to_sources(&resolution, explicit.is_none());
     if let Some(explicit_file) = explicit {
-        sources_file.sources.extend(explicit_file.sources.into_iter());
+        sources_file
+            .sources
+            .extend(explicit_file.sources.into_iter());
         sources_file.sources = dedupe_sources(sources_file.sources);
     }
     if sources_file.sources.is_empty() {

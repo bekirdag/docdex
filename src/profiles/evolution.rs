@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::llm::adapter::{LlmClient, LlmCompletion, LlmFuture};
-use crate::ollama::OllamaClient;
 use crate::metrics;
+use crate::ollama::OllamaClient;
 use crate::profiles::manager::PreferenceRecall;
 use crate::profiles::{PreferenceCategory, ProfileEmbedder, ProfileManager};
 use tracing::{info, warn};
@@ -46,7 +46,11 @@ pub struct EvolutionEngine {
 }
 
 impl EvolutionEngine {
-    pub fn new(manager: ProfileManager, embedder: ProfileEmbedder, llm: Arc<dyn LlmClient>) -> Self {
+    pub fn new(
+        manager: ProfileManager,
+        embedder: ProfileEmbedder,
+        llm: Arc<dyn LlmClient>,
+    ) -> Self {
         Self {
             manager,
             embedder,
@@ -112,9 +116,11 @@ impl EvolutionEngine {
     ) -> Result<EvolutionOutcome> {
         let started = std::time::Instant::now();
         let query_embedding = self.embedder.embed(new_fact).await?;
-        let recalled =
-            self.manager
-                .search_preferences_for_evolution(agent_id, &query_embedding, self.recall_k)?;
+        let recalled = self.manager.search_preferences_for_evolution(
+            agent_id,
+            &query_embedding,
+            self.recall_k,
+        )?;
         let prompt = build_evolution_prompt(&recalled, new_fact);
         let decision = self.decide_with_retry(&prompt).await?;
         let reasoning = decision
@@ -124,15 +130,15 @@ impl EvolutionEngine {
 
         match decision.action {
             EvolutionAction::Add => {
-                let content = decision
-                    .new_content
-                    .as_deref()
-                    .unwrap_or(new_fact)
-                    .trim();
+                let content = decision.new_content.as_deref().unwrap_or(new_fact).trim();
                 let embedding = self.embedder.embed(content).await?;
-                let preference =
-                    self.manager
-                        .add_preference(agent_id, content, &embedding, category, now_epoch_ms())?;
+                let preference = self.manager.add_preference(
+                    agent_id,
+                    content,
+                    &embedding,
+                    category,
+                    now_epoch_ms(),
+                )?;
                 let outcome = EvolutionOutcome {
                     action: EvolutionAction::Add,
                     preference_id: Some(preference.id),
@@ -168,13 +174,10 @@ impl EvolutionEngine {
                     );
                     return Ok(outcome);
                 }
-                let content = decision
-                    .new_content
-                    .as_deref()
-                    .unwrap_or(new_fact)
-                    .trim();
+                let content = decision.new_content.as_deref().unwrap_or(new_fact).trim();
                 let embedding = self.embedder.embed(content).await?;
-                self.manager.update_preference(&target, content, &embedding, now_epoch_ms())?;
+                self.manager
+                    .update_preference(&target, content, &embedding, now_epoch_ms())?;
                 let outcome = EvolutionOutcome {
                     action: EvolutionAction::Update,
                     preference_id: Some(target),
@@ -270,9 +273,7 @@ fn build_evolution_prompt(recalled: &[PreferenceRecall], new_fact: &str) -> Stri
         "2. UPDATE: The input contradicts or refines an existing fact (provide target_id)."
             .to_string(),
     );
-    lines.push(
-        "3. IGNORE: The input is conversational noise or already known.".to_string(),
-    );
+    lines.push("3. IGNORE: The input is conversational noise or already known.".to_string());
     lines.push(String::new());
     lines.push("Return ONLY a JSON object.".to_string());
     lines.join("\n")
@@ -497,7 +498,12 @@ impl EvolutionDecision {
     pub fn validate(&self) -> Result<(), &'static str> {
         match self.action {
             EvolutionAction::Add => {
-                if self.new_content.as_ref().map(|v| v.trim().is_empty()).unwrap_or(true) {
+                if self
+                    .new_content
+                    .as_ref()
+                    .map(|v| v.trim().is_empty())
+                    .unwrap_or(true)
+                {
                     return Err("new_content_required");
                 }
             }
@@ -510,7 +516,12 @@ impl EvolutionDecision {
                 {
                     return Err("target_preference_id_required");
                 }
-                if self.new_content.as_ref().map(|v| v.trim().is_empty()).unwrap_or(true) {
+                if self
+                    .new_content
+                    .as_ref()
+                    .map(|v| v.trim().is_empty())
+                    .unwrap_or(true)
+                {
                     return Err("new_content_required");
                 }
             }

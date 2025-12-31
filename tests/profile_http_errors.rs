@@ -21,7 +21,10 @@ fn write_config(home_dir: &Path, global_state_dir: &Path) -> Result<(), Box<dyn 
     let config_dir = home_dir.join(".docdex");
     fs::create_dir_all(&config_dir)?;
     let config_path = config_dir.join("config.toml");
-    let payload = format!("[core]\nglobal_state_dir = \"{}\"\n", global_state_dir.display());
+    let payload = format!(
+        "[core]\nglobal_state_dir = \"{}\"\n",
+        global_state_dir.display()
+    );
     fs::write(config_path, payload)?;
     Ok(())
 }
@@ -82,7 +85,8 @@ fn profile_add_validates_required_fields() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port)?;
+    let mut server =
+        ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(3)).build()?;
     let url = format!("http://{host}:{port}/v1/profile/add");
@@ -120,7 +124,8 @@ fn profile_search_validates_query() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut server = ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port)?;
+    let mut server =
+        ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(3)).build()?;
     let url = format!("http://{host}:{port}/v1/profile/search");

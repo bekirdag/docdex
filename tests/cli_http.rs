@@ -34,6 +34,7 @@ fn spawn_server(
     let state_root_str = state_root.to_string_lossy().to_string();
     Ok(Command::new(docdex_bin())
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "serve",
             "--repo",
@@ -120,6 +121,7 @@ fn cli_index_and_query_use_http() -> Result<(), Box<dyn Error>> {
         .env("DOCDEX_HTTP_BASE_URL", &base_url)
         .env("DOCDEX_CLI_LOCAL", "0")
         .env("DOCDEX_STATE_DIR", local_state.path())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .args(["index", "--repo", repo.path().to_string_lossy().as_ref()])
         .output()?;
     assert!(
@@ -138,6 +140,7 @@ fn cli_index_and_query_use_http() -> Result<(), Box<dyn Error>> {
         .env("DOCDEX_HTTP_BASE_URL", &base_url)
         .env("DOCDEX_CLI_LOCAL", "0")
         .env("DOCDEX_STATE_DIR", local_state.path())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "query",
             "--repo",
@@ -180,6 +183,7 @@ fn cli_query_errors_when_http_unavailable() -> Result<(), Box<dyn Error>> {
         .env("DOCDEX_HTTP_BASE_URL", &base_url)
         .env("DOCDEX_CLI_LOCAL", "0")
         .env("DOCDEX_STATE_DIR", local_state.path())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "query",
             "--repo",

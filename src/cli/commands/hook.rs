@@ -1,5 +1,6 @@
 use crate::cli::http_client::CliHttpClient;
 use crate::config::{self, RepoArgs};
+#[cfg(unix)]
 use crate::repo_manager;
 use anyhow::{Context, Result};
 #[cfg(unix)]
@@ -65,27 +66,26 @@ async fn run_pre_commit(repo: RepoArgs) -> Result<()> {
     let files = collect_staged_files(&repo_root)?;
     let socket_path = resolve_hook_socket_path()?;
 
-    let mut outcome: Option<HookValidateOutcome> = None;
-    if let Some(path) = socket_path {
-        #[cfg(unix)]
-        match send_hook_unix(&repo_root, &files, &path).await {
-            Ok(result) => {
-                outcome = Some(result);
+    let outcome = match socket_path {
+        Some(path) => {
+            #[cfg(unix)]
+            {
+                match send_hook_unix(&repo_root, &files, &path).await {
+                    Ok(result) => Some(result),
+                    Err(err) if is_connect_or_timeout(&err) => None,
+                    Err(err) => {
+                        return Err(err).context("hook validate unix socket request failed");
+                    }
+                }
             }
-            Err(err) if is_connect_or_timeout(&err) => {
-                outcome = None;
-            }
-            Err(err) => {
-                return Err(err).context("hook validate unix socket request failed");
+            #[cfg(not(unix))]
+            {
+                eprintln!("Docdex hook socket configured but unix sockets are unsupported; falling back to HTTP");
+                None
             }
         }
-        #[cfg(not(unix))]
-        {
-            eprintln!(
-                "Docdex hook socket configured but unix sockets are unsupported; falling back to HTTP"
-            );
-        }
-    }
+        None => None,
+    };
 
     let outcome = match outcome {
         Some(result) => result,

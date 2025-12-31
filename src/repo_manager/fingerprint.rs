@@ -68,10 +68,12 @@ fn file_identity_payload(path: &Path) -> Result<String> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        let vsn = meta.volume_serial_number().unwrap_or(0);
-        let file_index = meta.file_index().unwrap_or(0);
+        let file_size = meta.file_size();
+        let last_write_time = meta.last_write_time();
+        let creation_time = meta.creation_time();
+        let file_attributes = meta.file_attributes();
         return Ok(format!(
-            "v1|windows|volume_serial_number={vsn}|file_index={file_index}|is_dir={}",
+            "v1|windows|file_size={file_size}|last_write_time={last_write_time}|creation_time={creation_time}|attributes={file_attributes}|is_dir={}",
             meta.is_dir()
         ));
     }

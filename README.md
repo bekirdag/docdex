@@ -1,6 +1,10 @@
 # Docdex
 
 [![smithery badge](https://smithery.ai/badge/@bekirdag/docdex)](https://smithery.ai/server/@bekirdag/docdex)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/bekirdag/docdex/main.yml?branch=main)
+![GitHub License](https://img.shields.io/github/license/bekirdag/docdex)
+![GitHub Release](https://img.shields.io/github/v/release/bekirdag/docdex)
+![Made with Rust](https://img.shields.io/badge/Made%20with-Rust-orange?logo=rust)
 
 Docdex is a local-first indexer/search daemon for docs and source code. It runs per-project, keeps an on-disk index of markdown/text plus common code extensions, and serves top-k snippets over HTTP, CLI, or MCP for any coding assistant or tool—no external services or uploads required.
 

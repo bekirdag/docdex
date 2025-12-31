@@ -43,6 +43,7 @@ where
 {
     let output = Command::new(docdex_bin())
         .env("DOCDEX_STATE_DIR", state_root)
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .args(args)
         .output()?;
     if !output.status.success() {
@@ -72,6 +73,7 @@ fn spawn_server(state_root: &Path, repo: &Path, host: &str, port: u16) -> Result
     Ok(Command::new(docdex_bin())
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "serve",
             "--repo",

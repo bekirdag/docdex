@@ -32,6 +32,7 @@ where
 {
     Ok(Command::new(docdex_bin())
         .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .args(args)
         .output()?)
@@ -198,6 +199,7 @@ fn http_search_includes_repo_id_and_is_reasonably_fast() -> Result<(), Box<dyn E
     let port_str = port.to_string();
     let mut cmd = Command::new(docdex_bin());
     cmd.env("DOCDEX_ENABLE_MCP", "0");
+    cmd.env("DOCDEX_ENABLE_MEMORY", "0");
     cmd.env("DOCDEX_STATE_DIR", state_root.path());
     cmd.args([
         "serve",

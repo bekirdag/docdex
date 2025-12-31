@@ -32,7 +32,8 @@ fn spawn_server(
 ) -> Result<Child, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
-    Ok(Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    Ok(Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
         .args([
             "serve",
@@ -67,7 +68,8 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_index(state_root: &Path, repo_root: &Path) -> Result<(), Box<dyn Error>> {
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "index",
             "--repo",

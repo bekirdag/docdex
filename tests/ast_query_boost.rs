@@ -17,7 +17,8 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    Ok(Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    Ok(Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .args(args)

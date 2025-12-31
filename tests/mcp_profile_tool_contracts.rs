@@ -62,7 +62,8 @@ impl ServerHarness {
         embedding_base_url: &str,
     ) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo_root.to_string_lossy().to_string();
-        let child = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+        let child = Command::new(docdex_bin())
+            .env("DOCDEX_ENABLE_MEMORY", "0")
             .env("DOCDEX_STATE_DIR", state_root)
             .env("DOCDEX_ENABLE_MCP", "0")
             .env("HOME", home_dir)
@@ -106,7 +107,8 @@ struct McpHarness {
 impl McpHarness {
     fn spawn(state_root: &Path, repo_root: &Path, base_url: &str) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo_root.to_string_lossy().to_string();
-        let mut cmd = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0");
+        let mut cmd = Command::new(docdex_bin());
+        cmd.env("DOCDEX_ENABLE_MEMORY", "0");
         cmd.env("DOCDEX_STATE_DIR", state_root);
         cmd.env("DOCDEX_HTTP_BASE_URL", base_url);
         cmd.env("DOCDEX_MCP_SERVER_BIN", mcp_server_bin());

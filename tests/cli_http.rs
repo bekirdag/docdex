@@ -32,7 +32,8 @@ fn spawn_server(
 ) -> Result<Child, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
-    Ok(Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    Ok(Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
@@ -76,7 +77,8 @@ fn write_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 fn resolve_index_dir(state_root: &Path, repo_root: &Path) -> Result<PathBuf, Box<dyn Error>> {
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .args([
             "repo",
@@ -117,7 +119,8 @@ fn cli_index_and_query_use_http() -> Result<(), Box<dyn Error>> {
 
     let base_url = format!("http://{host}:{port}");
 
-    let index_out = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let index_out = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_HTTP_BASE_URL", &base_url)
         .env("DOCDEX_CLI_LOCAL", "0")
         .env("DOCDEX_STATE_DIR", local_state.path())
@@ -136,7 +139,8 @@ fn cli_index_and_query_use_http() -> Result<(), Box<dyn Error>> {
         "expected server index metadata after HTTP index"
     );
 
-    let query_out = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let query_out = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_HTTP_BASE_URL", &base_url)
         .env("DOCDEX_CLI_LOCAL", "0")
         .env("DOCDEX_STATE_DIR", local_state.path())
@@ -179,7 +183,8 @@ fn cli_query_errors_when_http_unavailable() -> Result<(), Box<dyn Error>> {
     };
     let base_url = format!("http://127.0.0.1:{port}");
 
-    let query_out = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let query_out = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_HTTP_BASE_URL", &base_url)
         .env("DOCDEX_CLI_LOCAL", "0")
         .env("DOCDEX_STATE_DIR", local_state.path())

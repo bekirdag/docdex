@@ -28,7 +28,8 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .args(args)
@@ -58,7 +59,8 @@ fn chat_repl_accepts_queries() -> Result<(), Box<dyn Error>> {
         state_dir.path().to_string_lossy().as_ref(),
     ])?;
 
-    let mut child = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let mut child = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([

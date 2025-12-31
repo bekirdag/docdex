@@ -49,7 +49,8 @@ impl McpHarness {
         envs: &[(&str, &str)],
     ) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo.to_string_lossy().to_string();
-        let mut cmd = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0");
+        let mut cmd = Command::new(docdex_bin());
+        cmd.env("DOCDEX_ENABLE_MEMORY", "0");
         cmd.args([
             "mcp",
             "--repo",
@@ -128,7 +129,8 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    Ok(Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    Ok(Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .args(args)
         .output()?)
@@ -342,7 +344,8 @@ fn spawn_server(
     port: u16,
 ) -> Result<Child, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
-    Ok(Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    Ok(Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MCP", "0")
         .args([

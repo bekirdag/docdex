@@ -55,7 +55,8 @@ fn check_skips_mcp_when_disabled() -> Result<(), Box<dyn Error>> {
     let state_root = TempDir::new()?;
     write_config(home.path(), state_root.path(), false)?;
 
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
         .env("DOCDEX_ENABLE_MEMORY", "0")
@@ -80,7 +81,8 @@ fn check_fails_when_mcp_enabled_missing_binary() -> Result<(), Box<dyn Error>> {
     write_config(home.path(), state_root.path(), true)?;
     let missing_bin = home.path().join("missing-mcp-server");
 
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
         .env("DOCDEX_ENABLE_MEMORY", "0")
@@ -107,7 +109,8 @@ fn check_passes_when_mcp_enabled_binary_resolves() -> Result<(), Box<dyn Error>>
     let bin_path = home.path().join("docdex-mcp-server");
     fs::write(&bin_path, "")?;
 
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
         .env("DOCDEX_ENABLE_MEMORY", "0")
@@ -138,7 +141,8 @@ fn check_spawn_fails_when_mcp_binary_exits() -> Result<(), Box<dyn Error>> {
         fs::set_permissions(&bin_path, perms)?;
     }
 
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
         .env("DOCDEX_ENABLE_MEMORY", "0")
@@ -179,7 +183,8 @@ fn check_spawn_succeeds_when_mcp_binary_exits_zero() -> Result<(), Box<dyn Error
         fs::set_permissions(&bin_path, perms)?;
     }
 
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
         .env("DOCDEX_ENABLE_MEMORY", "0")
@@ -221,7 +226,8 @@ fn check_spawn_times_out_when_mcp_binary_hangs() -> Result<(), Box<dyn Error>> {
         fs::set_permissions(&bin_path, perms)?;
     }
 
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
         .env("DOCDEX_ENABLE_MEMORY", "0")

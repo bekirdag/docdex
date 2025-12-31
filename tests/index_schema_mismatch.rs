@@ -15,7 +15,8 @@ fn docdex_bin() -> PathBuf {
 fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<Value, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "repo",
             "inspect",
@@ -77,7 +78,8 @@ fn cli_query_reports_schema_mismatch() -> Result<(), Box<dyn Error>> {
     let index_dir = resolve_index_dir(state_root.path(), repo.path())?;
     create_incompatible_index(&index_dir)?;
 
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
         .args([
             "query",
@@ -120,7 +122,8 @@ fn reindex_does_not_clobber_incompatible_schema() -> Result<(), Box<dyn Error>> 
     let meta_path = index_dir.join("meta.json");
     let before = fs::read_to_string(&meta_path)?;
 
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
         .args(["index", "--repo", repo.path().to_string_lossy().as_ref()])
         .output()?;

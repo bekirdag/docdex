@@ -33,7 +33,8 @@ fn spawn_server(
 ) -> Result<Child, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
-    Ok(Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    Ok(Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
         .args([
             "serve",
@@ -70,7 +71,8 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
 fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<Value, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "repo",
             "inspect",
@@ -170,7 +172,8 @@ fn symbols_status_cli_reports_fields() -> Result<(), Box<dyn Error>> {
     std::fs::create_dir_all(repo.path().join("src"))?;
     std::fs::write(repo.path().join("src").join("lib.rs"), "pub fn demo() {}\n")?;
     let state_root = TempDir::new()?;
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "symbols-status",
             "--repo",

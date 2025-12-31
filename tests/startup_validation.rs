@@ -32,7 +32,8 @@ fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
 fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<Value, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
         .args([
             "repo",
@@ -95,7 +96,8 @@ fn spawn_server_default_host(
     port: u16,
 ) -> Result<Child, Box<dyn Error>> {
     let repo_arg = repo_root.to_string_lossy().to_string();
-    Ok(Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    Ok(Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MCP", "0")
         .args([
@@ -142,7 +144,8 @@ fn daemon_refuses_requests_until_state_validation_completes() -> Result<(), Box<
 
     let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
     let repo_arg = repo.path().to_string_lossy().to_string();
-    let child = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let child = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
         .env("DOCDEX_ENABLE_MCP", "0")
         .args([
@@ -230,7 +233,8 @@ fn startup_failure_emits_single_error_envelope_for_auth() -> Result<(), Box<dyn 
         return Ok(());
     };
     let port_str = port.to_string();
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
         .env("DOCDEX_ENABLE_MCP", "0")
         .args([
@@ -286,7 +290,8 @@ fn startup_failure_emits_single_error_envelope_for_bind() -> Result<(), Box<dyn 
     };
     let port = listener.local_addr()?.port();
 
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
         .args([
             "serve",
@@ -317,7 +322,8 @@ fn startup_failure_emits_single_error_envelope_for_bind() -> Result<(), Box<dyn 
 
 #[test]
 fn startup_failure_emits_single_error_envelope_for_config_parse() -> Result<(), Box<dyn Error>> {
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .args(["serve", "--this-flag-does-not-exist"])
         .output()?;
     assert!(
@@ -340,7 +346,8 @@ fn startup_failure_emits_single_error_envelope_for_rate_limit_config() -> Result
 {
     let repo = setup_repo()?;
     let repo_arg = repo.path().to_string_lossy().to_string();
-    let output = Command::new(docdex_bin()).env("DOCDEX_ENABLE_MEMORY", "0")
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
         .args([
             "serve",

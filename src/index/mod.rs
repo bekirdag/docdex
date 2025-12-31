@@ -440,7 +440,7 @@ impl Indexer {
         let (schema, _, _, _, _, _, _) = build_schema();
         let index = if config.state_dir().join("meta.json").exists() {
             Index::open_in_dir(config.state_dir())
-                .map_err(|_| stale_index_error(config.state_dir()))?
+                .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?
         } else {
             Index::create_in_dir(config.state_dir(), schema.clone())?
         };
@@ -453,19 +453,19 @@ impl Indexer {
         let schema = index.schema();
         let doc_id_field = schema
             .get_field("doc_id")
-            .map_err(|_| stale_index_error(config.state_dir()))?;
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
         let path_field = schema
             .get_field("rel_path")
-            .map_err(|_| stale_index_error(config.state_dir()))?;
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
         let body_field = schema
             .get_field("body")
-            .map_err(|_| stale_index_error(config.state_dir()))?;
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
         let summary_field = schema
             .get_field("summary")
-            .map_err(|_| stale_index_error(config.state_dir()))?;
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
         let token_field = schema
             .get_field("token_estimate")
-            .map_err(|_| stale_index_error(config.state_dir()))?;
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
         let kind_field = schema.get_field("kind").ok();
         let writer = index.writer(MAX_INDEX_RAM_BYTES)?;
         let symbols_store = if config.symbols_enabled() {
@@ -516,14 +516,15 @@ impl Indexer {
             return Err(AppError::new(
                 ERR_MISSING_INDEX,
                 format!(
-                    "index not found at {}; run `docdexd index --repo <repo>` first",
-                    config.state_dir().display()
+                    "index not found at {}; run `docdexd index --repo {}` first",
+                    config.state_dir().display(),
+                    repo_root.display()
                 ),
             )
             .into());
         }
         let index = Index::open_in_dir(config.state_dir())
-            .map_err(|_| stale_index_error(config.state_dir()))?;
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommit)
@@ -531,19 +532,19 @@ impl Indexer {
         let schema = index.schema();
         let doc_id_field = schema
             .get_field("doc_id")
-            .map_err(|_| stale_index_error(config.state_dir()))?;
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
         let path_field = schema
             .get_field("rel_path")
-            .map_err(|_| stale_index_error(config.state_dir()))?;
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
         let body_field = schema
             .get_field("body")
-            .map_err(|_| stale_index_error(config.state_dir()))?;
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
         let summary_field = schema
             .get_field("summary")
-            .map_err(|_| stale_index_error(config.state_dir()))?;
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
         let token_field = schema
             .get_field("token_estimate")
-            .map_err(|_| stale_index_error(config.state_dir()))?;
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
         let kind_field = schema.get_field("kind").ok();
         let symbols_store = if config.symbols_enabled() {
             symbols::open_symbols_store(&repo_root, config.state_dir(), false)
@@ -1758,18 +1759,24 @@ fn missing_repo_path_error(repo_root: &Path) -> AppError {
         vec![
             "Repo may have moved or been renamed.".to_string(),
             "Re-run with the repo's current path.".to_string(),
-            "If you previously indexed this repo, you may need to reindex after moving it: `docdexd index --repo <repo>`."
-                .to_string(),
+            format!(
+                "If you previously indexed this repo, you may need to reindex after moving it: `docdexd index --repo {}`.",
+                normalize_for_error(repo_root)
+            ),
         ],
     ))
 }
 
-fn stale_index_error(state_dir: &Path) -> AppError {
+fn stale_index_error(state_dir: &Path, repo_root: Option<&Path>) -> AppError {
+    let reindex_hint = repo_root
+        .map(|root| format!("docdexd index --repo {}", normalize_for_error(root)))
+        .unwrap_or_else(|| "docdexd index --repo <repo>".to_string());
     AppError::new(
         ERR_STALE_INDEX,
         format!(
-            "index schema mismatch at {}; reindex with `docdexd index --repo <repo>`",
-            state_dir.display()
+            "index schema mismatch at {}; reindex with `{}`",
+            state_dir.display(),
+            reindex_hint
         ),
     )
 }

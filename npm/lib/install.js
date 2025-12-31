@@ -2,6 +2,7 @@
 "use strict";
 
 const fs = require("node:fs");
+const http = require("node:http");
 const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
@@ -194,17 +195,38 @@ function requestOptions() {
   return { headers };
 }
 
+function selectHttpClient(url) {
+  try {
+    const protocol = new URL(url).protocol;
+    if (protocol === "http:") return http;
+    if (protocol === "https:") return https;
+  } catch {
+    // Fall through to default.
+  }
+  return https;
+}
+
+function resolveRedirectUrl(location, baseUrl) {
+  try {
+    return new URL(location, baseUrl).toString();
+  } catch {
+    return location;
+  }
+}
+
 function downloadText(url, redirects = 0) {
   if (redirects > MAX_REDIRECTS) {
     throw new Error(`Too many redirects while fetching ${url}`);
   }
 
   return new Promise((resolve, reject) => {
-    https
+    const client = selectHttpClient(url);
+    client
       .get(url, requestOptions(), (res) => {
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume();
-          return downloadText(res.headers.location, redirects + 1).then(resolve, reject);
+          const redirectUrl = resolveRedirectUrl(res.headers.location, url);
+          return downloadText(redirectUrl, redirects + 1).then(resolve, reject);
         }
 
         if (res.statusCode !== 200) {
@@ -243,11 +265,13 @@ function download(url, dest, redirects = 0) {
   }
 
   return new Promise((resolve, reject) => {
-    https
+    const client = selectHttpClient(url);
+    client
       .get(url, requestOptions(), (res) => {
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume();
-          return download(res.headers.location, dest, redirects + 1).then(resolve, reject);
+          const redirectUrl = resolveRedirectUrl(res.headers.location, url);
+          return download(redirectUrl, dest, redirects + 1).then(resolve, reject);
         }
 
         if (res.statusCode !== 200) {

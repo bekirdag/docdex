@@ -1,0 +1,106 @@
+name: Nightly Quality
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install audit tooling
+        run: |
+          cargo install cargo-audit --locked
+          cargo install cargo-sbom --locked
+          npm install -g npm@latest
+
+      - name: Security audit
+        run: scripts/security_audit.sh
+
+      - name: Indexing benchmark
+        run: scripts/bench_indexing.sh
+
+      - name: Build release binaries
+        run: |
+          cargo build --release --locked
+          cargo build --release --locked -p docdex-mcp-server
+
+      - name: Short soak (HTTP + MCP)
+        env:
+          DOCDEX_LOAD_DURATION_SECS: "60"
+          DOCDEX_LOAD_CONCURRENCY: "2"
+          DOCDEX_LOAD_MAX_ERROR_RATE: "0.005"
+          DOCDEX_BIN: "./target/release/docdexd"
+          DOCDEX_MCP_SERVER_BIN: "./target/release/docdex-mcp-server"
+          DOCDEX_OFFLINE: "1"
+        run: |
+          ./target/release/docdexd serve --repo . --secure-mode=false --enable-memory=false --disable-mcp --access-log=false --log warn &
+          pid=$!
+          trap "kill $pid" EXIT
+          for i in {1..20}; do
+            curl -fsS http://127.0.0.1:3210/healthz >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+          scripts/load_test_http.sh
+          scripts/load_test_mcp.sh .
+
+  artifacts:
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package nightly artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/docdexd dist/docdexd
+          tar -czf docdexd-nightly-linux-x64-gnu.tar.gz -C dist docdexd
+          python -c "import hashlib, pathlib; p=pathlib.Path('docdexd-nightly-linux-x64-gnu.tar.gz'); h=hashlib.sha256(p.read_bytes()).hexdigest(); pathlib.Path(f'{p}.sha256').write_text(f'{h}  {p.name}\n')"
+          node scripts/generate_release_manifest.cjs \
+            --dir . \
+            --out docdexd-nightly-manifest.json \
+            --tag nightly \
+            --repo "${GITHUB_REPOSITORY}"
+
+      - name: Upload nightly artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: docdexd-nightly-linux-x64-gnu
+          path: |
+            docdexd-nightly-linux-x64-gnu.tar.gz
+            docdexd-nightly-linux-x64-gnu.tar.gz.sha256
+            docdexd-nightly-manifest.json

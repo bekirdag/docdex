@@ -9,6 +9,7 @@
 - Add quality gates doc plus load/bench/audit scripts for release validation.
 - Add network fault, concurrency, property, and metrics baseline tests.
 - Add fuzz targets for libs, hooks, profile sync, and MCP payload parsing.
+- Installer supports http download mirrors via `DOCDEX_DOWNLOAD_BASE` and skips docker matrix when the daemon is unavailable.
 
 ## 0.1.11
 - Added glama support

@@ -75,6 +75,7 @@
 - tests/hooks_http_contracts.rs
 - tests/hooks_rate_limits.rs
 - tests/metrics_endpoint.rs
+- tests/gates_status.rs
 - tests/chat_project_map_contracts.rs
 - tests/chat_profile_budgeting.rs
 - tests/memory_profile_http_contracts.rs
@@ -92,6 +93,7 @@
 - tests/upgrade_downgrade.rs
 - tests/network_faults.rs
 - tests/soak_large_repo.rs
+- tests/mcp_stdio_soak.rs
 - tests/concurrency_http.rs
 - tests/concurrency_mcp.rs
 - tests/metrics_baseline.rs
@@ -133,6 +135,7 @@
 - npm/test/installer_idempotent_convergence.test.js
 - npm/test/package_contents.test.js
 - npm/test/installer_errors.test.js
+- npm/test/installer_http_download_base.test.js
 - npm/test/installer_rollback_reporting.test.js
 - npm/test/installer_contract_atomicity.test.js
 - npm/test/daemon_version.test.js

@@ -51,6 +51,10 @@ if [[ "${DOCDEX_NPM_DOCKER_MATRIX:-0}" == "1" ]]; then
     echo "[npm-matrix] docker not available; skipping container matrix" >&2
     exit 0
   fi
+  if ! docker info >/dev/null 2>&1; then
+    echo "[npm-matrix] docker daemon not running; skipping container matrix" >&2
+    exit 0
+  fi
   IMAGE="${DOCDEX_NPM_DOCKER_IMAGE:-node:20-bullseye}"
   docker run --rm -v "$ROOT":/work -w /work "$IMAGE" \
     bash -lc "cd /work && scripts/test_npm_install_matrix.sh"

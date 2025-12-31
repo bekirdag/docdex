@@ -26,7 +26,7 @@ The installer resolves a single release asset deterministically:
 1) Release source (repo slug):
    - `DOCDEX_DOWNLOAD_REPO` if set, otherwise `package.json.repository.url` (`owner/repo`).
 2) Download base:
-   - `DOCDEX_DOWNLOAD_BASE` if set, otherwise `https://github.com/<repo>/releases/download`.
+   - `DOCDEX_DOWNLOAD_BASE` if set (may be `http://` for local mirrors), otherwise `https://github.com/<repo>/releases/download`.
 3) Release tag:
    - `v<expectedVersion>`.
 4) Platform mapping:

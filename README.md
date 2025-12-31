@@ -17,6 +17,7 @@ Install it with npm (preferred) or build from source, then run `docdexd index --
 - Supported platforms + manual source build + troubleshooting: `docs/ops/installer_supported_platforms.md`.
 - Release manifest schema (assets + checksums + fallback rules): `docs/contracts/release_manifest_schema_v1.md`.
 - If you publish from a fork, set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` before installing so the downloader fetches your release assets.
+- If you mirror release assets locally, set `DOCDEX_DOWNLOAD_BASE=http://host/path` to point the installer at the mirror.
 - Distribution: binaries stay in GitHub Releases (small npm package); postinstall fetches `docdexd-<platform>.tar.gz` matching the npm version.
 - Platform diagnostics (no download): `docdex doctor` (or `docdex diagnostics`) prints detected OS/arch(/libc), whether supported, and the expected Rust target triple + release asset naming pattern.
 - Publishing uses npm Trusted Publishing (OIDC) — no NPM token needed; see `.github/workflows/release.yml`.
@@ -146,10 +147,24 @@ Impact graph snapshots carry schema metadata and are migrated on read; reindex t
 
 ## Quality gates and audits
 - Quality targets: `docs/quality_gates.md` (latency, error rate, soak, security).
+- Metrics dashboard + alerts: `docs/metrics_dashboard.md` (PromQL, gate thresholds).
 - Run-all tests: `scripts/test_run_all.sh` (unit, integration, API scripts).
 - Load/soak: `scripts/load_test_http.sh`, `scripts/load_test_mcp.sh` (requires running daemon).
 - Indexing bench: `scripts/bench_indexing.sh` (criterion benchmark).
 - Security audit + SBOMs: `scripts/security_audit.sh` (cargo audit/sbom, npm audit).
+
+### Sample performance results
+- HTTP load test (30 minutes): 92,952 requests; 92,947 ok; 5 fail; 0.01% error rate; 51.64 qps.
+
+### Repro perf results
+- Start: `DOCDEX_WEB_ENABLED=0 DOCDEX_ENABLE_MCP=0 docdexd serve --repo /path/to/repo --secure-mode=false --access-log=false`.
+- Load: `DOCDEX_LOAD_DURATION_SECS=1800 DOCDEX_LOAD_CONCURRENCY=4 scripts/load_test_http.sh`.
+- Capture: record `docdex_http_request_latency_p95_ms` from `/metrics` and save the terminal output to `target/test_logs/`.
+
+### Perf FAQ
+- Chrome path errors: set `DOCDEX_CHROME_PATH` or `web.scraper.chrome_binary_path` in config.
+- Ollama timeouts: ensure `ollama` is running and tune `DOCDEX_EMBEDDING_TIMEOUT_MS` (or set `DOCDEX_EMBEDDING_BASE_URL`).
+- Rate limits (429): run with `--secure-mode=false` for load tests or increase `--rate-limit-per-min`.
 
 ## Versioning
 - Semantic versioning with tagged releases (`vX.Y.Z`). The Rust crate and npm package share the same version.

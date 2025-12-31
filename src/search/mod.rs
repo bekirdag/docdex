@@ -358,6 +358,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/memory/store", post(memory_store_handler))
         .route("/v1/memory/recall", post(memory_recall_handler))
+        .route(
+            "/v1/gates/status",
+            get(crate::api::v1::gates::gates_status_handler),
+        )
         .route("/ai-help", get(ai_help_handler))
         .route("/metrics", get(metrics_handler))
         .route_layer(middleware::from_fn_with_state(
@@ -370,6 +374,10 @@ pub fn router(state: AppState) -> Router {
             access_log_middleware,
         ));
     }
+    router = router.layer(middleware::from_fn_with_state(
+        state.clone(),
+        metrics_middleware,
+    ));
     router.with_state(state)
 }
 
@@ -1100,7 +1108,13 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             AiHelpEndpoint {
                 method: "GET",
                 path: "/metrics",
-                description: "Prometheus-style metrics for rate-limit/auth/error counts.",
+                description: "Prometheus-style metrics (rate limits, errors, HTTP latency).",
+                params: &[],
+            },
+            AiHelpEndpoint {
+                method: "GET",
+                path: "/v1/gates/status",
+                description: "Quality gate summary (error rate, latency p95, soak status).",
                 params: &[],
             },
             AiHelpEndpoint {
@@ -2882,10 +2896,13 @@ fn render_snippet(
 async fn security_middleware(
     State(state): State<AppState>,
     connect_info: Option<ConnectInfo<SocketAddr>>,
-    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    request_id: Option<axum::extract::Extension<RequestId>>,
     request: axum::http::Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, Response> {
+    let request_id = request_id
+        .map(|ext| ext.0)
+        .unwrap_or_else(|| RequestId(Uuid::new_v4().to_string()));
     let addr = connect_info
         .map(|info| info.0)
         .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)));
@@ -3003,6 +3020,24 @@ async fn security_middleware(
         }
     }
     Ok(next.run(request).await)
+}
+
+async fn metrics_middleware(
+    State(state): State<AppState>,
+    request: axum::http::Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, Response> {
+    let path = request.uri().path();
+    if matches!(path, "/healthz" | "/metrics") {
+        return Ok(next.run(request).await);
+    }
+    let start = Instant::now();
+    let response = next.run(request).await;
+    let duration_ms = start.elapsed().as_millis();
+    state
+        .metrics
+        .record_http_request(duration_ms, response.status().as_u16());
+    Ok(response)
 }
 
 async fn access_log_middleware(

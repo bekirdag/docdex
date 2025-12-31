@@ -20,7 +20,7 @@ Assumptions (explicit):
   - `DOCDEX_DOWNLOAD_REPO=<owner/repo>` overrides everything.
   - Otherwise, parse `package.json.repository.url` (GitHub URL).
 - Download base:
-  - `DOCDEX_DOWNLOAD_BASE` overrides the default.
+  - `DOCDEX_DOWNLOAD_BASE` overrides the default (may be `http://` for local mirrors).
   - Default base: `https://github.com/<owner/repo>/releases/download`.
 - Tag format: `v<expectedVersion>` where `expectedVersion` is normalized (leading `v` stripped).
 

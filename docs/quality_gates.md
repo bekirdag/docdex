@@ -82,3 +82,4 @@ Gate criteria mirror the SDS "Phase Gates" and add v2.1 checks.
 - Benchmarks: `target/criterion/*` and `target/bench_logs/*`
 - Security reports: `target/audit/*.json`
 - Release artifact checks: `target/release_checks/*`
+- Gate snapshot: `GET /v1/gates/status`

@@ -18,6 +18,8 @@ tags:
     description: Repo-scoped symbol lookup APIs.
   - name: Memory
     description: Repo-scoped semantic memory operations.
+  - name: Observability
+    description: Status and quality-gate visibility endpoints.
 paths:
   /v1/chat/completions:
     post:
@@ -913,6 +915,21 @@ paths:
           content:
             application/json:
               schema: *a3
+  /v1/gates/status:
+    get:
+      tags:
+        - Observability
+      summary: Quality gate status summary
+      description: |-
+        Returns the current HTTP gate readings derived from in-process metrics.
+      operationId: gatesStatus
+      responses:
+        "200":
+          description: Gate summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatesStatusResponse"
 components:
   securitySchemes:
     bearerAuth:
@@ -1408,3 +1425,58 @@ components:
     MemoryRecallRequest: *a15
     MemoryHit: *a16
     MemoryRecallResponse: *a17
+    GateCheck:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - pass
+            - fail
+            - unknown
+        value:
+          type: number
+        threshold:
+          type: number
+        unit:
+          type: string
+        note:
+          type: string
+    GatesStatusResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - generated_at
+        - http_requests_total
+        - http_errors_total
+        - gates
+      properties:
+        generated_at:
+          type: string
+        http_requests_total:
+          type: integer
+          minimum: 0
+        http_errors_total:
+          type: integer
+          minimum: 0
+        http_latency_avg_ms:
+          type: number
+        http_latency_p95_ms:
+          type: integer
+        gates:
+          type: object
+          additionalProperties: false
+          required:
+            - error_rate
+            - latency_p95_ms
+            - soak
+          properties:
+            error_rate:
+              $ref: "#/components/schemas/GateCheck"
+            latency_p95_ms:
+              $ref: "#/components/schemas/GateCheck"
+            soak:
+              $ref: "#/components/schemas/GateCheck"

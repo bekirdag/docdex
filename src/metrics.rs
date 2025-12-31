@@ -1,9 +1,11 @@
+use hdrhistogram::Histogram;
 use once_cell::sync::Lazy;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
-#[derive(Default)]
+const HTTP_LATENCY_MAX_MS: u64 = 60_000;
+
 pub struct Metrics {
     rate_limit_denies: AtomicU64,
     auth_denies: AtomicU64,
@@ -51,6 +53,65 @@ pub struct Metrics {
     chrome_watchdog_reap_attempts: AtomicU64,
     chrome_watchdog_reaped: AtomicU64,
     chrome_watchdog_reap_failures: AtomicU64,
+
+    http_requests_total: AtomicU64,
+    http_error_responses_total: AtomicU64,
+    http_request_latency_ms_total: AtomicU64,
+    http_request_latency_count: AtomicU64,
+    http_latency_hist: Mutex<Histogram<u64>>,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            rate_limit_denies: AtomicU64::new(0),
+            auth_denies: AtomicU64::new(0),
+            error_count: AtomicU64::new(0),
+            browser_sessions_active: AtomicI64::new(0),
+            browser_session_launch_failures: AtomicU64::new(0),
+            browser_session_cleanup_failures: AtomicU64::new(0),
+            tier2_permits_in_use: AtomicI64::new(0),
+            tier2_permits_acquired_total: AtomicU64::new(0),
+            tier2_overload_rejections: AtomicU64::new(0),
+            waterfall_tier2_attempts: AtomicU64::new(0),
+            waterfall_tier2_skipped: AtomicU64::new(0),
+            waterfall_tier2_served: AtomicU64::new(0),
+            waterfall_tier2_unavailable: AtomicU64::new(0),
+            waterfall_memory_context_requests: AtomicU64::new(0),
+            waterfall_memory_context_candidates: AtomicU64::new(0),
+            waterfall_memory_context_kept: AtomicU64::new(0),
+            waterfall_memory_context_dropped: AtomicU64::new(0),
+            profile_recall_requests: AtomicU64::new(0),
+            profile_recall_candidates: AtomicU64::new(0),
+            profile_recall_kept: AtomicU64::new(0),
+            profile_recall_dropped: AtomicU64::new(0),
+            profile_recall_latency_ms_total: AtomicU64::new(0),
+            profile_recall_latency_count: AtomicU64::new(0),
+            profile_budget_drops: AtomicU64::new(0),
+            profile_evolution_decisions: AtomicU64::new(0),
+            profile_evolution_retries: AtomicU64::new(0),
+            profile_evolution_invalid: AtomicU64::new(0),
+            profile_evolution_latency_ms_total: AtomicU64::new(0),
+            profile_evolution_latency_count: AtomicU64::new(0),
+            hook_checks: AtomicU64::new(0),
+            hook_failures: AtomicU64::new(0),
+            hook_latency_ms_total: AtomicU64::new(0),
+            hook_latency_count: AtomicU64::new(0),
+            project_map_cache_hits: AtomicU64::new(0),
+            project_map_cache_misses: AtomicU64::new(0),
+            chrome_watchdog_reap_attempts: AtomicU64::new(0),
+            chrome_watchdog_reaped: AtomicU64::new(0),
+            chrome_watchdog_reap_failures: AtomicU64::new(0),
+            http_requests_total: AtomicU64::new(0),
+            http_error_responses_total: AtomicU64::new(0),
+            http_request_latency_ms_total: AtomicU64::new(0),
+            http_request_latency_count: AtomicU64::new(0),
+            http_latency_hist: Mutex::new(
+                Histogram::new_with_bounds(1, HTTP_LATENCY_MAX_MS, 3)
+                    .expect("http latency histogram"),
+            ),
+        }
+    }
 }
 
 impl Metrics {
@@ -222,7 +283,50 @@ impl Metrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn record_http_request(&self, latency_ms: u128, status: u16) {
+        self.http_requests_total.fetch_add(1, Ordering::Relaxed);
+        if status >= 400 {
+            self.http_error_responses_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        let latency_total = latency_ms.min(u128::from(u64::MAX)) as u64;
+        self.http_request_latency_ms_total
+            .fetch_add(latency_total, Ordering::Relaxed);
+        self.http_request_latency_count
+            .fetch_add(1, Ordering::Relaxed);
+        let latency_bucket = latency_total.max(1).min(HTTP_LATENCY_MAX_MS);
+        let mut hist = self.http_latency_hist.lock();
+        let _ = hist.record(latency_bucket);
+    }
+
+    pub fn http_requests_total(&self) -> u64 {
+        self.http_requests_total.load(Ordering::Relaxed)
+    }
+
+    pub fn http_error_responses_total(&self) -> u64 {
+        self.http_error_responses_total.load(Ordering::Relaxed)
+    }
+
+    pub fn http_latency_avg_ms(&self) -> Option<f64> {
+        let count = self.http_request_latency_count.load(Ordering::Relaxed);
+        if count == 0 {
+            return None;
+        }
+        let total = self.http_request_latency_ms_total.load(Ordering::Relaxed);
+        Some(total as f64 / count as f64)
+    }
+
+    pub fn http_latency_p95_ms(&self) -> Option<u64> {
+        let hist = self.http_latency_hist.lock();
+        if hist.len() == 0 {
+            return None;
+        }
+        Some(hist.value_at_quantile(0.95))
+    }
+
     pub fn render_prometheus(&self) -> String {
+        let http_latency_p95 = self.http_latency_p95_ms().unwrap_or(0);
+        let http_latency_avg = self.http_latency_avg_ms().unwrap_or(0.0);
         format!(
             concat!(
                 "# HELP docdex_rate_limit_denies_total Rate limit denials\n",
@@ -234,6 +338,24 @@ impl Metrics {
                 "# HELP docdex_errors_total Handler errors\n",
                 "# TYPE docdex_errors_total counter\n",
                 "docdex_errors_total {}\n",
+                "# HELP docdex_http_requests_total HTTP request count\n",
+                "# TYPE docdex_http_requests_total counter\n",
+                "docdex_http_requests_total {}\n",
+                "# HELP docdex_http_error_responses_total HTTP error responses (status >= 400)\n",
+                "# TYPE docdex_http_error_responses_total counter\n",
+                "docdex_http_error_responses_total {}\n",
+                "# HELP docdex_http_request_latency_ms_total HTTP request latency sum in ms\n",
+                "# TYPE docdex_http_request_latency_ms_total counter\n",
+                "docdex_http_request_latency_ms_total {}\n",
+                "# HELP docdex_http_request_latency_count_total HTTP request latency samples\n",
+                "# TYPE docdex_http_request_latency_count_total counter\n",
+                "docdex_http_request_latency_count_total {}\n",
+                "# HELP docdex_http_request_latency_p95_ms HTTP request latency p95 in ms\n",
+                "# TYPE docdex_http_request_latency_p95_ms gauge\n",
+                "docdex_http_request_latency_p95_ms {}\n",
+                "# HELP docdex_http_request_latency_avg_ms HTTP request latency avg in ms\n",
+                "# TYPE docdex_http_request_latency_avg_ms gauge\n",
+                "docdex_http_request_latency_avg_ms {}\n",
                 "# HELP docdex_browser_sessions_active Active browser sessions\n",
                 "# TYPE docdex_browser_sessions_active gauge\n",
                 "docdex_browser_sessions_active {}\n",
@@ -343,6 +465,14 @@ impl Metrics {
             self.rate_limit_denies.load(Ordering::Relaxed),
             self.auth_denies.load(Ordering::Relaxed),
             self.error_count.load(Ordering::Relaxed),
+            self.http_requests_total.load(Ordering::Relaxed),
+            self.http_error_responses_total.load(Ordering::Relaxed),
+            self.http_request_latency_ms_total
+                .load(Ordering::Relaxed),
+            self.http_request_latency_count
+                .load(Ordering::Relaxed),
+            http_latency_p95,
+            http_latency_avg,
             self.browser_sessions_active.load(Ordering::Relaxed),
             self.browser_session_launch_failures.load(Ordering::Relaxed),
             self.browser_session_cleanup_failures.load(Ordering::Relaxed),

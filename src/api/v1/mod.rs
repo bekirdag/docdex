@@ -8,3 +8,4 @@ pub mod symbols;
 pub mod index;
 pub mod libs;
 pub mod web;
+pub mod gates;

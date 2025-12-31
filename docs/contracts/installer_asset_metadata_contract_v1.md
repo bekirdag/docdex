@@ -18,7 +18,7 @@ Required inputs:
 - Version: `DOCDEX_VERSION` or `package.json.version` (normalized to `X.Y.Z`)
 
 Optional overrides:
-- `DOCDEX_DOWNLOAD_BASE` (default: `https://github.com/<owner>/<repo>/releases/download`)
+- `DOCDEX_DOWNLOAD_BASE` (default: `https://github.com/<owner>/<repo>/releases/download`, may be `http://` for local mirrors)
 - `DOCDEX_GITHUB_TOKEN` or `GITHUB_TOKEN` (adds `Authorization: Bearer <token>` header)
 - `DOCDEX_LIBC=gnu|musl|glibc` (Linux libc override)
 - `DOCDEX_MANIFEST_NAMES` / `DOCDEX_MANIFEST_NAME` (comma-separated manifest filenames)

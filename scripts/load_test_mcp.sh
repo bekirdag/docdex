@@ -14,6 +14,10 @@ else
   DOCDEX_BIN="${DOCDEX_BIN:-docdexd}"
 fi
 
+if [[ -z "${MCP_BIN}" && -x "${ROOT_DIR}/target/debug/docdex-mcp-server" ]]; then
+  MCP_BIN="${ROOT_DIR}/target/debug/docdex-mcp-server"
+fi
+
 log() {
   printf "[load-mcp] %s\n" "$*" >&2
 }

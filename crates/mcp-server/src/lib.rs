@@ -33,6 +33,7 @@ use tantivy::directory::error::LockError;
 use tantivy::TantivyError;
 use thiserror::Error;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 const JSONRPC_VERSION: &str = "2.0";
@@ -578,7 +579,7 @@ pub async fn serve(
     let indexer = match Indexer::with_config(repo_root.clone(), index_config.clone()) {
         Ok(ix) => ix,
         Err(err) if is_lock_busy(&err) => {
-            eprintln!(
+            warn!(
                 "docdex mcp: index writer is busy; opening read-only (disable other docdexd to enable indexing)"
             );
             Indexer::with_config_read_only(repo_root.clone(), index_config)?
@@ -720,9 +721,9 @@ impl McpServer {
                         }
                     };
                     if let Some(id) = req.id.as_ref() {
-                        eprintln!("docdex mcp: recv method={} id={}", req.method, id);
+                        debug!(method = %req.method, id = %id, "docdex mcp: recv");
                     } else {
-                        eprintln!("docdex mcp: recv method={}", req.method);
+                        debug!(method = %req.method, "docdex mcp: recv");
                     }
                     let resp_opt = match self.handle(req).await {
                         Ok(resp) => resp,
@@ -750,7 +751,7 @@ impl McpServer {
                     continue;
                 }
                 Err(err) => {
-                    eprintln!("docdex mcp: stdin read error: {err}");
+                    warn!(error = %err, "docdex mcp: stdin read error");
                     break;
                 }
             }
@@ -762,7 +763,7 @@ impl McpServer {
         // Notifications (no id) do not expect a response.
         if req.id.is_none() {
             if req.method == "notifications/initialized" {
-                eprintln!("docdex mcp: client initialized");
+                debug!("docdex mcp: client initialized");
             }
             return Ok(None);
         }
@@ -914,7 +915,7 @@ impl McpServer {
                     })),
                     error: None,
                 };
-                eprintln!("docdex mcp: initialize -> ok (id {:?})", id);
+                debug!(id = ?id, "docdex mcp: initialize ok");
                 Ok(Some(resp))
             }
             "tools/list" => Ok(Some(RpcResponse {
@@ -2362,11 +2363,11 @@ impl McpServer {
                 "latency_ms": started.elapsed().as_millis(),
             }),
         );
-        eprintln!(
-            "docdex mcp: memory_store repo={} latency_ms={} id={}",
-            self.repo_root.display(),
-            started.elapsed().as_millis(),
-            stored.0
+        debug!(
+            repo = %self.repo_root.display(),
+            latency_ms = started.elapsed().as_millis(),
+            id = %stored.0,
+            "docdex mcp: memory_store"
         );
         Ok(json!({
             "id": stored.0.to_string(),
@@ -2417,12 +2418,12 @@ impl McpServer {
                 "latency_ms": started.elapsed().as_millis(),
             }),
         );
-        eprintln!(
-            "docdex mcp: memory_recall repo={} top_k={} results={} latency_ms={}",
-            self.repo_root.display(),
+        debug!(
+            repo = %self.repo_root.display(),
             top_k,
-            items.len(),
-            started.elapsed().as_millis()
+            results = items.len(),
+            latency_ms = started.elapsed().as_millis(),
+            "docdex mcp: memory_recall"
         );
         Ok(json!({
             "top_k": top_k,
@@ -2750,9 +2751,17 @@ fn queue_dag_log(
         })
         .await;
         if let Err(err) = result {
-            eprintln!("docdex mcp: dag log task failed for {session_id_log}: {err}");
+            warn!(
+                session_id = %session_id_log,
+                error = %err,
+                "docdex mcp: dag log task failed"
+            );
         } else if let Ok(Err(err)) = result {
-            eprintln!("docdex mcp: dag log failed for {session_id_log}: {err}");
+            warn!(
+                session_id = %session_id_log,
+                error = %err,
+                "docdex mcp: dag log failed"
+            );
         }
     });
 }

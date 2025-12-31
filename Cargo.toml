@@ -55,6 +55,7 @@ tree-sitter-javascript = "0.20.4"
 tree-sitter-python = "0.20.4"
 tree-sitter-rust = "0.20.4"
 tree-sitter-typescript = "0.20.5"
+hdrhistogram = "7.5"
 
 [dev-dependencies]
 assert_cmd = "2.0"

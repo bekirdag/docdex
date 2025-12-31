@@ -1,10 +1,11 @@
-import test from "node:test";
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+"use strict";
 
-const cwd = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { execFileSync } = require("node:child_process");
+const path = require("node:path");
+
+const cwd = path.resolve(__dirname, "..");
 
 const bannedMatchers = [
   { pattern: /(^|\/)docdexd(\.exe)?$/i, reason: "docdexd binary" },

@@ -198,3 +198,12 @@ your new job is to work on the tasks under docdev_v2.1_tasks.md and implement al
 - P7-T3: Run security audit + SBOM generation with documented advisory ignore.
 - P7-T4: Run soak_large_repo test and fuzz targets (libs/hooks/profile/MCP).
 - P7-T5: Run scripts/test_run_all.sh for final verification.
+- P7-T6: Validate release artifact manifest/checksums via test_release_artifacts using stub assets.
+- P7-T7: Validate npm install matrix (local ignore-scripts).
+- P7-T8: Add http download base support for installer and test coverage.
+- P7-T9: Make npm install matrix docker step skip when daemon unavailable.
+- P7-T10: Validate npm test suite after installer changes.
+- P7-T11: Validate release artifact manifest/checksums via stub release assets.
+- P7-T12: Validate npm install matrix with installer against local HTTP mirror.
+- P7-T13: Validate npm install matrix docker flow skipping when daemon unavailable.
+- P7-T14: Run upgrade/downgrade compatibility test suite.

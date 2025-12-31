@@ -65,6 +65,7 @@ Docdex runs a per-repo HTTP server (default `127.0.0.1:3210`). Secure mode is on
 - `POST /v1/web/cache/flush` - clear cached web entries.
 - `GET /ai-help` - JSON quickstart for agents (endpoints, CLI commands, limits).
 - `GET /metrics` - Prometheus-style metrics.
+- `GET /v1/gates/status` - quality gate summary (error rate, latency p95, soak status).
 
 ## Error envelope
 

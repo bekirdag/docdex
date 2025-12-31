@@ -16,6 +16,7 @@ where
 {
     Ok(Command::new(docdex_bin())
         .env("DOCDEX_STATE_DIR", state_root)
+        .env("DOCDEX_ENABLE_MEMORY", "0")
         .args(args)
         .output()?)
 }

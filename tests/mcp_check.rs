@@ -45,6 +45,31 @@ fn temp_exec_dir() -> Result<TempDir, Box<dyn Error>> {
     Ok(TempDir::new_in(base)?)
 }
 
+fn write_mcp_probe_binary(
+    dir: &TempDir,
+    exit_code: i32,
+) -> Result<PathBuf, Box<dyn Error>> {
+    #[cfg(windows)]
+    let path = dir.path().join("docdex-mcp-server.cmd");
+    #[cfg(not(windows))]
+    let path = dir.path().join("docdex-mcp-server");
+
+    #[cfg(windows)]
+    let payload = format!("@echo off\r\nexit /b {exit_code}\r\n");
+    #[cfg(not(windows))]
+    let payload = format!("#!/bin/sh\nexit {exit_code}\n");
+
+    fs::write(&path, payload)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms)?;
+    }
+    Ok(path)
+}
+
 fn find_check<'a>(report: &'a Value, name: &str) -> Option<&'a Value> {
     report
         .get("checks")
@@ -139,15 +164,7 @@ fn check_spawn_fails_when_mcp_binary_exits() -> Result<(), Box<dyn Error>> {
     let state_root = TempDir::new()?;
     write_config(home.path(), state_root.path(), true)?;
     let bin_dir = temp_exec_dir()?;
-    let bin_path = bin_dir.path().join("docdex-mcp-server");
-    fs::write(&bin_path, "#!/bin/sh\nexit 1\n")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&bin_path)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&bin_path, perms)?;
-    }
+    let bin_path = write_mcp_probe_binary(&bin_dir, 1)?;
 
     let output = Command::new(docdex_bin())
         .env("DOCDEX_ENABLE_MEMORY", "0")
@@ -182,15 +199,7 @@ fn check_spawn_succeeds_when_mcp_binary_exits_zero() -> Result<(), Box<dyn Error
     let state_root = TempDir::new()?;
     write_config(home.path(), state_root.path(), true)?;
     let bin_dir = temp_exec_dir()?;
-    let bin_path = bin_dir.path().join("docdex-mcp-server");
-    fs::write(&bin_path, "#!/bin/sh\nexit 0\n")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&bin_path)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&bin_path, perms)?;
-    }
+    let bin_path = write_mcp_probe_binary(&bin_dir, 0)?;
 
     let output = Command::new(docdex_bin())
         .env("DOCDEX_ENABLE_MEMORY", "0")

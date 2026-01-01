@@ -1357,7 +1357,21 @@ struct McpSpawnProbe {
 }
 
 fn probe_mcp_spawn(path: &Path, timeout: Duration) -> McpSpawnProbe {
-    let mut cmd = Command::new(path);
+    let mut cmd = if cfg!(windows) {
+        let ext = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase());
+        if matches!(ext.as_deref(), Some("cmd") | Some("bat")) {
+            let mut cmd = Command::new("cmd.exe");
+            cmd.arg("/C").arg(path);
+            cmd
+        } else {
+            Command::new(path)
+        }
+    } else {
+        Command::new(path)
+    };
     cmd.arg("--help");
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::null());

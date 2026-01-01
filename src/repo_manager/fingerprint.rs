@@ -67,11 +67,7 @@ fn file_identity_payload(path: &Path) -> Result<String> {
 
     #[cfg(windows)]
     {
-        use std::os::windows::fs::MetadataExt;
-        let volume = meta.volume_serial_number();
-        let file_index =
-            (u64::from(meta.file_index_high()) << 32) | u64::from(meta.file_index_low());
-        if volume != 0 || file_index != 0 {
+        if let Some((volume, file_index)) = windows_file_id(path) {
             return Ok(format!(
                 "v1|windows|vol={volume}|file={file_index}|is_dir={}",
                 meta.is_dir(),
@@ -88,6 +84,47 @@ fn file_identity_payload(path: &Path) -> Result<String> {
     {
         let normalized = normalize_path(path);
         Ok(format!("v1|path|{}", normalized))
+    }
+}
+
+#[cfg(windows)]
+fn windows_file_id(path: &Path) -> Option<(u32, u64)> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        let handle = CreateFileW(
+            wide.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null_mut(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            0,
+        );
+        if handle == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut info = std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>();
+        let ok = GetFileInformationByHandle(handle, &mut info as *mut _);
+        let _ = CloseHandle(handle);
+        if ok == 0 {
+            return None;
+        }
+        let file_index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+        if info.dwVolumeSerialNumber == 0 && file_index == 0 {
+            return None;
+        }
+        Some((info.dwVolumeSerialNumber, file_index))
     }
 }
 

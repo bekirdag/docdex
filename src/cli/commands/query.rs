@@ -667,7 +667,7 @@ pub(crate) async fn search_via_http(
     diff_head: Option<String>,
     diff_path: Vec<std::path::PathBuf>,
 ) -> Result<Value> {
-    let client = CliHttpClient::new_streaming()?;
+    let client = CliHttpClient::new()?;
     let payload = SearchRequest {
         q: query.to_string(),
         limit,
@@ -800,7 +800,7 @@ pub(crate) async fn stream_via_http(
     diff_head: Option<String>,
     diff_path: Vec<std::path::PathBuf>,
 ) -> Result<()> {
-    let client = CliHttpClient::new()?;
+    let client = CliHttpClient::new_streaming()?;
     let repo_id = repo_manager::repo_fingerprint_sha256(repo_root).ok();
     let diff_payload = if diff_mode.is_some()
         || diff_base.is_some()

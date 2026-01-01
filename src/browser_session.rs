@@ -729,21 +729,9 @@ mod tests {
     };
     use anyhow::anyhow;
     #[cfg(unix)]
-    use std::collections::BTreeMap;
-    #[cfg(unix)]
-    use std::sync::Mutex;
-    #[cfg(unix)]
     use std::time::Instant;
     #[cfg(unix)]
     use tempfile::TempDir;
-    #[cfg(unix)]
-    use tracing::Subscriber;
-    #[cfg(unix)]
-    use tracing_subscriber::layer::{Context, Layer};
-    #[cfg(unix)]
-    use tracing_subscriber::prelude::*;
-    #[cfg(unix)]
-    use tracing_subscriber::{registry::LookupSpan, Registry};
 
     #[cfg(unix)]
     fn process_group_alive(pgid: i32) -> bool {
@@ -1067,58 +1055,63 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    #[derive(Default)]
-    struct Captured {
-        events: Mutex<Vec<BTreeMap<String, String>>>,
-    }
-
-    #[cfg(unix)]
-    struct CaptureLayer(std::sync::Arc<Captured>);
-
-    #[cfg(unix)]
-    impl<S> Layer<S> for CaptureLayer
-    where
-        S: Subscriber + for<'a> LookupSpan<'a>,
-    {
-        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-            let mut fields = BTreeMap::new();
-            fields.insert("target".to_string(), event.metadata().target().to_string());
-            struct Visitor<'a>(&'a mut BTreeMap<String, String>);
-            impl tracing::field::Visit for Visitor<'_> {
-                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-                    self.0.insert(field.name().to_string(), value.to_string());
-                }
-
-                fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
-                    self.0.insert(field.name().to_string(), value.to_string());
-                }
-
-                fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
-                    self.0.insert(field.name().to_string(), value.to_string());
-                }
-
-                fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-                    self.0.insert(field.name().to_string(), value.to_string());
-                }
-
-                fn record_debug(
-                    &mut self,
-                    field: &tracing::field::Field,
-                    value: &dyn std::fmt::Debug,
-                ) {
-                    self.0
-                        .insert(field.name().to_string(), format!("{value:?}"));
-                }
-            }
-            event.record(&mut Visitor(&mut fields));
-            self.0.events.lock().unwrap().push(fields);
-        }
-    }
-
     #[test]
     #[cfg(unix)]
     fn emits_structured_session_lifecycle_logs() {
+        use std::collections::BTreeMap;
+        use std::sync::Mutex;
+        use tracing::Subscriber;
+        use tracing_subscriber::layer::{Context, Layer};
+        use tracing_subscriber::prelude::*;
+        use tracing_subscriber::registry::LookupSpan;
+        use tracing_subscriber::Registry;
+
+        #[derive(Default)]
+        struct Captured {
+            events: Mutex<Vec<BTreeMap<String, String>>>,
+        }
+
+        struct CaptureLayer(std::sync::Arc<Captured>);
+
+        impl<S> Layer<S> for CaptureLayer
+        where
+            S: Subscriber + for<'a> LookupSpan<'a>,
+        {
+            fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+                let mut fields = BTreeMap::new();
+                fields.insert("target".to_string(), event.metadata().target().to_string());
+                struct Visitor<'a>(&'a mut BTreeMap<String, String>);
+                impl tracing::field::Visit for Visitor<'_> {
+                    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                        self.0.insert(field.name().to_string(), value.to_string());
+                    }
+
+                    fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+                        self.0.insert(field.name().to_string(), value.to_string());
+                    }
+
+                    fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+                        self.0.insert(field.name().to_string(), value.to_string());
+                    }
+
+                    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+                        self.0.insert(field.name().to_string(), value.to_string());
+                    }
+
+                    fn record_debug(
+                        &mut self,
+                        field: &tracing::field::Field,
+                        value: &dyn std::fmt::Debug,
+                    ) {
+                        self.0
+                            .insert(field.name().to_string(), format!("{value:?}"));
+                    }
+                }
+                event.record(&mut Visitor(&mut fields));
+                self.0.events.lock().unwrap().push(fields);
+            }
+        }
+
         if let Some(events) = BROWSER_SESSION_TEST_EVENTS.get() {
             events.lock().unwrap().clear();
         }

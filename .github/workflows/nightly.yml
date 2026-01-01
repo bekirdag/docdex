@@ -20,6 +20,7 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        if: ${{ runner.os != 'Linux' }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -74,6 +75,7 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        if: ${{ runner.os != 'Linux' }}
 
       - name: Setup Node
         uses: actions/setup-node@v4

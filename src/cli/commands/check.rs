@@ -4,7 +4,6 @@ use crate::hardware;
 use crate::mcp;
 use crate::memory::MemoryStore;
 use crate::ollama;
-use crate::orchestrator::web;
 use crate::profiles::ProfileManager;
 use crate::state_layout::StateLayout;
 use crate::symbols::SymbolsStore;
@@ -1128,26 +1127,47 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
             "chrome" | "chromium" | "chromium-browser"
         );
         if needs_chrome {
-            let hint = config
-                .web
-                .scraper
-                .chrome_binary_path
-                .as_ref()
-                .map(|path| path.to_string_lossy().to_string());
-            let available = web::resolve_browser_available(hint.as_deref());
-            if available {
+            let auto_install_enabled = env_boolish("DOCDEX_BROWSER_AUTO_INSTALL")
+                .unwrap_or(config.web.scraper.auto_install);
+            let candidate = crate::util::detect_browser_binary(
+                config.web.scraper.chrome_binary_path.as_deref(),
+            );
+            if let Some(candidate) = candidate {
                 checks.push(CheckItem {
                     name: "chrome",
                     status: "ok",
-                    message: "chrome binary available".to_string(),
-                    details: hint.as_ref().map(|value| json!({ "path": value })),
+                    message: format!("browser available ({})", candidate.kind.as_str()),
+                    details: Some(json!({
+                        "path": candidate.path.to_string_lossy(),
+                        "kind": candidate.kind.as_str(),
+                        "source": candidate.source.as_str(),
+                        "auto_install_enabled": auto_install_enabled,
+                        "configured_kind": config.web.scraper.browser_kind.as_deref(),
+                    })),
                 });
             } else {
                 checks.push(CheckItem {
                     name: "chrome",
                     status: "warn",
-                    message: "chrome binary not found (web scraping disabled)".to_string(),
-                    details: hint.as_ref().map(|value| json!({ "path": value })),
+                    message: "browser binary not found (web scraping disabled)".to_string(),
+                    details: config
+                        .web
+                        .scraper
+                        .chrome_binary_path
+                        .as_ref()
+                        .map(|path| {
+                            json!({
+                                "path": path.to_string_lossy(),
+                                "auto_install_enabled": auto_install_enabled,
+                                "install_hint": "docdexd browser setup",
+                            })
+                        })
+                        .or_else(|| {
+                            Some(json!({
+                                "auto_install_enabled": auto_install_enabled,
+                                "install_hint": "docdexd browser setup",
+                            }))
+                        }),
                 });
             }
         } else {

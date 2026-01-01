@@ -246,7 +246,7 @@ impl WebGateConfig {
             .or_else(config_web_min_match_ratio)
             .unwrap_or(DEFAULT_WEB_MIN_MATCH_RATIO)
             .clamp(0.0, 1.0);
-        let browser_hint = env_string("DOCDEX_WEB_BROWSER");
+        let browser_hint = env_string("DOCDEX_WEB_BROWSER").or_else(config_web_browser_path);
         let browser_available = resolve_browser_available(browser_hint.as_deref());
         Self {
             enabled,
@@ -1510,8 +1510,8 @@ pub(crate) fn evaluate_gate_status(
 
     if !gate.browser_available {
         let message = match gate.browser_hint.as_deref() {
-            Some(hint) => format!("web browser not available: {hint}"),
-            None => "web browser not available".to_string(),
+            Some(hint) => format!("web browser not available: {hint}; run `docdexd browser setup`"),
+            None => "web browser not available; run `docdexd browser setup`".to_string(),
         };
         let unavailable =
             Tier2Unavailable::new(Tier2UnavailableReason::StartupFailed, message.clone())
@@ -1639,8 +1639,8 @@ async fn run_web_discovery(
 
     if !gate.browser_available {
         let message = match gate.browser_hint.as_deref() {
-            Some(hint) => format!("web browser not available: {hint}"),
-            None => "web browser not available".to_string(),
+            Some(hint) => format!("web browser not available: {hint}; run `docdexd browser setup`"),
+            None => "web browser not available; run `docdexd browser setup`".to_string(),
         };
         let unavailable =
             Tier2Unavailable::new(Tier2UnavailableReason::StartupFailed, message.clone())
@@ -2403,7 +2403,10 @@ async fn fetch_web_documents(
                 relevance_score: None,
                 debug_html: None,
                 debug_dom_text: None,
-                error: Some("web fetch chrome binary not configured".to_string()),
+                error: Some(
+                    "web fetch chrome binary not configured; run `docdexd browser setup`"
+                        .to_string(),
+                ),
                 debug: None,
             }];
         }
@@ -4909,6 +4912,19 @@ fn config_web_max_hits() -> Option<usize> {
     Some(config.search.max_web_hits)
 }
 
+fn config_web_browser_path() -> Option<String> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    config
+        .web
+        .scraper
+        .chrome_binary_path
+        .map(|path| path.to_string_lossy().to_string())
+}
+
 fn resolve_local_relevance_threshold() -> f32 {
     env_f32("DOCDEX_LOCAL_RELEVANCE_THRESHOLD")
         .or_else(config_local_relevance_threshold)
@@ -4927,7 +4943,7 @@ pub(crate) fn resolve_browser_available(hint: Option<&str>) -> bool {
         return false;
     }
 
-    util::detect_chrome_binary().is_some()
+    util::detect_browser_binary(None).is_some()
 }
 
 fn resolve_web_limit(requested: Option<usize>, fallback: usize) -> usize {

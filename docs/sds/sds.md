@@ -46,7 +46,7 @@ Docdex v2.0 runs a per-repo local-first daemon (`docdexd serve`) and also suppor
 - **Waterfall retrieval** (per repo): Tier 1 local indexes (source \+ libs), Tier 2 zero-cost web discovery/fetch (DuckDuckGo HTML \+ guarded headless Chrome), Tier 3 local cognition/memory (Ollama chat/embeddings, sqlite-vec memory). Cached library docs are treated as local within Tier 1\.  
 - **Context assembly**: fixed priority Memory → Repo Code → Library/Web; token budget roughly 10% system prompt, 20% memory, 50% repo/library/web, 20% generation buffer. Budgeting happens before Ollama calls.  
 - **Isolation model**: per-repo state under `~/.docdex/state/repos/<fingerprint>/`; global caches (`cache/web`, `cache/libs`) are reused but ingested per repo. CLI/MCP require explicit repo id/path; HTTP uses the daemon repo by default and validates any provided repo id/path.  
-- **Hardware awareness**: daemon detects RAM/VRAM to recommend or constrain Ollama models (e.g., \<8GB ultra-light; ≥16GB default `phi3.5:3.8b`; ≥32GB \+ GPU suggests `llama3.1:70b` if present). No auto-install; guidance only.  
+- **Hardware awareness**: daemon detects RAM/VRAM to recommend or constrain Ollama models (e.g., \<8GB ultra-light; ≥16GB default `phi3.5:3.8b`; ≥32GB \+ GPU suggests `llama3.1:70b` if present). No silent auto-install; npm postinstall may prompt and installs only on explicit confirmation.  
 - **Security posture**: binds to `127.0.0.1` by default; `--expose` demands token auth on HTTP, and MCP enforces `auth_token` when configured. No telemetry or paid/cloud services.  
 - **Scalability & reliability (per PDR scope)**: targets ≥8 concurrent repos by running separate per-repo daemons; local search p95 \< 50ms (\<20ms typical). Browser guard prevents zombie Chrome; web rate limits (≥2s DDG, ≥1s fetch) mitigate bans.  
 - **Out-of-scope (per section)**: new surfaces, cloud/vector backends, cross-repo memory, clustered/multi-tenant daemon topologies are explicitly excluded.
@@ -136,7 +136,7 @@ Assumptions
 
 - BM25 search is sufficient for Tier 1 initial ranking; rerank is optional/local only.  
 - `web_trigger_threshold` default 0.7 is configurable; same threshold used across surfaces unless overridden.  
-- Chrome availability and Ollama models are pre-installed or handled by setup flows; no auto-install.
+- Chrome availability and Ollama models are pre-installed or handled by setup flows; optional prompts may install on explicit confirmation (no silent auto-install).
 
 Open Questions & Risks
 
@@ -192,7 +192,7 @@ Verification Strategy
 Docdexd detects host RAM and (when present) GPU VRAM to guide Ollama model recommendations and default selection, keeping inference local and resource-safe. This logic informs CLI commands (`docdexd llm-list`, `docdexd check`, `docdexd llm-setup`) but does not introduce new APIs beyond what is already defined.
 
 - **Detection scope**: Read total system RAM; detect GPU presence and VRAM when available. No other hardware signals are in scope per PDR.  
-- **Threshold policy (from PDR)**: RAM \<8GB → recommend ultra-light; ≥16GB → default `phi3.5:3.8b`; ≥32GB \+ GPU → suggest `llama3.1:70b` if installed. Keep decisions advisory; do not auto-download/install.  
+- **Threshold policy (from PDR)**: RAM \<8GB → recommend ultra-light; ≥16GB → default `phi3.5:3.8b`; ≥32GB \+ GPU → suggest `llama3.1:70b` if installed. Keep decisions advisory; do not auto-download/install without explicit confirmation.  
 - **Integration points**:  
   - `docdexd llm-list` runs detection, loads `llm_list.json`, filters, and outputs recommendations.  
   - `docdexd llm-setup` reuses detection to suggest pulls and update `[llm]` defaults in config; must honor offline-first (no automatic network installs).  
@@ -286,7 +286,7 @@ This section defines the daemon’s key subsystems and how they cooperate to sat
 Config/state layer ensures typed configuration, RW validation, and deterministic state layout that other subsystems rely on for per-repo isolation across per-repo daemons.
 
 - **Intent**: Provide a single source of truth for daemon/runtime configuration and a predictable per-repo/global state directory tree with enforced read/write guarantees and auto-creation of sane defaults.  
-- **Config location & shape**: `~/.docdex/config.toml` auto-created on first run with localhost defaults. Sections per PDR: `[core] global_state_dir, log_level, max_concurrent_fetches`; `[llm] provider=<name> (default `ollama`), base_url, default_model, embedding_model, max_answer_tokens`; `[search] web_trigger_threshold, max_repo_hits, max_web_hits`; `[web] discovery_provider=duckduckgo_html, user_agent, min_spacing_ms, cache_ttl_secs, blocklist`; `[web.scraper] engine, headless, chrome_binary_path, request_delay_ms, page_load_timeout_secs`; `[memory] enabled=true, backend=sqlite`; `[server] http_bind_addr=127.0.0.1:3210, enable_mcp=true`. Typed parsing with defaults; warn on unknown providers. The npm installer may update `http_bind_addr` during auto-port selection.  
+- **Config location & shape**: `~/.docdex/config.toml` auto-created on first run with localhost defaults. Sections per PDR: `[core] global_state_dir, log_level, max_concurrent_fetches`; `[llm] provider=<name> (default `ollama`), base_url, default_model, embedding_model, max_answer_tokens`; `[search] web_trigger_threshold, max_repo_hits, max_web_hits`; `[web] discovery_provider=duckduckgo_html, user_agent, min_spacing_ms, cache_ttl_secs, blocklist`; `[web.scraper] engine, headless, chrome_binary_path, auto_install, browser_kind, request_delay_ms, page_load_timeout_secs`; `[memory] enabled=true, backend=sqlite`; `[server] http_bind_addr=127.0.0.1:3210, enable_mcp=true`. Typed parsing with defaults; warn on unknown providers. The npm installer may update `http_bind_addr` during auto-port selection.  
 - **Env override**: `DOCDEX_WEB_BLOCKLIST=example.com,docs.example.org` sets the web discovery blocklist as a comma-separated list of domain suffixes.  
 - **Env override**: `DOCDEX_WEB_MIN_SPACING_MS` (DDG spacing, min 2000ms) and `DOCDEX_WEB_REQUEST_DELAY_MS` (per-domain fetch delay, min 1000ms).  
 - **State root & layout**: `~/.docdex/state/` with enforced creation/validation:  
@@ -307,14 +307,14 @@ Config/state layer ensures typed configuration, RW validation, and deterministic
 - **Scalability/Reliability**: Bounded by `max_concurrent_fetches` and per-repo resources; state layout supports multiple per-repo daemons without cross-contamination. RW validation prevents partial init; locks directory guards browser lifecycle.  
 - **Security/Isolation**: Enforce localhost defaults; state paths scoped by fingerprint to prevent cross-repo bleed. No telemetry. Token auth handled at server layer; config/state manager just supplies bind info.  
 - **Observability**: Log config warnings (unknown provider), RW failures, and auto-create events. Additional metrics not requested in PDR.  
-- **DevOps**: Persistence across upgrades; do not auto-install Ollama/Chrome. No cloud dependencies.
+- **DevOps**: Persistence across upgrades; Linux may auto-install headless Chromium if no browser is detected (opt-out supported), while macOS/Windows rely on installed browsers. No cloud dependencies.
 
 **Open Questions & Risks**
 
 - Should config validation hard-fail on unknown keys or only warn? (PDR silent)  
 - Behavior when `global_state_dir` is moved or lacks perms after init—migrate vs. fail?  
 - Fingerprint collisions are improbable but not addressed; assume SHA256 sufficient.  
-- Chrome path/headless defaults on diverse OSes—fallbacks not specified.
+- Chrome/browser path defaults on diverse OSes—multi-browser fallbacks and Linux auto-install need to remain deterministic.
 
 **Verification Strategy**
 
@@ -547,7 +547,7 @@ LLM/embedding layer is Ollama-only for both generation and embeddings, operating
 - **Context Assembly**: Priority order Memory → Repo code (Tantivy \+ symbols) → Library/web artifacts. Library docs treated as Tier-1 support. Waterfall orchestrator only escalates to web when confidence \< `web_trigger_threshold` or explicitly forced.  
 - **Repo Isolation**: CLI/MCP calls require repo id/path; HTTP defaults to the daemon repo and validates any provided repo id. Embeddings and memory stored per-repo (`state/repos/<fingerprint>/memory.db`), no cross-repo bleed. Unknown/unindexed repo returns clear error.  
 - **Embeddings**: Ollama embedding model only; used for memory\_store/recall, local rerank (optional), and any vector similarity in sqlite-vec. No external vector DB.  
-- **Hardware Awareness**: `llm-list` detects RAM/VRAM and recommends models (e.g., `phi3.5:3.8b` default, `:70b` if resources and installed; ultra-light if \<8GB RAM). `llm-setup` ensures `ollama` in PATH and guides pulls; no auto-install.  
+- **Hardware Awareness**: `llm-list` detects RAM/VRAM and recommends models (e.g., `phi3.5:3.8b` default, `:70b` if resources and installed; ultra-light if \<8GB RAM). `llm-setup` ensures `ollama` in PATH and guides pulls; npm postinstall may prompt and installs only on explicit confirmation.  
 - **Reliability & Limits**: Streaming must tolerate backpressure; apply timeouts/retries aligned with daemon defaults. Ensure daemon startup (`check`) validates Ollama reachability/models and budget configuration. Token overflow mitigated by pruning per priorities above.  
 - **Security/Privacy**: Local-only by default (bind 127.0.0.1); when `--expose`, require auth token on HTTP/MCP. No telemetry; prompts and inference stay local.  
 - **Observability**: Log model used, token budget decisions, truncation events, and repo id; avoid logging sensitive prompt content. Additional metrics not requested in PDR.  
@@ -848,7 +848,7 @@ Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper
     
   - Core readiness: `docdexd check` validates config RW, state layout, repo registry, Ollama reachability/models, headless Chrome availability, HTTP bind, MCP enablement.  
   - Repo indexing/chat: `index --repo <path>` builds Tantivy \+ symbols \+ dag/lib scaffolding; `chat --repo <path> [--query <q>]` runs Tier-1 local search, optional REPL if no query.  
-  - LLM ops: `llm-list` (hardware-aware recommendations from `llm_list.json`); `llm-setup` (verify `ollama` presence, list/pull models, update `[llm]` config; no auto-install).  
+  - LLM ops: `llm-list` (hardware-aware recommendations from `llm_list.json`); `llm-setup` (verify `ollama` presence, list/pull models, update `[llm]` config; prompt-based install only).  
   - Web waterfall: `web-search "<query>"`, `web-fetch <url>`, `web-rag "<question>" --repo <path>` triggering discovery→scrape→cache with rate limits.  
   - Library docs: `libs fetch --repo <path>` detects deps (Cargo/Node/Python), scrapes docs, caches under `cache/libs`, ingests into repo `libs_index`.  
   - DAG: `dag view --repo <path> <session_id>` renders text/DOT from `dag.db`.  
@@ -892,7 +892,7 @@ Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper
 
 - **DevOps**  
     
-  - Config at `~/.docdex/config.toml` auto-created; CLI should warn if provider ≠ Ollama. No auto-install of Ollama/Chrome per PDR.
+  - Config at `~/.docdex/config.toml` auto-created; CLI should warn if provider ≠ Ollama. No silent auto-install of Ollama/Chrome per PDR (prompt-based installs only).
 
 
 - **Assumptions**  
@@ -1096,7 +1096,7 @@ Docdex relies solely on locally managed, zero-cost components for LLM/embeddings
 - Config at `~/.docdex/config.toml`; auto-created with localhost defaults. Validates RW access to `global_state_dir`.  
 - Key sections enforced: `[core]`, `[llm]`, `[search]`, `[web]`, `[web.scraper]`, `[memory]`, `[server]`. Warn if `provider` is unknown or missing required config.  
 - State layout under `~/.docdex/state/` with repo fingerprints; includes `index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`, `impact_graph.json`, `cache/web`, `cache/libs`, `locks/`.  
-- No auto-install of Ollama/Chrome; `llm-setup` provides guidance only.
+- No silent auto-install of Ollama/Chrome; `llm-setup` provides guidance, and npm postinstall may prompt for explicit installs.
 
 **Open Questions & Risks**
 
@@ -1154,7 +1154,8 @@ Architectural intent: keep a per-repo `docdexd` responsive on commodity machines
 
 **Browser and web fetch controls**
 
-- Headless Chrome guarded by a lifecycle manager: bounded concurrency (configurable, tied to `[core].max_concurrent_fetches`/web scraper settings), per-page load timeout (default 15s), and teardown to avoid zombie processes; locks directory used to serialize guard state.  
+- Headless browser guarded by a lifecycle manager: bounded concurrency (configurable, tied to `[core].max_concurrent_fetches`/web scraper settings), per-page load timeout (default 15s), and teardown to avoid zombie processes; locks directory used to serialize guard state.  
+- Browser discovery supports Chrome/Chromium/Edge/Brave/Vivaldi on macOS/Windows; Linux can auto-install Chromium if none is found and persist the resolved path.  
 - Discovery rate limits: DuckDuckGo HTML queries spaced ≥2s; fetch rate limit ≥1 req/sec per domain; backoff on HTTP errors; respect blocklist; cache reused to avoid redundant fetches.  
 - Scraper uses readability cleanup; caches raw HTML \+ cleaned JSON under `cache/web/` with TTL from config.
 
@@ -1179,7 +1180,7 @@ Architectural intent: keep a per-repo `docdexd` responsive on commodity machines
 
 **DevOps/scalability**
 
-- No clustered multi-tenant mode; scale by running per-repo daemons and tuning fetch concurrency. State layout must remain upgrade-safe; no auto-install of Chrome/Ollama.
+- No clustered multi-tenant mode; scale by running per-repo daemons and tuning fetch concurrency. State layout must remain upgrade-safe; no silent auto-install of Chrome/Ollama.
 
 **Assumptions**
 
@@ -1209,7 +1210,7 @@ Docdex enforces local-first, zero-cost operation with explicit controls when the
 - **Data residency & locality**: All inference, embeddings, search, and state are local by default; no telemetry. Only zero-cost/open components (Ollama, Tantivy, DuckDuckGo HTML, headless Chrome, sqlite-vec, Tree-sitter) are permitted. Web access is gated (confidence-based or explicit) and cached locally. No cloud/vector DBs, no paid APIs.  
 - **Repo isolation**: Per-repo state under `~/.docdex/state/repos/<fingerprint>/` (indexes, memory.db, symbols.db, dag.db, impact_graph.json, libs\_index). Global caches (`cache/web`, `cache/libs`) are shared storage but ingested per repo without cross-contamination.  
 - **Process/browsing safeguards**: Headless Chrome guarded with locks and lifecycle checks to avoid zombie processes; rate limits enforced to reduce abuse risk. Locks directory under state for browser/process guards.  
-- **Configuration defaults**: Auto-created config favors privacy: localhost bind, Ollama provider, MCP enabled locally. Warnings if LLM provider differs from Ollama. No auto-install of dependencies.  
+- **Configuration defaults**: Auto-created config favors privacy: localhost bind, Ollama provider, MCP enabled locally. Warnings if LLM provider differs from Ollama. No silent auto-install of dependencies (prompt-based only).  
 - **Logging/observability**: PDR does not request telemetry; assume minimal local logs only. No remote log shipping described. Optional state logs via `DOCDEX_LOG_TO_STATE=1` write to `~/.docdex/state/logs/docdexd-<pid>.log`.  
 - **Dependencies**: Open-source/local-only; no paid keys. DuckDuckGo HTML for discovery; local Chrome for scraping; Ollama for LLM/embeddings.
 
@@ -1293,7 +1294,7 @@ Validation and safeguards
 Hardware-aware model recommendations
 
 - Detect RAM/VRAM at `llm-list`/`llm-setup` time; filter `llm_list.json` per thresholds: RAM \<8GB → ultra-light only; ≥16GB → default `phi3.5:3.8b`; ≥32GB with GPU → recommend `llama3.1:70b` if installed.  
-- Never auto-install models; only suggest pulls and update `[llm]` defaults upon user confirmation.
+- Never auto-install models silently; only suggest pulls and update `[llm]` defaults upon explicit confirmation.
 
 Scope boundaries
 

@@ -401,6 +401,13 @@ New commands are added to the docdex binary to manage profiles manually, providi
   * **Description:** Facilitates the **Swarm Synchronization** protocol (Section 4.5).  
   * **Usage:** docdex profile export \--out \<file.json\> and docdex profile import \<file.json\>.
 
+**Browser setup helpers (web tier dependency):**
+
+* **docdexd browser list/setup/install**  
+  * **Description:** Lists discovered headless-capable browsers, runs auto-discovery, and (on Linux) installs a pinned headless Chromium build when no browser is present.  
+  * **Usage:** docdexd browser list \| docdexd browser setup \| docdexd browser install  
+  * **Behavior:** Persists `web.scraper.chrome_binary_path` and `web.scraper.browser_kind` in `~/.docdex/config.toml`; `web.scraper.auto_install` defaults to true on Linux and false elsewhere (override with `DOCDEX_BROWSER_AUTO_INSTALL=0`).
+
 ### **6.2 HTTP API Extensions**
 
 The Chat API is updated to accept an agent\_id context, enabling the **Waterfall Orchestrator** to perform persona-aware retrieval.

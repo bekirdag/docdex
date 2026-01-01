@@ -9,7 +9,14 @@ const {
   parseServerBind,
   upsertMcpServerJson,
   upsertCodexConfig,
-  configUrlForPort
+  configUrlForPort,
+  resolveOllamaInstallMode,
+  resolveOllamaModelPromptMode,
+  parseOllamaListOutput,
+  formatGiB,
+  readLlmDefaultModel,
+  upsertLlmDefaultModel,
+  pullOllamaModel
 } = require("../lib/postinstall_setup");
 
 test("upsertServerConfig adds server section when missing", () => {
@@ -43,4 +50,95 @@ test("upsertCodexConfig appends docdex server", () => {
   const contents = fs.readFileSync(file, "utf8");
   assert.ok(contents.includes('name = "docdex"'));
   assert.ok(contents.includes(`url = "${url}"`));
+});
+
+test("resolveOllamaInstallMode respects env overrides", () => {
+  const mode = resolveOllamaInstallMode({
+    env: { DOCDEX_OLLAMA_INSTALL: "1" },
+    stdin: {},
+    stdout: {}
+  });
+  assert.equal(mode.mode, "install");
+});
+
+test("resolveOllamaInstallMode skips when non-interactive", () => {
+  const mode = resolveOllamaInstallMode({
+    env: {},
+    stdin: { isTTY: false },
+    stdout: { isTTY: false }
+  });
+  assert.equal(mode.mode, "skip");
+});
+
+test("resolveOllamaInstallMode prompts when interactive", () => {
+  const mode = resolveOllamaInstallMode({
+    env: {},
+    stdin: { isTTY: true },
+    stdout: { isTTY: true }
+  });
+  assert.equal(mode.mode, "prompt");
+});
+
+test("resolveOllamaModelPromptMode auto-accepts with env flag", () => {
+  const mode = resolveOllamaModelPromptMode({
+    env: { DOCDEX_OLLAMA_MODEL_ASSUME_Y: "1" },
+    stdin: {},
+    stdout: {}
+  });
+  assert.equal(mode.mode, "auto");
+});
+
+test("resolveOllamaModelPromptMode skips when disabled", () => {
+  const mode = resolveOllamaModelPromptMode({
+    env: { DOCDEX_OLLAMA_MODEL_PROMPT: "0" },
+    stdin: { isTTY: true },
+    stdout: { isTTY: true }
+  });
+  assert.equal(mode.mode, "skip");
+});
+
+test("parseOllamaListOutput extracts model names", () => {
+  const output = [
+    "NAME            ID              SIZE    MODIFIED",
+    "phi3.5:3.8b     abcdef          2.2 GB  2 days ago",
+    "nomic-embed-text 123456         274 MB  1 day ago"
+  ].join("\n");
+  const models = parseOllamaListOutput(output);
+  assert.deepEqual(models, ["phi3.5:3.8b", "nomic-embed-text"]);
+});
+
+test("formatGiB returns unknown for invalid bytes", () => {
+  assert.equal(formatGiB(Number.NaN), "unknown");
+  assert.equal(formatGiB(-1), "unknown");
+});
+
+test("readLlmDefaultModel detects default model in config", () => {
+  const contents = ["[llm]", "default_model = \"phi3.5:3.8b\"", ""].join("\n");
+  assert.equal(readLlmDefaultModel(contents), "phi3.5:3.8b");
+});
+
+test("upsertLlmDefaultModel adds llm section when missing", () => {
+  const contents = ["[server]", "http_bind_addr = \"127.0.0.1:3210\""].join("\n");
+  const updated = upsertLlmDefaultModel(contents, "phi3.5:3.8b");
+  assert.ok(updated.includes("[llm]"));
+  assert.ok(updated.includes("default_model = \"phi3.5:3.8b\""));
+});
+
+test("upsertLlmDefaultModel preserves existing default model", () => {
+  const contents = ["[llm]", "default_model = \"phi3.5:3.8b\"", ""].join("\n");
+  const updated = upsertLlmDefaultModel(contents, "phi3.5:3.8b");
+  assert.equal(updated, contents);
+});
+
+test("pullOllamaModel invokes ollama pull", () => {
+  const calls = [];
+  const runner = (cmd, args, opts) => {
+    calls.push({ cmd, args, opts });
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  const ok = pullOllamaModel("phi3.5:3.8b", { runner });
+  assert.equal(ok, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cmd, "ollama");
+  assert.deepEqual(calls[0].args, ["pull", "phi3.5:3.8b"]);
 });

@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod browser;
 pub mod check;
 pub mod dag;
 pub mod help_all;
@@ -29,6 +30,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
         super::Command::Serve { args } => serve::run(args).await,
         super::Command::Daemon { args } => serve::run_daemon(args).await,
         super::Command::HelpAll => help_all::run(),
+        super::Command::Browser { command } => browser::run(command).await,
         super::Command::SelfCheck {
             repo,
             terms,

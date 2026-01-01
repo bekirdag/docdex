@@ -14,6 +14,7 @@ Docdex is a local-first docs + code indexer/search daemon. It runs per repo, kee
 - Distribution: binaries stay in GitHub Releases (small npm package); postinstall fetches `docdexd-<platform>.tar.gz` matching the npm version.
 - Platform diagnostics (no download): `docdex doctor` (or `docdex diagnostics`) prints detected OS/arch(/libc), whether supported, and the expected Rust target triple + release asset naming pattern.
 - Publishing uses npm Trusted Publishing (OIDC) — no NPM token needed; see `.github/workflows/release.yml`.
+- Postinstall prompts: if Ollama is missing, the installer asks to install Ollama and `nomic-embed-text`. If Ollama is available, it prompts to pick a default chat model and can install `phi3.5:3.8b` (~2.2 GB) while showing free disk space. Skip with `DOCDEX_OLLAMA_INSTALL=0` or `DOCDEX_OLLAMA_MODEL_PROMPT=0`; force with `DOCDEX_OLLAMA_INSTALL=1` or `DOCDEX_OLLAMA_MODEL=<model>`; preselect with `DOCDEX_OLLAMA_DEFAULT_MODEL`.
 
 ## Features at a glance
 - Per-repo indexing of docs + common source code extensions (tantivy-backed; no external services).

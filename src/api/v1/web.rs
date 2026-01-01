@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 use url::Url;
 
-use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT};
-use crate::search::{json_error, AppState};
+use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY};
+use crate::search::{json_error, json_error_with_details, AppState};
+use crate::util;
 use crate::web;
 use crate::web::chrome::{fetch_dom, ChromeFetchConfig};
 use crate::web::readability::extract_readable_text;
@@ -126,10 +127,11 @@ pub async fn web_fetch_handler(
     }
 
     let Some(chrome_config) = ChromeFetchConfig::from_web_config(&config) else {
-        return json_error(
-            StatusCode::BAD_REQUEST,
-            ERR_INVALID_ARGUMENT,
+        return json_error_with_details(
+            StatusCode::CONFLICT,
+            ERR_MISSING_DEPENDENCY,
             "chrome binary not configured",
+            browser_missing_details(&config),
         );
     };
     web::fetch::enforce_domain_delay(&url, config.fetch_delay).await;
@@ -212,4 +214,26 @@ fn now_epoch_ms() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
+}
+
+fn browser_missing_details(config: &web::WebConfig) -> serde_json::Value {
+    let mut candidates = util::detect_browser_candidates(config.chrome_binary_path.as_deref());
+    candidates.sort_by_key(|candidate| candidate.priority);
+    let candidate_list: Vec<serde_json::Value> = candidates
+        .into_iter()
+        .map(|candidate| {
+            serde_json::json!({
+                "name": candidate.name,
+                "kind": candidate.kind.as_str(),
+                "source": candidate.source.as_str(),
+                "path": candidate.path.to_string_lossy(),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "browser_available": false,
+        "install_action": "docdexd browser setup",
+        "configured_path": config.chrome_binary_path.as_ref().map(|path| path.to_string_lossy()),
+        "candidates": candidate_list,
+    })
 }

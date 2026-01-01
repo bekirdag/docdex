@@ -104,6 +104,11 @@
 - tests/property_profile.rs
 - tests/property_memory.rs
 - tests/validation_artifacts.rs
+- tests/browser_detection.rs
+- tests/browser_config.rs
+- tests/browser_install.rs
+- tests/browser_cli.rs
+- tests/check_browser.rs
 
 ## Rust Unit/Component Tests
 - src/config/tests.rs

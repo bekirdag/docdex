@@ -33,10 +33,7 @@ pub struct ChromeFetchResult {
 
 impl ChromeFetchConfig {
     pub fn from_web_config(config: &WebConfig) -> Option<Self> {
-        let chrome_binary = config
-            .chrome_binary_path
-            .clone()
-            .or_else(util::detect_chrome_binary)?;
+        let chrome_binary = util::detect_browser_binary(config.chrome_binary_path.as_deref())?.path;
         Some(Self {
             chrome_binary,
             headless: config.scraper_headless,

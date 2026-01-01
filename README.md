@@ -25,6 +25,7 @@ Install it with npm (preferred) or build from source, then run `docdexd index --
 - Distribution: binaries stay in GitHub Releases (small npm package); postinstall fetches `docdexd-<platform>.tar.gz` matching the npm version.
 - Platform diagnostics (no download): `docdex doctor` (or `docdex diagnostics`) prints detected OS/arch(/libc), whether supported, and the expected Rust target triple + release asset naming pattern.
 - Publishing uses npm Trusted Publishing (OIDC) — no NPM token needed; see `.github/workflows/release.yml`.
+- Postinstall prompts: if Ollama is missing, the installer asks to install Ollama and `nomic-embed-text`. If Ollama is available, it prompts to pick a default chat model and can install `phi3.5:3.8b` (~2.2 GB) while showing free disk space. Skip with `DOCDEX_OLLAMA_INSTALL=0` or `DOCDEX_OLLAMA_MODEL_PROMPT=0`; force with `DOCDEX_OLLAMA_INSTALL=1` or `DOCDEX_OLLAMA_MODEL=<model>`; preselect with `DOCDEX_OLLAMA_DEFAULT_MODEL`.
 
 ### Build from source
 - Requires Rust (stable) and Cargo.
@@ -38,11 +39,11 @@ Install it with npm (preferred) or build from source, then run `docdexd index --
 - Local-first waterfall retrieval: repo index + libs, optional web fallback, memory enabled by default (Ollama embeddings).
 - Search + chat surfaces: `/search`, `/v1/chat/completions`, CLI `chat` (CLI proxies to HTTP by default; `DOCDEX_CLI_LOCAL=1` for in-process).
 - Code intelligence: symbols, AST, impact graph and diagnostics (`/v1/symbols`, `/v1/ast`, `/v1/graph/impact`).
-- Web discovery + scraping (Tier 2, disabled by default; enable with `DOCDEX_WEB_ENABLED=1`): DuckDuckGo HTML + headless Chrome with caching and rate limits.
+- Web discovery + scraping (Tier 2, disabled by default; enable with `DOCDEX_WEB_ENABLED=1`): DuckDuckGo HTML + headless browser (Chrome/Chromium/Edge/Brave/Vivaldi) with caching and rate limits; Linux can auto-install Chromium when missing.
 - Memory + reasoning DAG (`/v1/memory/*`, `/v1/dag/export`) enabled by default (disable in config if needed).
 - Hardware-aware LLM guidance (`llm-list`, `llm-setup`) and Ollama defaults (`phi3.5:3.8b`, `nomic-embed-text`).
 - Security/ops: loopback bind by default, non-loopback binds require auth token, secure-mode rate limiting, TLS options, audit logs, `/healthz` + `/metrics`, `docdexd check` preflight.
-- Utilities: `self-check` secret scan, `help-all`, `repo inspect/reassociate`, `libs discover/fetch/ingest`, `run-tests` harness, `web-cache-flush`, `tui`, `mcp-add`.
+- Utilities: `self-check` secret scan, `help-all`, `repo inspect/reassociate`, `browser list/setup/install`, `libs discover/fetch/ingest`, `run-tests` harness, `web-cache-flush`, `tui`, `mcp-add`.
 
 ## What it does
 - Indexes repo docs and source code (.md/.mdx/.txt plus common code extensions) into Tantivy plus symbols/AST/impact data, stored under `~/.docdex/state/repos/<fingerprint>/` (override with `--state-dir`).
@@ -173,7 +174,7 @@ Impact graph snapshots carry schema metadata and are migrated on read; reindex t
 - Capture: record `docdex_http_request_latency_p95_ms` from `/metrics` and save the terminal output to `target/test_logs/`.
 
 ### Perf FAQ
-- Chrome path errors: set `DOCDEX_CHROME_PATH` or `web.scraper.chrome_binary_path` in config.
+- Browser path errors: run `docdexd browser setup` (Linux auto-installs Chromium when allowed), or set `DOCDEX_WEB_BROWSER`/`DOCDEX_CHROME_PATH`/`web.scraper.chrome_binary_path`.
 - Ollama timeouts: ensure `ollama` is running and tune `DOCDEX_EMBEDDING_TIMEOUT_MS` (or set `DOCDEX_EMBEDDING_BASE_URL`).
 - Rate limits (429): run with `--secure-mode=false` for load tests or increase `--rate-limit-per-min`.
 
@@ -207,7 +208,9 @@ Impact graph snapshots carry schema metadata and are migrated on read; reindex t
 - `DOCDEX_WEB_MIN_SPACING_MS` / `DOCDEX_WEB_REQUEST_DELAY_MS` / `DOCDEX_WEB_REQUEST_TIMEOUT_MS`: discovery spacing, fetch delay, and request timeout.
 - `DOCDEX_WEB_JITTER_MS` / `DOCDEX_WEB_MAX_ATTEMPTS` / `DOCDEX_WEB_BACKOFF_BASE_MS` / `DOCDEX_WEB_BACKOFF_MULTIPLIER` / `DOCDEX_WEB_BACKOFF_MAX_MS` / `DOCDEX_WEB_MAX_CONSEC_FAIL` / `DOCDEX_WEB_COOLDOWN_MS`: web backoff/cooldown tuning.
 - `DOCDEX_WEB_CACHE_TTL_SECS`: override cache TTL (default 2,592,000 seconds).
-- `DOCDEX_WEB_BROWSER` / `DOCDEX_CHROME_PATH` / `CHROME_PATH`: override the Chrome binary for scraping (or set `web.scraper.chrome_binary_path` in config).
+- `DOCDEX_WEB_BROWSER` / `DOCDEX_CHROME_PATH` / `CHROME_PATH`: override the browser binary for scraping (or set `web.scraper.chrome_binary_path` in config).
+- `DOCDEX_BROWSER_AUTO_INSTALL`: set to `0` to disable Linux auto-install of headless Chromium (config: `web.scraper.auto_install`).
+- `DOCDEX_BROWSER_DOWNLOAD_BASE` / `DOCDEX_BROWSER_VERSION` / `DOCDEX_BROWSER_SHA256`: override the pinned Linux Chromium download URL + checksum (air-gapped mirrors).
 - `--expose` / `DOCDEX_EXPOSE`: allow binding to non-loopback interfaces (requires `--auth-token`).
 - `--auth-token <token>` / `DOCDEX_AUTH_TOKEN`: required for non-loopback binds; clients pass it as `Authorization: Bearer <token>`.
 - `--secure-mode <true|false>` / `DOCDEX_SECURE_MODE`: default `true`; when enabled, applies loopback allowlist by default and default rate limiting (60 req/min).
@@ -307,6 +310,7 @@ embedding_dim = 768
 
 ## CLI commands
 - `check` — validate config/state, bind availability, and local dependencies (Ollama/Chrome/MCP); set `DOCDEX_CHECK_MCP_SPAWN=1` to spawn-check MCP.
+- `browser list|setup|install` — inspect browser candidates, run discovery/auto-install, or install headless Chromium on Linux.
 - `serve --repo <path> [--host 127.0.0.1] [--port 3210] [--log info]` — start HTTP API with file watching for incremental updates.
 - `index --repo <path>` — rebuild the entire index.
 - `ingest --repo <path> --file <file>` — reindex a single file.

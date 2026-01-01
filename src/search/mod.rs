@@ -489,6 +489,21 @@ pub(crate) fn json_error(
         .into_response()
 }
 
+pub(crate) fn json_error_with_details(
+    status: StatusCode,
+    code: &'static str,
+    message: impl Into<String>,
+    details: serde_json::Value,
+) -> Response {
+    (
+        status,
+        Json(ErrorBody {
+            error: ErrorDetail::new(code, message).with_details(details),
+        }),
+    )
+        .into_response()
+}
+
 pub(crate) struct RepoIdError {
     pub status: StatusCode,
     pub code: &'static str,
@@ -1641,6 +1656,8 @@ struct ErrorDetail {
     code: &'static str,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     retry_after_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     retry_at: Option<String>,
@@ -1663,6 +1680,7 @@ impl ErrorDetail {
         Self {
             code,
             message: message.into(),
+            details: None,
             retry_after_ms: None,
             retry_at: None,
             limit_key: None,
@@ -1674,10 +1692,16 @@ impl ErrorDetail {
         }
     }
 
+    fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
+    }
+
     fn rate_limited(err: &RateLimited) -> Self {
         Self {
             code: ERR_RATE_LIMITED,
             message: truncate_bytes(&err.message, MAX_RATE_LIMIT_MESSAGE_BYTES),
+            details: None,
             retry_after_ms: Some(err.retry_after_ms),
             retry_at: err.retry_at.as_ref().map(|at| at.to_rfc3339()),
             limit_key: Some(err.limit_key.clone()),

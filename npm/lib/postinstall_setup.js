@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
+const readline = require("node:readline");
 const { spawn, spawnSync } = require("node:child_process");
 
 const { detectPlatformKey, UnsupportedPlatformError } = require("./platform");
@@ -13,6 +14,9 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT_PRIMARY = 3000;
 const DEFAULT_PORT_FALLBACK = 3210;
 const STARTUP_FAILURE_MARKER = "startup_registration_failed.json";
+const DEFAULT_OLLAMA_MODEL = "nomic-embed-text";
+const DEFAULT_OLLAMA_CHAT_MODEL = "phi3.5:3.8b";
+const DEFAULT_OLLAMA_CHAT_MODEL_SIZE_GIB = 2.2;
 
 function defaultConfigPath() {
   return path.join(os.homedir(), ".docdex", "config.toml");
@@ -221,6 +225,453 @@ function ensureDaemonRoot() {
   return root;
 }
 
+function parseEnvBool(value) {
+  if (value == null) return null;
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  return null;
+}
+
+function resolveOllamaInstallMode({ env = process.env, stdin = process.stdin, stdout = process.stdout } = {}) {
+  const override = parseEnvBool(env.DOCDEX_OLLAMA_INSTALL);
+  if (override === true) return { mode: "install", reason: "env", interactive: false };
+  if (override === false) return { mode: "skip", reason: "env", interactive: false };
+  const hasTty = Boolean(stdin && stdout && stdin.isTTY && stdout.isTTY);
+  if (!hasTty) return { mode: "skip", reason: "non_interactive", interactive: false };
+  if (env.CI) return { mode: "skip", reason: "ci", interactive: false };
+  return { mode: "prompt", reason: "interactive", interactive: true };
+}
+
+function resolveOllamaModelPromptMode({ env = process.env, stdin = process.stdin, stdout = process.stdout } = {}) {
+  const override = parseEnvBool(env.DOCDEX_OLLAMA_MODEL_PROMPT);
+  if (override === true) return { mode: "prompt", reason: "env", interactive: true };
+  if (override === false) return { mode: "skip", reason: "env", interactive: false };
+  const assumeYes = parseEnvBool(env.DOCDEX_OLLAMA_MODEL_ASSUME_Y);
+  if (assumeYes === true) return { mode: "auto", reason: "env", interactive: false };
+  const hasTty = Boolean(stdin && stdout && stdin.isTTY && stdout.isTTY);
+  if (!hasTty) return { mode: "skip", reason: "non_interactive", interactive: false };
+  if (env.CI) return { mode: "skip", reason: "ci", interactive: false };
+  return { mode: "prompt", reason: "interactive", interactive: true };
+}
+
+function parseOllamaListOutput(output) {
+  const lines = String(output || "").split(/\r?\n/);
+  const models = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || /^name\b/i.test(trimmed)) continue;
+    const name = trimmed.split(/\s+/)[0];
+    if (name) models.push(name);
+  }
+  return models;
+}
+
+function listOllamaModels({ runner = spawnSync } = {}) {
+  const result = runner("ollama", ["list"], { stdio: "pipe" });
+  if (result.error || result.status !== 0) return null;
+  return parseOllamaListOutput(result.stdout);
+}
+
+function formatGiB(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "unknown";
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GiB`;
+}
+
+function getDiskFreeBytesUnix() {
+  if (typeof fs.statfsSync !== "function") return null;
+  try {
+    const stats = fs.statfsSync(os.homedir());
+    return Number(stats.bavail) * Number(stats.bsize);
+  } catch {
+    try {
+      const stats = fs.statfsSync("/");
+      return Number(stats.bavail) * Number(stats.bsize);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function parsePowerShellFreeBytes(output) {
+  const trimmed = String(output || "").trim();
+  const value = Number.parseFloat(trimmed);
+  return Number.isFinite(value) ? value : null;
+}
+
+function parseWmicFreeBytes(output) {
+  const lines = String(output || "").split(/\r?\n/);
+  for (const line of lines) {
+    const match = line.match(/FreeSpace=(\d+)/i);
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
+function getDiskFreeBytesWindows() {
+  if (isCommandAvailable("powershell", ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major"])) {
+    const result = spawnSync(
+      "powershell",
+      [
+        "-NoProfile",
+        "-Command",
+        "(Get-PSDrive -Name $env:SystemDrive.TrimEnd(':')).Free"
+      ],
+      { stdio: "pipe" }
+    );
+    const parsed = parsePowerShellFreeBytes(result.stdout);
+    if (parsed != null) return parsed;
+  }
+  if (isCommandAvailable("wmic", ["/?"])) {
+    const drive = (process.env.SystemDrive || "C:").toUpperCase();
+    const result = spawnSync(
+      "wmic",
+      ["logicaldisk", "where", `DeviceID='${drive}'`, "get", "FreeSpace", "/value"],
+      { stdio: "pipe" }
+    );
+    return parseWmicFreeBytes(result.stdout);
+  }
+  return null;
+}
+
+function getDiskFreeBytes() {
+  if (process.platform === "win32") return getDiskFreeBytesWindows();
+  return getDiskFreeBytesUnix();
+}
+
+function normalizeModelName(name) {
+  return String(name || "").trim();
+}
+
+function readLlmDefaultModel(contents) {
+  let inLlm = false;
+  const lines = String(contents || "").split(/\r?\n/);
+  for (const line of lines) {
+    const section = line.match(/^\s*\[([^\]]+)\]\s*$/);
+    if (section) {
+      inLlm = section[1].trim() === "llm";
+      continue;
+    }
+    if (!inLlm) continue;
+    const match = line.match(/^\s*default_model\s*=\s*\"([^\"]+)\"/);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+function upsertLlmDefaultModel(contents, model) {
+  const lines = String(contents || "").split(/\r?\n/);
+  const output = [];
+  let inLlm = false;
+  let foundLlm = false;
+  let updated = false;
+
+  for (const line of lines) {
+    const section = line.match(/^\s*\[([^\]]+)\]\s*$/);
+    if (section) {
+      if (inLlm && !updated) {
+        output.push(`default_model = \"${model}\"`);
+        updated = true;
+      }
+      inLlm = section[1].trim() === "llm";
+      if (inLlm) foundLlm = true;
+      output.push(line);
+      continue;
+    }
+    if (inLlm) {
+      if (/^\s*default_model\s*=/.test(line)) {
+        output.push(`default_model = \"${model}\"`);
+        updated = true;
+        continue;
+      }
+    }
+    output.push(line);
+  }
+
+  if (foundLlm) {
+    if (!updated) output.push(`default_model = \"${model}\"`);
+  } else {
+    if (output.length && output[output.length - 1].trim()) output.push("");
+    output.push("[llm]");
+    output.push(`default_model = \"${model}\"`);
+  }
+  return output.join("\n");
+}
+
+function isCommandAvailable(command, args = ["--version"]) {
+  const result = spawnSync(command, args, { stdio: "ignore" });
+  if (result.error) return false;
+  return true;
+}
+
+function isOllamaAvailable() {
+  return isCommandAvailable("ollama", ["--version"]);
+}
+
+function promptYesNo(question, { defaultYes = true, stdin = process.stdin, stdout = process.stdout } = {}) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: stdin, output: stdout });
+    rl.question(question, (answer) => {
+      rl.close();
+      const normalized = String(answer || "").trim().toLowerCase();
+      if (!normalized) return resolve(defaultYes);
+      resolve(["y", "yes"].includes(normalized));
+    });
+  });
+}
+
+function promptInput(question, { stdin = process.stdin, stdout = process.stdout } = {}) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: stdin, output: stdout });
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(String(answer || "").trim());
+    });
+  });
+}
+
+function runInstallCommand(command, args, { logger, interactive } = {}) {
+  const options = { stdio: interactive ? "inherit" : "pipe" };
+  const result = spawnSync(command, args, options);
+  if (result.error) {
+    logger?.warn?.(`[docdex] ${command} failed: ${result.error.message || result.error}`);
+    return false;
+  }
+  if (result.status !== 0) {
+    const stderr = result.stderr ? String(result.stderr).trim() : "";
+    logger?.warn?.(`[docdex] ${command} exited with ${result.status}${stderr ? `: ${stderr}` : ""}`);
+    return false;
+  }
+  return true;
+}
+
+function installOllama({ logger, interactive } = {}) {
+  if (process.platform === "darwin") {
+    if (!isCommandAvailable("brew")) {
+      logger?.warn?.("[docdex] Homebrew not found; install Ollama from https://ollama.com/download");
+      return false;
+    }
+    return runInstallCommand("brew", ["install", "ollama"], { logger, interactive });
+  }
+  if (process.platform === "linux") {
+    if (isCommandAvailable("curl")) {
+      return runInstallCommand("sh", ["-c", "curl -fsSL https://ollama.com/install.sh | sh"], {
+        logger,
+        interactive
+      });
+    }
+    if (isCommandAvailable("wget")) {
+      return runInstallCommand("sh", ["-c", "wget -qO- https://ollama.com/install.sh | sh"], {
+        logger,
+        interactive
+      });
+    }
+    logger?.warn?.("[docdex] curl or wget not found; install Ollama from https://ollama.com/download");
+    return false;
+  }
+  if (process.platform === "win32") {
+    if (!isCommandAvailable("winget", ["--version"])) {
+      logger?.warn?.("[docdex] winget not found; install Ollama from https://ollama.com/download");
+      return false;
+    }
+    return runInstallCommand(
+      "winget",
+      ["install", "-e", "--id", "Ollama.Ollama", "--accept-package-agreements", "--accept-source-agreements"],
+      { logger, interactive }
+    );
+  }
+  logger?.warn?.("[docdex] unsupported platform; install Ollama from https://ollama.com/download");
+  return false;
+}
+
+function pullOllamaModel(model, { logger, interactive, runner = spawnSync } = {}) {
+  const result = runner("ollama", ["pull", model], { stdio: interactive ? "inherit" : "pipe" });
+  if (result.error) {
+    logger?.warn?.(`[docdex] ollama pull failed: ${result.error.message || result.error}`);
+    return false;
+  }
+  if (result.status !== 0) {
+    const stderr = result.stderr ? String(result.stderr).trim() : "";
+    logger?.warn?.(`[docdex] ollama pull exited with ${result.status}${stderr ? `: ${stderr}` : ""}`);
+    return false;
+  }
+  return true;
+}
+
+async function maybeInstallOllama({ logger, env = process.env, stdin = process.stdin, stdout = process.stdout } = {}) {
+  if (isOllamaAvailable()) return { status: "available" };
+  const decision = resolveOllamaInstallMode({ env, stdin, stdout });
+  if (decision.mode === "skip") return { status: "skipped", reason: decision.reason };
+  if (decision.mode === "prompt") {
+    const answer = await promptYesNo(
+      `[docdex] Ollama not found. Install Ollama and ${DEFAULT_OLLAMA_MODEL}? [Y/n] `,
+      { defaultYes: true, stdin, stdout }
+    );
+    if (!answer) {
+      logger?.warn?.("[docdex] Skipping Ollama install. Run `docdexd llm-setup` later if needed.");
+      return { status: "declined" };
+    }
+  }
+  logger?.warn?.("[docdex] Installing Ollama...");
+  const installed = installOllama({ logger, interactive: decision.interactive });
+  if (!installed) {
+    logger?.warn?.("[docdex] Ollama install failed; see https://ollama.com/download");
+    return { status: "failed" };
+  }
+  if (!isOllamaAvailable()) {
+    logger?.warn?.("[docdex] Ollama installed but not found on PATH. Restart your shell.");
+    return { status: "failed" };
+  }
+  const model = String(env.DOCDEX_OLLAMA_MODEL || DEFAULT_OLLAMA_MODEL).trim() || DEFAULT_OLLAMA_MODEL;
+  const pulled = pullOllamaModel(model, { logger, interactive: decision.interactive });
+  if (!pulled) {
+    logger?.warn?.(`[docdex] Ollama installed but model pull failed. Run: ollama pull ${model}`);
+    return { status: "partial" };
+  }
+  logger?.warn?.(`[docdex] Ollama ready with model ${model}.`);
+  return { status: "installed" };
+}
+
+function updateDefaultModelConfig(configPath, model, logger) {
+  if (!configPath) return false;
+  const normalized = normalizeModelName(model);
+  if (!normalized) return false;
+  let contents = "";
+  if (fs.existsSync(configPath)) {
+    contents = fs.readFileSync(configPath, "utf8");
+  }
+  const current = normalizeModelName(readLlmDefaultModel(contents));
+  if (current && current === normalized) return false;
+  const next = upsertLlmDefaultModel(contents, normalized);
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, next);
+  logger?.warn?.(`[docdex] set default model to ${normalized} in ${configPath}`);
+  return true;
+}
+
+async function maybePromptOllamaModel({
+  logger,
+  configPath,
+  env = process.env,
+  stdin = process.stdin,
+  stdout = process.stdout
+} = {}) {
+  if (!isOllamaAvailable()) return { status: "skipped", reason: "ollama_missing" };
+
+  const forced = normalizeModelName(env.DOCDEX_OLLAMA_MODEL);
+  if (forced) {
+    const installed = listOllamaModels() || [];
+    const forcedLower = forced.toLowerCase();
+    const hasForced = installed.some((model) => normalizeModelName(model).toLowerCase() === forcedLower);
+    if (!hasForced) {
+      const pulled = pullOllamaModel(forced, { logger, interactive: false });
+      if (!pulled) return { status: "failed", reason: "pull_failed" };
+    }
+    updateDefaultModelConfig(configPath, forced, logger);
+    return { status: "forced", model: forced };
+  }
+
+  const decision = resolveOllamaModelPromptMode({ env, stdin, stdout });
+  if (decision.mode === "skip") return { status: "skipped", reason: decision.reason };
+
+  const installed = listOllamaModels();
+  if (!installed) {
+    logger?.warn?.("[docdex] ollama list failed; skipping model prompt");
+    return { status: "skipped", reason: "list_failed" };
+  }
+
+  const phiModel = DEFAULT_OLLAMA_CHAT_MODEL;
+  const freeBytes = getDiskFreeBytes();
+  const freeText = formatGiB(freeBytes);
+  const sizeText = `${DEFAULT_OLLAMA_CHAT_MODEL_SIZE_GIB.toFixed(1)} GB`;
+
+  const configContents = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "";
+  const configDefault = normalizeModelName(readLlmDefaultModel(configContents));
+  const envDefault = normalizeModelName(env.DOCDEX_OLLAMA_DEFAULT_MODEL);
+  const defaultChoice = envDefault || configDefault || null;
+
+  if (installed.length === 0) {
+    if (decision.mode === "auto") {
+      const pulled = pullOllamaModel(phiModel, { logger, interactive: false });
+      if (!pulled) return { status: "failed", reason: "pull_failed" };
+      updateDefaultModelConfig(configPath, phiModel, logger);
+      return { status: "installed", model: phiModel };
+    }
+    stdout.write(
+      `[docdex] Ollama has no models installed. Free space: ${freeText}. ` +
+        `${phiModel} uses ~${sizeText}.\n`
+    );
+    const accept = await promptYesNo(
+      `[docdex] Install ${phiModel} now? [Y/n] `,
+      { defaultYes: true, stdin, stdout }
+    );
+    if (!accept) return { status: "declined" };
+    const pulled = pullOllamaModel(phiModel, { logger, interactive: true });
+    if (!pulled) return { status: "failed", reason: "pull_failed" };
+    updateDefaultModelConfig(configPath, phiModel, logger);
+    return { status: "installed", model: phiModel };
+  }
+
+  const normalizedInstalled = installed.map(normalizeModelName);
+  const installedLower = normalizedInstalled.map((model) => model.toLowerCase());
+  const hasPhi = installedLower.includes(phiModel.toLowerCase());
+  const selectionDefault = defaultChoice && installedLower.includes(defaultChoice.toLowerCase())
+    ? defaultChoice
+    : normalizedInstalled[0];
+
+  if (decision.mode === "auto") {
+    if (selectionDefault) {
+      updateDefaultModelConfig(configPath, selectionDefault, logger);
+      return { status: "selected", model: selectionDefault };
+    }
+    return { status: "skipped", reason: "no_models" };
+  }
+
+  stdout.write("[docdex] Ollama models detected:\n");
+  normalizedInstalled.forEach((model, idx) => {
+    const marker = model === selectionDefault ? " (default)" : "";
+    stdout.write(`  ${idx + 1}) ${model}${marker}\n`);
+  });
+  if (!hasPhi) {
+    stdout.write(`  I) Install ${phiModel} (~${sizeText}, free ${freeText})\n`);
+  }
+  stdout.write("  S) Skip\n");
+
+  const answer = await promptInput(
+    `[docdex] Select default model [${selectionDefault}]: `,
+    { stdin, stdout }
+  );
+  const normalizedAnswer = normalizeModelName(answer);
+  const answerLower = normalizedAnswer.toLowerCase();
+  if (!answer) {
+    updateDefaultModelConfig(configPath, selectionDefault, logger);
+    return { status: "selected", model: selectionDefault };
+  }
+  if (answerLower === "s" || answerLower === "skip") {
+    return { status: "skipped", reason: "user_skip" };
+  }
+  if ((answerLower === "i" || answerLower === "install") && !hasPhi) {
+    const pulled = pullOllamaModel(phiModel, { logger, interactive: true });
+    if (!pulled) return { status: "failed", reason: "pull_failed" };
+    updateDefaultModelConfig(configPath, phiModel, logger);
+    return { status: "installed", model: phiModel };
+  }
+  const numeric = Number.parseInt(answerLower, 10);
+  if (Number.isFinite(numeric) && numeric >= 1 && numeric <= normalizedInstalled.length) {
+    const selected = normalizedInstalled[numeric - 1];
+    updateDefaultModelConfig(configPath, selected, logger);
+    return { status: "selected", model: selected };
+  }
+  const matchedIndex = installedLower.indexOf(answerLower);
+  if (matchedIndex !== -1) {
+    const selected = normalizedInstalled[matchedIndex];
+    updateDefaultModelConfig(configPath, selected, logger);
+    return { status: "selected", model: selected };
+  }
+  logger?.warn?.("[docdex] Unrecognized selection; skipping model update.");
+  return { status: "skipped", reason: "invalid_selection" };
+}
+
 function registerStartup({ binaryPath, port, repoRoot, logger }) {
   if (!binaryPath) return { ok: false, reason: "missing_binary" };
   const args = [
@@ -409,6 +860,8 @@ async function runPostInstallSetup({ binaryPath, logger } = {}) {
   }
 
   startDaemonNow({ binaryPath: resolvedBinary, port, repoRoot: daemonRoot });
+  await maybeInstallOllama({ logger: log });
+  await maybePromptOllamaModel({ logger: log, configPath });
   return { port, url, configPath };
 }
 
@@ -419,5 +872,14 @@ module.exports = {
   upsertMcpServerJson,
   upsertCodexConfig,
   pickAvailablePort,
-  configUrlForPort
+  configUrlForPort,
+  parseEnvBool,
+  resolveOllamaInstallMode,
+  resolveOllamaModelPromptMode,
+  parseOllamaListOutput,
+  formatGiB,
+  readLlmDefaultModel,
+  upsertLlmDefaultModel,
+  pullOllamaModel,
+  listOllamaModels
 };

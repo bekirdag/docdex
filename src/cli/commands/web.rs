@@ -2,7 +2,7 @@ use crate::cli::commands::query;
 use crate::cli::http_client::CliHttpClient;
 use crate::config::RepoArgs;
 use crate::dag::logging as dag_logging;
-use crate::error::{AppError, ERR_INVALID_ARGUMENT};
+use crate::error::{AppError, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY};
 use crate::index;
 use crate::libs;
 use crate::memory::repo_state_root_from_state_dir;
@@ -16,7 +16,6 @@ use crate::web;
 use crate::web::chrome::{fetch_dom, ChromeFetchConfig};
 use crate::web::readability::extract_readable_text;
 use crate::web::status::fetch_status;
-use anyhow::Context;
 use anyhow::Result;
 use reqwest::Method;
 use serde_json::json;
@@ -66,8 +65,12 @@ pub async fn run_fetch(url: String) -> Result<()> {
             config.scraper_engine
         );
     }
-    let chrome_config =
-        ChromeFetchConfig::from_web_config(&config).context("chrome binary not configured")?;
+    let chrome_config = ChromeFetchConfig::from_web_config(&config).ok_or_else(|| {
+        AppError::new(
+            ERR_MISSING_DEPENDENCY,
+            "chrome binary not configured; run `docdexd browser setup`",
+        )
+    })?;
     web::fetch::enforce_domain_delay(&url, config.fetch_delay).await;
     let status_probe = fetch_status(&url, &config.user_agent, config.request_timeout).await;
     let fetch_result = fetch_dom(&url, &chrome_config).await?;

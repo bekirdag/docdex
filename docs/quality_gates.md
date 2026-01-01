@@ -36,14 +36,14 @@ Gate criteria mirror the SDS "Phase Gates" and add v2.1 checks.
 
 - Phase 0 (Foundation):
   - `docdexd check` passes config RW, repo registry, localhost bind, MCP binary discovery.
-  - Ollama and headless Chrome presence validated.
+  - Ollama and headless browser presence validated (Linux may auto-install Chromium).
 - Phase 1 (Local RAG/Chat):
   - `index --repo` builds per-repo index.
   - `chat --repo` answers from local snippets.
   - `llm-list` / `llm-setup` functional with hardware-aware guidance.
 - Phase 2 (Web Intelligence):
   - Web waterfall only triggers when confidence < `web_trigger_threshold`.
-  - `web-search` / `web-fetch` / `web-rag` enforce DDG spacing and Chrome guard.
+  - `web-search` / `web-fetch` / `web-rag` enforce DDG spacing and browser guard.
 - Phase 2.1 (Library Context):
   - `libs fetch --repo` detects Rust/Node/Python dependencies.
   - Cached library docs are ingested into repo `libs_index`.

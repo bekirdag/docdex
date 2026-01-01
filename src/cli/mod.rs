@@ -322,6 +322,11 @@ pub(crate) enum Command {
     },
     /// Print help for all commands and flags.
     HelpAll,
+    /// Manage browser discovery and setup.
+    Browser {
+        #[command(subcommand)]
+        command: BrowserCommand,
+    },
     /// Scan the index for sensitive terms before enabling access.
     SelfCheck {
         #[command(flatten)]
@@ -868,6 +873,16 @@ pub(crate) enum ProfileCommand {
         #[arg(value_name = "PATH")]
         path: PathBuf,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum BrowserCommand {
+    /// List browser candidates and the selected binary.
+    List,
+    /// Run browser discovery (and Linux auto-install) then persist config.
+    Setup,
+    /// Install headless Chromium on Linux and update config.
+    Install,
 }
 
 #[derive(Subcommand, Debug)]

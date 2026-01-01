@@ -1834,12 +1834,19 @@ fn collect_tree_sitter_symbols(
     language: SourceLanguage,
     node: Node,
 ) {
-    if let Some(symbol) = symbol_from_node(repo_id, rel_path, content, language, node) {
-        symbols.push(symbol);
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_tree_sitter_symbols(symbols, repo_id, rel_path, content, language, child);
+    let mut stack = vec![node];
+    while let Some(node) = stack.pop() {
+        if let Some(symbol) = symbol_from_node(repo_id, rel_path, content, language, node) {
+            symbols.push(symbol);
+        }
+        let mut cursor = node.walk();
+        let mut children = Vec::new();
+        for child in node.children(&mut cursor) {
+            children.push(child);
+        }
+        for child in children.into_iter().rev() {
+            stack.push(child);
+        }
     }
 }
 
@@ -2061,57 +2068,74 @@ fn is_identifier_kind(kind: &str) -> bool {
     )
 }
 
-fn collect_ast_nodes(
+fn collect_ast_nodes<'a>(
     nodes: &mut Vec<AstNode>,
     content: &str,
-    node: Node,
+    node: Node<'a>,
     parent_id: Option<u32>,
     field_name: Option<String>,
     next_id: &mut u32,
     total_nodes: &mut usize,
     truncated: &mut bool,
 ) {
-    let id = *next_id;
-    *next_id = (*next_id).saturating_add(1);
-    *total_nodes = (*total_nodes).saturating_add(1);
-    if nodes.len() < AST_NODE_STORE_LIMIT {
-        let (start_line, start_col, end_line, end_col) = node_range(node);
-        let name = node_name_value(content, node);
-        nodes.push(AstNode {
-            id,
-            parent_id,
-            kind: node.kind().to_string(),
-            field: field_name.clone(),
-            name,
-            is_named: node.is_named(),
-            range: SymbolRange {
-                start_line,
-                start_col,
-                end_line,
-                end_col,
-            },
-        });
-    } else {
-        *truncated = true;
+    struct AstStackItem<'a> {
+        node: Node<'a>,
+        parent_id: Option<u32>,
+        field_name: Option<String>,
     }
 
-    let mut cursor = node.walk();
-    if cursor.goto_first_child() {
-        loop {
-            let child = cursor.node();
-            let child_field = cursor.field_name().map(|value| value.to_string());
-            collect_ast_nodes(
-                nodes,
-                content,
-                child,
-                Some(id),
-                child_field,
-                next_id,
-                total_nodes,
-                truncated,
-            );
-            if !cursor.goto_next_sibling() {
-                break;
+    let mut stack = vec![AstStackItem {
+        node,
+        parent_id,
+        field_name,
+    }];
+    while let Some(item) = stack.pop() {
+        let AstStackItem {
+            node,
+            parent_id,
+            field_name,
+        } = item;
+        let id = *next_id;
+        *next_id = (*next_id).saturating_add(1);
+        *total_nodes = (*total_nodes).saturating_add(1);
+        if nodes.len() < AST_NODE_STORE_LIMIT {
+            let (start_line, start_col, end_line, end_col) = node_range(node);
+            let name = node_name_value(content, node);
+            nodes.push(AstNode {
+                id,
+                parent_id,
+                kind: node.kind().to_string(),
+                field: field_name,
+                name,
+                is_named: node.is_named(),
+                range: SymbolRange {
+                    start_line,
+                    start_col,
+                    end_line,
+                    end_col,
+                },
+            });
+        } else {
+            *truncated = true;
+        }
+
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            let mut children = Vec::new();
+            loop {
+                let child = cursor.node();
+                let child_field = cursor.field_name().map(|value| value.to_string());
+                children.push(AstStackItem {
+                    node: child,
+                    parent_id: Some(id),
+                    field_name: child_field,
+                });
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+            for child in children.into_iter().rev() {
+                stack.push(child);
             }
         }
     }

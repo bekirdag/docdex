@@ -277,6 +277,10 @@ pub struct WebScraperConfig {
     pub headless: bool,
     #[serde(default)]
     pub chrome_binary_path: Option<PathBuf>,
+    #[serde(default = "default_web_auto_install")]
+    pub auto_install: bool,
+    #[serde(default)]
+    pub browser_kind: Option<String>,
     #[serde(default = "default_request_delay_ms")]
     pub request_delay_ms: u64,
     #[serde(default = "default_page_load_timeout_secs")]
@@ -289,6 +293,8 @@ impl Default for WebScraperConfig {
             engine: default_web_engine(),
             headless: default_web_headless(),
             chrome_binary_path: None,
+            auto_install: default_web_auto_install(),
+            browser_kind: None,
             request_delay_ms: default_request_delay_ms(),
             page_load_timeout_secs: default_page_load_timeout_secs(),
         }
@@ -579,18 +585,64 @@ fn default_web_engine() -> String {
 fn apply_browser_defaults(config: &mut AppConfig) -> bool {
     let engine = config.web.scraper.engine.trim().to_ascii_lowercase();
     let needs_chrome = matches!(engine.as_str(), "chrome" | "chromium" | "chromium-browser");
-    if !needs_chrome || config.web.scraper.chrome_binary_path.is_some() {
+    if !needs_chrome {
         return false;
     }
-    if let Some(path) = crate::util::detect_chrome_binary() {
-        config.web.scraper.chrome_binary_path = Some(path);
-        return true;
+    let mut updated = false;
+    if let Some(path) = config.web.scraper.chrome_binary_path.as_ref() {
+        if !path.is_file() {
+            config.web.scraper.chrome_binary_path = None;
+            config.web.scraper.browser_kind = None;
+            updated = true;
+        }
     }
-    false
+    if config.web.scraper.chrome_binary_path.is_some() {
+        return updated;
+    }
+
+    if let Some(candidate) = crate::util::detect_browser_binary(None) {
+        if candidate.source != crate::util::BrowserSource::Env {
+            config.web.scraper.chrome_binary_path = Some(candidate.path);
+            config.web.scraper.browser_kind = Some(candidate.kind.as_str().to_string());
+            updated = true;
+        }
+        return updated;
+    }
+
+    let auto_install_enabled = resolve_auto_install_enabled(config);
+    if auto_install_enabled {
+        if let Ok(Some(result)) =
+            crate::web::browser_install::install_if_missing(auto_install_enabled)
+        {
+            config.web.scraper.chrome_binary_path = Some(result.path);
+            config.web.scraper.browser_kind = Some("chromium".to_string());
+            updated = true;
+        }
+    }
+
+    updated
+}
+
+fn resolve_auto_install_enabled(config: &AppConfig) -> bool {
+    env_boolish("DOCDEX_BROWSER_AUTO_INSTALL").unwrap_or(config.web.scraper.auto_install)
+}
+
+fn env_boolish(key: &str) -> Option<bool> {
+    let raw = std::env::var(key).ok()?;
+    let trimmed = raw.trim().to_ascii_lowercase();
+    match trimmed.as_str() {
+        "1" | "true" | "t" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "f" | "no" | "n" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 fn default_web_headless() -> bool {
     true
+}
+
+fn default_web_auto_install() -> bool {
+    cfg!(target_os = "linux")
 }
 
 fn default_request_delay_ms() -> u64 {

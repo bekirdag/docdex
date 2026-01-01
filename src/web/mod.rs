@@ -1,3 +1,4 @@
+pub mod browser_install;
 pub mod cache;
 pub mod chrome;
 pub mod ddg;

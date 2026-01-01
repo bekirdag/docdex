@@ -82,7 +82,7 @@ When running the singleton daemon (`docdexd daemon`), the server can mount multi
 
 ## Error envelope
 
-Most endpoints return `{ "error": { "code": "<docdex_code>", "message": "<string>" } }` on failure (see `docs/mcp/errors.md` for shared codes).
+Most endpoints return `{ "error": { "code": "<docdex_code>", "message": "<string>" } }` on failure (see `docs/mcp/errors.md` for shared codes). Some dependency failures include `details` with remediation hints (e.g., `/v1/web/fetch` when no browser is available).
 
 ## Config highlights
 
@@ -91,3 +91,4 @@ Most endpoints return `{ "error": { "code": "<docdex_code>", "message": "<string
   - `embedding_dim` (default `768`)
 - `[server].default_agent_id` sets the fallback agent used when requests omit `agent_id` (also configurable via `DOCDEX_DEFAULT_AGENT_ID` / `docdexd serve --agent-id`).
 - `[server].hook_socket_path` enables Unix socket transport for `/v1/hooks/validate` (HTTP remains available).
+- `[web.scraper].auto_install` controls Linux auto-install of headless Chromium; `[web.scraper].chrome_binary_path` and `[web.scraper].browser_kind` store the resolved browser binary.

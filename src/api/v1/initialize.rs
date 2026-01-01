@@ -81,6 +81,9 @@ pub(crate) fn parse_root_uri(raw: &str) -> Result<PathBuf, AppError> {
             "rootUri must not be empty",
         ));
     }
+    if looks_like_windows_path(trimmed) {
+        return Ok(PathBuf::from(trimmed));
+    }
     if let Ok(url) = Url::parse(trimmed) {
         if url.scheme() != "file" {
             return Err(AppError::new(
@@ -94,4 +97,9 @@ pub(crate) fn parse_root_uri(raw: &str) -> Result<PathBuf, AppError> {
         return Ok(path);
     }
     Ok(PathBuf::from(trimmed))
+}
+
+fn looks_like_windows_path(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic()
 }

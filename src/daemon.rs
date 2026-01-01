@@ -362,6 +362,26 @@ pub async fn serve(
         })?)),
         None => None,
     };
+    let ip = if host.eq_ignore_ascii_case("localhost") {
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    } else {
+        host.parse::<IpAddr>().map_err(|_| {
+            StartupError::new(
+                "startup_config_invalid",
+                format!("invalid --host value `{host}`: expected an IP address"),
+            )
+            .with_hint("Use `127.0.0.1` (default) or a specific interface IP like `0.0.0.0`.")
+        })?
+    };
+    let is_loopback = ip.is_loopback();
+    if require_tls && !is_loopback && tls_config.is_none() && !allow_insecure {
+        return Err(StartupError::new(
+            "startup_tls_required",
+            "refusing to bind on non-loopback without TLS; provide --tls-cert/--tls-key or --insecure to allow plain HTTP",
+        )
+        .with_hint("Provide `--tls-cert/--tls-key`, use `--certbot-domain/--certbot-live-dir`, or (unsafe) pass `--insecure` behind a trusted proxy.")
+        .into());
+    }
 
     apply_privilege_drop(run_as_uid, run_as_gid, unshare_net).map_err(|err| {
         StartupError::new(
@@ -618,26 +638,6 @@ pub async fn serve(
         })?;
     }
 
-    let ip = if host.eq_ignore_ascii_case("localhost") {
-        IpAddr::V4(Ipv4Addr::LOCALHOST)
-    } else {
-        host.parse::<IpAddr>().map_err(|_| {
-            StartupError::new(
-                "startup_config_invalid",
-                format!("invalid --host value `{host}`: expected an IP address"),
-            )
-            .with_hint("Use `127.0.0.1` (default) or a specific interface IP like `0.0.0.0`.")
-        })?
-    };
-    let is_loopback = ip.is_loopback();
-    if require_tls && !is_loopback && tls_config.is_none() && !allow_insecure {
-        return Err(StartupError::new(
-            "startup_tls_required",
-            "refusing to bind on non-loopback without TLS; provide --tls-cert/--tls-key or --insecure to allow plain HTTP",
-        )
-        .with_hint("Provide `--tls-cert/--tls-key`, use `--certbot-domain/--certbot-live-dir`, or (unsafe) pass `--insecure` behind a trusted proxy.")
-        .into());
-    }
     let addr = SocketAddr::new(ip, port);
 
     let listener = TcpListener::bind(&addr).await.map_err(|err| {

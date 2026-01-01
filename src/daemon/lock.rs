@@ -78,17 +78,18 @@ pub fn acquire_lock_at_path(path: &Path, port: u16) -> Result<DaemonLock> {
 }
 
 pub fn read_metadata(path: &Path) -> Result<Option<DaemonLockMetadata>> {
-    let file = match File::open(path) {
+    let mut file = match File::open(path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err.into()),
     };
-    read_metadata_from_file(&file)
+    read_metadata_from_file(&mut file)
         .map(Some)
         .or_else(|_| Ok(None))
 }
 
-fn read_metadata_from_file(file: &File) -> Result<DaemonLockMetadata> {
+fn read_metadata_from_file(file: &mut File) -> Result<DaemonLockMetadata> {
+    file.seek(SeekFrom::Start(0))?;
     let mut raw = String::new();
     let mut reader = std::io::BufReader::new(file);
     reader

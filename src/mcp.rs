@@ -427,7 +427,7 @@ async fn spawn_mcp(options: McpSpawnOptions) -> Result<Child> {
     } else if options.detach_stdio {
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::null());
-        cmd.stderr(Stdio::inherit());
+        cmd.stderr(Stdio::null());
     } else {
         cmd.stdin(Stdio::inherit());
         cmd.stdout(Stdio::inherit());

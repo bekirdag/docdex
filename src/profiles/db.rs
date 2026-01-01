@@ -39,6 +39,7 @@ pub fn init_profile_db(path: &Path, embedding_dim: Option<usize>) -> Result<Prof
     })
 }
 
+#[cfg(not(target_env = "musl"))]
 fn ensure_vec_extension_loaded() -> Result<()> {
     SQLITE_VEC_INIT.call_once(|| unsafe {
         rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
@@ -46,6 +47,11 @@ fn ensure_vec_extension_loaded() -> Result<()> {
         )));
     });
     Ok(())
+}
+
+#[cfg(target_env = "musl")]
+fn ensure_vec_extension_loaded() -> Result<()> {
+    anyhow::bail!("sqlite-vec is not available on musl builds; profile vector search is disabled");
 }
 
 fn ensure_schema(conn: &Connection, embedding_dim: Option<usize>) -> Result<Option<usize>> {

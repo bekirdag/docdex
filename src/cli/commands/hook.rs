@@ -67,10 +67,10 @@ async fn run_pre_commit(repo: RepoArgs) -> Result<()> {
     let socket_path = resolve_hook_socket_path()?;
 
     let outcome = match socket_path {
-        Some(path) => {
+        Some(_path) => {
             #[cfg(unix)]
             {
-                match send_hook_unix(&repo_root, &files, &path).await {
+                match send_hook_unix(&repo_root, &files, &_path).await {
                     Ok(result) => Some(result),
                     Err(err) if is_connect_or_timeout(&err) => None,
                     Err(err) => {

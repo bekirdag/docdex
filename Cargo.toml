@@ -42,7 +42,6 @@ hex = "0.4"
 which = "6"
 sysinfo = { version = "0.30" }
 rusqlite = { version = "0.31", features = ["bundled"] }
-sqlite-vec = "0.1"
 http-body-util = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 url = "2.5"
@@ -65,6 +64,9 @@ criterion = "0.5"
 proptest = "1.5"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde_json = "1.0"
+
+[target.'cfg(not(target_env = "musl"))'.dependencies]
+sqlite-vec = "0.1"
 
 [workspace]
 members = ["crates/mcp-server", "fuzz"]

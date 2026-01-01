@@ -37,6 +37,7 @@ impl FaultServer {
                 }
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        let _ = stream.set_nonblocking(false);
                         let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
                         let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
                         let mut buffer = [0u8; 512];

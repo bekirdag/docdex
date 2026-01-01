@@ -67,6 +67,16 @@ fn file_identity_payload(path: &Path) -> Result<String> {
 
     #[cfg(windows)]
     {
+        use std::os::windows::fs::MetadataExt;
+        let volume = meta.volume_serial_number();
+        let file_index =
+            (u64::from(meta.file_index_high()) << 32) | u64::from(meta.file_index_low());
+        if volume != 0 || file_index != 0 {
+            return Ok(format!(
+                "v1|windows|vol={volume}|file={file_index}|is_dir={}",
+                meta.is_dir(),
+            ));
+        }
         let normalized = normalize_path(path);
         return Ok(format!(
             "v1|windows|path={normalized}|is_dir={}",

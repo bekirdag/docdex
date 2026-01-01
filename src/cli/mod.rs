@@ -962,7 +962,10 @@ pub async fn run() -> Result<()> {
     } else {
         None
     };
-    if should_ensure_daemon(&cli.command) && !cli_local_mode() {
+    if should_ensure_daemon(&cli.command)
+        && !cli_local_mode()
+        && std::env::var_os("DOCDEX_HTTP_BASE_URL").is_none()
+    {
         if let Some(config) = config.as_ref() {
             let repo_hint = repo_hint_for_command(&cli.command);
             daemon_spawn::ensure_daemon_running(config, repo_hint)?;

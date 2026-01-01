@@ -17,9 +17,8 @@ impl CliHttpClient {
     pub(crate) fn new() -> Result<Self> {
         let base_url = resolve_base_url()?;
         let auth_token = env_non_empty("DOCDEX_AUTH_TOKEN");
-        let timeout_ms = env_u64("DOCDEX_HTTP_TIMEOUT_MS").unwrap_or(30_000);
-        let connect_timeout_ms =
-            env_u64("DOCDEX_HTTP_CONNECT_TIMEOUT_MS").unwrap_or(timeout_ms);
+        let timeout_ms = resolve_http_timeout_ms();
+        let connect_timeout_ms = resolve_http_connect_timeout_ms(timeout_ms);
         let client = Client::builder()
             .timeout(Duration::from_millis(timeout_ms.max(1)))
             .connect_timeout(Duration::from_millis(connect_timeout_ms.max(1)))
@@ -63,6 +62,16 @@ impl CliHttpClient {
         let repo_id = repo_manager::repo_fingerprint_sha256(repo_root)?;
         Ok(req.header(REPO_ID_HEADER, repo_id))
     }
+}
+
+pub(crate) fn resolve_http_timeout_ms() -> u64 {
+    env_u64("DOCDEX_HTTP_TIMEOUT_MS").unwrap_or(30_000).max(1)
+}
+
+pub(crate) fn resolve_http_connect_timeout_ms(default_timeout_ms: u64) -> u64 {
+    env_u64("DOCDEX_HTTP_CONNECT_TIMEOUT_MS")
+        .unwrap_or(default_timeout_ms)
+        .max(1)
 }
 
 fn resolve_base_url() -> Result<String> {

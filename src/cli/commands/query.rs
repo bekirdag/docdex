@@ -1,4 +1,4 @@
-use crate::cli::http_client::CliHttpClient;
+use crate::cli::http_client::{resolve_http_timeout_ms, CliHttpClient};
 use crate::cli::CliDiffMode;
 use crate::config::{self, RepoArgs};
 use crate::dag::logging as dag_logging;
@@ -692,21 +692,32 @@ pub(crate) async fn search_via_http(
     if let Some(agent_id) = agent_id {
         req = req.header("x-docdex-agent-id", agent_id);
     }
-    let resp = req.send().await.map_err(|err| {
+    let timeout_ms = resolve_http_timeout_ms();
+    let timeout = Duration::from_millis(timeout_ms);
+    let raw = tokio::time::timeout(timeout, async {
+        let resp = req.send().await.map_err(|err| {
+            anyhow!(
+                "docdexd search failed: {err}; ensure `docdexd serve --repo {}` is running",
+                repo_root.display()
+            )
+        })?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "docdexd search failed ({status}): {body}; ensure `docdexd serve --repo {}` is running",
+                repo_root.display()
+            );
+        }
+        Ok::<_, anyhow::Error>(resp.text().await?)
+    })
+    .await
+    .map_err(|_| {
         anyhow!(
-            "docdexd search failed: {err}; ensure `docdexd serve --repo {}` is running",
+            "docdexd search failed: request timed out after {timeout_ms}ms; ensure `docdexd serve --repo {}` is running",
             repo_root.display()
         )
-    })?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!(
-            "docdexd search failed ({status}): {body}; ensure `docdexd serve --repo {}` is running",
-            repo_root.display()
-        );
-    }
-    let raw = resp.text().await?;
+    })??;
     Ok(serde_json::from_str(&raw)?)
 }
 

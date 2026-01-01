@@ -667,7 +667,7 @@ pub(crate) async fn search_via_http(
     diff_head: Option<String>,
     diff_path: Vec<std::path::PathBuf>,
 ) -> Result<Value> {
-    let client = CliHttpClient::new_streaming()?;
+    let client = CliHttpClient::new()?;
     let payload = SearchRequest {
         q: query.to_string(),
         limit,

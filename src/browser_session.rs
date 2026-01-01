@@ -728,12 +728,18 @@ mod tests {
         Tier2UnavailableReason,
     };
     use anyhow::anyhow;
-    use std::time::Instant;
     use std::{collections::BTreeMap, sync::Mutex};
+    #[cfg(unix)]
+    use std::time::Instant;
+    #[cfg(unix)]
     use tempfile::TempDir;
+    #[cfg(unix)]
     use tracing::Subscriber;
+    #[cfg(unix)]
     use tracing_subscriber::layer::{Context, Layer};
+    #[cfg(unix)]
     use tracing_subscriber::prelude::*;
+    #[cfg(unix)]
     use tracing_subscriber::{registry::LookupSpan, Registry};
 
     #[cfg(unix)]

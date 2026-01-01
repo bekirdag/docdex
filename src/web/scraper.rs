@@ -706,6 +706,7 @@ async fn terminate_windows(pid: u32, force: bool) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
 
     fn prometheus_counter(text: &str, name: &str) -> u64 {

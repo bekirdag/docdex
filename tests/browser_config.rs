@@ -1,3 +1,5 @@
+#![cfg(not(target_os = "windows"))]
+
 use docdexd::config;
 use once_cell::sync::Lazy;
 use std::ffi::OsString;

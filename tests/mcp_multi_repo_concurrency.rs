@@ -24,10 +24,11 @@ struct McpHarness {
 }
 
 impl McpHarness {
-    fn spawn(repo: &Path) -> Result<Self, BoxError> {
+    fn spawn(repo: &Path, state_root: &Path) -> Result<Self, BoxError> {
         let repo_str = repo.to_string_lossy().to_string();
         let mut cmd = Command::new(docdex_bin());
         cmd.env("DOCDEX_ENABLE_MEMORY", "0");
+        cmd.env("DOCDEX_STATE_DIR", state_root);
         cmd.args(["mcp", "--repo", repo_str.as_str(), "--log", "warn"]);
         let mut child = cmd
             .stdin(Stdio::piped())
@@ -56,13 +57,14 @@ impl McpHarness {
     }
 }
 
-fn run_docdex<I, S>(args: I) -> Result<(), BoxError>
+fn run_docdex<I, S>(state_root: &Path, args: I) -> Result<(), BoxError>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
     let output = Command::new(docdex_bin())
         .env("DOCDEX_ENABLE_MEMORY", "0")
+        .env("DOCDEX_STATE_DIR", state_root)
         .args(args)
         .output()?;
     if !output.status.success() {
@@ -212,14 +214,15 @@ fn run_search_and_open(
 fn mcp_multi_repo_concurrency_is_isolated() -> Result<(), BoxError> {
     let repo_a = setup_repo("a-only.md", "REPO_A_TOKEN")?;
     let repo_b = setup_repo("b-only.md", "REPO_B_TOKEN")?;
+    let state_root = TempDir::new()?;
 
     let repo_a_root = repo_a.path().to_string_lossy().to_string();
     let repo_b_root = repo_b.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_a_root.as_str()])?;
-    run_docdex(["index", "--repo", repo_b_root.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_a_root.as_str()])?;
+    run_docdex(state_root.path(), ["index", "--repo", repo_b_root.as_str()])?;
 
-    let harness_a = McpHarness::spawn(repo_a.path())?;
-    let harness_b = McpHarness::spawn(repo_b.path())?;
+    let harness_a = McpHarness::spawn(repo_a.path(), state_root.path())?;
+    let harness_b = McpHarness::spawn(repo_b.path(), state_root.path())?;
 
     let barrier = Arc::new(Barrier::new(3));
     let barrier_a = barrier.clone();

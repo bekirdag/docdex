@@ -121,8 +121,10 @@ mod tests {
         let dir = TempDir::new()?;
         let path = dir.path().join("daemon.lock");
         let lock = acquire_lock_at_path(&path, 3210)?;
+        let expected_pid = lock.metadata.pid;
+        drop(lock);
         let snapshot = read_metadata(&path)?.expect("metadata present");
-        assert_eq!(snapshot.pid, lock.metadata.pid);
+        assert_eq!(snapshot.pid, expected_pid);
         assert_eq!(snapshot.port, 3210);
         Ok(())
     }

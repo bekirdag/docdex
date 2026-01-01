@@ -165,7 +165,7 @@ fn network_faults_surface_stable_errors() -> Result<(), Box<dyn Error>> {
         .await?;
         run_case(
             FaultMode::Status(429),
-            Duration::from_millis(200),
+            Duration::from_secs(1),
             ERR_BACKOFF_REQUIRED,
             "duckduckgo discovery blocked",
         )

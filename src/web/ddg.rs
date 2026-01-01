@@ -6,7 +6,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Duration;
-use url::Url;
+use url::{Host, Url};
 
 use crate::error::{
     AppError, ERR_BACKOFF_REQUIRED, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
@@ -49,11 +49,13 @@ pub struct WebDiscoveryResponse {
 
 impl DdgDiscovery {
     pub fn new(config: WebConfig) -> Result<Self> {
-        let client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .user_agent(config.user_agent.clone())
-            .timeout(config.request_timeout)
-            .build()
-            .context("build ddg client")?;
+            .timeout(config.request_timeout);
+        if is_loopback_url(&config.ddg_base_url) {
+            builder = builder.no_proxy();
+        }
+        let client = builder.build().context("build ddg client")?;
         let pacer_config = DdgDiscoveryPolicyConfig {
             min_spacing: config.policy.min_spacing,
             base_backoff: config.policy.base_backoff,
@@ -235,6 +237,15 @@ fn build_ddg_url(base: &Url, query: &str) -> Result<Url> {
     let mut url = base.clone();
     url.query_pairs_mut().append_pair("q", query);
     Ok(url)
+}
+
+fn is_loopback_url(url: &Url) -> bool {
+    match url.host() {
+        Some(Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(Host::Ipv6(ip)) => ip.is_loopback(),
+        Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        None => false,
+    }
 }
 
 fn ddg_cache_key(base: &Url, query: &str) -> String {

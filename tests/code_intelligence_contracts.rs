@@ -1,9 +1,17 @@
 use std::fs;
 
+fn read_text(path: &str, message: &str) -> String {
+    fs::read_to_string(path)
+        .expect(message)
+        .replace("\r\n", "\n")
+}
+
 #[test]
 fn contract_docs_exist_and_define_edge_direction() {
-    let text = fs::read_to_string("docs/contracts/code_intelligence_schema_v1.md")
-        .expect("expected docs/contracts/code_intelligence_schema_v1.md to exist");
+    let text = read_text(
+        "docs/contracts/code_intelligence_schema_v1.md",
+        "expected docs/contracts/code_intelligence_schema_v1.md to exist",
+    );
     assert!(
         text.contains("\"name\": \"docdex.impact_graph\""),
         "contract doc should define the impact graph schema name"
@@ -24,7 +32,7 @@ fn contract_docs_exist_and_define_edge_direction() {
 
 #[test]
 fn openapi_impact_graph_requires_schema_and_exposes_edges() {
-    let text = fs::read_to_string("openapi/mcoda.yaml").expect("expected openapi/mcoda.yaml");
+    let text = read_text("openapi/mcoda.yaml", "expected openapi/mcoda.yaml");
     assert!(
         text.contains("DocdexSchemaInfo"),
         "OpenAPI should define DocdexSchemaInfo for schema compatibility signaling"
@@ -46,8 +54,10 @@ fn openapi_impact_graph_requires_schema_and_exposes_edges() {
 
 #[test]
 fn contract_docs_define_impact_diagnostics() {
-    let text = fs::read_to_string("docs/contracts/code_intelligence_schema_v1.md")
-        .expect("expected docs/contracts/code_intelligence_schema_v1.md to exist");
+    let text = read_text(
+        "docs/contracts/code_intelligence_schema_v1.md",
+        "expected docs/contracts/code_intelligence_schema_v1.md to exist",
+    );
     assert!(
         text.contains("\"name\": \"docdex.impact_diagnostics\""),
         "contract doc should define the impact diagnostics schema name"
@@ -60,7 +70,7 @@ fn contract_docs_define_impact_diagnostics() {
 
 #[test]
 fn openapi_includes_impact_diagnostics_endpoint() {
-    let text = fs::read_to_string("openapi/mcoda.yaml").expect("expected openapi/mcoda.yaml");
+    let text = read_text("openapi/mcoda.yaml", "expected openapi/mcoda.yaml");
     assert!(
         text.contains("/v1/graph/impact/diagnostics"),
         "OpenAPI should define the impact diagnostics endpoint"

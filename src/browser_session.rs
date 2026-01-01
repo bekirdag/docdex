@@ -728,7 +728,10 @@ mod tests {
         Tier2UnavailableReason,
     };
     use anyhow::anyhow;
-    use std::{collections::BTreeMap, sync::Mutex};
+    #[cfg(unix)]
+    use std::collections::BTreeMap;
+    #[cfg(unix)]
+    use std::sync::Mutex;
     #[cfg(unix)]
     use std::time::Instant;
     #[cfg(unix)]
@@ -1064,13 +1067,16 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[derive(Default)]
     struct Captured {
         events: Mutex<Vec<BTreeMap<String, String>>>,
     }
 
+    #[cfg(unix)]
     struct CaptureLayer(std::sync::Arc<Captured>);
 
+    #[cfg(unix)]
     impl<S> Layer<S> for CaptureLayer
     where
         S: Subscriber + for<'a> LookupSpan<'a>,

@@ -279,6 +279,7 @@ fn startup_failure_emits_single_error_envelope_for_auth() -> Result<(), Box<dyn 
 #[test]
 fn startup_failure_emits_single_error_envelope_for_bind() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
     let repo_arg = repo.path().to_string_lossy().to_string();
     let listener = match TcpListener::bind("127.0.0.1:0") {
         Ok(listener) => listener,
@@ -292,6 +293,7 @@ fn startup_failure_emits_single_error_envelope_for_bind() -> Result<(), Box<dyn 
 
     let output = Command::new(docdex_bin())
         .env("DOCDEX_ENABLE_MEMORY", "0")
+        .env("DOCDEX_STATE_DIR", state_root.path())
         .env("DOCDEX_ENABLE_MCP", "0")
         .args([
             "serve",

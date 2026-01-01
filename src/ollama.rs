@@ -109,11 +109,7 @@ impl OllamaClient {
                 .context("write request body")?;
             stream.flush().await.ok();
 
-            let mut raw = Vec::new();
-            stream
-                .read_to_end(&mut raw)
-                .await
-                .context("read response")?;
+            let raw = read_response(&mut stream).await.context("read response")?;
             let (status_code, response_body) = parse_http_response(&raw)?;
 
             if let Some(error_message) = ollama_error_message(&response_body) {
@@ -266,8 +262,7 @@ impl OllamaClient {
                 stream.write_all(&body).await.context("write request body")?;
                 stream.flush().await.ok();
 
-                let mut raw = Vec::new();
-                stream.read_to_end(&mut raw).await.context("read response")?;
+                let raw = read_response(&mut stream).await.context("read response")?;
                 let (status_code, response_body) = parse_http_response(&raw)?;
 
                 if let Some(error_message) = ollama_error_message(&response_body) {
@@ -347,11 +342,7 @@ pub async fn list_models(
                 .await
                 .context("write request headers")?;
             stream.flush().await.ok();
-            let mut raw = Vec::new();
-            stream
-                .read_to_end(&mut raw)
-                .await
-                .context("read response")?;
+            let raw = read_response(&mut stream).await.context("read response")?;
             let (status_code, response_body) = parse_http_response(&raw)?;
             if let Some(error_message) = ollama_error_message(&response_body) {
                 return Err(anyhow!("ollama tags request failed: {error_message}"));
@@ -529,6 +520,32 @@ fn parse_http_response(raw: &[u8]) -> Result<(u16, Vec<u8>), anyhow::Error> {
         body.to_vec()
     };
     Ok((status, body))
+}
+
+async fn read_response(stream: &mut TcpStream) -> Result<Vec<u8>, std::io::Error> {
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match stream.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => raw.extend_from_slice(&buf[..n]),
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::UnexpectedEof
+                        | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                if raw.is_empty() {
+                    return Err(err);
+                }
+                break;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(raw)
 }
 
 fn decode_chunked(mut input: &[u8]) -> Result<Vec<u8>, anyhow::Error> {

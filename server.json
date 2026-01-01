@@ -6,12 +6,12 @@
     "url": "https://github.com/bekirdag/docdex",
     "source": "github"
   },
-  "version": "1.0.0",
+  "version": "0.2.2",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "docdex",
-      "version": "1.0.0",
+      "version": "0.2.2",
       "transport": {
         "type": "stdio"
       }

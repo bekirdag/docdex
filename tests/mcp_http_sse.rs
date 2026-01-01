@@ -128,6 +128,13 @@ fn normalize_windows_path(value: &str) -> String {
     }
 }
 
+fn canonical_display(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string()
+}
+
 #[test]
 fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
     let repo = TempDir::new()?;
@@ -215,7 +222,7 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         .get("project_root")
         .and_then(|value| value.as_str())
         .ok_or_else(|| format!("stats response missing project_root: {stats_json}"))?;
-    let expected_root = normalize_windows_path(&repo_other.path().display().to_string());
+    let expected_root = normalize_windows_path(&canonical_display(repo_other.path()));
     let reported_root = normalize_windows_path(project_root);
     assert!(
         reported_root.contains(&expected_root),
@@ -251,7 +258,7 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         .get("project_root")
         .and_then(|value| value.as_str())
         .ok_or_else(|| format!("stats override missing project_root: {stats_override_json}"))?;
-    let expected_override_root = normalize_windows_path(&repo.path().display().to_string());
+    let expected_override_root = normalize_windows_path(&canonical_display(repo.path()));
     let reported_override_root = normalize_windows_path(override_root);
     assert!(
         reported_override_root.contains(&expected_override_root),

@@ -31,8 +31,8 @@ fn write_config(
     let config_path = config_dir.join("config.toml");
     let payload = format!(
         "[core]\nglobal_state_dir = \"{}\"\n\n[server]\nhook_socket_path = \"{}\"\n\n[memory.profile]\nembedding_dim = 4\nembedding_model = \"fake-embed\"\n",
-        global_state_dir.display(),
-        socket_path.display()
+        crate::common::toml_path(global_state_dir),
+        crate::common::toml_path(socket_path)
     );
     fs::write(config_path, payload)?;
     Ok(())

@@ -23,7 +23,7 @@ fn write_config(home_dir: &Path, global_state_dir: &Path) -> Result<(), Box<dyn 
     let config_path = config_dir.join("config.toml");
     let payload = format!(
         "[core]\nglobal_state_dir = \"{}\"\n",
-        global_state_dir.display()
+        crate::common::toml_path(global_state_dir)
     );
     fs::write(config_path, payload)?;
     Ok(())

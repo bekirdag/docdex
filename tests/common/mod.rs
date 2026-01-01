@@ -2,7 +2,7 @@
 
 use std::error::Error;
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Once;
 use std::thread;
@@ -46,6 +46,10 @@ pub fn mcp_server_bin() -> PathBuf {
         "docdex-mcp-server binary not found at {}",
         candidate.display()
     );
+}
+
+pub fn toml_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 pub fn docdex_bin() -> PathBuf {

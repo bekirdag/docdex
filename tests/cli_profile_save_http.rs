@@ -26,7 +26,7 @@ fn write_config(
     let config_path = config_dir.join("config.toml");
     let payload = format!(
         "[core]\nglobal_state_dir = \"{}\"\n\n[llm]\nbase_url = \"{}\"\ndefault_model = \"fake-model\"\n\n[memory.profile]\nembedding_dim = 4\nembedding_model = \"fake-embed\"\n",
-        global_state_dir.display(),
+        crate::common::toml_path(global_state_dir),
         llm_base_url
     );
     fs::write(config_path, payload)?;

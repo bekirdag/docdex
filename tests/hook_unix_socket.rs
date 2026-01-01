@@ -1,3 +1,5 @@
+mod common;
+
 #[cfg(unix)]
 mod unix_tests {
     use docdexd::repo_manager::repo_fingerprint_sha256;
@@ -92,8 +94,8 @@ mod unix_tests {
         let config_path = config_dir.join("config.toml");
         let payload = format!(
             "[core]\nglobal_state_dir = \"{}\"\n\n[memory.profile]\nembedding_dim = 4\nembedding_model = \"test-embed\"\n\n[server]\nhook_socket_path = \"{}\"\n",
-            global_state_dir.display(),
-            hook_socket_path.display()
+            crate::common::toml_path(global_state_dir),
+            crate::common::toml_path(hook_socket_path)
         );
         fs::write(config_path, payload)?;
         Ok(())

@@ -1,3 +1,5 @@
+mod common;
+
 use axum::{routing::post, Json, Router};
 use docdexd::profiles::{PreferenceCategory, ProfileManager};
 use reqwest::blocking::Client;
@@ -83,7 +85,7 @@ fn write_config(
     let config_path = config_dir.join("config.toml");
     let payload = format!(
         "[core]\nglobal_state_dir = \"{}\"\n\n[llm]\nbase_url = \"{}\"\ndefault_model = \"fake-model\"\n\n[memory.profile]\nembedding_dim = {}\nembedding_model = \"fake-embed\"\n\n[server]\ndefault_agent_id = \"{}\"\n",
-        global_state_dir.display(),
+        crate::common::toml_path(global_state_dir),
         llm_base_url,
         embedding_dim,
         agent_id

@@ -1,3 +1,5 @@
+mod common;
+
 use serde_json::Value;
 use std::error::Error;
 use std::fs;
@@ -27,7 +29,7 @@ max_answer_tokens = 128
 enable_mcp = {}
 http_bind_addr = "127.0.0.1:0"
 "#,
-        state_root.display(),
+        crate::common::toml_path(state_root),
         enable_mcp
     );
     fs::write(config_dir.join("config.toml"), payload)?;

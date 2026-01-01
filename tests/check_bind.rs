@@ -1,3 +1,5 @@
+mod common;
+
 use serde_json::Value;
 use std::error::Error;
 use std::fs;
@@ -31,7 +33,7 @@ enabled = false
 enable_mcp = false
 http_bind_addr = "{}"
 "#,
-        state_root.display(),
+        crate::common::toml_path(state_root),
         bind_addr
     );
     fs::write(config_dir.join("config.toml"), payload)?;

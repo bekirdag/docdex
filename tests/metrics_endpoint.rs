@@ -151,7 +151,7 @@ fn write_config(
     let config_path = config_dir.join("config.toml");
     let payload = format!(
         "[core]\nglobal_state_dir = \"{}\"\n\n[llm]\nbase_url = \"{}\"\ndefault_model = \"fake-model\"\n\n[memory.profile]\nembedding_dim = {}\nembedding_model = \"fake-embed\"\n\n[features]\nhooks = true\nproject_map = true\nworkflow_prompt = true\n",
-        global_state_dir.display(),
+        crate::common::toml_path(global_state_dir),
         llm_base_url,
         embedding_dim
     );

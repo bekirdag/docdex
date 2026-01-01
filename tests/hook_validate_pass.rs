@@ -1,3 +1,5 @@
+mod common;
+
 use docdexd::profiles::{PreferenceCategory, ProfileManager};
 use docdexd::repo_manager::repo_fingerprint_sha256;
 use reqwest::blocking::Client;
@@ -80,7 +82,7 @@ fn write_config(
     let config_path = config_dir.join("config.toml");
     let payload = format!(
         "[core]\nglobal_state_dir = \"{}\"\n\n[memory.profile]\nembedding_dim = {}\nembedding_model = \"test-embed\"\n",
-        global_state_dir.display(),
+        crate::common::toml_path(global_state_dir),
         embedding_dim
     );
     fs::write(config_path, payload)?;

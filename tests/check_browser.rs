@@ -14,6 +14,10 @@ fn check_reports_browser_fields() {
         &config_path,
         r#"[server]
 http_bind_addr = "127.0.0.1:0"
+enable_mcp = false
+
+[llm]
+provider = "openai"
 "#,
     )
     .expect("write config");
@@ -22,6 +26,8 @@ http_bind_addr = "127.0.0.1:0"
     cmd.args(["check"])
         .env("DOCDEX_CLI_LOCAL", "1")
         .env("DOCDEX_ENABLE_MEMORY", "0")
+        .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_LLM_AGENT", "test")
         .env("HOME", temp.path())
         .env("USERPROFILE", temp.path());
     let output = cmd.assert().success().get_output().stdout.clone();

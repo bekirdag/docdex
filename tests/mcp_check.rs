@@ -38,6 +38,11 @@ fn parse_report(output: &[u8]) -> Result<Value, Box<dyn Error>> {
     Ok(serde_json::from_slice(output)?)
 }
 
+fn temp_exec_dir() -> Result<TempDir, Box<dyn Error>> {
+    let base = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+    Ok(TempDir::new_in(base)?)
+}
+
 fn find_check<'a>(report: &'a Value, name: &str) -> Option<&'a Value> {
     report
         .get("checks")
@@ -131,7 +136,8 @@ fn check_spawn_fails_when_mcp_binary_exits() -> Result<(), Box<dyn Error>> {
     let home = TempDir::new()?;
     let state_root = TempDir::new()?;
     write_config(home.path(), state_root.path(), true)?;
-    let bin_path = home.path().join("docdex-mcp-server");
+    let bin_dir = temp_exec_dir()?;
+    let bin_path = bin_dir.path().join("docdex-mcp-server");
     fs::write(&bin_path, "#!/bin/sh\nexit 1\n")?;
     #[cfg(unix)]
     {
@@ -173,7 +179,8 @@ fn check_spawn_succeeds_when_mcp_binary_exits_zero() -> Result<(), Box<dyn Error
     let home = TempDir::new()?;
     let state_root = TempDir::new()?;
     write_config(home.path(), state_root.path(), true)?;
-    let bin_path = home.path().join("docdex-mcp-server");
+    let bin_dir = temp_exec_dir()?;
+    let bin_path = bin_dir.path().join("docdex-mcp-server");
     fs::write(&bin_path, "#!/bin/sh\nexit 0\n")?;
     #[cfg(unix)]
     {
@@ -216,7 +223,8 @@ fn check_spawn_times_out_when_mcp_binary_hangs() -> Result<(), Box<dyn Error>> {
     let home = TempDir::new()?;
     let state_root = TempDir::new()?;
     write_config(home.path(), state_root.path(), true)?;
-    let bin_path = home.path().join("docdex-mcp-server");
+    let bin_dir = temp_exec_dir()?;
+    let bin_path = bin_dir.path().join("docdex-mcp-server");
     fs::write(&bin_path, "#!/bin/sh\nsleep 2\n")?;
     #[cfg(unix)]
     {

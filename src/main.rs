@@ -1,6 +1,29 @@
-#[tokio::main]
-async fn main() {
-    if let Err(err) = docdexd::cli::run().await {
+fn main() {
+    let result = if cfg!(windows) {
+        let runner = std::thread::Builder::new()
+            .name("docdexd-main".to_string())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(run_with_runtime);
+        match runner {
+            Ok(handle) => match handle.join() {
+                Ok(result) => result,
+                Err(_) => Err(anyhow::anyhow!("docdexd main thread panicked")),
+            },
+            Err(_) => run_with_runtime(),
+        }
+    } else {
+        run_with_runtime()
+    };
+
+    if let Err(err) = result {
         docdexd::cli::render_error_and_exit(err);
     }
+}
+
+fn run_with_runtime() -> Result<(), anyhow::Error> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(anyhow::Error::from)?;
+    runtime.block_on(docdexd::cli::run())
 }

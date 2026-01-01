@@ -310,6 +310,10 @@ fn ensure_executable(path: &Path) -> Result<()> {
         perms.set_mode(perms.mode() | 0o111);
         fs::set_permissions(path, perms)?;
     }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
     Ok(())
 }
 

@@ -18,8 +18,11 @@ impl CliHttpClient {
         let base_url = resolve_base_url()?;
         let auth_token = env_non_empty("DOCDEX_AUTH_TOKEN");
         let timeout_ms = env_u64("DOCDEX_HTTP_TIMEOUT_MS").unwrap_or(30_000);
+        let connect_timeout_ms =
+            env_u64("DOCDEX_HTTP_CONNECT_TIMEOUT_MS").unwrap_or(timeout_ms);
         let client = Client::builder()
             .timeout(Duration::from_millis(timeout_ms.max(1)))
+            .connect_timeout(Duration::from_millis(connect_timeout_ms.max(1)))
             .build()?;
         Ok(Self {
             client,

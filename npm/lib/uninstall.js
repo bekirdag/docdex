@@ -18,6 +18,8 @@ function stateDir() {
 }
 
 function daemonLockPath() {
+  const override = process.env.DOCDEX_DAEMON_LOCK_PATH;
+  if (override && override.trim()) return override.trim();
   return path.join(os.homedir(), ".docdex", "daemon.lock");
 }
 
@@ -28,21 +30,51 @@ function clientConfigPaths() {
   switch (process.platform) {
     case "win32":
       return {
-        claude: path.join(appData, "Claude", "claude_desktop_config.json"),
-        cursor: path.join(userProfile, ".cursor", "mcp.json"),
-        codex: path.join(userProfile, ".codex", "config.toml")
+        json: [
+          path.join(appData, "Claude", "claude_desktop_config.json"),
+          path.join(userProfile, ".cursor", "mcp.json"),
+          path.join(userProfile, ".cursor", "settings.json"),
+          path.join(userProfile, ".codeium", "windsurf", "mcp_config.json"),
+          path.join(appData, "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
+          path.join(appData, "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "mcp_settings.json"),
+          path.join(userProfile, ".continue", "config.json"),
+          path.join(userProfile, ".kiro", "settings", "mcp.json"),
+          path.join(appData, "Zed", "settings.json")
+        ],
+        toml: [path.join(userProfile, ".codex", "config.toml")],
+        yaml: [path.join(appData, "Aider", "config.yml")]
       };
     case "darwin":
       return {
-        claude: path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
-        cursor: path.join(home, ".cursor", "mcp.json"),
-        codex: path.join(home, ".codex", "config.toml")
+        json: [
+          path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
+          path.join(home, ".cursor", "mcp.json"),
+          path.join(home, ".cursor", "settings.json"),
+          path.join(home, ".codeium", "windsurf", "mcp_config.json"),
+          path.join(home, "Library", "Application Support", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
+          path.join(home, "Library", "Application Support", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "mcp_settings.json"),
+          path.join(home, ".continue", "config.json"),
+          path.join(home, ".kiro", "settings", "mcp.json"),
+          path.join(home, ".config", "zed", "settings.json")
+        ],
+        toml: [path.join(home, ".codex", "config.toml")],
+        yaml: [path.join(home, ".config", "aider", "config.yml"), path.join(home, ".aider.conf.yml")]
       };
     default:
       return {
-        claude: path.join(home, ".config", "Claude", "claude_desktop_config.json"),
-        cursor: path.join(home, ".cursor", "mcp.json"),
-        codex: path.join(home, ".codex", "config.toml")
+        json: [
+          path.join(home, ".config", "Claude", "claude_desktop_config.json"),
+          path.join(home, ".cursor", "mcp.json"),
+          path.join(home, ".cursor", "settings.json"),
+          path.join(home, ".codeium", "windsurf", "mcp_config.json"),
+          path.join(home, ".config", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
+          path.join(home, ".config", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "mcp_settings.json"),
+          path.join(home, ".continue", "config.json"),
+          path.join(home, ".kiro", "settings", "mcp.json"),
+          path.join(home, ".config", "zed", "settings.json")
+        ],
+        toml: [path.join(home, ".codex", "config.toml")],
+        yaml: [path.join(home, ".config", "aider", "config.yml"), path.join(home, ".aider.conf.yml")]
       };
   }
 }
@@ -67,12 +99,17 @@ function removeMcpServerJson(pathname, name = "docdex") {
   const { value, exists } = readJson(pathname);
   if (!exists || typeof value !== "object" || value == null || Array.isArray(value)) return false;
   const root = value;
-  if (!root.mcpServers || typeof root.mcpServers !== "object" || Array.isArray(root.mcpServers)) {
-    return false;
+  const keys = ["mcpServers", "mcp_servers"];
+  let changed = false;
+  for (const key of keys) {
+    const section = root[key];
+    if (!section || typeof section !== "object" || Array.isArray(section)) continue;
+    if (!Object.prototype.hasOwnProperty.call(section, name)) continue;
+    delete section[name];
+    changed = true;
+    if (Object.keys(section).length === 0) delete root[key];
   }
-  if (!Object.prototype.hasOwnProperty.call(root.mcpServers, name)) return false;
-  delete root.mcpServers[name];
-  if (Object.keys(root.mcpServers).length === 0) delete root.mcpServers;
+  if (!changed) return false;
   writeJson(pathname, root);
   return true;
 }
@@ -180,6 +217,71 @@ function removeCodexConfig(pathname, name = "docdex") {
   return false;
 }
 
+function removeMcpServerYaml(pathname, name = "docdex") {
+  if (!fs.existsSync(pathname)) return false;
+  const original = fs.readFileSync(pathname, "utf8");
+  const lines = original.split(/\r?\n/);
+  const output = [];
+  let inSection = false;
+  let sectionIndent = null;
+  let skipIndent = null;
+  let changed = false;
+
+  const indentSize = (line) => (line.match(/^\s*/)?.[0].length ?? 0);
+
+  for (const line of lines) {
+    if (skipIndent != null) {
+      if (line.trim() && indentSize(line) <= skipIndent) {
+        skipIndent = null;
+      } else {
+        changed = true;
+        continue;
+      }
+    }
+
+    if (!inSection) {
+      if (/^\s*mcp_servers\s*:\s*$/.test(line)) {
+        inSection = true;
+        sectionIndent = indentSize(line);
+      }
+      output.push(line);
+      continue;
+    }
+
+    if (line.trim() && indentSize(line) <= sectionIndent) {
+      inSection = false;
+      output.push(line);
+      continue;
+    }
+
+    if (new RegExp(`^\\s*${name}\\s*:`).test(line)) {
+      changed = true;
+      skipIndent = indentSize(line);
+      continue;
+    }
+
+    const listName = line.match(/^\s*-\s*name\s*:\s*(.+)\s*$/);
+    if (listName && listName[1].replace(/["']/g, "").trim() === name) {
+      changed = true;
+      skipIndent = indentSize(line);
+      continue;
+    }
+
+    const listValue = line.match(/^\s*-\s*([^\s#]+)\s*$/);
+    if (listValue && listValue[1].replace(/["']/g, "").trim() === name) {
+      changed = true;
+      continue;
+    }
+
+    output.push(line);
+  }
+
+  if (changed) {
+    fs.writeFileSync(pathname, output.join("\n"));
+  }
+  return changed;
+}
+
 function killPid(pid) {
   if (!pid) return false;
   try {
@@ -207,6 +309,16 @@ function stopDaemonFromLock() {
   } catch {
     return false;
   }
+}
+
+function stopDaemonByName() {
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/IM", "docdexd.exe", "/T", "/F"]);
+    return true;
+  }
+  spawnSync("pkill", ["-TERM", "-x", "docdexd"]);
+  spawnSync("pkill", ["-TERM", "-f", "docdexd daemon"]);
+  return true;
 }
 
 function unregisterStartup() {
@@ -259,23 +371,34 @@ function clearStartupFailure() {
 
 function removeDaemonRootNotice() {
   const root = daemonRootPath();
-  const readme = path.join(root, "README.txt");
-  if (fs.existsSync(readme)) {
-    try {
-      fs.unlinkSync(readme);
-    } catch {}
+  const readmes = [path.join(root, "README.txt"), path.join(root, "README.md")];
+  for (const readme of readmes) {
+    if (fs.existsSync(readme)) {
+      try {
+        fs.unlinkSync(readme);
+      } catch {}
+    }
   }
 }
 
 function removeClientConfigs() {
   const paths = clientConfigPaths();
-  removeMcpServerJson(paths.claude);
-  removeMcpServerJson(paths.cursor);
-  removeCodexConfig(paths.codex);
+  for (const pathname of paths.json || []) {
+    removeMcpServerJson(pathname);
+  }
+  for (const pathname of paths.toml || []) {
+    removeCodexConfig(pathname);
+  }
+  for (const pathname of paths.yaml || []) {
+    removeMcpServerYaml(pathname);
+  }
 }
 
 async function main() {
-  stopDaemonFromLock();
+  const stopped = stopDaemonFromLock();
+  if (!stopped) {
+    stopDaemonByName();
+  }
   unregisterStartup();
   removeClientConfigs();
   clearStartupFailure();
@@ -289,7 +412,9 @@ if (require.main === module) {
 module.exports = {
   removeMcpServerJson,
   removeCodexConfig,
+  removeMcpServerYaml,
   stopDaemonFromLock,
+  stopDaemonByName,
   unregisterStartup,
   removeClientConfigs
 };

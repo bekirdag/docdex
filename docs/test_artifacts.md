@@ -168,6 +168,7 @@
 - npm/test/installer_interrupted_installs.test.js
 - npm/test/postinstall_setup.test.js
 - npm/test/installer_local_fallback.test.js
+- npm/test/uninstall.test.js
 
 ## Test Fixtures
 - npm/test/fixtures/archive/fake-archive.bin

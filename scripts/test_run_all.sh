@@ -127,6 +127,9 @@ fi
 if command -v node >/dev/null 2>&1 && [[ -f "${ROOT_DIR}/npm/test/installer_local_fallback.test.js" ]]; then
   run_step "unit_node_installer_local" node --test "${ROOT_DIR}/npm/test/installer_local_fallback.test.js"
 fi
+if command -v node >/dev/null 2>&1 && [[ -f "${ROOT_DIR}/npm/test/uninstall.test.js" ]]; then
+  run_step "unit_node_uninstall" node --test "${ROOT_DIR}/npm/test/uninstall.test.js"
+fi
 run_step "unit_ignore_rules" cargo test --lib file_decision_tests
 run_step "unit_repo_manager_lru" cargo test --lib repo_manager_
 run_step "integration" cargo test --tests

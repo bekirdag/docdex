@@ -16,6 +16,7 @@
   ],
   "scripts": {
     "postinstall": "node ./lib/install.js",
+    "preuninstall": "node ./lib/uninstall.js",
     "postuninstall": "node ./lib/uninstall.js",
     "test": "node --test",
     "pack:verify": "node --test test/packaging_guardrails.test.js"

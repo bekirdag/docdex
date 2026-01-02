@@ -1,6 +1,8 @@
 mod common;
 
 use common::{docdex_bin, pick_free_port};
+use reqwest::blocking::Client;
+use reqwest::header::CONNECTION;
 use serde_json::Value;
 use std::error::Error;
 use std::fs;
@@ -127,21 +129,18 @@ fn wait_for_health(host: &str, port: u16, child: &mut Child) -> Result<(), Box<d
 }
 
 fn http_get(host: &str, port: u16, path: &str) -> Result<String, Box<dyn Error>> {
-    let addr = SocketAddr::new(host.parse()?, port);
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(1))?;
-    stream.set_read_timeout(Some(Duration::from_secs(1)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(1)))?;
-    let request = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
-    stream.write_all(request.as_bytes())?;
-    let mut buf = Vec::new();
-    stream.read_to_end(&mut buf)?;
-    let response = String::from_utf8_lossy(&buf);
-    let mut parts = response.splitn(2, "\r\n\r\n");
-    let head = parts.next().unwrap_or("");
-    if !head.starts_with("HTTP/1.1 200") && !head.starts_with("HTTP/1.0 200") {
-        return Err(format!("unexpected response: {head}").into());
+    let url = format!("http://{host}:{port}{path}");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(3))
+        .pool_max_idle_per_host(0)
+        .build()?;
+    let resp = client.get(url).header(CONNECTION, "close").send()?;
+    let status = resp.status();
+    let body = resp.text()?;
+    if !status.is_success() {
+        return Err(format!("unexpected response: {status}").into());
     }
-    Ok(parts.next().unwrap_or("").to_string())
+    Ok(body)
 }
 
 fn try_health_check(host: &str, port: u16) -> Result<bool, Box<dyn Error>> {

@@ -50,7 +50,7 @@ with multi-repo mounting, shared MCP transport, and automated config injection.
 ## Phase 4: Shared MCP Transport
 
 - Add shared MCP transport:
-  - HTTP/SSE endpoint, e.g. `http://127.0.0.1:3210/sse` (auto-select 3000 if free, fallback 3210).
+  - HTTP/SSE endpoint, e.g. `http://127.0.0.1:3210/sse` (auto-select 3000 if free, fallback 3210). Codex uses streamable HTTP at `http://127.0.0.1:3210/v1/mcp`.
   - Unix socket listener, e.g. `docdex-mcp-server --listen-unix ~/.docdex/mcp.sock`.
 - Multi-client JSON-RPC; each request includes `rootUri` or `repo_id`.
 - Add stdio proxy:
@@ -84,7 +84,7 @@ with multi-repo mounting, shared MCP transport, and automated config injection.
 ## Client Config Paths (Auto-Injection Targets)
 
 To achieve install-and-forget behavior, the installer should look for these files and
-append the docdex HTTP entry (`http://localhost:3000/sse`) where `mcpServers` is supported.
+append the docdex HTTP entry (`http://localhost:3000/sse`) where `mcpServers` is supported (Codex uses `http://localhost:3000/v1/mcp`).
 
 ### Windows
 
@@ -130,7 +130,7 @@ append the docdex HTTP entry (`http://localhost:3000/sse`) where `mcpServers` is
 - Check OS via `process.platform`.
 - Locate candidate config files from the lists above.
 - Read and parse JSON/TOML/YAML.
-- Inject `mcpServers.docdex = { url: "http://localhost:<port>/sse" }` if missing (port auto-selected and written to `~/.docdex/config.toml`).
+- Inject `mcpServers.docdex = { url: "http://localhost:<port>/sse" }` if missing (port auto-selected and written to `~/.docdex/config.toml`). For Codex, inject `http://localhost:<port>/v1/mcp`.
 - Write back to disk without duplicating entries.
 
 Note: the daemon default port remains 3210; if you use `http://localhost:3000/sse`,

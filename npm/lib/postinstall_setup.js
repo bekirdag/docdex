@@ -40,6 +40,10 @@ function configUrlForPort(port) {
   return `http://localhost:${port}/sse`;
 }
 
+function configStreamableUrlForPort(port) {
+  return `http://localhost:${port}/v1/mcp`;
+}
+
 function isPortAvailable(port, host) {
   return new Promise((resolve) => {
     const server = net.createServer();
@@ -837,11 +841,21 @@ async function maybePromptOllamaModel({
   }
 
   const normalizedInstalled = installed.map(normalizeModelName);
+  const displayModels = normalizedInstalled.map((model) => {
+    const selectable = model.toLowerCase() !== DEFAULT_OLLAMA_MODEL.toLowerCase();
+    return {
+      model,
+      label: selectable ? model : `${model} (embedding only)`,
+      selectable
+    };
+  });
+  const selectableModels = displayModels.filter((item) => item.selectable).map((item) => item.model);
   const installedLower = normalizedInstalled.map((model) => model.toLowerCase());
   const hasPhi = installedLower.includes(phiModel.toLowerCase());
-  const selectionDefault = defaultChoice && installedLower.includes(defaultChoice.toLowerCase())
+  const defaultLower = defaultChoice ? defaultChoice.toLowerCase() : null;
+  const selectionDefault = defaultLower && selectableModels.some((model) => model.toLowerCase() === defaultLower)
     ? defaultChoice
-    : normalizedInstalled[0];
+    : selectableModels[0];
 
   if (decision.mode === "auto") {
     if (selectionDefault) {
@@ -852,24 +866,28 @@ async function maybePromptOllamaModel({
   }
 
   stdout.write("[docdex] Ollama models detected:\n");
-  normalizedInstalled.forEach((model, idx) => {
-    const marker = model === selectionDefault ? " (default)" : "";
-    stdout.write(`  ${idx + 1}) ${model}${marker}\n`);
+  displayModels.forEach((item, idx) => {
+    const marker = item.model === selectionDefault ? " (default)" : "";
+    stdout.write(`  ${idx + 1}) ${item.label}${marker}\n`);
   });
   if (!hasPhi) {
     stdout.write(`  I) Install ${phiModel} (~${sizeText}, free ${freeText})\n`);
   }
   stdout.write("  S) Skip\n");
 
+  const defaultHint = selectionDefault ? ` [${selectionDefault}]` : "";
   const answer = await promptInput(
-    `[docdex] Select default model [${selectionDefault}]: `,
+    `[docdex] Select default model${defaultHint}: `,
     { stdin, stdout }
   );
   const normalizedAnswer = normalizeModelName(answer);
   const answerLower = normalizedAnswer.toLowerCase();
   if (!answer) {
-    updateDefaultModelConfig(configPath, selectionDefault, logger);
-    return { status: "selected", model: selectionDefault };
+    if (selectionDefault) {
+      updateDefaultModelConfig(configPath, selectionDefault, logger);
+      return { status: "selected", model: selectionDefault };
+    }
+    return { status: "skipped", reason: "no_models" };
   }
   if (answerLower === "s" || answerLower === "skip") {
     return { status: "skipped", reason: "user_skip" };
@@ -881,16 +899,24 @@ async function maybePromptOllamaModel({
     return { status: "installed", model: phiModel };
   }
   const numeric = Number.parseInt(answerLower, 10);
-  if (Number.isFinite(numeric) && numeric >= 1 && numeric <= normalizedInstalled.length) {
-    const selected = normalizedInstalled[numeric - 1];
-    updateDefaultModelConfig(configPath, selected, logger);
-    return { status: "selected", model: selected };
+  if (Number.isFinite(numeric) && numeric >= 1 && numeric <= displayModels.length) {
+    const selected = displayModels[numeric - 1];
+    if (!selected.selectable) {
+      logger?.warn?.(`[docdex] ${selected.model} is an embedding-only model; choose a chat model.`);
+      return { status: "skipped", reason: "embedding_only" };
+    }
+    updateDefaultModelConfig(configPath, selected.model, logger);
+    return { status: "selected", model: selected.model };
   }
   const matchedIndex = installedLower.indexOf(answerLower);
   if (matchedIndex !== -1) {
-    const selected = normalizedInstalled[matchedIndex];
-    updateDefaultModelConfig(configPath, selected, logger);
-    return { status: "selected", model: selected };
+    const selected = displayModels[matchedIndex];
+    if (!selected.selectable) {
+      logger?.warn?.(`[docdex] ${selected.model} is an embedding-only model; choose a chat model.`);
+      return { status: "skipped", reason: "embedding_only" };
+    }
+    updateDefaultModelConfig(configPath, selected.model, logger);
+    return { status: "selected", model: selected.model };
   }
   logger?.warn?.("[docdex] Unrecognized selection; skipping model update.");
   return { status: "skipped", reason: "invalid_selection" };
@@ -1072,8 +1098,14 @@ function commandExists(cmd, spawnSyncFn) {
 function launchMacTerminal({ binaryPath, args, spawnSyncFn, logger }) {
   const command = [binaryPath, ...args].join(" ");
   const script = [
-    'tell application "Terminal" to activate',
-    `tell application "Terminal" to do script ${JSON.stringify(command)}`
+    'tell application "Terminal"',
+    'if not (exists window 1) then',
+    `do script ${JSON.stringify(command)}`,
+    "else",
+    `do script ${JSON.stringify(command)} in window 1`,
+    "end if",
+    "activate",
+    "end tell"
   ].join("\n");
   const result = spawnSyncFn("osascript", ["-e", script]);
   if (result.status === 0) return true;
@@ -1173,10 +1205,11 @@ async function runPostInstallSetup({ binaryPath, logger } = {}) {
   }
 
   const url = configUrlForPort(port);
+  const codexUrl = configStreamableUrlForPort(port);
   const paths = clientConfigPaths();
   upsertMcpServerJson(paths.claude, url);
   upsertMcpServerJson(paths.cursor, url);
-  upsertCodexConfig(paths.codex, url);
+  upsertCodexConfig(paths.codex, codexUrl);
 
   const daemonRoot = ensureDaemonRoot();
   const resolvedBinary = resolveBinaryPath({ binaryPath });
@@ -1208,6 +1241,7 @@ module.exports = {
   upsertCodexConfig,
   pickAvailablePort,
   configUrlForPort,
+  configStreamableUrlForPort,
   parseEnvBool,
   resolveOllamaInstallMode,
   resolveOllamaModelPromptMode,

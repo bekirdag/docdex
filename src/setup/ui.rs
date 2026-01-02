@@ -447,6 +447,8 @@ fn format_completion_message(
         ));
     }
 
+    lines.push("Now you can safely close this window.".to_string());
+
     lines.join("\n")
 }
 

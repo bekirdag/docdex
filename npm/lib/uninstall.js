@@ -380,6 +380,16 @@ function stopDaemonByName() {
   return true;
 }
 
+function stopMcpByName() {
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/IM", "docdex-mcp-server.exe", "/T", "/F"]);
+    return true;
+  }
+  spawnSync("pkill", ["-TERM", "-x", "docdex-mcp-server"]);
+  spawnSync("pkill", ["-TERM", "-f", "docdex-mcp-server"]);
+  return true;
+}
+
 function unregisterStartup() {
   if (process.platform === "darwin") {
     const plistPath = path.join(os.homedir(), "Library", "LaunchAgents", "com.docdex.daemon.plist");
@@ -458,6 +468,7 @@ async function main() {
   if (!stopped) {
     stopDaemonByName();
   }
+  stopMcpByName();
   unregisterStartup();
   removeClientConfigs();
   clearStartupFailure();

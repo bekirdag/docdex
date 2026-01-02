@@ -10,6 +10,7 @@ const {
   upsertMcpServerJson,
   upsertCodexConfig,
   configUrlForPort,
+  configStreamableUrlForPort,
   runPostInstallSetup,
   resolveOllamaInstallMode,
   resolveOllamaModelPromptMode,
@@ -48,7 +49,7 @@ test("upsertMcpServerJson sets docdex url", () => {
 test("upsertCodexConfig appends docdex server", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-codex-"));
   const file = path.join(dir, "config.toml");
-  const url = configUrlForPort(3210);
+  const url = configStreamableUrlForPort(3210);
   const changed = upsertCodexConfig(file, url);
   assert.equal(changed, true);
   const contents = fs.readFileSync(file, "utf8");
@@ -70,7 +71,7 @@ test("upsertCodexConfig migrates legacy mcp_servers array", () => {
       "",
     ].join("\n")
   );
-  const url = configUrlForPort(3000);
+  const url = configStreamableUrlForPort(3000);
   const changed = upsertCodexConfig(file, url);
   assert.equal(changed, true);
   const contents = fs.readFileSync(file, "utf8");

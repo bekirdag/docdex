@@ -38,7 +38,7 @@ Installer notes:
 - Platform diagnostics (no download): `docdex doctor` (alias `docdex diagnostics`).
 
 Postinstall behavior:
-- Docdex registers a local daemon and writes MCP client config pointing to `http://localhost:<port>/sse`.
+- Docdex registers a local daemon and writes MCP client config pointing to `http://localhost:<port>/sse` (Codex uses `http://localhost:<port>/v1/mcp`).
 - If Ollama is missing, the installer can prompt to install it and the default embedding model.
 - Skip prompts with `DOCDEX_OLLAMA_INSTALL=0` or `DOCDEX_OLLAMA_MODEL_PROMPT=0`.
 - Force with `DOCDEX_OLLAMA_INSTALL=1` or `DOCDEX_OLLAMA_MODEL=<model>`.
@@ -105,7 +105,7 @@ JSON config example (Cursor, Continue, Cline, Claude Desktop devtools):
 Codex config example (TOML):
 ```toml
 [mcp_servers]
-docdex = { url = "http://localhost:3210/sse" }
+docdex = { url = "http://localhost:3210/v1/mcp" }
 ```
 
 ### Legacy stdio MCP

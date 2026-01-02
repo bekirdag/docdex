@@ -87,7 +87,7 @@ JSON example (Cursor, Continue, Cline, Claude Desktop devtools):
 TOML example (Codex):
 ```toml
 [mcp_servers]
-docdex = { url = "http://localhost:3210/sse" }
+docdex = { url = "http://localhost:3210/v1/mcp" }
 ```
 
 ## Code intelligence

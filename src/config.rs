@@ -423,6 +423,12 @@ pub fn load_config_from_path(path: &Path) -> Result<AppConfig> {
 }
 
 pub fn default_config_path() -> Result<PathBuf> {
+    if let Ok(value) = std::env::var("DOCDEX_CONFIG_PATH") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
     let state_dir = default_state_dir()?;
     let base = state_dir.parent().ok_or_else(|| {
         anyhow!(

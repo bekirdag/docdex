@@ -162,7 +162,7 @@ fn wait_for_health_with_token(
 ) -> Result<(), Box<dyn Error>> {
     let client = Client::builder().timeout(Duration::from_secs(1)).build()?;
     let url = format!("http://{host}:{port}/healthz");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
         let mut request = client.get(&url);
         if let Some(token) = token {

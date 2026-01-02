@@ -42,6 +42,7 @@
 - tests/index_schema_mismatch.rs
 - tests/ast_query_endpoint.rs
 - tests/cli_http.rs
+- tests/cli_setup.rs
 - tests/repo_isolation_symbols_impact.rs
 - tests/reasoning_trace.rs
 - tests/hook_validate_fail.rs
@@ -117,6 +118,13 @@
 - src/orchestrator/budget_tests.rs
 - src/orchestrator/plan_tests.rs
 - src/llm/tests.rs
+- src/setup/state.rs
+- src/setup/ui.rs
+- src/setup/ollama.rs
+- src/setup/mod.rs
+- src/setup/state_store.rs
+- src/setup/config.rs
+- src/setup/hardware.rs
 - src/ollama/tests.rs
 - src/cli/http_client/tests.rs
 - src/repo_manager/resolution/tests.rs

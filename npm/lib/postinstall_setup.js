@@ -6,6 +6,7 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
+const tty = require("node:tty");
 const { spawn, spawnSync } = require("node:child_process");
 
 const { detectPlatformKey, UnsupportedPlatformError } = require("./platform");
@@ -17,6 +18,7 @@ const STARTUP_FAILURE_MARKER = "startup_registration_failed.json";
 const DEFAULT_OLLAMA_MODEL = "nomic-embed-text";
 const DEFAULT_OLLAMA_CHAT_MODEL = "phi3.5:3.8b";
 const DEFAULT_OLLAMA_CHAT_MODEL_SIZE_GIB = 2.2;
+const SETUP_PENDING_MARKER = "setup_pending.json";
 
 function defaultConfigPath() {
   return path.join(os.homedir(), ".docdex", "config.toml");
@@ -28,6 +30,10 @@ function daemonRootPath() {
 
 function stateDir() {
   return path.join(os.homedir(), ".docdex", "state");
+}
+
+function setupPendingPath() {
+  return path.join(stateDir(), SETUP_PENDING_MARKER);
 }
 
 function configUrlForPort(port) {
@@ -389,9 +395,11 @@ function canPromptWithTty(stdin, stdout) {
   try {
     const readFd = fs.openSync(inputPath, "r");
     const writeFd = fs.openSync(outputPath, "w");
+    const readable = tty.isatty(readFd);
+    const writable = tty.isatty(writeFd);
     fs.closeSync(readFd);
     fs.closeSync(writeFd);
-    return true;
+    return readable && writable;
   } catch {
     return false;
   }
@@ -592,8 +600,15 @@ function resolvePromptStreams(stdin, stdout) {
   const inputPath = isWindows ? "CONIN$" : "/dev/tty";
   const outputPath = isWindows ? "CONOUT$" : "/dev/tty";
   try {
-    const input = fs.createReadStream(inputPath, { autoClose: true });
-    const output = fs.createWriteStream(outputPath, { autoClose: true });
+    const readFd = fs.openSync(inputPath, "r");
+    const writeFd = fs.openSync(outputPath, "w");
+    if (!tty.isatty(readFd) || !tty.isatty(writeFd)) {
+      fs.closeSync(readFd);
+      fs.closeSync(writeFd);
+      return { input: stdin, output: stdout, close: null };
+    }
+    const input = fs.createReadStream(inputPath, { fd: readFd, autoClose: true });
+    const output = fs.createWriteStream(outputPath, { fd: writeFd, autoClose: true });
     return {
       input,
       output,
@@ -610,8 +625,11 @@ function resolvePromptStreams(stdin, stdout) {
 function promptYesNo(question, { defaultYes = true, stdin = process.stdin, stdout = process.stdout } = {}) {
   return new Promise((resolve) => {
     const { input, output, close } = resolvePromptStreams(stdin, stdout);
-    const rl = readline.createInterface({ input, output });
-    rl.question(question, (answer) => {
+    const rl = readline.createInterface({ input, output, terminal: Boolean(output?.isTTY) });
+    if (output && typeof output.write === "function") {
+      output.write(`\n${question}`);
+    }
+    rl.question("", (answer) => {
       rl.close();
       if (typeof close === "function") close();
       const normalized = String(answer || "").trim().toLowerCase();
@@ -624,8 +642,11 @@ function promptYesNo(question, { defaultYes = true, stdin = process.stdin, stdou
 function promptInput(question, { stdin = process.stdin, stdout = process.stdout } = {}) {
   return new Promise((resolve) => {
     const { input, output, close } = resolvePromptStreams(stdin, stdout);
-    const rl = readline.createInterface({ input, output });
-    rl.question(question, (answer) => {
+    const rl = readline.createInterface({ input, output, terminal: Boolean(output?.isTTY) });
+    if (output && typeof output.write === "function") {
+      output.write(`\n${question}`);
+    }
+    rl.question("", (answer) => {
       rl.close();
       if (typeof close === "function") close();
       resolve(String(answer || "").trim());
@@ -901,6 +922,11 @@ function registerStartup({ binaryPath, port, repoRoot, logger }) {
       `<dict>\n` +
       `  <key>Label</key>\n` +
       `  <string>com.docdex.daemon</string>\n` +
+      `  <key>EnvironmentVariables</key>\n` +
+      `  <dict>\n` +
+      `    <key>DOCDEX_BROWSER_AUTO_INSTALL</key>\n` +
+      `    <string>0</string>\n` +
+      `  </dict>\n` +
       `  <key>ProgramArguments</key>\n` +
       `  <array>\n` +
       programArgs.map((arg) => `    <string>${arg}</string>\n`).join("") +
@@ -939,6 +965,7 @@ function registerStartup({ binaryPath, port, repoRoot, logger }) {
       "",
       "[Service]",
       `ExecStart=${binaryPath} ${args.join(" ")}`,
+      "Environment=DOCDEX_BROWSER_AUTO_INSTALL=0",
       "Restart=always",
       "RestartSec=2",
       "",
@@ -956,7 +983,9 @@ function registerStartup({ binaryPath, port, repoRoot, logger }) {
 
   if (process.platform === "win32") {
     const taskName = "Docdex Daemon";
-    const taskArgs = `"${binaryPath}" ${args.map((arg) => `"${arg}"`).join(" ")}`;
+    const joinedArgs = args.map((arg) => `"${arg}"`).join(" ");
+    const taskArgs =
+      `"cmd.exe" /c "set DOCDEX_BROWSER_AUTO_INSTALL=0 && \"${binaryPath}\" ${joinedArgs}"`;
     const create = spawnSync("schtasks", [
       "/Create",
       "/F",
@@ -996,7 +1025,14 @@ function startDaemonNow({ binaryPath, port, repoRoot }) {
       "warn",
       "--secure-mode=false"
     ],
-    { stdio: "ignore", detached: true }
+    {
+      stdio: "ignore",
+      detached: true,
+      env: {
+        ...process.env,
+        DOCDEX_BROWSER_AUTO_INSTALL: "0"
+      }
+    }
   );
   child.unref();
   return true;
@@ -1008,6 +1044,12 @@ function recordStartupFailure(details) {
   fs.writeFileSync(markerPath, JSON.stringify(details, null, 2));
 }
 
+function recordSetupPending(details) {
+  const markerPath = setupPendingPath();
+  fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+  fs.writeFileSync(markerPath, JSON.stringify(details, null, 2));
+}
+
 function clearStartupFailure() {
   const markerPath = path.join(stateDir(), STARTUP_FAILURE_MARKER);
   if (fs.existsSync(markerPath)) fs.unlinkSync(markerPath);
@@ -1015,6 +1057,58 @@ function clearStartupFailure() {
 
 function startupFailureReported() {
   return fs.existsSync(path.join(stateDir(), STARTUP_FAILURE_MARKER));
+}
+
+function shouldSkipSetup(env = process.env) {
+  return parseEnvBool(env.DOCDEX_SETUP_SKIP) === true;
+}
+
+function launchSetupWizard({
+  binaryPath,
+  logger,
+  env = process.env,
+  stdin = process.stdin,
+  stdout = process.stdout,
+  spawnFn = spawn,
+  spawnSyncFn = spawnSync,
+  platform = process.platform,
+  canPrompt = canPromptWithTty
+}) {
+  if (!binaryPath) return { ok: false, reason: "missing_binary" };
+  if (shouldSkipSetup(env)) return { ok: false, reason: "skipped" };
+
+  const args = ["setup"];
+  if (platform === "linux") {
+    if (!canPrompt(stdin, stdout)) {
+      return { ok: false, reason: "non_interactive" };
+    }
+    const child = spawnFn(binaryPath, args, { stdio: "inherit" });
+    if (child.pid) return { ok: true };
+    return { ok: false, reason: "spawn_failed" };
+  }
+
+  if (platform === "darwin") {
+    const command = `${binaryPath} ${args.join(" ")}`;
+    const osa = [
+      "osascript",
+      "-e",
+      `tell application \"Terminal\" to do script \"${command.replace(/"/g, '\\"')}\"`
+    ];
+    const result = spawnSyncFn(osa[0], osa.slice(1));
+    if (result.status === 0) return { ok: true };
+    logger?.warn?.(`[docdex] osascript failed: ${result.stderr || "unknown error"}`);
+    return { ok: false, reason: "terminal_launch_failed" };
+  }
+
+  if (platform === "win32") {
+    const quoted = `"${binaryPath}" ${args.map((arg) => `"${arg}"`).join(" ")}`;
+    const result = spawnSyncFn("cmd", ["/c", "start", "", quoted]);
+    if (result.status === 0) return { ok: true };
+    logger?.warn?.(`[docdex] cmd start failed: ${result.stderr || "unknown error"}`);
+    return { ok: false, reason: "terminal_launch_failed" };
+  }
+
+  return { ok: false, reason: "unsupported_platform" };
 }
 
 async function runPostInstallSetup({ binaryPath, logger } = {}) {
@@ -1063,8 +1157,11 @@ async function runPostInstallSetup({ binaryPath, logger } = {}) {
   }
 
   startDaemonNow({ binaryPath: resolvedBinary, port, repoRoot: daemonRoot });
-  await maybeInstallOllama({ logger: log });
-  await maybePromptOllamaModel({ logger: log, configPath });
+  const setupLaunch = launchSetupWizard({ binaryPath: resolvedBinary, logger: log });
+  if (!setupLaunch.ok && setupLaunch.reason !== "skipped") {
+    log.warn?.("[docdex] setup wizard did not launch. Run `docdex setup`.");
+    recordSetupPending({ reason: setupLaunch.reason, port, repoRoot: daemonRoot });
+  }
   return { port, url, configPath };
 }
 
@@ -1086,5 +1183,7 @@ module.exports = {
   pullOllamaModel,
   listOllamaModels,
   hasInteractiveTty,
-  canPromptWithTty
+  canPromptWithTty,
+  shouldSkipSetup,
+  launchSetupWizard
 };

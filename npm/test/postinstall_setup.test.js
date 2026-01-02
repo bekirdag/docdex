@@ -10,6 +10,7 @@ const {
   upsertMcpServerJson,
   upsertCodexConfig,
   configUrlForPort,
+  runPostInstallSetup,
   resolveOllamaInstallMode,
   resolveOllamaModelPromptMode,
   parseOllamaListOutput,
@@ -17,7 +18,9 @@ const {
   readLlmDefaultModel,
   upsertLlmDefaultModel,
   pullOllamaModel,
-  hasInteractiveTty
+  hasInteractiveTty,
+  shouldSkipSetup,
+  launchSetupWizard
 } = require("../lib/postinstall_setup");
 
 test("upsertServerConfig adds server section when missing", () => {
@@ -73,6 +76,12 @@ test("upsertCodexConfig migrates legacy mcp_servers array", () => {
   const contents = fs.readFileSync(file, "utf8");
   assert.ok(!contents.includes("[[mcp_servers]]"));
   assert.ok(contents.includes(`docdex = { url = "${url}" }`) || contents.includes("[mcp_servers.docdex]"));
+});
+
+test("runPostInstallSetup does not call Ollama installers", () => {
+  const source = runPostInstallSetup.toString();
+  assert.equal(source.includes("maybeInstallOllama"), false);
+  assert.equal(source.includes("maybePromptOllamaModel"), false);
 });
 
 test("resolveOllamaInstallMode respects env overrides", () => {
@@ -146,6 +155,75 @@ test("resolveOllamaModelPromptMode prompts even when CI if promptable", () => {
     canPrompt: () => true
   });
   assert.equal(mode.mode, "prompt");
+});
+
+test("shouldSkipSetup returns true when DOCDEX_SETUP_SKIP is set", () => {
+  assert.equal(shouldSkipSetup({ DOCDEX_SETUP_SKIP: "1" }), true);
+  assert.equal(shouldSkipSetup({ DOCDEX_SETUP_SKIP: "true" }), true);
+  assert.equal(shouldSkipSetup({ DOCDEX_SETUP_SKIP: "0" }), false);
+});
+
+test("launchSetupWizard uses linux spawn when interactive", () => {
+  const calls = [];
+  const spawnFn = (cmd, args, opts) => {
+    calls.push({ cmd, args, opts });
+    return { pid: 1234 };
+  };
+  const result = launchSetupWizard({
+    binaryPath: "/tmp/docdexd",
+    stdin: { isTTY: true },
+    stdout: { isTTY: true },
+    spawnFn,
+    platform: "linux"
+  });
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cmd, "/tmp/docdexd");
+  assert.deepEqual(calls[0].args, ["setup"]);
+  assert.equal(calls[0].opts.stdio, "inherit");
+});
+
+test("launchSetupWizard returns non_interactive when no tty", () => {
+  const result = launchSetupWizard({
+    binaryPath: "/tmp/docdexd",
+    stdin: { isTTY: false },
+    stdout: { isTTY: false },
+    platform: "linux",
+    canPrompt: () => false
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "non_interactive");
+});
+
+test("launchSetupWizard uses osascript on macOS", () => {
+  const calls = [];
+  const spawnSyncFn = (cmd, args) => {
+    calls.push({ cmd, args });
+    return { status: 0 };
+  };
+  const result = launchSetupWizard({
+    binaryPath: "/tmp/docdexd",
+    spawnSyncFn,
+    platform: "darwin"
+  });
+  assert.equal(result.ok, true);
+  assert.equal(calls[0].cmd, "osascript");
+});
+
+test("launchSetupWizard uses cmd start on Windows", () => {
+  const calls = [];
+  const spawnSyncFn = (cmd, args) => {
+    calls.push({ cmd, args });
+    return { status: 0 };
+  };
+  const result = launchSetupWizard({
+    binaryPath: "C:\\\\docdexd.exe",
+    spawnSyncFn,
+    platform: "win32"
+  });
+  assert.equal(result.ok, true);
+  assert.equal(calls[0].cmd, "cmd");
+  assert.deepEqual(calls[0].args.slice(0, 2), ["/c", "start"]);
 });
 
 test("parseOllamaListOutput extracts model names", () => {

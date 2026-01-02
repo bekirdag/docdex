@@ -354,15 +354,11 @@ pub(crate) enum Command {
     },
     /// Show hardware-aware LLM recommendations.
     LlmList,
-    /// Install Ollama if missing, pull required models, and update LLM defaults.
-    LlmSetup {
-        #[arg(
-            long,
-            env = "DOCDEX_OLLAMA_PATH",
-            value_name = "PATH",
-            help = "Explicit path to the Ollama binary (falls back to PATH)"
-        )]
-        ollama_path: Option<PathBuf>,
+    /// Run the interactive setup wizard for Ollama and models.
+    #[command(visible_alias = "llm-setup")]
+    Setup {
+        #[command(flatten)]
+        args: SetupArgs,
     },
     /// Build or rebuild the entire index for a repo.
     Index {
@@ -759,6 +755,26 @@ pub(crate) enum Command {
     },
 }
 
+#[derive(Args, Debug, Clone)]
+pub(crate) struct SetupArgs {
+    #[arg(
+        long,
+        help = "Do not prompt; print manual setup instructions instead"
+    )]
+    pub non_interactive: bool,
+    #[arg(long, help = "Emit JSON summary to stdout")]
+    pub json: bool,
+    #[arg(long, help = "Always run setup even if already completed")]
+    pub force: bool,
+    #[arg(
+        long,
+        env = "DOCDEX_OLLAMA_PATH",
+        value_name = "PATH",
+        help = "Explicit path to the Ollama binary (falls back to PATH)"
+    )]
+    pub ollama_path: Option<PathBuf>,
+}
+
 #[derive(Subcommand, Debug)]
 pub(crate) enum RepoCommand {
     /// Explicitly re-associate a moved/renamed repo path to existing state under a shared `--state-dir`.
@@ -977,7 +993,7 @@ pub async fn run() -> Result<()> {
 fn should_ensure_daemon(command: &Command) -> bool {
     !matches!(
         command,
-        Command::Serve { .. } | Command::Daemon { .. } | Command::HelpAll
+        Command::Serve { .. } | Command::Daemon { .. } | Command::HelpAll | Command::Setup { .. }
     )
 }
 

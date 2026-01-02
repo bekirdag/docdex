@@ -27,6 +27,7 @@ pub mod project_map;
 pub mod ratelimit;
 pub mod repo_manager;
 pub mod search;
+pub mod setup;
 pub mod state_layout;
 pub mod state_paths;
 pub mod symbols;

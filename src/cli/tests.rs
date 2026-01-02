@@ -20,6 +20,19 @@ fn ensure_daemon_skips_help_only() {
 }
 
 #[test]
+fn ensure_daemon_skips_setup() {
+    let cmd = Command::Setup {
+        args: super::SetupArgs {
+            non_interactive: true,
+            json: false,
+            force: false,
+            ollama_path: None,
+        },
+    };
+    assert!(!should_ensure_daemon(&cmd));
+}
+
+#[test]
 fn ensure_daemon_for_index_and_hint() {
     let temp = TempDir::new().expect("temp dir");
     let repo = repo_args(temp.path().to_path_buf());

@@ -138,7 +138,23 @@ curl "http://127.0.0.1:3210/v1/graph/impact?file=src/app.ts&maxDepth=3"
 ## Local LLM usage (Ollama)
 Docdex uses Ollama for embeddings and optional local chat. Use `docdexd llm-list` to see recommended models for your hardware.
 
-Quick setup:
+First-time setup (recommended):
+```bash
+docdex setup
+```
+The wizard is interactive; run it from a terminal.
+Skip auto-setup on install:
+```bash
+DOCDEX_SETUP_SKIP=1 npm i -g docdex
+```
+Setup markers are stored under `~/.docdex/state`: `setup_status.json`, `setup_pending.json`, and `setup_failed.json`.
+Setup overrides:
+- `DOCDEX_SETUP_FORCE=1`: re-run the wizard even if deferred/complete.
+- `DOCDEX_OLLAMA_INSTALL=1|0`: auto-accept or skip the Ollama install prompt.
+- `DOCDEX_OLLAMA_MODEL_PROMPT=1|0`: force model prompts on/off.
+- `DOCDEX_OLLAMA_MODEL_ASSUME_Y=1`: auto-accept recommended model installs.
+
+Manual setup:
 ```bash
 ollama serve
 ollama pull nomic-embed-text
@@ -200,7 +216,7 @@ docdexd mcp --repo {{repo_path}} --log warn --max-results 8
 ```
 
 ## Hardware-aware LLM guidance
-Use `docdexd llm-list` or `docdexd llm-setup` to print your host RAM + GPU summary together with entries from `docs/llm_list.json`. The commands highlight a recommended entry that satisfies `minRamGb` and `requiresGpu`.
+Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary together with entries from `docs/llm_list.json`. The commands highlight a recommended entry that satisfies `minRamGb` and `requiresGpu`.
 
 ## State, paths, and defaults
 - State/index directory: `~/.docdex/state/repos/<fingerprint>/index` by default (override with `--state-dir` / `DOCDEX_STATE_DIR`).

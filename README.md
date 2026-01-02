@@ -123,7 +123,18 @@ Tips:
 ## Local LLM + embeddings (Ollama)
 Docdex pairs well with local Ollama for embeddings and optional chat.
 
-Start Ollama and pull the default embedding model:
+First-time setup (recommended):
+```bash
+docdex setup
+```
+The setup wizard runs in a terminal UI and asks for consent before installing Ollama and models.
+
+Skip auto-setup on install:
+```bash
+DOCDEX_SETUP_SKIP=1 npm i -g docdex
+```
+
+Manual setup:
 ```bash
 ollama serve
 ollama pull nomic-embed-text

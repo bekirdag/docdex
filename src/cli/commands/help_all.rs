@@ -12,6 +12,7 @@ pub fn run() -> Result<()> {
         "daemon",
         "serve",
         "self-check",
+        "setup",
         "index",
         "ingest",
         "chat",

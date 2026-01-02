@@ -1,0 +1,205 @@
+# Docdex Usage Guide
+
+This is the detailed, technical guide for Docdex. Use it for installation, setup, MCP wiring, HTTP usage, and configuration.
+
+## Contents
+- Install
+- First run
+- Operating modes
+- MCP integration
+- HTTP API
+- Smithery local usage
+- State, paths, and defaults
+- Configuration reference
+- Ops and safety
+- Troubleshooting
+- References
+
+## Install
+
+### npm (recommended)
+- Requires Node.js >= 18.
+- Install: `npm i -g docdex`
+- Verify: `docdex --version`
+- `docdex` (alias `docdexd`) downloads the matching platform binary from the GitHub release that matches the npm version.
+
+Supported published binaries:
+- macOS: arm64, x64
+- Linux glibc: arm64, x64
+- Linux musl: x64
+- Windows: x64
+
+Installer notes:
+- Supported platforms and troubleshooting: `docs/ops/installer_supported_platforms.md`.
+- Release manifest schema: `docs/contracts/release_manifest_schema_v1.md`.
+- Forks: set `DOCDEX_DOWNLOAD_REPO=<owner/repo>` before install.
+- Mirrors: set `DOCDEX_DOWNLOAD_BASE=http://host/path` to redirect downloads.
+- Local dev fallback: if release assets are missing and a local `target/release/docdexd` (or `target/debug/docdexd`) exists, the installer can use it. Disable with `DOCDEX_LOCAL_FALLBACK=0` or override with `DOCDEX_LOCAL_BINARY=/path/to/docdexd`.
+- Platform diagnostics (no download): `docdex doctor` (alias `docdex diagnostics`).
+
+Postinstall behavior:
+- Docdex registers a local daemon and writes MCP client config pointing to `http://localhost:<port>/sse`.
+- If Ollama is missing, the installer can prompt to install it and the default embedding model.
+- Skip prompts with `DOCDEX_OLLAMA_INSTALL=0` or `DOCDEX_OLLAMA_MODEL_PROMPT=0`.
+- Force with `DOCDEX_OLLAMA_INSTALL=1` or `DOCDEX_OLLAMA_MODEL=<model>`.
+
+### Build from source
+- Requires Rust (stable) and Cargo.
+- Build: `cargo build --release`
+- Install: `cargo install --path .`
+- MCP server: build `docdex-mcp-server` as well, or set `DOCDEX_MCP_SERVER_BIN`.
+
+### Uninstall
+- `npm uninstall -g docdex` stops the daemon, removes its startup registration, and deletes Docdex MCP entries from supported client config files.
+
+## First run
+
+```bash
+# index a repo
+
+docdexd index --repo /path/to/repo
+
+# serve HTTP API with watcher
+
+docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 3210 --log warn --secure-mode=false
+
+# singleton daemon (shared MCP over /sse)
+
+docdexd daemon --repo /path/to/repo --host 127.0.0.1 --port 3210 --log warn --secure-mode=false
+
+# ad-hoc query via CLI
+
+docdexd chat --repo /path/to/repo --query "otp flow" --limit 5
+
+# interactive REPL
+
+docdexd chat --repo /path/to/repo
+```
+
+Notes:
+- CLI commands default to the daemon HTTP base URL (from config). Use `DOCDEX_HTTP_BASE_URL` to override or `DOCDEX_CLI_LOCAL=1` to run in-process.
+- Add `.docdex/` to `.gitignore` if you store state under the repo.
+
+## Operating modes
+- `index`: builds the repo index and code intelligence artifacts.
+- `serve`: starts the per-repo HTTP API with watcher.
+- `daemon`: singleton service that hosts shared MCP over HTTP/SSE (`/sse`).
+- `mcp`: legacy stdio MCP server for local, per-repo use.
+
+## MCP integration
+
+### Shared MCP (daemon, HTTP/SSE)
+Start the daemon and point clients at `http://localhost:<port>/sse`.
+
+JSON config example (Cursor, Continue, Cline, Claude Desktop devtools):
+```json
+{
+  "mcpServers": {
+    "docdex": {
+      "url": "http://localhost:3210/sse"
+    }
+  }
+}
+```
+
+Codex config example (TOML):
+```toml
+[mcp_servers]
+docdex = { url = "http://localhost:3210/sse" }
+```
+
+### Legacy stdio MCP
+Run a per-repo MCP server over stdio:
+```bash
+docdexd mcp --repo /path/to/repo --log warn --max-results 8
+```
+
+## HTTP API
+
+Core endpoints:
+- `GET /healthz`
+- `GET /search?q=...&limit=...`
+- `GET /snippet/:doc_id`
+- `POST /v1/chat/completions`
+- `GET /v1/symbols`, `GET /v1/ast`, `GET /v1/graph/impact`
+
+Reference: `docs/http_api.md`.
+
+## Smithery local usage
+Smithery runs Docdex as a local MCP tool using stdio. The provided `smithery.yaml` uses `runtime: "local"` and:
+```
+docdexd mcp --repo {{repo_path}} --log warn --max-results 8
+```
+
+## Hardware-aware LLM guidance
+Use `docdexd llm-list` or `docdexd llm-setup` to print your host RAM + GPU summary together with entries from `docs/llm_list.json`. The commands highlight a recommended entry that satisfies `minRamGb` and `requiresGpu`.
+
+## State, paths, and defaults
+- State/index directory: `~/.docdex/state/repos/<fingerprint>/index` by default (override with `--state-dir` / `DOCDEX_STATE_DIR`).
+- HTTP API: defaults to `127.0.0.1:3210` when serving.
+- Docdex data stays local under `~/.docdex/state` unless overridden.
+- Logs: set `DOCDEX_LOG_TO_STATE=1` to also write `~/.docdex/state/logs/docdexd-<pid>.log`.
+
+## Configuration reference
+
+### Common flags and env vars
+- `--repo <path>`: repo root (defaults to `.`).
+- `--state-dir <path>` / `DOCDEX_STATE_DIR`: override state dir (relative paths resolve under `repo`).
+- `--exclude-prefix a,b,c` / `DOCDEX_EXCLUDE_PREFIXES`.
+- `--exclude-dir a,b,c` / `DOCDEX_EXCLUDE_DIRS`.
+- `DOCDEX_HTTP_BASE_URL`: override daemon base URL for CLI.
+- `DOCDEX_HTTP_TIMEOUT_MS`: override CLI HTTP timeout (default 30000).
+- `DOCDEX_CLI_LOCAL=1`: run CLI in-process.
+- `DOCDEX_ENABLE_SYMBOL_EXTRACTION`: deprecated (no-op).
+
+### Security and serving
+- `--expose` / `DOCDEX_EXPOSE`: allow non-loopback binds (requires auth).
+- `--auth-token <token>` / `DOCDEX_AUTH_TOKEN`: required for non-loopback binds.
+- `--secure-mode <true|false>` / `DOCDEX_SECURE_MODE`: default true.
+- `--allow-ip a,b,c` / `DOCDEX_ALLOW_IPS`: allowlist for HTTP API.
+- `--tls-cert`, `--tls-key`, `--certbot-domain`, `--certbot-live-dir`.
+- `--require-tls <true|false>` / `DOCDEX_REQUIRE_TLS`.
+- `--insecure` / `DOCDEX_INSECURE_HTTP=true`.
+- `--preflight-check` / `DOCDEX_PREFLIGHT_CHECK`.
+
+### Limits and logging
+- `--max-limit <n>` / `DOCDEX_MAX_LIMIT`.
+- `--max-query-bytes <n>` / `DOCDEX_MAX_QUERY_BYTES`.
+- `--max-request-bytes <n>` / `DOCDEX_MAX_REQUEST_BYTES`.
+- `--rate-limit-per-min <n>` / `DOCDEX_RATE_LIMIT_PER_MIN`.
+- `--rate-limit-burst <n>` / `DOCDEX_RATE_LIMIT_BURST`.
+- `--audit-log-path`, `--audit-max-bytes`, `--audit-max-files`, `--audit-disable`.
+- `--strip-snippet-html` / `DOCDEX_STRIP_SNIPPET_HTML`.
+- `--disable-snippet-text` / `DOCDEX_DISABLE_SNIPPET_TEXT`.
+- `--access-log <true|false>` / `DOCDEX_ACCESS_LOG`.
+
+### Memory and LLM
+- `--enable-memory <true|false>` / `DOCDEX_ENABLE_MEMORY`.
+- `--embedding-base-url` / `DOCDEX_EMBEDDING_BASE_URL`.
+- `--ollama-base-url` / `DOCDEX_OLLAMA_BASE_URL`.
+- `--embedding-model` / `DOCDEX_EMBEDDING_MODEL` (default `nomic-embed-text`).
+- `DOCDEX_LLM_AGENT` / `DOCDEX_AGENT` for default chat agent.
+
+### Web discovery (Tier 2)
+- `DOCDEX_WEB_ENABLED=1` to enable.
+- `DOCDEX_OFFLINE=1` to force offline.
+- `DOCDEX_WEB_*` knobs for thresholds, timeouts, cache TTL, and backoff.
+- `DOCDEX_WEB_BROWSER` / `DOCDEX_CHROME_PATH` to set a browser binary.
+- `DOCDEX_BROWSER_AUTO_INSTALL=0` to disable Linux auto-install of Chromium.
+
+## Ops and safety
+- Health check: `GET /healthz`.
+- Metrics: `GET /metrics`.
+- `docdexd check`: preflight validation for config, state, Ollama, browser, ports.
+- `docdexd self-check --repo <path>`: sensitive-term scan.
+
+## Troubleshooting
+- Browser path issues: `docdexd browser setup` or set `DOCDEX_WEB_BROWSER`/`DOCDEX_CHROME_PATH`.
+- Ollama timeouts: ensure `ollama` is running and tune `DOCDEX_EMBEDDING_TIMEOUT_MS`.
+- 429s in load tests: run with `--secure-mode=false` or raise rate limits.
+
+## References
+- HTTP API: `docs/http_api.md`
+- MCP errors: `docs/mcp/errors.md`
+- Quality gates: `docs/quality_gates.md`
+- Metrics dashboard: `docs/metrics_dashboard.md`

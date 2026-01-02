@@ -158,22 +158,166 @@ function upsertMcpServerJson(pathname, url) {
 }
 
 function upsertCodexConfig(pathname, url) {
+  const hasSection = (contents, section) =>
+    new RegExp(`^\\s*\\[${section}\\]\\s*$`, "m").test(contents);
+  const hasNestedMcpServers = (contents) =>
+    /^\s*\[mcp_servers\.[^\]]+\]\s*$/m.test(contents);
+  const parseTomlString = (value) => {
+    const trimmed = value.trim();
+    const quoted = trimmed.match(/^"(.*)"$/) || trimmed.match(/^'(.*)'$/);
+    return quoted ? quoted[1] : trimmed;
+  };
+  const migrateLegacyMcpServers = (contents) => {
+    if (!/\[\[mcp_servers\]\]/m.test(contents)) {
+      return { contents, migrated: false };
+    }
+    const lines = contents.split(/\r?\n/);
+    const output = [];
+    const entries = [];
+    let inBlock = false;
+    let current = null;
+
+    for (const line of lines) {
+      if (/^\s*\[\[mcp_servers\]\]\s*$/.test(line)) {
+        if (current) entries.push(current);
+        current = {};
+        inBlock = true;
+        continue;
+      }
+      if (inBlock) {
+        if (/^\s*\[.+\]\s*$/.test(line)) {
+          if (current) entries.push(current);
+          current = null;
+          inBlock = false;
+          output.push(line);
+          continue;
+        }
+        const match = line.match(/^\s*([A-Za-z0-9_.-]+)\s*=\s*(.+?)\s*$/);
+        if (match) {
+          current[match[1]] = match[2].trim();
+        }
+        continue;
+      }
+      output.push(line);
+    }
+    if (current) entries.push(current);
+
+    const mapLines = [];
+    for (const entry of entries) {
+      if (!entry.name) continue;
+      const name = parseTomlString(entry.name);
+      if (!name) continue;
+      mapLines.push(`[mcp_servers.${name}]`);
+      for (const [key, value] of Object.entries(entry)) {
+        if (key === "name") continue;
+        mapLines.push(`${key} = ${value}`);
+      }
+      mapLines.push("");
+    }
+
+    if (mapLines.length === 0) {
+      return { contents: output.join("\n"), migrated: true };
+    }
+    if (output.length && output[output.length - 1].trim()) output.push("");
+    while (mapLines.length && !mapLines[mapLines.length - 1].trim()) mapLines.pop();
+    output.push(...mapLines);
+    return { contents: output.join("\n"), migrated: true };
+  };
+
+  const upsertDocdexNested = (contents, urlValue) => {
+    const lines = contents.split(/\r?\n/);
+    const headerRe = /^\s*\[mcp_servers\.docdex\]\s*$/;
+    let start = lines.findIndex((line) => headerRe.test(line));
+    if (start === -1) {
+      if (lines.length && lines[lines.length - 1].trim()) lines.push("");
+      lines.push("[mcp_servers.docdex]");
+      lines.push(`url = "${urlValue}"`);
+      return { contents: lines.join("\n"), updated: true };
+    }
+    let end = start + 1;
+    while (end < lines.length && !/^\s*\[.+\]\s*$/.test(lines[end])) {
+      end += 1;
+    }
+    let updated = false;
+    let urlIndex = -1;
+    for (let i = start + 1; i < end; i += 1) {
+      if (/^\s*url\s*=/.test(lines[i])) {
+        urlIndex = i;
+        break;
+      }
+    }
+    if (urlIndex === -1) {
+      lines.splice(start + 1, 0, `url = "${urlValue}"`);
+      updated = true;
+    } else if (!lines[urlIndex].includes(`"${urlValue}"`)) {
+      lines[urlIndex] = `url = "${urlValue}"`;
+      updated = true;
+    }
+    return { contents: lines.join("\n"), updated };
+  };
+
+  const upsertDocdexRoot = (contents, urlValue) => {
+    const lines = contents.split(/\r?\n/);
+    const headerRe = /^\s*\[mcp_servers\]\s*$/;
+    const start = lines.findIndex((line) => headerRe.test(line));
+    if (start === -1) {
+      if (lines.length && lines[lines.length - 1].trim()) lines.push("");
+      lines.push("[mcp_servers]");
+      lines.push(`docdex = { url = "${urlValue}" }`);
+      return { contents: lines.join("\n"), updated: true };
+    }
+    let end = start + 1;
+    while (end < lines.length && !/^\s*\[.+\]\s*$/.test(lines[end])) {
+      end += 1;
+    }
+    let updated = false;
+    let docdexLine = -1;
+    for (let i = start + 1; i < end; i += 1) {
+      if (/^\s*docdex\s*=/.test(lines[i])) {
+        docdexLine = i;
+        break;
+      }
+    }
+    if (docdexLine === -1) {
+      lines.splice(end, 0, `docdex = { url = "${urlValue}" }`);
+      updated = true;
+    } else if (!lines[docdexLine].includes(`"${urlValue}"`)) {
+      lines[docdexLine] = `docdex = { url = "${urlValue}" }`;
+      updated = true;
+    }
+    return { contents: lines.join("\n"), updated };
+  };
+
   let contents = "";
   if (fs.existsSync(pathname)) {
     contents = fs.readFileSync(pathname, "utf8");
   }
-  if (/name\s*=\s*\"docdex\"/.test(contents) || /docdex/.test(contents) && /mcp_servers/.test(contents)) {
+  let updated = false;
+  if (/\[\[mcp_servers\]\]/m.test(contents)) {
+    const migrated = migrateLegacyMcpServers(contents);
+    contents = migrated.contents;
+    updated = updated || migrated.migrated;
+  }
+
+  if (hasNestedMcpServers(contents)) {
+    const nested = upsertDocdexNested(contents, url);
+    contents = nested.contents;
+    updated = updated || nested.updated;
+  } else if (hasSection(contents, "mcp_servers")) {
+    const root = upsertDocdexRoot(contents, url);
+    contents = root.contents;
+    updated = updated || root.updated;
+  } else {
+    const root = upsertDocdexRoot(contents, url);
+    contents = root.contents;
+    updated = updated || root.updated;
+  }
+
+  if (!updated) {
     return false;
   }
-  const block = [
-    "",
-    "[[mcp_servers]]",
-    'name = "docdex"',
-    `url = "${url}"`,
-    "",
-  ].join("\n");
   fs.mkdirSync(path.dirname(pathname), { recursive: true });
-  fs.writeFileSync(pathname, contents + block);
+  fs.writeFileSync(pathname, contents.endsWith("\n") ? contents : `${contents}\n`);
   return true;
 }
 
@@ -233,12 +377,17 @@ function parseEnvBool(value) {
   return null;
 }
 
+function hasInteractiveTty(stdin, stdout) {
+  return Boolean((stdin && stdin.isTTY) || (stdout && stdout.isTTY));
+}
+
 function resolveOllamaInstallMode({ env = process.env, stdin = process.stdin, stdout = process.stdout } = {}) {
   const override = parseEnvBool(env.DOCDEX_OLLAMA_INSTALL);
   if (override === true) return { mode: "install", reason: "env", interactive: false };
   if (override === false) return { mode: "skip", reason: "env", interactive: false };
-  const hasTty = Boolean(stdin && stdout && stdin.isTTY && stdout.isTTY);
-  if (!hasTty) return { mode: "skip", reason: "non_interactive", interactive: false };
+  if (!hasInteractiveTty(stdin, stdout)) {
+    return { mode: "skip", reason: "non_interactive", interactive: false };
+  }
   if (env.CI) return { mode: "skip", reason: "ci", interactive: false };
   return { mode: "prompt", reason: "interactive", interactive: true };
 }
@@ -249,8 +398,9 @@ function resolveOllamaModelPromptMode({ env = process.env, stdin = process.stdin
   if (override === false) return { mode: "skip", reason: "env", interactive: false };
   const assumeYes = parseEnvBool(env.DOCDEX_OLLAMA_MODEL_ASSUME_Y);
   if (assumeYes === true) return { mode: "auto", reason: "env", interactive: false };
-  const hasTty = Boolean(stdin && stdout && stdin.isTTY && stdout.isTTY);
-  if (!hasTty) return { mode: "skip", reason: "non_interactive", interactive: false };
+  if (!hasInteractiveTty(stdin, stdout)) {
+    return { mode: "skip", reason: "non_interactive", interactive: false };
+  }
   if (env.CI) return { mode: "skip", reason: "ci", interactive: false };
   return { mode: "prompt", reason: "interactive", interactive: true };
 }
@@ -408,11 +558,27 @@ function isOllamaAvailable() {
   return isCommandAvailable("ollama", ["--version"]);
 }
 
+function resolvePromptStreams(stdin, stdout) {
+  if (hasInteractiveTty(stdin, stdout)) {
+    return { input: stdin, output: stdout, close: null };
+  }
+  const isWindows = process.platform === "win32";
+  const ttyPath = isWindows ? "CONIN$" : "/dev/tty";
+  try {
+    const input = fs.createReadStream(ttyPath, { autoClose: true });
+    return { input, output: stdout, close: () => input.close() };
+  } catch {
+    return { input: stdin, output: stdout, close: null };
+  }
+}
+
 function promptYesNo(question, { defaultYes = true, stdin = process.stdin, stdout = process.stdout } = {}) {
   return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: stdin, output: stdout });
+    const { input, output, close } = resolvePromptStreams(stdin, stdout);
+    const rl = readline.createInterface({ input, output });
     rl.question(question, (answer) => {
       rl.close();
+      if (typeof close === "function") close();
       const normalized = String(answer || "").trim().toLowerCase();
       if (!normalized) return resolve(defaultYes);
       resolve(["y", "yes"].includes(normalized));
@@ -422,9 +588,11 @@ function promptYesNo(question, { defaultYes = true, stdin = process.stdin, stdou
 
 function promptInput(question, { stdin = process.stdin, stdout = process.stdout } = {}) {
   return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: stdin, output: stdout });
+    const { input, output, close } = resolvePromptStreams(stdin, stdout);
+    const rl = readline.createInterface({ input, output });
     rl.question(question, (answer) => {
       rl.close();
+      if (typeof close === "function") close();
       resolve(String(answer || "").trim());
     });
   });
@@ -881,5 +1049,6 @@ module.exports = {
   readLlmDefaultModel,
   upsertLlmDefaultModel,
   pullOllamaModel,
-  listOllamaModels
+  listOllamaModels,
+  hasInteractiveTty
 };

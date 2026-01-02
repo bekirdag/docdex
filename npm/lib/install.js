@@ -37,6 +37,8 @@ const DEFAULT_INTEGRITY_CONFIG = Object.freeze({
   metadataSources: ["manifest", "checksums", "sidecar"],
   missingPolicy: "fallback"
 });
+const LOCAL_FALLBACK_ENV = "DOCDEX_LOCAL_FALLBACK";
+const LOCAL_BINARY_ENV = "DOCDEX_LOCAL_BINARY";
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -359,6 +361,141 @@ function normalizeSha256Hex(value) {
   const trimmed = value.trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(trimmed)) return null;
   return trimmed;
+}
+
+function parseEnvBool(value) {
+  if (value == null) return null;
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  return null;
+}
+
+function detectLocalRepoRoot({ pathModule, fsModule } = {}) {
+  const pathImpl = pathModule || path;
+  const fsImpl = fsModule || fs;
+  const candidate = pathImpl.resolve(__dirname, "..", "..");
+  const hasCargo = fsImpl.existsSync(pathImpl.join(candidate, "Cargo.toml"));
+  const hasGit = fsImpl.existsSync(pathImpl.join(candidate, ".git"));
+  if (hasCargo || hasGit) {
+    return candidate;
+  }
+  return null;
+}
+
+function resolveLocalBinaryCandidate({
+  env = process.env,
+  platform = process.platform,
+  pathModule = path,
+  fsModule = fs,
+  repoRoot
+} = {}) {
+  const explicit = env[LOCAL_BINARY_ENV];
+  if (explicit) {
+    const resolved = pathModule.resolve(explicit);
+    if (fsModule.existsSync(resolved)) return resolved;
+  }
+  const root = repoRoot || detectLocalRepoRoot({ pathModule, fsModule });
+  if (!root) return null;
+  const binaryName = platform === "win32" ? "docdexd.exe" : "docdexd";
+  const releasePath = pathModule.join(root, "target", "release", binaryName);
+  if (fsModule.existsSync(releasePath)) return releasePath;
+  const debugPath = pathModule.join(root, "target", "debug", binaryName);
+  if (fsModule.existsSync(debugPath)) return debugPath;
+  return null;
+}
+
+async function installFromLocalBinary({
+  fsModule,
+  pathModule,
+  distDir,
+  binaryPath,
+  isWin32,
+  version,
+  platformKey,
+  targetTriple,
+  repoSlug,
+  sha256FileFn,
+  writeJsonFileAtomicFn,
+  logger
+}) {
+  await fsModule.promises.rm(distDir, { recursive: true, force: true });
+  await fsModule.promises.mkdir(distDir, { recursive: true });
+  const filename = isWin32 ? "docdexd.exe" : "docdexd";
+  const destPath = pathModule.join(distDir, filename);
+  await fsModule.promises.copyFile(binaryPath, destPath);
+  if (!isWin32) {
+    await fsModule.promises.chmod(destPath, 0o755).catch(() => {});
+  }
+  const binarySha256 = await sha256FileFn(destPath);
+  const metadata = {
+    schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
+    installedAt: nowIso(),
+    version,
+    repoSlug: repoSlug || "local",
+    platformKey,
+    targetTriple,
+    binary: {
+      filename,
+      sha256: binarySha256
+    },
+    archive: {
+      name: null,
+      sha256: null,
+      source: "local",
+      downloadUrl: null
+    }
+  };
+  await writeJsonFileAtomicFn({
+    fsModule,
+    pathModule,
+    filePath: installMetadataPath(distDir, pathModule),
+    value: metadata
+  });
+  logger?.warn?.(`[docdex] Installed local binary from ${binaryPath}`);
+  return { binaryPath: destPath, outcome: "local", outcomeCode: "local" };
+}
+
+async function maybeInstallLocalFallback({
+  err,
+  env,
+  fsModule,
+  pathModule,
+  distDir,
+  isWin32,
+  version,
+  platformKey,
+  targetTriple,
+  repoSlug,
+  sha256FileFn,
+  writeJsonFileAtomicFn,
+  logger,
+  localRepoRoot,
+  localBinaryPath
+}) {
+  if (!err || err.code !== "DOCDEX_CHECKSUM_UNUSABLE") return null;
+  const allowFallback = parseEnvBool(env[LOCAL_FALLBACK_ENV]);
+  if (allowFallback === false) return null;
+
+  const candidate =
+    localBinaryPath ||
+    resolveLocalBinaryCandidate({ env, platform: process.platform, pathModule, fsModule, repoRoot: localRepoRoot });
+  if (!candidate) return null;
+
+  return installFromLocalBinary({
+    fsModule,
+    pathModule,
+    distDir,
+    binaryPath: candidate,
+    isWin32,
+    version,
+    platformKey,
+    targetTriple,
+    repoSlug,
+    sha256FileFn,
+    writeJsonFileAtomicFn,
+    logger
+  });
 }
 
 function emitInstallerEvent(logger, payload) {
@@ -1348,6 +1485,8 @@ async function runInstaller(options) {
   const sha256FileFn = opts.sha256FileFn || sha256File;
   const writeJsonFileAtomicFn = opts.writeJsonFileAtomicFn || writeJsonFileAtomic;
   const restartFn = opts.restartFn;
+  const localRepoRoot = opts.localRepoRoot;
+  const localBinaryPath = opts.localBinaryPath;
 
   const detectedPlatform = opts.platform || process.platform;
   const detectedArch = opts.arch || process.arch;
@@ -1431,16 +1570,48 @@ async function runInstaller(options) {
     };
   }
 
-  const repoSlug = parseRepoSlugFn();
-
-  const { archive, expectedSha256, source, manifestAttempt } = await resolveInstallerDownloadPlanFn({
-    repoSlug,
-    version,
-    platformKey,
-    targetTriple,
-    logger,
-    integrityConfigFn: opts.integrityConfigFn
-  });
+  let repoSlug = null;
+  let archive;
+  let expectedSha256;
+  let source;
+  let manifestAttempt;
+  try {
+    repoSlug = parseRepoSlugFn();
+    const resolved = await resolveInstallerDownloadPlanFn({
+      repoSlug,
+      version,
+      platformKey,
+      targetTriple,
+      logger,
+      integrityConfigFn: opts.integrityConfigFn
+    });
+    archive = resolved.archive;
+    expectedSha256 = resolved.expectedSha256;
+    source = resolved.source;
+    manifestAttempt = resolved.manifestAttempt;
+  } catch (err) {
+    const fallback = await maybeInstallLocalFallback({
+      err,
+      env: process.env,
+      fsModule,
+      pathModule,
+      distDir,
+      isWin32,
+      version,
+      platformKey,
+      targetTriple,
+      repoSlug,
+      sha256FileFn,
+      writeJsonFileAtomicFn,
+      logger,
+      localRepoRoot,
+      localBinaryPath
+    });
+    if (fallback) {
+      return fallback;
+    }
+    throw err;
+  }
 
   const downloadUrl = `${getDownloadBaseFn(repoSlug)}/v${version}/${archive}`;
   const nonce = buildInstallNonce();

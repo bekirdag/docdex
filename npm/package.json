@@ -1,6 +1,6 @@
 {
   "name": "docdex",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Docdex CLI as an npm-installable binary wrapper.",
   "bin": {
     "docdex": "bin/docdex.js",
@@ -15,6 +15,7 @@
   ],
   "scripts": {
     "postinstall": "node ./lib/install.js",
+    "postuninstall": "node ./lib/uninstall.js",
     "test": "node --test",
     "pack:verify": "node --test test/packaging_guardrails.test.js"
   },

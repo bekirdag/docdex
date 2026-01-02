@@ -16,7 +16,8 @@ const {
   formatGiB,
   readLlmDefaultModel,
   upsertLlmDefaultModel,
-  pullOllamaModel
+  pullOllamaModel,
+  hasInteractiveTty
 } = require("../lib/postinstall_setup");
 
 test("upsertServerConfig adds server section when missing", () => {
@@ -48,8 +49,30 @@ test("upsertCodexConfig appends docdex server", () => {
   const changed = upsertCodexConfig(file, url);
   assert.equal(changed, true);
   const contents = fs.readFileSync(file, "utf8");
-  assert.ok(contents.includes('name = "docdex"'));
-  assert.ok(contents.includes(`url = "${url}"`));
+  assert.ok(contents.includes("[mcp_servers]"));
+  assert.ok(contents.includes(`docdex = { url = "${url}" }`));
+});
+
+test("upsertCodexConfig migrates legacy mcp_servers array", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-codex-legacy-"));
+  const file = path.join(dir, "config.toml");
+  fs.writeFileSync(
+    file,
+    [
+      'model = "gpt-5.1-codex-max"',
+      "",
+      "[[mcp_servers]]",
+      'name = "docdex"',
+      'url = "http://localhost:3000/sse"',
+      "",
+    ].join("\n")
+  );
+  const url = configUrlForPort(3000);
+  const changed = upsertCodexConfig(file, url);
+  assert.equal(changed, true);
+  const contents = fs.readFileSync(file, "utf8");
+  assert.ok(!contents.includes("[[mcp_servers]]"));
+  assert.ok(contents.includes(`docdex = { url = "${url}" }`) || contents.includes("[mcp_servers.docdex]"));
 });
 
 test("resolveOllamaInstallMode respects env overrides", () => {
@@ -86,6 +109,10 @@ test("resolveOllamaModelPromptMode auto-accepts with env flag", () => {
     stdout: {}
   });
   assert.equal(mode.mode, "auto");
+});
+
+test("hasInteractiveTty accepts stdout-only TTY", () => {
+  assert.equal(hasInteractiveTty({ isTTY: false }, { isTTY: true }), true);
 });
 
 test("resolveOllamaModelPromptMode skips when disabled", () => {

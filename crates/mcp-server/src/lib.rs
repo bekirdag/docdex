@@ -892,7 +892,7 @@ impl McpServer {
                 }
                 let protocol_version = init_params
                     .protocol_version
-                    .unwrap_or_else(|| "2024-11-05".to_string());
+                    .unwrap_or_else(|| "2025-11-25".to_string());
                 let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast and docdex_impact_diagnostics for unresolved imports.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nProfile tools (docdex_save_preference/docdex_get_profile) use global profile memory and do not require project_root.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
                 let mut caps = json!({
                     "tools": { "listChanged": false },

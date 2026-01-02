@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.8
+## 0.2.9
 - Added glama support
 
 ## 0.1.10

@@ -427,6 +427,15 @@ async function installFromLocalBinary({
   if (!isWin32) {
     await fsModule.promises.chmod(destPath, 0o755).catch(() => {});
   }
+  const mcpName = isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server";
+  const mcpSource = pathModule.join(pathModule.dirname(binaryPath), mcpName);
+  if (fsModule.existsSync(mcpSource)) {
+    const mcpDest = pathModule.join(distDir, mcpName);
+    await fsModule.promises.copyFile(mcpSource, mcpDest);
+    if (!isWin32) {
+      await fsModule.promises.chmod(mcpDest, 0o755).catch(() => {});
+    }
+  }
   const binarySha256 = await sha256FileFn(destPath);
   const metadata = {
     schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,

@@ -18,9 +18,12 @@ test("installer falls back to local binary when integrity metadata is missing", 
 
   const repoRoot = path.join(tmp, "repo");
   const binaryName = process.platform === "win32" ? "docdexd.exe" : "docdexd";
+  const mcpName = process.platform === "win32" ? "docdex-mcp-server.exe" : "docdex-mcp-server";
   const binaryPath = path.join(repoRoot, "target", "release", binaryName);
+  const mcpPath = path.join(repoRoot, "target", "release", mcpName);
   await fs.promises.mkdir(path.dirname(binaryPath), { recursive: true });
   await fs.promises.writeFile(binaryPath, "local-binary\n");
+  await fs.promises.writeFile(mcpPath, "local-mcp\n");
 
   const distBaseDir = path.join(tmp, "dist");
   const platformKey = "linux-x64-gnu";
@@ -44,4 +47,6 @@ test("installer falls back to local binary when integrity metadata is missing", 
 
   assert.equal(result.outcome, "local");
   assert.ok(fs.existsSync(result.binaryPath));
+  const distMcp = path.join(distBaseDir, platformKey, mcpName);
+  assert.ok(fs.existsSync(distMcp));
 });

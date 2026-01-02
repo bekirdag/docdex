@@ -206,9 +206,68 @@ function removeCodexConfig(pathname, name = "docdex") {
     return output.join("\n");
   };
 
+  const removeLooseEntry = (text) => {
+    const lines = text.split(/\r?\n/);
+    const output = [];
+    let changed = false;
+    for (const line of lines) {
+      if (/^\s*docdex\s*=/.test(line)) {
+        changed = true;
+        continue;
+      }
+      output.push(line);
+    }
+    return { text: output.join("\n"), changed };
+  };
+
+  const removeEmptyMcpServersTable = (text) => {
+    const lines = text.split(/\r?\n/);
+    const output = [];
+    let inTable = false;
+    let tableHasEntries = false;
+    let buffer = [];
+
+    const flushTable = () => {
+      if (!inTable) return;
+      if (tableHasEntries) output.push(...buffer);
+      inTable = false;
+      tableHasEntries = false;
+      buffer = [];
+    };
+
+    for (const line of lines) {
+      const section = line.match(/^\s*\[([^\]]+)\]\s*$/);
+      if (section) {
+        flushTable();
+        if (section[1].trim() === "mcp_servers") {
+          inTable = true;
+          buffer = [line];
+          continue;
+        }
+        output.push(line);
+        continue;
+      }
+
+      if (inTable) {
+        if (line.trim() && !line.trim().startsWith("#")) {
+          if (/=/.test(line)) tableHasEntries = true;
+        }
+        buffer.push(line);
+        continue;
+      }
+
+      output.push(line);
+    }
+    flushTable();
+    return output.join("\n");
+  };
+
   contents = removeArrayBlocks(contents);
   contents = removeNestedSection(contents);
   contents = removeTableEntry(contents);
+  const loose = removeLooseEntry(contents);
+  contents = loose.text;
+  contents = removeEmptyMcpServersTable(contents);
 
   if (contents !== original) {
     fs.writeFileSync(pathname, contents.endsWith("\n") ? contents : `${contents}\n`);

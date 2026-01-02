@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use tracing::warn;
 use which::which;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +51,20 @@ pub struct InstallCommand {
     pub args: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OllamaDaemonStatus {
+    pub running: bool,
+    pub service: Option<String>,
+    pub service_enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceStatus {
+    Running,
+    Stopped,
+    Missing,
+}
+
 pub fn resolve_ollama_path(explicit: Option<PathBuf>) -> Option<PathBuf> {
     if let Some(path) = explicit {
         if path.is_file() {
@@ -63,9 +78,11 @@ pub fn list_models(bin: &Path) -> Result<Vec<String>> {
     match list_models_once(bin) {
         Ok(models) => Ok(models),
         Err(err) => {
-            if is_connect_error(&err) && start_server(bin).is_ok() {
-                if let Ok(models) = wait_for_models(bin) {
-                    return Ok(models);
+            if is_connect_error(&err) {
+                if ensure_ollama_daemon(bin).is_ok() {
+                    if let Ok(models) = wait_for_models(bin) {
+                        return Ok(models);
+                    }
                 }
             }
             Err(err)
@@ -77,8 +94,8 @@ pub fn pull_model(bin: &Path, model: &str) -> Result<()> {
     match pull_model_once(bin, model) {
         Ok(()) => Ok(()),
         Err(err) => {
-            if is_connect_error(&err) && start_server(bin).is_ok() {
-                if wait_for_ready(bin) {
+            if is_connect_error(&err) {
+                if ensure_ollama_daemon(bin).is_ok() && wait_for_ready(bin) {
                     return pull_model_once(bin, model);
                 }
             }
@@ -163,6 +180,200 @@ fn start_server(bin: &Path) -> Result<()> {
     }
     cmd.spawn().context("spawn ollama serve")?;
     Ok(())
+}
+
+pub fn ensure_ollama_daemon(bin: &Path) -> Result<OllamaDaemonStatus> {
+    if list_models_once(bin).is_ok() {
+        return Ok(OllamaDaemonStatus {
+            running: true,
+            service: None,
+            service_enabled: false,
+        });
+    }
+    if let Some(outcome) = ensure_service_running() {
+        if outcome.running && wait_for_ready(bin) {
+            return Ok(outcome);
+        }
+        warn!("ollama service started but did not become ready in time");
+    }
+    start_server(bin)?;
+    if wait_for_ready(bin) {
+        return Ok(OllamaDaemonStatus {
+            running: true,
+            service: None,
+            service_enabled: false,
+        });
+    }
+    Err(anyhow!("ollama server did not become ready in time"))
+}
+
+fn ensure_service_running() -> Option<OllamaDaemonStatus> {
+    match Platform::current() {
+        Platform::Mac => ensure_service_macos(),
+        Platform::Linux => ensure_service_linux(),
+        Platform::Windows => ensure_service_windows(),
+        Platform::Other => None,
+    }
+}
+
+fn ensure_service_macos() -> Option<OllamaDaemonStatus> {
+    if which("brew").is_ok() {
+        if let Ok(output) = Command::new("brew").args(["services", "list"]).output() {
+            let status = parse_brew_services(&output.stdout);
+            match status {
+                ServiceStatus::Running => {
+                    return Some(OllamaDaemonStatus {
+                        running: true,
+                        service: Some("brew services".to_string()),
+                        service_enabled: true,
+                    })
+                }
+                ServiceStatus::Stopped => {
+                    if command_ok("brew", &["services", "start", "ollama"]) {
+                        return Some(OllamaDaemonStatus {
+                            running: true,
+                            service: Some("brew services".to_string()),
+                            service_enabled: true,
+                        });
+                    }
+                }
+                ServiceStatus::Missing => {}
+            }
+        }
+    }
+    let app_path = Path::new("/Applications/Ollama.app");
+    if app_path.exists() && command_ok("open", &["-a", "Ollama"]) {
+        return Some(OllamaDaemonStatus {
+            running: true,
+            service: Some("Ollama.app".to_string()),
+            service_enabled: false,
+        });
+    }
+    None
+}
+
+fn ensure_service_linux() -> Option<OllamaDaemonStatus> {
+    if which("systemctl").is_ok() {
+        if let Ok(output) = Command::new("systemctl")
+            .args(["is-active", "ollama"])
+            .output()
+        {
+            match parse_systemctl_status(&output.stdout, &output.stderr) {
+                ServiceStatus::Running => {
+                    return Some(OllamaDaemonStatus {
+                        running: true,
+                        service: Some("systemd".to_string()),
+                        service_enabled: true,
+                    })
+                }
+                ServiceStatus::Stopped => {
+                    if command_ok("systemctl", &["enable", "--now", "ollama"]) {
+                        return Some(OllamaDaemonStatus {
+                            running: true,
+                            service: Some("systemd".to_string()),
+                            service_enabled: true,
+                        });
+                    }
+                    if command_ok("systemctl", &["--user", "enable", "--now", "ollama"]) {
+                        return Some(OllamaDaemonStatus {
+                            running: true,
+                            service: Some("systemd --user".to_string()),
+                            service_enabled: true,
+                        });
+                    }
+                }
+                ServiceStatus::Missing => {}
+            }
+        }
+    }
+    None
+}
+
+fn ensure_service_windows() -> Option<OllamaDaemonStatus> {
+    if let Ok(output) = Command::new("sc").args(["query", "Ollama"]).output() {
+        match parse_sc_status(&output.stdout, &output.stderr) {
+            ServiceStatus::Running => {
+                return Some(OllamaDaemonStatus {
+                    running: true,
+                    service: Some("windows service".to_string()),
+                    service_enabled: true,
+                })
+            }
+            ServiceStatus::Stopped => {
+                let _ = Command::new("sc")
+                    .args(["config", "Ollama", "start=", "auto"])
+                    .status();
+                if command_ok("sc", &["start", "Ollama"]) {
+                    return Some(OllamaDaemonStatus {
+                        running: true,
+                        service: Some("windows service".to_string()),
+                        service_enabled: true,
+                    });
+                }
+            }
+            ServiceStatus::Missing => {}
+        }
+    }
+    None
+}
+
+fn command_ok(program: &str, args: &[&str]) -> bool {
+    Command::new(program)
+        .args(args)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn parse_brew_services(stdout: &[u8]) -> ServiceStatus {
+    let output = String::from_utf8_lossy(stdout);
+    for line in output.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(name) = parts.next() else { continue };
+        if name != "ollama" {
+            continue;
+        }
+        let status = parts.next().unwrap_or("");
+        return match status {
+            "started" | "running" => ServiceStatus::Running,
+            "stopped" | "none" => ServiceStatus::Stopped,
+            _ => ServiceStatus::Stopped,
+        };
+    }
+    ServiceStatus::Missing
+}
+
+fn parse_systemctl_status(stdout: &[u8], stderr: &[u8]) -> ServiceStatus {
+    let output = String::from_utf8_lossy(stdout).trim().to_ascii_lowercase();
+    if output.is_empty() {
+        let err = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+        if err.contains("could not be found") || err.contains("not found") {
+            return ServiceStatus::Missing;
+        }
+    }
+    match output.as_str() {
+        "active" | "activating" => ServiceStatus::Running,
+        "inactive" | "failed" | "deactivating" => ServiceStatus::Stopped,
+        _ => ServiceStatus::Missing,
+    }
+}
+
+fn parse_sc_status(stdout: &[u8], stderr: &[u8]) -> ServiceStatus {
+    let combined = format!(
+        "{} {}",
+        String::from_utf8_lossy(stdout).to_ascii_lowercase(),
+        String::from_utf8_lossy(stderr).to_ascii_lowercase()
+    );
+    if combined.contains("does not exist") || combined.contains("failed 1060") {
+        return ServiceStatus::Missing;
+    }
+    if combined.contains("running") {
+        return ServiceStatus::Running;
+    }
+    if combined.contains("stopped") {
+        return ServiceStatus::Stopped;
+    }
+    ServiceStatus::Missing
 }
 
 fn wait_for_ready(bin: &Path) -> bool {
@@ -350,5 +561,45 @@ mod tests {
         let input = b"NAME\tSIZE\nnomic-embed-text\t123MB\n\nphi3.5:3.8b\t2GB\n";
         let parsed = parse_models(input);
         assert_eq!(parsed, vec!["nomic-embed-text", "phi3.5:3.8b"]);
+    }
+
+    #[test]
+    fn parse_brew_services_detects_running() {
+        let output = b"Name Status User File\nollama started user ~/Library/LaunchAgents/homebrew.mxcl.ollama.plist\n";
+        assert_eq!(parse_brew_services(output), ServiceStatus::Running);
+    }
+
+    #[test]
+    fn parse_brew_services_detects_stopped() {
+        let output = b"Name Status User File\nollama stopped user ~/Library/LaunchAgents/homebrew.mxcl.ollama.plist\n";
+        assert_eq!(parse_brew_services(output), ServiceStatus::Stopped);
+    }
+
+    #[test]
+    fn parse_systemctl_detects_active() {
+        assert_eq!(
+            parse_systemctl_status(b"active\n", b""),
+            ServiceStatus::Running
+        );
+    }
+
+    #[test]
+    fn parse_systemctl_detects_missing() {
+        assert_eq!(
+            parse_systemctl_status(b"", b"Unit ollama.service could not be found."),
+            ServiceStatus::Missing
+        );
+    }
+
+    #[test]
+    fn parse_sc_detects_running() {
+        let output = b"STATE              : 4  RUNNING";
+        assert_eq!(parse_sc_status(output, b""), ServiceStatus::Running);
+    }
+
+    #[test]
+    fn parse_sc_detects_missing() {
+        let output = b"[SC] OpenService FAILED 1060: The specified service does not exist as an installed service.";
+        assert_eq!(parse_sc_status(output, b""), ServiceStatus::Missing);
     }
 }

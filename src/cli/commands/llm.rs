@@ -1,6 +1,7 @@
 use crate::config;
 use crate::hardware;
 use crate::llm;
+use crate::setup::ollama as setup_ollama;
 use crate::util;
 use anyhow::{Context, Result};
 use std::collections::HashSet;
@@ -65,6 +66,7 @@ pub fn run_setup(ollama_path: Option<PathBuf>) -> Result<()> {
         println!("recommended model: none (hardware does not meet catalog minimums)");
     }
     let bin = ensure_ollama_installed(ollama_path)?;
+    setup_ollama::ensure_ollama_daemon(&bin)?;
     match StdCommand::new(&bin).arg("--version").output() {
         Ok(output) if output.status.success() => {
             let version = String::from_utf8_lossy(&output.stdout);

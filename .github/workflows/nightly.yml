@@ -83,14 +83,17 @@ jobs:
           node-version: 20
 
       - name: Build release binary
-        run: cargo build --release --locked
+        run: |
+          cargo build --release --locked
+          cargo build --release --locked -p docdex-mcp-server
 
       - name: Package nightly artifact
         shell: bash
         run: |
           mkdir -p dist
           cp target/release/docdexd dist/docdexd
-          tar -czf docdexd-nightly-linux-x64-gnu.tar.gz -C dist docdexd
+          cp target/release/docdex-mcp-server dist/docdex-mcp-server
+          tar -czf docdexd-nightly-linux-x64-gnu.tar.gz -C dist docdexd docdex-mcp-server
           python -c "import hashlib, pathlib; p=pathlib.Path('docdexd-nightly-linux-x64-gnu.tar.gz'); h=hashlib.sha256(p.read_bytes()).hexdigest(); pathlib.Path(f'{p}.sha256').write_text(f'{h}  {p.name}\n')"
           node scripts/generate_release_manifest.cjs \
             --dir . \

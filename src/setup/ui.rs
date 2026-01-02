@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode},
@@ -21,10 +21,14 @@ use super::model::{CHAT_MODEL, CHAT_MODEL_SIZE_GIB, EMBED_MODEL};
 use super::ollama;
 use super::state::{SetupContext, SetupEvent, SetupState, StepKey, StepSnapshot, StepStatus};
 use super::SetupSummary;
+use crate::config as app_config;
+use crate::util;
+use std::env;
 
 pub trait WizardServices {
     fn resolve_ollama_path(&self, explicit: Option<std::path::PathBuf>) -> Option<std::path::PathBuf>;
     fn install_ollama(&self) -> Result<()>;
+    fn ensure_ollama_service(&self, bin: &Path) -> Result<ollama::OllamaDaemonStatus>;
     fn list_models(&self, bin: &Path) -> Result<Vec<String>>;
     fn pull_model(&self, bin: &Path, model: &str) -> Result<()>;
     fn set_default_model(&self, model: &str) -> Result<()>;
@@ -39,6 +43,10 @@ impl WizardServices for RealServices {
 
     fn install_ollama(&self) -> Result<()> {
         ollama::install_ollama()
+    }
+
+    fn ensure_ollama_service(&self, bin: &Path) -> Result<ollama::OllamaDaemonStatus> {
+        ollama::ensure_ollama_daemon(bin)
     }
 
     fn list_models(&self, bin: &Path) -> Result<Vec<String>> {
@@ -59,7 +67,7 @@ pub trait WizardInput {
     fn select_model(
         &mut self,
         state: &SetupState,
-        models: &[String],
+        models: &[ModelChoice],
         default_index: usize,
     ) -> Result<Option<String>>;
     fn info(&mut self, state: &SetupState, message: &str) -> Result<()>;
@@ -155,6 +163,28 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
     } else {
         state.apply(SetupEvent::OllamaReady);
         context.ollama_path.clone().unwrap()
+    };
+
+    let ollama_status = loop {
+        input.info(&state, "Ensuring Ollama is running...")?;
+        let ensure = input.with_suspended_terminal(|| services.ensure_ollama_service(&ollama_path));
+        match ensure {
+            Ok(status) => break Some(status),
+            Err(err) => {
+                let err = err.to_string();
+                state.apply(SetupEvent::OllamaFailed(err.clone()));
+                if !prompt_retry(input, &state, "Ollama daemon failed to start. Retry?")? {
+                    state.mark_failed(err.clone());
+                    return Ok(summary_from_state(
+                        &state,
+                        format!("Setup failed: {err}"),
+                        Vec::new(),
+                        None,
+                    ));
+                }
+                state.apply(SetupEvent::OllamaRetry);
+            }
+        }
     };
 
     let mut models = services.list_models(&ollama_path).unwrap_or_default();
@@ -263,20 +293,196 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
         input.info(&state, "Model prompts disabled; skipping default model selection.")?;
         None
     } else {
-        let selected = input.select_model(&state, &models, 0)?;
-        state.apply(SetupEvent::DefaultSelected(selected.clone()));
-        if let Some(ref model) = selected {
-            services.set_default_model(model)?;
+        let (choices, default_index) = build_model_choices(&models);
+        match default_index {
+            None => {
+                state.apply(SetupEvent::DefaultSelected(None));
+                input.info(&state, "No selectable chat models found; keeping existing default.")?;
+                None
+            }
+            Some(default_index) => {
+                let selected = input.select_model(&state, &choices, default_index)?;
+                state.apply(SetupEvent::DefaultSelected(selected.clone()));
+                if let Some(ref model) = selected {
+                    services.set_default_model(model)?;
+                }
+                selected
+            }
         }
-        selected
     };
 
     Ok(summary_from_state(
         &state,
-        "Setup complete.".to_string(),
+        format_completion_message(
+            &models,
+            default_model.as_deref(),
+            ollama_status.as_ref(),
+            installed.as_slice(),
+        ),
         installed,
         default_model,
     ))
+}
+
+#[derive(Clone, Debug)]
+pub struct ModelChoice {
+    pub label: String,
+    pub value: String,
+    pub selectable: bool,
+}
+
+fn build_model_choices(models: &[String]) -> (Vec<ModelChoice>, Option<usize>) {
+    let mut choices = Vec::new();
+    let mut default_index = None;
+    for model in models {
+        let selectable = !model.eq_ignore_ascii_case(EMBED_MODEL);
+        let label = if selectable {
+            model.clone()
+        } else {
+            format!("{model} (embedding only)")
+        };
+        if selectable && default_index.is_none() {
+            default_index = Some(choices.len());
+        }
+        choices.push(ModelChoice {
+            label,
+            value: model.clone(),
+            selectable,
+        });
+    }
+    (choices, default_index)
+}
+
+fn format_completion_message(
+    models: &[String],
+    default_model: Option<&str>,
+    ollama_status: Option<&ollama::OllamaDaemonStatus>,
+    installed_models: &[String],
+) -> String {
+    let config = load_summary_config();
+    let config_default = config
+        .as_ref()
+        .and_then(|cfg| {
+            let trimmed = cfg.llm.default_model.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+    let config_embed = config
+        .as_ref()
+        .and_then(|cfg| {
+            let trimmed = cfg.llm.embedding_model.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .unwrap_or_else(|| EMBED_MODEL.to_string());
+
+    let ollama_running = ollama_status.map(|status| status.running).unwrap_or(false);
+    let service_line = match ollama_status {
+        Some(status) if status.service_enabled => {
+            let service = status.service.as_deref().unwrap_or("service");
+            format!("Ollama service: enabled via {service}")
+        }
+        Some(status) if status.service.is_some() => {
+            format!(
+                "Ollama service: running via {} (not registered for restart)",
+                status.service.as_deref().unwrap_or("launch")
+            )
+        }
+        _ => "Ollama service: not detected; using background process".to_string(),
+    };
+    let embed_installed = models
+        .iter()
+        .any(|m| m.eq_ignore_ascii_case(&config_embed));
+    let embed_line = if embed_installed {
+        format!("Embedding model: {config_embed} (installed)")
+    } else {
+        format!("Embedding model: {config_embed} (missing)")
+    };
+    let default_present = default_model.is_some() || config_default.is_some();
+    let default_line = match default_model
+        .map(|value| value.to_string())
+        .or(config_default)
+    {
+        Some(model) => format!("Default chat model: {model}"),
+        None => "Default chat model: not set".to_string(),
+    };
+
+    let browser_info = config
+        .as_ref()
+        .and_then(resolve_browser_summary_from_config)
+        .or_else(resolve_browser_summary_from_detection);
+    let browser_ready = browser_info.is_some();
+    let browser_line = match browser_info {
+        Some(info) => format!("Web browser: {info}"),
+        None => "Web browser: not configured".to_string(),
+    };
+
+    let fully_functional = ollama_running && embed_installed && default_present && browser_ready;
+    let status_line = if fully_functional {
+        "Docdex status: fully functional".to_string()
+    } else {
+        "Docdex status: partially configured".to_string()
+    };
+
+    let mut lines = vec![
+        "Setup complete.".to_string(),
+        format!("Ollama: {}", if ollama_running { "running" } else { "not running" }),
+        service_line,
+        embed_line,
+        default_line,
+        browser_line,
+        status_line,
+    ];
+
+    if !installed_models.is_empty() {
+        lines.push(format!(
+            "Models installed this run: {}",
+            installed_models.join(", ")
+        ));
+    }
+
+    lines.join("\n")
+}
+
+fn load_summary_config() -> Option<app_config::AppConfig> {
+    let path = app_config::default_config_path().ok()?;
+    let previous = env::var("DOCDEX_BROWSER_AUTO_INSTALL").ok();
+    env::set_var("DOCDEX_BROWSER_AUTO_INSTALL", "0");
+    let config = app_config::load_config_from_path(&path).ok();
+    match previous {
+        Some(value) => env::set_var("DOCDEX_BROWSER_AUTO_INSTALL", value),
+        None => env::remove_var("DOCDEX_BROWSER_AUTO_INSTALL"),
+    }
+    config
+}
+
+fn resolve_browser_summary_from_config(config: &app_config::AppConfig) -> Option<String> {
+    config
+        .web
+        .scraper
+        .chrome_binary_path
+        .as_ref()
+        .map(|path| {
+            let kind = config
+                .web
+                .scraper
+                .browser_kind
+                .as_deref()
+                .unwrap_or("chrome");
+            format!("{kind} ({})", path.display())
+        })
+}
+
+fn resolve_browser_summary_from_detection() -> Option<String> {
+    util::detect_browser_binary(None).map(|candidate| {
+        format!("{} ({})", candidate.kind.as_str(), candidate.path.display())
+    })
 }
 
 fn prompt_retry<I: WizardInput>(input: &mut I, state: &SetupState, message: &str) -> Result<bool> {
@@ -341,7 +547,7 @@ impl TuiInput {
         state: &SetupState,
         body: &str,
         hint: &str,
-        list: Option<(&[String], usize)>,
+        list: Option<(&[ModelChoice], usize)>,
     ) -> Result<()> {
         self.terminal.draw(|frame| {
             let layout = Layout::default()
@@ -395,7 +601,7 @@ impl WizardInput for TuiInput {
     fn select_model(
         &mut self,
         state: &SetupState,
-        models: &[String],
+        models: &[ModelChoice],
         default_index: usize,
     ) -> Result<Option<String>> {
         let hint = "Up/Down=move, Enter=select, Esc=skip";
@@ -409,21 +615,21 @@ impl WizardInput for TuiInput {
             )?;
             match self.read_key()? {
                 KeyCode::Up => {
-                    if self.selected_index > 0 {
-                        self.selected_index -= 1;
+                    if let Some(next) = next_selectable_index(models, self.selected_index, -1) {
+                        self.selected_index = next;
                     }
                 }
                 KeyCode::Down => {
-                    if self.selected_index + 1 < models.len() {
-                        self.selected_index += 1;
+                    if let Some(next) = next_selectable_index(models, self.selected_index, 1) {
+                        self.selected_index = next;
                     }
                 }
                 KeyCode::Enter => {
-                    return models
-                        .get(self.selected_index)
-                        .cloned()
-                        .map(Some)
-                        .ok_or_else(|| anyhow!("no model selected"));
+                    if let Some(choice) = models.get(self.selected_index) {
+                        if choice.selectable {
+                            return Ok(Some(choice.value.clone()));
+                        }
+                    }
                 }
                 KeyCode::Esc => return Ok(None),
                 _ => {}
@@ -494,7 +700,7 @@ fn render_body(
     frame: &mut ratatui::Frame,
     area: Rect,
     body: &str,
-    list: Option<(&[String], usize)>,
+    list: Option<(&[ModelChoice], usize)>,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -509,7 +715,13 @@ fn render_body(
     if let Some((items, selected)) = list {
         let list_items: Vec<ListItem> = items
             .iter()
-            .map(|item| ListItem::new(item.clone()))
+            .map(|item| {
+                let mut style = Style::default();
+                if !item.selectable {
+                    style = style.fg(Color::DarkGray);
+                }
+                ListItem::new(Line::from(Span::styled(item.label.clone(), style)))
+            })
             .collect();
         let mut state = ListState::default();
         state.select(Some(selected));
@@ -517,6 +729,23 @@ fn render_body(
             .block(Block::default().title("Models").borders(Borders::ALL))
             .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
         frame.render_stateful_widget(list, chunks[1], &mut state);
+    }
+}
+
+fn next_selectable_index(models: &[ModelChoice], current: usize, direction: isize) -> Option<usize> {
+    if models.is_empty() {
+        return None;
+    }
+    let mut index = current as isize;
+    loop {
+        index += direction;
+        if index < 0 || index >= models.len() as isize {
+            return None;
+        }
+        let idx = index as usize;
+        if models[idx].selectable {
+            return Some(idx);
+        }
     }
 }
 
@@ -564,13 +793,19 @@ mod tests {
         fn select_model(
             &mut self,
             _state: &SetupState,
-            models: &[String],
+            models: &[ModelChoice],
             default_index: usize,
         ) -> Result<Option<String>> {
             match self.next() {
-                ScriptedAnswer::Select(Some(idx)) => Ok(models.get(idx).cloned()),
+                ScriptedAnswer::Select(Some(idx)) => Ok(models
+                    .get(idx)
+                    .filter(|choice| choice.selectable)
+                    .map(|choice| choice.value.clone())),
                 ScriptedAnswer::Select(None) => Ok(None),
-                ScriptedAnswer::Confirm(_) => Ok(models.get(default_index).cloned()),
+                ScriptedAnswer::Confirm(_) => Ok(models
+                    .get(default_index)
+                    .filter(|choice| choice.selectable)
+                    .map(|choice| choice.value.clone())),
             }
         }
 
@@ -594,6 +829,14 @@ mod tests {
 
         fn install_ollama(&self) -> Result<()> {
             Ok(())
+        }
+
+        fn ensure_ollama_service(&self, _bin: &Path) -> Result<ollama::OllamaDaemonStatus> {
+            Ok(ollama::OllamaDaemonStatus {
+                running: true,
+                service: Some("test".to_string()),
+                service_enabled: true,
+            })
         }
 
         fn list_models(&self, _bin: &Path) -> Result<Vec<String>> {
@@ -640,7 +883,7 @@ mod tests {
             ScriptedAnswer::Confirm(true),
             ScriptedAnswer::Confirm(false),
             ScriptedAnswer::Confirm(false),
-            ScriptedAnswer::Select(Some(0)),
+            ScriptedAnswer::Select(Some(1)),
         ]);
         let services = FakeServices {
             models: vec![EMBED_MODEL.to_string(), CHAT_MODEL.to_string()],
@@ -655,7 +898,7 @@ mod tests {
         };
         let summary = run_wizard_with_input(context, &mut input, &services)?;
         assert_eq!(summary.status, "complete");
-        assert_eq!(summary.default_model.as_deref(), Some(EMBED_MODEL));
+        assert_eq!(summary.default_model.as_deref(), Some(CHAT_MODEL));
         Ok(())
     }
 

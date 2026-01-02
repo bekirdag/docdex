@@ -1063,6 +1063,49 @@ function shouldSkipSetup(env = process.env) {
   return parseEnvBool(env.DOCDEX_SETUP_SKIP) === true;
 }
 
+function commandExists(cmd, spawnSyncFn) {
+  const result = spawnSyncFn(cmd, ["--version"], { stdio: "ignore" });
+  if (result?.error?.code === "ENOENT") return false;
+  return true;
+}
+
+function launchMacTerminal({ binaryPath, args, spawnSyncFn, logger }) {
+  const command = [binaryPath, ...args].join(" ");
+  const script = [
+    'tell application "Terminal" to activate',
+    `tell application "Terminal" to do script ${JSON.stringify(command)}`
+  ].join("\n");
+  const result = spawnSyncFn("osascript", ["-e", script]);
+  if (result.status === 0) return true;
+  logger?.warn?.(`[docdex] osascript launch failed: ${result.stderr || "unknown error"}`);
+  return false;
+}
+
+function launchLinuxTerminal({ binaryPath, args, spawnFn, spawnSyncFn }) {
+  const candidates = [
+    { cmd: "x-terminal-emulator", args: ["-e", binaryPath, ...args] },
+    { cmd: "gnome-terminal", args: ["--", binaryPath, ...args] },
+    { cmd: "konsole", args: ["-e", binaryPath, ...args] },
+    { cmd: "xfce4-terminal", args: ["-e", binaryPath, ...args] },
+    { cmd: "xterm", args: ["-e", binaryPath, ...args] },
+    { cmd: "kitty", args: ["-e", binaryPath, ...args] },
+    { cmd: "alacritty", args: ["-e", binaryPath, ...args] },
+    { cmd: "wezterm", args: ["start", "--", binaryPath, ...args] }
+  ];
+  for (const candidate of candidates) {
+    if (!commandExists(candidate.cmd, spawnSyncFn)) continue;
+    const child = spawnFn(candidate.cmd, candidate.args, {
+      stdio: "ignore",
+      detached: true
+    });
+    if (child?.pid) {
+      child.unref?.();
+      return true;
+    }
+  }
+  return false;
+}
+
 function launchSetupWizard({
   binaryPath,
   logger,
@@ -1082,9 +1125,14 @@ function launchSetupWizard({
     if (!canPrompt(stdin, stdout)) {
       return { ok: false, reason: "non_interactive" };
     }
-    const child = spawnFn(binaryPath, args, { stdio: "inherit" });
-    if (child.pid) return { ok: true };
-    return { ok: false, reason: "spawn_failed" };
+    if (platform === "darwin") {
+      return launchMacTerminal({ binaryPath, args, spawnSyncFn, logger })
+        ? { ok: true }
+        : { ok: false, reason: "terminal_launch_failed" };
+    }
+    return launchLinuxTerminal({ binaryPath, args, spawnFn, spawnSyncFn })
+      ? { ok: true }
+      : { ok: false, reason: "terminal_launch_failed" };
   }
 
   if (platform === "win32") {

@@ -163,24 +163,28 @@ test("shouldSkipSetup returns true when DOCDEX_SETUP_SKIP is set", () => {
   assert.equal(shouldSkipSetup({ DOCDEX_SETUP_SKIP: "0" }), false);
 });
 
-test("launchSetupWizard uses linux spawn when interactive", () => {
+test("launchSetupWizard uses linux terminal launcher when interactive", () => {
   const calls = [];
   const spawnFn = (cmd, args, opts) => {
     calls.push({ cmd, args, opts });
-    return { pid: 1234 };
+    return { pid: 1234, unref() {} };
+  };
+  const spawnSyncFn = (cmd) => {
+    if (cmd === "x-terminal-emulator") return { status: 0 };
+    return { error: Object.assign(new Error("missing"), { code: "ENOENT" }) };
   };
   const result = launchSetupWizard({
     binaryPath: "/tmp/docdexd",
     stdin: { isTTY: true },
     stdout: { isTTY: true },
     spawnFn,
+    spawnSyncFn,
     platform: "linux"
   });
   assert.equal(result.ok, true);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].cmd, "/tmp/docdexd");
-  assert.deepEqual(calls[0].args, ["setup"]);
-  assert.equal(calls[0].opts.stdio, "inherit");
+  assert.equal(calls[0].cmd, "x-terminal-emulator");
+  assert.deepEqual(calls[0].args, ["-e", "/tmp/docdexd", "setup"]);
 });
 
 test("launchSetupWizard returns non_interactive when no tty", () => {
@@ -195,22 +199,23 @@ test("launchSetupWizard returns non_interactive when no tty", () => {
   assert.equal(result.reason, "non_interactive");
 });
 
-test("launchSetupWizard uses spawn on macOS when interactive", () => {
+test("launchSetupWizard uses osascript on macOS when interactive", () => {
   const calls = [];
-  const spawnFn = (cmd, args) => {
+  const spawnSyncFn = (cmd, args) => {
     calls.push({ cmd, args });
-    return { pid: 1234 };
+    return { status: 0 };
   };
   const result = launchSetupWizard({
     binaryPath: "/tmp/docdexd",
-    spawnFn,
+    spawnSyncFn,
     platform: "darwin",
     stdin: { isTTY: true },
     stdout: { isTTY: true },
     canPrompt: () => true
   });
   assert.equal(result.ok, true);
-  assert.equal(calls[0].cmd, "/tmp/docdexd");
+  assert.equal(calls[0].cmd, "osascript");
+  assert.ok(calls[0].args[0] === "-e");
 });
 
 test("launchSetupWizard uses cmd start on Windows", () => {

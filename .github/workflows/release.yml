@@ -85,18 +85,23 @@ jobs:
           AR_aarch64_unknown_linux_gnu: ${{ matrix.ar }}
           CC_aarch64_unknown_linux_gnu: ${{ matrix.cc }}
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.linker }}
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: |
+          cargo build --release --locked --target ${{ matrix.target }}
+          cargo build --release --locked --target ${{ matrix.target }} -p docdex-mcp-server
 
       - name: Package binary
         shell: bash
         run: |
           mkdir -p dist
           BIN_NAME="docdexd"
+          MCP_NAME="docdex-mcp-server"
           if [[ "${{ matrix.target }}" == *"windows"* ]]; then
             BIN_NAME="docdexd.exe"
+            MCP_NAME="docdex-mcp-server.exe"
           fi
           cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${BIN_NAME}"
-          tar -czf ${{ matrix.archive }}.tar.gz -C dist "${BIN_NAME}"
+          cp "target/${{ matrix.target }}/release/${MCP_NAME}" "dist/${MCP_NAME}"
+          tar -czf ${{ matrix.archive }}.tar.gz -C dist "${BIN_NAME}" "${MCP_NAME}"
           python -c "import hashlib, pathlib; p=pathlib.Path('${{ matrix.archive }}.tar.gz'); h=hashlib.sha256(p.read_bytes()).hexdigest(); pathlib.Path(f'{p}.sha256').write_bytes(f'{h}  {p.name}\n'.encode())"
 
       - name: Upload GitHub release assets

@@ -9,7 +9,7 @@ use crate::setup::state::StepSnapshot;
 mod config;
 mod hardware;
 mod model;
-mod ollama;
+pub(crate) mod ollama;
 mod state;
 mod state_store;
 mod ui;

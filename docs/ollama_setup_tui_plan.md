@@ -43,7 +43,7 @@
 
 ### TUI Implementation
 - Use Rust `ratatui` + `crossterm` within the existing `docdexd` binary.
-- TUI runs in the current terminal; for postinstall, open a new terminal window and execute `docdex setup`.
+- TUI runs in a new terminal window for postinstall (macOS, Windows, Linux) and executes `docdex setup`.
 - Provide minimal UI:
   - Status panel (Ollama installed? Models installed? Disk free?)
   - Stepper (Consent → Install → Model selection → Summary)
@@ -70,7 +70,7 @@
 
 ## Cross-Platform Terminal Launch
 ### macOS
-- Run the wizard in the **same terminal** as the install (no new window).
+- Open a **new terminal window** and run `docdex setup`.
 - If no interactive TTY is available, print the manual command and create the pending marker.
 
 ### Windows
@@ -78,7 +78,7 @@
 - Prefer PowerShell for proper quoting; fallback to `cmd`.
 
 ### Linux
-- Run the wizard in the **same terminal** as a continuation of the install (no new window).
+- Open a **new terminal window** and run `docdex setup`.
 - If no interactive TTY is available, print the manual command and create the pending marker.
 
 ## Detection & Recommendations

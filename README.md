@@ -128,6 +128,7 @@ First-time setup (recommended):
 docdex setup
 ```
 The setup wizard runs in a terminal UI and asks for consent before installing Ollama and models.
+It also attempts to start the Ollama service and enable it to run on restart when supported by the OS.
 
 Skip auto-setup on install:
 ```bash

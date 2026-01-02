@@ -73,6 +73,26 @@ test("removeCodexConfig removes docdex from mcp_servers table", () => {
   assert.ok(contents.includes("other ="));
 });
 
+test("removeCodexConfig removes empty mcp_servers table", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-uninstall-codex-empty-"));
+  const file = path.join(dir, "config.toml");
+  fs.writeFileSync(
+    file,
+    [
+      'model = "gpt-5.1-codex-max"',
+      "",
+      "[mcp_servers]",
+      'docdex = { url = "http://localhost:3000/sse" }',
+      ""
+    ].join("\n")
+  );
+  const changed = removeCodexConfig(file);
+  assert.equal(changed, true);
+  const contents = fs.readFileSync(file, "utf8");
+  assert.ok(!contents.includes("docdex ="));
+  assert.ok(!contents.includes("[mcp_servers]"));
+});
+
 test("removeCodexConfig removes docdex nested section", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-uninstall-codex-nested-"));
   const file = path.join(dir, "config.toml");

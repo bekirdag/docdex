@@ -383,10 +383,14 @@ function hasInteractiveTty(stdin, stdout) {
 
 function canPromptWithTty(stdin, stdout) {
   if (hasInteractiveTty(stdin, stdout)) return true;
-  const ttyPath = process.platform === "win32" ? "CONIN$" : "/dev/tty";
+  const isWindows = process.platform === "win32";
+  const inputPath = isWindows ? "CONIN$" : "/dev/tty";
+  const outputPath = isWindows ? "CONOUT$" : "/dev/tty";
   try {
-    const fd = fs.openSync(ttyPath, "r");
-    fs.closeSync(fd);
+    const readFd = fs.openSync(inputPath, "r");
+    const writeFd = fs.openSync(outputPath, "w");
+    fs.closeSync(readFd);
+    fs.closeSync(writeFd);
     return true;
   } catch {
     return false;
@@ -403,9 +407,9 @@ function resolveOllamaInstallMode({
   if (override === true) return { mode: "install", reason: "env", interactive: false };
   if (override === false) return { mode: "skip", reason: "env", interactive: false };
   if (!canPrompt(stdin, stdout)) {
+    if (env.CI) return { mode: "skip", reason: "ci", interactive: false };
     return { mode: "skip", reason: "non_interactive", interactive: false };
   }
-  if (env.CI) return { mode: "skip", reason: "ci", interactive: false };
   return { mode: "prompt", reason: "interactive", interactive: true };
 }
 
@@ -421,9 +425,9 @@ function resolveOllamaModelPromptMode({
   const assumeYes = parseEnvBool(env.DOCDEX_OLLAMA_MODEL_ASSUME_Y);
   if (assumeYes === true) return { mode: "auto", reason: "env", interactive: false };
   if (!canPrompt(stdin, stdout)) {
+    if (env.CI) return { mode: "skip", reason: "ci", interactive: false };
     return { mode: "skip", reason: "non_interactive", interactive: false };
   }
-  if (env.CI) return { mode: "skip", reason: "ci", interactive: false };
   return { mode: "prompt", reason: "interactive", interactive: true };
 }
 
@@ -585,10 +589,19 @@ function resolvePromptStreams(stdin, stdout) {
     return { input: stdin, output: stdout, close: null };
   }
   const isWindows = process.platform === "win32";
-  const ttyPath = isWindows ? "CONIN$" : "/dev/tty";
+  const inputPath = isWindows ? "CONIN$" : "/dev/tty";
+  const outputPath = isWindows ? "CONOUT$" : "/dev/tty";
   try {
-    const input = fs.createReadStream(ttyPath, { autoClose: true });
-    return { input, output: stdout, close: () => input.close() };
+    const input = fs.createReadStream(inputPath, { autoClose: true });
+    const output = fs.createWriteStream(outputPath, { autoClose: true });
+    return {
+      input,
+      output,
+      close: () => {
+        input.close();
+        output.end();
+      }
+    };
   } catch {
     return { input: stdin, output: stdout, close: null };
   }

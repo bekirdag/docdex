@@ -104,6 +104,16 @@ test("resolveOllamaInstallMode prompts when interactive", () => {
   assert.equal(mode.mode, "prompt");
 });
 
+test("resolveOllamaInstallMode prompts even when CI if promptable", () => {
+  const mode = resolveOllamaInstallMode({
+    env: { CI: "1" },
+    stdin: { isTTY: true },
+    stdout: { isTTY: true },
+    canPrompt: () => true
+  });
+  assert.equal(mode.mode, "prompt");
+});
+
 test("resolveOllamaModelPromptMode auto-accepts with env flag", () => {
   const mode = resolveOllamaModelPromptMode({
     env: { DOCDEX_OLLAMA_MODEL_ASSUME_Y: "1" },
@@ -126,6 +136,16 @@ test("resolveOllamaModelPromptMode skips when disabled", () => {
     canPrompt: () => true
   });
   assert.equal(mode.mode, "skip");
+});
+
+test("resolveOllamaModelPromptMode prompts even when CI if promptable", () => {
+  const mode = resolveOllamaModelPromptMode({
+    env: { CI: "1" },
+    stdin: { isTTY: true },
+    stdout: { isTTY: true },
+    canPrompt: () => true
+  });
+  assert.equal(mode.mode, "prompt");
 });
 
 test("parseOllamaListOutput extracts model names", () => {

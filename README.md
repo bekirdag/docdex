@@ -33,7 +33,8 @@ Docdex is the layer between raw files and an AI assistant. It beats ad-hoc searc
 - Local indexing for docs and code
 - A shared daemon multiple tools can use
 - HTTP, CLI, and MCP access
-- Optional memory and web fallback when you want it
+- Repo memory and agent memory (preferences)
+- Optional web fallback when you want it
 
 ## Quick start
 
@@ -131,6 +132,21 @@ ollama pull nomic-embed-text
 Point Docdex at Ollama if needed:
 ```bash
 DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdexd daemon --repo /path/to/repo --host 127.0.0.1 --port 3210
+```
+
+## Memory (repo + agent)
+Docdex keeps two memory layers: repo-scoped memory for project facts, and agent memory for long-lived preferences across repos. Memory uses local embeddings (Ollama).
+
+Repo memory (enabled by default, disable with `DOCDEX_ENABLE_MEMORY=0`):
+```bash
+docdexd memory-store --repo /path/to/repo --text "Payments retry up to 3 times with backoff."
+docdexd memory-recall --repo /path/to/repo --query "payments retry policy" --top-k 5
+```
+
+Agent memory (global profile preferences):
+```bash
+docdexd profile add --agent-id "default" --category style --content "Use concise bullet points."
+docdexd profile search --agent-id "default" --query "style" --top-k 5
 ```
 
 ## Agent usage patterns

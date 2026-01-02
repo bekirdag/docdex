@@ -149,6 +149,50 @@ Run Docdex with Ollama:
 DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdexd daemon --repo /path/to/repo --host 127.0.0.1 --port 3210
 ```
 
+## Repo memory
+Repo memory stores project facts (notes, decisions, edge cases) and is used during chat/context assembly. Memory is enabled by default; disable with `DOCDEX_ENABLE_MEMORY=0` or `[memory].enabled = false`.
+
+CLI:
+```bash
+docdexd memory-store --repo /path/to/repo --text "Payments retry up to 3 times with backoff."
+docdexd memory-recall --repo /path/to/repo --query "payments retry policy" --top-k 5
+```
+
+HTTP:
+```bash
+curl -X POST "http://127.0.0.1:3210/v1/memory/store" \\
+  -H "Content-Type: application/json" \\
+  -d '{\"text\":\"Payments retry up to 3 times with backoff.\"}'
+
+curl -X POST "http://127.0.0.1:3210/v1/memory/recall" \\
+  -H "Content-Type: application/json" \\
+  -d '{\"query\":\"payments retry policy\",\"top_k\":5}'
+```
+
+Notes:
+- Memory uses embeddings (Ollama). If Ollama is unavailable, these calls fail with a structured error.
+- For multi-repo daemons, pass `repo_id` in the body/query or `x-docdex-repo-id` header.
+
+## Agent memory (profile preferences)
+Agent memory stores long-lived preferences across repos (style, tooling, constraints, workflow). It lives in the global state dir and does not require a repo path.
+
+CLI:
+```bash
+docdexd profile add --agent-id "default" --category style --content "Use concise bullet points."
+docdexd profile search --agent-id "default" --query "style" --top-k 5
+```
+
+HTTP:
+```bash
+curl -X POST "http://127.0.0.1:3210/v1/profile/add" \\
+  -H "Content-Type: application/json" \\
+  -d '{\"agent_id\":\"default\",\"content\":\"Use concise bullet points.\",\"category\":\"style\"}'
+```
+
+Notes:
+- Categories: `style`, `tooling`, `constraint`, `workflow`.
+- Set a default agent with `[server].default_agent_id` or `docdexd serve --agent-id` (`DOCDEX_AGENT_ID`).
+
 ## Smithery local usage
 Smithery runs Docdex as a local MCP tool using stdio. The provided `smithery.yaml` uses `runtime: "local"` and:
 ```

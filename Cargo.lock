@@ -698,7 +698,7 @@ dependencies = [
 
 [[package]]
 name = "docdex-mcp-server"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "chrono",
@@ -716,7 +716,7 @@ dependencies = [
 
 [[package]]
 name = "docdexd"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "aes-gcm",
  "ammonia",

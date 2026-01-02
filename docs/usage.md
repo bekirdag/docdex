@@ -125,6 +125,30 @@ Core endpoints:
 
 Reference: `docs/http_api.md`.
 
+## Code intelligence
+Docdex builds symbol, AST, and impact graph data during indexing so tools can reason about structure, not just text.
+
+Examples:
+```bash
+curl "http://127.0.0.1:3210/v1/symbols?file=src/app.ts"
+curl "http://127.0.0.1:3210/v1/ast?name=handleRequest&pathPrefix=src"
+curl "http://127.0.0.1:3210/v1/graph/impact?file=src/app.ts&maxDepth=3"
+```
+
+## Local LLM usage (Ollama)
+Docdex uses Ollama for embeddings and optional local chat. Use `docdexd llm-list` to see recommended models for your hardware.
+
+Quick setup:
+```bash
+ollama serve
+ollama pull nomic-embed-text
+```
+
+Run Docdex with Ollama:
+```bash
+DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdexd daemon --repo /path/to/repo --host 127.0.0.1 --port 3210
+```
+
 ## Smithery local usage
 Smithery runs Docdex as a local MCP tool using stdio. The provided `smithery.yaml` uses `runtime: "local"` and:
 ```

@@ -390,7 +390,11 @@ pub fn router(state: AppState) -> Router {
             post(crate::api::mcp_http::mcp_message_handler),
         )
         .route("/v1/mcp/sse", get(crate::api::mcp_http::mcp_sse_handler))
-        .route("/sse", get(crate::api::mcp_http::mcp_sse_handler))
+        .route(
+            "/sse",
+            get(crate::api::mcp_http::mcp_sse_handler)
+                .post(crate::api::mcp_http::mcp_request_handler),
+        )
         .route("/ai-help", get(ai_help_handler))
         .route("/metrics", get(metrics_handler))
         .route_layer(middleware::from_fn_with_state(

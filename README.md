@@ -37,6 +37,8 @@ Docdex is the layer between raw files and an AI assistant. It beats ad-hoc searc
 
 ## Quick start
 
+Full usage guide: [docs/usage.md](docs/usage.md)
+
 Install:
 ```bash
 npm i -g docdex
@@ -86,6 +88,58 @@ TOML example (Codex):
 [mcp_servers]
 docdex = { url = "http://localhost:3210/sse" }
 ```
+
+## Code intelligence
+Docdex exposes symbols, AST search, and impact graphs over HTTP. These endpoints help agents reason about structure, not just text.
+
+Symbols:
+```bash
+curl "http://127.0.0.1:3210/v1/symbols?file=src/app.ts"
+```
+
+AST query:
+```bash
+curl "http://127.0.0.1:3210/v1/ast?name=handleRequest&pathPrefix=src"
+```
+
+Impact graph:
+```bash
+curl "http://127.0.0.1:3210/v1/graph/impact?file=src/app.ts&maxDepth=3"
+```
+
+## Web search (optional)
+Docdex can enrich answers with web results when you want it to, while keeping your repo local.
+
+Enable web mode:
+```bash
+DOCDEX_WEB_ENABLED=1 docdexd daemon --repo /path/to/repo --host 127.0.0.1 --port 3210
+```
+
+Tips:
+- Set `DOCDEX_WEB_BROWSER` or `DOCDEX_CHROME_PATH` if a browser is not auto-detected.
+- Use `DOCDEX_OFFLINE=1` to force offline behavior in CI or air-gapped environments.
+
+## Local LLM + embeddings (Ollama)
+Docdex pairs well with local Ollama for embeddings and optional chat.
+
+Start Ollama and pull the default embedding model:
+```bash
+ollama serve
+ollama pull nomic-embed-text
+```
+
+Point Docdex at Ollama if needed:
+```bash
+DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdexd daemon --repo /path/to/repo --host 127.0.0.1 --port 3210
+```
+
+## Agent usage patterns
+Docdex gives agents a consistent, local context source. Treat it as the repo brain they can query before changing code.
+
+Sample agent prompts:
+- "Use Docdex to find the authentication entry point, then summarize the flow."
+- "Use Docdex impact graph to list downstream modules before refactoring."
+- "Use Docdex to fetch relevant code snippets for this bug report."
 
 ## Real-world scenarios
 
@@ -151,9 +205,10 @@ MCP client config (two servers):
 flowchart LR
   Repo[Repo on disk] --> Indexer[Docdex indexer]
   Indexer --> Daemon[Docdex daemon]
-  Daemon -->|HTTP + SSE (/sse)| MCPClient[MCP client]
+  Daemon -->|HTTP + SSE| MCPClient[MCP client]
   MCPClient --> Host[AI app or agent]
 ```
+SSE endpoint: `/sse`
 
 ## How it helps AI agents
 Agents do better work when they see accurate, ranked context. Docdex gives them a stable, local source of truth so they do not hallucinate over stale docs or miss critical files. You run Docdex once, point your MCP client at it, and the same context is shared across tools and workflows.

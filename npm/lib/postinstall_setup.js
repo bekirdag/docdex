@@ -1078,26 +1078,13 @@ function launchSetupWizard({
   if (shouldSkipSetup(env)) return { ok: false, reason: "skipped" };
 
   const args = ["setup"];
-  if (platform === "linux") {
+  if (platform === "linux" || platform === "darwin") {
     if (!canPrompt(stdin, stdout)) {
       return { ok: false, reason: "non_interactive" };
     }
     const child = spawnFn(binaryPath, args, { stdio: "inherit" });
     if (child.pid) return { ok: true };
     return { ok: false, reason: "spawn_failed" };
-  }
-
-  if (platform === "darwin") {
-    const command = `${binaryPath} ${args.join(" ")}`;
-    const osa = [
-      "osascript",
-      "-e",
-      `tell application \"Terminal\" to do script \"${command.replace(/"/g, '\\"')}\"`
-    ];
-    const result = spawnSyncFn(osa[0], osa.slice(1));
-    if (result.status === 0) return { ok: true };
-    logger?.warn?.(`[docdex] osascript failed: ${result.stderr || "unknown error"}`);
-    return { ok: false, reason: "terminal_launch_failed" };
   }
 
   if (platform === "win32") {

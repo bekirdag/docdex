@@ -1,6 +1,6 @@
 {
   "name": "docdex",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "mcpName": "io.github.bekirdag/docdex",
   "description": "Docdex CLI as an npm-installable binary wrapper.",
   "bin": {

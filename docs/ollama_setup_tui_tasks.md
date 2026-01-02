@@ -210,7 +210,7 @@ Each task includes: slug, title, deep description, dependencies, files to touch,
 - **Slug:** `postinstall-launcher`
 - **Title:** Postinstall launches TUI (no installs)
 - **Description:**  
-  Update npm postinstall to launch the setup wizard. On Linux/Unix, do **not** open a new window; continue in the same terminal if possible. On macOS/Windows, use a new terminal window. Do not install Ollama/models in Node. If launch fails, create `setup_pending.json` and print `docdex setup`. Respect `DOCDEX_SETUP_SKIP=1`.
+  Update npm postinstall to launch the setup wizard. On Linux/Unix/macOS, do **not** open a new window; continue in the same terminal if possible. On Windows, use a new terminal window. Do not install Ollama/models in Node. If launch fails, create `setup_pending.json` and print `docdex setup`. Respect `DOCDEX_SETUP_SKIP=1`.
 - **Dependencies:** `cli-setup-command-wireup`, `setup-status-store`
 - **Files to Touch:**
   - `npm/lib/postinstall_setup.js`

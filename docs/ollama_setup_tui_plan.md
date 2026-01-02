@@ -70,8 +70,8 @@
 
 ## Cross-Platform Terminal Launch
 ### macOS
-- Use `open -a Terminal` or `osascript` to open Terminal and run `docdex setup`.
-- Prefer `open -a Terminal` with `--args` when available.
+- Run the wizard in the **same terminal** as the install (no new window).
+- If no interactive TTY is available, print the manual command and create the pending marker.
 
 ### Windows
 - Use `cmd /c start` or PowerShell `Start-Process` to open a console and run `docdex setup`.

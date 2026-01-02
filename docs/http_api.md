@@ -89,6 +89,6 @@ Most endpoints return `{ "error": { "code": "<docdex_code>", "message": "<string
 - `[memory.profile]` controls profile embedding config:
   - `embedding_model` (default `nomic-embed-text`)
   - `embedding_dim` (default `768`)
-- `[server].default_agent_id` sets the fallback agent used when requests omit `agent_id` (also configurable via `DOCDEX_DEFAULT_AGENT_ID` / `docdexd serve --agent-id`).
+- `[server].default_agent_id` sets the fallback agent used when requests omit `agent_id` (also configurable via `DOCDEX_AGENT_ID` / `docdexd serve --agent-id`).
 - `[server].hook_socket_path` enables Unix socket transport for `/v1/hooks/validate` (HTTP remains available).
 - `[web.scraper].auto_install` controls Linux auto-install of headless Chromium; `[web.scraper].chrome_binary_path` and `[web.scraper].browser_kind` store the resolved browser binary.

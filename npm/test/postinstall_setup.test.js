@@ -195,19 +195,22 @@ test("launchSetupWizard returns non_interactive when no tty", () => {
   assert.equal(result.reason, "non_interactive");
 });
 
-test("launchSetupWizard uses osascript on macOS", () => {
+test("launchSetupWizard uses spawn on macOS when interactive", () => {
   const calls = [];
-  const spawnSyncFn = (cmd, args) => {
+  const spawnFn = (cmd, args) => {
     calls.push({ cmd, args });
-    return { status: 0 };
+    return { pid: 1234 };
   };
   const result = launchSetupWizard({
     binaryPath: "/tmp/docdexd",
-    spawnSyncFn,
-    platform: "darwin"
+    spawnFn,
+    platform: "darwin",
+    stdin: { isTTY: true },
+    stdout: { isTTY: true },
+    canPrompt: () => true
   });
   assert.equal(result.ok, true);
-  assert.equal(calls[0].cmd, "osascript");
+  assert.equal(calls[0].cmd, "/tmp/docdexd");
 });
 
 test("launchSetupWizard uses cmd start on Windows", () => {

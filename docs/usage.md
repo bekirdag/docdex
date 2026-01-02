@@ -143,6 +143,7 @@ First-time setup (recommended):
 docdex setup
 ```
 The wizard is interactive; run it from a terminal.
+If Ollama is installed but not running, the wizard will attempt to start it to pull models.
 Skip auto-setup on install:
 ```bash
 DOCDEX_SETUP_SKIP=1 npm i -g docdex

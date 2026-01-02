@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use which::which;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,28 +60,45 @@ pub fn resolve_ollama_path(explicit: Option<PathBuf>) -> Option<PathBuf> {
 }
 
 pub fn list_models(bin: &Path) -> Result<Vec<String>> {
+    match list_models_once(bin) {
+        Ok(models) => Ok(models),
+        Err(err) => {
+            if is_connect_error(&err) && start_server(bin).is_ok() {
+                if let Ok(models) = wait_for_models(bin) {
+                    return Ok(models);
+                }
+            }
+            Err(err)
+        }
+    }
+}
+
+pub fn pull_model(bin: &Path, model: &str) -> Result<()> {
+    match pull_model_once(bin, model) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            if is_connect_error(&err) && start_server(bin).is_ok() {
+                if wait_for_ready(bin) {
+                    return pull_model_once(bin, model);
+                }
+            }
+            Err(err)
+        }
+    }
+}
+
+fn list_models_once(bin: &Path) -> Result<Vec<String>> {
     let output = Command::new(bin).arg("list").output()?;
     if !output.status.success() {
         return Err(anyhow!(
             "ollama list failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            normalize_command_error(&output)
         ));
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut models = Vec::new();
-    for line in stdout.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("NAME") {
-            continue;
-        }
-        if let Some(name) = trimmed.split_whitespace().next() {
-            models.push(name.to_string());
-        }
-    }
-    Ok(models)
+    Ok(parse_models(&output.stdout))
 }
 
-pub fn pull_model(bin: &Path, model: &str) -> Result<()> {
+fn pull_model_once(bin: &Path, model: &str) -> Result<()> {
     let output = Command::new(bin)
         .arg("pull")
         .arg(model)
@@ -95,6 +112,77 @@ pub fn pull_model(bin: &Path, model: &str) -> Result<()> {
         String::from_utf8_lossy(&output.stdout).trim(),
         String::from_utf8_lossy(&output.stderr).trim()
     ))
+}
+
+fn parse_models(stdout: &[u8]) -> Vec<String> {
+    let stdout = String::from_utf8_lossy(stdout);
+    let mut models = Vec::new();
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("NAME") {
+            continue;
+        }
+        if let Some(name) = trimmed.split_whitespace().next() {
+            models.push(name.to_string());
+        }
+    }
+    models
+}
+
+fn normalize_command_error(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stderr.is_empty() {
+        stdout
+    } else if stdout.is_empty() {
+        stderr
+    } else {
+        format!("{stderr} {stdout}")
+    }
+}
+
+fn is_connect_error(err: &anyhow::Error) -> bool {
+    let text = err.to_string().to_ascii_lowercase();
+    text.contains("could not connect")
+        || text.contains("connection refused")
+        || text.contains("connection error")
+        || text.contains("connect to")
+}
+
+fn start_server(bin: &Path) -> Result<()> {
+    let mut cmd = Command::new(bin);
+    cmd.arg("serve")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x00000008;
+        cmd.creation_flags(DETACHED_PROCESS);
+    }
+    cmd.spawn().context("spawn ollama serve")?;
+    Ok(())
+}
+
+fn wait_for_ready(bin: &Path) -> bool {
+    for _ in 0..15 {
+        if list_models_once(bin).is_ok() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    false
+}
+
+fn wait_for_models(bin: &Path) -> Result<Vec<String>> {
+    for _ in 0..15 {
+        if let Ok(models) = list_models_once(bin) {
+            return Ok(models);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    Err(anyhow!("ollama server did not become ready in time"))
 }
 
 pub fn install_ollama() -> Result<()> {
@@ -247,5 +335,20 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("curl or wget missing"));
+    }
+
+    #[test]
+    fn connect_error_detection_matches_common_messages() {
+        let err = anyhow!("could not connect to a running Ollama instance");
+        assert!(is_connect_error(&err));
+        let err = anyhow!("Connection refused");
+        assert!(is_connect_error(&err));
+    }
+
+    #[test]
+    fn parse_models_filters_header_and_empty_lines() {
+        let input = b"NAME\tSIZE\nnomic-embed-text\t123MB\n\nphi3.5:3.8b\t2GB\n";
+        let parsed = parse_models(input);
+        assert_eq!(parsed, vec!["nomic-embed-text", "phi3.5:3.8b"]);
     }
 }

@@ -381,24 +381,46 @@ function hasInteractiveTty(stdin, stdout) {
   return Boolean((stdin && stdin.isTTY) || (stdout && stdout.isTTY));
 }
 
-function resolveOllamaInstallMode({ env = process.env, stdin = process.stdin, stdout = process.stdout } = {}) {
+function canPromptWithTty(stdin, stdout) {
+  if (hasInteractiveTty(stdin, stdout)) return true;
+  const ttyPath = process.platform === "win32" ? "CONIN$" : "/dev/tty";
+  try {
+    const fd = fs.openSync(ttyPath, "r");
+    fs.closeSync(fd);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveOllamaInstallMode({
+  env = process.env,
+  stdin = process.stdin,
+  stdout = process.stdout,
+  canPrompt = canPromptWithTty
+} = {}) {
   const override = parseEnvBool(env.DOCDEX_OLLAMA_INSTALL);
   if (override === true) return { mode: "install", reason: "env", interactive: false };
   if (override === false) return { mode: "skip", reason: "env", interactive: false };
-  if (!hasInteractiveTty(stdin, stdout)) {
+  if (!canPrompt(stdin, stdout)) {
     return { mode: "skip", reason: "non_interactive", interactive: false };
   }
   if (env.CI) return { mode: "skip", reason: "ci", interactive: false };
   return { mode: "prompt", reason: "interactive", interactive: true };
 }
 
-function resolveOllamaModelPromptMode({ env = process.env, stdin = process.stdin, stdout = process.stdout } = {}) {
+function resolveOllamaModelPromptMode({
+  env = process.env,
+  stdin = process.stdin,
+  stdout = process.stdout,
+  canPrompt = canPromptWithTty
+} = {}) {
   const override = parseEnvBool(env.DOCDEX_OLLAMA_MODEL_PROMPT);
   if (override === true) return { mode: "prompt", reason: "env", interactive: true };
   if (override === false) return { mode: "skip", reason: "env", interactive: false };
   const assumeYes = parseEnvBool(env.DOCDEX_OLLAMA_MODEL_ASSUME_Y);
   if (assumeYes === true) return { mode: "auto", reason: "env", interactive: false };
-  if (!hasInteractiveTty(stdin, stdout)) {
+  if (!canPrompt(stdin, stdout)) {
     return { mode: "skip", reason: "non_interactive", interactive: false };
   }
   if (env.CI) return { mode: "skip", reason: "ci", interactive: false };
@@ -1050,5 +1072,6 @@ module.exports = {
   upsertLlmDefaultModel,
   pullOllamaModel,
   listOllamaModels,
-  hasInteractiveTty
+  hasInteractiveTty,
+  canPromptWithTty
 };

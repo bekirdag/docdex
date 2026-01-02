@@ -88,7 +88,8 @@ test("resolveOllamaInstallMode skips when non-interactive", () => {
   const mode = resolveOllamaInstallMode({
     env: {},
     stdin: { isTTY: false },
-    stdout: { isTTY: false }
+    stdout: { isTTY: false },
+    canPrompt: () => false
   });
   assert.equal(mode.mode, "skip");
 });
@@ -97,7 +98,8 @@ test("resolveOllamaInstallMode prompts when interactive", () => {
   const mode = resolveOllamaInstallMode({
     env: {},
     stdin: { isTTY: true },
-    stdout: { isTTY: true }
+    stdout: { isTTY: true },
+    canPrompt: () => true
   });
   assert.equal(mode.mode, "prompt");
 });
@@ -106,7 +108,8 @@ test("resolveOllamaModelPromptMode auto-accepts with env flag", () => {
   const mode = resolveOllamaModelPromptMode({
     env: { DOCDEX_OLLAMA_MODEL_ASSUME_Y: "1" },
     stdin: {},
-    stdout: {}
+    stdout: {},
+    canPrompt: () => false
   });
   assert.equal(mode.mode, "auto");
 });
@@ -119,7 +122,8 @@ test("resolveOllamaModelPromptMode skips when disabled", () => {
   const mode = resolveOllamaModelPromptMode({
     env: { DOCDEX_OLLAMA_MODEL_PROMPT: "0" },
     stdin: { isTTY: true },
-    stdout: { isTTY: true }
+    stdout: { isTTY: true },
+    canPrompt: () => true
   });
   assert.equal(mode.mode, "skip");
 });

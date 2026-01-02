@@ -1,4 +1,5 @@
 use reqwest::blocking::Client;
+use reqwest::header::CONNECTION;
 use serde_json::json;
 use std::error::Error;
 use std::fs;
@@ -111,6 +112,38 @@ fn file_uri(path: &Path) -> String {
         .to_string()
 }
 
+fn post_initialize(
+    client: &Client,
+    port: u16,
+    root_uri: &str,
+) -> Result<reqwest::blocking::Response, Box<dyn Error>> {
+    let url = format!("http://127.0.0.1:{port}/v1/initialize");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut last_err: Option<reqwest::Error> = None;
+    while Instant::now() < deadline {
+        match client
+            .post(&url)
+            .header(CONNECTION, "close")
+            .json(&json!({ "rootUri": root_uri }))
+            .send()
+        {
+            Ok(resp) => return Ok(resp),
+            Err(err) => {
+                last_err = Some(err);
+                thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
+    Err(format!(
+        "initialize request failed: {}",
+        last_err
+            .as_ref()
+            .map(|err| err.to_string())
+            .unwrap_or_else(|| "unknown error".to_string())
+    )
+    .into())
+}
+
 #[test]
 fn initialize_returns_repo_id_and_status() -> Result<(), Box<dyn Error>> {
     let repo = TempDir::new()?;
@@ -128,11 +161,11 @@ fn initialize_returns_repo_id_and_status() -> Result<(), Box<dyn Error>> {
     let _daemon = start_daemon(state_dir.path(), repo.path(), port)?;
     wait_for_health(port)?;
 
-    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
-    let resp = client
-        .post(format!("http://127.0.0.1:{port}/v1/initialize"))
-        .json(&json!({ "rootUri": file_uri(repo.path()) }))
-        .send()?;
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .pool_max_idle_per_host(0)
+        .build()?;
+    let resp = post_initialize(&client, port, &file_uri(repo.path()))?;
     assert!(
         resp.status().is_success(),
         "initialize failed: {}",
@@ -171,11 +204,11 @@ fn initialize_rejects_unknown_repo() -> Result<(), Box<dyn Error>> {
     let other = TempDir::new()?;
     write_repo(other.path())?;
 
-    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
-    let resp = client
-        .post(format!("http://127.0.0.1:{port}/v1/initialize"))
-        .json(&json!({ "rootUri": file_uri(other.path()) }))
-        .send()?;
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .pool_max_idle_per_host(0)
+        .build()?;
+    let resp = post_initialize(&client, port, &file_uri(other.path()))?;
     assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
     let payload: serde_json::Value = resp.json()?;
     let code = payload

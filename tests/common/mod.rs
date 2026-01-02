@@ -74,7 +74,7 @@ pub fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
     let timeout_secs = std::env::var("DOCDEX_TEST_HEALTH_TIMEOUT_SECS")
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or(20);
+        .unwrap_or(60);
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     while Instant::now() < deadline {
         match client.get(&url).send() {

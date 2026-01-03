@@ -38,7 +38,7 @@ struct AuditRecord<'a> {
 impl AuditLogger {
     pub fn new(path: PathBuf, max_bytes: u64, max_files: usize) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            crate::state_layout::ensure_state_dir_secure(parent)?;
         }
         let (writer, prev_hash) = open_with_prev_hash(&path)?;
         Ok(Self {

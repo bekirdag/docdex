@@ -1,6 +1,6 @@
 [package]
 name = "docdexd"
-version = "0.1.11"
+version = "0.2.11"
 edition = "2021"
 
 [dependencies]
@@ -8,18 +8,22 @@ anyhow = "1.0"
 axum = { version = "0.7", features = ["json"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 futures = "0.3"
+fs4 = "0.7"
 once_cell = "1.19"
 parking_lot = "0.12"
 regex = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.39", features = ["rt-multi-thread", "macros", "signal"] }
+serde_urlencoded = "0.7"
+toml = "0.8"
+tokio = { version = "1.39", features = ["rt-multi-thread", "macros", "signal", "time", "process"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 tantivy = { version = "0.21", default-features = false, features = ["mmap", "lz4-compression"] }
 walkdir = "2.5"
 thiserror = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
+crossterm = "0.27"
 notify = "6"
 zstd-sys = "=2.0.9"
 ipnet = "2"
@@ -29,14 +33,50 @@ hyper-util = { version = "0.1", features = ["server", "tokio", "http1", "http2",
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 tower = "0.4"
 ammonia = "3"
+aes-gcm = "0.10"
+base64 = "0.22"
+html2text = "0.13"
 nix = { version = "0.29", default-features = false, features = ["user", "sched", "fs"] }
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 hex = "0.4"
 which = "6"
+sysinfo = { version = "0.30" }
+rusqlite = { version = "0.31", features = ["bundled"] }
+ratatui = "0.26"
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
+http-body-util = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }
+url = "2.5"
+readability = { version = "0.3", default-features = false }
+tempfile = "3.10"
+tokio-tungstenite = "0.21"
+tree-sitter = "0.20.10"
+tree-sitter-go = "0.20.0"
+tree-sitter-javascript = "0.20.4"
+tree-sitter-python = "0.20.4"
+tree-sitter-rust = "0.20.4"
+tree-sitter-typescript = "0.20.5"
+hdrhistogram = "7.5"
+ignore = "0.4"
+tokio-stream = "0.1"
 
 [dev-dependencies]
 assert_cmd = "2.0"
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+criterion = "0.5"
+proptest = "1.5"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde_json = "1.0"
-tempfile = "3.10"
+
+[target.'cfg(not(target_env = "musl"))'.dependencies]
+sqlite-vec = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] }
+
+[workspace]
+members = ["crates/mcp-server", "fuzz"]
+
+[[bench]]
+name = "indexing_bench"
+harness = false

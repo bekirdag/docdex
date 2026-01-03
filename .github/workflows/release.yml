@@ -61,6 +61,7 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        if: ${{ runner.os != 'Linux' }}
         with:
           key: ${{ runner.os }}-${{ matrix.target }}
           workspaces: |
@@ -84,19 +85,24 @@ jobs:
           AR_aarch64_unknown_linux_gnu: ${{ matrix.ar }}
           CC_aarch64_unknown_linux_gnu: ${{ matrix.cc }}
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.linker }}
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: |
+          cargo build --release --locked --target ${{ matrix.target }}
+          cargo build --release --locked --target ${{ matrix.target }} -p docdex-mcp-server
 
       - name: Package binary
         shell: bash
         run: |
           mkdir -p dist
           BIN_NAME="docdexd"
+          MCP_NAME="docdex-mcp-server"
           if [[ "${{ matrix.target }}" == *"windows"* ]]; then
             BIN_NAME="docdexd.exe"
+            MCP_NAME="docdex-mcp-server.exe"
           fi
           cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${BIN_NAME}"
-          tar -czf ${{ matrix.archive }}.tar.gz -C dist "${BIN_NAME}"
-          python -c "import hashlib, pathlib; p=pathlib.Path('${{ matrix.archive }}.tar.gz'); h=hashlib.sha256(p.read_bytes()).hexdigest(); pathlib.Path(f'{p}.sha256').write_text(f'{h}  {p.name}\n')"
+          cp "target/${{ matrix.target }}/release/${MCP_NAME}" "dist/${MCP_NAME}"
+          tar -czf ${{ matrix.archive }}.tar.gz -C dist "${BIN_NAME}" "${MCP_NAME}"
+          python -c "import hashlib, pathlib; p=pathlib.Path('${{ matrix.archive }}.tar.gz'); h=hashlib.sha256(p.read_bytes()).hexdigest(); pathlib.Path(f'{p}.sha256').write_bytes(f'{h}  {p.name}\n'.encode())"
 
       - name: Upload GitHub release assets
         uses: softprops/action-gh-release@v1
@@ -104,7 +110,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: |
             ${{ matrix.archive }}.tar.gz
-            ${{ matrix.archive }}.sha256
+            ${{ matrix.archive }}.tar.gz.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -114,7 +120,7 @@ jobs:
           name: ${{ matrix.archive }}
           path: |
             ${{ matrix.archive }}.tar.gz
-            ${{ matrix.archive }}.sha256
+            ${{ matrix.archive }}.tar.gz.sha256
 
   publish-npm:
     name: Publish npm package and MCP server
@@ -142,6 +148,8 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           for f in *.sha256; do
+            tr -d '\r' < "$f" > "$f.tmp"
+            mv "$f.tmp" "$f"
             shasum -a 256 -c "$f"
           done
 
@@ -191,6 +199,27 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org
 
+      - name: Generate release manifest
+        run: |
+          node scripts/generate_release_manifest.cjs \
+            --dir artifacts \
+            --out artifacts/docdex-release-manifest.json \
+            --tag "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}"
+
+      - name: Upload release manifest + checksums
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/docdex-release-manifest.json
+            artifacts/docdex-release-manifest.json.sha256
+            artifacts/SHA256SUMS
+            artifacts/SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Update npm to latest (trusted publish requires >=11.5.1)
         run: npm install -g npm@latest
 
@@ -237,7 +266,7 @@ jobs:
       # MCP Registry publishing
       - name: Install MCP Publisher
         run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/download/v1.3.10/mcp-publisher_linux_amd64.tar.gz" \
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/download/v1.4.0/mcp-publisher_linux_amd64.tar.gz" \
             | tar xz mcp-publisher
           chmod +x mcp-publisher
 

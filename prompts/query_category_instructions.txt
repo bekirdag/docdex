@@ -1,0 +1,18 @@
+Classify the user query into exactly one category from this list:
+- code_example
+- api_reference
+- how_to_guide
+- concept_definition
+- troubleshooting
+- spec_standard
+- comparison_opinion
+- news_release
+- general
+
+Instructions:
+- Choose the category that best matches what the user wants to see in the answer.
+- If unsure, choose general.
+- Return JSON only. Do not wrap JSON in Markdown.
+
+Return JSON ONLY in this shape:
+{"category":"..."}

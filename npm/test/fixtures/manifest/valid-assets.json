@@ -1,0 +1,9 @@
+{
+  "assets": [
+    {
+      "target_triple": "aarch64-apple-darwin",
+      "name": "docdexd-darwin-arm64.tar.gz",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ]
+}

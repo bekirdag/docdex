@@ -1,23 +1,57 @@
+mod ignore_rules;
+mod impact;
+pub(crate) mod libs;
+mod symbols;
+
+use crate::error::{
+    repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
+    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
+};
+use crate::impact::{extract_import_edges, ImpactGraphEdge};
+use crate::symbols::{
+    AstQuery, AstQueryMatch, AstResponseV1, AstSearchMatch, AstSearchMode, SymbolSearchMatch,
+    SymbolsParserStatus, SymbolsResponseV1, SymbolsStore,
+};
 use anyhow::{anyhow, Context, Result};
+use ignore_rules::{build_ignore_matcher, IgnoreMatcher};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use regex::Regex;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use tantivy::collector::TopDocs;
-use tantivy::query::{AllQuery, QueryParser};
+use tantivy::query::QueryParser;
 use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
 use tantivy::DocAddress;
 use tantivy::{
     doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, SnippetGenerator, Term,
 };
+use thiserror::Error;
 use tracing::warn;
 use walkdir::WalkDir;
 
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
-const DEFAULT_EXTENSIONS: &[&str] = &[".md", ".markdown", ".mdx", ".txt"];
+const MAX_BINARY_FILE_BYTES: u64 = 5 * 1024 * 1024;
+const BINARY_SNIFF_BYTES: usize = 8192;
+const DOC_EXTENSIONS: &[&str] = &[".md", ".markdown", ".mdx", ".txt"];
+const CODE_EXTENSIONS: &[&str] = &[".rs", ".py", ".js", ".jsx", ".ts", ".tsx", ".go"];
+const DEFAULT_EXTENSIONS: &[&str] = &[
+    ".md",
+    ".markdown",
+    ".mdx",
+    ".txt",
+    ".rs",
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".go",
+];
 const DEFAULT_EXCLUDED_DIR_NAMES: &[&str] = &[
     // Core VCS / tooling
     ".git",
@@ -28,6 +62,11 @@ const DEFAULT_EXCLUDED_DIR_NAMES: &[&str] = &[
     "temp",
     ".hg",
     ".svn",
+    ".bzr",
+    ".darcs",
+    ".fossil",
+    ".pijul",
+    "cvs",
     // JS / TS / Node ecosystem
     "node_modules",
     ".pnpm-store",
@@ -63,7 +102,6 @@ const DEFAULT_EXCLUDED_DIR_NAMES: &[&str] = &[
     ".cargo",
     // Go
     "bin",
-    "pkg",
     "go-build",
     // Java / Kotlin / JVM
     ".gradle",
@@ -155,6 +193,8 @@ pub struct IndexConfig {
     state_dir: PathBuf,
     excluded_dir_names: Vec<String>,
     excluded_relative_prefixes: Vec<String>,
+    symbols_enabled: bool,
+    ignore_matcher: Option<Arc<IgnoreMatcher>>,
 }
 
 #[derive(Clone)]
@@ -168,21 +208,74 @@ pub struct Indexer {
     body_field: tantivy::schema::Field,
     summary_field: tantivy::schema::Field,
     token_field: tantivy::schema::Field,
+    kind_field: Option<tantivy::schema::Field>,
     writer: Option<Arc<Mutex<IndexWriter>>>,
+    symbols_store: Option<SymbolsStore>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentKind {
+    Doc,
+    Code,
+}
+
+impl DocumentKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            DocumentKind::Doc => "doc",
+            DocumentKind::Code => "code",
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Hit {
     pub doc_id: String,
     pub rel_path: String,
+    // Stable search contract alias for `rel_path` (preferred by downstream clients).
+    pub path: String,
+    pub kind: DocumentKind,
     pub score: f32,
     pub summary: String,
     pub snippet: String,
     pub token_estimate: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet_origin: Option<SearchSnippetOrigin>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet_truncated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub line_start: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_end: Option<usize>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchSnippetOrigin {
+    Query,
+    Preview,
+    Summary,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryRewrite {
+    None,
+    Sanitized,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SearchQueryMeta {
+    pub raw: String,
+    pub effective: String,
+    pub rewrite: QueryRewrite,
+}
+
+#[derive(Error, Debug)]
+pub enum SearchError {
+    #[error("invalid query: {reason}")]
+    InvalidQuery { reason: String },
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -206,6 +299,7 @@ pub struct SnippetResult {
 pub struct DocSnapshot {
     pub doc_id: String,
     pub rel_path: String,
+    pub kind: DocumentKind,
     pub summary: String,
     pub token_estimate: u64,
 }
@@ -225,8 +319,14 @@ pub struct IndexStats {
 
 impl IndexConfig {
     #[allow(dead_code)]
-    pub fn for_repo(repo_root: &Path) -> Self {
-        Self::with_overrides(repo_root, None, Vec::new(), Vec::new())
+    pub fn for_repo(repo_root: &Path) -> Result<Self> {
+        if env_flag_disabled("DOCDEX_ENABLE_SYMBOL_EXTRACTION") {
+            warn!(
+                target: "docdexd",
+                "symbol + impact extraction are always enabled; ignoring DOCDEX_ENABLE_SYMBOL_EXTRACTION=0"
+            );
+        }
+        Self::with_overrides(repo_root, None, Vec::new(), Vec::new(), true)
     }
 
     pub fn with_overrides(
@@ -234,8 +334,15 @@ impl IndexConfig {
         state_dir: Option<PathBuf>,
         extra_excluded_dirs: Vec<String>,
         extra_excluded_prefixes: Vec<String>,
-    ) -> Self {
-        let state_dir = resolve_state_dir(repo_root, state_dir);
+        symbols_enabled: bool,
+    ) -> Result<Self> {
+        if !symbols_enabled {
+            warn!(
+                target: "docdexd",
+                "symbol + impact extraction are always enabled; ignoring symbols_enabled=false"
+            );
+        }
+        let state_dir = resolve_state_dir(repo_root, state_dir)?;
         let mut excluded_dir_names: Vec<String> = DEFAULT_EXCLUDED_DIR_NAMES
             .iter()
             .map(|value| value.to_string())
@@ -268,11 +375,14 @@ impl IndexConfig {
                 excluded_relative_prefixes.push(normalized);
             }
         }
-        Self {
+        let ignore_matcher = build_ignore_matcher(repo_root, &excluded_dir_names).map(Arc::new);
+        Ok(Self {
             state_dir,
             excluded_dir_names,
             excluded_relative_prefixes,
-        }
+            symbols_enabled: true,
+            ignore_matcher,
+        })
     }
 
     pub fn state_dir(&self) -> &Path {
@@ -286,63 +396,97 @@ impl IndexConfig {
     pub fn excluded_relative_prefixes(&self) -> &[String] {
         &self.excluded_relative_prefixes
     }
+
+    pub fn symbols_enabled(&self) -> bool {
+        self.symbols_enabled
+    }
+
+    pub fn ignore_matcher(&self) -> Option<&IgnoreMatcher> {
+        self.ignore_matcher.as_deref()
+    }
 }
 
 impl Indexer {
     #[allow(dead_code)]
     pub fn new(repo_root: PathBuf) -> Result<Self> {
+        if !repo_root.exists() {
+            return Err(missing_repo_path_error(&repo_root).into());
+        }
+        if !repo_root.is_dir() {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                format!("repo root is not a directory: {}", repo_root.display()),
+            )
+            .into());
+        }
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
-        let config = IndexConfig::for_repo(&repo_root);
+        let config = IndexConfig::for_repo(&repo_root)?;
         Self::with_config(repo_root, config)
     }
 
     pub fn with_config(repo_root: PathBuf, config: IndexConfig) -> Result<Self> {
-        let repo_root = repo_root.canonicalize().context("resolve repo root")?;
-        ensure_state_dir_secure(config.state_dir())?;
-        let (schema, doc_id_field, path_field, body_field, summary_field, token_field) =
-            build_schema();
-        let index = Index::open_or_create(
-            tantivy::directory::MmapDirectory::open(config.state_dir())?,
-            schema.clone(),
-        )?;
-        let reader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommit)
-            .try_into()?;
-        let writer = index.writer(MAX_INDEX_RAM_BYTES)?;
-        Ok(Self {
-            repo_root,
-            config,
-            index,
-            reader,
-            doc_id_field,
-            path_field,
-            body_field,
-            summary_field,
-            token_field,
-            writer: Some(Arc::new(Mutex::new(writer))),
-        })
-    }
-
-    pub fn with_config_read_only(repo_root: PathBuf, config: IndexConfig) -> Result<Self> {
-        let repo_root = repo_root.canonicalize().context("resolve repo root")?;
-        if !config.state_dir().exists() {
-            return Err(anyhow!(
-                "index not found at {}; run `docdexd index` first",
-                config.state_dir().display()
-            ));
+        if !repo_root.exists() {
+            return Err(missing_repo_path_error(&repo_root).into());
         }
-        let index = Index::open_in_dir(config.state_dir())?;
+        if !repo_root.is_dir() {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                format!("repo root is not a directory: {}", repo_root.display()),
+            )
+            .into());
+        }
+        let repo_root = repo_root.canonicalize().context("resolve repo root")?;
+        let created_state_dir = !config.state_dir().exists();
+        if created_state_dir {
+            ensure_state_dir_secure(config.state_dir())?;
+        }
+        let (schema, _, _, _, _, _, _) = build_schema();
+        let index = if config.state_dir().join("meta.json").exists() {
+            Index::open_in_dir(config.state_dir())
+                .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?
+        } else {
+            Index::create_in_dir(config.state_dir(), schema.clone())?
+        };
+        ensure_state_dir_secure(config.state_dir())?;
+        hold_after_state_dir_created();
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommit)
             .try_into()?;
         let schema = index.schema();
-        let doc_id_field = schema.get_field("doc_id").unwrap();
-        let path_field = schema.get_field("rel_path").unwrap();
-        let body_field = schema.get_field("body").unwrap();
-        let summary_field = schema.get_field("summary").unwrap();
-        let token_field = schema.get_field("token_estimate").unwrap();
+        let doc_id_field = schema
+            .get_field("doc_id")
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
+        let path_field = schema
+            .get_field("rel_path")
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
+        let body_field = schema
+            .get_field("body")
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
+        let summary_field = schema
+            .get_field("summary")
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
+        let token_field = schema
+            .get_field("token_estimate")
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
+        let kind_field = schema.get_field("kind").ok();
+        let writer = index.writer(MAX_INDEX_RAM_BYTES)?;
+        let symbols_store = if config.symbols_enabled() {
+            symbols::open_symbols_store(&repo_root, config.state_dir(), true)
+        } else {
+            None
+        };
+        if let Err(err) = crate::repo_manager::record_repo_opened(&repo_root, config.state_dir()) {
+            if let Some(identity) = err.downcast_ref::<crate::repo_manager::RepoIdentityError>() {
+                return Err(repo_state_mismatch_error(
+                    &repo_root,
+                    Some(config.state_dir()),
+                    identity,
+                )
+                .into());
+            }
+            return Err(err).context("record repo identity metadata");
+        }
         Ok(Self {
             repo_root,
             config,
@@ -353,7 +497,89 @@ impl Indexer {
             body_field,
             summary_field,
             token_field,
+            kind_field,
+            writer: Some(Arc::new(Mutex::new(writer))),
+            symbols_store,
+        })
+    }
+
+    pub fn with_config_read_only(repo_root: PathBuf, config: IndexConfig) -> Result<Self> {
+        if !repo_root.exists() {
+            return Err(missing_repo_path_error(&repo_root).into());
+        }
+        if !repo_root.is_dir() {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                format!("repo root is not a directory: {}", repo_root.display()),
+            )
+            .into());
+        }
+        let repo_root = repo_root.canonicalize().context("resolve repo root")?;
+        if !config.state_dir().exists() {
+            return Err(AppError::new(
+                ERR_MISSING_INDEX,
+                format!(
+                    "index not found at {}; run `docdexd index --repo {}` first",
+                    config.state_dir().display(),
+                    repo_root.display()
+                ),
+            )
+            .into());
+        }
+        let index = Index::open_in_dir(config.state_dir())
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::OnCommit)
+            .try_into()?;
+        let schema = index.schema();
+        let doc_id_field = schema
+            .get_field("doc_id")
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
+        let path_field = schema
+            .get_field("rel_path")
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
+        let body_field = schema
+            .get_field("body")
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
+        let summary_field = schema
+            .get_field("summary")
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
+        let token_field = schema
+            .get_field("token_estimate")
+            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
+        let kind_field = schema.get_field("kind").ok();
+        let symbols_store = if config.symbols_enabled() {
+            symbols::open_symbols_store(&repo_root, config.state_dir(), false)
+        } else {
+            None
+        };
+        if let Err(err) =
+            crate::repo_manager::validate_repo_state_dir(&repo_root, config.state_dir())
+        {
+            if let Some(identity) = err.downcast_ref::<crate::repo_manager::RepoIdentityError>() {
+                return Err(repo_state_mismatch_error(
+                    &repo_root,
+                    Some(config.state_dir()),
+                    identity,
+                )
+                .into());
+            }
+            return Err(err).context("validate repo identity metadata");
+        }
+        Ok(Self {
+            repo_root,
+            config,
+            index,
+            reader,
+            doc_id_field,
+            path_field,
+            body_field,
+            summary_field,
+            token_field,
+            kind_field,
             writer: None,
+            symbols_store,
         })
     }
 
@@ -361,36 +587,62 @@ impl Indexer {
         let writer_arc = self.writer()?;
         let mut writer = writer_arc.lock();
         writer.delete_all_documents()?;
+        self.reset_symbols_store();
+        let mut impact_edges: BTreeSet<ImpactGraphEdge> = BTreeSet::new();
+        let mut impact_diagnostics: HashMap<String, crate::impact::ImpactDiagnostics> =
+            HashMap::new();
         for entry in WalkDir::new(&self.repo_root)
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
         {
             let path = entry.path();
-            if !should_index(path, &self.repo_root, &self.config) {
+            let decision = decide_file(path, &self.repo_root, &self.config);
+            if !decision.should_index() {
                 continue;
             }
-            self.add_document(&mut writer, path)?;
+            let ingest = self.add_document(&mut writer, path)?;
+            self.maybe_update_symbols(&ingest);
+            if self.symbols_store.is_some() {
+                for edge in ingest.impact_edges {
+                    impact_edges.insert(edge);
+                }
+                if let Some(diag) = ingest.impact_diagnostics {
+                    impact_diagnostics.insert(ingest.rel_path.clone(), diag);
+                }
+            }
         }
         writer.commit()?;
         self.reader.reload()?;
+        if self.symbols_store.is_some() {
+            self.write_impact_graph(impact_edges.into_iter().collect(), impact_diagnostics)?;
+        }
         Ok(())
     }
 
-    pub async fn ingest_file(&self, file: PathBuf) -> Result<()> {
+    pub async fn ingest_file(&self, file: PathBuf) -> Result<FileDecision> {
         let path = file.canonicalize().context("resolve file")?;
-        if !should_index(&path, &self.repo_root, &self.config) {
-            return Ok(());
+        let decision = decide_file(&path, &self.repo_root, &self.config);
+        if !decision.should_index() {
+            return Ok(decision);
         }
-        let rel = self.rel_path(&path)?;
         let writer_arc = self.writer()?;
         let mut writer = writer_arc.lock();
+        let rel = self.rel_path(&path)?;
         let term = Term::from_field_text(self.doc_id_field, &rel);
         writer.delete_term(term);
-        self.add_document(&mut writer, &path)?;
+        let ingest = self.add_document(&mut writer, &path)?;
+        self.maybe_update_symbols(&ingest);
         writer.commit()?;
         self.reader.reload()?;
-        Ok(())
+        if self.symbols_store.is_some() {
+            self.update_impact_graph_for_file(
+                &rel,
+                &ingest.impact_edges,
+                ingest.impact_diagnostics,
+            )?;
+        }
+        Ok(decision)
     }
 
     pub async fn delete_file(&self, file: PathBuf) -> Result<()> {
@@ -404,46 +656,78 @@ impl Indexer {
         writer.delete_term(term);
         writer.commit()?;
         self.reader.reload()?;
+        self.delete_symbols_record(&rel);
+        if self.symbols_store.is_some() {
+            self.remove_impact_edges_for_file(&rel)?;
+        }
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Hit>> {
+        let (hits, _meta) = self.search_with_query_meta(query, limit)?;
+        Ok(hits)
+    }
+
+    pub fn search_with_query_meta(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<(Vec<Hit>, SearchQueryMeta)> {
+        let raw = query.trim();
+        if raw.is_empty() {
+            return Err(SearchError::InvalidQuery {
+                reason: "query must not be empty".to_string(),
+            }
+            .into());
+        }
+        // Tantivy's query parser accepts some operator-only inputs (e.g. "!!!") that contain
+        // no searchable terms. Enforce a strict "must contain at least one term" rule for
+        // determinism and predictable validation behavior.
+        if sanitize_query(raw).trim().is_empty() {
+            return Err(SearchError::InvalidQuery {
+                reason: "query contains no searchable terms".to_string(),
+            }
+            .into());
+        }
         let searcher = self.reader.searcher();
         let parser = QueryParser::for_index(
             &self.index,
             vec![self.body_field, self.summary_field, self.path_field],
         );
-        let tantivy_query = match parser.parse_query(query) {
-            Ok(q) => q,
+        let (tantivy_query, query_meta) = match parser.parse_query(raw) {
+            Ok(q) => (
+                q,
+                SearchQueryMeta {
+                    raw: raw.to_string(),
+                    effective: raw.to_string(),
+                    rewrite: QueryRewrite::None,
+                },
+            ),
             Err(err) => {
-                let sanitized = sanitize_query(query);
+                let sanitized = sanitize_query(raw);
                 if sanitized.trim().is_empty() {
-                    warn!(
-                        target: "docdexd",
-                        error = ?err,
-                        "query parse failed; using AllQuery fallback"
-                    );
-                    Box::new(AllQuery)
-                } else {
-                    match parser.parse_query(&sanitized) {
-                        Ok(q) => {
-                            warn!(
-                                target: "docdexd",
-                                error = ?err,
-                                sanitized = %sanitized,
-                                "query parse failed; using sanitized query"
-                            );
-                            q
+                    return Err(SearchError::InvalidQuery {
+                        reason: "query contains no searchable terms".to_string(),
+                    }
+                    .into());
+                }
+                match parser.parse_query(&sanitized) {
+                    Ok(q) => (
+                        q,
+                        SearchQueryMeta {
+                            raw: raw.to_string(),
+                            effective: sanitized.clone(),
+                            rewrite: QueryRewrite::Sanitized,
+                        },
+                    ),
+                    Err(err2) => {
+                        return Err(SearchError::InvalidQuery {
+                            reason: format!(
+                                "query parse failed: {err}; sanitized parse failed: {err2}"
+                            ),
                         }
-                        Err(err2) => {
-                            warn!(
-                                target: "docdexd",
-                                error = ?err2,
-                                sanitized = %sanitized,
-                                "sanitized query parse failed; using AllQuery fallback"
-                            );
-                            Box::new(AllQuery)
-                        }
+                        .into());
                     }
                 }
             }
@@ -470,15 +754,18 @@ impl Indexer {
                 .get_first(self.path_field)
                 .and_then(|v| v.as_text().map(|s| s.to_string()))
                 .unwrap_or_default();
+            let path = rel_path.clone();
             let summary = retrieved
                 .get_first(self.summary_field)
                 .and_then(|v| v.as_text().map(|s| s.to_string()))
                 .unwrap_or_default();
+            let kind = self.document_kind_from_doc(&retrieved, &rel_path);
             let token_estimate = retrieved
                 .get_first(self.token_field)
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            let (snippet, line_start, line_end) = snippet_generator
+            let (snippet, snippet_origin, snippet_truncated, line_start, line_end) =
+                snippet_generator
                 .as_ref()
                 .and_then(|gen| {
                     let snippet = gen.snippet_from_doc(&retrieved);
@@ -487,13 +774,27 @@ impl Indexer {
                         None
                     } else {
                         let range = line_range_for_fragment(&body_text, &fragment);
-                        Some((fragment, range.map(|r| r.0), range.map(|r| r.1)))
+                        let inferred_truncated =
+                            fragment.chars().count() >= MAX_SNIPPET_CHARS.saturating_sub(1);
+                        Some((
+                            fragment,
+                            SearchSnippetOrigin::Query,
+                            inferred_truncated,
+                            range.map(|r| r.0),
+                            range.map(|r| r.1),
+                        ))
                     }
                 })
                 .or_else(|| {
                     match self.preview_snippet(&rel_path, FALLBACK_PREVIEW_LINES) {
-                        Ok(Some((text, _truncated, start_line, end_line))) => {
-                            Some((text, Some(start_line), Some(end_line)))
+                        Ok(Some((text, truncated, start_line, end_line))) => {
+                            Some((
+                                text,
+                                SearchSnippetOrigin::Preview,
+                                truncated,
+                                Some(start_line),
+                                Some(end_line),
+                            ))
                         }
                         Ok(None) => None,
                         Err(err) => {
@@ -502,19 +803,32 @@ impl Indexer {
                         }
                     }
                 })
-                .unwrap_or_else(|| (summary.clone(), None, None));
+                .unwrap_or_else(|| {
+                    (
+                        summary.clone(),
+                        SearchSnippetOrigin::Summary,
+                        false,
+                        None,
+                        None,
+                    )
+                });
             results.push(Hit {
                 doc_id,
                 rel_path,
+                path,
+                kind,
                 score,
                 summary,
                 snippet,
                 token_estimate,
+                snippet_origin: Some(snippet_origin),
+                snippet_truncated: Some(snippet_truncated),
                 line_start,
                 line_end,
             });
         }
-        Ok(results)
+        sort_hits_deterministically(&mut results);
+        Ok((results, query_meta))
     }
 
     fn fetch_document(&self, doc_id: &str) -> Result<Option<Document>> {
@@ -595,27 +909,156 @@ impl Indexer {
         &self.repo_root
     }
 
+    pub fn read_symbols(&self, rel_path: &str) -> Result<Option<SymbolsResponseV1>> {
+        let Some(store) = self.symbols_store.as_ref() else {
+            return Ok(None);
+        };
+        if store.requires_reindex()? {
+            return Ok(None);
+        }
+        store.read_symbols(rel_path)
+    }
+
+    pub fn read_ast(&self, rel_path: &str, max_nodes: usize) -> Result<Option<AstResponseV1>> {
+        let Some(store) = self.symbols_store.as_ref() else {
+            return Ok(None);
+        };
+        if store.requires_reindex()? {
+            return Ok(None);
+        }
+        store.read_ast(rel_path, max_nodes)
+    }
+
+    pub fn symbols_parser_status(&self) -> Result<SymbolsParserStatus> {
+        match self.symbols_store.as_ref() {
+            Some(store) => store.parser_status(),
+            None => {
+                let store = SymbolsStore::new(self.repo_root(), self.config.state_dir())?;
+                store.parser_status()
+            }
+        }
+    }
+
+    pub fn symbols_reindex_required(&self) -> Result<bool> {
+        let status = match self.symbols_store.as_ref() {
+            Some(store) => store.parser_status()?,
+            None => {
+                let store = SymbolsStore::new(self.repo_root(), self.config.state_dir())?;
+                store.parser_status()?
+            }
+        };
+        Ok(status.requires_reindex || status.drift)
+    }
+
+    pub fn search_symbols(
+        &self,
+        query: &str,
+        max_files: usize,
+        max_symbols_per_file: usize,
+    ) -> Result<Vec<SymbolSearchMatch>> {
+        let Some(store) = self.symbols_store.as_ref() else {
+            return Ok(Vec::new());
+        };
+        if store.requires_reindex()? {
+            return Ok(Vec::new());
+        }
+        store.search_symbols(query, max_files, max_symbols_per_file)
+    }
+
+    pub fn search_ast_kinds(
+        &self,
+        kinds: &[String],
+        max_files: usize,
+    ) -> Result<Vec<AstSearchMatch>> {
+        let Some(store) = self.symbols_store.as_ref() else {
+            return Ok(Vec::new());
+        };
+        if store.requires_reindex()? {
+            return Ok(Vec::new());
+        }
+        store.search_ast_kinds(kinds, max_files)
+    }
+
+    pub fn search_ast_kinds_with_mode(
+        &self,
+        kinds: &[String],
+        max_files: usize,
+        mode: AstSearchMode,
+    ) -> Result<Vec<AstSearchMatch>> {
+        let Some(store) = self.symbols_store.as_ref() else {
+            return Ok(Vec::new());
+        };
+        if store.requires_reindex()? {
+            return Ok(Vec::new());
+        }
+        store.search_ast_kinds_with_mode(kinds, max_files, mode)
+    }
+
+    pub fn ast_kind_counts_for_file(
+        &self,
+        rel_path: &str,
+        kinds: &[String],
+    ) -> Result<BTreeMap<String, usize>> {
+        let Some(store) = self.symbols_store.as_ref() else {
+            return Ok(BTreeMap::new());
+        };
+        if store.requires_reindex()? {
+            return Ok(BTreeMap::new());
+        }
+        store.ast_kind_counts_for_file(rel_path, kinds)
+    }
+
+    pub fn query_ast(&self, query: &AstQuery) -> Result<Vec<AstQueryMatch>> {
+        let Some(store) = self.symbols_store.as_ref() else {
+            return Ok(Vec::new());
+        };
+        if store.requires_reindex()? {
+            return Ok(Vec::new());
+        }
+        store.query_ast(query)
+    }
+
+    pub fn state_dir(&self) -> &Path {
+        self.config.state_dir()
+    }
+
     fn writer(&self) -> Result<Arc<Mutex<IndexWriter>>> {
-        self.writer
-            .clone()
-            .ok_or_else(|| anyhow!("index opened in read-only mode; writer unavailable"))
+        self.writer.clone().ok_or_else(|| {
+            AppError::new(
+                ERR_BACKOFF_REQUIRED,
+                "index writer unavailable (another docdexd may be indexing); retry later",
+            )
+            .into()
+        })
     }
 
     pub fn config(&self) -> &IndexConfig {
         &self.config
     }
 
-    pub fn stats(&self) -> Result<IndexStats> {
+    pub fn symbols_enabled(&self) -> bool {
+        self.config.symbols_enabled()
+    }
+
+    pub fn num_docs(&self) -> u64 {
         let searcher = self.reader.searcher();
         let mut num_docs: u64 = 0;
-        let mut segments: usize = 0;
         for segment_reader in searcher.segment_readers() {
-            segments += 1;
             let live_docs = segment_reader
                 .alive_bitset()
                 .map(|bits| bits.num_alive_docs() as u64)
                 .unwrap_or_else(|| segment_reader.max_doc() as u64);
             num_docs = num_docs.saturating_add(live_docs);
+        }
+        num_docs
+    }
+
+    pub fn stats(&self) -> Result<IndexStats> {
+        let searcher = self.reader.searcher();
+        let num_docs = self.num_docs();
+        let mut segments: usize = 0;
+        for _ in searcher.segment_readers() {
+            segments += 1;
         }
         let state_dir = self.config.state_dir().to_path_buf();
         let index_size_bytes = walkdir::WalkDir::new(&state_dir)
@@ -712,19 +1155,51 @@ impl Indexer {
         Ok((snapshots, total_live))
     }
 
-    fn add_document(&self, writer: &mut IndexWriter, path: &Path) -> Result<()> {
+    fn add_document(&self, writer: &mut IndexWriter, path: &Path) -> Result<DocumentIngest> {
         let rel = self.rel_path(path)?;
-        let content = fs::read_to_string(path).unwrap_or_default();
+        let rel_for_return = rel.clone();
+        let (content, read_error) = match fs::read_to_string(path) {
+            Ok(content) => (content, None),
+            Err(err) => (String::new(), Some(err.to_string())),
+        };
+        let content_for_symbols = if self.symbols_store.is_some() {
+            content.clone()
+        } else {
+            String::new()
+        };
+        let (impact_edges, impact_diagnostics) =
+            if self.symbols_store.is_some() && read_error.is_none() {
+                let result = extract_import_edges(
+                    &self.repo_root,
+                    self.config.state_dir(),
+                    &rel_for_return,
+                    &content,
+                );
+                (result.edges, result.diagnostics)
+            } else {
+                (Vec::new(), None)
+            };
         let summary = summarize(&content);
         let tokens = estimate_tokens(&content);
-        writer.add_document(doc!(
+        let kind = document_kind_for_path(&rel_for_return);
+        let mut document = doc!(
             self.doc_id_field => rel.clone(),
             self.path_field => rel,
             self.body_field => content,
             self.summary_field => summary,
             self.token_field => tokens,
-        ))?;
-        Ok(())
+        );
+        if let Some(kind_field) = self.kind_field {
+            document.add_text(kind_field, kind.as_str());
+        }
+        writer.add_document(document)?;
+        Ok(DocumentIngest {
+            rel_path: rel_for_return,
+            content: content_for_symbols,
+            read_error,
+            impact_edges,
+            impact_diagnostics,
+        })
     }
 
     fn rel_path(&self, path: &Path) -> Result<String> {
@@ -743,6 +1218,7 @@ impl Indexer {
             .get_first(self.summary_field)
             .and_then(|v| v.as_text().map(|s| s.to_string()))
             .unwrap_or_default();
+        let kind = self.document_kind_from_doc(doc, &rel_path);
         let token_estimate = doc
             .get_first(self.token_field)
             .and_then(|v| v.as_u64())
@@ -750,6 +1226,7 @@ impl Indexer {
         DocSnapshot {
             doc_id: doc_id.to_string(),
             rel_path,
+            kind,
             summary,
             token_estimate,
         }
@@ -816,8 +1293,29 @@ impl Indexer {
     }
 }
 
+struct DocumentIngest {
+    rel_path: String,
+    content: String,
+    read_error: Option<String>,
+    impact_edges: Vec<ImpactGraphEdge>,
+    impact_diagnostics: Option<crate::impact::ImpactDiagnostics>,
+}
+
+fn env_flag_disabled(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|v| {
+            matches!(
+                v.trim().to_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+        .unwrap_or(false)
+}
+
 fn build_schema() -> (
     Schema,
+    tantivy::schema::Field,
     tantivy::schema::Field,
     tantivy::schema::Field,
     tantivy::schema::Field,
@@ -830,6 +1328,7 @@ fn build_schema() -> (
     let body_field = builder.add_text_field("body", TEXT | STORED);
     let summary_field = builder.add_text_field("summary", TEXT | STORED);
     let token_field = builder.add_u64_field("token_estimate", FAST | STORED);
+    let kind_field = builder.add_text_field("kind", STRING | STORED);
     let schema = builder.build();
     (
         schema,
@@ -838,33 +1337,171 @@ fn build_schema() -> (
         body_field,
         summary_field,
         token_field,
+        kind_field,
     )
 }
 
-pub(crate) fn should_index(path: &Path, repo_root: &Path, config: &IndexConfig) -> bool {
+fn document_kind_from_text(value: &str) -> Option<DocumentKind> {
+    match value.trim() {
+        "doc" => Some(DocumentKind::Doc),
+        "code" => Some(DocumentKind::Code),
+        _ => None,
+    }
+}
+
+fn document_kind_for_path(rel_path: &str) -> DocumentKind {
+    let extension = Path::new(rel_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| format!(".{}", ext.to_lowercase()));
+    if let Some(extension) = extension {
+        if DOC_EXTENSIONS.contains(&extension.as_str()) {
+            return DocumentKind::Doc;
+        }
+        if CODE_EXTENSIONS.contains(&extension.as_str()) {
+            return DocumentKind::Code;
+        }
+    }
+    DocumentKind::Doc
+}
+
+impl Indexer {
+    fn document_kind_from_doc(&self, doc: &Document, rel_path: &str) -> DocumentKind {
+        if let Some(kind_field) = self.kind_field {
+            if let Some(raw) = doc.get_first(kind_field).and_then(|v| v.as_text()) {
+                if let Some(kind) = document_kind_from_text(raw) {
+                    return kind;
+                }
+            }
+        }
+        document_kind_for_path(rel_path)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileDecisionOutcome {
+    Include,
+    Exclude,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case", tag = "code")]
+pub enum FileDecisionReason {
+    OutsideRepo,
+    StateDir,
+    NotAFile,
+    ExcludedPrefix { prefix: String },
+    ExcludedDirName { name: String },
+    IgnoredByPattern,
+    MissingExtension,
+    UnsupportedExtension { extension: String },
+    BinaryTooLarge { bytes: u64 },
+    AllowedExtension { extension: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct FileDecision {
+    pub decision: FileDecisionOutcome,
+    pub reason: FileDecisionReason,
+}
+
+impl FileDecision {
+    fn include(reason: FileDecisionReason) -> Self {
+        Self {
+            decision: FileDecisionOutcome::Include,
+            reason,
+        }
+    }
+
+    fn exclude(reason: FileDecisionReason) -> Self {
+        Self {
+            decision: FileDecisionOutcome::Exclude,
+            reason,
+        }
+    }
+
+    pub fn should_index(&self) -> bool {
+        matches!(self.decision, FileDecisionOutcome::Include)
+    }
+}
+
+pub(crate) fn decide_file(path: &Path, repo_root: &Path, config: &IndexConfig) -> FileDecision {
     if path.starts_with(config.state_dir()) {
-        return false;
+        return FileDecision::exclude(FileDecisionReason::StateDir);
     }
     if let (Ok(state_dir), Ok(canonical)) = (config.state_dir().canonicalize(), path.canonicalize())
     {
         if canonical.starts_with(state_dir) {
-            return false;
+            return FileDecision::exclude(FileDecisionReason::StateDir);
         }
     }
-    let relative = path.strip_prefix(repo_root).unwrap_or(path);
+
+    if path.exists() && !path.is_file() {
+        return FileDecision::exclude(FileDecisionReason::NotAFile);
+    }
+
+    let relative: PathBuf = if path.starts_with(repo_root) {
+        match path.strip_prefix(repo_root) {
+            Ok(value) => value.to_path_buf(),
+            Err(_) => {
+                return FileDecision::exclude(FileDecisionReason::OutsideRepo);
+            }
+        }
+    } else if let (Ok(repo_canon), Ok(path_canon)) = (repo_root.canonicalize(), path.canonicalize())
+    {
+        if path_canon.starts_with(&repo_canon) {
+            match path_canon.strip_prefix(&repo_canon) {
+                Ok(value) => value.to_path_buf(),
+                Err(_) => {
+                    return FileDecision::exclude(FileDecisionReason::OutsideRepo);
+                }
+            }
+        } else {
+            return FileDecision::exclude(FileDecisionReason::OutsideRepo);
+        }
+    } else {
+        return FileDecision::exclude(FileDecisionReason::OutsideRepo);
+    };
+
     let normalized = relative
         .to_string_lossy()
         .replace('\\', "/")
         .trim_start_matches('/')
         .to_string()
         .to_lowercase();
-    if config
-        .excluded_relative_prefixes()
-        .iter()
-        .any(|prefix| normalized.starts_with(prefix))
-    {
-        return false;
+
+    if let Some(matcher) = config.ignore_matcher() {
+        let is_dir = path.is_dir();
+        if matcher.is_ignored(path, is_dir) {
+            return FileDecision::exclude(FileDecisionReason::IgnoredByPattern);
+        }
     }
+
+    let mut best_prefix: Option<&String> = None;
+    for prefix in config.excluded_relative_prefixes().iter() {
+        if !normalized.starts_with(prefix) {
+            continue;
+        }
+        best_prefix = match best_prefix {
+            None => Some(prefix),
+            Some(current) => {
+                if prefix.len() > current.len()
+                    || (prefix.len() == current.len() && prefix.as_str() < current.as_str())
+                {
+                    Some(prefix)
+                } else {
+                    Some(current)
+                }
+            }
+        };
+    }
+    if let Some(prefix) = best_prefix {
+        return FileDecision::exclude(FileDecisionReason::ExcludedPrefix {
+            prefix: prefix.clone(),
+        });
+    }
+
     for component in relative.components() {
         if let Component::Normal(name) = component {
             let name_lower = name.to_string_lossy().to_lowercase();
@@ -873,18 +1510,217 @@ pub(crate) fn should_index(path: &Path, repo_root: &Path, config: &IndexConfig) 
                 .iter()
                 .any(|excluded| excluded == &name_lower)
             {
-                return false;
+                return FileDecision::exclude(FileDecisionReason::ExcludedDirName {
+                    name: name_lower,
+                });
             }
         }
     }
+
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-        return false;
+        return FileDecision::exclude(FileDecisionReason::MissingExtension);
     };
-    let lower = format!(".{}", ext.to_lowercase());
-    DEFAULT_EXTENSIONS.contains(&lower.as_str())
+    let extension = format!(".{}", ext.to_lowercase());
+    if !DEFAULT_EXTENSIONS.contains(&extension.as_str()) {
+        return FileDecision::exclude(FileDecisionReason::UnsupportedExtension { extension });
+    }
+
+    if let Ok(meta) = path.metadata() {
+        if meta.len() > MAX_BINARY_FILE_BYTES {
+            if is_probably_binary(path).unwrap_or(true) {
+                return FileDecision::exclude(FileDecisionReason::BinaryTooLarge {
+                    bytes: meta.len(),
+                });
+            }
+        }
+    }
+
+    FileDecision::include(FileDecisionReason::AllowedExtension { extension })
 }
 
-fn ensure_state_dir_secure(path: &Path) -> Result<()> {
+pub(crate) fn should_index(path: &Path, repo_root: &Path, config: &IndexConfig) -> bool {
+    decide_file(path, repo_root, config).should_index()
+}
+
+fn is_probably_binary(path: &Path) -> io::Result<bool> {
+    let mut file = File::open(path)?;
+    let mut buffer = [0u8; BINARY_SNIFF_BYTES];
+    let read = file.read(&mut buffer)?;
+    let sample = &buffer[..read];
+    if sample.iter().any(|byte| *byte == 0) {
+        return Ok(true);
+    }
+    Ok(std::str::from_utf8(sample).is_err())
+}
+
+#[cfg(test)]
+mod file_decision_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn decide_file_picks_longest_excluded_prefix() {
+        let repo = TempDir::new().expect("temp repo");
+        let repo_root = repo.path().canonicalize().expect("canonical repo root");
+        let config = IndexConfig::with_overrides(
+            &repo_root,
+            None,
+            Vec::new(),
+            vec!["docs/".into(), "docs/private/".into()],
+            true,
+        )
+        .expect("config");
+        let file = repo_root.join("docs/private/a.md");
+        fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
+        fs::write(&file, "# test\n").expect("write file");
+
+        let decision = decide_file(&file, &repo_root, &config);
+        assert_eq!(decision.decision, FileDecisionOutcome::Exclude);
+        assert_eq!(
+            decision.reason,
+            FileDecisionReason::ExcludedPrefix {
+                prefix: "docs/private/".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn decide_file_excludes_state_dir_before_prefix_rules() {
+        let repo = TempDir::new().expect("temp repo");
+        let repo_root = repo.path().canonicalize().expect("canonical repo root");
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
+            .expect("config");
+        let file = config.state_dir().join("doc.md");
+        fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
+        fs::write(&file, "# state dir\n").expect("write file");
+
+        let decision = decide_file(&file, &repo_root, &config);
+        assert_eq!(decision.decision, FileDecisionOutcome::Exclude);
+        assert_eq!(decision.reason, FileDecisionReason::StateDir);
+    }
+
+    #[test]
+    fn decide_file_excludes_default_vendor_dir() {
+        let repo = TempDir::new().expect("temp repo");
+        let repo_root = repo.path().canonicalize().expect("canonical repo root");
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
+            .expect("config");
+        let file = repo_root.join("vendor/doc.md");
+        fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
+        fs::write(&file, "# vendor\n").expect("write file");
+
+        let decision = decide_file(&file, &repo_root, &config);
+        assert_eq!(decision.decision, FileDecisionOutcome::Exclude);
+        assert_eq!(
+            decision.reason,
+            FileDecisionReason::ExcludedDirName {
+                name: "vendor".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn decide_file_excludes_outside_repo() {
+        let repo = TempDir::new().expect("temp repo");
+        let repo_root = repo.path().canonicalize().expect("canonical repo root");
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
+            .expect("config");
+
+        let other = TempDir::new().expect("other repo");
+        let outside = other.path().join("note.md");
+        fs::write(&outside, "# outside\n").expect("write file");
+
+        let decision = decide_file(&outside, &repo_root, &config);
+        assert_eq!(decision.decision, FileDecisionOutcome::Exclude);
+        assert_eq!(decision.reason, FileDecisionReason::OutsideRepo);
+    }
+
+    #[test]
+    fn decide_file_excludes_large_binary() {
+        let repo = TempDir::new().expect("temp repo");
+        let repo_root = repo.path().canonicalize().expect("canonical repo root");
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
+            .expect("config");
+        let binary_path = repo_root.join("large.md");
+        let blob = vec![0u8; (MAX_BINARY_FILE_BYTES as usize) + 1];
+        fs::write(&binary_path, blob).expect("write binary");
+
+        let decision = decide_file(&binary_path, &repo_root, &config);
+        assert_eq!(
+            decision.reason,
+            FileDecisionReason::BinaryTooLarge {
+                bytes: (MAX_BINARY_FILE_BYTES + 1)
+            }
+        );
+    }
+
+    #[test]
+    fn decide_file_includes_supported_extensions() {
+        let repo = TempDir::new().expect("temp repo");
+        let repo_root = repo.path().canonicalize().expect("canonical repo root");
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
+            .expect("config");
+        let file = repo_root.join("docs/notes.txt");
+        fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
+        fs::write(&file, "hello\n").expect("write file");
+
+        let decision = decide_file(&file, &repo_root, &config);
+        assert_eq!(decision.decision, FileDecisionOutcome::Include);
+        assert_eq!(
+            decision.reason,
+            FileDecisionReason::AllowedExtension {
+                extension: ".txt".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn decide_file_respects_gitignore() {
+        let repo = TempDir::new().expect("temp repo");
+        let repo_root = repo.path().canonicalize().expect("canonical repo root");
+        let ignore_path = repo_root.join(".gitignore");
+        fs::write(&ignore_path, "ignored.md\n").expect("write gitignore");
+        let file = repo_root.join("ignored.md");
+        fs::write(&file, "ignore me\n").expect("write file");
+
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
+            .expect("config");
+        let decision = decide_file(&file, &repo_root, &config);
+        assert_eq!(decision.decision, FileDecisionOutcome::Exclude);
+        assert_eq!(decision.reason, FileDecisionReason::IgnoredByPattern);
+    }
+
+    #[test]
+    fn decide_file_respects_docdexignore() {
+        let repo = TempDir::new().expect("temp repo");
+        let repo_root = repo.path().canonicalize().expect("canonical repo root");
+        let ignore_path = repo_root.join(".docdexignore");
+        fs::write(&ignore_path, "docs/private/\n").expect("write docdexignore");
+        let file = repo_root.join("docs/private/notes.md");
+        fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
+        fs::write(&file, "ignore me\n").expect("write file");
+
+        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
+            .expect("config");
+        let decision = decide_file(&file, &repo_root, &config);
+        assert_eq!(decision.decision, FileDecisionOutcome::Exclude);
+        assert_eq!(decision.reason, FileDecisionReason::IgnoredByPattern);
+    }
+}
+
+fn hold_after_state_dir_created() {
+    let Ok(value) = std::env::var("DOCDEX_TEST_HOLD_AFTER_STATE_DIR_CREATED_MS") else {
+        return;
+    };
+    let Ok(ms) = value.trim().parse::<u64>() else {
+        return;
+    };
+    static HOLD_ONCE: Once = Once::new();
+    HOLD_ONCE.call_once(|| std::thread::sleep(std::time::Duration::from_millis(ms)));
+}
+
+pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::fs::DirBuilder;
@@ -910,24 +1746,181 @@ fn ensure_state_dir_secure(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> PathBuf {
-    match state_dir {
-        Some(custom) if custom.is_absolute() => custom,
-        Some(custom) => repo_root.join(custom),
-        None => {
-            let default_dir = repo_root.join(".docdex").join("index");
-            let legacy_dir = repo_root.join(".gpt-creator").join("docdex").join("index");
-            if !default_dir.exists() && legacy_dir.exists() {
-                warn!(
-                    target: "docdexd",
-                    legacy = %legacy_dir.display(),
-                    default = %default_dir.display(),
-                    "using legacy docdex index path; consider migrating to the new default"
-                );
-                legacy_dir
-            } else {
-                default_dir
+fn normalize_for_error(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn known_canonical_path_from_repo_meta(index_state_dir: &Path) -> Option<String> {
+    if index_state_dir.file_name().and_then(|s| s.to_str())? != "index" {
+        return None;
+    }
+    let state_key_dir = index_state_dir.parent()?;
+    let state_key = state_key_dir.file_name()?.to_string_lossy().to_string();
+    let repos_dir = state_key_dir.parent()?;
+    if repos_dir.file_name().and_then(|s| s.to_str())? != "repos" {
+        return None;
+    }
+    let base_dir = repos_dir.parent()?;
+    let registry_path = base_dir.join("repos").join("repo_registry.json");
+    if let Ok(raw) = fs::read_to_string(&registry_path) {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(repos) = parsed.get("repos").and_then(|v| v.as_object()) {
+                for entry in repos.values() {
+                    let entry_state_key = entry.get("state_key").and_then(|v| v.as_str())?;
+                    if entry_state_key == state_key {
+                        return entry
+                            .get("canonical_path")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                    }
+                }
             }
+        }
+    }
+    None
+}
+
+fn canonical_path_from_repo_meta(repo_root: &Path) -> Option<String> {
+    let meta_path = repo_root.join("repo_meta.json");
+    let raw = fs::read_to_string(&meta_path).ok()?;
+    let parsed = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
+    parsed
+        .get("canonical_path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+fn missing_repo_path_error(repo_root: &Path) -> AppError {
+    AppError::new(ERR_MISSING_REPO_PATH, "repo path not found").with_details(repo_resolution_details(
+        normalize_for_error(repo_root),
+        None,
+        None,
+        vec![
+            "Repo may have moved or been renamed.".to_string(),
+            "Re-run with the repo's current path.".to_string(),
+            format!(
+                "If you previously indexed this repo, you may need to reindex after moving it: `docdexd index --repo {}`.",
+                normalize_for_error(repo_root)
+            ),
+        ],
+    ))
+}
+
+fn stale_index_error(state_dir: &Path, repo_root: Option<&Path>) -> AppError {
+    let reindex_hint = repo_root
+        .map(|root| format!("docdexd index --repo {}", normalize_for_error(root)))
+        .unwrap_or_else(|| "docdexd index --repo <repo>".to_string());
+    AppError::new(
+        ERR_STALE_INDEX,
+        format!(
+            "index schema mismatch at {}; reindex with `{}`",
+            state_dir.display(),
+            reindex_hint
+        ),
+    )
+}
+
+fn repo_state_mismatch_error(
+    repo_root: &Path,
+    index_state_dir: Option<&Path>,
+    identity: &crate::repo_manager::RepoIdentityError,
+) -> AppError {
+    let attempted_fingerprint = crate::repo_manager::repo_fingerprint_sha256(repo_root).ok();
+    let mut known_canonical_path = index_state_dir.and_then(known_canonical_path_from_repo_meta);
+    if known_canonical_path.is_none() {
+        known_canonical_path = canonical_path_from_repo_meta(repo_root);
+    }
+    if let crate::repo_manager::RepoIdentityError::CanonicalPathCollision {
+        canonical_path, ..
+    } = identity
+    {
+        known_canonical_path = Some(canonical_path.clone());
+    }
+    if let crate::repo_manager::RepoIdentityError::ReassociationRequired {
+        registered_canonical_path,
+        ..
+    } = identity
+    {
+        known_canonical_path = Some(registered_canonical_path.clone());
+    }
+    AppError::new(
+        ERR_REPO_STATE_MISMATCH,
+        "repo state mismatch; refusing to associate this repo with the existing state directory",
+    )
+    .with_details(repo_resolution_details(
+        normalize_for_error(repo_root),
+        attempted_fingerprint,
+        known_canonical_path,
+        vec![
+            "Repo may have moved or been renamed.".to_string(),
+            "Verify you are using the correct `--repo` and `--state-dir` combination.".to_string(),
+            "Run: `docdexd repo inspect --repo <repo> --state-dir <shared_state_dir>` to see the repo fingerprint and any known canonical/alias mappings.".to_string(),
+            "To explicitly re-associate a moved repo to existing shared state, run: `docdexd repo reassociate --repo <new_path> --state-dir <shared_state_dir> --old-path <knownCanonicalPath>` (or `--fingerprint <attemptedFingerprint>`)."
+                .to_string(),
+            "Do not reuse a shared `--state-dir` across unrelated repos; choose a different state dir or clear the conflicting state."
+                .to_string(),
+        ],
+    ))
+}
+
+fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<PathBuf> {
+    if !repo_root.exists() {
+        return Err(missing_repo_path_error(repo_root).into());
+    }
+    if !repo_root.is_dir() {
+        return Err(AppError::new(
+            ERR_INVALID_ARGUMENT,
+            format!("repo root is not a directory: {}", repo_root.display()),
+        )
+        .into());
+    }
+
+    match state_dir {
+        Some(custom) if custom.is_absolute() => {
+            // Guardrail: when an absolute state dir is provided outside the repo root,
+            // treat it as a shared *base* directory and scope all state under a repo id.
+            // This prevents accidental cross-repo mixing when the same `--state-dir` is
+            // used across multiple repos.
+            let repo_root = repo_root
+                .canonicalize()
+                .unwrap_or_else(|_| repo_root.to_path_buf());
+            if custom.starts_with(&repo_root) {
+                return Ok(custom);
+            }
+            match crate::repo_manager::resolve_shared_index_state_dir(&repo_root, &custom) {
+                Ok(path) => Ok(path),
+                Err(err) => {
+                    if let Some(identity) =
+                        err.downcast_ref::<crate::repo_manager::RepoIdentityError>()
+                    {
+                        let index_dir_hint = match identity {
+                            crate::repo_manager::RepoIdentityError::StateMetaFingerprintMismatch { state_key, .. } => {
+                                Some(custom.join("repos").join(state_key).join("index"))
+                            }
+                            crate::repo_manager::RepoIdentityError::StateKeyConflict {
+                                existing_state_key,
+                                ..
+                            } => Some(custom.join("repos").join(existing_state_key).join("index")),
+                            _ => None,
+                        };
+                        return Err(repo_state_mismatch_error(
+                            &repo_root,
+                            index_dir_hint.as_deref(),
+                            identity,
+                        )
+                        .into());
+                    }
+                    Err(err)
+                }
+            }
+        }
+        Some(custom) => Ok(repo_root.join(custom)),
+        None => {
+            let base_dir = crate::state_paths::default_state_base_dir()?;
+            let repo_root = repo_root
+                .canonicalize()
+                .unwrap_or_else(|_| repo_root.to_path_buf());
+            crate::repo_manager::resolve_shared_index_state_dir(&repo_root, &base_dir)
         }
     }
 }
@@ -1298,4 +2291,64 @@ fn line_range_for_fragment(body: &str, fragment: &str) -> Option<(usize, usize)>
         }
     }
     Some((start, end_line_val))
+}
+
+fn sort_hits_deterministically(hits: &mut [Hit]) {
+    hits.sort_by(|a, b| {
+        let score_cmp = b.score.total_cmp(&a.score);
+        if score_cmp != Ordering::Equal {
+            return score_cmp;
+        }
+        let path_cmp = a.rel_path.cmp(&b.rel_path);
+        if path_cmp != Ordering::Equal {
+            return path_cmp;
+        }
+        a.doc_id.cmp(&b.doc_id)
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sort_hits_deterministically, DocumentKind, Hit};
+
+    fn hit(doc_id: &str, rel_path: &str, score: f32) -> Hit {
+        Hit {
+            doc_id: doc_id.to_string(),
+            rel_path: rel_path.to_string(),
+            path: rel_path.to_string(),
+            kind: DocumentKind::Doc,
+            score,
+            summary: String::new(),
+            snippet: String::new(),
+            token_estimate: 0,
+            snippet_origin: None,
+            snippet_truncated: None,
+            line_start: None,
+            line_end: None,
+        }
+    }
+
+    #[test]
+    fn deterministic_sorting_orders_by_score_then_path_then_doc_id() {
+        let mut hits = vec![
+            hit("b", "docs/b.md", 1.0),
+            hit("a", "docs/a.md", 1.0),
+            hit("z", "docs/c.md", 2.0),
+            hit("c", "docs/a.md", 1.0),
+        ];
+        sort_hits_deterministically(&mut hits);
+        let ordered = hits
+            .iter()
+            .map(|h| (h.score, h.rel_path.as_str(), h.doc_id.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordered,
+            vec![
+                (2.0, "docs/c.md", "z"),
+                (1.0, "docs/a.md", "a"),
+                (1.0, "docs/a.md", "c"),
+                (1.0, "docs/b.md", "b"),
+            ]
+        );
+    }
 }

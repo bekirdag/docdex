@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+- Add global profile memory (HTTP profile endpoints, CLI profile commands, MCP profile tools).
+- Add default profile agent selection via `server.default_agent_id`, `docdexd serve --agent-id`, and MCP initialize `agent_id`.
+- Add semantic gatekeeper hooks (`/v1/hooks/validate`, `docdexd hook pre-commit`) with optional Unix socket transport.
+- Add `reasoning_trace` metadata to chat completions and project map context injection.
+- Add profile import/export schema checks and sync compatibility validation.
+- Add singleton daemon mode (`docdexd daemon`) with daemon lock and CLI auto-spawn guardrails.
+- Add `POST /v1/initialize` repo validation endpoint and OpenAPI docs.
+- Accept boolish env values for `DOCDEX_ENABLE_MCP`/`DOCDEX_DISABLE_MCP`.
+- Add quality gates doc plus load/bench/audit scripts for release validation.
+- Add network fault, concurrency, property, and metrics baseline tests.
+- Add fuzz targets for libs, hooks, profile sync, and MCP payload parsing.
+- Installer supports http download mirrors via `DOCDEX_DOWNLOAD_BASE` and skips docker matrix when the daemon is unavailable.
+
 ## 0.1.11
 - Added glama support
 

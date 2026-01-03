@@ -19,9 +19,26 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        if: ${{ runner.os != 'Linux' }}
 
       - name: Format check
         run: cargo fmt --all -- --check
 
       - name: Tests
         run: cargo test --locked --all
+
+  npm-installer-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Npm installer tests (offline)
+        run: |
+          cd npm
+          node --test

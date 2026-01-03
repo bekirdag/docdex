@@ -1,0 +1,37 @@
+[package]
+name = "docdexd-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+docdexd = { path = ".." }
+serde_json = "1.0"
+
+[[bin]]
+name = "libs_request"
+path = "fuzz_targets/libs_request.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "hook_validate_request"
+path = "fuzz_targets/hook_validate_request.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "profile_sync_manifest"
+path = "fuzz_targets/profile_sync_manifest.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "mcp_payload"
+path = "fuzz_targets/mcp_payload.rs"
+test = false
+bench = false

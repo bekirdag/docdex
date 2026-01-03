@@ -1,0 +1,1646 @@
+openapi: 3.1.0
+info:
+  title: Docdex
+  version: 0.1.11
+  description: |-
+    Local-first, repo-scoped documentation retrieval and chat API.
+
+    By default, the daemon binds to 127.0.0.1 and does not require authentication.
+    When started with `--expose`, requests require `Authorization: Bearer <token>`.
+servers:
+  - url: http://127.0.0.1:3210
+tags:
+  - name: Chat
+    description: OpenAI-compatible chat completions scoped to a repo.
+  - name: Graph
+    description: Repo-scoped impact graph read APIs.
+  - name: Symbols
+    description: Repo-scoped symbol lookup APIs.
+  - name: Memory
+    description: Repo-scoped semantic memory operations.
+  - name: Repo
+    description: Repo initialization and discovery endpoints.
+  - name: Observability
+    description: Status and quality-gate visibility endpoints.
+paths:
+  /v1/chat/completions:
+    post:
+      tags:
+        - Chat
+      summary: Create chat completion
+      description: |-
+        OpenAI-compatible chat completions.
+
+        Repo context must be provided via `x-docdex-repo-id` header, `repo_id` query, or request body (`repo_id`/`repo_path`). If missing, the server returns 400.
+
+        When started with `--expose`, requests require `Authorization: Bearer <token>`.
+      operationId: createChatCompletion
+      parameters:
+        - &a4
+          name: x-docdex-repo-id
+          in: header
+          required: false
+          schema: &a1
+            type: string
+            description: SHA256 fingerprint of normalized absolute repo path.
+            pattern: ^[a-fA-F0-9]{64}$
+          description: Repo fingerprint (SHA256 of normalized absolute repo path).
+        - &a5
+          name: repo_id
+          in: query
+          required: false
+          schema: *a1
+          description: Repo fingerprint (SHA256 of normalized absolute repo path).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: &a8
+              type: object
+              additionalProperties: true
+              required:
+                - messages
+              properties:
+                repo_id: *a1
+                repo_path: &a6
+                  type: string
+                  description: Normalized absolute repo path.
+                model:
+                  type: string
+                  description: Optional model override; defaults to server configuration.
+                messages:
+                  type: array
+                  minItems: 1
+                  items: &a2
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - role
+                      - content
+                    properties:
+                      role:
+                        type: string
+                        enum:
+                          - system
+                          - user
+                          - assistant
+                          - tool
+                      content:
+                        type: string
+                      name:
+                        type: string
+                stream:
+                  type: boolean
+                  default: false
+                max_tokens:
+                  type: integer
+                  minimum: 1
+                temperature:
+                  type: number
+                  minimum: 0
+                top_p:
+                  type: number
+                  minimum: 0
+                  maximum: 1
+                force_web:
+                  type: boolean
+                  description: When true, explicitly allows Tier-2 web enrichment even if local
+                    confidence is high.
+                docdex:
+                  $ref: "#/components/schemas/DocdexChatOptions"
+      responses:
+        "200":
+          description: Chat completion (JSON when `stream=false`, SSE when `stream=true`).
+          content:
+            application/json:
+              schema: &a11
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - object
+                  - created
+                  - choices
+                properties:
+                  id:
+                    type: string
+                  object:
+                    const: chat.completion
+                  created:
+                    type: integer
+                    minimum: 0
+                  model:
+                    type: string
+                  choices:
+                    type: array
+                    minItems: 1
+                    items: &a9
+                      type: object
+                      additionalProperties: false
+                      required:
+                        - index
+                        - message
+                      properties:
+                        index:
+                          type: integer
+                          minimum: 0
+                        message: *a2
+                        finish_reason:
+                          type:
+                            - string
+                            - "null"
+                  usage: &a10
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      prompt_tokens:
+                        type: integer
+                        minimum: 0
+                      completion_tokens:
+                        type: integer
+                        minimum: 0
+                      total_tokens:
+                        type: integer
+                        minimum: 0
+            text/event-stream:
+              schema:
+                type: string
+              examples:
+                openai_sse:
+                  summary: OpenAI-compatible SSE
+                  value: |
+                    data: {"id":"cmpl_...","object":"chat.completion.chunk","created":1710000000,"model":"llama3.1:8b","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
+
+                    data: [DONE]
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema: &a3
+                type: object
+                additionalProperties: false
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - message
+                    properties:
+                      code:
+                        type: string
+                      message:
+                        type: string
+                      retry_after_ms:
+                        type: integer
+                        minimum: 0
+                      retry_at:
+                        type: string
+                        format: date-time
+                      limit_key:
+                        type: string
+                      scope:
+                        type: string
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: *a3
+        "404":
+          description: Repo unknown or not indexed
+          content:
+            application/json:
+              schema: *a3
+        "429":
+          description: Rate limited
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - code
+                      - message
+                      - retry_after_ms
+                      - limit_key
+                      - scope
+                      - resource_key
+                      - limit_per_min
+                      - limit_burst
+                      - denied_total
+                    properties:
+                      code:
+                        const: rate_limited
+                      message:
+                        type: string
+                        maxLength: 260
+                      retry_after_ms:
+                        type: integer
+                        minimum: 0
+                      retry_at:
+                        type: string
+                        format: date-time
+                      limit_key:
+                        type: string
+                      scope:
+                        type: string
+                      resource_key:
+                        type: string
+                      limit_per_min:
+                        type: integer
+                        minimum: 0
+                      limit_burst:
+                        type: integer
+                        minimum: 0
+                      denied_total:
+                        type: integer
+                        minimum: 0
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: *a3
+  /v1/initialize:
+    post:
+      tags:
+        - Repo
+      summary: Initialize repo context
+      description: |-
+        Validates the requested repo root and returns the resolved repo fingerprint.
+
+        `rootUri` may be a file:// URI or an absolute path. When omitted, the daemon uses its configured repo.
+      operationId: initializeRepo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                rootUri:
+                  type: string
+                  description: file:// URI or absolute path for the repo root.
+      responses:
+        "200":
+          description: Initialize response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - repo_id
+                  - status
+                  - repo_root
+                properties:
+                  repo_id: *a1
+                  status:
+                    type: string
+                    enum:
+                      - ready
+                      - indexing
+                      - stale
+                  repo_root:
+                    type: string
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema: *a3
+        "404":
+          description: Unknown repo
+          content:
+            application/json:
+              schema: *a3
+  /v1/mcp:
+    post:
+      tags:
+        - MCP
+      summary: MCP JSON-RPC request
+      description: Submit a single MCP JSON-RPC request over HTTP.
+      operationId: mcpRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: MCP JSON-RPC response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "503":
+          description: MCP proxy unavailable
+          content:
+            application/json:
+              schema: *a3
+  /v1/mcp/message:
+    post:
+      tags:
+        - MCP
+      summary: MCP JSON-RPC request (SSE session)
+      description: Submit a JSON-RPC request to an existing MCP SSE session.
+      operationId: mcpMessage
+      parameters:
+        - name: x-docdex-mcp-session
+          in: header
+          required: false
+          schema:
+            type: string
+          description: MCP session id from /v1/mcp/sse.
+        - name: session_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: MCP session id from /v1/mcp/sse.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: Missing session id
+          content:
+            application/json:
+              schema: *a3
+        "503":
+          description: MCP proxy unavailable
+          content:
+            application/json:
+              schema: *a3
+  /v1/mcp/sse:
+    get:
+      tags:
+        - MCP
+      summary: MCP SSE stream
+      description: Opens an MCP SSE stream and returns a session id in the response header.
+      operationId: mcpSse
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "503":
+          description: MCP proxy unavailable
+          content:
+            application/json:
+              schema: *a3
+  /sse:
+    get:
+      tags:
+        - MCP
+      summary: MCP SSE stream (alias)
+      operationId: mcpSseAlias
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: *a3
+  /v1/graph/impact:
+    get:
+      tags:
+        - Graph
+      summary: Get impact graph for a file
+      description: |-
+        Returns inbound/outbound dependency edges for a repo-scoped file.
+
+        Edge direction semantics:
+        - Each directed edge is `source -> target` where `source` depends on/imports/references `target`.
+        - For the requested file `F`, `outbound` contains `target` paths for edges where `source == F`.
+        - For the requested file `F`, `inbound` contains `source` paths for edges where `target == F`.
+
+        The response includes an explicit `schema` compatibility signal; see `docs/contracts/code_intelligence_schema_v1.md`.
+
+        Output bounds (deterministic):
+        - maxEdges is hard-capped at 10,000 (requests above are clamped).
+        - inbound/outbound arrays are capped to the applied maxEdges.
+        - Node path strings are truncated to 512 bytes; edge kind labels and edgeTypes entries are truncated to 128 bytes.
+        - `truncated` is true when any clamp or truncation occurs.
+
+        When started with `--expose`, requests require `Authorization: Bearer <token>`.
+      operationId: getImpactGraph
+      parameters:
+        - &a7
+          name: repo_id
+          in: query
+          required: true
+          schema: *a1
+          description: Repo fingerprint (SHA256 of normalized absolute repo path).
+        - name: file
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Repo-relative file path.
+        - name: maxEdges
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 10000
+            default: 1000
+          description: Maximum number of edges to return (hard-capped server-side).
+        - name: maxDepth
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 100
+            default: 10
+          description: Maximum traversal depth from the requested file (0 returns no edges).
+        - name: edgeTypes
+          in: query
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          description: Optional edge kind/type filter (e.g. import/include/require). When provided, only matching edges are returned.
+      responses:
+        "200":
+          description: Impact graph
+          content:
+            application/json:
+              schema: &a12
+                type: object
+                additionalProperties: false
+                required:
+                  - schema
+                  - source
+                  - inbound
+                  - outbound
+                  - edges
+                  - truncated
+                  - appliedLimits
+                properties:
+                  schema: &a18
+                    $ref: "#/components/schemas/DocdexSchemaInfo"
+                  repo_id:
+                    $ref: "#/components/schemas/RepoId"
+                  source:
+                    type: string
+                    description: The requested file path (truncated to 512 bytes when needed).
+                  inbound:
+                    type: array
+                    description: Repo-relative file paths which depend on (import/reference) `source` (truncated to 512 bytes when needed).
+                    items:
+                      type: string
+                  outbound:
+                    type: array
+                    description: Repo-relative file paths which `source` depends on (imports/references), truncated to 512 bytes when needed.
+                    items:
+                      type: string
+                  edges:
+                    type: array
+                    description: |-
+                      Directed edges. Each edge is `source -> target` where `source` depends on `target`.
+
+                      For the requested file `F`:
+                      - inbound edges are those with `target == F`
+                      - outbound edges are those with `source == F`
+                    items:
+                      $ref: "#/components/schemas/ImpactGraphEdge"
+                  truncated:
+                    type: boolean
+                    description: True if the response was incomplete due to maxEdges/maxDepth limits, edgeTypes filtering, or text truncation.
+                  applied:
+                    deprecated: true
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - maxEdges
+                      - maxDepth
+                    properties:
+                      maxEdges:
+                        type: integer
+                        minimum: 0
+                      maxDepth:
+                        type: integer
+                        minimum: 0
+                      edgeTypes:
+                        type: array
+                        items:
+                          type: string
+                  appliedLimits:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - maxEdges
+                      - maxDepth
+                    properties:
+                      maxEdges:
+                        type: integer
+                        minimum: 0
+                      maxDepth:
+                        type: integer
+                        minimum: 0
+                      edgeTypes:
+                        type: array
+                        items:
+                          type: string
+                  diagnostics:
+                    $ref: "#/components/schemas/ImpactGraphDiagnostics"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema: *a3
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: *a3
+        "404":
+          description: Repo unknown or not indexed
+          content:
+            application/json:
+              schema: *a3
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: *a3
+  /v1/graph/impact/diagnostics:
+    get:
+      tags:
+        - Graph
+      summary: Get impact diagnostics
+      description: |-
+        Lists unresolved dynamic import diagnostics across files.
+
+        Repo context may be provided via `x-docdex-repo-id` header or `repo_id` query parameter.
+      operationId: getImpactDiagnostics
+      parameters:
+        - *a4
+        - *a5
+        - name: file
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Optional repo-relative file path to filter diagnostics.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 200
+          description: Max entries to return (hard-capped server-side).
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Offset into the diagnostics list.
+      responses:
+        "200":
+          description: Impact diagnostics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImpactDiagnosticsResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema: *a3
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: *a3
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: *a3
+  /v1/ast:
+    get:
+      tags:
+        - Symbols
+      summary: Get AST for a file
+      description: |-
+        Returns Tree-sitter AST nodes for the requested file from the repo-scoped symbols store.
+
+        Repo context may be provided via `x-docdex-repo-id` header or `repo_id` query parameter.
+      operationId: getAst
+      parameters:
+        - *a4
+        - *a5
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+          description: Repo-relative file path.
+        - name: maxNodes
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100000
+            default: 20000
+          description: Maximum number of AST nodes returned (hard-capped server-side).
+      responses:
+        "200":
+          description: AST response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AstResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema: *a3
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: *a3
+        "404":
+          description: AST record missing
+          content:
+            application/json:
+              schema: *a3
+        "409":
+          description: AST extraction disabled or stale after parser drift
+          content:
+            application/json:
+              schema: *a3
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: *a3
+  /v1/ast/search:
+    get:
+      tags:
+        - Symbols
+      summary: Search AST by node kinds
+      description: |-
+        Search the repo-scoped AST store for files that contain the requested Tree-sitter node kinds.
+
+        Repo context may be provided via `x-docdex-repo-id` header or `repo_id` query parameter.
+      operationId: searchAst
+      parameters:
+        - *a4
+        - *a5
+        - name: kinds
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Comma-separated list of Tree-sitter node kinds to match.
+        - name: mode
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - any
+              - all
+            default: any
+          description: Match mode; `all` requires all kinds to appear in a file.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 50
+          description: Maximum number of files returned.
+      responses:
+        "200":
+          description: AST search response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AstSearchResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema: *a3
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: *a3
+        "409":
+          description: AST extraction disabled or stale after parser drift
+          content:
+            application/json:
+              schema: *a3
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: *a3
+  /v1/ast/query:
+    post:
+      tags:
+        - Symbols
+      summary: Query AST nodes
+      description: |-
+        Query the repo-scoped AST store for files and matching nodes that satisfy kind/name/field filters.
+
+        Repo context may be provided via `x-docdex-repo-id` header or `repo_id` field in the request body.
+      operationId: queryAst
+      parameters:
+        - *a4
+        - *a5
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AstQueryRequest"
+      responses:
+        "200":
+          description: AST query response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AstQueryResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema: *a3
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: *a3
+        "409":
+          description: AST extraction disabled or stale after parser drift
+          content:
+            application/json:
+              schema: *a3
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: *a3
+  /v1/symbols:
+    get:
+      tags:
+        - Symbols
+      summary: Get symbols for a file
+      description: |-
+        Returns per-file symbol extraction results from `symbols.db`.
+
+        Repo context may be provided via `x-docdex-repo-id` header or `repo_id` query parameter.
+
+        When started with `--expose`, requests require `Authorization: Bearer <token>`.
+      operationId: getSymbols
+      parameters:
+        - *a4
+        - *a5
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Repo-relative file path.
+      responses:
+        "200":
+          description: Symbols payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SymbolsResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema: *a3
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: *a3
+        "404":
+          description: Symbols record missing
+          content:
+            application/json:
+              schema: *a3
+        "409":
+          description: Symbol extraction disabled or stale after parser drift
+          content:
+            application/json:
+              schema: *a3
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: *a3
+  /v1/symbols/status:
+    get:
+      tags:
+        - Symbols
+      summary: Get symbols parser status
+      description: |-
+        Returns Tree-sitter parser version metadata and drift status for the repo-scoped symbols store.
+
+        Repo context may be provided via `x-docdex-repo-id` header or `repo_id` query parameter.
+      operationId: getSymbolsStatus
+      parameters:
+        - *a4
+        - *a5
+      responses:
+        "200":
+          description: Symbols parser status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SymbolsParserStatus"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema: *a3
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: *a3
+        "409":
+          description: Symbol extraction disabled
+          content:
+            application/json:
+              schema: *a3
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: *a3
+  /v1/memory/store:
+    post:
+      tags:
+        - Memory
+      summary: Store a memory
+      description: |-
+        Stores text plus optional metadata into repo-scoped semantic memory.
+
+        Repo context must be provided via `x-docdex-repo-id` header, `repo_id` query, or request body (`repo_id`/`repo_path`). If missing, the server returns 400.
+
+        When started with `--expose`, requests require `Authorization: Bearer <token>`.
+      operationId: memoryStore
+      parameters:
+        - *a4
+        - *a5
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: &a13
+              type: object
+              additionalProperties: false
+              required:
+                - text
+              properties:
+                repo_id: *a1
+                repo_path: *a6
+                text:
+                  type: string
+                  minLength: 1
+                metadata:
+                  type: object
+                  additionalProperties: true
+      responses:
+        "200":
+          description: Memory stored
+          content:
+            application/json:
+              schema: &a14
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  created_at:
+                    type: integer
+                    minimum: 0
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema: *a3
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: *a3
+        "404":
+          description: Repo unknown or not indexed
+          content:
+            application/json:
+              schema: *a3
+        "409":
+          description: Memory disabled
+          content:
+            application/json:
+              schema: *a3
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: *a3
+  /v1/memory/recall:
+    post:
+      tags:
+        - Memory
+      summary: Recall memories
+      description: |-
+        Semantic recall using embeddings over repo-scoped memory.
+
+        Repo context must be provided via `x-docdex-repo-id` header, `repo_id` query, or request body (`repo_id`/`repo_path`). If missing, the server returns 400.
+
+        When started with `--expose`, requests require `Authorization: Bearer <token>`.
+      operationId: memoryRecall
+      parameters:
+        - *a4
+        - *a5
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: &a15
+              type: object
+              additionalProperties: false
+              required:
+                - query
+              properties:
+                repo_id: *a1
+                repo_path: *a6
+                query:
+                  type: string
+                  minLength: 1
+                top_k:
+                  type: integer
+                  minimum: 1
+                  default: 5
+      responses:
+        "200":
+          description: Recalled memories
+          content:
+            application/json:
+              schema: &a17
+                type: object
+                additionalProperties: false
+                required:
+                  - results
+                properties:
+                  results:
+                    type: array
+                    items: &a16
+                      type: object
+                      additionalProperties: false
+                      required:
+                        - content
+                        - score
+                      properties:
+                        content:
+                          type: string
+                        score:
+                          type: number
+                        metadata:
+                          type: object
+                          additionalProperties: true
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema: *a3
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: *a3
+        "404":
+          description: Repo unknown or not indexed
+          content:
+            application/json:
+              schema: *a3
+        "409":
+          description: Memory disabled
+          content:
+            application/json:
+              schema: *a3
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: *a3
+  /v1/gates/status:
+    get:
+      tags:
+        - Observability
+      summary: Quality gate status summary
+      description: |-
+        Returns the current HTTP gate readings derived from in-process metrics.
+      operationId: gatesStatus
+      responses:
+        "200":
+          description: Gate summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatesStatusResponse"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: token
+  parameters:
+    XDocdexRepoId: *a4
+    RepoIdQueryOptional: *a5
+    RepoIdQueryRequired: *a7
+  schemas:
+    RepoId: *a1
+    RepoPath: *a6
+    ErrorResponse: *a3
+    ChatMessage: *a2
+    ChatCompletionRequest: *a8
+    ChatCompletionChoice: *a9
+    ChatCompletionUsage: *a10
+    ChatCompletionResponse: *a11
+    DocdexChatOptions:
+      type: object
+      additionalProperties: false
+      properties:
+        compress_results:
+          type: boolean
+          default: false
+          description: When true, the assistant content includes a Docdex-structured summary payload.
+        diff:
+          $ref: "#/components/schemas/DocdexDiffOptions"
+    DocdexDiffOptions:
+      type: object
+      additionalProperties: false
+      properties:
+        mode:
+          type: string
+          enum:
+            - working_tree
+            - staged
+            - range
+          description: Diff mode; `working` is accepted as an alias of `working_tree`.
+        base:
+          type: string
+          description: Base revision for `mode=range`.
+        head:
+          type: string
+          description: Head revision for `mode=range`.
+        paths:
+          type: array
+          items:
+            type: string
+          description: Optional repo-relative path filters.
+      description: |-
+        Diff-aware context options. When `mode=range`, `base` and `head` are required.
+    ImpactGraphResponse: *a12
+    DocdexSchemaCompatRange: &a19
+      type: object
+      additionalProperties: false
+      required:
+        - min
+        - max
+      properties:
+        min:
+          type: integer
+          minimum: 1
+        max:
+          type: integer
+          minimum: 1
+    DocdexSchemaInfo:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - version
+        - compatible
+      properties:
+        name:
+          type: string
+          description: Stable identifier for a payload family (example: `docdex.impact_graph`).
+        version:
+          type: integer
+          minimum: 1
+          description: Schema version emitted by the server/tool.
+        compatible:
+          $ref: "#/components/schemas/DocdexSchemaCompatRange"
+    ImpactGraphEdge:
+      type: object
+      additionalProperties: false
+      required:
+        - source
+        - target
+      properties:
+        source:
+          type: string
+          description: Repo-relative file path of the depender/importer (truncated to 512 bytes when needed).
+        target:
+          type: string
+          description: Repo-relative file path of the dependee/imported file (truncated to 512 bytes when needed).
+        kind:
+          type: string
+          description: Optional edge classifier (e.g. `import`, `include`, `require`), truncated to 128 bytes when needed.
+    ImpactDiagnostics:
+      type: object
+      additionalProperties: false
+      required:
+        - unresolvedImportsTotal
+        - unresolvedImportsSample
+      properties:
+        unresolvedImportsTotal:
+          type: integer
+          minimum: 0
+        unresolvedImportsSample:
+          type: array
+          items:
+            type: string
+    ImpactDiagnosticsEntry:
+      type: object
+      additionalProperties: false
+      required:
+        - file
+        - diagnostics
+      properties:
+        file:
+          type: string
+        diagnostics:
+          $ref: "#/components/schemas/ImpactDiagnostics"
+    ImpactDiagnosticsResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - schema
+        - repo_id
+        - total
+        - limit
+        - offset
+        - truncated
+        - diagnostics
+      properties:
+        schema:
+          $ref: "#/components/schemas/DocdexSchemaInfo"
+        repo_id:
+          $ref: "#/components/schemas/RepoId"
+        total:
+          type: integer
+          minimum: 0
+        limit:
+          type: integer
+          minimum: 1
+        offset:
+          type: integer
+          minimum: 0
+        truncated:
+          type: boolean
+        diagnostics:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImpactDiagnosticsEntry"
+    AstNode:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - kind
+        - is_named
+        - range
+      properties:
+        id:
+          type: integer
+          minimum: 0
+        parent_id:
+          type: integer
+          minimum: 0
+        kind:
+          type: string
+        field:
+          type: string
+          description: Field name on the parent node, when available.
+        name:
+          type: string
+          description: Best-effort identifier name extracted from the node.
+        is_named:
+          type: boolean
+        range:
+          $ref: "#/components/schemas/SymbolRange"
+    AstResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - schema
+        - repo_id
+        - file
+        - nodes
+        - total_nodes
+        - truncated
+      properties:
+        schema:
+          $ref: "#/components/schemas/DocdexSchemaInfo"
+        repo_id:
+          $ref: "#/components/schemas/RepoId"
+        file:
+          type: string
+        language:
+          type: string
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/AstNode"
+        total_nodes:
+          type: integer
+          minimum: 0
+        truncated:
+          type: boolean
+        outcome:
+          $ref: "#/components/schemas/SymbolOutcome"
+    AstSearchMatch:
+      type: object
+      additionalProperties: false
+      required:
+        - file
+        - match_count
+      properties:
+        file:
+          type: string
+          description: Repo-relative file path.
+        match_count:
+          type: integer
+          minimum: 0
+          description: Number of matching AST nodes found in the file.
+    AstSearchResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - schema
+        - repo_id
+        - kinds
+        - mode
+        - limit
+        - truncated
+        - matches
+      properties:
+        schema:
+          $ref: "#/components/schemas/DocdexSchemaInfo"
+        repo_id:
+          $ref: "#/components/schemas/RepoId"
+        kinds:
+          type: array
+          items:
+            type: string
+        mode:
+          type: string
+          enum:
+            - any
+            - all
+        limit:
+          type: integer
+          minimum: 1
+        truncated:
+          type: boolean
+        matches:
+          type: array
+          items:
+            $ref: "#/components/schemas/AstSearchMatch"
+    AstQueryRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - kinds
+      properties:
+        kinds:
+          type: array
+          items:
+            type: string
+          description: Tree-sitter node kinds to match.
+        name:
+          type: string
+          description: Optional node name filter (exact match).
+        field:
+          type: string
+          description: Optional field-name filter (exact match).
+        pathPrefix:
+          type: string
+          description: Restrict results to files under this repo-relative prefix.
+        mode:
+          type: string
+          enum:
+            - any
+            - all
+          default: any
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 500
+        sampleLimit:
+          type: integer
+          minimum: 1
+          maximum: 500
+          description: Maximum number of sample nodes per file.
+        repoId:
+          $ref: "#/components/schemas/RepoId"
+    AstQueryMatch:
+      type: object
+      additionalProperties: false
+      required:
+        - file
+        - matchCount
+        - samples
+      properties:
+        file:
+          type: string
+          description: Repo-relative file path.
+        matchCount:
+          type: integer
+          minimum: 0
+          description: Number of matching AST nodes found in the file.
+        samples:
+          type: array
+          items:
+            $ref: "#/components/schemas/AstNode"
+    AstQueryResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - schema
+        - repo_id
+        - kinds
+        - mode
+        - limit
+        - sampleLimit
+        - truncated
+        - matches
+      properties:
+        schema:
+          $ref: "#/components/schemas/DocdexSchemaInfo"
+        repoId:
+          $ref: "#/components/schemas/RepoId"
+        kinds:
+          type: array
+          items:
+            type: string
+        mode:
+          type: string
+        limit:
+          type: integer
+          minimum: 1
+        sampleLimit:
+          type: integer
+          minimum: 1
+        truncated:
+          type: boolean
+        name:
+          type: string
+        field:
+          type: string
+        pathPrefix:
+          type: string
+        matches:
+          type: array
+          items:
+            $ref: "#/components/schemas/AstQueryMatch"
+    ImpactGraphDiagnostics:
+      type: object
+      additionalProperties: false
+      required:
+        - unresolvedImportsTotal
+        - unresolvedImportsSample
+      properties:
+        unresolvedImportsTotal:
+          type: integer
+          minimum: 0
+        unresolvedImportsSample:
+          type: array
+          items:
+            type: string
+    SymbolRange:
+      type: object
+      additionalProperties: false
+      required:
+        - start_line
+        - start_col
+        - end_line
+        - end_col
+      properties:
+        start_line:
+          type: integer
+          minimum: 1
+        start_col:
+          type: integer
+          minimum: 1
+        end_line:
+          type: integer
+          minimum: 1
+        end_col:
+          type: integer
+          minimum: 1
+    SymbolOutcome:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+            - skipped
+            - failed
+        reason:
+          type: string
+        error_summary:
+          type: string
+    SymbolItem:
+      type: object
+      additionalProperties: false
+      required:
+        - symbol_id
+        - name
+        - kind
+        - range
+      properties:
+        symbol_id:
+          type: string
+        name:
+          type: string
+        kind:
+          type: string
+        range:
+          $ref: "#/components/schemas/SymbolRange"
+        signature:
+          type: string
+    SymbolsResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - schema
+        - repo_id
+        - file
+        - symbols
+      properties:
+        schema:
+          $ref: "#/components/schemas/DocdexSchemaInfo"
+        repo_id:
+          $ref: "#/components/schemas/RepoId"
+        file:
+          type: string
+          description: Repo-relative file path.
+        symbols:
+          type: array
+          items:
+            $ref: "#/components/schemas/SymbolItem"
+        outcome:
+          $ref: "#/components/schemas/SymbolOutcome"
+    SymbolsParserStatus:
+      type: object
+      additionalProperties: false
+      required:
+        - schema
+        - repo_id
+        - current_parser_versions
+        - parser_versions_changed
+        - requires_reindex
+        - drift
+      properties:
+        schema:
+          $ref: "#/components/schemas/DocdexSchemaInfo"
+        repo_id:
+          $ref: "#/components/schemas/RepoId"
+        current_parser_versions:
+          type: object
+          additionalProperties: true
+        stored_parser_versions:
+          type: object
+          additionalProperties: true
+        parser_versions_previous:
+          type: object
+          additionalProperties: true
+        parser_versions_changed_at_ms:
+          type: integer
+          minimum: 0
+        symbols_invalidated_at_ms:
+          type: integer
+          minimum: 0
+        symbols_invalidation_reason:
+          type: string
+        docdex_version:
+          type: string
+        parser_versions_changed:
+          type: boolean
+        requires_reindex:
+          type: boolean
+        drift:
+          type: boolean
+    MemoryStoreRequest: *a13
+    MemoryStoreResponse: *a14
+    MemoryRecallRequest: *a15
+    MemoryHit: *a16
+    MemoryRecallResponse: *a17
+    GateCheck:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - pass
+            - fail
+            - unknown
+        value:
+          type: number
+        threshold:
+          type: number
+        unit:
+          type: string
+        note:
+          type: string
+    GatesStatusResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - generated_at
+        - http_requests_total
+        - http_errors_total
+        - gates
+      properties:
+        generated_at:
+          type: string
+        http_requests_total:
+          type: integer
+          minimum: 0
+        http_errors_total:
+          type: integer
+          minimum: 0
+        http_latency_avg_ms:
+          type: number
+        http_latency_p95_ms:
+          type: integer
+        gates:
+          type: object
+          additionalProperties: false
+          required:
+            - error_rate
+            - latency_p95_ms
+            - soak
+          properties:
+            error_rate:
+              $ref: "#/components/schemas/GateCheck"
+            latency_p95_ms:
+              $ref: "#/components/schemas/GateCheck"
+            soak:
+              $ref: "#/components/schemas/GateCheck"

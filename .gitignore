@@ -22,3 +22,5 @@
 *.log
 
 logs/
+.mcoda/
+tmp/

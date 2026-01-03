@@ -1,6 +1,7 @@
 {
   "name": "docdex",
-  "version": "0.1.11",
+  "version": "0.2.11",
+  "mcpName": "io.github.bekirdag/docdex",
   "description": "Docdex CLI as an npm-installable binary wrapper.",
   "bin": {
     "docdex": "bin/docdex.js",
@@ -14,7 +15,11 @@
     "LICENSE"
   ],
   "scripts": {
-    "postinstall": "node ./lib/install.js"
+    "postinstall": "node ./lib/install.js",
+    "preuninstall": "node ./lib/uninstall.js",
+    "postuninstall": "node ./lib/uninstall.js",
+    "test": "node --test",
+    "pack:verify": "node --test test/packaging_guardrails.test.js"
   },
   "engines": {
     "node": ">=18"

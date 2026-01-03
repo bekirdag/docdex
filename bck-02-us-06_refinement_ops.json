@@ -1,0 +1,733 @@
+{
+  "operations": [
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t16",
+      "updates": {
+        "title": "Spike: audit repo scoping, context derivation, and snapshot boundaries (search/index)",
+        "type": "spike",
+        "priority": "high",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "repo-scope",
+            "context",
+            "search",
+            "indexing",
+            "consistency"
+          ]
+        },
+        "description": "Audit repo scope/identity derivation + propagation across index/search, and identify mixed-state + nondeterminism risks during incremental ingest.",
+        "acceptanceCriteria": [
+          "Document repo identity inputs/outputs and where they are persisted",
+          "Identify mixed-state read paths and propose a per-request snapshot rule",
+          "Identify nondeterminism sources and propose stable ordering/tolerance rules"
+        ],
+        "dependsOn": []
+      }
+    },
+    {
+      "op": "update_estimate",
+      "taskKey": "bck-02-us-06-t16",
+      "storyPoints": 5
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t01",
+      "updates": {
+        "title": "Merged into bck-02-us-06-t16 (repo scoping + context derivation audit)",
+        "type": "spike",
+        "priority": "low",
+        "status": "cancelled",
+        "metadata": {
+          "labels": [
+            "merged",
+            "repo-scope"
+          ]
+        },
+        "description": "Merged into `bck-02-us-06-t16`.",
+        "acceptanceCriteria": [
+          "Task is cancelled; work tracked in `bck-02-us-06-t16`."
+        ],
+        "dependsOn": []
+      }
+    },
+    {
+      "op": "update_estimate",
+      "taskKey": "bck-02-us-06-t01",
+      "storyPoints": 0
+    },
+    {
+      "op": "merge_tasks",
+      "targetKey": "bck-02-us-06-t16",
+      "sourceKeys": [
+        "bck-02-us-06-t01"
+      ],
+      "sourceDisposition": "cancelled"
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t03",
+      "updates": {
+        "title": "Implement repo normalization + fingerprint resolution and propagate repo/index identity",
+        "type": "feature",
+        "priority": "high",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "repo-identity",
+            "fingerprint",
+            "indexing",
+            "search"
+          ]
+        },
+        "description": "Implement deterministic repo normalization + `repoFingerprint`, and propagate repo/index identity (`indexRevision`) through index/search for keying + snapshotting.",
+        "acceptanceCriteria": [
+          "Repo normalization is deterministic for equivalent paths",
+          "`repoFingerprint` is derived and propagated to index/search",
+          "An `indexRevision` (or generation id) is available for snapshotting/cache keying"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t16"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t02",
+      "updates": {
+        "title": "Enforce repo context presence/derivation at all request entrypoints",
+        "type": "feature",
+        "priority": "high",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "repo-scope",
+            "context",
+            "entrypoints"
+          ]
+        },
+        "description": "Require or deterministically derive repo context at every index/search entrypoint; fail closed on missing/ambiguous scope.",
+        "acceptanceCriteria": [
+          "All index/search entrypoints validate repo context",
+          "Missing/ambiguous repo context fails closed with canonical error",
+          "Downstream context includes normalized path + `repoFingerprint`"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t03"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t05",
+      "updates": {
+        "title": "Block cross-repo access by enforcing repo-scoped state roots and guards",
+        "type": "feature",
+        "priority": "high",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "repo-isolation",
+            "state-root",
+            "guards"
+          ]
+        },
+        "description": "Derive all state roots from `repoFingerprint` and guard artifact open/read/write so cross-repo reuse is impossible.",
+        "acceptanceCriteria": [
+          "State roots are keyed by `repoFingerprint` (not raw path)",
+          "Artifact identity mismatches fail closed",
+          "Failures do not leak cross-repo identifiers/content"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t02",
+          "bck-02-us-06-t03"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t21",
+      "updates": {
+        "title": "Fail-closed repo isolation gate in context assembly (filter + explicit errors)",
+        "type": "feature",
+        "priority": "high",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "repo-isolation",
+            "fail-closed",
+            "context"
+          ]
+        },
+        "description": "Centralize repo isolation checks in context assembly so requests either run fully repo-scoped or error explicitly.",
+        "acceptanceCriteria": [
+          "Context assembly produces one validated repo scope",
+          "Any scope mismatch fails closed before downstream work",
+          "Error signaling is consistent across entrypoints"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t02",
+          "bck-02-us-06-t05"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t19",
+      "updates": {
+        "title": "Tag and enforce repo scope for ingested artifacts (docs/web-derived)",
+        "type": "feature",
+        "priority": "high",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "artifact-tagging",
+            "repo-scope",
+            "ingestion"
+          ]
+        },
+        "description": "Tag ingested artifacts with `repoFingerprint` (and where needed `indexRevision`) and enforce scope on reads/queries.",
+        "acceptanceCriteria": [
+          "Artifacts are stored repo-scoped with repo identity metadata",
+          "Reads/queries enforce matching `repoFingerprint`",
+          "Stale artifacts are not reused across revisions unless policy allows"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t03",
+          "bck-02-us-06-t05"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t06",
+      "updates": {
+        "title": "Refactor shared caches into explicit repo+revision keyed interfaces",
+        "type": "chore",
+        "priority": "high",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "caching",
+            "repo-scope",
+            "index-revision"
+          ]
+        },
+        "description": "Make caches explicitly keyed by `repoFingerprint` and (where applicable) `indexRevision`; add deterministic invalidation on incremental ingest.",
+        "acceptanceCriteria": [
+          "Cache keys include `repoFingerprint`",
+          "Index-dependent caches are revision/snapshot keyed",
+          "Incremental ingest deterministically invalidates affected cache entries"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t03"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t20",
+      "updates": {
+        "title": "Implement safe web cache keying/partitioning for Tier 2 usage",
+        "type": "feature",
+        "priority": "medium",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "tier-2",
+            "web",
+            "caching",
+            "repo-scope"
+          ]
+        },
+        "description": "Partition Tier 2 web cache by `repoFingerprint`; ensure relevance-affecting entries are revision-keyed or invalidated per policy.",
+        "acceptanceCriteria": [
+          "Web cache keys include `repoFingerprint`",
+          "Cross-repo cache reads are impossible",
+          "Relevance-affecting entries respect `indexRevision` (keyed or invalidated)"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t03",
+          "bck-02-us-06-t06"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t18",
+      "updates": {
+        "title": "Partition memory store by repo (read/write/query enforcement)",
+        "type": "feature",
+        "priority": "medium",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "memory",
+            "repo-scope",
+            "isolation"
+          ]
+        },
+        "description": "Partition memory by `repoFingerprint` and enforce scope on reads/queries so memory cannot leak or destabilize relevance across repos.",
+        "acceptanceCriteria": [
+          "Memory records are stored with `repoFingerprint`",
+          "Reads/queries enforce matching repo scope",
+          "Ranking-related memory features are deterministic for fixed inputs"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t03",
+          "bck-02-us-06-t05"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t17",
+      "updates": {
+        "title": "Enforce repo-scoped Tier 1 search with per-request index snapshot + deterministic ranking",
+        "type": "feature",
+        "priority": "high",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "search",
+            "relevance",
+            "determinism",
+            "snapshot",
+            "rerank"
+          ]
+        },
+        "description": "Guarantee stable ordering/scores for unchanged content and single-snapshot behavior per search request, including consistent `score`/`topScore` semantics under reranking.",
+        "acceptanceCriteria": [
+          "Each search executes against one `indexRevision` (no mixed-state hits)",
+          "Unchanged repo + same query yields stable ordering; scores stable within documented tolerance",
+          "`score`/`topScore` semantics remain consistent for gating (rerank on/off)"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t06",
+          "bck-02-us-06-t19",
+          "bck-02-us-06-t21"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t24",
+      "updates": {
+        "title": "Spike: audit existing session + persistence surfaces",
+        "type": "spike",
+        "priority": "medium",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "session",
+            "tracing",
+            "persistence"
+          ]
+        },
+        "description": "Inventory current session/persistence identifiers and propose a repo-scoped, client-safe tracing surface.",
+        "acceptanceCriteria": [
+          "Inventory identifiers and where they are emitted",
+          "Identify cross-repo risk points",
+          "Recommend minimal safe external trace/session fields"
+        ],
+        "dependsOn": []
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t27",
+      "updates": {
+        "title": "Stable session id lifecycle: create/resume/validate per repo",
+        "type": "feature",
+        "priority": "medium",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "session",
+            "repo-scope",
+            "lifecycle"
+          ]
+        },
+        "description": "Make session ids repo-scoped (validated with `repoFingerprint`) so session reuse cannot cross repos and traces can correlate behavior over time.",
+        "acceptanceCriteria": [
+          "Session ids are created/validated with `repoFingerprint`",
+          "Cross-repo session resume fails closed",
+          "Session lifecycle is documented (create/resume/expire)"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t24",
+          "bck-02-us-06-t03"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t30",
+      "updates": {
+        "title": "Expose session id + tracing indicators (traceId, indexRevision) via client-facing surfaces",
+        "type": "feature",
+        "priority": "medium",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "tracing",
+            "session",
+            "contract"
+          ]
+        },
+        "description": "Expose client-safe `traceId`, session id, and the `indexRevision` used for the request so clients can assert single-snapshot behavior.",
+        "acceptanceCriteria": [
+          "Search responses include client-safe `traceId` + session id",
+          "Search responses include `indexRevision`/snapshot id",
+          "No repo content or cross-repo identifiers are leaked via tracing fields"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t27",
+          "bck-02-us-06-t17"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t29",
+      "updates": {
+        "title": "Trace persistence error handling and policy-driven response flags",
+        "type": "feature",
+        "priority": "low",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "tracing",
+            "persistence",
+            "degradation"
+          ]
+        },
+        "description": "Define behavior when trace persistence fails; keep response contract stable and add explicit persisted/not-persisted flags.",
+        "acceptanceCriteria": [
+          "Trace persistence failures do not break response contract",
+          "Responses include explicit persistence outcome flag",
+          "Sensitive details are sanitized"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t30"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t34",
+      "updates": {
+        "title": "Spike: define error taxonomy and envelope contract for MCP tools (search/index)",
+        "type": "spike",
+        "priority": "medium",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "errors",
+            "taxonomy",
+            "mcp",
+            "contract"
+          ]
+        },
+        "description": "Define canonical error codes/envelope for search/index tools, including repo mismatch, stale revision, and ingest conflicts.",
+        "acceptanceCriteria": [
+          "Canonical codes/envelope fields are documented",
+          "Client-safe vs internal-safe error content is specified",
+          "Mixed-state/staleness scenarios have explicit semantics"
+        ],
+        "dependsOn": []
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t35",
+      "updates": {
+        "title": "Implement shared error envelope builder and internal-safe error sanitization",
+        "type": "feature",
+        "priority": "high",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "errors",
+            "envelope",
+            "sanitization",
+            "contract"
+          ]
+        },
+        "description": "Implement shared error envelope builder with sanitization, mapping internal failures to bounded canonical codes.",
+        "acceptanceCriteria": [
+          "Shared builder exists and is used by search/index tool paths",
+          "Sensitive fields are redacted from client-facing errors",
+          "Domain failures map deterministically to canonical codes"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t34"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t37",
+      "updates": {
+        "title": "Map repo/index/dependency/rate-limit domain failures to canonical codes",
+        "type": "feature",
+        "priority": "medium",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "errors",
+            "codes",
+            "indexing"
+          ]
+        },
+        "description": "Map domain failures to canonical codes, including distinct codes for stale revision vs ingest-in-progress.",
+        "acceptanceCriteria": [
+          "All mapped failures yield canonical codes with stable meaning",
+          "Stale revision vs ingest conflict are distinct",
+          "Codes support client gating/retry without message parsing"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t35"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t36",
+      "updates": {
+        "title": "Standardize parameter validation across MCP tools (repo/search/index)",
+        "type": "feature",
+        "priority": "medium",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "validation",
+            "mcp",
+            "contract"
+          ]
+        },
+        "description": "Standardize validation for repo/search/index tools and return canonical validation errors via the shared envelope.",
+        "acceptanceCriteria": [
+          "Required params are validated consistently",
+          "Validation failures return canonical codes/envelopes",
+          "Validation does not leak repo identifiers/content"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t35",
+          "bck-02-us-06-t37"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t39",
+      "updates": {
+        "title": "Refactor MCP tool implementations to use shared validation and error mapping",
+        "type": "chore",
+        "priority": "medium",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "mcp",
+            "refactor",
+            "errors",
+            "validation"
+          ]
+        },
+        "description": "Refactor index/search MCP tools to use shared validation + canonical error mapping/envelopes.",
+        "acceptanceCriteria": [
+          "Index/search tools use shared validation",
+          "Index/search tools use canonical error mapping/envelopes",
+          "Success/failure contracts remain stable across incremental updates"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t36",
+          "bck-02-us-06-t37"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t22",
+      "updates": {
+        "title": "Harden logs and errors against cross-repo identifiers/content leakage",
+        "type": "chore",
+        "priority": "medium",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "logging",
+            "security",
+            "repo-isolation"
+          ]
+        },
+        "description": "Harden logs/errors to avoid emitting raw paths/content/cross-repo identifiers; apply sanitization consistently in search/index flows.",
+        "acceptanceCriteria": [
+          "Default logs/errors avoid raw content and full paths",
+          "Repo identity is represented with client-safe identifiers where needed",
+          "Sanitization is consistently applied across search/index"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t03",
+          "bck-02-us-06-t05",
+          "bck-02-us-06-t35"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t28",
+      "updates": {
+        "title": "Capture DAG nodes/edges for chat + tool events (incremental writes) with repo+revision metadata",
+        "type": "feature",
+        "priority": "low",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "dag",
+            "tracing",
+            "incremental-ingestion"
+          ]
+        },
+        "description": "Capture DAG events with `repoFingerprint`, trace/session ids, and (where applicable) `indexRevision` to debug stability regressions.",
+        "acceptanceCriteria": [
+          "DAG events are repo-scoped (`repoFingerprint`)",
+          "Events include correlation metadata (trace/session; revision when applicable)",
+          "DAG persistence failures follow documented policy and do not break search"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t30",
+          "bck-02-us-06-t05"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t31",
+      "updates": {
+        "title": "Repo isolation enforcement for DAG reads/writes",
+        "type": "feature",
+        "priority": "low",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "dag",
+            "repo-isolation",
+            "guards"
+          ]
+        },
+        "description": "Partition DAG storage by `repoFingerprint` and enforce repo scope on all reads/writes.",
+        "acceptanceCriteria": [
+          "DAG reads/writes enforce repo scope",
+          "Cross-repo DAG access fails closed",
+          "DAG isolation aligns with index/search artifact isolation"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t28",
+          "bck-02-us-06-t05"
+        ]
+      }
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t23",
+      "updates": {
+        "title": "End-to-end isolation + relevance stability tests (multi-repo, incremental ingest, no mixed-state)",
+        "type": "feature",
+        "priority": "high",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "tests",
+            "search",
+            "incremental-ingestion",
+            "consistency"
+          ]
+        },
+        "description": "E2E tests: stable ordering/scores for unchanged content; updated results after incremental ingest; no mixed-state hits; no cross-repo leaks.",
+        "acceptanceCriteria": [
+          "Repeated searches on unchanged repo return stable ordering and scores within documented tolerance",
+          "Incremental ingest updates are reflected without breaking response contract",
+          "Each search response is single-snapshot (one `indexRevision`) and repo-isolated"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t17",
+          "bck-02-us-06-t18",
+          "bck-02-us-06-t19",
+          "bck-02-us-06-t20",
+          "bck-02-us-06-t22",
+          "bck-02-us-06-t30"
+        ]
+      }
+    },
+    {
+      "op": "update_estimate",
+      "taskKey": "bck-02-us-06-t23",
+      "storyPoints": 10
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t07",
+      "updates": {
+        "title": "Merged into bck-02-us-06-t23 (multi-repo isolation + concurrency tests)",
+        "type": "feature",
+        "priority": "low",
+        "status": "cancelled",
+        "metadata": {
+          "labels": [
+            "merged",
+            "tests"
+          ]
+        },
+        "description": "Merged into `bck-02-us-06-t23`.",
+        "acceptanceCriteria": [
+          "Task is cancelled; work tracked in `bck-02-us-06-t23`."
+        ],
+        "dependsOn": []
+      }
+    },
+    {
+      "op": "update_estimate",
+      "taskKey": "bck-02-us-06-t07",
+      "storyPoints": 0
+    },
+    {
+      "op": "merge_tasks",
+      "targetKey": "bck-02-us-06-t23",
+      "sourceKeys": [
+        "bck-02-us-06-t07"
+      ],
+      "sourceDisposition": "cancelled"
+    },
+    {
+      "op": "update_task",
+      "taskKey": "bck-02-us-06-t49",
+      "updates": {
+        "title": "Document relevance stability contract (scores/order), mixed-state semantics, and upgrade/downgrade troubleshooting",
+        "type": "chore",
+        "priority": "medium",
+        "status": "not_started",
+        "metadata": {
+          "labels": [
+            "docs",
+            "search",
+            "relevance",
+            "contract"
+          ]
+        },
+        "description": "Document stability/consistency guarantees, score semantics (`score`/`topScore`), and upgrade/downgrade + stale-binary/index repair steps.",
+        "acceptanceCriteria": [
+          "Docs specify deterministic ordering rules and numeric score tolerance",
+          "Docs define `score`/`topScore` semantics for rerank on/off and gating",
+          "Docs state per-request snapshot vs eventual-consistency semantics during ingest"
+        ],
+        "dependsOn": [
+          "bck-02-us-06-t17",
+          "bck-02-us-06-t23",
+          "bck-02-us-06-t30"
+        ]
+      }
+    }
+  ]
+}

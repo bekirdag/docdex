@@ -1,0 +1,131 @@
+
+• Plan to add MCP readiness validation to docdexd check
+
+  - Inspect src/cli/commands/check.rs to find the current check report structure and where server config (bind/auth/etc.) is validated; identify the right spot to add MCP readiness.
+  - Define MCP readiness rules: when MCP is enabled (config/env/CLI), validate the binary path resolution and optionally do a lightweight spawn check (or a dry‑run resolver). Decide when to warn vs fail if MCP is disabled.
+  - Implement the MCP check with clear error codes and remediation hints (missing binary, bad path, spawn failure), and wire it into the existing check output.
+  - Add tests for enabled/disabled paths and missing binary cases; update SDS/README notes to reflect the new check behavior.
+  
+
+  • Plan to make CLI a thin HTTP client (per SDS)
+
+    - Inventory CLI commands that call library code directly (src/cli/commands/query.rs, src/cli/commands/index.rs, src/cli/commands/web.rs, plus any others) and map each to the equivalent HTTP/MCP endpoint.
+    - Define a single CLI transport layer: base URL resolution, auth token handling, timeouts, and error mapping to match current CLI UX.
+    - Rewire each command to use HTTP requests (and streaming for chat/web‑rag), keeping flags/outputs compatible; deprecate/remove in‑process code paths behind a feature flag if needed for transition.
+    - Ensure repo selection is sent consistently (headers/body/query) per SDS, and reject unknown repos with the same error contracts as HTTP.
+    - Add end‑to‑end CLI tests that spin up docdexd serve and verify index, query, web-* commands only hit HTTP (no local indexing/search), plus a fallback/offline error path.
+
+  • Plan to align MCP auth with SDS exposed‑mode expectations
+
+    - Clarify SDS intent: whether MCP auth applies only to networked MCP (not stdio) or if stdio should enforce a token gate when --expose is used; document the decision.
+    - If enforcing in stdio: add an optional token handshake for docdexd mcp (e.g., --auth-token/DOCDEX_AUTH_TOKEN), validate on initialize, and reject tool calls when missing/invalid.
+    - If limiting to networked MCP: update SDS/README to explicitly state stdio MCP is local‑only and not subject to token auth; add a warning in docdexd mcp when --expose is set on the daemon but MCP is stdio.
+    - Add tests for the chosen behavior (missing token → error, valid token → ok) and ensure error codes match HTTP auth failures.
+
+
+  › make a plan to fix this: Dynamic import resolution is still best‑effort: runtime‑computed paths remain unresolved and only surface diagnostics, so edges can still be incomplete by design (src/impact.rs, docs/contracts/code_intelligence_schema_v1.md).
+
+
+  • Plan to improve dynamic import resolution coverage
+
+    - Formalize limits: list resolvable vs non‑resolvable patterns in SDS/contract docs and decide what “complete enough” means (static only vs runtime tracing).
+    - Add opt‑in runtime trace ingestion as the primary completeness path (e.g., docdex.import_traces.jsonl); document how to collect traces and merge rules with import maps.
+    - Expand static resolver heuristics safely: more template literal/f‑string patterns, path helpers, and a unique‑match repo scan with a deterministic tie‑break and strict scan limits.
+    - Surface unresolved import diagnostics more prominently (per file counts + samples; expose in impact diagnostics endpoint and logs).
+    - Add tests for each resolver pattern + trace merge behavior + unresolved diagnostics reporting.
+  
+  
+
+• A) MCP readiness validation in docdexd check — detailed tasks
+
+  - A1: Review src/cli/commands/check.rs report structure and locate existing server/bind/auth checks to decide insertion point.
+  - A2: Confirm config/env precedence for MCP enablement in check (config [server] enable_mcp vs DOCDEX_ENABLE_MCP).
+  - A3: Define readiness rules:
+      - A3.1: MCP disabled → record “skipped/disabled” in check output (non‑failing).
+      - A3.2: MCP enabled → validate binary resolution (same logic as src/mcp.rs: DOCDEX_MCP_SERVER_BIN → sibling → PATH).
+      - A3.3: Optional spawn smoke test behind a new check flag (avoid always spawning).
+  - A4: Implement MCP check:
+      - A4.1: Expose a reusable resolve_mcp_binary() helper from src/mcp.rs (or duplicate minimal logic in check).
+      - A4.2: Add check entry mcp_ready with status/message/details (binary path, source).
+      - A4.3: Add stable error codes + remediation hints for missing/invalid binary.
+  - A5: Tests:
+      - A5.1: MCP disabled in config → check reports “skipped/disabled”.
+      - A5.2: MCP enabled + missing binary → check fails with mcp_ready failure and hint.
+      - A5.3: MCP enabled + binary present → check passes.
+      - A5.4: Spawn flag path → failure if process cannot start.
+  - A6: Docs:
+      - A6.1: Update docs/sds/sds.md to mention MCP readiness validation in docdexd check.
+      - A6.2: Update README.md check guidance to call out MCP binary readiness and overrides.
+
+
+  B) Make CLI a thin HTTP client (per SDS)
+
+  - B1: Inventory direct library usage:
+      - B1.1: src/cli/commands/query.rs (search + web‑rag path)
+      - B1.2: src/cli/commands/index.rs (local indexing)
+      - B1.3: src/cli/commands/web.rs (web discovery/fetch)
+      - B1.4: Scan other commands (e.g., memory, symbols, ast, dag) for in‑process calls.
+  - B2: Define CLI transport layer (new module, e.g., src/cli/http_client.rs):
+      - B2.1: Base URL resolution (config + env + CLI flags).
+      - B2.2: Auth token handling (bearer header, secure‑mode behavior).
+      - B2.3: Timeouts and retries.
+      - B2.4: Error mapping (HTTP error → CLI error codes/messages).
+  - B3: Rewire commands to HTTP:
+      - B3.1: query → POST /v1/search (or existing search endpoint).
+      - B3.2: web-search, web-fetch, web-rag → HTTP equivalents.
+      - B3.3: index → HTTP endpoint (if missing, add /v1/index or POST /v1/ingest parity) or keep a “local index” subcommand explicitly labeled as local.
+      - B3.4: Ensure JSON output format remains stable.
+  - B4: Repo selection consistency:
+      - B4.1: Ensure repo id/path is sent in headers/body for every CLI HTTP call.
+      - B4.2: Confirm unknown repo yields the same error envelope as HTTP.
+  - B5: Transition strategy:
+      - B5.1: Add feature flag (e.g., DOCDEX_CLI_LOCAL=1) to preserve local mode temporarily.
+      - B5.2: Add deprecation warnings for local mode.
+  - B6: Tests:
+      - B6.1: End‑to‑end CLI tests that start docdexd serve and confirm CLI calls hit HTTP (no local indexing/search).
+      - B6.2: Offline/daemon‑down test expects clear “daemon unavailable” error.
+      - B6.3: Auth-required mode test (token missing → failure; token present → ok).
+
+  C) MCP auth alignment with exposed‑mode expectations
+
+  - C1: Decide behavior:
+      - C1.1: Confirm whether stdio MCP should enforce token in exposed mode (policy decision).
+      - C1.2: Update SDS language to explicitly define behavior (stdio vs networked MCP).
+  - C2: If enforcing token in stdio:
+      - C2.1: Add --auth-token/DOCDEX_AUTH_TOKEN to docdexd mcp command.
+      - C2.2: Require token in initialize and store session auth state.
+      - C2.3: Reject tool calls without auth; map to same error codes as HTTP.
+      - C2.4: Add “missing token” hints in MCP errors.
+  - C3: If not enforcing token in stdio:
+      - C3.1: Add a warning in docdexd mcp when --expose is used on daemon.
+      - C3.2: Update SDS/README to state stdio MCP is local‑only and not token‑gated.
+  - C4: Tests:
+      - C4.1: Initialize + tool call without token (expected failure if enforcing).
+      - C4.2: Valid token path (expected success).
+      - C4.3: Ensure error code parity with HTTP auth failures.
+
+
+
+  D) Dynamic import resolution completeness
+
+  - D1: Formalize limits in docs:
+      - D1.1: Update docs/contracts/code_intelligence_schema_v1.md to list resolvable patterns + explicit non‑resolvable cases.
+      - D1.2: Update SDS “Code Intelligence” section to match behavior and configuration knobs.
+  - D2: Runtime trace ingestion (primary completeness path):
+      - D2.1: Define trace JSONL schema and merge policy with docdex.import_map.json.
+      - D2.2: Implement trace ingestion path (if not already) in src/impact.rs.
+      - D2.3: Add config/env toggles for trace enablement and scan limits.
+  - D3: Static resolver enhancements:
+      - D3.1: Expand template‑literal/f‑string evaluation with static bindings.
+      - D3.2: Add path helper support (path.resolve, path.join, os.path.join variants).
+      - D3.3: Unique‑match heuristic with scan limits + deterministic tie‑break.
+  - D4: Diagnostics visibility:
+      - D4.1: Persist unresolved counts + samples per file in diagnostics.
+      - D4.2: Ensure /v1/graph/impact/diagnostics surfaces them.
+      - D4.3: Add logs for unresolved specs when RUST_LOG=docdexd=info.
+  - D5: Tests:
+      - D5.1: Unit tests for each resolver pattern.
+      - D5.2: Tests for trace ingestion + import_map override/merge.
+      - D5.3: Diagnostics tests (counts/samples; endpoint output).
+      - D5.4: Repo scan limit + tie‑break determinism tests.
+

@@ -1,0 +1,12 @@
+# Guardrails: never publish native binaries in the npm tarball.
+**/docdexd
+**/docdexd.exe
+**/docdexd-*.tar.gz
+**/docdexd-*.zip
+**/*.node
+**/*.so
+**/*.dylib
+**/*.dll
+**/*.exe
+**/*.a
+**/*.lib

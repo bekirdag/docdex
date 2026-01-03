@@ -1,0 +1,21 @@
+Instructions:
+- Decide if the page is relevant to the query.
+- If relevant and the query/category asks for code/example, output ONLY the code from the provided code blocks as Markdown fenced code blocks. Do not add, rewrite, or explain code. No prose.
+- If relevant and the query/category asks for code/example but no code blocks were extracted, output the best and shortest direct answer possible in plain text.
+- If relevant and not code-focused, output the best and shortest direct answer possible in plain text.
+- For single-fact questions (who/what/where/when/how many), output ONLY the exact answer phrase. No extra words, no punctuation, no preface.
+- If irrelevant, set relevant=false and output empty string.
+- Return JSON only. Do not wrap JSON in Markdown.
+ - Your response must be a single valid JSON object and NOTHING else. If you add any extra text, it will be discarded.
+ - Do not mention the prompt, the page text, or your reasoning. Only return the JSON object.
+ - If you cannot answer in one short phrase for a single-fact question, set relevant=false and output empty string.
+
+Examples (single-fact):
+Q: "9th president of usa"
+Output JSON: {"relevant":true,"score":0.9,"kind":"summary","output":"William Henry Harrison"}
+
+Q: "where is the capital city of greece?"
+Output JSON: {"relevant":true,"score":0.9,"kind":"summary","output":"Athens"}
+
+Return JSON ONLY in this shape:
+{"relevant":true|false,"score":0..1,"kind":"summary"|"code","output":"..."}

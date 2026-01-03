@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "docdex:mcp_error_envelope_schema_v1",
+  "title": "Docdex MCP Error Envelope v1",
+  "type": "object",
+  "allOf": [
+    { "$ref": "#/$defs/McpErrorCore" },
+    {
+      "type": "object",
+      "required": ["error"],
+      "properties": {
+        "error": { "$ref": "#/$defs/McpErrorCore" }
+      }
+    }
+  ],
+  "$defs": {
+    "McpErrorCode": {
+      "type": "string",
+      "enum": [
+        "parse_error",
+        "invalid_request",
+        "method_not_found",
+        "invalid_params",
+        "invalid_argument",
+        "missing_query",
+        "invalid_query",
+        "invalid_path",
+        "invalid_range",
+        "max_content_exceeded",
+        "embedding_timeout",
+        "embedding_model_not_found",
+        "embedding_failed",
+        "memory_disabled",
+        "missing_repo",
+        "missing_repo_path",
+        "unknown_repo",
+        "repo_state_mismatch",
+        "missing_index",
+        "stale_index",
+        "missing_dependency",
+        "rate_limited",
+        "backoff_required",
+        "internal_error"
+      ]
+    },
+    "McpRetryHint": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["rate_limited", "backoff_required"]
+        },
+        "retry_after_ms": { "type": "integer", "minimum": 0 },
+        "retry_at": { "type": "string", "format": "date-time" },
+        "limit_key": { "type": "string" },
+        "scope": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "McpErrorCore": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "$ref": "#/$defs/McpErrorCode" },
+        "message": { "type": "string" },
+        "reason": { "type": "string" },
+        "tool": { "type": "string" },
+        "details": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "retry": { "$ref": "#/$defs/McpRetryHint" },
+        "correlation_id": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

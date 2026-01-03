@@ -1,0 +1,57 @@
+{
+  "agents": [
+    { "id": "mcoda_frontend", "role": "Frontend development" },
+    { "id": "mcoda_backend", "role": "Backend development" },
+    { "id": "mcoda_security", "role": "Security review" }
+  ],
+  "preferences": [
+    {
+      "id": "8d3ef9fe-9c7d-4bcb-9b0f-4e6c1b0b5f01",
+      "agent_id": "mcoda_frontend",
+      "content": "Prefer functional components for UI work",
+      "category": "style"
+    },
+    {
+      "id": "d8f9d7ab-0a6a-4e1b-9b0a-08e1e2f4f102",
+      "agent_id": "mcoda_frontend",
+      "content": "Use TypeScript strict mode",
+      "category": "constraint"
+    },
+    {
+      "id": "2d2b4f1b-2a6a-4ed3-9c28-0c17f2d3e203",
+      "agent_id": "mcoda_frontend",
+      "content": "Use Tailwind CSS for styling when available",
+      "category": "tooling"
+    },
+    {
+      "id": "f5b37f2c-4c86-44b5-8c4a-7d5b4a2d6404",
+      "agent_id": "mcoda_frontend",
+      "content": "Write tests before implementation",
+      "category": "workflow"
+    },
+    {
+      "id": "b07b7bb1-6ec4-4a25-8bde-3e8d1d92b505",
+      "agent_id": "mcoda_backend",
+      "content": "Prefer explicit error handling over panics",
+      "category": "style"
+    },
+    {
+      "id": "8a7f0e6d-9f3a-4fb2-8f31-3a57e120b606",
+      "agent_id": "mcoda_backend",
+      "content": "Use structured logging for services",
+      "category": "tooling"
+    },
+    {
+      "id": "7c2a7d1e-9b3d-4f1e-b9c6-4d8b7c2a8707",
+      "agent_id": "mcoda_security",
+      "content": "Avoid hardcoded secrets in code",
+      "category": "constraint"
+    },
+    {
+      "id": "c1f2a7b5-6d9e-4a6e-9a0c-2b2d3f4e9808",
+      "agent_id": "mcoda_security",
+      "content": "Prefer least-privilege access patterns",
+      "category": "workflow"
+    }
+  ]
+}

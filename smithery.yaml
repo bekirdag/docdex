@@ -1,14 +1,24 @@
-# Smithery configuration file: https://smithery.ai/docs/build/project-config/smithery-yaml
 version: 1
-runtime: "container"
-
-build:
-  dockerfile: "Dockerfile"
-  dockerBuildPath: "."
+runtime: "local"
 
 startCommand:
-  type: "http"
+  type: "stdio"
+  command: "docdexd"
+  args:
+    - "mcp"
+    - "--repo"
+    - "{{repo_path}}"
+    - "--log"
+    - "warn"
+    - "--max-results"
+    - "8"
   configSchema:
     type: "object"
-    properties: {}
-  exampleConfig: {}
+    properties:
+      repo_path:
+        type: "string"
+        description: "Repo root to index for the local Docdex MCP server"
+    required:
+      - "repo_path"
+  exampleConfig:
+    repo_path: "."

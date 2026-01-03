@@ -1,979 +1,588 @@
-use crate::index::{IndexConfig, Indexer};
-use crate::search;
+use crate::mcp_proxy::McpProxy;
 use anyhow::{anyhow, Context, Result};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use std::fs;
-use std::path::{Component, Path, PathBuf};
-use tantivy::directory::error::LockError;
-use tantivy::TantivyError;
-use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use serde_json::Value;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::process::{Child, Command};
+use tokio::sync::{mpsc, RwLock};
+use which::which;
 
-const JSONRPC_VERSION: &str = "2.0";
-const ERR_PARSE: i32 = -32700;
-const ERR_INVALID_REQUEST: i32 = -32600;
-const ERR_METHOD_NOT_FOUND: i32 = -32601;
-const ERR_INVALID_PARAMS: i32 = -32602;
-const ERR_INTERNAL: i32 = -32000;
-const FILES_DEFAULT_LIMIT: usize = 200;
-const FILES_MAX_LIMIT: usize = 1000;
-const FILES_MAX_OFFSET: usize = 50_000;
-const OPEN_MAX_BYTES: usize = 512 * 1024; // guard rail for returning file content
-
-#[derive(Deserialize)]
-struct RpcRequest {
-    #[serde(default)]
-    jsonrpc: Option<String>,
-    #[serde(default)]
-    id: Option<serde_json::Value>,
-    method: String,
-    #[serde(default)]
-    params: Option<serde_json::Value>,
-}
-
-#[derive(Default, Deserialize)]
-struct InitializeParams {
-    #[serde(default)]
-    project_root: Option<PathBuf>,
-    #[serde(default)]
-    workspace_root: Option<PathBuf>,
-    #[serde(default, rename = "protocolVersion")]
-    protocol_version: Option<String>,
-    #[serde(default)]
-    capabilities: Option<serde_json::Value>,
-}
-
-#[derive(Serialize)]
-struct RpcResponse {
-    jsonrpc: &'static str,
-    id: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<RpcError>,
-}
-
-#[derive(Serialize)]
-struct RpcError {
-    code: i32,
-    message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    data: Option<serde_json::Value>,
-}
-
-#[derive(Serialize)]
-struct ToolDefinition {
-    name: &'static str,
-    description: &'static str,
-    #[serde(rename = "inputSchema")]
-    input_schema: serde_json::Value,
-}
-
-#[derive(Deserialize)]
-struct ToolCallParams {
-    name: String,
-    #[serde(default)]
-    arguments: serde_json::Value,
-}
-
-#[derive(Deserialize)]
-struct SearchArgs {
-    query: String,
-    #[serde(default)]
-    limit: Option<usize>,
-    #[serde(default)]
-    project_root: Option<PathBuf>,
-}
-
-#[derive(Deserialize)]
-struct IndexArgs {
-    #[serde(default)]
-    paths: Vec<PathBuf>,
-    #[serde(default)]
-    project_root: Option<PathBuf>,
-}
-
-#[derive(Deserialize)]
-struct StatsArgs {
-    #[serde(default)]
-    project_root: Option<PathBuf>,
-}
-
-#[derive(Deserialize)]
-struct FilesArgs {
-    #[serde(default)]
-    project_root: Option<PathBuf>,
-    #[serde(default)]
-    limit: Option<usize>,
-    #[serde(default)]
-    offset: Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct OpenArgs {
-    path: String,
-    #[serde(default)]
-    project_root: Option<PathBuf>,
-    #[serde(default)]
-    start_line: Option<usize>,
-    #[serde(default)]
-    end_line: Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct ResourceReadParams {
-    uri: String,
-}
-
-#[derive(Serialize)]
-struct ResourceTemplate {
-    name: &'static str,
-    description: &'static str,
-    #[serde(rename = "uriTemplate")]
-    uri_template: &'static str,
-    variables: &'static [&'static str],
-}
+const MCP_SERVER_BIN_ENV: &str = "DOCDEX_MCP_SERVER_BIN";
+const MCP_SERVER_BIN_NAME: &str = "docdex-mcp-server";
+const MCP_ROUTER_SESSION_IDLE_SECS: u64 = 3600;
+const MCP_ROUTER_CLEANUP_INTERVAL_SECS: u64 = 600;
 
 pub async fn serve(
-    repo_root: PathBuf,
-    index_config: IndexConfig,
+    repo: crate::config::RepoArgs,
+    log: String,
     max_results: usize,
+    rate_limit_per_min: u32,
+    rate_limit_burst: u32,
+    auth_token: Option<String>,
 ) -> Result<()> {
-    let repo_root = repo_root
-        .canonicalize()
-        .context("resolve repo root for MCP server")?;
-    // Try to open with a writer; if the index is already locked (another docdexd
-    // instance is indexing), fall back to read-only so search/open still work.
-    let indexer = match Indexer::with_config(repo_root.clone(), index_config.clone()) {
-        Ok(ix) => ix,
-        Err(err) if is_lock_busy(&err) => {
-            eprintln!(
-                "docdex mcp: index writer is busy; opening read-only (disable other docdexd to enable indexing)"
-            );
-            Indexer::with_config_read_only(repo_root.clone(), index_config)?
-        }
-        Err(err) => return Err(err),
+    let memory_settings = resolve_memory_settings()?;
+    let options = McpSpawnOptions {
+        repo,
+        log_level: log,
+        max_results,
+        rate_limit_per_min,
+        rate_limit_burst,
+        memory_enabled: memory_settings.enabled,
+        embedding_base_url: Some(memory_settings.base_url),
+        embedding_model: Some(memory_settings.model),
+        embedding_timeout_ms: Some(memory_settings.timeout_ms),
+        auth_token,
+        detach_stdio: false,
+        capture_stdio: false,
     };
-    let mut server = McpServer {
-        repo_root,
-        indexer,
-        max_results: max_results.max(1),
-        default_project_root: None,
-    };
-    server.run().await
+    let mut child = spawn_mcp(options).await?;
+    let status = child
+        .wait()
+        .await
+        .with_context(|| format!("launch {MCP_SERVER_BIN_NAME}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("{MCP_SERVER_BIN_NAME} exited with status {status}"))
+    }
 }
 
-struct McpServer {
-    repo_root: PathBuf,
-    indexer: Indexer,
+pub async fn spawn_for_serve(
+    repo: crate::config::RepoArgs,
+    log_level: String,
     max_results: usize,
-    default_project_root: Option<PathBuf>,
+    rate_limit_per_min: u32,
+    rate_limit_burst: u32,
+    memory_enabled: bool,
+    embedding_base_url: String,
+    embedding_model: String,
+    embedding_timeout_ms: u64,
+    auth_token: Option<String>,
+) -> Result<Child> {
+    let options = McpSpawnOptions {
+        repo,
+        log_level,
+        max_results,
+        rate_limit_per_min,
+        rate_limit_burst,
+        memory_enabled,
+        embedding_base_url: Some(embedding_base_url),
+        embedding_model: Some(embedding_model),
+        embedding_timeout_ms: Some(embedding_timeout_ms),
+        auth_token,
+        detach_stdio: true,
+        capture_stdio: false,
+    };
+    spawn_mcp(options).await
 }
 
-impl McpServer {
-    async fn run(&mut self) -> Result<()> {
-        let stdin = io::stdin();
-        let stdout = io::stdout();
-        let mut reader = BufReader::new(stdin).lines();
-        let mut writer = BufWriter::new(stdout);
-        let mut _seen_input = false;
+pub async fn spawn_proxy_for_serve(
+    repo: crate::config::RepoArgs,
+    log_level: String,
+    max_results: usize,
+    rate_limit_per_min: u32,
+    rate_limit_burst: u32,
+    memory_enabled: bool,
+    embedding_base_url: String,
+    embedding_model: String,
+    embedding_timeout_ms: u64,
+    auth_token: Option<String>,
+) -> Result<Arc<McpProxyRouter>> {
+    let config = McpProxyConfig {
+        repo,
+        log_level,
+        max_results,
+        rate_limit_per_min,
+        rate_limit_burst,
+        memory_enabled,
+        embedding_base_url,
+        embedding_model,
+        embedding_timeout_ms,
+        auth_token,
+    };
+    Ok(McpProxyRouter::new(config))
+}
 
-        loop {
-            match reader.next_line().await {
-                Ok(Some(line)) => {
-                    _seen_input = true;
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        eprintln!("docdex mcp: recv -> {}", trimmed);
-                    }
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    let req = match serde_json::from_str::<RpcRequest>(trimmed) {
-                        Ok(req) => req,
-                        Err(err) => {
-                            let resp = RpcResponse {
-                                jsonrpc: JSONRPC_VERSION,
-                                id: serde_json::Value::Null,
-                                result: None,
-                                error: Some(RpcError {
-                                    code: ERR_PARSE,
-                                    message: format!("invalid JSON: {err}"),
-                                    data: None,
-                                }),
-                            };
-                            write_response(&mut writer, &resp).await?;
-                            continue;
-                        }
-                    };
-                    let resp_opt = match self.handle(req).await {
-                        Ok(resp) => resp,
-                        Err(err) => Some(RpcResponse {
-                            jsonrpc: JSONRPC_VERSION,
-                            id: serde_json::Value::Null,
-                            result: None,
-                            error: Some(RpcError {
-                                code: ERR_INTERNAL,
-                                message: format!("internal error"),
-                                data: Some(json!({ "reason": err.to_string() })),
-                            }),
-                        }),
-                    };
-                    if let Some(resp) = resp_opt {
-                        write_response(&mut writer, &resp).await?;
-                    }
-                }
-                Ok(None) => {
-                    // Some clients momentarily close stdin; stay alive and keep polling.
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                    continue;
-                }
-                Err(err) => {
-                    eprintln!("docdex mcp: stdin read error: {err}");
-                    break;
-                }
-            }
-        }
-        Ok(())
-    }
+pub struct McpProxyRouter {
+    config: McpProxyConfig,
+    children: RwLock<HashMap<PathBuf, Arc<McpProxy>>>,
+    sessions: RwLock<HashMap<String, RouterSession>>,
+    default_repo: RwLock<Option<PathBuf>>,
+}
 
-    async fn handle(&mut self, req: RpcRequest) -> Result<Option<RpcResponse>> {
-        // Notifications (no id) do not expect a response.
-        if req.id.is_none() {
-            if req.method == "notifications/initialized" {
-                eprintln!("docdex mcp: client initialized");
-            }
-            return Ok(None);
-        }
-        let id = req.id.clone().unwrap();
+#[derive(Clone)]
+pub(crate) struct McpProxyConfig {
+    repo: crate::config::RepoArgs,
+    log_level: String,
+    max_results: usize,
+    rate_limit_per_min: u32,
+    rate_limit_burst: u32,
+    memory_enabled: bool,
+    embedding_base_url: String,
+    embedding_model: String,
+    embedding_timeout_ms: u64,
+    auth_token: Option<String>,
+}
 
-        if let Some(version) = req.jsonrpc.as_deref() {
-            if version != JSONRPC_VERSION {
-                return Ok(Some(RpcResponse {
-                    jsonrpc: JSONRPC_VERSION,
-                    id: id.clone(),
-                    result: None,
-                    error: Some(RpcError {
-                        code: ERR_INVALID_REQUEST,
-                        message: format!("unsupported jsonrpc version: {version}"),
-                        data: Some(json!({ "expected": JSONRPC_VERSION })),
-                    }),
-                }));
-            }
-        }
-        match req.method.as_str() {
-            "initialize" => {
-                let init_params: InitializeParams =
-                    serde_json::from_value(req.params.clone().unwrap_or_default())
-                        .unwrap_or_default();
-                if let Some(client_root) = init_params
-                    .workspace_root
-                    .or(init_params.project_root)
-                    .as_ref()
-                {
-                    match client_root.canonicalize() {
-                        Ok(canon) => {
-                            if canon != self.repo_root {
-                                return Ok(Some(RpcResponse {
-                                    jsonrpc: JSONRPC_VERSION,
-                                    id: id.clone(),
-                                    result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_REQUEST,
-                                        message: "workspace root mismatch".to_string(),
-                                        data: Some(json!({
-                                            "expected": self.repo_root.display().to_string(),
-                                            "got": canon.display().to_string()
-                                        })),
-                                    }),
-                                }));
-                            }
-                            self.default_project_root = Some(canon);
-                        }
-                        Err(err) => {
-                            return Ok(Some(RpcResponse {
-                                jsonrpc: JSONRPC_VERSION,
-                                id: id.clone(),
-                                result: None,
-                                error: Some(RpcError {
-                                    code: ERR_INVALID_REQUEST,
-                                    message: "workspace root not usable".to_string(),
-                                    data: Some(json!({ "reason": err.to_string() })),
-                                }),
-                            }));
-                        }
-                    }
-                }
-                let protocol_version = init_params
-                    .protocol_version
-                    .unwrap_or_else(|| "2024-11-05".to_string());
-                let instructions = "Use docdex_search to find repo-local docs before changing code.\nUse docdex_index to refresh the index if results seem stale.";
-                let mut caps = json!({
-                    "tools": { "listChanged": false },
-                    "resources": { "listChanged": false },
-                    "resourceTemplates": { "listChanged": false },
-                });
-                if let Some(req_caps) = init_params.capabilities {
-                    if let Some(obj) = caps.as_object_mut() {
-                        if let Some(elicitation) = req_caps.get("elicitation") {
-                            obj.insert("elicitation".to_string(), elicitation.clone());
-                        }
-                    }
-                }
-                let resp = RpcResponse {
-                    jsonrpc: JSONRPC_VERSION,
-                    id: id.clone(),
-                    result: Some(json!({
-                        "protocolVersion": protocol_version,
-                        "serverInfo": {
-                            "name": "docdex-mcp",
-                            "version": env!("CARGO_PKG_VERSION"),
-                        },
-                        "capabilities": caps,
-                        "instructions": instructions,
-                    })),
-                    error: None,
-                };
-                eprintln!("docdex mcp: initialize -> ok (id {:?})", id);
-                Ok(Some(resp))
-            }
-            "tools/list" => Ok(Some(RpcResponse {
-                jsonrpc: JSONRPC_VERSION,
-                id: id.clone(),
-                result: Some(json!({ "tools": self.tool_defs() })),
-                error: None,
-            })),
-            "resources/list" => Ok(Some(RpcResponse {
-                jsonrpc: JSONRPC_VERSION,
-                id: id.clone(),
-                result: Some(json!({ "resources": Vec::<serde_json::Value>::new() })),
-                error: None,
-            })),
-            "resources/templates/list" => Ok(Some(RpcResponse {
-                jsonrpc: JSONRPC_VERSION,
-                id: id.clone(),
-                result: Some(json!({ "resourceTemplates": self.resource_templates() })),
-                error: None,
-            })),
-            "resources/read" => {
-                let params_res: Result<ResourceReadParams, _> =
-                    serde_json::from_value(req.params.clone().unwrap_or_default());
-                let params = match params_res {
-                    Ok(p) => p,
-                    Err(err) => {
-                        return Ok(Some(RpcResponse {
-                            jsonrpc: JSONRPC_VERSION,
-                            id: id.clone(),
-                            result: None,
-                            error: Some(RpcError {
-                                code: ERR_INVALID_PARAMS,
-                                message: "invalid resources/read params".to_string(),
-                                data: Some(json!({ "reason": err.to_string() })),
-                            }),
-                        }))
-                    }
-                };
-                match self.handle_resource_read(params).await {
-                    Ok(value) => Ok(Some(RpcResponse {
-                        jsonrpc: JSONRPC_VERSION,
-                        id: id.clone(),
-                        result: Some(value),
-                        error: None,
-                    })),
-                    Err(err) => Ok(Some(RpcResponse {
-                        jsonrpc: JSONRPC_VERSION,
-                        id: id.clone(),
-                        result: None,
-                        error: Some(RpcError {
-                            code: ERR_INVALID_PARAMS,
-                            message: "resources/read failed".to_string(),
-                            data: Some(json!({ "reason": err.to_string() })),
-                        }),
-                    })),
-                }
-            }
-            "tools/call" => {
-                let params_res: Result<ToolCallParams, _> =
-                    serde_json::from_value(req.params.clone().unwrap_or_default());
-                let params = match params_res {
-                    Ok(p) => p,
-                    Err(err) => {
-                        return Ok(Some(RpcResponse {
-                            jsonrpc: JSONRPC_VERSION,
-                            id: id.clone(),
-                            result: None,
-                            error: Some(RpcError {
-                                code: ERR_INVALID_PARAMS,
-                                message: "invalid tool call params".to_string(),
-                                data: Some(json!({ "reason": err.to_string() })),
-                            }),
-                        }))
-                    }
-                };
-                let result = match params.name.as_str() {
-                    "docdex_search" | "docdex.search" => {
-                        let args_res: Result<SearchArgs, _> =
-                            serde_json::from_value(params.arguments.clone());
-                        let args = match args_res {
-                            Ok(args) => args,
-                            Err(err) => {
-                                return Ok(Some(RpcResponse {
-                                    jsonrpc: JSONRPC_VERSION,
-                                    id: id.clone(),
-                                    result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "invalid docdex_search args".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
-                                }))
-                            }
-                        };
-                        match self.handle_search(args).await {
-                            Ok(value) => value,
-                            Err(err) => {
-                                return Ok(Some(RpcResponse {
-                                    jsonrpc: JSONRPC_VERSION,
-                                    id: id.clone(),
-                                    result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "docdex_search failed".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
-                                }))
-                            }
-                        }
-                    }
-                    "docdex_index" | "docdex.index" => {
-                        let args_res: Result<IndexArgs, _> =
-                            serde_json::from_value(params.arguments.clone());
-                        let args = match args_res {
-                            Ok(args) => args,
-                            Err(err) => {
-                                return Ok(Some(RpcResponse {
-                                    jsonrpc: JSONRPC_VERSION,
-                                    id: id.clone(),
-                                    result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "invalid docdex_index args".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
-                                }))
-                            }
-                        };
-                        match self.handle_index(args).await {
-                            Ok(value) => value,
-                            Err(err) => {
-                                return Ok(Some(RpcResponse {
-                                    jsonrpc: JSONRPC_VERSION,
-                                    id: id.clone(),
-                                    result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "docdex_index failed".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
-                                }))
-                            }
-                        }
-                    }
-                    "docdex_files" | "docdex.files" => {
-                        let args_res: Result<FilesArgs, _> =
-                            serde_json::from_value(params.arguments.clone());
-                        let args = match args_res {
-                            Ok(args) => args,
-                            Err(err) => {
-                                return Ok(Some(RpcResponse {
-                                    jsonrpc: JSONRPC_VERSION,
-                                    id: id.clone(),
-                                    result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "invalid docdex_files args".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
-                                }))
-                            }
-                        };
-                        match self.handle_files(args).await {
-                            Ok(value) => value,
-                            Err(err) => {
-                                return Ok(Some(RpcResponse {
-                                    jsonrpc: JSONRPC_VERSION,
-                                    id: id.clone(),
-                                    result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "docdex_files failed".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
-                                }))
-                            }
-                        }
-                    }
-                    "docdex_open" | "docdex.open" => {
-                        let args_res: Result<OpenArgs, _> =
-                            serde_json::from_value(params.arguments.clone());
-                        let args = match args_res {
-                            Ok(args) => args,
-                            Err(err) => {
-                                return Ok(Some(RpcResponse {
-                                    jsonrpc: JSONRPC_VERSION,
-                                    id: id.clone(),
-                                    result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "invalid docdex_open args".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
-                                }))
-                            }
-                        };
-                        match self.handle_open(args).await {
-                            Ok(value) => value,
-                            Err(err) => {
-                                return Ok(Some(RpcResponse {
-                                    jsonrpc: JSONRPC_VERSION,
-                                    id: id.clone(),
-                                    result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "docdex_open failed".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
-                                }))
-                            }
-                        }
-                    }
-                    "docdex_stats" | "docdex.stats" => {
-                        let args_res: Result<StatsArgs, _> =
-                            serde_json::from_value(params.arguments.clone());
-                        let args = match args_res {
-                            Ok(args) => args,
-                            Err(err) => {
-                                return Ok(Some(RpcResponse {
-                                    jsonrpc: JSONRPC_VERSION,
-                                    id: id.clone(),
-                                    result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INVALID_PARAMS,
-                                        message: "invalid docdex_stats args".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
-                                }))
-                            }
-                        };
-                        match self.handle_stats(args).await {
-                            Ok(value) => value,
-                            Err(err) => {
-                                return Ok(Some(RpcResponse {
-                                    jsonrpc: JSONRPC_VERSION,
-                                    id: id.clone(),
-                                    result: None,
-                                    error: Some(RpcError {
-                                        code: ERR_INTERNAL,
-                                        message: "docdex_stats failed".to_string(),
-                                        data: Some(json!({ "reason": err.to_string() })),
-                                    }),
-                                }))
-                            }
-                        }
-                    }
-                    other => {
-                        return Ok(Some(RpcResponse {
-                            jsonrpc: JSONRPC_VERSION,
-                            id: id.clone(),
-                            result: None,
-                            error: Some(RpcError {
-                                code: ERR_METHOD_NOT_FOUND,
-                                message: format!("unknown tool: {other}"),
-                                data: Some(
-                                    json!({ "known_tools": ["docdex_search", "docdex_index", "docdex_files", "docdex_open", "docdex_stats"] }),
-                                ),
-                            }),
-                        }));
-                    }
-                };
-                let content =
-                    serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
-                Ok(Some(RpcResponse {
-                    jsonrpc: JSONRPC_VERSION,
-                    id: id.clone(),
-                    result: Some(json!({
-                        "content": [
-                            { "type": "text", "text": content }
-                        ],
-                        "isError": false
-                    })),
-                    error: None,
-                }))
-            }
-            other => Ok(Some(RpcResponse {
-                jsonrpc: JSONRPC_VERSION,
-                id: id.clone(),
-                result: None,
-                error: Some(RpcError {
-                    code: ERR_METHOD_NOT_FOUND,
-                    message: format!("unknown method: {other}"),
-                    data: None,
-                }),
-            })),
-        }
-    }
+struct RouterSession {
+    sender: mpsc::Sender<Value>,
+    last_active: Instant,
+    binding: Option<SessionBinding>,
+}
 
-    fn tool_defs(&self) -> Vec<ToolDefinition> {
-        vec![
-            ToolDefinition {
-                name: "docdex_search",
-                description:
-                    "Search repository docs and return hits with rel_path, summary, snippet, and doc_id.",
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string", "minLength": 1, "description": "Concise search query (will be rejected if empty)" },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": self.max_results as i64, "default": self.max_results, "description": "Max results to return (clamped to server max)" },
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
-                    },
-                    "required": ["query"]
-                }),
-            },
-            ToolDefinition {
-                name: "docdex_index",
-                description:
-                    "Rebuild the index (or ingest specific files) for the current repo root.",
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "paths": {
-                            "type": "array",
-                            "items": { "type": "string" },
-                            "description": "Optional list of files to ingest; empty => full reindex"
-                        },
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
-                    }
-                }),
-            },
-            ToolDefinition {
-                name: "docdex_files",
-                description:
-                    "List indexed documents (rel_path/doc_id/token_estimate) for the current repo.",
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": FILES_MAX_LIMIT as i64, "default": FILES_DEFAULT_LIMIT, "description": "Max documents to return (clamped)" },
-                        "offset": { "type": "integer", "minimum": 0, "maximum": FILES_MAX_OFFSET as i64, "default": 0, "description": "Number of docs to skip before listing (clamped)" }
-                    }
-                }),
-            },
-            ToolDefinition {
-                name: "docdex_open",
-                description:
-                    "Read a file from the repo (optional line window); rejects paths outside the repo.",
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string", "minLength": 1, "description": "Relative path under the repo" },
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" },
-                        "start_line": { "type": "integer", "minimum": 1, "description": "Optional start line (1-based, inclusive)" },
-                        "end_line": { "type": "integer", "minimum": 1, "description": "Optional end line (1-based, inclusive)" }
-                    },
-                    "required": ["path"]
-                }),
-            },
-            ToolDefinition {
-                name: "docdex_stats",
-                description:
-                    "Inspect index metadata: doc count, state dir, size on disk, and last update time.",
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "project_root": { "type": "string", "description": "Optional repo root; must match the MCP server repo" }
-                    }
-                }),
-            },
-        ]
-    }
+#[derive(Clone)]
+struct SessionBinding {
+    repo_root: PathBuf,
+    child: Arc<McpProxy>,
+    child_session_id: String,
+}
 
-    fn resource_templates(&self) -> Vec<ResourceTemplate> {
-        vec![ResourceTemplate {
-            name: "docdex_file",
-            description:
-                "Read a file from the current repo (delegates to docdex_open); vars: {path}.",
-            uri_template: "docdex://{path}",
-            variables: &["path"],
-        }]
-    }
-
-    async fn handle_search(&self, args: SearchArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
-        let query = args.query.trim();
-        if query.is_empty() {
-            return Err(anyhow!("query must not be empty"));
-        }
-        let limit = args
-            .limit
-            .unwrap_or(self.max_results)
-            .clamp(1, self.max_results);
-        let hits = search::run_query(&self.indexer, query, limit).await?;
-        let project_root_path = self
-            .default_project_root
-            .as_ref()
-            .unwrap_or(&self.repo_root)
-            .display()
-            .to_string();
-        let mut meta = hits.meta.unwrap_or_else(|| search::SearchMeta {
-            generated_at_epoch_ms: 0,
-            index_last_updated_epoch_ms: None,
-            repo_root: self.repo_root.display().to_string(),
+impl McpProxyRouter {
+    pub(crate) fn new(config: McpProxyConfig) -> Arc<Self> {
+        let default_repo = normalize_repo_root(&config.repo.repo_root());
+        let router = Arc::new(Self {
+            config,
+            children: RwLock::new(HashMap::new()),
+            sessions: RwLock::new(HashMap::new()),
+            default_repo: RwLock::new(Some(default_repo)),
         });
-        meta.repo_root = project_root_path.clone();
-        Ok(json!({
-            "results": hits.hits,
-            "repo_root": self.repo_root.display().to_string(),
-            "state_dir": self.indexer.config().state_dir().display().to_string(),
-            "limit": limit,
-            "project_root": project_root_path,
-            "meta": meta
-        }))
+        McpProxyRouter::spawn_cleanup(router.clone());
+        router
     }
 
-    async fn handle_index(&mut self, args: IndexArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
-        if args.paths.is_empty() {
-            self.indexer.reindex_all().await?;
-            return Ok(json!({
-                "status": "ok",
-                "action": "reindex_all",
-                "repo_root": self.repo_root.display().to_string(),
-                "state_dir": self.indexer.config().state_dir().display().to_string(),
-                "project_root": self
-                    .default_project_root
-                    .as_ref()
-                    .unwrap_or(&self.repo_root)
-                    .display()
-                    .to_string(),
-            }));
+    pub async fn set_default_repo(&self, repo_root: PathBuf) {
+        let normalized = normalize_repo_root(&repo_root);
+        let mut guard = self.default_repo.write().await;
+        *guard = Some(normalized);
+    }
+
+    pub async fn create_session(&self) -> (String, mpsc::Receiver<Value>) {
+        let session_id = format!("mcp-{}", uuid::Uuid::new_v4());
+        let (tx, rx) = mpsc::channel(64);
+        self.sessions.write().await.insert(
+            session_id.clone(),
+            RouterSession {
+                sender: tx,
+                last_active: Instant::now(),
+                binding: None,
+            },
+        );
+        (session_id, rx)
+    }
+
+    pub async fn bind_session(self: &Arc<Self>, session_id: &str, repo_root: &Path) -> Result<()> {
+        let repo_root = normalize_repo_root(repo_root);
+        let existing_binding = {
+            let mut sessions = self.sessions.write().await;
+            let entry = sessions
+                .get_mut(session_id)
+                .ok_or_else(|| anyhow!("unknown mcp session"))?;
+            entry.last_active = Instant::now();
+            entry.binding.clone()
+        };
+        if let Some(binding) = existing_binding {
+            if binding.repo_root == repo_root && binding.child.is_alive().await {
+                return Ok(());
+            }
+            self.evict_child(&binding.repo_root).await;
         }
-        let mut ingested = Vec::new();
-        for path in args.paths {
-            let resolved = if path.is_absolute() {
-                path
+        let child = self.ensure_child(&repo_root).await?;
+        let (child_session_id, rx) = child.create_session().await;
+        let sender = {
+            let mut sessions = self.sessions.write().await;
+            let entry = sessions
+                .get_mut(session_id)
+                .ok_or_else(|| anyhow!("unknown mcp session"))?;
+            entry.last_active = Instant::now();
+            entry.binding = Some(SessionBinding {
+                repo_root: repo_root.clone(),
+                child: child.clone(),
+                child_session_id: child_session_id.clone(),
+            });
+            entry.sender.clone()
+        };
+        let router = Arc::clone(self);
+        let session_id = session_id.to_string();
+        tokio::spawn(async move {
+            let mut rx = rx;
+            while let Some(payload) = rx.recv().await {
+                router
+                    .forward_to_session(&session_id, &sender, payload)
+                    .await;
+            }
+        });
+        Ok(())
+    }
+
+    pub async fn enqueue_for_session(
+        self: &Arc<Self>,
+        session_id: &str,
+        payload: Value,
+    ) -> Result<Value> {
+        let binding = {
+            let mut sessions = self.sessions.write().await;
+            let entry = sessions
+                .get_mut(session_id)
+                .ok_or_else(|| anyhow!("unknown mcp session"))?;
+            entry.last_active = Instant::now();
+            entry.binding.clone()
+        }
+        .ok_or_else(|| anyhow!("mcp session not initialized"))?;
+        let repo_root = binding.repo_root.clone();
+        let attempt = binding
+            .child
+            .enqueue_for_session(&binding.child_session_id, payload.clone())
+            .await;
+        match attempt {
+            Ok(resp) => Ok(resp),
+            Err(err) if is_retryable_mcp_error(&err) => {
+                self.evict_child(&repo_root).await;
+                self.bind_session(session_id, &repo_root).await?;
+                let rebound = {
+                    let mut sessions = self.sessions.write().await;
+                    let entry = sessions
+                        .get_mut(session_id)
+                        .ok_or_else(|| anyhow!("unknown mcp session"))?;
+                    entry.last_active = Instant::now();
+                    entry.binding.clone()
+                }
+                .ok_or_else(|| anyhow!("mcp session not initialized"))?;
+                rebound
+                    .child
+                    .enqueue_for_session(&rebound.child_session_id, payload)
+                    .await
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    pub async fn call(&self, repo_root: Option<&Path>, payload: Value) -> Result<Value> {
+        let repo_root = match repo_root {
+            Some(root) => normalize_repo_root(root),
+            None => self
+                .default_repo
+                .read()
+                .await
+                .clone()
+                .ok_or_else(|| anyhow!("missing default repo for mcp request"))?,
+        };
+        let child = self.ensure_child(&repo_root).await?;
+        let attempt = child.call(payload.clone()).await;
+        match attempt {
+            Ok(resp) => Ok(resp),
+            Err(err) if is_retryable_mcp_error(&err) => {
+                self.evict_child(&repo_root).await;
+                let child = self.ensure_child(&repo_root).await?;
+                child.call(payload).await
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    pub async fn session_repo_root(&self, session_id: &str) -> Option<PathBuf> {
+        self.sessions
+            .read()
+            .await
+            .get(session_id)
+            .and_then(|entry| {
+                entry
+                    .binding
+                    .as_ref()
+                    .map(|binding| binding.repo_root.clone())
+            })
+    }
+
+    async fn ensure_child(&self, repo_root: &Path) -> Result<Arc<McpProxy>> {
+        let repo_root = normalize_repo_root(repo_root);
+        if let Some(existing) = self.children.read().await.get(&repo_root).cloned() {
+            if existing.is_alive().await {
+                return Ok(existing);
+            }
+        }
+        if let Some(existing) = self.children.read().await.get(&repo_root).cloned() {
+            if !existing.is_alive().await {
+                self.evict_child(&repo_root).await;
             } else {
-                self.repo_root.join(path)
-            };
-            self.indexer.ingest_file(resolved.clone()).await?;
-            ingested.push(resolved);
+                return Ok(existing);
+            }
         }
-        Ok(json!({
-            "status": "ok",
-            "action": "ingest",
-            "paths": ingested.into_iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-            "project_root": self
-                .default_project_root
-                .as_ref()
-                .unwrap_or(&self.repo_root)
-                .display()
-                .to_string(),
-        }))
-    }
-
-    async fn handle_files(&self, args: FilesArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
-        let limit = args
-            .limit
-            .unwrap_or(FILES_DEFAULT_LIMIT)
-            .clamp(1, FILES_MAX_LIMIT);
-        let offset = args.offset.unwrap_or(0).min(FILES_MAX_OFFSET);
-        let (docs, total) = self.indexer.list_docs(offset, limit)?;
-        Ok(json!({
-            "results": docs,
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-            "repo_root": self.repo_root.display().to_string(),
-            "project_root": self
-                .default_project_root
-                .as_ref()
-                .unwrap_or(&self.repo_root)
-                .display()
-                .to_string(),
-        }))
-    }
-
-    async fn handle_stats(&self, args: StatsArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
-        let stats = self.indexer.stats()?;
-        Ok(json!({
-            "num_docs": stats.num_docs,
-            "state_dir": stats.state_dir.display().to_string(),
-            "index_size_bytes": stats.index_size_bytes,
-            "segments": stats.segments,
-            "avg_bytes_per_doc": stats.avg_bytes_per_doc,
-            "generated_at_epoch_ms": stats.generated_at_epoch_ms,
-            "last_updated_epoch_ms": stats.last_updated_epoch_ms,
-            "repo_root": self.repo_root.display().to_string(),
-            "project_root": self
-                .default_project_root
-                .as_ref()
-                .unwrap_or(&self.repo_root)
-                .display()
-                .to_string(),
-        }))
-    }
-
-    async fn handle_open(&self, args: OpenArgs) -> Result<serde_json::Value> {
-        self.ensure_project_root(args.project_root.as_deref())?;
-        let rel_path = normalize_rel_path(&args.path)
-            .ok_or_else(|| anyhow!("path must be relative and not contain parent components"))?;
-        let abs_path = self.repo_root.join(&rel_path);
-        let canonical = abs_path
-            .canonicalize()
-            .with_context(|| format!("resolve path {}", rel_path.display()))?;
-        if !canonical.starts_with(&self.repo_root) {
-            return Err(anyhow!("path must be under repo root"));
-        }
-        let content = fs::read_to_string(&canonical)
-            .with_context(|| format!("read {}", rel_path.display()))?;
-        if content.len() > OPEN_MAX_BYTES {
-            return Err(anyhow!(
-                "file too large ({} bytes > {} limit)",
-                content.len(),
-                OPEN_MAX_BYTES
-            ));
-        }
-        let lines: Vec<&str> = content.lines().collect();
-        let total_lines = lines.len();
-        if total_lines == 0 {
-            return Ok(json!({
-                "path": rel_path.display().to_string(),
-                "start_line": 0,
-                "end_line": 0,
-                "total_lines": 0,
-                "content": "",
-                "repo_root": self.repo_root.display().to_string(),
-                "project_root": self
-                    .default_project_root
-                    .as_ref()
-                    .unwrap_or(&self.repo_root)
-                    .display()
-                    .to_string(),
-            }));
-        }
-        let start = args.start_line.unwrap_or(1).max(1);
-        let end_raw = args.end_line.unwrap_or(total_lines);
-        if end_raw < start {
-            return Err(anyhow!("end_line must be >= start_line"));
-        }
-        if start > total_lines {
-            return Err(anyhow!("start_line beyond file length"));
-        }
-        if end_raw > total_lines {
-            return Err(anyhow!("end_line beyond file length"));
-        }
-        let start_idx = start.saturating_sub(1);
-        let end_idx = end_raw.saturating_sub(1);
-        let slice = lines[start_idx..=end_idx].join("\n");
-        Ok(json!({
-            "path": rel_path.display().to_string(),
-            "start_line": start,
-            "end_line": end_raw,
-            "total_lines": total_lines,
-            "content": slice,
-            "repo_root": self.repo_root.display().to_string(),
-            "project_root": self
-                .default_project_root
-                .as_ref()
-                .unwrap_or(&self.repo_root)
-                .display()
-                .to_string(),
-        }))
-    }
-
-    async fn handle_resource_read(&self, params: ResourceReadParams) -> Result<serde_json::Value> {
-        // Expect uri like docdex://path
-        let uri = params.uri.trim();
-        let prefix = "docdex://";
-        if !uri.starts_with(prefix) {
-            return Err(anyhow!("unsupported uri scheme"));
-        }
-        let raw_path = &uri[prefix.len()..];
-        let rel = if raw_path.starts_with('/') {
-            &raw_path[1..]
-        } else {
-            raw_path
+        let mut repo = self.config.repo.clone();
+        repo.repo = repo_root.clone();
+        let options = McpSpawnOptions {
+            repo,
+            log_level: self.config.log_level.clone(),
+            max_results: self.config.max_results,
+            rate_limit_per_min: self.config.rate_limit_per_min,
+            rate_limit_burst: self.config.rate_limit_burst,
+            memory_enabled: self.config.memory_enabled,
+            embedding_base_url: Some(self.config.embedding_base_url.clone()),
+            embedding_model: Some(self.config.embedding_model.clone()),
+            embedding_timeout_ms: Some(self.config.embedding_timeout_ms),
+            auth_token: self.config.auth_token.clone(),
+            detach_stdio: false,
+            capture_stdio: true,
         };
-        let open_args = OpenArgs {
-            path: rel.to_string(),
-            project_root: None,
-            start_line: None,
-            end_line: None,
-        };
-        self.handle_open(open_args).await
+        let child = spawn_mcp_proxy(options).await?;
+        let mut children = self.children.write().await;
+        if let Some(existing) = children.get(&repo_root) {
+            return Ok(existing.clone());
+        }
+        children.insert(repo_root, child.clone());
+        Ok(child)
     }
 
-    fn ensure_same_repo(&self, candidate: &Path) -> Result<()> {
-        let normalized = candidate.canonicalize().context("resolve project_root")?;
-        if normalized != self.repo_root {
-            return Err(anyhow!(
-                "project_root mismatch (started for {}; got {})",
-                self.repo_root.display(),
-                normalized.display()
-            ));
-        }
-        Ok(())
+    async fn evict_child(&self, repo_root: &Path) {
+        let repo_root = normalize_repo_root(repo_root);
+        self.children.write().await.remove(&repo_root);
     }
 
-    fn ensure_project_root(&self, candidate: Option<&Path>) -> Result<()> {
-        if let Some(path) = candidate {
-            return self.ensure_same_repo(path);
+    async fn forward_to_session(
+        &self,
+        session_id: &str,
+        sender: &mpsc::Sender<Value>,
+        payload: Value,
+    ) {
+        let _ = sender.send(payload).await;
+        if let Some(entry) = self.sessions.write().await.get_mut(session_id) {
+            entry.last_active = Instant::now();
         }
-        if let Some(default_root) = self.default_project_root.as_ref() {
-            return self.ensure_same_repo(default_root);
-        }
-        Ok(())
+    }
+
+    fn spawn_cleanup(router: Arc<Self>) {
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(MCP_ROUTER_CLEANUP_INTERVAL_SECS));
+            loop {
+                interval.tick().await;
+                router.cleanup_sessions().await;
+            }
+        });
+    }
+
+    async fn cleanup_sessions(&self) {
+        let mut sessions = self.sessions.write().await;
+        let now = Instant::now();
+        sessions.retain(|_, entry| {
+            now.duration_since(entry.last_active)
+                < Duration::from_secs(MCP_ROUTER_SESSION_IDLE_SECS)
+        });
     }
 }
 
-fn is_lock_busy(err: &anyhow::Error) -> bool {
-    err.chain().any(|cause| {
-        if let Some(tantivy_err) = cause.downcast_ref::<TantivyError>() {
-            if let TantivyError::LockFailure(lock_err, _) = tantivy_err {
-                return matches!(lock_err, LockError::LockBusy);
+fn normalize_repo_root(repo_root: &Path) -> PathBuf {
+    repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf())
+}
+
+fn is_retryable_mcp_error(err: &anyhow::Error) -> bool {
+    for cause in err.chain() {
+        if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            if matches!(
+                io.kind(),
+                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+            ) {
+                return true;
             }
         }
-        // Fallback: match on string in case the error is wrapped differently.
-        let msg = cause.to_string();
-        msg.contains("LockBusy") || msg.contains("Failed to acquire Lockfile")
+    }
+    let msg = err.to_string().to_lowercase();
+    msg.contains("broken pipe")
+        || msg.contains("write mcp request")
+        || msg.contains("flush mcp request")
+        || msg.contains("mcp proxy failed")
+}
+
+struct McpSpawnOptions {
+    repo: crate::config::RepoArgs,
+    log_level: String,
+    max_results: usize,
+    rate_limit_per_min: u32,
+    rate_limit_burst: u32,
+    memory_enabled: bool,
+    embedding_base_url: Option<String>,
+    embedding_model: Option<String>,
+    embedding_timeout_ms: Option<u64>,
+    auth_token: Option<String>,
+    detach_stdio: bool,
+    capture_stdio: bool,
+}
+
+struct McpMemorySettings {
+    enabled: bool,
+    base_url: String,
+    model: String,
+    timeout_ms: u64,
+}
+
+async fn spawn_mcp(options: McpSpawnOptions) -> Result<Child> {
+    let mut cmd = build_mcp_command(&options)?;
+    if options.capture_stdio {
+        cmd.stdin(Stdio::piped());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::inherit());
+    } else if options.detach_stdio {
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
+    } else {
+        cmd.stdin(Stdio::inherit());
+        cmd.stdout(Stdio::inherit());
+        cmd.stderr(Stdio::inherit());
+    }
+    cmd.kill_on_drop(true);
+    cmd.spawn()
+        .with_context(|| format!("launch {MCP_SERVER_BIN_NAME}"))
+}
+
+async fn spawn_mcp_proxy(options: McpSpawnOptions) -> Result<Arc<McpProxy>> {
+    let mut cmd = build_mcp_command(&options)?;
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::inherit());
+    cmd.kill_on_drop(true);
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("launch {MCP_SERVER_BIN_NAME}"))?;
+    let stdin = child.stdin.take().context("capture mcp stdin")?;
+    let stdout = child.stdout.take().context("capture mcp stdout")?;
+    Ok(McpProxy::new(child, stdin, stdout))
+}
+
+fn build_mcp_command(options: &McpSpawnOptions) -> Result<Command> {
+    let bin = resolve_mcp_server_binary()?;
+    let mut cmd = Command::new(&bin);
+    cmd.arg("--repo").arg(&options.repo.repo);
+    if let Some(state_dir) = options.repo.state_dir.clone() {
+        cmd.arg("--state-dir").arg(state_dir);
+    }
+    for dir in &options.repo.exclude_dir {
+        cmd.arg("--exclude-dir").arg(dir);
+    }
+    for prefix in &options.repo.exclude_prefix {
+        cmd.arg("--exclude-prefix").arg(prefix);
+    }
+    if options.repo.enable_symbol_extraction {
+        cmd.arg("--enable-symbol-extraction").arg("true");
+    }
+    cmd.arg("--log").arg(&options.log_level);
+    cmd.arg("--max-results")
+        .arg(options.max_results.to_string());
+    cmd.arg("--rate-limit-per-min")
+        .arg(options.rate_limit_per_min.to_string());
+    cmd.arg("--rate-limit-burst")
+        .arg(options.rate_limit_burst.to_string());
+    cmd.env(
+        "DOCDEX_ENABLE_MEMORY",
+        if options.memory_enabled { "1" } else { "0" },
+    );
+    if let Some(base_url) = options.embedding_base_url.as_ref() {
+        cmd.env("DOCDEX_EMBEDDING_BASE_URL", base_url);
+    }
+    if let Some(model) = options.embedding_model.as_ref() {
+        cmd.env("DOCDEX_EMBEDDING_MODEL", model);
+    }
+    if let Some(timeout_ms) = options.embedding_timeout_ms {
+        cmd.env("DOCDEX_EMBEDDING_TIMEOUT_MS", timeout_ms.to_string());
+    }
+    if let Some(token) = options.auth_token.as_ref() {
+        if !token.trim().is_empty() {
+            cmd.arg("--auth-token").arg(token.trim());
+        }
+    }
+    Ok(cmd)
+}
+
+fn resolve_memory_settings() -> Result<McpMemorySettings> {
+    let config = crate::config::AppConfig::load_default()
+        .context("load config for MCP memory enablement")?;
+    let enabled = env_boolish("DOCDEX_ENABLE_MEMORY").unwrap_or(config.memory.enabled);
+    let base_url = std::env::var("DOCDEX_EMBEDDING_BASE_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            std::env::var("DOCDEX_OLLAMA_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+        })
+        .unwrap_or_else(|| config.llm.base_url.clone());
+    let model = std::env::var("DOCDEX_EMBEDDING_MODEL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| config.llm.embedding_model.clone());
+    let timeout_ms = std::env::var("DOCDEX_EMBEDDING_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    Ok(McpMemorySettings {
+        enabled,
+        base_url,
+        model,
+        timeout_ms,
     })
 }
 
-async fn write_response(writer: &mut BufWriter<io::Stdout>, resp: &RpcResponse) -> Result<()> {
-    let payload = serde_json::to_vec(resp)?;
-    writer.write_all(&payload).await?;
-    writer.write_all(b"\n").await?;
-    writer.flush().await?;
-    Ok(())
-}
-
-fn normalize_rel_path(input: &str) -> Option<PathBuf> {
-    let path = Path::new(input);
-    if path.is_absolute() {
-        return None;
-    }
-    let mut clean = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => continue,
-            Component::Normal(part) => clean.push(part),
-            _ => return None, // rejects ParentDir/Prefix/RootDir
+pub(crate) fn resolve_mcp_server_binary() -> Result<PathBuf> {
+    if let Ok(path) = std::env::var(MCP_SERVER_BIN_ENV) {
+        if !path.trim().is_empty() {
+            let candidate = PathBuf::from(path);
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+            #[cfg(windows)]
+            {
+                let exe = candidate.with_extension("exe");
+                if exe.is_file() {
+                    return Ok(exe);
+                }
+            }
+            return Err(anyhow!(
+                "{MCP_SERVER_BIN_ENV} points to missing MCP server binary; set it to the docdex-mcp-server path"
+            ));
         }
     }
-    if clean.as_os_str().is_empty() {
-        None
-    } else {
-        Some(clean)
+
+    if let Ok(current) = std::env::current_exe() {
+        if let Some(dir) = current.parent() {
+            if let Some(candidate) = sibling_binary(dir, MCP_SERVER_BIN_NAME) {
+                return Ok(candidate);
+            }
+        }
+    }
+
+    if let Ok(found) = which(MCP_SERVER_BIN_NAME) {
+        return Ok(found);
+    }
+
+    Err(anyhow!(
+        "docdex-mcp-server not found; build it with `cargo build -p docdex-mcp-server` or set {MCP_SERVER_BIN_ENV} to the binary path"
+    ))
+}
+
+fn sibling_binary(dir: &Path, name: &str) -> Option<PathBuf> {
+    let candidate = dir.join(name);
+    if candidate.is_file() {
+        return Some(candidate);
+    }
+    #[cfg(windows)]
+    {
+        let candidate = dir.join(format!("{name}.exe"));
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn env_boolish(key: &str) -> Option<bool> {
+    let raw = std::env::var(key).ok()?;
+    let trimmed = raw.trim().to_ascii_lowercase();
+    match trimmed.as_str() {
+        "1" | "true" | "t" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "f" | "no" | "n" | "off" => Some(false),
+        _ => None,
     }
 }

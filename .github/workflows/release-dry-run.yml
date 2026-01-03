@@ -21,6 +21,7 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        if: ${{ runner.os != 'Linux' }}
 
       - name: Tests
         run: cargo test --locked --all

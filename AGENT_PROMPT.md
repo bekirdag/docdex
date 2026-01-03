@@ -1,41 +1,46 @@
 # Docdex — Agent Prompt
 
-You are interacting with Docdex, a local documentation indexer/search daemon. It keeps a per-repo index of Markdown/text files on disk and serves search/snippet results over HTTP and CLI. No external services are used; all data stays local.
+You are interacting with Docdex, a local-first indexer/search daemon for docs and source code. It keeps a per-repo index on disk and serves search, chat, and code intelligence results over HTTP, CLI, or MCP. No external services or uploads are required.
 
 ## What Docdex does
-- Builds a tantivy-based index under `<repo>/.docdex/index`.
-- Serves HTTP endpoints: `/search`, `/snippet`, `/healthz`.
-- CLI commands mirror the API: `docdexd index|serve|query|ingest|self-check`.
-- Optional MCP mode (stdio) exposes `docdex.search` and `docdex.index` tools for MCP-aware clients.
-- Watches files while serving to keep the index fresh.
+- Builds a Tantivy-based index under `~/.docdex/state/repos/<fingerprint>/index` (docs + common code extensions).
+- Serves HTTP endpoints: `/search`, `/snippet`, `/v1/chat/completions`, `/v1/symbols`, `/v1/ast`, `/v1/graph/impact`, `/healthz`.
+- CLI commands mirror the API: `docdexd index|serve|chat|ingest|self-check` (chat includes a REPL when `--query` is omitted).
+- Optional MCP mode (stdio) exposes `docdex_search`, `docdex_web_research`, `docdex_index`, `docdex_files`, `docdex_open`, `docdex_stats`, `docdex_repo_inspect`, `docdex_symbols`, `docdex_ast`, `docdex_impact_diagnostics`, `docdex_memory_store/recall`.
+- Watches files while serving to keep the index fresh; memory is enabled by default and web fallback is gated (disabled unless `DOCDEX_WEB_ENABLED=1`).
 
 ## How to use
 - Install via npm: `npm i -g docdex` (or `npx docdex --version`).
 - Build an index: `docdexd index --repo /path/to/repo`.
-- Serve API: `docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 46137 --log info --auth-token <token>` (or add `--secure-mode=false` for token-free local use).
-- Query via CLI: `docdexd query --repo /path/to/repo --query "term" --limit 5`.
+- Serve API: `docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 3210 --log info` (use `--expose --auth-token <token>` for non-loopback binds).
+- Query via CLI: `docdexd chat --repo /path/to/repo --query "term" --limit 5` (omit `--query` for REPL).
+- Web fallback: set `DOCDEX_WEB_ENABLED=1` (otherwise web is disabled).
 - Health: `GET /healthz` should return `ok`.
 
 ## Security/constraints
-- Defaults bind to `127.0.0.1`; secure mode is on by default and requires an auth token, loopback-only allowlist, and default rate limiting. Add `--secure-mode=false` (and set `--allow-ip`/`--rate-limit-per-min`) when you need broader access. Respect local-only behavior unless configured otherwise.
+- Defaults bind to `127.0.0.1`; non-loopback binds require `--expose` and `--auth-token`. Secure mode is on by default and enables default rate limiting.
 - Index stays on disk; do not upload corpus or snippets externally.
 - Respect rate limits and request size defaults (`max_query_bytes`, `max_request_bytes`, `max_limit`).
 
 ## Paths and binaries
 - Binary name: `docdexd` (`docdex` alias via npm).
-- Index path: `<repo>/.docdex/index` (or `DOCDEX_STATE_DIR`).
-- Supported platforms: macOS (arm64/x64), Linux glibc (arm64/x64), Linux musl (arm64/x64), Windows (x64/arm64) with matching release artifacts.
+- Index path: `~/.docdex/state/repos/<fingerprint>/index` (or `DOCDEX_STATE_DIR` as a base override).
+- Supported published platforms: macOS (arm64/x64), Linux glibc (arm64/x64), Linux musl (x64), Windows (x64).
+- Unpublished/unsupported (fails gracefully): Linux musl (arm64), Windows (arm64).
 
 ## Environment overrides (common)
-- `DOCDEX_STATE_DIR` — override index location.
+- `DOCDEX_STATE_DIR` — override state base directory.
+- `DOCDEX_HTTP_BASE_URL` — point CLI to a running daemon.
+- `DOCDEX_ENABLE_MEMORY` — enable/disable memory endpoints (default enabled via config).
+- `DOCDEX_WEB_ENABLED` / `DOCDEX_OFFLINE` — enable web fallback or force offline.
+- `DOCDEX_AUTH_TOKEN` — bearer token for HTTP/MCP auth when required.
 - `DOCDEX_DOWNLOAD_REPO` — owner/repo for release assets (npm installer).
-- `DOCDEX_LIBC` — force `gnu` or `musl` on Linux.
 - `DOCDEX_GITHUB_TOKEN` — authenticated downloads of release assets (avoids rate limits/private releases).
 
 ## Agent guidance
 - Keep queries concise; prefer summary-only when possible (`snippets=false`), then fetch snippets for selected docs.
 - Avoid sending sensitive content elsewhere; Docdex is local—keep data local.
 - When returning snippets, include `rel_path` so humans can navigate the source.
-- If your client supports MCP, use `docdex.search` (concise queries, low `limit`) for repo-specific context, `docdex.index` when results look stale, `docdex.files` to list indexed docs, and `docdex.stats` to confirm doc counts/recency; otherwise keep using HTTP/CLI.
-- When integrating Docdex into a new repo, ensure `.docdex/` (especially `.docdex/index/`) is listed in `.gitignore` so index artifacts are never committed.
+- If your client supports MCP, use `docdex_search` for repo context, `docdex_web_research` for web fallback, `docdex_index` when results look stale, and `docdex_open` to read files; use symbols/AST/impact tools for code intelligence when needed.
+- When integrating Docdex into a new repo, add `.docdex/` to `.gitignore` only if you opt into an in-repo `--state-dir`.
 - MCP client setup: register a server named `docdex` that runs `docdexd mcp --repo <repo> --log warn --max-results 8` (or `docdex mcp ...` from npm). Use the Docdex helper to auto-add wherever possible: `docdex mcp-add --repo <repo>` (add `--all` to attempt every supported client, or `--remove` to uninstall). Direct Codex CLI command: `codex mcp add docdex -- docdexd mcp --repo <repo> --log warn --max-results 8`. Then use the MCP tools instead of shelling out.

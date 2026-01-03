@@ -424,7 +424,7 @@ The Chat API is updated to accept an agent\_id context, enabling the **Waterfall
 * **Input:** { "rootUri": "file:///path/to/repo" }  
 * **Behavior:**  
   * The singleton daemon resolves the repo fingerprint and mounts the repo state.  
-  * If new or stale, it starts an async index crawl and returns status "indexing" or "stale".  
+  * If new, unindexed, or stale, it starts an async index crawl and returns status "indexing" or "stale".  
   * If ready, returns status "ready" and the repo_id for subsequent requests.
   * The singleton daemon runs as `docdexd daemon` and uses a lockfile at `~/.docdex/daemon.lock`; CLI entrypoints auto-start it when missing.
   * The npm installer auto-selects a port (prefers 3000, fallback 3210), updates `~/.docdex/config.toml`, injects MCP config into supported clients, and attempts OS startup registration (with a one-time warning if blocked).

@@ -1,9 +1,12 @@
 use crate::error::{AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_UNKNOWN_REPO};
+use crate::index::Indexer;
 use crate::search::{json_error, status_for_app_error, AppState};
 use axum::{extract::State, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Arc;
 use url::Url;
+use tracing::{info, warn};
 
 #[derive(Debug, Deserialize)]
 pub struct InitializeRequest {
@@ -51,9 +54,15 @@ pub(crate) fn resolve_initialize(
             }
             AppError::new(ERR_INTERNAL_ERROR, "failed to initialize repo")
         })?;
+        let mut status = mount.status;
+        if status == crate::daemon::multi_repo::RepoMountStatus::Ready
+            && maybe_start_background_index(mount.repo.indexer.clone(), &mount.repo.repo_id)
+        {
+            status = crate::daemon::multi_repo::RepoMountStatus::Indexing;
+        }
         return Ok(InitializeResponse {
             repo_id: mount.repo.repo_id.clone(),
-            status: mount.status.as_str(),
+            status: status.as_str(),
             repo_root: mount.repo.repo_root.display().to_string(),
         });
     }
@@ -66,11 +75,35 @@ pub(crate) fn resolve_initialize(
     if resolved_repo != default_repo {
         return Err(AppError::new(ERR_UNKNOWN_REPO, "unknown repo"));
     }
+    let status = if maybe_start_background_index(state.indexer.clone(), &state.repo_id) {
+        "indexing"
+    } else {
+        "ready"
+    };
     Ok(InitializeResponse {
         repo_id: state.repo_id.clone(),
-        status: "ready",
+        status,
         repo_root: default_repo.display().to_string(),
     })
+}
+
+fn maybe_start_background_index(indexer: Arc<Indexer>, repo_id: &str) -> bool {
+    if indexer.num_docs() > 0 {
+        return false;
+    }
+    let repo_id = repo_id.to_string();
+    if tokio::runtime::Handle::try_current().is_err() {
+        warn!(repo_id = %repo_id, "no Tokio runtime available; skipping background reindex");
+        return false;
+    }
+    tokio::spawn(async move {
+        if let Err(err) = indexer.reindex_all().await {
+            warn!(repo_id = %repo_id, error = ?err, "background reindex failed");
+        } else {
+            info!(repo_id = %repo_id, "background reindex complete");
+        }
+    });
+    true
 }
 
 pub(crate) fn parse_root_uri(raw: &str) -> Result<PathBuf, AppError> {

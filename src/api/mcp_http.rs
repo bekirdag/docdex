@@ -32,6 +32,9 @@ pub async fn mcp_request_handler(
         );
     };
     let method = extract_method(&payload).map(str::to_string);
+    if is_notification(&payload, method.as_deref()) {
+        return StatusCode::NO_CONTENT.into_response();
+    }
     if method.as_deref() == Some("initialize") {
         normalize_initialize_payload(&mut payload);
     }
@@ -117,6 +120,9 @@ pub async fn mcp_message_handler(
         );
     };
     let method = extract_method(&payload).map(str::to_string);
+    if is_notification(&payload, method.as_deref()) {
+        return StatusCode::NO_CONTENT.into_response();
+    }
     if method.as_deref() == Some("initialize") {
         normalize_initialize_payload(&mut payload);
         let repo_root = match resolve_repo_for_mcp(&state, extract_init_root(&payload)) {
@@ -173,6 +179,17 @@ fn header_session_id(headers: &HeaderMap) -> Option<String> {
 
 fn extract_method(payload: &Value) -> Option<&str> {
     payload.get("method").and_then(|value| value.as_str())
+}
+
+fn is_notification(payload: &Value, method: Option<&str>) -> bool {
+    if payload.get("id").is_some() {
+        return false;
+    }
+    match method {
+        Some(name) if name.starts_with("notifications/") => true,
+        Some("initialized") => true,
+        _ => false,
+    }
 }
 
 fn extract_init_root(payload: &Value) -> Option<String> {

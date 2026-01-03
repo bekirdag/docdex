@@ -16,7 +16,8 @@ When running the singleton daemon (`docdexd daemon`), the server can mount multi
 - `GET /healthz` - basic health check.
 - `POST /v1/initialize` - validate repo context and return repo metadata.
   - Body: `{ "rootUri": "<file://... or absolute path optional>" }`.
-  - Response: `{ "repo_id": "<sha256>", "status": "ready", "repo_root": "<path>" }`.
+  - Behavior: mounts the repo and triggers background indexing if the repo has not been indexed yet.
+  - Response: `{ "repo_id": "<sha256>", "status": "ready|indexing", "repo_root": "<path>" }`.
 - `POST /v1/mcp` - MCP JSON-RPC over HTTP (single request/response).
   - Body: JSON-RPC request (`initialize`, `tools/list`, `tools/call`, ...).
 - `GET /v1/mcp/sse` (alias `GET /sse`) - MCP SSE stream.

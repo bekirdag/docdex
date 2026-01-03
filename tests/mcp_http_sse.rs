@@ -194,6 +194,17 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         "tools/list result missing"
     );
 
+    let notify_payload = json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+        "params": {}
+    });
+    let notify_resp = client
+        .post(format!("http://127.0.0.1:{port}/v1/mcp"))
+        .json(&notify_payload)
+        .send()?;
+    assert_eq!(notify_resp.status(), reqwest::StatusCode::NO_CONTENT);
+
     let stats_payload = json!({
         "jsonrpc": "2.0",
         "id": 3,

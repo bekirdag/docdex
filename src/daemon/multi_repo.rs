@@ -260,7 +260,20 @@ impl RepoManager {
             None => IndexConfig::for_repo(&repo_root)?,
         };
         let has_index = config.state_dir().join("meta.json").exists();
-        let indexer = Arc::new(Indexer::with_config(repo_root.clone(), config)?);
+        let (indexer, read_only) = match Indexer::with_config(repo_root.clone(), config.clone()) {
+            Ok(indexer) => (Arc::new(indexer), false),
+            Err(err) if is_lock_busy_error(&err) => {
+                warn!(
+                    target: "docdexd",
+                    repo = %repo_root.display(),
+                    error = %err,
+                    "index writer busy; opening read-only"
+                );
+                let readonly = Indexer::with_config_read_only(repo_root.clone(), config)?;
+                (Arc::new(readonly), true)
+            }
+            Err(err) => return Err(err),
+        };
         let libs_indexer = {
             let libs_dir = libs::libs_state_dir_from_index_state_dir(indexer.state_dir());
             libs::LibsIndexer::open_read_only(libs_dir)
@@ -280,16 +293,20 @@ impl RepoManager {
             libs_indexer,
             memory,
         });
-        let watcher = match watcher::spawn(indexer.clone()) {
-            Ok(handle) => Some(handle),
-            Err(err) => {
-                warn!(
-                    target: "docdexd",
-                    error = ?err,
-                    repo = %repo_root.display(),
-                    "failed to start file watcher"
-                );
-                None
+        let watcher = if read_only {
+            None
+        } else {
+            match watcher::spawn(indexer.clone()) {
+                Ok(handle) => Some(handle),
+                Err(err) => {
+                    warn!(
+                        target: "docdexd",
+                        error = ?err,
+                        repo = %repo_root.display(),
+                        "failed to start file watcher"
+                    );
+                    None
+                }
             }
         };
         self.insert_repo(repo.clone(), watcher);
@@ -298,7 +315,7 @@ impl RepoManager {
         } else {
             RepoMountStatus::Indexing
         };
-        if status == RepoMountStatus::Indexing {
+        if status == RepoMountStatus::Indexing && !read_only {
             let repo_id_clone = repo.repo_id.clone();
             tokio::spawn(async move {
                 if let Err(err) = indexer.reindex_all().await {
@@ -310,6 +327,14 @@ impl RepoManager {
         }
         Ok(RepoMount { repo, status })
     }
+}
+
+fn is_lock_busy_error(err: &anyhow::Error) -> bool {
+    let message = err.to_string();
+    message.contains("LockBusy")
+        || message.contains("Failed to acquire")
+        || message.contains("failed to acquire")
+        || message.contains("index writer")
 }
 
 #[cfg(test)]

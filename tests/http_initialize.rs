@@ -219,3 +219,32 @@ fn initialize_rejects_unknown_repo() -> Result<(), Box<dyn Error>> {
     assert_eq!(code, "unknown_repo");
     Ok(())
 }
+
+#[test]
+fn initialize_triggers_indexing_when_unindexed() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    write_repo(repo.path())?;
+    let state_dir = TempDir::new()?;
+
+    let port = match pick_free_port() {
+        Some(port) => port,
+        None => return Ok(()),
+    };
+    let _daemon = start_daemon(state_dir.path(), repo.path(), port)?;
+    wait_for_health(port)?;
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .pool_max_idle_per_host(0)
+        .build()?;
+    let resp = post_initialize(&client, port, &file_uri(repo.path()))?;
+    assert!(
+        resp.status().is_success(),
+        "initialize failed: {}",
+        resp.status()
+    );
+    let payload: serde_json::Value = resp.json()?;
+    let status = payload.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    assert_eq!(status, "indexing");
+    Ok(())
+}

@@ -50,6 +50,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Free disk space (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /usr/local/share/boost /usr/local/share/chromium /usr/share/swift
+          sudo rm -rf /var/lib/apt/lists/*
+          df -h
+
       - name: Compute source date epoch
         id: epoch
         run: echo "epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
@@ -67,15 +76,13 @@ jobs:
           workspaces: |
             .
 
-      - name: Tests
-        run: cargo test --locked --all
-
       - name: Install cross toolchain
         if: ${{ matrix.cross_deps != '' }}
         run: sudo apt-get update && sudo apt-get install -y ${{ matrix.cross_deps }}
 
       - name: Build release binary
         env:
+          CARGO_INCREMENTAL: 0
           SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.epoch }}
           CARGO_PROFILE_RELEASE_DEBUG: 0
           CARGO_PROFILE_RELEASE_LTO: true

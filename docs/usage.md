@@ -177,6 +177,19 @@ ollama serve
 ollama pull nomic-embed-text
 ```
 
+Change the default chat model later:
+- Run the wizard again: `docdexd setup` (alias: `docdexd llm-setup`).
+- Or edit `~/.docdex/config.toml`:
+  - `[llm].default_model` (chat model)
+  - `[llm].embedding_model`
+  - `[llm].base_url` (Ollama base URL)
+  - `[llm].provider` (must be `ollama` for built-in features)
+Restart the daemon after changing config so it reloads the new defaults.
+
+Enable Ollama later (if skipped during install):
+- Install Ollama for your OS.
+- Run `docdexd setup` to validate the daemon and pull configured models.
+
 Run Docdex with Ollama:
 ```bash
 DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdexd daemon --repo /path/to/repo --host 127.0.0.1 --port 3210

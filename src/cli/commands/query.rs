@@ -186,7 +186,7 @@ async fn run_single(
         .as_ref()
         .map(|cfg| cfg.llm.max_answer_tokens)
         .unwrap_or(1024);
-    let memory_state = resolve_memory_state(config.as_ref(), server.state_dir())?;
+    let memory_state = resolve_memory_state(config.as_ref(), server.state_dir(), server.repo_root())?;
     let plan = WaterfallPlan::new(
         web_gate,
         Tier2Config::enabled(),
@@ -371,6 +371,7 @@ async fn run_via_http(
 pub(crate) fn resolve_memory_state(
     config: Option<&config::AppConfig>,
     state_dir: &Path,
+    repo_root: &Path,
 ) -> Result<Option<MemoryState>> {
     let env_enabled = env_boolish("DOCDEX_ENABLE_MEMORY");
     let config_enabled = config.map(|cfg| cfg.memory.enabled).unwrap_or(false);
@@ -391,9 +392,11 @@ pub(crate) fn resolve_memory_state(
     let timeout_ms = env_u64("DOCDEX_EMBEDDING_TIMEOUT_MS").unwrap_or(0);
     let timeout = Duration::from_millis(timeout_ms);
     let embedder = OllamaEmbedder::new(base_url, model, timeout)?;
+    let repo_id = crate::repo_manager::repo_fingerprint_sha256(repo_root)?;
     Ok(Some(MemoryState {
         store: MemoryStore::new(state_dir),
         embedder,
+        repo_id,
     }))
 }
 

@@ -4,6 +4,7 @@ use crate::error;
 use crate::index;
 use crate::memory;
 use crate::ollama;
+use crate::repo_manager;
 use crate::util;
 use anyhow::Result;
 use reqwest::Method;
@@ -58,6 +59,8 @@ pub async fn run_store(
     };
     let metadata =
         memory::inject_embedding_metadata(user_metadata, embedder.provider(), embedder.model());
+    let repo_id = repo_manager::repo_fingerprint_sha256(&repo_root)?;
+    let metadata = memory::inject_repo_metadata(metadata, &repo_id);
     let store = memory::MemoryStore::new(index_config.state_dir());
     let created_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?

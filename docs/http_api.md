@@ -13,12 +13,13 @@ Docdex exposes a local HTTP server (default `127.0.0.1:3210`). Use it directly o
 Docdex can run in two modes:
 
 - Per-repo daemon: `repo_id` is optional but must match the daemon repo when provided.
-- Singleton daemon: mount repos with `POST /v1/initialize` and pass `repo_id` on later requests.
+- Singleton daemon: mount repos with `POST /v1/initialize` and pass `repo_id` on later requests. Once more than one repo is mounted, `repo_id` becomes required for all repo-scoped endpoints.
 
 Repo selection rules:
 
 - `repo_id` can be sent in the query/body or in the header `x-docdex-repo-id`.
-- MCP initialize over `/sse` + `/v1/mcp/message` binds the session to a repo.
+- MCP initialize over `/sse` + `/v1/mcp/message` must include `rootUri` when multiple repos are active.
+- MCP SSE sessions bind to the repo and reuse it for subsequent tool calls.
 - `/v1/mcp` requests can override the bound repo using `project_root`/`repo_path`.
 
 ## Common headers

@@ -1866,9 +1866,14 @@ impl McpServer {
             memory_budget_from_max_answer_tokens(self.max_answer_tokens),
             ProfileBudget::default(),
         );
+        let repo_id = docdexd::repo_manager::repo_fingerprint_sha256(&self.repo_root)
+            .unwrap_or_else(|_| {
+                docdexd::repo_manager::fingerprint::legacy_repo_id_for_root(&self.repo_root)
+            });
         let memory_state = self.memory.as_ref().map(|state| search::MemoryState {
             store: state.store.clone(),
             embedder: state.embedder.clone(),
+            repo_id: repo_id.clone(),
         });
         let request_id_ref = request_id.as_str();
         let waterfall = run_waterfall(WaterfallRequest {

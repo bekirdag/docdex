@@ -172,6 +172,10 @@ impl RepoManager {
         Some(runtime)
     }
 
+    pub fn repo_count(&self) -> usize {
+        self.repos.read().len()
+    }
+
     pub fn start_housekeeping(self: &Arc<Self>) {
         let manager = Arc::clone(self);
         let interval = manager.cleanup_interval;
@@ -284,6 +288,7 @@ impl RepoManager {
         let memory = self.memory_embedder.clone().map(|embedder| MemoryState {
             store: MemoryStore::new(indexer.state_dir()),
             embedder,
+            repo_id: repo_id.clone(),
         });
         let repo = Arc::new(RepoRuntime {
             repo_id: repo_id.clone(),

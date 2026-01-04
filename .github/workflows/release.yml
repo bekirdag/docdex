@@ -55,8 +55,11 @@ jobs:
         run: |
           df -h
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
-            /usr/local/share/boost /usr/local/share/chromium /usr/share/swift
-          sudo rm -rf /var/lib/apt/lists/*
+            /usr/local/share/boost /usr/local/share/chromium /usr/share/swift \
+            /usr/local/share/powershell /usr/local/.ghcup /usr/lib/jvm \
+            /opt/hostedtoolcache
+          sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/*
+          sudo apt-get clean
           df -h
 
       - name: Compute source date epoch
@@ -79,6 +82,10 @@ jobs:
       - name: Install cross toolchain
         if: ${{ matrix.cross_deps != '' }}
         run: sudo apt-get update && sudo apt-get install -y ${{ matrix.cross_deps }}
+
+      - name: Limit build jobs (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        run: echo "CARGO_BUILD_JOBS=1" >> "$GITHUB_ENV"
 
       - name: Build release binary
         env:

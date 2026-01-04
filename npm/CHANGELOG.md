@@ -1,7 +1,10 @@
 # Changelog
 
-## 0.2.12
-- Added glama support
+## 0.2.13
+- Repo memory now tags items with `repoId` and filters recalls to prevent cross-repo leakage in multi-repo daemons.
+- MCP HTTP requires explicit repo selection when multiple repos are active.
+- Postinstall banner now guides users to run `docdex setup`.
+- Docs refreshed with memory, agent memory, code intelligence, web search, and Ollama guidance.
 
 ## 0.1.10
 - smithery deployment work to get a bettwe score. enriched server.js, added mcp.json and an icon address.

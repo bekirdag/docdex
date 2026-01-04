@@ -194,13 +194,20 @@ Docdex runs as a local daemon serving:
 
 ### Multi-Repo Setup
 
-To support multiple repositories simultaneously, run separate daemons on different ports and add them to your MCP config.
+Run a single daemon and mount additional repos on demand.
 
 ```bash
 docdexd daemon --repo /path/to/repo-a --port 3210
-docdexd daemon --repo /path/to/repo-b --port 3220
 
+# Mount another repo and capture its repo_id
+curl -X POST "http://127.0.0.1:3210/v1/initialize" \
+  -H "Content-Type: application/json" \
+  -d '{"rootUri":"file:///path/to/repo-b"}'
 ```
+
+Notes:
+- When more than one repo is mounted, include `x-docdex-repo-id: <sha256>` on HTTP requests.
+- MCP sessions bind to the repo provided in `initialize.rootUri` and reuse that repo automatically.
 
 ### Security
 

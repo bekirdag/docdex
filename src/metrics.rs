@@ -28,6 +28,7 @@ pub struct Metrics {
     waterfall_memory_context_candidates: AtomicU64,
     waterfall_memory_context_kept: AtomicU64,
     waterfall_memory_context_dropped: AtomicU64,
+    memory_repo_mismatch_total: AtomicU64,
     profile_recall_requests: AtomicU64,
     profile_recall_candidates: AtomicU64,
     profile_recall_kept: AtomicU64,
@@ -81,6 +82,7 @@ impl Default for Metrics {
             waterfall_memory_context_candidates: AtomicU64::new(0),
             waterfall_memory_context_kept: AtomicU64::new(0),
             waterfall_memory_context_dropped: AtomicU64::new(0),
+            memory_repo_mismatch_total: AtomicU64::new(0),
             profile_recall_requests: AtomicU64::new(0),
             profile_recall_candidates: AtomicU64::new(0),
             profile_recall_kept: AtomicU64::new(0),
@@ -191,6 +193,11 @@ impl Metrics {
             .fetch_add(kept as u64, Ordering::Relaxed);
         self.waterfall_memory_context_dropped
             .fetch_add(dropped as u64, Ordering::Relaxed);
+    }
+
+    pub fn inc_memory_repo_mismatch(&self, dropped: u64) {
+        self.memory_repo_mismatch_total
+            .fetch_add(dropped, Ordering::Relaxed);
     }
 
     pub fn record_profile_recall(
@@ -395,6 +402,9 @@ impl Metrics {
                 "# HELP docdex_waterfall_memory_context_dropped_total Memory context items dropped\n",
                 "# TYPE docdex_waterfall_memory_context_dropped_total counter\n",
                 "docdex_waterfall_memory_context_dropped_total {}\n",
+                "# HELP docdex_memory_repo_mismatch_total Memory items dropped due to repo mismatch\n",
+                "# TYPE docdex_memory_repo_mismatch_total counter\n",
+                "docdex_memory_repo_mismatch_total {}\n",
                 "# HELP docdex_profile_recall_requests_total Profile recall requests\n",
                 "# TYPE docdex_profile_recall_requests_total counter\n",
                 "docdex_profile_recall_requests_total {}\n",
@@ -484,6 +494,7 @@ impl Metrics {
             self.waterfall_memory_context_candidates.load(Ordering::Relaxed),
             self.waterfall_memory_context_kept.load(Ordering::Relaxed),
             self.waterfall_memory_context_dropped.load(Ordering::Relaxed),
+            self.memory_repo_mismatch_total.load(Ordering::Relaxed),
             self.profile_recall_requests.load(Ordering::Relaxed),
             self.profile_recall_candidates.load(Ordering::Relaxed),
             self.profile_recall_kept.load(Ordering::Relaxed),

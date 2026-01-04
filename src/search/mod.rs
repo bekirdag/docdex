@@ -12,7 +12,9 @@ use crate::index::{
 };
 use crate::libs::LibsIndexer;
 use crate::mcp::McpProxyRouter;
-use crate::memory::{inject_embedding_metadata, MemoryStore};
+use crate::memory::{
+    filter_memory_items_by_repo, inject_embedding_metadata, inject_repo_metadata, MemoryStore,
+};
 use crate::ollama::OllamaEmbedder;
 use crate::orchestrator::web::{web_context_from_status, WebDiscoveryStatus, WebFetchResult};
 use crate::orchestrator::{
@@ -271,6 +273,7 @@ pub struct RequestId(pub String);
 pub struct MemoryState {
     pub store: MemoryStore,
     pub embedder: OllamaEmbedder,
+    pub repo_id: String,
 }
 
 #[derive(Clone)]
@@ -521,7 +524,16 @@ pub(crate) fn resolve_repo_context(
     body_repo_id: Option<&str>,
     require: bool,
 ) -> Result<RepoContext, RepoIdError> {
-    let selected = parse_repo_id(headers, query_repo_id, body_repo_id, require)?;
+    let explicit_required = if state.multi_repo {
+        state
+            .repos
+            .as_ref()
+            .map(|manager| manager.repo_count() > 1)
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    let selected = parse_repo_id(headers, query_repo_id, body_repo_id, require || explicit_required)?;
     let default_repo = RepoContext {
         repo_id: state.repo_id.clone(),
         legacy_repo_id: state.legacy_repo_id.clone(),
@@ -710,6 +722,7 @@ async fn memory_store_handler(
         memory.embedder.provider(),
         memory.embedder.model(),
     );
+    let metadata = inject_repo_metadata(metadata, &repo.repo_id);
     let store = memory.store.clone();
     let text_owned = text.to_string();
 
@@ -831,6 +844,18 @@ async fn memory_recall_handler(
     let read = tokio::task::spawn_blocking(move || store.recall(&query_embedding, top_k)).await;
     match read {
         Ok(Ok(items)) => {
+            let (items, dropped) = filter_memory_items_by_repo(items, &repo.repo_id);
+            if dropped > 0 {
+                state
+                    .metrics
+                    .inc_memory_repo_mismatch(dropped as u64);
+                warn!(
+                    target: "docdexd",
+                    repo_id = %repo.repo_id,
+                    dropped,
+                    "memory_recall dropped items with mismatched repo id"
+                );
+            }
             let results_len = items.len();
             let results = items
                 .into_iter()

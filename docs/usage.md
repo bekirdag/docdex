@@ -87,6 +87,15 @@ Notes:
 - `daemon`: singleton service that hosts shared MCP over HTTP/SSE (`/sse`).
 - `mcp`: legacy stdio MCP server for local, per-repo use.
 
+## Repo scoping (multi-repo daemon)
+When a singleton daemon has more than one repo mounted, the daemon requires an explicit repo scope.
+
+- Mount a repo and get its `repo_id`:
+  - `POST /v1/initialize` with `{ "rootUri": "file:///path/to/repo" }`
+- For HTTP calls, send `x-docdex-repo-id: <sha256>` or `repo_id` in query/body.
+- MCP SSE sessions bind to the repo in `initialize.rootUri` and reuse it automatically.
+- Per-request `project_root`/`repo_path` overrides the bound repo for MCP calls.
+
 ## MCP integration
 
 Supported auto-detected MCP clients (installation adds config when the file exists):
@@ -217,7 +226,7 @@ curl -X POST "http://127.0.0.1:3210/v1/memory/recall" \\
 
 Notes:
 - Memory uses embeddings (Ollama). If Ollama is unavailable, these calls fail with a structured error.
-- For multi-repo daemons, pass `repo_id` in the body/query or `x-docdex-repo-id` header.
+- When more than one repo is mounted, `repo_id` is required (query/body or `x-docdex-repo-id`).
 
 ## Agent memory (profile preferences)
 Agent memory stores long-lived preferences across repos (style, tooling, constraints, workflow). It lives in the global state dir and does not require a repo path.

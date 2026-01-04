@@ -159,6 +159,17 @@ fn daemon_routes_requests_by_repo_id() -> Result<(), Box<dyn Error>> {
         .and_then(|value| value.as_str())
         .ok_or("missing repo_id")?;
 
+    let init_resp = client
+        .post(format!("http://127.0.0.1:{port}/v1/initialize"))
+        .json(&serde_json::json!({ "rootUri": file_uri(repo_one.path()) }))
+        .send()?;
+    assert!(init_resp.status().is_success());
+    let init_payload: Value = init_resp.json()?;
+    let repo_one_id = init_payload
+        .get("repo_id")
+        .and_then(|value| value.as_str())
+        .ok_or("missing repo_id")?;
+
     let search_resp = client
         .get(format!("http://127.0.0.1:{port}/search"))
         .query(&[("q", "bravo")])
@@ -179,6 +190,7 @@ fn daemon_routes_requests_by_repo_id() -> Result<(), Box<dyn Error>> {
     let search_default = client
         .get(format!("http://127.0.0.1:{port}/search"))
         .query(&[("q", "alpha")])
+        .header("x-docdex-repo-id", repo_one_id)
         .send()?;
     if !search_default.status().is_success() {
         let status = search_default.status();
@@ -191,6 +203,12 @@ fn daemon_routes_requests_by_repo_id() -> Result<(), Box<dyn Error>> {
         .and_then(|value| value.as_array())
         .ok_or("missing hits")?;
     assert!(!hits.is_empty(), "expected hits for default repo");
+
+    let missing_repo = client
+        .get(format!("http://127.0.0.1:{port}/search"))
+        .query(&[("q", "alpha")])
+        .send()?;
+    assert_eq!(missing_repo.status(), reqwest::StatusCode::BAD_REQUEST);
 
     Ok(())
 }

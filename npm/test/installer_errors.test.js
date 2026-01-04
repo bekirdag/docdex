@@ -37,9 +37,9 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
     detected: { os: "linux", arch: "arm64" },
     platformKey: "linux-arm64-gnu",
     targetTriple: "aarch64-unknown-linux-gnu",
-    version: "0.2.12",
+    version: "0.2.13",
     repoSlug: "owner/repo",
-    downloadUrl: "https://example.test/releases/download/v0.2.12/docdexd-linux-arm64-gnu.tar.gz",
+    downloadUrl: "https://example.test/releases/download/v0.2.13/docdexd-linux-arm64-gnu.tar.gz",
     assetName: "docdexd-linux-arm64-gnu.tar.gz",
     expectedAsset: "docdexd-linux-arm64-gnu.tar.gz",
     expectedAssetPattern: "docdexd-<platformKey>.tar.gz"

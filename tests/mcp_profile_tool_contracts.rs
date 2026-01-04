@@ -63,6 +63,7 @@ impl ServerHarness {
     ) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo_root.to_string_lossy().to_string();
         let child = Command::new(docdex_bin())
+            .env("DOCDEX_WEB_ENABLED", "0")
             .env("DOCDEX_ENABLE_MEMORY", "0")
             .env("DOCDEX_STATE_DIR", state_root)
             .env("DOCDEX_ENABLE_MCP", "0")
@@ -108,6 +109,7 @@ impl McpHarness {
     fn spawn(state_root: &Path, repo_root: &Path, base_url: &str) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo_root.to_string_lossy().to_string();
         let mut cmd = Command::new(docdex_bin());
+        cmd.env("DOCDEX_WEB_ENABLED", "0");
         cmd.env("DOCDEX_ENABLE_MEMORY", "0");
         cmd.env("DOCDEX_STATE_DIR", state_root);
         cmd.env("DOCDEX_HTTP_BASE_URL", base_url);

@@ -29,6 +29,7 @@ where
     S: AsRef<std::ffi::OsStr>,
 {
     Ok(Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .args(args)
@@ -54,6 +55,7 @@ fn spawn_server(
 ) -> Result<Child, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     Ok(Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MCP", "0")
@@ -91,6 +93,7 @@ fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<Value, Box<
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "repo",
@@ -174,6 +177,7 @@ fn cli_export(
         args.push(max_nodes.to_string());
     }
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .args(args)

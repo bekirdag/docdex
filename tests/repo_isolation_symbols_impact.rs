@@ -16,6 +16,7 @@ fn docdex_bin() -> PathBuf {
 
 fn run_index(state_root: &Path, repo_root: &Path) -> Result<(), Box<dyn Error>> {
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "index",

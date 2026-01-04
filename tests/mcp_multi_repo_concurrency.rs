@@ -28,6 +28,7 @@ impl McpHarness {
     fn spawn(repo: &Path, state_root: &Path) -> Result<Self, BoxError> {
         let repo_str = repo.to_string_lossy().to_string();
         let mut cmd = Command::new(docdex_bin());
+        cmd.env("DOCDEX_WEB_ENABLED", "0");
         cmd.env("DOCDEX_ENABLE_MEMORY", "0");
         cmd.env("DOCDEX_STATE_DIR", state_root);
         cmd.args(["mcp", "--repo", repo_str.as_str(), "--log", "warn"]);
@@ -64,6 +65,7 @@ where
     S: AsRef<std::ffi::OsStr>,
 {
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .args(args)

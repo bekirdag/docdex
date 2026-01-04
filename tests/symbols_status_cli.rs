@@ -35,6 +35,7 @@ fn spawn_server(
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
     Ok(Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
         .args([
@@ -73,6 +74,7 @@ fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<Value, Box<
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "repo",
@@ -174,6 +176,7 @@ fn symbols_status_cli_reports_fields() -> Result<(), Box<dyn Error>> {
     std::fs::write(repo.path().join("src").join("lib.rs"), "pub fn demo() {}\n")?;
     let state_root = TempDir::new()?;
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "symbols-status",

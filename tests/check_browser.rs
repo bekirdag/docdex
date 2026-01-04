@@ -23,6 +23,7 @@ provider = "openai"
     .expect("write config");
 
     let mut cmd = Command::new(common::docdex_bin());
+    cmd.env("DOCDEX_WEB_ENABLED", "0");
     cmd.args(["check"])
         .env("DOCDEX_CLI_LOCAL", "1")
         .env("DOCDEX_ENABLE_MEMORY", "0")

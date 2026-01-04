@@ -43,6 +43,7 @@ where
     S: AsRef<std::ffi::OsStr>,
 {
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MEMORY", "0")
@@ -73,6 +74,7 @@ fn pick_free_port() -> Option<u16> {
 fn spawn_server(state_root: &Path, repo: &Path, host: &str, port: u16) -> Result<Child, BoxError> {
     let repo_str = repo.to_string_lossy().to_string();
     Ok(Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MCP", "0")

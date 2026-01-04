@@ -5,6 +5,7 @@ mod common;
 #[test]
 fn setup_non_interactive_prints_hint() {
     let output = Command::new(common::docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .arg("setup")
         .arg("--non-interactive")
         .output()

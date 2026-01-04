@@ -24,6 +24,7 @@ fn browser_list_reports_env_selection() {
     touch_file(&env_path);
 
     let mut cmd = Command::new(common::docdex_bin());
+    cmd.env("DOCDEX_WEB_ENABLED", "0");
     cmd.args(["browser", "list"])
         .env("DOCDEX_CLI_LOCAL", "1")
         .env("HOME", temp.path())
@@ -49,6 +50,7 @@ fn browser_setup_persists_detected_binary() {
     touch_file(&chrome_path);
 
     let mut cmd = Command::new(common::docdex_bin());
+    cmd.env("DOCDEX_WEB_ENABLED", "0");
     cmd.args(["browser", "setup"])
         .env("DOCDEX_CLI_LOCAL", "1")
         .env("HOME", temp.path())
@@ -71,6 +73,7 @@ fn browser_setup_persists_detected_binary() {
 fn browser_install_is_noop_when_disabled() {
     let temp = TempDir::new().expect("tempdir");
     let mut cmd = Command::new(common::docdex_bin());
+    cmd.env("DOCDEX_WEB_ENABLED", "0");
     cmd.args(["browser", "install"])
         .env("DOCDEX_CLI_LOCAL", "1")
         .env("HOME", temp.path())

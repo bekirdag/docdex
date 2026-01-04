@@ -292,6 +292,16 @@ Symbol extraction is attempted only for:
 - TypeScript/TSX (`.ts`, `.tsx`)
 - JavaScript/JSX (`.js`, `.jsx`)
 - Go (`.go`)
+- Java (`.java`)
+- C# (`.cs`)
+- C (`.c`, `.h`)
+- C++ (`.cc`, `.cpp`, `.cxx`, `.hh`, `.hpp`, `.hxx`)
+- PHP (`.php`)
+- Kotlin (`.kt`, `.kts`)
+- Swift (`.swift`)
+- Ruby (`.rb`)
+- Lua (`.lua`)
+- Dart (`.dart`)
 
 Other extensions are recorded as `skipped` with `reason: unsupported_language`.
 

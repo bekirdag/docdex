@@ -307,6 +307,15 @@ pub async fn serve(
     let repo_display = repo.display().to_string();
     let provider = llm_provider.trim();
     let agent_override = env_agent_override();
+    if daemon_mode {
+        let enable_web = std::env::var("DOCDEX_WEB_ENABLED")
+            .ok()
+            .map(|value| value.trim().is_empty())
+            .unwrap_or(true);
+        if enable_web {
+            std::env::set_var("DOCDEX_WEB_ENABLED", "1");
+        }
+    }
     if !provider.eq_ignore_ascii_case("ollama") && agent_override.is_none() {
         return Err(StartupError::new(
             "startup_config_invalid",

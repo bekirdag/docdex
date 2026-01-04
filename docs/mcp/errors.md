@@ -1,135 +1,101 @@
-# MCP Error Envelope + Code Taxonomy (Docdex)
+# Docdex Error Envelope + Code Taxonomy (MCP + HTTP)
 
-Docdex’s MCP server reports failures as JSON-RPC errors over both stdio (`docdexd mcp`) and HTTP/SSE (`/sse`, `/v1/mcp`). The **machine-readable** error code is carried in `error.data.code` (and duplicated under `error.data.error.code`) so clients can reliably branch on it.
+Docdex uses the same machine-readable error codes across MCP, HTTP, and CLI. This document defines the canonical envelope and the stable code taxonomy.
 
-This document defines the **canonical MCP error envelope**, a **stable code taxonomy**, and a **parity mapping** to Docdex’s HTTP daemon responses and CLI error output.
+## Error envelope
 
-Note: `docdexd mcp` launches the companion `docdex-mcp-server` binary. If it is missing, build it with `cargo build -p docdex-mcp-server` or set `DOCDEX_MCP_SERVER_BIN` to the binary path.
+### HTTP daemon
 
-## Canonical MCP envelope
+Most HTTP endpoints return:
+```json
+{ "error": { "code": "<docdex_code>", "message": "<summary>", "details": { } } }
+```
 
-### JSON-RPC wrapper
+- `code` is the stable machine-readable identifier.
+- `message` is a short human-readable summary.
+- `details` is optional structured data for remediation.
 
-On failure, the MCP server returns a JSON-RPC error response:
+### MCP JSON-RPC
 
-- `error.code` (number): JSON-RPC error code.
-  - `-32700` parse failure (`parse_error`)
-  - `-32600` invalid request (`invalid_request`)
-  - `-32601` unknown method/tool (`method_not_found`)
-  - `-32602` tool failures and argument validation (`invalid_params` *and* domain failures like `missing_index`)
-  - `-32000` internal server error (`internal_error`) when the MCP server fails outside tool handling
-- `error.message` (string): a short, stable category message.
-- `error.data` (object): Docdex error envelope (below).
+MCP responses wrap Docdex errors inside JSON-RPC:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32602,
+    "message": "invalid_params",
+    "data": {
+      "code": "invalid_params",
+      "message": "missing required field: project_root",
+      "details": { "field": "project_root" },
+      "error": { "code": "invalid_params", "message": "..." }
+    }
+  }
+}
+```
 
-### `error.data` (Docdex envelope)
+Clients should treat `error.data.code` as the primary signal.
 
-`error.data` is an object with:
+### CLI
 
-- `code` (string, required): machine-readable Docdex code (see taxonomy below).
-- `message` (string, required): short summary message (often mirrors `error.message`).
-- `reason` (string, optional): a more specific reason (typically an underlying error string).
-- `tool` (string, optional): tool name (for `tools/call` failures), e.g. `docdex_search` or `docdex_web_research`.
-- `details` (object, optional): structured context (limits, fields, expected/got, etc). For repo move/rename/mismatch errors, `details` may include `normalizedPath`, `attemptedFingerprint`, `knownCanonicalPath`, and `recoverySteps` (often including `docdexd repo inspect` for diagnostics and `docdexd repo reassociate` for moved repos under shared state dirs).
-- `error` (object, required): the canonical envelope, containing the same fields as above (`code/message/reason/tool/details`).
+CLI exits non-zero and prints the HTTP-style envelope to stderr when errors are an `AppError`/`StartupError`.
 
-Compatibility guidance for clients:
+## Stable error codes
 
-- Treat `error.data.code` as the primary stable signal.
-- Ignore unknown fields; new `details` keys may be added without breaking changes.
-- `error.data.error` is redundant; it exists for convenience where clients expect a nested `error` object.
+### Core repo/index failures
 
-## Code taxonomy (machine-readable)
+- `missing_repo` - repo context is required but missing.
+- `missing_repo_path` - provided repo path does not exist on disk.
+- `unknown_repo` - repo path does not match configured repo root.
+- `repo_state_mismatch` - repo state fingerprint mismatch (fails closed).
+- `missing_index` - index not present (run `docdexd index`).
+- `stale_index` - index exists but requires reindex after parser drift.
+- `backoff_required` - retry later (index writer busy).
 
-### MCP-only protocol codes
+### Validation errors
 
-These codes appear in `error.data.code` for JSON-RPC/MCP protocol failures (not tool/domain failures):
+- `invalid_params` - request fails schema/type validation.
+- `invalid_argument` - well-formed argument but invalid value.
+- `missing_query` - required query missing (HTTP /search).
+- `invalid_query` - empty or invalid query text.
+- `invalid_path` - unsafe or non-repo path.
+- `invalid_range` - invalid line range/window.
+- `max_content_exceeded` - response would exceed max payload.
 
-- `parse_error`
-- `invalid_request`
-- `method_not_found`
+### Dependencies and feature gates
 
-### Required, transport-stable codes
+- `missing_dependency` - feature disabled or unavailable (web, symbols, etc).
+- `memory_disabled` - memory feature disabled.
+- `embedding_timeout` - embedding request timed out.
+- `embedding_model_not_found` - embedding model missing.
+- `embedding_failed` - embedding call failed for other reasons.
 
-These codes are the **required** set for repo/index/dependency failures and are intended to be stable across MCP/HTTP/CLI for the same underlying failure:
+### Startup failures
 
-- `missing_repo`: required repo context is absent (e.g., MCP tool call omits `project_root`).
-- `missing_repo_path`: the provided repo path does not exist on disk (often after a move/rename).
-- `unknown_repo`: provided repo context does not match the server’s configured repo root.
-- `repo_state_mismatch`: per-repo state cannot be safely associated (fingerprint/meta/registry mismatch); Docdex must fast-fail to prevent cross-repo mixing.
-- `missing_index`: on-disk index is not present (e.g. `docdexd chat` before indexing).
-- `stale_index`: index exists but is known to be stale (emitted for symbols/AST when parser version drift requires reindexing).
-- `missing_dependency`: a required optional feature/dependency is disabled (e.g. web discovery disabled, or symbols extraction disabled).
-- `rate_limited`: request rejected due to rate limiting (reserved for future use in MCP).
-- `backoff_required`: retry later (e.g. indexing requested but index writer is locked/unavailable).
-- `internal_error`: unexpected server failure.
+- `startup_tls_required` - non-loopback bind requires TLS.
+- `startup_state_invalid` - state/identity mismatch on startup.
 
-### Parameter/argument validation codes
+### Generic
 
-Use these codes for invalid inputs:
+- `rate_limited` - request rejected by rate limits.
+- `internal_error` - unexpected server failure.
 
-- `invalid_params`: request/arguments fail schema/JSON parsing (serde validation).
-- `invalid_argument`: arguments are well-formed but semantically invalid (e.g. empty strings, negative values after coercion).
-- `missing_query`: HTTP `/search` only — required query string is missing.
-- `invalid_query`: invalid query text (empty/whitespace-only, or query parser rejects it).
-- `invalid_path`: invalid or unsafe path (absolute path, parent traversal, outside repo, etc).
-- `invalid_range`: invalid line window (`start_line`/`end_line` out of bounds).
-- `max_content_exceeded`: response content would exceed server limits (e.g. `docdex_open` file too large).
+## Typical recovery steps
 
-### Feature/domain codes (currently emitted)
+- `missing_index`: run `docdexd index --repo <path>`.
+- `repo_state_mismatch`: reindex with a fresh state dir or run `docdexd repo reassociate`.
+- `missing_dependency`: enable feature or set required config.
+- `startup_tls_required`: provide `--tls-cert/--tls-key` or use `--insecure` behind a trusted proxy.
 
-Docdex also uses feature-specific codes in some tools:
+## Parity behavior (MCP / HTTP / CLI)
 
-- `memory_disabled`
-- `embedding_timeout`
-- `embedding_model_not_found`
-- `embedding_failed`
+- **MCP**: error lives in JSON-RPC `error.data.code`.
+- **HTTP**: `{ "error": { "code", "message", "details" } }`.
+- **CLI**: exit `1` with JSON error to stderr when applicable.
 
-## Repo moved/renamed (deterministic behavior + recovery)
+## Notes
 
-Docdex intentionally **fails closed** on repo identity changes to prevent cross-repo state mixing (no silent cross-association).
-
-You may see these repo-related codes during moves/renames:
-
-- `missing_repo_path`: the path passed as `project_root` does not exist on disk.
-  - Recovery: pass the repo’s current path in `project_root`; restart the MCP server with `docdexd mcp --repo <repo>` if it is pointed at the wrong path.
-- `unknown_repo`: `project_root` exists but does not match the MCP server’s configured `--repo` (fast-fail guardrail).
-  - Recovery: restart the MCP server with `docdexd mcp --repo <repo>` matching the repo you intend to use.
-- `repo_state_mismatch`: the server cannot safely associate an existing on-disk state directory with the current repo without an explicit user action (common when using an absolute shared `--state-dir` across repos and the repo path changes).
-  - Recovery: either reindex into a fresh `--state-dir`, or explicitly re-associate the moved repo to the existing shared state with `docdexd repo reassociate --repo <new_path> --state-dir <shared_state_dir> --old-path <knownCanonicalPath>` (or `--fingerprint <attemptedFingerprint>`).
-
-Diagnostics:
-
-- For these errors, `error.data.details` may include `normalizedPath`, `attemptedFingerprint`, `knownCanonicalPath`, and a `recoverySteps` array intended to be directly actionable in UX.
-
-## Parity mapping (HTTP / CLI / MCP)
-
-Docdex presents the same underlying failures in three different wrappers:
-
-- **HTTP daemon**: JSON error body (where implemented) is `{ "error": { "code": "<docdex_code>", "message": "<string>" } }`.
-- **CLI**: non-zero exit (currently always `1`) and a JSON error line to `stderr` when the error is a `StartupError`/`AppError` (same `{error:{code,message}}` shape as HTTP).
-- **MCP**: JSON-RPC error with Docdex code in `error.data.code`.
-
-### Mapping table (common failures)
-
-| Underlying failure | Docdex code (`error.data.code`) | MCP JSON-RPC `error.code` | HTTP daemon behavior | CLI behavior |
-| --- | --- | --- | --- | --- |
-| Missing repo context | `missing_repo` | `-32602` | N/A for per-repo daemon (MCP tool calls without `project_root` return `missing_repo`) | N/A for per-repo CLI (repo is required via `--repo`) |
-| Repo path missing on disk | `missing_repo_path` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"missing_repo_path",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"missing_repo_path",...}}` |
-| Repo mismatch (`project_root` does not match server repo) | `unknown_repo` | `-32602` | N/A (daemon is started per-repo) | N/A (CLI always has `--repo`; mismatch is not represented) |
-| Repo state mismatch (unsafe to associate state) | `repo_state_mismatch` | `-32602` | Daemon startup fails (stderr JSON `{error:{code:"repo_state_mismatch",...}}`) | Exit `1`, `stderr` JSON `{error:{code:"repo_state_mismatch",...}}` |
-| Index missing (chat/open without prior `index`) | `missing_index` | `-32602` | N/A in `serve` (daemon creates/opens index dir on startup) | Exit `1`, `stderr` JSON `{error:{code:"missing_index",...}}` |
-| Index stale | `stale_index` | `-32602` | Emitted by `/v1/symbols` and `/v1/ast` when data are stale after parser drift | CLI surfaces drift via `symbols-status` (it does not fetch symbols/AST directly) |
-| Index writer unavailable (concurrent indexing lock) | `backoff_required` | `-32602` | N/A in `serve` (daemon opens a writer at startup) | Usually surfaced as a non-JSON error string (not an `AppError`) |
-| Rate limited | `rate_limited` | `-32602` | `429` (security middleware returns status-only; no JSON envelope) | Not currently emitted as an `AppError` (usually a plain error string if encountered) |
-| Optional dependency disabled (e.g. web discovery, symbols) | `missing_dependency` | `-32602` | `409` from `/v1/symbols` when symbol extraction is disabled; web endpoints return `missing_dependency` when web is off | CLI surfaces `missing_dependency` when calling web/memory/tools |
-| Invalid MCP arguments (wrong JSON types / missing required fields) | `invalid_params` | `-32602` | N/A | N/A |
-| Invalid path for `docdex_open` | `invalid_path` | `-32602` | N/A | N/A |
-| Invalid line window for `docdex_open` | `invalid_range` | `-32602` | N/A | N/A |
-| File too large for `docdex_open` | `max_content_exceeded` | `-32602` | N/A | N/A |
-| Internal MCP server failure | `internal_error` | `-32000` | `500` (varies by endpoint) | Exit `1` (varies; may be JSON for `StartupError`/`AppError`) |
-
-Notes:
-
-- HTTP `/search` enforces `limit` by clamping to the daemon’s configured max and does not error on over-limit; MCP `docdex_search` similarly clamps `limit` to the MCP server’s `--max-results`.
-- MCP `docdex_files` clamps `limit` to `<= 1000` and `offset` to `<= 50000`.
-- MCP `docdex_open` enforces a hard maximum of 512 KiB for returned content; exceeding it returns `max_content_exceeded` with `details.max_bytes` and `details.actual_bytes`.
+- Error codes are stable. `details` fields may evolve.
+- MCP tools clamp limits instead of erroring when possible.
+- HTTP `/search` clamps `limit` to server caps.

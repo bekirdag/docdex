@@ -10,6 +10,7 @@ use tempfile::TempDir;
 
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
+    std::env::set_var("DOCDEX_WEB_ENABLED", "0");
     std::env::set_var("DOCDEX_MCP_SERVER_BIN", common::mcp_server_bin());
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
@@ -22,6 +23,7 @@ fn write_fixture_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
 
 fn run_index(state_root: &Path, repo_root: &Path) -> Result<(), Box<dyn Error>> {
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .args(["index", "--repo", repo_root.to_string_lossy().as_ref()])
@@ -44,6 +46,7 @@ fn mcp_initialize_requires_auth_token_when_configured() -> Result<(), Box<dyn Er
     run_index(state_root.path(), repo.path())?;
 
     let mut child = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
         .env("DOCDEX_AUTH_TOKEN", "secret-token")

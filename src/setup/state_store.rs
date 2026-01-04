@@ -29,7 +29,8 @@ pub fn read_status() -> Result<Option<SetupStatusRecord>> {
     if !path.exists() {
         return Ok(None);
     }
-    let raw = fs::read_to_string(&path).with_context(|| format!("read setup status {}", path.display()))?;
+    let raw = fs::read_to_string(&path)
+        .with_context(|| format!("read setup status {}", path.display()))?;
     let parsed = serde_json::from_str(&raw).context("parse setup status")?;
     Ok(Some(parsed))
 }

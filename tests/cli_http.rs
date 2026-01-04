@@ -10,6 +10,7 @@ use tempfile::TempDir;
 
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
+    std::env::set_var("DOCDEX_WEB_ENABLED", "0");
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
@@ -34,6 +35,7 @@ fn spawn_server(
     let state_root_str = state_root.to_string_lossy().to_string();
     Ok(Command::new(docdex_bin())
         .env("DOCDEX_ENABLE_MEMORY", "0")
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
@@ -78,6 +80,7 @@ fn write_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
 
 fn resolve_index_dir(state_root: &Path, repo_root: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .args([
@@ -120,6 +123,7 @@ fn cli_index_and_query_use_http() -> Result<(), Box<dyn Error>> {
     let base_url = format!("http://{host}:{port}");
 
     let index_out = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_HTTP_BASE_URL", &base_url)
         .env("DOCDEX_HTTP_TIMEOUT_MS", "5000")
@@ -142,6 +146,7 @@ fn cli_index_and_query_use_http() -> Result<(), Box<dyn Error>> {
     );
 
     let query_out = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_HTTP_BASE_URL", &base_url)
         .env("DOCDEX_HTTP_TIMEOUT_MS", "5000")
@@ -188,6 +193,7 @@ fn cli_query_errors_when_http_unavailable() -> Result<(), Box<dyn Error>> {
     let base_url = format!("http://127.0.0.1:{port}");
 
     let query_out = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_HTTP_BASE_URL", &base_url)
         .env("DOCDEX_HTTP_TIMEOUT_MS", "5000")

@@ -13,6 +13,7 @@ type BoxError = Box<dyn Error + Send + Sync>;
 
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
+    std::env::set_var("DOCDEX_WEB_ENABLED", "0");
     std::env::set_var("DOCDEX_MCP_SERVER_BIN", common::mcp_server_bin());
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
@@ -27,6 +28,7 @@ impl McpHarness {
     fn spawn(repo: &Path, state_root: &Path) -> Result<Self, BoxError> {
         let repo_str = repo.to_string_lossy().to_string();
         let mut cmd = Command::new(docdex_bin());
+        cmd.env("DOCDEX_WEB_ENABLED", "0");
         cmd.env("DOCDEX_ENABLE_MEMORY", "0");
         cmd.env("DOCDEX_STATE_DIR", state_root);
         cmd.args(["mcp", "--repo", repo_str.as_str(), "--log", "warn"]);
@@ -63,6 +65,7 @@ where
     S: AsRef<std::ffi::OsStr>,
 {
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .args(args)

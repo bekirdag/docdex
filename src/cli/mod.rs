@@ -728,6 +728,11 @@ pub(crate) enum Command {
                 "droid",
                 "factory",
                 "gemini",
+                "windsurf",
+                "roo",
+                "pearai",
+                "void",
+                "zed",
                 "vscode",
                 "amp",
                 "forge",
@@ -757,10 +762,7 @@ pub(crate) enum Command {
 
 #[derive(Args, Debug, Clone)]
 pub(crate) struct SetupArgs {
-    #[arg(
-        long,
-        help = "Do not prompt; print manual setup instructions instead"
-    )]
+    #[arg(long, help = "Do not prompt; print manual setup instructions instead")]
     pub non_interactive: bool,
     #[arg(long, help = "Emit JSON summary to stdout")]
     pub json: bool,

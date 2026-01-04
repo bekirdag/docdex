@@ -9,22 +9,42 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use tracing::warn;
 use tree_sitter::{Language, Node, Parser};
+use tree_sitter_c as ts_c;
+use tree_sitter_c_sharp as ts_c_sharp;
+use tree_sitter_cpp as ts_cpp;
+use tree_sitter_dart as ts_dart;
 use tree_sitter_go as ts_go;
+use tree_sitter_java as ts_java;
 use tree_sitter_javascript as ts_javascript;
+use tree_sitter_kotlin as ts_kotlin;
+use tree_sitter_lua as ts_lua;
+use tree_sitter_php as ts_php;
 use tree_sitter_python as ts_python;
+use tree_sitter_ruby as ts_ruby;
 use tree_sitter_rust as ts_rust;
+use tree_sitter_swift as ts_swift;
 use tree_sitter_typescript as ts_typescript;
 
 const SYMBOLS_SCHEMA_VERSION: u32 = 5;
 const SYMBOLS_SCHEMA_MIN_VERSION: u32 = 1;
 const AST_NODE_STORE_LIMIT: usize = 50_000;
 const AST_NODE_NAME_LIMIT: usize = 120;
-const TREE_SITTER_VERSION: &str = "0.20";
-const TREE_SITTER_GO_VERSION: &str = "0.20.0";
-const TREE_SITTER_JAVASCRIPT_VERSION: &str = "0.20.4";
-const TREE_SITTER_PYTHON_VERSION: &str = "0.20.4";
-const TREE_SITTER_RUST_VERSION: &str = "0.20.4";
-const TREE_SITTER_TYPESCRIPT_VERSION: &str = "0.20.5";
+const TREE_SITTER_VERSION: &str = "0.22.6";
+const TREE_SITTER_GO_VERSION: &str = "0.21.2";
+const TREE_SITTER_JAVASCRIPT_VERSION: &str = "0.21.4";
+const TREE_SITTER_PYTHON_VERSION: &str = "0.21.0";
+const TREE_SITTER_RUST_VERSION: &str = "0.21.2";
+const TREE_SITTER_TYPESCRIPT_VERSION: &str = "0.21.2";
+const TREE_SITTER_JAVA_VERSION: &str = "0.21.0";
+const TREE_SITTER_C_SHARP_VERSION: &str = "0.21.3";
+const TREE_SITTER_C_VERSION: &str = "0.21.4";
+const TREE_SITTER_CPP_VERSION: &str = "0.22.3";
+const TREE_SITTER_PHP_VERSION: &str = "0.23.0";
+const TREE_SITTER_KOTLIN_VERSION: &str = "0.3.8";
+const TREE_SITTER_SWIFT_VERSION: &str = "0.5.0";
+const TREE_SITTER_RUBY_VERSION: &str = "0.21.0";
+const TREE_SITTER_LUA_VERSION: &str = "0.1.0";
+const TREE_SITTER_DART_VERSION: &str = "0.0.4";
 fn default_symbols_schema() -> SchemaInfo {
     SchemaInfo {
         name: "docdex.symbols".to_string(),
@@ -229,6 +249,16 @@ pub enum SourceLanguage {
     JavaScript,
     TypeScript,
     Go,
+    Java,
+    CSharp,
+    C,
+    Cpp,
+    Php,
+    Kotlin,
+    Swift,
+    Ruby,
+    Lua,
+    Dart,
 }
 
 impl SourceLanguage {
@@ -240,6 +270,16 @@ impl SourceLanguage {
             SourceLanguage::JavaScript => "javascript",
             SourceLanguage::TypeScript => "typescript",
             SourceLanguage::Go => "go",
+            SourceLanguage::Java => "java",
+            SourceLanguage::CSharp => "csharp",
+            SourceLanguage::C => "c",
+            SourceLanguage::Cpp => "cpp",
+            SourceLanguage::Php => "php",
+            SourceLanguage::Kotlin => "kotlin",
+            SourceLanguage::Swift => "swift",
+            SourceLanguage::Ruby => "ruby",
+            SourceLanguage::Lua => "lua",
+            SourceLanguage::Dart => "dart",
         }
     }
 }
@@ -263,6 +303,42 @@ pub fn language_for_path(rel_path: &str) -> Option<SourceLanguage> {
     }
     if lower.ends_with(".go") {
         return Some(SourceLanguage::Go);
+    }
+    if lower.ends_with(".java") {
+        return Some(SourceLanguage::Java);
+    }
+    if lower.ends_with(".cs") {
+        return Some(SourceLanguage::CSharp);
+    }
+    if lower.ends_with(".c") || lower.ends_with(".h") {
+        return Some(SourceLanguage::C);
+    }
+    if lower.ends_with(".cc")
+        || lower.ends_with(".cpp")
+        || lower.ends_with(".cxx")
+        || lower.ends_with(".hh")
+        || lower.ends_with(".hpp")
+        || lower.ends_with(".hxx")
+    {
+        return Some(SourceLanguage::Cpp);
+    }
+    if lower.ends_with(".php") {
+        return Some(SourceLanguage::Php);
+    }
+    if lower.ends_with(".kt") || lower.ends_with(".kts") {
+        return Some(SourceLanguage::Kotlin);
+    }
+    if lower.ends_with(".swift") {
+        return Some(SourceLanguage::Swift);
+    }
+    if lower.ends_with(".rb") {
+        return Some(SourceLanguage::Ruby);
+    }
+    if lower.ends_with(".lua") {
+        return Some(SourceLanguage::Lua);
+    }
+    if lower.ends_with(".dart") {
+        return Some(SourceLanguage::Dart);
     }
     None
 }
@@ -1507,6 +1583,16 @@ fn current_parser_versions() -> serde_json::Value {
         "tree_sitter_javascript": TREE_SITTER_JAVASCRIPT_VERSION,
         "tree_sitter_typescript": TREE_SITTER_TYPESCRIPT_VERSION,
         "tree_sitter_go": TREE_SITTER_GO_VERSION,
+        "tree_sitter_java": TREE_SITTER_JAVA_VERSION,
+        "tree_sitter_c_sharp": TREE_SITTER_C_SHARP_VERSION,
+        "tree_sitter_c": TREE_SITTER_C_VERSION,
+        "tree_sitter_cpp": TREE_SITTER_CPP_VERSION,
+        "tree_sitter_php": TREE_SITTER_PHP_VERSION,
+        "tree_sitter_kotlin": TREE_SITTER_KOTLIN_VERSION,
+        "tree_sitter_swift": TREE_SITTER_SWIFT_VERSION,
+        "tree_sitter_ruby": TREE_SITTER_RUBY_VERSION,
+        "tree_sitter_lua": TREE_SITTER_LUA_VERSION,
+        "tree_sitter_dart": TREE_SITTER_DART_VERSION
     })
 }
 
@@ -1632,6 +1718,16 @@ pub fn extract_symbols_best_effort(
             extract_js_ts_symbols(repo_id, rel_path, content, language)
         }
         SourceLanguage::Go => extract_go_symbols(repo_id, rel_path, content),
+        SourceLanguage::Java
+        | SourceLanguage::CSharp
+        | SourceLanguage::C
+        | SourceLanguage::Cpp
+        | SourceLanguage::Php
+        | SourceLanguage::Kotlin
+        | SourceLanguage::Swift
+        | SourceLanguage::Ruby
+        | SourceLanguage::Lua
+        | SourceLanguage::Dart => extract_tree_sitter_symbols(repo_id, rel_path, content, language),
     }?;
     symbols.sort_by(|a, b| a.symbol_id.cmp(&b.symbol_id));
     Ok(symbols)
@@ -1656,7 +1752,7 @@ pub fn extract_ast_nodes_best_effort(
     };
     let mut parser = Parser::new();
     parser
-        .set_language(ts_language)
+        .set_language(&ts_language)
         .map_err(|err| anyhow!("tree-sitter language init failed: {err}"))?;
     let tree = parser
         .parse(content, None)
@@ -1792,7 +1888,7 @@ fn extract_tree_sitter_symbols(
     };
     let mut parser = Parser::new();
     parser
-        .set_language(ts_language)
+        .set_language(&ts_language)
         .map_err(|err| anyhow!("tree-sitter language init failed: {err}"))?;
     let tree = parser
         .parse(content, None)
@@ -1822,6 +1918,16 @@ fn tree_sitter_language(language: SourceLanguage, rel_path: &str) -> Option<Lang
             }
         }
         SourceLanguage::Go => Some(ts_go::language()),
+        SourceLanguage::Java => Some(ts_java::language()),
+        SourceLanguage::CSharp => Some(ts_c_sharp::language()),
+        SourceLanguage::C => Some(ts_c::language()),
+        SourceLanguage::Cpp => Some(ts_cpp::language()),
+        SourceLanguage::Php => Some(ts_php::language_php()),
+        SourceLanguage::Kotlin => Some(ts_kotlin::language()),
+        SourceLanguage::Swift => Some(ts_swift::language()),
+        SourceLanguage::Ruby => Some(ts_ruby::language()),
+        SourceLanguage::Lua => Some(ts_lua::language()),
+        SourceLanguage::Dart => Some(ts_dart::language()),
         SourceLanguage::Markdown => None,
     }
 }
@@ -1975,6 +2081,259 @@ fn symbol_from_node(
             }
             _ => None,
         },
+        SourceLanguage::Java => match node.kind() {
+            "class_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "class", None)
+            }
+            "interface_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "interface", None)
+            }
+            "enum_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "enum", None)
+            }
+            "record_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "record", None)
+            }
+            "method_declaration" => symbol_from_named_node(
+                repo_id,
+                rel_path,
+                content,
+                node,
+                "name",
+                "method",
+                Some(&['{']),
+            ),
+            "constructor_declaration" => symbol_from_named_or_identifier(
+                repo_id,
+                rel_path,
+                content,
+                node,
+                "name",
+                "constructor",
+                Some(&['{']),
+            ),
+            _ => None,
+        },
+        SourceLanguage::CSharp => match node.kind() {
+            "class_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "class", None)
+            }
+            "struct_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "struct", None)
+            }
+            "interface_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "interface", None)
+            }
+            "enum_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "enum", None)
+            }
+            "record_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "record", None)
+            }
+            "method_declaration" => symbol_from_named_node(
+                repo_id,
+                rel_path,
+                content,
+                node,
+                "name",
+                "method",
+                Some(&['{']),
+            ),
+            "constructor_declaration" => symbol_from_named_or_identifier(
+                repo_id,
+                rel_path,
+                content,
+                node,
+                "name",
+                "constructor",
+                Some(&['{']),
+            ),
+            "property_declaration" => symbol_from_named_or_identifier(
+                repo_id, rel_path, content, node, "name", "property", None,
+            ),
+            _ => None,
+        },
+        SourceLanguage::C => match node.kind() {
+            "function_definition" => symbol_from_identifier_node(
+                repo_id,
+                rel_path,
+                content,
+                node,
+                "function",
+                Some(&['{']),
+            ),
+            "struct_specifier" => {
+                symbol_from_identifier_node(repo_id, rel_path, content, node, "struct", None)
+            }
+            "union_specifier" => {
+                symbol_from_identifier_node(repo_id, rel_path, content, node, "union", None)
+            }
+            "enum_specifier" => {
+                symbol_from_identifier_node(repo_id, rel_path, content, node, "enum", None)
+            }
+            "type_definition" => {
+                symbol_from_identifier_node(repo_id, rel_path, content, node, "type", None)
+            }
+            _ => None,
+        },
+        SourceLanguage::Cpp => match node.kind() {
+            "function_definition" => symbol_from_identifier_node(
+                repo_id,
+                rel_path,
+                content,
+                node,
+                "function",
+                Some(&['{']),
+            ),
+            "class_specifier" => {
+                symbol_from_identifier_node(repo_id, rel_path, content, node, "class", None)
+            }
+            "struct_specifier" => {
+                symbol_from_identifier_node(repo_id, rel_path, content, node, "struct", None)
+            }
+            "enum_specifier" => {
+                symbol_from_identifier_node(repo_id, rel_path, content, node, "enum", None)
+            }
+            "namespace_definition" => {
+                symbol_from_identifier_node(repo_id, rel_path, content, node, "namespace", None)
+            }
+            _ => None,
+        },
+        SourceLanguage::Php => match node.kind() {
+            "function_definition" => symbol_from_named_node(
+                repo_id,
+                rel_path,
+                content,
+                node,
+                "name",
+                "function",
+                Some(&['{']),
+            ),
+            "class_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "class", None)
+            }
+            "interface_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "interface", None)
+            }
+            "trait_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "trait", None)
+            }
+            "method_declaration" => symbol_from_named_node(
+                repo_id,
+                rel_path,
+                content,
+                node,
+                "name",
+                "method",
+                Some(&['{']),
+            ),
+            "enum_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "enum", None)
+            }
+            _ => None,
+        },
+        SourceLanguage::Kotlin => match node.kind() {
+            "class_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "class", None)
+            }
+            "interface_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "interface", None)
+            }
+            "object_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "object", None)
+            }
+            "function_declaration" => symbol_from_named_node(
+                repo_id,
+                rel_path,
+                content,
+                node,
+                "name",
+                "function",
+                Some(&['{']),
+            ),
+            "type_alias" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "type", None)
+            }
+            _ => None,
+        },
+        SourceLanguage::Swift => match node.kind() {
+            "class_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "class", None)
+            }
+            "struct_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "struct", None)
+            }
+            "enum_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "enum", None)
+            }
+            "protocol_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "protocol", None)
+            }
+            "extension_declaration" => symbol_from_named_or_identifier(
+                repo_id,
+                rel_path,
+                content,
+                node,
+                "name",
+                "extension",
+                None,
+            ),
+            "function_declaration" => symbol_from_named_node(
+                repo_id,
+                rel_path,
+                content,
+                node,
+                "name",
+                "function",
+                Some(&['{']),
+            ),
+            _ => None,
+        },
+        SourceLanguage::Ruby => match node.kind() {
+            "class" => symbol_from_identifier_node(repo_id, rel_path, content, node, "class", None),
+            "module" => {
+                symbol_from_identifier_node(repo_id, rel_path, content, node, "module", None)
+            }
+            "method" | "singleton_method" => {
+                symbol_from_identifier_node(repo_id, rel_path, content, node, "method", None)
+            }
+            _ => None,
+        },
+        SourceLanguage::Lua => match node.kind() {
+            "function_declaration" | "function_definition" | "local_function" => {
+                symbol_from_identifier_node(repo_id, rel_path, content, node, "function", None)
+            }
+            _ => None,
+        },
+        SourceLanguage::Dart => match node.kind() {
+            "class_definition" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "class", None)
+            }
+            "enum_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "enum", None)
+            }
+            "mixin_declaration" => {
+                symbol_from_named_node(repo_id, rel_path, content, node, "name", "mixin", None)
+            }
+            "extension_declaration" => symbol_from_named_or_identifier(
+                repo_id,
+                rel_path,
+                content,
+                node,
+                "name",
+                "extension",
+                None,
+            ),
+            "function_signature" | "function_declaration" | "function_definition" => {
+                symbol_from_named_or_identifier(
+                    repo_id, rel_path, content, node, "name", "function", None,
+                )
+            }
+            "method_signature" => symbol_from_named_or_identifier(
+                repo_id, rel_path, content, node, "name", "method", None,
+            ),
+            _ => None,
+        },
         SourceLanguage::Markdown => None,
     }
 }
@@ -1989,6 +2348,45 @@ fn symbol_from_named_node(
     signature_terms: Option<&[char]>,
 ) -> Option<SymbolItem> {
     let name = node_name(content, node, name_field)?;
+    let (start_line, start_col, end_line, end_col) = node_range(node);
+    let signature = signature_terms.and_then(|terms| signature_from_node(content, node, terms));
+    Some(make_symbol(
+        repo_id, rel_path, name, kind, start_line, start_col, end_line, end_col, signature,
+    ))
+}
+
+fn symbol_from_named_or_identifier(
+    repo_id: &str,
+    rel_path: &str,
+    content: &str,
+    node: Node,
+    name_field: &str,
+    kind: &'static str,
+    signature_terms: Option<&[char]>,
+) -> Option<SymbolItem> {
+    symbol_from_named_node(
+        repo_id,
+        rel_path,
+        content,
+        node,
+        name_field,
+        kind,
+        signature_terms,
+    )
+    .or_else(|| {
+        symbol_from_identifier_node(repo_id, rel_path, content, node, kind, signature_terms)
+    })
+}
+
+fn symbol_from_identifier_node(
+    repo_id: &str,
+    rel_path: &str,
+    content: &str,
+    node: Node,
+    kind: &'static str,
+    signature_terms: Option<&[char]>,
+) -> Option<SymbolItem> {
+    let name = first_identifier_text(content, node)?;
     let (start_line, start_col, end_line, end_col) = node_range(node);
     let signature = signature_terms.and_then(|terms| signature_from_node(content, node, terms));
     Some(make_symbol(
@@ -2013,6 +2411,19 @@ fn node_name_value(content: &str, node: Node) -> Option<String> {
     }
     if is_identifier_kind(node.kind()) {
         return normalize_node_name_text(content, node);
+    }
+    None
+}
+
+fn first_identifier_text(content: &str, node: Node) -> Option<String> {
+    if let Some(value) = node_name_value(content, node) {
+        return Some(value);
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(value) = first_identifier_text(content, child) {
+            return Some(value);
+        }
     }
     None
 }
@@ -2065,6 +2476,10 @@ fn is_identifier_kind(kind: &str) -> bool {
             | "namespace_identifier"
             | "label"
             | "module_identifier"
+            | "scoped_identifier"
+            | "qualified_identifier"
+            | "simple_identifier"
+            | "constant_identifier"
     )
 }
 

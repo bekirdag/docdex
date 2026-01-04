@@ -39,6 +39,7 @@ Installer notes:
 
 Postinstall behavior:
 - Docdex registers a local daemon and writes MCP client config pointing to `http://localhost:<port>/sse` (Codex uses `http://localhost:<port>/v1/mcp`).
+- Auto-configured clients (when config files are present): Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Continue, VS Code, PearAI, Void, Zed, Codex. Restart clients after install.
 - If Ollama is missing, the installer can prompt to install it and the default embedding model.
 - Skip prompts with `DOCDEX_OLLAMA_INSTALL=0` or `DOCDEX_OLLAMA_MODEL_PROMPT=0`.
 - Force with `DOCDEX_OLLAMA_INSTALL=1` or `DOCDEX_OLLAMA_MODEL=<model>`.
@@ -88,6 +89,19 @@ Notes:
 
 ## MCP integration
 
+Supported auto-detected MCP clients (installation adds config when the file exists):
+- Claude Desktop
+- Cursor
+- Windsurf
+- Cline
+- Roo Code
+- Continue
+- VS Code
+- PearAI
+- Void
+- Zed
+- Codex
+
 ### Shared MCP (daemon, HTTP/SSE)
 Start the daemon and point clients at `http://localhost:<port>/sse`.
 
@@ -127,6 +141,7 @@ Reference: `docs/http_api.md`.
 
 ## Code intelligence
 Docdex builds symbol, AST, and impact graph data during indexing so tools can reason about structure, not just text.
+Supported AST/symbols languages: Rust, Python, JavaScript, TypeScript, Go, Java, C#, C/C++, PHP, Kotlin, Swift, Ruby, Lua, Dart.
 
 Examples:
 ```bash
@@ -161,6 +176,19 @@ Manual setup:
 ollama serve
 ollama pull nomic-embed-text
 ```
+
+Change the default chat model later:
+- Run the wizard again: `docdexd setup` (alias: `docdexd llm-setup`).
+- Or edit `~/.docdex/config.toml`:
+  - `[llm].default_model` (chat model)
+  - `[llm].embedding_model`
+  - `[llm].base_url` (Ollama base URL)
+  - `[llm].provider` (must be `ollama` for built-in features)
+Restart the daemon after changing config so it reloads the new defaults.
+
+Enable Ollama later (if skipped during install):
+- Install Ollama for your OS.
+- Run `docdexd setup` to validate the daemon and pull configured models.
 
 Run Docdex with Ollama:
 ```bash
@@ -212,9 +240,9 @@ Notes:
 - Set a default agent with `[server].default_agent_id` or `docdexd serve --agent-id` (`DOCDEX_AGENT_ID`).
 
 ## Smithery local usage
-Smithery runs Docdex as a local MCP tool using stdio. The provided `smithery.yaml` uses `runtime: "local"` and:
+Smithery runs Docdex as a local MCP tool using stdio. The provided `smithery.yaml` uses `commandFunction` to map `repo_path` into:
 ```
-docdexd mcp --repo {{repo_path}} --log warn --max-results 8
+docdexd mcp --repo <repo_path> --log warn --max-results 8
 ```
 
 ## Hardware-aware LLM guidance
@@ -267,7 +295,7 @@ Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary to
 - `DOCDEX_LLM_AGENT` / `DOCDEX_AGENT` for default chat agent.
 
 ### Web discovery (Tier 2)
-- `DOCDEX_WEB_ENABLED=1` to enable.
+- `DOCDEX_WEB_ENABLED=1` to enable (daemon sets this by default unless overridden).
 - `DOCDEX_OFFLINE=1` to force offline.
 - `DOCDEX_WEB_*` knobs for thresholds, timeouts, cache TTL, and backoff.
 - `DOCDEX_WEB_BROWSER` / `DOCDEX_CHROME_PATH` to set a browser binary.

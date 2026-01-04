@@ -14,6 +14,7 @@ use tempfile::TempDir;
 
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
+    std::env::set_var("DOCDEX_WEB_ENABLED", "0");
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
@@ -84,6 +85,7 @@ where
     S: AsRef<std::ffi::OsStr>,
 {
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
         .env("DOCDEX_STATE_DIR", state_root)
@@ -104,6 +106,7 @@ fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<Value, Box<
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "repo",
@@ -476,6 +479,7 @@ fn spawn_server_with_args(
     ];
     args.extend_from_slice(extra_args);
     let child = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MCP", "0")
@@ -769,6 +773,7 @@ fn non_loopback_plain_http_requires_tls_or_opt_out() -> Result<(), Box<dyn Error
     };
     let token = "secret-token";
     let failure = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
         .args([
@@ -829,6 +834,7 @@ fn non_loopback_plain_http_requires_tls_or_opt_out() -> Result<(), Box<dyn Error
         return Ok(());
     };
     let mut child = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
         .args([
@@ -1286,6 +1292,7 @@ fn ai_help_requires_auth_when_configured() -> Result<(), Box<dyn Error>> {
 #[test]
 fn help_all_command_outputs_subcommands() -> Result<(), Box<dyn Error>> {
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .arg("help-all")
         .output()?;
@@ -1334,6 +1341,7 @@ fn self_check_reports_sensitive_terms() -> Result<(), Box<dyn Error>> {
 
     // Self-check should fail when sensitive term is present.
     let failure = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
         .args([
@@ -1356,6 +1364,7 @@ fn self_check_reports_sensitive_terms() -> Result<(), Box<dyn Error>> {
 
     // Self-check passes when term is absent.
     let success = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
         .args([

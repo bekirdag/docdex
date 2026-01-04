@@ -10,8 +10,9 @@ stable JSON schemas across all clients.
 - Limits are server-wide and repo-invariant. Repo configuration cannot increase
   maxima.
 - Tools never aggregate across repos; responses are scoped to the server repo.
-- Web research tools require `DOCDEX_WEB_ENABLED=1`; memory tools are enabled
-  by default but can be disabled in config or via `DOCDEX_ENABLE_MEMORY=0`.
+- Web research tools require `DOCDEX_WEB_ENABLED=1` (daemon enables by default);
+  memory tools are enabled by default but can be disabled in config or via
+  `DOCDEX_ENABLE_MEMORY=0`.
 - Profile tools accept optional `agent_id`; `initialize.agent_id` sets the default
   for profile calls that omit it.
 

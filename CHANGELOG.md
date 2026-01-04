@@ -14,6 +14,13 @@
 - Add fuzz targets for libs, hooks, profile sync, and MCP payload parsing.
 - Installer supports http download mirrors via `DOCDEX_DOWNLOAD_BASE` and skips docker matrix when the daemon is unavailable.
 
+## 0.2.12
+- Add AST/symbols support for Java, C#, C/C++, PHP, Kotlin, Swift, Ruby, Lua, and Dart.
+- Bump Tree-sitter dependencies and parser version metadata for the expanded language set.
+- Extend `docdexd mcp-add` to support Windsurf, Roo Code, PearAI, Void, and Zed configs.
+- Expand indexed code extensions and default exclude folders for the new language ecosystems.
+- Document expanded AST language support and auto-detected MCP clients.
+
 ## 0.1.11
 - Added glama support
 

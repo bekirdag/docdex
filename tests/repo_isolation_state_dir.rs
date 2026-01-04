@@ -7,6 +7,7 @@ use tempfile::TempDir;
 
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
+    std::env::set_var("DOCDEX_WEB_ENABLED", "0");
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
@@ -23,6 +24,7 @@ where
     S: AsRef<std::ffi::OsStr>,
 {
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
         .args(args)
@@ -249,6 +251,7 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
 
     fs::rename(&repo_a, &repo_b)?;
     let moved_out = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
         .args([
@@ -429,6 +432,7 @@ fn reassociate_fails_closed_when_fingerprint_mismatches() -> Result<(), Box<dyn 
     let (fp_a, _state_key_a) = registry_entry_for_path(&state_root, &canon_a)?;
 
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
         .args([
@@ -531,6 +535,7 @@ fn never_cross_associates_repo_requests_via_other_repo_scoped_state_dir(
     // Querying repo-a with repo-b's scoped state dir must not return repo-b hits.
     // Repo-a is unindexed, so the only safe outcome is a missing_index error.
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
         .args([

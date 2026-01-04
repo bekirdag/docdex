@@ -10,6 +10,7 @@ use tempfile::TempDir;
 
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
+    std::env::set_var("DOCDEX_WEB_ENABLED", "0");
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
@@ -33,6 +34,7 @@ fn spawn_server(
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
     Ok(Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
         .args([
@@ -69,6 +71,7 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
 
 fn run_index(state_root: &Path, repo_root: &Path) -> Result<(), Box<dyn Error>> {
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "index",

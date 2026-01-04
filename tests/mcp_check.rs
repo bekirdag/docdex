@@ -9,6 +9,7 @@ use tempfile::TempDir;
 
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
+    std::env::set_var("DOCDEX_WEB_ENABLED", "0");
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
@@ -45,10 +46,7 @@ fn temp_exec_dir() -> Result<TempDir, Box<dyn Error>> {
     Ok(TempDir::new_in(base)?)
 }
 
-fn write_mcp_probe_binary(
-    dir: &TempDir,
-    exit_code: i32,
-) -> Result<PathBuf, Box<dyn Error>> {
+fn write_mcp_probe_binary(dir: &TempDir, exit_code: i32) -> Result<PathBuf, Box<dyn Error>> {
     #[cfg(windows)]
     let path = dir.path().join("docdex-mcp-server.cmd");
     #[cfg(not(windows))]
@@ -88,6 +86,7 @@ fn check_skips_mcp_when_disabled() -> Result<(), Box<dyn Error>> {
     write_config(home.path(), state_root.path(), false)?;
 
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
@@ -114,6 +113,7 @@ fn check_fails_when_mcp_enabled_missing_binary() -> Result<(), Box<dyn Error>> {
     let missing_bin = home.path().join("missing-mcp-server");
 
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
@@ -142,6 +142,7 @@ fn check_passes_when_mcp_enabled_binary_resolves() -> Result<(), Box<dyn Error>>
     fs::write(&bin_path, "")?;
 
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
@@ -167,6 +168,7 @@ fn check_spawn_fails_when_mcp_binary_exits() -> Result<(), Box<dyn Error>> {
     let bin_path = write_mcp_probe_binary(&bin_dir, 1)?;
 
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
@@ -202,6 +204,7 @@ fn check_spawn_succeeds_when_mcp_binary_exits_zero() -> Result<(), Box<dyn Error
     let bin_path = write_mcp_probe_binary(&bin_dir, 0)?;
 
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
@@ -246,6 +249,7 @@ fn check_spawn_times_out_when_mcp_binary_hangs() -> Result<(), Box<dyn Error>> {
     }
 
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")

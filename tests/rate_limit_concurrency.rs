@@ -16,6 +16,7 @@ const MAX_RATE_LIMIT_MESSAGE_BYTES: usize = 256;
 
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
+    std::env::set_var("DOCDEX_WEB_ENABLED", "0");
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
@@ -45,6 +46,7 @@ where
     S: AsRef<std::ffi::OsStr>,
 {
     Ok(Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .args(args)
@@ -71,6 +73,7 @@ fn spawn_server_with_args(
 ) -> Result<Child, BoxError> {
     let repo_str = repo.to_string_lossy().to_string();
     let mut cmd = Command::new(docdex_bin());
+    cmd.env("DOCDEX_WEB_ENABLED", "0");
     cmd.env("DOCDEX_ENABLE_MEMORY", "0");
     cmd.args([
         "serve",

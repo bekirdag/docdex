@@ -8,10 +8,20 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 use tracing::{info, warn};
 use tree_sitter::{Node, Parser};
+use tree_sitter_c as ts_c;
+use tree_sitter_c_sharp as ts_c_sharp;
+use tree_sitter_cpp as ts_cpp;
+use tree_sitter_dart as ts_dart;
 use tree_sitter_go as ts_go;
+use tree_sitter_java as ts_java;
 use tree_sitter_javascript as ts_javascript;
+use tree_sitter_kotlin as ts_kotlin;
+use tree_sitter_lua as ts_lua;
+use tree_sitter_php as ts_php;
 use tree_sitter_python as ts_python;
+use tree_sitter_ruby as ts_ruby;
 use tree_sitter_rust as ts_rust;
+use tree_sitter_swift as ts_swift;
 use tree_sitter_typescript as ts_typescript;
 use walkdir::WalkDir;
 
@@ -1374,7 +1384,17 @@ pub(crate) fn extract_import_edges(
         };
     };
     match language {
-        SourceLanguage::Markdown => ImpactEdgeBuildResult {
+        SourceLanguage::Markdown
+        | SourceLanguage::Java
+        | SourceLanguage::CSharp
+        | SourceLanguage::C
+        | SourceLanguage::Cpp
+        | SourceLanguage::Php
+        | SourceLanguage::Kotlin
+        | SourceLanguage::Swift
+        | SourceLanguage::Ruby
+        | SourceLanguage::Lua
+        | SourceLanguage::Dart => ImpactEdgeBuildResult {
             edges: Vec::new(),
             diagnostics: None,
         },
@@ -1698,7 +1718,7 @@ fn parse_tree(
 ) -> Option<tree_sitter::Tree> {
     let ts_language = tree_sitter_language(language, rel_path)?;
     let mut parser = Parser::new();
-    parser.set_language(ts_language).ok()?;
+    parser.set_language(&ts_language).ok()?;
     parser.parse(content, None)
 }
 
@@ -1715,6 +1735,16 @@ fn tree_sitter_language(language: SourceLanguage, rel_path: &str) -> Option<tree
             }
         }
         SourceLanguage::Go => Some(ts_go::language()),
+        SourceLanguage::Java => Some(ts_java::language()),
+        SourceLanguage::CSharp => Some(ts_c_sharp::language()),
+        SourceLanguage::C => Some(ts_c::language()),
+        SourceLanguage::Cpp => Some(ts_cpp::language()),
+        SourceLanguage::Php => Some(ts_php::language_php()),
+        SourceLanguage::Kotlin => Some(ts_kotlin::language()),
+        SourceLanguage::Swift => Some(ts_swift::language()),
+        SourceLanguage::Ruby => Some(ts_ruby::language()),
+        SourceLanguage::Lua => Some(ts_lua::language()),
+        SourceLanguage::Dart => Some(ts_dart::language()),
         SourceLanguage::Markdown => None,
     }
 }

@@ -5,8 +5,8 @@ use axum::{extract::State, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use url::Url;
 use tracing::{info, warn};
+use url::Url;
 
 #[derive(Debug, Deserialize)]
 pub struct InitializeRequest {

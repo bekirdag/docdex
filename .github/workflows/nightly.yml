@@ -15,6 +15,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Free disk space (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /usr/local/share/boost /usr/local/share/chromium /usr/share/swift
+          sudo rm -rf /var/lib/apt/lists/*
+          df -h
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -69,6 +78,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Free disk space (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /usr/local/share/boost /usr/local/share/chromium /usr/share/swift
+          sudo rm -rf /var/lib/apt/lists/*
+          df -h
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

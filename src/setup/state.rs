@@ -185,11 +185,7 @@ impl SetupState {
                 self.advance_to(StepKey::EmbedModel);
             }
             SetupEvent::OllamaFailed(err) => {
-                self.set_step_status(
-                    StepKey::Ollama,
-                    StepStatus::Failed,
-                    Some(err.clone()),
-                );
+                self.set_step_status(StepKey::Ollama, StepStatus::Failed, Some(err.clone()));
                 self.error = Some(err);
             }
             SetupEvent::OllamaRetry => {
@@ -205,11 +201,7 @@ impl SetupState {
                 self.advance_to(StepKey::ChatModel);
             }
             SetupEvent::EmbedFailed(err) => {
-                self.set_step_status(
-                    StepKey::EmbedModel,
-                    StepStatus::Failed,
-                    Some(err.clone()),
-                );
+                self.set_step_status(StepKey::EmbedModel, StepStatus::Failed, Some(err.clone()));
                 self.error = Some(err);
             }
             SetupEvent::EmbedRetry => {
@@ -225,11 +217,7 @@ impl SetupState {
                 self.advance_to(StepKey::DefaultModel);
             }
             SetupEvent::ChatFailed(err) => {
-                self.set_step_status(
-                    StepKey::ChatModel,
-                    StepStatus::Failed,
-                    Some(err.clone()),
-                );
+                self.set_step_status(StepKey::ChatModel, StepStatus::Failed, Some(err.clone()));
                 self.error = Some(err);
             }
             SetupEvent::ChatRetry => {
@@ -308,7 +296,11 @@ mod tests {
         assert_eq!(state.error.as_deref(), Some("oops"));
         state.apply(SetupEvent::OllamaRetry);
         assert_eq!(state.error, None);
-        let step = state.steps.iter().find(|s| s.key == StepKey::Ollama).unwrap();
+        let step = state
+            .steps
+            .iter()
+            .find(|s| s.key == StepKey::Ollama)
+            .unwrap();
         assert_eq!(step.status, StepStatus::Active);
     }
 }

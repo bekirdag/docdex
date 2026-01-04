@@ -26,7 +26,10 @@ use crate::util;
 use std::env;
 
 pub trait WizardServices {
-    fn resolve_ollama_path(&self, explicit: Option<std::path::PathBuf>) -> Option<std::path::PathBuf>;
+    fn resolve_ollama_path(
+        &self,
+        explicit: Option<std::path::PathBuf>,
+    ) -> Option<std::path::PathBuf>;
     fn install_ollama(&self) -> Result<()>;
     fn ensure_ollama_service(&self, bin: &Path) -> Result<ollama::OllamaDaemonStatus>;
     fn list_models(&self, bin: &Path) -> Result<Vec<String>>;
@@ -37,7 +40,10 @@ pub trait WizardServices {
 pub struct RealServices;
 
 impl WizardServices for RealServices {
-    fn resolve_ollama_path(&self, explicit: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    fn resolve_ollama_path(
+        &self,
+        explicit: Option<std::path::PathBuf>,
+    ) -> Option<std::path::PathBuf> {
         ollama::resolve_ollama_path(explicit)
     }
 
@@ -101,11 +107,7 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
     let consent = match install_override {
         Some(true) => true,
         Some(false) => false,
-        None => input.confirm(
-            &state,
-            "Install Ollama and models now?",
-            true,
-        )?,
+        None => input.confirm(&state, "Install Ollama and models now?", true)?,
     };
     if !consent {
         state.apply(SetupEvent::ConsentDeclined);
@@ -197,7 +199,10 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
         state.apply(SetupEvent::EmbedSkipped);
     } else if !prompt_models {
         state.apply(SetupEvent::EmbedSkipped);
-        input.info(&state, "Model prompts disabled; skipping embedding model install.")?;
+        input.info(
+            &state,
+            "Model prompts disabled; skipping embedding model install.",
+        )?;
     } else if assume_yes
         || input.confirm(
             &state,
@@ -207,11 +212,14 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
     {
         loop {
             input.info(&state, "Pulling embedding model...")?;
-            let pull = input.with_suspended_terminal(|| services.pull_model(&ollama_path, EMBED_MODEL));
+            let pull =
+                input.with_suspended_terminal(|| services.pull_model(&ollama_path, EMBED_MODEL));
             match pull {
                 Ok(()) => {
                     installed.push(EMBED_MODEL.to_string());
-                    models = services.list_models(&ollama_path).unwrap_or_else(|_| models.clone());
+                    models = services
+                        .list_models(&ollama_path)
+                        .unwrap_or_else(|_| models.clone());
                     state.apply(SetupEvent::EmbedInstalled);
                     break;
                 }
@@ -245,23 +253,27 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
         state.apply(SetupEvent::ChatSkipped);
     } else if !prompt_models {
         state.apply(SetupEvent::ChatSkipped);
-        input.info(&state, "Model prompts disabled; skipping chat model install.")?;
+        input.info(
+            &state,
+            "Model prompts disabled; skipping chat model install.",
+        )?;
     } else if assume_yes
         || input.confirm(
             &state,
-            &format!(
-                "Install chat model {CHAT_MODEL} (~{CHAT_MODEL_SIZE_GIB:.1} GiB)?"
-            ),
+            &format!("Install chat model {CHAT_MODEL} (~{CHAT_MODEL_SIZE_GIB:.1} GiB)?"),
             true,
         )?
     {
         loop {
             input.info(&state, "Pulling chat model...")?;
-            let pull = input.with_suspended_terminal(|| services.pull_model(&ollama_path, CHAT_MODEL));
+            let pull =
+                input.with_suspended_terminal(|| services.pull_model(&ollama_path, CHAT_MODEL));
             match pull {
                 Ok(()) => {
                     installed.push(CHAT_MODEL.to_string());
-                    models = services.list_models(&ollama_path).unwrap_or_else(|_| models.clone());
+                    models = services
+                        .list_models(&ollama_path)
+                        .unwrap_or_else(|_| models.clone());
                     state.apply(SetupEvent::ChatInstalled);
                     break;
                 }
@@ -290,14 +302,20 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
         None
     } else if !prompt_models {
         state.apply(SetupEvent::DefaultSelected(None));
-        input.info(&state, "Model prompts disabled; skipping default model selection.")?;
+        input.info(
+            &state,
+            "Model prompts disabled; skipping default model selection.",
+        )?;
         None
     } else {
         let (choices, default_index) = build_model_choices(&models);
         match default_index {
             None => {
                 state.apply(SetupEvent::DefaultSelected(None));
-                input.info(&state, "No selectable chat models found; keeping existing default.")?;
+                input.info(
+                    &state,
+                    "No selectable chat models found; keeping existing default.",
+                )?;
                 None
             }
             Some(default_index) => {
@@ -360,16 +378,14 @@ fn format_completion_message(
     installed_models: &[String],
 ) -> String {
     let config = load_summary_config();
-    let config_default = config
-        .as_ref()
-        .and_then(|cfg| {
-            let trimmed = cfg.llm.default_model.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        });
+    let config_default = config.as_ref().and_then(|cfg| {
+        let trimmed = cfg.llm.default_model.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
     let config_embed = config
         .as_ref()
         .and_then(|cfg| {
@@ -396,9 +412,7 @@ fn format_completion_message(
         }
         _ => "Ollama service: not detected; using background process".to_string(),
     };
-    let embed_installed = models
-        .iter()
-        .any(|m| m.eq_ignore_ascii_case(&config_embed));
+    let embed_installed = models.iter().any(|m| m.eq_ignore_ascii_case(&config_embed));
     let embed_line = if embed_installed {
         format!("Embedding model: {config_embed} (installed)")
     } else {
@@ -432,7 +446,14 @@ fn format_completion_message(
 
     let mut lines = vec![
         "Setup complete.".to_string(),
-        format!("Ollama: {}", if ollama_running { "running" } else { "not running" }),
+        format!(
+            "Ollama: {}",
+            if ollama_running {
+                "running"
+            } else {
+                "not running"
+            }
+        ),
         service_line,
         embed_line,
         default_line,
@@ -465,26 +486,20 @@ fn load_summary_config() -> Option<app_config::AppConfig> {
 }
 
 fn resolve_browser_summary_from_config(config: &app_config::AppConfig) -> Option<String> {
-    config
-        .web
-        .scraper
-        .chrome_binary_path
-        .as_ref()
-        .map(|path| {
-            let kind = config
-                .web
-                .scraper
-                .browser_kind
-                .as_deref()
-                .unwrap_or("chrome");
-            format!("{kind} ({})", path.display())
-        })
+    config.web.scraper.chrome_binary_path.as_ref().map(|path| {
+        let kind = config
+            .web
+            .scraper
+            .browser_kind
+            .as_deref()
+            .unwrap_or("chrome");
+        format!("{kind} ({})", path.display())
+    })
 }
 
 fn resolve_browser_summary_from_detection() -> Option<String> {
-    util::detect_browser_binary(None).map(|candidate| {
-        format!("{} ({})", candidate.kind.as_str(), candidate.path.display())
-    })
+    util::detect_browser_binary(None)
+        .map(|candidate| format!("{} ({})", candidate.kind.as_str(), candidate.path.display()))
 }
 
 fn prompt_retry<I: WizardInput>(input: &mut I, state: &SetupState, message: &str) -> Result<bool> {
@@ -673,7 +688,12 @@ impl Drop for TuiInput {
     }
 }
 
-fn render_status_list(frame: &mut ratatui::Frame, area: Rect, steps: &[StepSnapshot], current: StepKey) {
+fn render_status_list(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    steps: &[StepSnapshot],
+    current: StepKey,
+) {
     let items: Vec<ListItem> = steps
         .iter()
         .map(|step| {
@@ -693,8 +713,7 @@ fn render_status_list(frame: &mut ratatui::Frame, area: Rect, steps: &[StepSnaps
         })
         .collect();
 
-    let list = List::new(items)
-        .block(Block::default().title("Setup").borders(Borders::ALL));
+    let list = List::new(items).block(Block::default().title("Setup").borders(Borders::ALL));
     frame.render_widget(list, area);
 }
 
@@ -729,12 +748,20 @@ fn render_body(
         state.select(Some(selected));
         let list = List::new(list_items)
             .block(Block::default().title("Models").borders(Borders::ALL))
-            .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            );
         frame.render_stateful_widget(list, chunks[1], &mut state);
     }
 }
 
-fn next_selectable_index(models: &[ModelChoice], current: usize, direction: isize) -> Option<usize> {
+fn next_selectable_index(
+    models: &[ModelChoice],
+    current: usize,
+    direction: isize,
+) -> Option<usize> {
     if models.is_empty() {
         return None;
     }
@@ -785,7 +812,12 @@ mod tests {
     }
 
     impl WizardInput for ScriptedInput {
-        fn confirm(&mut self, _state: &SetupState, _prompt: &str, default_yes: bool) -> Result<bool> {
+        fn confirm(
+            &mut self,
+            _state: &SetupState,
+            _prompt: &str,
+            default_yes: bool,
+        ) -> Result<bool> {
             match self.next() {
                 ScriptedAnswer::Confirm(value) => Ok(value),
                 ScriptedAnswer::Select(_) => Ok(default_yes),

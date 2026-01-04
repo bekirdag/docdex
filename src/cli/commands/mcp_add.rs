@@ -6,6 +6,16 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
+fn home_dir() -> Result<PathBuf> {
+    let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    let value = std::env::var(key).with_context(|| format!("{key} not set"))?;
+    Ok(PathBuf::from(value))
+}
+
+fn app_data_dir() -> Option<PathBuf> {
+    std::env::var("APPDATA").ok().map(PathBuf::from)
+}
+
 pub fn run(
     agent: String,
     repo: Option<PathBuf>,
@@ -30,6 +40,11 @@ pub fn run(
             "droid",
             "factory",
             "gemini",
+            "windsurf",
+            "roo",
+            "pearai",
+            "void",
+            "zed",
             "vscode",
             "amp",
             "forge",
@@ -58,6 +73,117 @@ fn continue_config_path() -> Result<PathBuf> {
     Ok(path)
 }
 
+fn config_paths_for_agent(agent: &str) -> Result<Vec<PathBuf>> {
+    let home = home_dir()?;
+    let app_data = app_data_dir();
+    let mut paths = Vec::new();
+    if cfg!(windows) {
+        let app_data = app_data.context("APPDATA not set")?;
+        match agent {
+            "windsurf" => {
+                paths.push(
+                    home.join(".codeium")
+                        .join("windsurf")
+                        .join("mcp_config.json"),
+                );
+            }
+            "roo" => {
+                paths.push(
+                    app_data
+                        .join("Code")
+                        .join("User")
+                        .join("globalStorage")
+                        .join("rooveterinaryinc.roo-cline")
+                        .join("settings")
+                        .join("mcp_settings.json"),
+                );
+            }
+            "pearai" => {
+                paths.push(home.join(".kiro").join("settings").join("mcp.json"));
+                paths.push(home.join(".pearai").join("mcp.json"));
+            }
+            "void" => {
+                paths.push(app_data.join("Void").join("mcp.json"));
+            }
+            "zed" => {
+                paths.push(app_data.join("Zed").join("settings.json"));
+            }
+            _ => {}
+        }
+    } else if cfg!(target_os = "macos") {
+        match agent {
+            "windsurf" => {
+                paths.push(
+                    home.join(".codeium")
+                        .join("windsurf")
+                        .join("mcp_config.json"),
+                );
+            }
+            "roo" => {
+                paths.push(
+                    home.join("Library")
+                        .join("Application Support")
+                        .join("Code")
+                        .join("User")
+                        .join("globalStorage")
+                        .join("rooveterinaryinc.roo-cline")
+                        .join("settings")
+                        .join("mcp_settings.json"),
+                );
+            }
+            "pearai" => {
+                paths.push(home.join(".kiro").join("settings").join("mcp.json"));
+                paths.push(home.join(".config").join("pearai").join("mcp.json"));
+            }
+            "void" => {
+                paths.push(
+                    home.join("Library")
+                        .join("Application Support")
+                        .join("Void")
+                        .join("mcp.json"),
+                );
+            }
+            "zed" => {
+                paths.push(home.join(".config").join("zed").join("settings.json"));
+            }
+            _ => {}
+        }
+    } else {
+        match agent {
+            "windsurf" => {
+                paths.push(
+                    home.join(".codeium")
+                        .join("windsurf")
+                        .join("mcp_config.json"),
+                );
+            }
+            "roo" => {
+                paths.push(
+                    home.join(".config")
+                        .join("Code")
+                        .join("User")
+                        .join("globalStorage")
+                        .join("rooveterinaryinc.roo-cline")
+                        .join("settings")
+                        .join("mcp_settings.json"),
+                );
+            }
+            "pearai" => {
+                paths.push(home.join(".kiro").join("settings").join("mcp.json"));
+                paths.push(home.join(".config").join("pearai").join("mcp.json"));
+            }
+            "void" => {
+                paths.push(home.join(".config").join("Void").join("mcp.json"));
+            }
+            "zed" => {
+                paths.push(home.join(".config").join("zed").join("settings.json"));
+            }
+            _ => {}
+        }
+    }
+    Ok(paths)
+}
+
 fn upsert_mcp_entry(path: &Path, command: &str, args: Vec<String>) -> Result<()> {
     let mut contents = json!({});
     if path.exists() {
@@ -67,18 +193,45 @@ fn upsert_mcp_entry(path: &Path, command: &str, args: Vec<String>) -> Result<()>
     let obj = contents
         .as_object_mut()
         .ok_or_else(|| anyhow!("config root is not an object"))?;
-    let mcp_servers = obj
-        .entry("mcpServers")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .ok_or_else(|| anyhow!("mcpServers is not an object"))?;
-    mcp_servers.insert(
-        "docdex".to_string(),
-        json!({
+    if let Some(mcp_servers) = obj.get_mut("mcpServers").and_then(|v| v.as_array_mut()) {
+        let idx = mcp_servers.iter().position(|entry| {
+            entry
+                .get("name")
+                .and_then(|value| value.as_str())
+                .map(|name| name == "docdex")
+                .unwrap_or(false)
+        });
+        let entry = json!({
+            "name": "docdex",
             "command": command,
             "args": args
-        }),
-    );
+        });
+        if let Some(idx) = idx {
+            mcp_servers[idx] = entry;
+        } else {
+            mcp_servers.push(entry);
+        }
+    } else {
+        let key = if obj.get("mcpServers").and_then(|v| v.as_object()).is_some() {
+            "mcpServers"
+        } else if obj.get("mcp_servers").and_then(|v| v.as_object()).is_some() {
+            "mcp_servers"
+        } else {
+            "mcpServers"
+        };
+        let mcp_servers = obj
+            .entry(key)
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("{key} is not an object"))?;
+        mcp_servers.insert(
+            "docdex".to_string(),
+            json!({
+                "command": command,
+                "args": args
+            }),
+        );
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -97,7 +250,77 @@ fn remove_mcp_entry(path: &Path, warn_only: bool) -> Result<()> {
     let data = fs::read_to_string(path)?;
     let mut contents: serde_json::Value = serde_json::from_str(&data).unwrap_or_else(|_| json!({}));
     if let Some(obj) = contents.as_object_mut() {
-        if let Some(mcp_servers) = obj.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+        if let Some(mcp_servers) = obj.get_mut("mcpServers").and_then(|v| v.as_array_mut()) {
+            mcp_servers.retain(|entry| {
+                entry
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .map(|name| name != "docdex")
+                    .unwrap_or(true)
+            });
+            let pretty = serde_json::to_string_pretty(&contents)?;
+            fs::write(path, pretty)?;
+            return Ok(());
+        }
+        for key in ["mcpServers", "mcp_servers"] {
+            if let Some(mcp_servers) = obj.get_mut(key).and_then(|v| v.as_object_mut()) {
+                mcp_servers.remove("docdex");
+                let pretty = serde_json::to_string_pretty(&contents)?;
+                fs::write(path, pretty)?;
+                return Ok(());
+            }
+        }
+    }
+    if warn_only {
+        Ok(())
+    } else {
+        Err(anyhow!("mcpServers.docdex not found in {}", path.display()))
+    }
+}
+
+fn upsert_zed_entry(path: &Path, command: &str, args: Vec<String>) -> Result<()> {
+    let mut contents = json!({});
+    if path.exists() {
+        let data = fs::read_to_string(path)?;
+        contents = serde_json::from_str(&data).unwrap_or_else(|_| json!({}));
+    }
+    let obj = contents
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("config root is not an object"))?;
+    let mcp_servers = obj
+        .entry("experimental_mcp_servers")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("experimental_mcp_servers is not an object"))?;
+    mcp_servers.insert(
+        "docdex".to_string(),
+        json!({
+            "command": command,
+            "args": args
+        }),
+    );
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let pretty = serde_json::to_string_pretty(&contents)?;
+    fs::write(path, pretty)?;
+    Ok(())
+}
+
+fn remove_zed_entry(path: &Path, warn_only: bool) -> Result<()> {
+    if !path.exists() {
+        if warn_only {
+            return Ok(());
+        }
+        return Err(anyhow!("config file not found: {}", path.display()));
+    }
+    let data = fs::read_to_string(path)?;
+    let mut contents: serde_json::Value = serde_json::from_str(&data).unwrap_or_else(|_| json!({}));
+    if let Some(obj) = contents.as_object_mut() {
+        if let Some(mcp_servers) = obj
+            .get_mut("experimental_mcp_servers")
+            .and_then(|v| v.as_object_mut())
+        {
             mcp_servers.remove("docdex");
             let pretty = serde_json::to_string_pretty(&contents)?;
             fs::write(path, pretty)?;
@@ -107,7 +330,10 @@ fn remove_mcp_entry(path: &Path, warn_only: bool) -> Result<()> {
     if warn_only {
         Ok(())
     } else {
-        Err(anyhow!("mcpServers.docdex not found in {}", path.display()))
+        Err(anyhow!(
+            "experimental_mcp_servers.docdex not found in {}",
+            path.display()
+        ))
     }
 }
 
@@ -122,6 +348,9 @@ fn agent_available(agent: &str, repo_root: &Path) -> bool {
         "claude" | "claude-cli" => is_cmd_available("claude"),
         "continue" => continue_config_path().map(|p| p.exists()).unwrap_or(false),
         "cline" => repo_root.join(".vscode").exists(),
+        "windsurf" | "roo" | "pearai" | "void" | "zed" => config_paths_for_agent(agent)
+            .map(|paths| paths.iter().any(|path| path.exists()))
+            .unwrap_or(false),
         "droid" | "factory" => is_cmd_available("droid"),
         "gemini" => is_cmd_available("gemini"),
         "vscode" => is_cmd_available("code"),
@@ -132,6 +361,18 @@ fn agent_available(agent: &str, repo_root: &Path) -> bool {
         "grok" => false,
         _ => false,
     }
+}
+
+fn stdio_args(repo_root: &Path, log: &str, max_results: usize) -> Vec<String> {
+    vec![
+        "mcp".to_string(),
+        "--repo".to_string(),
+        repo_root.display().to_string(),
+        "--log".to_string(),
+        log.to_string(),
+        "--max-results".to_string(),
+        max_results.to_string(),
+    ]
 }
 
 fn handle_mcp_add(
@@ -198,15 +439,7 @@ fn handle_mcp_add(
                 remove_mcp_entry(&path, false)?;
                 println!("Removed docdex from Continue config at {}", path.display());
             } else {
-                let args = vec![
-                    "mcp".to_string(),
-                    "--repo".to_string(),
-                    repo_root.display().to_string(),
-                    "--log".to_string(),
-                    log.to_string(),
-                    "--max-results".to_string(),
-                    max_results.to_string(),
-                ];
+                let args = stdio_args(repo_root, log, max_results);
                 upsert_mcp_entry(&path, "docdexd", args)?;
                 println!("Added docdex to Continue config at {}", path.display());
             }
@@ -220,17 +453,73 @@ fn handle_mcp_add(
                     path.display()
                 );
             } else {
-                let args = vec![
-                    "mcp".to_string(),
-                    "--repo".to_string(),
-                    repo_root.display().to_string(),
-                    "--log".to_string(),
-                    log.to_string(),
-                    "--max-results".to_string(),
-                    max_results.to_string(),
-                ];
+                let args = stdio_args(repo_root, log, max_results);
                 upsert_mcp_entry(&path, "docdexd", args)?;
                 println!("Added docdex to Cline settings at {}", path.display());
+            }
+        }
+        "windsurf" | "roo" | "pearai" | "void" => {
+            let paths = config_paths_for_agent(agent)?;
+            if !installed {
+                if paths.is_empty() {
+                    println!("{agent}: no config path could be resolved.");
+                } else {
+                    for path in &paths {
+                        println!(
+                            "{agent}: create or edit {} and set mcpServers.docdex to command: docdexd mcp --repo {} --log {} --max-results {}",
+                            path.display(),
+                            repo_root.display(),
+                            log,
+                            max_results
+                        );
+                    }
+                }
+                return Ok(());
+            }
+            for path in &paths {
+                if remove {
+                    remove_mcp_entry(path, true)?;
+                    println!(
+                        "Removed docdex from {agent} config at {} (if it existed)",
+                        path.display()
+                    );
+                } else {
+                    let args = stdio_args(repo_root, log, max_results);
+                    upsert_mcp_entry(path, "docdexd", args)?;
+                    println!("Added docdex to {agent} config at {}", path.display());
+                }
+            }
+        }
+        "zed" => {
+            let paths = config_paths_for_agent(agent)?;
+            if !installed {
+                if paths.is_empty() {
+                    println!("{agent}: no config path could be resolved.");
+                } else {
+                    for path in &paths {
+                        println!(
+                            "{agent}: edit {} and set experimental_mcp_servers.docdex to command: docdexd mcp --repo {} --log {} --max-results {}",
+                            path.display(),
+                            repo_root.display(),
+                            log,
+                            max_results
+                        );
+                    }
+                }
+                return Ok(());
+            }
+            for path in &paths {
+                if remove {
+                    remove_zed_entry(path, true)?;
+                    println!(
+                        "Removed docdex from {agent} config at {} (if it existed)",
+                        path.display()
+                    );
+                } else {
+                    let args = stdio_args(repo_root, log, max_results);
+                    upsert_zed_entry(path, "docdexd", args)?;
+                    println!("Added docdex to {agent} config at {}", path.display());
+                }
             }
         }
         "cursor" => {

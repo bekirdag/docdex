@@ -25,6 +25,7 @@ impl Drop for Daemon {
 
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
+    std::env::set_var("DOCDEX_WEB_ENABLED", "0");
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
@@ -61,6 +62,7 @@ fn write_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
 fn start_daemon(state_root: &Path, repo_root: &Path, port: u16) -> Result<Daemon, Box<dyn Error>> {
     let lock_path = state_root.join("daemon.lock");
     let child = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_DAEMON_LOCK_PATH", &lock_path)
@@ -110,8 +112,11 @@ fn read_next_sse(reader: &mut BufReader<reqwest::blocking::Response>) -> Option<
         }
         let trimmed = line.trim();
         if let Some(payload) = trimmed.strip_prefix("data:") {
-            let value = serde_json::from_str(payload.trim()).ok()?;
-            return Some(value);
+            let payload = payload.trim();
+            if let Ok(value) = serde_json::from_str(payload) {
+                return Some(value);
+            }
+            continue;
         }
     }
 }
@@ -119,9 +124,7 @@ fn read_next_sse(reader: &mut BufReader<reqwest::blocking::Response>) -> Option<
 fn normalize_windows_path(value: &str) -> String {
     if cfg!(windows) {
         let trimmed = value.trim();
-        let without_prefix = trimmed
-            .strip_prefix(r"\\?\")
-            .unwrap_or(trimmed);
+        let without_prefix = trimmed.strip_prefix(r"\\?\").unwrap_or(trimmed);
         without_prefix.replace('/', "\\").to_ascii_lowercase()
     } else {
         value.trim().to_string()

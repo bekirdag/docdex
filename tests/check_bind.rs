@@ -10,6 +10,7 @@ use tempfile::TempDir;
 
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
+    std::env::set_var("DOCDEX_WEB_ENABLED", "0");
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
@@ -71,6 +72,7 @@ fn check_fails_when_bind_in_use() -> Result<(), Box<dyn Error>> {
     write_config(home.path(), state_root.path(), &format!("127.0.0.1:{port}"))?;
 
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")
@@ -106,6 +108,7 @@ fn check_reports_permission_denied_on_privileged_port() -> Result<(), Box<dyn Er
     write_config(home.path(), state_root.path(), "127.0.0.1:1")?;
 
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home.path())
         .env("DOCDEX_LLM_AGENT", "test")

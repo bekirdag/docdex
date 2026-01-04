@@ -21,6 +21,7 @@ fn cli_state_dir_override_scopes_index() -> Result<(), Box<dyn Error>> {
     let state_base = TempDir::new()?;
 
     let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "index",
@@ -39,6 +40,7 @@ fn cli_state_dir_override_scopes_index() -> Result<(), Box<dyn Error>> {
     }
 
     let inspect_out = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
             "repo",

@@ -29,21 +29,21 @@ const SYMBOLS_SCHEMA_VERSION: u32 = 5;
 const SYMBOLS_SCHEMA_MIN_VERSION: u32 = 1;
 const AST_NODE_STORE_LIMIT: usize = 50_000;
 const AST_NODE_NAME_LIMIT: usize = 120;
-const TREE_SITTER_VERSION: &str = "0.26.3";
-const TREE_SITTER_GO_VERSION: &str = "0.25.0";
-const TREE_SITTER_JAVASCRIPT_VERSION: &str = "0.25.0";
-const TREE_SITTER_PYTHON_VERSION: &str = "0.25.0";
-const TREE_SITTER_RUST_VERSION: &str = "0.24.0";
-const TREE_SITTER_TYPESCRIPT_VERSION: &str = "0.23.2";
-const TREE_SITTER_JAVA_VERSION: &str = "0.23.5";
-const TREE_SITTER_C_SHARP_VERSION: &str = "0.23.1";
-const TREE_SITTER_C_VERSION: &str = "0.24.1";
-const TREE_SITTER_CPP_VERSION: &str = "0.23.4";
-const TREE_SITTER_PHP_VERSION: &str = "0.24.2";
+const TREE_SITTER_VERSION: &str = "0.22.6";
+const TREE_SITTER_GO_VERSION: &str = "0.21.2";
+const TREE_SITTER_JAVASCRIPT_VERSION: &str = "0.21.4";
+const TREE_SITTER_PYTHON_VERSION: &str = "0.21.0";
+const TREE_SITTER_RUST_VERSION: &str = "0.21.2";
+const TREE_SITTER_TYPESCRIPT_VERSION: &str = "0.21.2";
+const TREE_SITTER_JAVA_VERSION: &str = "0.21.0";
+const TREE_SITTER_C_SHARP_VERSION: &str = "0.21.3";
+const TREE_SITTER_C_VERSION: &str = "0.21.4";
+const TREE_SITTER_CPP_VERSION: &str = "0.22.3";
+const TREE_SITTER_PHP_VERSION: &str = "0.23.0";
 const TREE_SITTER_KOTLIN_VERSION: &str = "0.3.8";
-const TREE_SITTER_SWIFT_VERSION: &str = "0.7.1";
-const TREE_SITTER_RUBY_VERSION: &str = "0.23.1";
-const TREE_SITTER_LUA_VERSION: &str = "0.4.1";
+const TREE_SITTER_SWIFT_VERSION: &str = "0.5.0";
+const TREE_SITTER_RUBY_VERSION: &str = "0.21.0";
+const TREE_SITTER_LUA_VERSION: &str = "0.1.0";
 const TREE_SITTER_DART_VERSION: &str = "0.0.4";
 fn default_symbols_schema() -> SchemaInfo {
     SchemaInfo {
@@ -1752,7 +1752,7 @@ pub fn extract_ast_nodes_best_effort(
     };
     let mut parser = Parser::new();
     parser
-        .set_language(ts_language)
+        .set_language(&ts_language)
         .map_err(|err| anyhow!("tree-sitter language init failed: {err}"))?;
     let tree = parser
         .parse(content, None)
@@ -1888,7 +1888,7 @@ fn extract_tree_sitter_symbols(
     };
     let mut parser = Parser::new();
     parser
-        .set_language(ts_language)
+        .set_language(&ts_language)
         .map_err(|err| anyhow!("tree-sitter language init failed: {err}"))?;
     let tree = parser
         .parse(content, None)
@@ -1922,7 +1922,7 @@ fn tree_sitter_language(language: SourceLanguage, rel_path: &str) -> Option<Lang
         SourceLanguage::CSharp => Some(ts_c_sharp::language()),
         SourceLanguage::C => Some(ts_c::language()),
         SourceLanguage::Cpp => Some(ts_cpp::language()),
-        SourceLanguage::Php => Some(ts_php::language()),
+        SourceLanguage::Php => Some(ts_php::language_php()),
         SourceLanguage::Kotlin => Some(ts_kotlin::language()),
         SourceLanguage::Swift => Some(ts_swift::language()),
         SourceLanguage::Ruby => Some(ts_ruby::language()),

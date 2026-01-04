@@ -1718,7 +1718,7 @@ fn parse_tree(
 ) -> Option<tree_sitter::Tree> {
     let ts_language = tree_sitter_language(language, rel_path)?;
     let mut parser = Parser::new();
-    parser.set_language(ts_language).ok()?;
+    parser.set_language(&ts_language).ok()?;
     parser.parse(content, None)
 }
 
@@ -1739,7 +1739,7 @@ fn tree_sitter_language(language: SourceLanguage, rel_path: &str) -> Option<tree
         SourceLanguage::CSharp => Some(ts_c_sharp::language()),
         SourceLanguage::C => Some(ts_c::language()),
         SourceLanguage::Cpp => Some(ts_cpp::language()),
-        SourceLanguage::Php => Some(ts_php::language()),
+        SourceLanguage::Php => Some(ts_php::language_php()),
         SourceLanguage::Kotlin => Some(ts_kotlin::language()),
         SourceLanguage::Swift => Some(ts_swift::language()),
         SourceLanguage::Ruby => Some(ts_ruby::language()),

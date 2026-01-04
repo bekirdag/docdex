@@ -493,6 +493,9 @@ fn build_mcp_command(options: &McpSpawnOptions) -> Result<Command> {
             cmd.arg("--auth-token").arg(token.trim());
         }
     }
+    if std::env::var("DOCDEX_WEB_ENABLED").is_err() {
+        cmd.env("DOCDEX_WEB_ENABLED", "1");
+    }
     Ok(cmd)
 }
 

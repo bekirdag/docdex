@@ -1,17 +1,5 @@
-version: 1
-runtime: "local"
-
 startCommand:
   type: "stdio"
-  command: "docdexd"
-  args:
-    - "mcp"
-    - "--repo"
-    - "{{repo_path}}"
-    - "--log"
-    - "warn"
-    - "--max-results"
-    - "8"
   configSchema:
     type: "object"
     properties:
@@ -22,3 +10,16 @@ startCommand:
       - "repo_path"
   exampleConfig:
     repo_path: "."
+  commandFunction: |-
+    (config) => ({
+      command: 'docdexd',
+      args: [
+        'mcp',
+        '--repo',
+        config.repo_path,
+        '--log',
+        'warn',
+        '--max-results',
+        '8'
+      ]
+    })

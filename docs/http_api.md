@@ -74,8 +74,8 @@ When running the singleton daemon (`docdexd daemon`), the server can mount multi
   - Body: `{ "files": ["<repo-relative path>", "..."] }`.
 - `GET /v1/dag/export` - export a reasoning DAG trace.
   - Query params: `session_id`, `format` (`json|text|dot`), `max_nodes`, `repo_id`.
-- `POST /v1/web/search` - web discovery (requires `DOCDEX_WEB_ENABLED=1`).
-- `POST /v1/web/fetch` - fetch a single web URL (requires `DOCDEX_WEB_ENABLED=1`).
+- `POST /v1/web/search` - web discovery (requires `DOCDEX_WEB_ENABLED=1`; daemon enables by default).
+- `POST /v1/web/fetch` - fetch a single web URL (requires `DOCDEX_WEB_ENABLED=1`; daemon enables by default).
 - `POST /v1/web/cache/flush` - clear cached web entries.
 - `GET /ai-help` - JSON quickstart for agents (endpoints, CLI commands, limits).
 - `GET /metrics` - Prometheus-style metrics.

@@ -1,7 +1,7 @@
 # Docdex
 
 [![smithery badge](https://smithery.ai/badge/@bekirdag/docdex)](https://smithery.ai/server/@bekirdag/docdex)
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/bekirdag/docdex/main.yml?branch=main)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/bekirdag/docdex/release.yml?branch=main)
 ![GitHub License](https://img.shields.io/github/license/bekirdag/docdex)
 ![GitHub Release](https://img.shields.io/github/v/release/bekirdag/docdex)
 ![Made with Rust](https://img.shields.io/badge/Made%20with-Rust-orange?logo=rust)
@@ -111,10 +111,12 @@ curl "http://127.0.0.1:3210/v1/graph/impact?file=src/app.ts&maxDepth=3"
 ## Web search (optional)
 Docdex can enrich answers with web results when you want it to, while keeping your repo local.
 
-Enable web mode:
+Web discovery is enabled by default for `docdexd serve`/`docdexd daemon`.
+To disable it, set:
 ```bash
-DOCDEX_WEB_ENABLED=1 docdexd daemon --repo /path/to/repo --host 127.0.0.1 --port 3210
+DOCDEX_WEB_ENABLED=0 docdexd daemon --repo /path/to/repo --host 127.0.0.1 --port 3210
 ```
+If you run `docdexd web-search` directly (no daemon), set `DOCDEX_WEB_ENABLED=1`.
 
 Tips:
 - Set `DOCDEX_WEB_BROWSER` or `DOCDEX_CHROME_PATH` if a browser is not auto-detected.

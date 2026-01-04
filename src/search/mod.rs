@@ -1154,7 +1154,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             AiHelpEndpoint {
                 method: "POST",
                 path: "/v1/web/search",
-                description: "Run a web discovery query (requires DOCDEX_WEB_ENABLED=1).",
+                description: "Run a web discovery query (requires DOCDEX_WEB_ENABLED=1; daemon enables by default).",
                 params: &["query=<string>", "limit=<int optional>"],
             },
             AiHelpEndpoint {
@@ -1275,7 +1275,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             },
             AiHelpCli {
                 command: "docdexd web-search --query \"...\" [--limit 8]",
-                description: "Run a web discovery query (requires DOCDEX_WEB_ENABLED=1).",
+                description: "Run a web discovery query (requires DOCDEX_WEB_ENABLED=1; daemon enables by default).",
                 example: "docdexd web-search --query \"rust async cancel\" --limit 5",
             },
             AiHelpCli {
@@ -1486,7 +1486,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             "Use /search with snippets=false to read summaries first; only fetch 1-2 snippets you need.",
             "Keep q short; long query strings are rejected by max_query_bytes to save bandwidth/tokens.",
             "Respect the reported `token_estimate` to avoid oversized prompts.",
-            "Web discovery is disabled by default; set DOCDEX_WEB_ENABLED=1 to allow web search.",
+            "Web discovery is enabled when DOCDEX_WEB_ENABLED=1 (daemon sets this by default); set DOCDEX_WEB_ENABLED=0 to disable.",
             "When running remote, set --auth-token and TLS (certbot or manual cert/key).",
             "Keep server logging minimal for agent pipelines (e.g., --log warn --access-log=false).",
             "Use state_dir per project to keep indexes isolated; run separate serve instances per repo.",

@@ -40,6 +40,14 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let web_env = std::env::var("DOCDEX_WEB_ENABLED").ok();
+    if web_env
+        .as_deref()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        std::env::set_var("DOCDEX_WEB_ENABLED", "1");
+    }
     let max_results = std::env::var("DOCDEX_MCP_MAX_RESULTS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())

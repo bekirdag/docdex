@@ -63,6 +63,14 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         unshare_net,
         allow_ip,
     } = args;
+    let web_env = std::env::var("DOCDEX_WEB_ENABLED").ok();
+    if web_env
+        .as_deref()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        std::env::set_var("DOCDEX_WEB_ENABLED", "1");
+    }
     let config = config::AppConfig::load_default().map_err(|err| {
         StartupError::new(
             "startup_config_invalid",

@@ -212,9 +212,9 @@ Notes:
 - Set a default agent with `[server].default_agent_id` or `docdexd serve --agent-id` (`DOCDEX_AGENT_ID`).
 
 ## Smithery local usage
-Smithery runs Docdex as a local MCP tool using stdio. The provided `smithery.yaml` uses `runtime: "local"` and:
+Smithery runs Docdex as a local MCP tool using stdio. The provided `smithery.yaml` uses `commandFunction` to map `repo_path` into:
 ```
-docdexd mcp --repo {{repo_path}} --log warn --max-results 8
+docdexd mcp --repo <repo_path> --log warn --max-results 8
 ```
 
 ## Hardware-aware LLM guidance
@@ -267,7 +267,7 @@ Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary to
 - `DOCDEX_LLM_AGENT` / `DOCDEX_AGENT` for default chat agent.
 
 ### Web discovery (Tier 2)
-- `DOCDEX_WEB_ENABLED=1` to enable.
+- `DOCDEX_WEB_ENABLED=1` to enable (daemon sets this by default unless overridden).
 - `DOCDEX_OFFLINE=1` to force offline.
 - `DOCDEX_WEB_*` knobs for thresholds, timeouts, cache TTL, and backoff.
 - `DOCDEX_WEB_BROWSER` / `DOCDEX_CHROME_PATH` to set a browser binary.

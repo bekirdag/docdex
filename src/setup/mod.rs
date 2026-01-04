@@ -80,7 +80,8 @@ fn run_with_options(options: &SetupOptions) -> Result<SetupSummary> {
     }
 
     let force = options.force || env_bool("DOCDEX_SETUP_FORCE");
-    if should_skip_due_to_status(force)? {
+    let auto_run = env_bool("DOCDEX_SETUP_AUTO");
+    if should_skip_due_to_status(force, auto_run)? {
         if let Some(status) = state_store::read_status()? {
             match status.status {
                 state_store::SetupStatus::Complete => {
@@ -148,16 +149,15 @@ fn env_bool(key: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn should_skip_due_to_status(force: bool) -> Result<bool> {
+fn should_skip_due_to_status(force: bool, skip_deferred: bool) -> Result<bool> {
     if force {
         return Ok(false);
     }
     if let Some(status) = state_store::read_status()? {
-        if matches!(
-            status.status,
-            state_store::SetupStatus::Complete | state_store::SetupStatus::Deferred
-        ) {
-            return Ok(true);
+        match status.status {
+            state_store::SetupStatus::Complete => return Ok(true),
+            state_store::SetupStatus::Deferred => return Ok(skip_deferred),
+            state_store::SetupStatus::Failed => {}
         }
     }
     Ok(false)
@@ -191,8 +191,8 @@ mod tests {
             steps: Vec::new(),
         };
         state_store::write_status(&summary)?;
-        assert!(should_skip_due_to_status(false)?);
-        assert!(!should_skip_due_to_status(true)?);
+        assert!(should_skip_due_to_status(false, true)?);
+        assert!(!should_skip_due_to_status(true, true)?);
         std::env::remove_var("DOCDEX_STATE_DIR");
         Ok(())
     }
@@ -212,7 +212,27 @@ mod tests {
             steps: Vec::new(),
         };
         state_store::write_status(&summary)?;
-        assert!(should_skip_due_to_status(false)?);
+        assert!(should_skip_due_to_status(false, true)?);
+        std::env::remove_var("DOCDEX_STATE_DIR");
+        Ok(())
+    }
+
+    #[test]
+    fn deferred_status_does_not_skip_when_allowed() -> Result<()> {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = TempDir::new()?;
+        std::env::set_var("DOCDEX_STATE_DIR", dir.path());
+        let summary = SetupSummary {
+            status: "deferred".to_string(),
+            message: "later".to_string(),
+            models_installed: Vec::new(),
+            default_model: None,
+            timestamp_ms: now_ms(),
+            error: None,
+            steps: Vec::new(),
+        };
+        state_store::write_status(&summary)?;
+        assert!(!should_skip_due_to_status(false, false)?);
         std::env::remove_var("DOCDEX_STATE_DIR");
         Ok(())
     }

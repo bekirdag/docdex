@@ -16,11 +16,11 @@ use crate::impact::{
 };
 use crate::index::{Hit, Indexer};
 use crate::libs::LibsIndexer;
+use crate::memory::filter_memory_candidates_by_repo;
 use crate::memory::{
     prune_and_truncate_memory_context, repo_state_root_from_state_dir, MemoryContextItem,
     MemoryContextPruneTrace,
 };
-use crate::memory::filter_memory_candidates_by_repo;
 use crate::metrics;
 use crate::orchestrator::web::{
     build_gate_meta, detect_query_intent, evaluate_gate_status, filter_local_hits_with_llm,

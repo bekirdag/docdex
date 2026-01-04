@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.13
+## 0.2.14
 - Repo memory now tags items with `repoId` and filters recalls to prevent cross-repo leakage in multi-repo daemons.
 - MCP HTTP requires explicit repo selection when multiple repos are active.
 - Postinstall banner now guides users to run `docdex setup`.

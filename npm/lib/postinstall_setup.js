@@ -1161,7 +1161,11 @@ function commandExists(cmd, spawnSyncFn) {
 }
 
 function launchMacTerminal({ binaryPath, args, spawnSyncFn, logger }) {
-  const command = [binaryPath, ...args].join(" ");
+  const command = [
+    "DOCDEX_SETUP_AUTO=1",
+    `"${binaryPath}"`,
+    ...args.map((arg) => `"${arg}"`)
+  ].join(" ");
   const script = [
     'tell application "Terminal"',
     'if not (exists window 1) then',
@@ -1179,15 +1183,16 @@ function launchMacTerminal({ binaryPath, args, spawnSyncFn, logger }) {
 }
 
 function launchLinuxTerminal({ binaryPath, args, spawnFn, spawnSyncFn }) {
+  const envArgs = ["env", "DOCDEX_SETUP_AUTO=1", binaryPath, ...args];
   const candidates = [
-    { cmd: "x-terminal-emulator", args: ["-e", binaryPath, ...args] },
-    { cmd: "gnome-terminal", args: ["--", binaryPath, ...args] },
-    { cmd: "konsole", args: ["-e", binaryPath, ...args] },
-    { cmd: "xfce4-terminal", args: ["-e", binaryPath, ...args] },
-    { cmd: "xterm", args: ["-e", binaryPath, ...args] },
-    { cmd: "kitty", args: ["-e", binaryPath, ...args] },
-    { cmd: "alacritty", args: ["-e", binaryPath, ...args] },
-    { cmd: "wezterm", args: ["start", "--", binaryPath, ...args] }
+    { cmd: "x-terminal-emulator", args: ["-e", ...envArgs] },
+    { cmd: "gnome-terminal", args: ["--", ...envArgs] },
+    { cmd: "konsole", args: ["-e", ...envArgs] },
+    { cmd: "xfce4-terminal", args: ["-e", ...envArgs] },
+    { cmd: "xterm", args: ["-e", ...envArgs] },
+    { cmd: "kitty", args: ["-e", ...envArgs] },
+    { cmd: "alacritty", args: ["-e", ...envArgs] },
+    { cmd: "wezterm", args: ["start", "--", ...envArgs] }
   ];
   for (const candidate of candidates) {
     if (!commandExists(candidate.cmd, spawnSyncFn)) continue;
@@ -1234,7 +1239,8 @@ function launchSetupWizard({
 
   if (platform === "win32") {
     const quoted = `"${binaryPath}" ${args.map((arg) => `"${arg}"`).join(" ")}`;
-    const result = spawnSyncFn("cmd", ["/c", "start", "", quoted]);
+    const cmdline = `set DOCDEX_SETUP_AUTO=1 && ${quoted}`;
+    const result = spawnSyncFn("cmd", ["/c", "start", "", "cmd", "/c", cmdline]);
     if (result.status === 0) return { ok: true };
     logger?.warn?.(`[docdex] cmd start failed: ${result.stderr || "unknown error"}`);
     return { ok: false, reason: "terminal_launch_failed" };

@@ -238,7 +238,13 @@ test("launchSetupWizard uses linux terminal launcher when interactive", () => {
   assert.equal(result.ok, true);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].cmd, "x-terminal-emulator");
-  assert.deepEqual(calls[0].args, ["-e", "/tmp/docdexd", "setup"]);
+  assert.deepEqual(calls[0].args, [
+    "-e",
+    "env",
+    "DOCDEX_SETUP_AUTO=1",
+    "/tmp/docdexd",
+    "setup"
+  ]);
 });
 
 test("launchSetupWizard returns non_interactive when no tty", () => {

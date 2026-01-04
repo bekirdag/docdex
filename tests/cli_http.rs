@@ -34,6 +34,7 @@ fn spawn_server(
     let state_root_str = state_root.to_string_lossy().to_string();
     Ok(Command::new(docdex_bin())
         .env("DOCDEX_ENABLE_MEMORY", "0")
+        .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([

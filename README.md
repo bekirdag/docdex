@@ -1,103 +1,112 @@
+Here is a rewritten, restructured, and visually optimized version of your README. It prioritizes the "Set-and-forget" value proposition, clearly separates the "Why" from the "How," and organizes technical details into a digestible format.
+
+---
+
 # Docdex
 
-[![smithery badge](https://smithery.ai/badge/@bekirdag/docdex)](https://smithery.ai/server/@bekirdag/docdex)
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/bekirdag/docdex/release.yml?branch=main)
-![GitHub License](https://img.shields.io/github/license/bekirdag/docdex)
-![GitHub Release](https://img.shields.io/github/v/release/bekirdag/docdex)
-![Made with Rust](https://img.shields.io/badge/Made%20with-Rust-orange?logo=rust)
+> **Turn your repository into fast, private context that humans and AI can trust.**
 
-Docdex is a local-first indexer and search daemon for docs and source code. It turns a repo into fast, private context that humans and AI can trust.
+Docdex is a **local-first indexer and search daemon** for documentation and source code. It sits between your raw files and your AI assistant, providing deterministic search, code intelligence, and persistent memory without ever uploading your code to a cloud vector store.
 
-## What Docdex does
-1. Document indexing: rank and summarize repo docs fast.
-2. Code indexing: search code by intent, not just string match.
-3. AST + impact graph: reason about structure and dependencies.
-4. Web search + local LLM: optional web enrichment with Ollama-powered filtering.
-5. Repo memory: project facts and decisions stored locally.
-6. Agent memory: long-lived preferences that follow an agent across repos.
+## ⚡ Why Docdex?
 
-## Set-and-forget install
+Most AI tools rely on "grep" (fast but dumb) or hosted RAG (slow and requires uploads). Docdex runs locally, understands code structure, and gives your AI agents a persistent memory.
+
+| Problem | Typical Approach | The Docdex Solution |
+| --- | --- | --- |
+| **Finding Context** | `grep`/`rg` (Noisy, literal matches) | **Ranked, structured results** based on intent. |
+| **Code Privacy** | Hosted RAG (Requires uploading code) | **Local-only indexing.** Your code stays on your machine. |
+| **Siloed Search** | IDE-only search bars | **Shared Daemon** serving CLI, HTTP, and MCP clients simultaneously. |
+| **Code Awareness** | String matching | **AST & Impact Graph** to understand dependencies and definitions. |
+
+---
+
+## 🚀 Features
+
+* **📚 Document Indexing:** Rank and summarize repo documentation instantly.
+* **🧠 AST & Impact Graph:** Search by function intent and track downstream dependencies (supports Rust, Python, JS/TS, Go, Java, C++, and more).
+* **💾 Repo Memory:** Stores project facts, decisions, and notes locally.
+* **👤 Agent Memory:** Remembers user preferences (e.g., "Use concise bullet points") across different repositories.
+* **🔌 MCP Native:** Auto-configures for tools like Claude Desktop, Cursor, and Windsurf.
+* **🌐 Web Enrichment:** Optional web search with local LLM filtering (via Ollama).
+
+---
+
+## 📦 Set-and-Forget Install
+
 Install once, point your agent at Docdex, and it keeps working in the background.
+
+### 1. Install via npm (Recommended)
+
+Requires Node.js >= 18. This will download the correct binary for your OS (macOS, Linux, Windows).
 
 ```bash
 npm i -g docdex
+
 ```
 
-Auto-configured MCP clients (when config files exist): Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Continue, VS Code, PearAI, Void, Zed, Codex. Restart clients after install.
+### 2. Auto-Configuration
 
-Index once per repo:
-```bash
-docdexd index --repo /path/to/repo
-```
+If you have any of the following clients installed, Docdex automatically configures them to use the local MCP server:
 
-Start the shared daemon (HTTP + MCP):
-```bash
-docdexd daemon --repo /path/to/repo --host 127.0.0.1 --port 3210 --log warn --secure-mode=false
-```
+> **Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Continue, VS Code, PearAI, Void, Zed, Codex.**
 
-Ask from the CLI:
-```bash
-docdexd chat --repo /path/to/repo --query "how does auth work?"
-```
+*Note: Restart your AI client after installation.*
 
-## Fast examples
+---
 
-### Document + code search
-```bash
-docdexd chat --repo /path/to/repo --query "payment retry logic" --limit 5
-```
+## 🛠️ Usage Workflow
+
+### 1. Index a Repository
+
+Run this once to build the index and graph data.
 
 ```bash
-curl "http://127.0.0.1:3210/search?q=payment%20retry&limit=5"
+docdexd index --repo /path/to/my-project
+
 ```
 
-### AST + impact graph
-Find a function definition by name:
-```bash
-curl "http://127.0.0.1:3210/v1/ast?name=addressGenerator&pathPrefix=src"
-```
+### 2. Start the Daemon
 
-Track downstream impact:
-```bash
-curl "http://127.0.0.1:3210/v1/graph/impact?file=src/app.ts&maxDepth=3"
-```
-
-### Web search + Ollama filtering (optional)
-```bash
-DOCDEX_WEB_ENABLED=1 docdexd web-search --query "smithery local testing" --limit 5
-```
-
-### Memory (repo + agent)
-```bash
-docdexd memory-store --repo /path/to/repo --text "Payments retry up to 3 times with backoff."
-docdexd memory-recall --repo /path/to/repo --query "payments retry policy" --top-k 5
-```
+Start the shared server. This handles HTTP requests and MCP connections.
 
 ```bash
-docdexd profile add --agent-id "default" --category style --content "Use concise bullet points."
-docdexd profile search --agent-id "default" --query "style" --top-k 5
+docdexd daemon --repo /path/to/my-project --host 127.0.0.1 --port 3210
+
 ```
 
-## Why it matters
-Docdex is the layer between raw files and an AI assistant. It avoids uploads, keeps context local, and makes search deterministic.
+### 3. Ask Questions (CLI)
 
-| Problem | Typical approach | What Docdex changes |
-| --- | --- | --- |
-| Find relevant context | `grep`/`rg` (fast, literal, noisy) | Ranked, structured results that match intent |
-| AI needs repo context | Hosted RAG (upload code) | Local-only indexing, no upload required |
-| Search is siloed | IDE-only search | Shared daemon for CLI, HTTP, and MCP clients |
+You can chat directly from the terminal.
 
-## Daemon, MCP, HTTP, security
-Docdex runs as a local daemon and serves:
-- CLI commands (`docdexd chat`, `docdexd query`)
-- HTTP APIs (`/search`, `/v1/ast`, `/v1/graph/impact`)
-- MCP endpoints for agents (`/v1/mcp` and `/sse`)
+```bash
+docdexd chat --repo /path/to/my-project --query "how does auth work?"
 
-Security and TLS:
-- Secure-mode defaults enforce TLS on non-loopback binds.
-- Provide certs with `--tls-cert/--tls-key` or use `--insecure` behind a trusted proxy.
+```
 
-MCP config examples:
+---
+
+## 🔌 Model Context Protocol (MCP)
+
+Docdex is designed to be the "brain" for your AI agents. It exposes an MCP endpoint that agents connect to.
+
+### Architecture
+
+```mermaid
+flowchart LR
+  Repo[Repo on disk] --> Indexer[Docdex Indexer]
+  Indexer --> Daemon[Docdex Daemon]
+  Daemon -->|HTTP + SSE| MCPClient[MCP Client]
+  MCPClient --> Host[AI Agent / Editor]
+
+```
+
+### Manual Configuration
+
+If you need to configure your client manually:
+
+**JSON (Claude/Cursor/Continue):**
+
 ```json
 {
   "mcpServers": {
@@ -106,66 +115,102 @@ MCP config examples:
     }
   }
 }
+
 ```
+
+**TOML (Codex):**
 
 ```toml
 [mcp_servers]
 docdex = { url = "http://localhost:3210/v1/mcp" }
+
 ```
 
-## Supported AST languages
-Rust, Python, JavaScript, TypeScript, Go, Java, C#, C/C++, PHP, Kotlin, Swift, Ruby, Lua, Dart.
+---
 
-## Auto-detected MCP clients
-Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Continue, VS Code, PearAI, Void, Zed, Codex.
+## 🤖 capabilities & Examples
 
-## Local LLM + embeddings (Ollama)
+### 1. AST & Impact Analysis
+
+Don't just find the string "addressGenerator"; find the **definition** and what it impacts.
+
+```bash
+# Find definition
+curl "http://127.0.0.1:3210/v1/ast?name=addressGenerator&pathPrefix=src"
+
+# Track downstream impact (what breaks if I change this?)
+curl "http://127.0.0.1:3210/v1/graph/impact?file=src/app.ts&maxDepth=3"
+
+```
+
+### 2. Memory System
+
+Docdex allows you to store "facts" that retrieval helps recall later.
+
+**Repo Memory (Project specific):**
+
+```bash
+# Teach the repo a fact
+docdexd memory-store --repo . --text "Payments retry up to 3 times with backoff."
+
+# Recall it later
+docdexd memory-recall --repo . --query "payments retry policy"
+
+```
+
+**Agent Memory (User preference):**
+
+```bash
+# Set a style preference
+docdexd profile add --agent-id "default" --category style --content "Use concise bullet points."
+
+```
+
+### 3. Local LLM (Ollama)
+
 Docdex uses Ollama for embeddings and optional local chat.
 
-First-time setup (recommended):
+* **Setup:** Run `docdex setup` for an interactive wizard.
+* **Manual:** Ensure `nomic-embed-text` is pulled in Ollama (`ollama pull nomic-embed-text`).
+* **Custom URL:**
 ```bash
-docdex setup
+DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdexd daemon ...
+
 ```
 
-Manual setup:
+
+
+---
+
+## ⚙️ Configuration & HTTP API
+
+Docdex runs as a local daemon serving:
+
+* **CLI Commands:** `docdexd chat`
+* **HTTP API:** `/search`, `/v1/ast`, `/v1/graph/impact`
+* **MCP Endpoints:** `/v1/mcp` and `/sse`
+
+### Multi-Repo Setup
+
+To support multiple repositories simultaneously, run separate daemons on different ports and add them to your MCP config.
+
 ```bash
-ollama serve
-ollama pull nomic-embed-text
+docdexd daemon --repo /path/to/repo-a --port 3210
+docdexd daemon --repo /path/to/repo-b --port 3220
+
 ```
 
-Point Docdex at Ollama if needed:
-```bash
-DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdexd daemon --repo /path/to/repo --host 127.0.0.1 --port 3210
-```
+### Security
 
-## Multi-repo setup
-Run separate daemons for different repositories and connect both to your MCP client.
+* **Secure Mode:** By default, Docdex enforces TLS on non-loopback binds.
+* **Loopback:** `127.0.0.1` is accessible without TLS for local agents.
+* To expose to a network (use with caution), use `--expose` and `--auth-token`.
 
-```bash
-docdexd daemon --repo /path/to/repo-a --host 127.0.0.1 --port 3210 --log warn --secure-mode=false
-docdexd daemon --repo /path/to/repo-b --host 127.0.0.1 --port 3220 --log warn --secure-mode=false
-```
+---
 
-```json
-{
-  "mcpServers": {
-    "docdex-repo-a": { "url": "http://localhost:3210/sse" },
-    "docdex-repo-b": { "url": "http://localhost:3220/sse" }
-  }
-}
-```
+## 📚 Learn More
 
-## Daemon + MCP flow
-```mermaid
-flowchart LR
-  Repo[Repo on disk] --> Indexer[Docdex indexer]
-  Indexer --> Daemon[Docdex daemon]
-  Daemon -->|HTTP + SSE| MCPClient[MCP client]
-  MCPClient --> Host[AI app or agent]
-```
-SSE endpoint: `/sse`
-
-## Learn more
-- Detailed usage guide: `docs/usage.md`
-- HTTP API reference: `docs/http_api.md`
-- MCP errors and contracts: `docs/mcp/errors.md`
+* **Smithery:** [View on Smithery.ai](https://smithery.ai/server/@bekirdag/docdex)
+* **Detailed Usage:** `docs/usage.md`
+* **API Reference:** `docs/http_api.md`
+* **MCP Specs:** `docs/mcp/errors.md`

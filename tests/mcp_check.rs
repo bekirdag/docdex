@@ -45,10 +45,7 @@ fn temp_exec_dir() -> Result<TempDir, Box<dyn Error>> {
     Ok(TempDir::new_in(base)?)
 }
 
-fn write_mcp_probe_binary(
-    dir: &TempDir,
-    exit_code: i32,
-) -> Result<PathBuf, Box<dyn Error>> {
+fn write_mcp_probe_binary(dir: &TempDir, exit_code: i32) -> Result<PathBuf, Box<dyn Error>> {
     #[cfg(windows)]
     let path = dir.path().join("docdex-mcp-server.cmd");
     #[cfg(not(windows))]

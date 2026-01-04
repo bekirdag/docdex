@@ -12,9 +12,9 @@ mod model;
 pub(crate) mod ollama;
 mod state;
 mod state_store;
-mod ui;
 #[cfg(test)]
 mod test_support;
+mod ui;
 
 #[derive(Debug, Clone)]
 pub struct SetupOptions {
@@ -139,7 +139,12 @@ fn run_with_options(options: &SetupOptions) -> Result<SetupSummary> {
 fn env_bool(key: &str) -> bool {
     std::env::var(key)
         .ok()
-        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "y" | "on"))
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "y" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 

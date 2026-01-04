@@ -53,7 +53,10 @@ fn detect_free_disk_bytes(home: Option<PathBuf>) -> u64 {
         let mount = disk.mount_point();
         if home_path.starts_with(mount) {
             let len = mount.as_os_str().len();
-            if best_match.map(|(best_len, _)| len > best_len).unwrap_or(true) {
+            if best_match
+                .map(|(best_len, _)| len > best_len)
+                .unwrap_or(true)
+            {
                 best_match = Some((len, disk.available_space()));
             }
         }

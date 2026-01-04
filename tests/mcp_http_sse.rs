@@ -112,8 +112,11 @@ fn read_next_sse(reader: &mut BufReader<reqwest::blocking::Response>) -> Option<
         }
         let trimmed = line.trim();
         if let Some(payload) = trimmed.strip_prefix("data:") {
-            let value = serde_json::from_str(payload.trim()).ok()?;
-            return Some(value);
+            let payload = payload.trim();
+            if let Ok(value) = serde_json::from_str(payload) {
+                return Some(value);
+            }
+            continue;
         }
     }
 }

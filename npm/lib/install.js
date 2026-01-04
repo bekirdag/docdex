@@ -1899,6 +1899,55 @@ async function main() {
   } catch (err) {
     console.warn(`[docdex] postinstall setup skipped: ${err?.message || err}`);
   }
+  printPostInstallBanner();
+}
+
+function printPostInstallBanner() {
+  const frame = "\x1b[35m";
+  const reset = "\x1b[0m";
+  const stripAnsi = (text) => text.replace(/\x1b\[[0-9;]*m/g, "");
+  const writeDirect = (message) => {
+    const ttyPath = process.platform === "win32" ? "CONOUT$" : "/dev/tty";
+    try {
+      const fd = fs.openSync(ttyPath, "w");
+      fs.writeSync(fd, message);
+      fs.closeSync(fd);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  let width = 0;
+  const content = [
+    "\x1b[31m      _               _           \x1b[0m",
+    "\x1b[31m   __| | ___   ___ __| | _____  __\x1b[0m",
+    "\x1b[31m  / _` |/ _ \\ / __/ _` |/ _ \\ \\/ /\x1b[0m",
+    "\x1b[31m | (_| | (_) | (_| (_| |  __/>  < \x1b[0m",
+    "\x1b[31m  \\__,_|\\___/ \\___\\__,_|\\___/_/\\_\\\x1b[0m",
+    "",
+    "\x1b[32mDocdex installed successfully!\x1b[0m",
+    "\x1b[41m\x1b[97m IMPORTANT \x1b[0m \x1b[33mNext step:\x1b[0m run \x1b[32m`docdex setup`\x1b[0m to complete the installation.",
+    "\x1b[33mSetup:\x1b[0m configures Ollama/models + browser.",
+    "\x1b[34mTip:\x1b[0m after setup, start the daemon with \x1b[36m`docdexd serve --repo <path>`\x1b[0m"
+  ];
+  width = Math.max(72, content.reduce((max, line) => Math.max(max, stripAnsi(line).length), 0));
+  const padLine = (text) => {
+    const visible = stripAnsi(text).length;
+    const padding = Math.max(0, width - visible);
+    return `${text}${" ".repeat(padding)}`;
+  };
+
+  const top = `${frame}╭${"─".repeat(width + 2)}╮${reset}`;
+  const bottom = `${frame}╰${"─".repeat(width + 2)}╯${reset}`;
+  const lines = [top];
+  for (const line of content) {
+    lines.push(`${frame}│ ${reset}${padLine(line)}${frame} │${reset}`);
+  }
+  lines.push(bottom);
+  const banner = `\r\x1b[2K${lines.join("\n")}\n`;
+  if (!writeDirect(banner)) {
+    console.log(banner);
+  }
 }
 
 function appendInstallSafetyLines(lines, err) {

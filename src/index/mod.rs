@@ -39,30 +39,8 @@ const MAX_BINARY_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8192;
 const DOC_EXTENSIONS: &[&str] = &[".md", ".markdown", ".mdx", ".txt"];
 const CODE_EXTENSIONS: &[&str] = &[
-    ".rs",
-    ".py",
-    ".js",
-    ".jsx",
-    ".ts",
-    ".tsx",
-    ".go",
-    ".java",
-    ".cs",
-    ".c",
-    ".h",
-    ".cc",
-    ".cpp",
-    ".cxx",
-    ".hh",
-    ".hpp",
-    ".hxx",
-    ".php",
-    ".kt",
-    ".kts",
-    ".swift",
-    ".rb",
-    ".lua",
-    ".dart",
+    ".rs", ".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".java", ".cs", ".c", ".h", ".cc", ".cpp",
+    ".cxx", ".hh", ".hpp", ".hxx", ".php", ".kt", ".kts", ".swift", ".rb", ".lua", ".dart",
 ];
 const DEFAULT_EXTENSIONS: &[&str] = &[
     ".md",

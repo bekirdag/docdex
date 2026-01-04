@@ -46,6 +46,60 @@ pub struct MemoryContextPruneTrace {
     pub dropped: Vec<MemoryContextDropped>,
 }
 
+fn repo_id_from_metadata(metadata: &Value) -> Option<&str> {
+    metadata
+        .get("repoId")
+        .and_then(|value| value.as_str())
+        .or_else(|| metadata.get("repo_id").and_then(|value| value.as_str()))
+}
+
+pub fn inject_repo_metadata(value: Value, repo_id: &str) -> Value {
+    let mut value = match value {
+        Value::Object(map) => Value::Object(map),
+        _ => json!({}),
+    };
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("repoId".to_string(), Value::String(repo_id.to_string()));
+    }
+    value
+}
+
+pub fn filter_memory_candidates_by_repo(
+    candidates: Vec<MemoryCandidate>,
+    repo_id: &str,
+) -> (Vec<MemoryCandidate>, usize) {
+    let mut dropped = 0;
+    let mut filtered = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        if let Some(found) = repo_id_from_metadata(&candidate.metadata) {
+            if found != repo_id {
+                dropped += 1;
+                continue;
+            }
+        }
+        filtered.push(candidate);
+    }
+    (filtered, dropped)
+}
+
+pub fn filter_memory_items_by_repo(
+    items: Vec<MemoryItem>,
+    repo_id: &str,
+) -> (Vec<MemoryItem>, usize) {
+    let mut dropped = 0;
+    let mut filtered = Vec::with_capacity(items.len());
+    for item in items {
+        if let Some(found) = repo_id_from_metadata(&item.metadata) {
+            if found != repo_id {
+                dropped += 1;
+                continue;
+            }
+        }
+        filtered.push(item);
+    }
+    (filtered, dropped)
+}
+
 pub fn prune_and_truncate_memory_context(
     candidates: &[MemoryCandidate],
     max_items: usize,

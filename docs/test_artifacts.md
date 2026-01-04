@@ -54,6 +54,7 @@
 - tests/memory_budgeting_ordering.rs
 - tests/ast_search_endpoint.rs
 - tests/memory_embedding_timeouts.rs
+- tests/memory_multi_repo_isolation.rs
 - tests/check_bind.rs
 - tests/hook_unix_socket.rs
 - tests/profile_state_layout.rs

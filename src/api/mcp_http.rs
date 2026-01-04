@@ -38,11 +38,26 @@ pub async fn mcp_request_handler(
     if method.as_deref() == Some("initialize") {
         normalize_initialize_payload(&mut payload);
     }
+    let require_repo = state
+        .repos
+        .as_ref()
+        .map(|manager| state.multi_repo && manager.repo_count() > 1)
+        .unwrap_or(false);
     let repo_root = match method {
         Some(method) if method == "initialize" => {
-            match resolve_repo_for_mcp(&state, extract_init_root(&payload)) {
+            let root_uri = extract_init_root(&payload);
+            if require_repo && root_uri.is_none() {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    ERR_INVALID_ARGUMENT,
+                    "missing rootUri (required when multiple repos are active)",
+                );
+            }
+            match resolve_repo_for_mcp(&state, root_uri) {
                 Ok(root) => {
-                    router.set_default_repo(root.clone()).await;
+                    if !state.multi_repo {
+                        router.set_default_repo(root.clone()).await;
+                    }
                     Some(root)
                 }
                 Err(err) => {
@@ -58,6 +73,12 @@ pub async fn mcp_request_handler(
                         return json_error(status_for_app_error(err.code), err.code, err.message);
                     }
                 }
+            } else if require_repo {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    ERR_INVALID_ARGUMENT,
+                    "missing project_root/repo_path (required when multiple repos are active)",
+                );
             } else {
                 None
             }
@@ -120,12 +141,25 @@ pub async fn mcp_message_handler(
         );
     };
     let method = extract_method(&payload).map(str::to_string);
+    let require_repo = state
+        .repos
+        .as_ref()
+        .map(|manager| state.multi_repo && manager.repo_count() > 1)
+        .unwrap_or(false);
     if is_notification(&payload, method.as_deref()) {
         return StatusCode::NO_CONTENT.into_response();
     }
     if method.as_deref() == Some("initialize") {
         normalize_initialize_payload(&mut payload);
-        let repo_root = match resolve_repo_for_mcp(&state, extract_init_root(&payload)) {
+        let root_uri = extract_init_root(&payload);
+        if require_repo && root_uri.is_none() {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                "missing rootUri (required when multiple repos are active)",
+            );
+        }
+        let repo_root = match resolve_repo_for_mcp(&state, root_uri) {
             Ok(root) => root,
             Err(err) => {
                 return json_error(status_for_app_error(err.code), err.code, err.message);
@@ -154,6 +188,13 @@ pub async fn mcp_message_handler(
             }
         }
     } else if router.session_repo_root(&session_id).await.is_none() {
+        if require_repo {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                "missing project_root/repo_path (required when multiple repos are active)",
+            );
+        }
         return json_error(
             StatusCode::BAD_REQUEST,
             ERR_INVALID_ARGUMENT,

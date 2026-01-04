@@ -20,6 +20,7 @@ use crate::memory::{
     prune_and_truncate_memory_context, repo_state_root_from_state_dir, MemoryContextItem,
     MemoryContextPruneTrace,
 };
+use crate::memory::filter_memory_candidates_by_repo;
 use crate::metrics;
 use crate::orchestrator::web::{
     build_gate_meta, detect_query_intent, evaluate_gate_status, filter_local_hits_with_llm,
@@ -694,6 +695,16 @@ async fn collect_memory_context(
         .map_err(|err| anyhow!("memory recall aborted: {err}"))?
         .context("memory recall failed")?;
 
+    let (recall, dropped) = filter_memory_candidates_by_repo(recall, &memory.repo_id);
+    if dropped > 0 {
+        metrics::global().inc_memory_repo_mismatch(dropped as u64);
+        warn!(
+            target: "docdexd",
+            repo_id = %memory.repo_id,
+            dropped,
+            "memory context dropped items with mismatched repo id"
+        );
+    }
     let (items, prune_trace) =
         prune_and_truncate_memory_context(&recall, budget.max_items.max(1), budget.token_budget);
 

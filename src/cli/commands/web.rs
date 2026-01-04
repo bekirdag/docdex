@@ -191,7 +191,8 @@ pub async fn run_rag(
         .as_ref()
         .map(|cfg| cfg.llm.max_answer_tokens)
         .unwrap_or(1024);
-    let memory_state = query::resolve_memory_state(config.as_ref(), server.state_dir())?;
+    let memory_state =
+        query::resolve_memory_state(config.as_ref(), server.state_dir(), server.repo_root())?;
     let plan = WaterfallPlan::new(
         web_gate,
         Tier2Config::enabled(),

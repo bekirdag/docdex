@@ -441,10 +441,6 @@ pub async fn serve(
     } else {
         None
     };
-    let memory = memory_embedder.clone().map(|embedder| search::MemoryState {
-        store: MemoryStore::new(indexer.state_dir()),
-        embedder,
-    });
     let profile_state = match global_state_dir.as_ref() {
         Some(state_dir) => match ProfileManager::new(state_dir, profile_embedding_dim) {
             Ok(manager) => {
@@ -487,6 +483,11 @@ pub async fn serve(
         .with_hint("Verify the repo path is accessible and writable.")
     })?;
     let legacy_repo_id = repo_manager::fingerprint::legacy_repo_id_for_root(indexer.repo_root());
+    let memory = memory_embedder.clone().map(|embedder| search::MemoryState {
+        store: MemoryStore::new(indexer.state_dir()),
+        embedder,
+        repo_id: repo_id.clone(),
+    });
     let shared_state_dir =
         repo_manager::split_scoped_state_dir(indexer.state_dir()).map(|(base_dir, _, _)| base_dir);
     let repo_manager = if daemon_mode {

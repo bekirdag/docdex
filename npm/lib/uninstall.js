@@ -33,12 +33,14 @@ function clientConfigPaths() {
         json: [
           path.join(appData, "Claude", "claude_desktop_config.json"),
           path.join(userProfile, ".cursor", "mcp.json"),
-          path.join(userProfile, ".cursor", "settings.json"),
           path.join(userProfile, ".codeium", "windsurf", "mcp_config.json"),
           path.join(appData, "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
           path.join(appData, "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "mcp_settings.json"),
           path.join(userProfile, ".continue", "config.json"),
           path.join(userProfile, ".kiro", "settings", "mcp.json"),
+          path.join(userProfile, ".pearai", "mcp.json"),
+          path.join(appData, "Void", "mcp.json"),
+          path.join(appData, "Code", "User", "mcp.json"),
           path.join(appData, "Zed", "settings.json")
         ],
         toml: [path.join(userProfile, ".codex", "config.toml")],
@@ -49,12 +51,14 @@ function clientConfigPaths() {
         json: [
           path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
           path.join(home, ".cursor", "mcp.json"),
-          path.join(home, ".cursor", "settings.json"),
           path.join(home, ".codeium", "windsurf", "mcp_config.json"),
           path.join(home, "Library", "Application Support", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
           path.join(home, "Library", "Application Support", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "mcp_settings.json"),
           path.join(home, ".continue", "config.json"),
           path.join(home, ".kiro", "settings", "mcp.json"),
+          path.join(home, ".config", "pearai", "mcp.json"),
+          path.join(home, "Library", "Application Support", "Void", "mcp.json"),
+          path.join(home, "Library", "Application Support", "Code", "User", "mcp.json"),
           path.join(home, ".config", "zed", "settings.json")
         ],
         toml: [path.join(home, ".codex", "config.toml")],
@@ -65,12 +69,14 @@ function clientConfigPaths() {
         json: [
           path.join(home, ".config", "Claude", "claude_desktop_config.json"),
           path.join(home, ".cursor", "mcp.json"),
-          path.join(home, ".cursor", "settings.json"),
           path.join(home, ".codeium", "windsurf", "mcp_config.json"),
           path.join(home, ".config", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
           path.join(home, ".config", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "mcp_settings.json"),
           path.join(home, ".continue", "config.json"),
           path.join(home, ".kiro", "settings", "mcp.json"),
+          path.join(home, ".config", "pearai", "mcp.json"),
+          path.join(home, ".config", "Void", "mcp.json"),
+          path.join(home, ".config", "Code", "User", "mcp.json"),
           path.join(home, ".config", "zed", "settings.json")
         ],
         toml: [path.join(home, ".codex", "config.toml")],
@@ -103,11 +109,32 @@ function removeMcpServerJson(pathname, name = "docdex") {
   let changed = false;
   for (const key of keys) {
     const section = root[key];
-    if (!section || typeof section !== "object" || Array.isArray(section)) continue;
-    if (!Object.prototype.hasOwnProperty.call(section, name)) continue;
-    delete section[name];
+    if (!section) continue;
+    if (Array.isArray(section)) {
+      const before = section.length;
+      root[key] = section.filter((entry) => !(entry && entry.name === name));
+      if (root[key].length !== before) {
+        changed = true;
+      }
+      if (root[key].length === 0) delete root[key];
+      continue;
+    }
+    if (typeof section !== "object") continue;
+    if (Object.prototype.hasOwnProperty.call(section, name)) {
+      delete section[name];
+      changed = true;
+      if (Object.keys(section).length === 0) delete root[key];
+    }
+  }
+  if (
+    root.experimental_mcp_servers &&
+    typeof root.experimental_mcp_servers === "object" &&
+    !Array.isArray(root.experimental_mcp_servers) &&
+    Object.prototype.hasOwnProperty.call(root.experimental_mcp_servers, name)
+  ) {
+    delete root.experimental_mcp_servers[name];
     changed = true;
-    if (Object.keys(section).length === 0) delete root[key];
+    if (Object.keys(root.experimental_mcp_servers).length === 0) delete root.experimental_mcp_servers;
   }
   if (!changed) return false;
   writeJson(pathname, root);

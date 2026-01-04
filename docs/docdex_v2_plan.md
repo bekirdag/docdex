@@ -482,7 +482,7 @@ src
 ### Key Changes in this Step
 
 1. **`src/index/symbols.rs`**: This module handles the "Code Intelligence" layer.
-* It integrates **Tree-sitter** parsers (for Rust, TS/JS, Python, Go) to extract function/class definitions and dependency imports.
+* It integrates **Tree-sitter** parsers (for Rust, TypeScript/JavaScript, Python, Go, Java, C#, C/C++, PHP, Kotlin, Swift, Ruby, Lua, Dart) to extract function/class definitions and dependency imports.
 * It manages the **`symbols.db`** (SQLite) schema, storing `files`, `deps` (for the Impact Graph), and symbol locations.
 
 

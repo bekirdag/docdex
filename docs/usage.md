@@ -39,6 +39,7 @@ Installer notes:
 
 Postinstall behavior:
 - Docdex registers a local daemon and writes MCP client config pointing to `http://localhost:<port>/sse` (Codex uses `http://localhost:<port>/v1/mcp`).
+- Auto-configured clients (when config files are present): Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Continue, VS Code, PearAI, Void, Zed, Codex. Restart clients after install.
 - If Ollama is missing, the installer can prompt to install it and the default embedding model.
 - Skip prompts with `DOCDEX_OLLAMA_INSTALL=0` or `DOCDEX_OLLAMA_MODEL_PROMPT=0`.
 - Force with `DOCDEX_OLLAMA_INSTALL=1` or `DOCDEX_OLLAMA_MODEL=<model>`.
@@ -88,6 +89,19 @@ Notes:
 
 ## MCP integration
 
+Supported auto-detected MCP clients (installation adds config when the file exists):
+- Claude Desktop
+- Cursor
+- Windsurf
+- Cline
+- Roo Code
+- Continue
+- VS Code
+- PearAI
+- Void
+- Zed
+- Codex
+
 ### Shared MCP (daemon, HTTP/SSE)
 Start the daemon and point clients at `http://localhost:<port>/sse`.
 
@@ -127,6 +141,7 @@ Reference: `docs/http_api.md`.
 
 ## Code intelligence
 Docdex builds symbol, AST, and impact graph data during indexing so tools can reason about structure, not just text.
+Supported AST/symbols languages: Rust, Python, JavaScript, TypeScript, Go, Java, C#, C/C++, PHP, Kotlin, Swift, Ruby, Lua, Dart.
 
 Examples:
 ```bash

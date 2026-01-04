@@ -52,6 +52,52 @@ test("removeMcpServerJson drops docdex from mcp_servers", () => {
   assert.equal(parsed.mcp_servers.other.url, "http://localhost:7777/sse");
 });
 
+test("removeMcpServerJson drops docdex from array mcpServers", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-uninstall-array-"));
+  const file = path.join(dir, "config.json");
+  fs.writeFileSync(
+    file,
+    JSON.stringify(
+      {
+        mcpServers: [
+          { name: "docdex", url: "http://localhost:3000/sse" },
+          { name: "other", url: "http://localhost:7777/sse" }
+        ]
+      },
+      null,
+      2
+    )
+  );
+  const changed = removeMcpServerJson(file);
+  assert.equal(changed, true);
+  const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(parsed.mcpServers.length, 1);
+  assert.equal(parsed.mcpServers[0].name, "other");
+});
+
+test("removeMcpServerJson drops docdex from experimental_mcp_servers", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-uninstall-zed-"));
+  const file = path.join(dir, "config.json");
+  fs.writeFileSync(
+    file,
+    JSON.stringify(
+      {
+        experimental_mcp_servers: {
+          docdex: { url: "http://localhost:3000/sse" },
+          other: { url: "http://localhost:7777/sse" }
+        }
+      },
+      null,
+      2
+    )
+  );
+  const changed = removeMcpServerJson(file);
+  assert.equal(changed, true);
+  const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.ok(!parsed.experimental_mcp_servers?.docdex);
+  assert.equal(parsed.experimental_mcp_servers.other.url, "http://localhost:7777/sse");
+});
+
 test("removeCodexConfig removes docdex from mcp_servers table", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-uninstall-codex-"));
   const file = path.join(dir, "config.toml");

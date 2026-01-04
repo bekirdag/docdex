@@ -721,7 +721,7 @@ Architectural intent: define per-repo and global storage schemas that support lo
 **Components & Data Contracts**
 
 - `memory.db` (per repo, sqlite-vec): `memories` table plus `memory_vec` (vec0) and `memory_meta` (embedding_dim, schema_version); embeddings from Ollama; queried via vector search; prioritized in context assembly.  
-- `symbols.db` (per repo): Tree-sitter extracted symbols for Rust/TS/JS/Python/Go with columns `{name, kind, file_path, line_start, line_end, signature}`; enables symbol search and impact analysis inputs.  
+- `symbols.db` (per repo): Tree-sitter extracted symbols for Rust/TypeScript/JavaScript/Python/Go/Java/C#/C/C++/PHP/Kotlin/Swift/Ruby/Lua/Dart with columns `{name, kind, file_path, line_start, line_end, signature}`; enables symbol search and impact analysis inputs.  
 - `dag.db` (per repo): nodes table with `type ENUM(UserRequest|Thought|ToolCall|Observation|Decision)`, `session_id`, `payload JSON`, `created_at`; edges implied by `session_id` \+ ordering (PDR: DAG logging and view).  
 - `index/` (per repo, Tantivy): source index for repo code; `libs_index/` for ingested library docs; both scoped by repo fingerprint to prevent cross-contamination.  
 - `cache/web` and `cache/libs` (global read-mostly): raw HTML/cleaned JSON and cached library docs; ingestion into per-repo indexes is explicit.  
@@ -1011,7 +1011,7 @@ Docdex relies solely on locally managed, zero-cost components for LLM/embeddings
 - LLM provider: configured via `[llm]` in `config.toml` (default `ollama`) with hardware-aware model guidance and token budgeting handled upstream.  
 - DuckDuckGo HTML discovery: search-only HTML endpoint used for web queries; enforces ≥2s between queries.  
 - Headless Chrome: fetch and readability extraction for discovered URLs; guarded lifecycle to avoid zombie processes; respects per-domain ≥1s fetch delay and 15s page timeout defaults.  
-- Tree-sitter: language parsers (Rust, TS/JS, Python, Go) for symbol extraction during `index`; outputs stored in per-repo `symbols.db`.
+- Tree-sitter: language parsers (Rust, TypeScript/JavaScript, Python, Go, Java, C#, C/C++, PHP, Kotlin, Swift, Ruby, Lua, Dart) for symbol extraction during `index`; outputs stored in per-repo `symbols.db`.
 - Impact graph resolution (best-effort): import edges resolve static patterns including literal import strings, string concatenation with constant bindings, static path joins (`path.join`, `path.resolve`, `os.path.join`), template strings or f-strings with static bindings (multiple candidates use a deterministic tie-break), Python `importlib.import_module`, `importlib.util.spec_from_file_location`, `importlib.machinery.SourceFileLoader`, and Rust `mod`/`use`/`include!`. Unresolved dynamic imports are skipped and recorded in impact diagnostics.
 - Import hints: `docdex.import_map.json` supports mapping overrides and pattern expansions (`targets` + `expand`); runtime traces can be supplied via repo-root `docdex.import_traces.jsonl` or `<repo-state-root>/import_traces.jsonl` (toggle with `[code_intelligence].import_traces_enabled` or `DOCDEX_ENABLE_IMPORT_TRACES`). Dynamic import scan limits can be tuned via `[code_intelligence].dynamic_import_scan_limit` or `DOCDEX_DYNAMIC_IMPORT_SCAN_LIMIT`.
 - Parser drift policy: when stored Tree-sitter parser versions differ from the running build, Docdex invalidates symbols/AST, sets `symbols_reindex_required`, and `GET /v1/symbols`/`GET /v1/ast` return `409 stale_index` until reindex. Drift metadata is exposed via `GET /v1/symbols/status` and `docdexd symbols-status`.
@@ -1368,7 +1368,7 @@ Docdex advances through gated phases; each gate requires the preceding functiona
 - Phase 3/3.5 (Unified API \+ Memory): `/v1/chat/completions` defaults to the daemon repo (body/header/query optional), budgets tokens, streams via Ollama; per-repo `memory_store/recall` on `memory.db` with sqlite-vec embeddings; memory prioritized in context merge.  
 - Phase 4 (Reasoning DAG): Per-repo `dag.db` logging UserRequest/Thought/ToolCall/Observation/Decision; `dag view --repo <session_id>` renders text/DOT.  
 - Phase 5 (MCP): Per-repo MCP server exposes repo-aware tools (`docdex_search`, `docdex_web_research`, `docdex_memory_save/recall`); unknown/unindexed repo yields clear error.  
-- Phase 6 (Code Intelligence): Tree-sitter symbols for Rust/TS-JS/Python/Go stored in `symbols.db`; import graph impact API
+- Phase 6 (Code Intelligence): Tree-sitter symbols for Rust/TypeScript/JavaScript/Python/Go/Java/C#/C/C++/PHP/Kotlin/Swift/Ruby/Lua/Dart stored in `symbols.db`; import graph impact API
   `GET /v1/graph/impact?file=` returns schema-tagged inbound/outbound deps with explicit edge direction semantics;
   `run-tests --repo --target` returns structured JSON; diff-aware RAG uses git diff \+ impact graph \+ memory.  
 - Phase 7 (UI Surfaces): TUI repo switcher via external `docdex-tui` binary; web dashboard + VSCode extension live in separate packages but target `/v1/chat/completions` and MCP, always passing `repo_path`.

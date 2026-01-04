@@ -157,12 +157,50 @@ function upsertMcpServerJson(pathname, url) {
   const { value } = readJson(pathname);
   if (typeof value !== "object" || value == null || Array.isArray(value)) return false;
   const root = value;
-  if (!root.mcpServers || typeof root.mcpServers !== "object" || Array.isArray(root.mcpServers)) {
+  const pickSection = () => {
+    if (root.mcpServers && typeof root.mcpServers === "object" && !Array.isArray(root.mcpServers)) {
+      return { key: "mcpServers", section: root.mcpServers };
+    }
+    if (root.mcp_servers && typeof root.mcp_servers === "object" && !Array.isArray(root.mcp_servers)) {
+      return { key: "mcp_servers", section: root.mcp_servers };
+    }
+    return null;
+  };
+  if (Array.isArray(root.mcpServers)) {
+    const idx = root.mcpServers.findIndex((entry) => entry && entry.name === "docdex");
+    if (idx >= 0) {
+      if (root.mcpServers[idx].url === url) return false;
+      root.mcpServers[idx] = { ...root.mcpServers[idx], url };
+      writeJson(pathname, root);
+      return true;
+    }
+    root.mcpServers.push({ name: "docdex", url });
+    writeJson(pathname, root);
+    return true;
+  }
+
+  const picked = pickSection();
+  if (!picked) {
     root.mcpServers = {};
   }
-  const current = root.mcpServers.docdex;
+  const section = picked ? picked.section : root.mcpServers;
+  const current = section.docdex;
   if (current && current.url === url) return false;
-  root.mcpServers.docdex = { url };
+  section.docdex = { url };
+  writeJson(pathname, root);
+  return true;
+}
+
+function upsertZedConfig(pathname, url) {
+  const { value } = readJson(pathname);
+  if (typeof value !== "object" || value == null || Array.isArray(value)) return false;
+  const root = value;
+  if (!root.experimental_mcp_servers || typeof root.experimental_mcp_servers !== "object" || Array.isArray(root.experimental_mcp_servers)) {
+    root.experimental_mcp_servers = {};
+  }
+  const current = root.experimental_mcp_servers.docdex;
+  if (current && current.url === url) return false;
+  root.experimental_mcp_servers.docdex = { url };
   writeJson(pathname, root);
   return true;
 }
@@ -340,18 +378,45 @@ function clientConfigPaths() {
       return {
         claude: path.join(appData, "Claude", "claude_desktop_config.json"),
         cursor: path.join(userProfile, ".cursor", "mcp.json"),
+        windsurf: path.join(userProfile, ".codeium", "windsurf", "mcp_config.json"),
+        cline: path.join(appData, "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
+        roo: path.join(appData, "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "mcp_settings.json"),
+        continue: path.join(userProfile, ".continue", "config.json"),
+        pearai: path.join(userProfile, ".kiro", "settings", "mcp.json"),
+        pearai_alt: path.join(userProfile, ".pearai", "mcp.json"),
+        void: path.join(appData, "Void", "mcp.json"),
+        vscode: path.join(appData, "Code", "User", "mcp.json"),
+        zed: path.join(appData, "Zed", "settings.json"),
         codex: path.join(userProfile, ".codex", "config.toml")
       };
     case "darwin":
       return {
         claude: path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
         cursor: path.join(home, ".cursor", "mcp.json"),
+        windsurf: path.join(home, ".codeium", "windsurf", "mcp_config.json"),
+        cline: path.join(home, "Library", "Application Support", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
+        roo: path.join(home, "Library", "Application Support", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "mcp_settings.json"),
+        continue: path.join(home, ".continue", "config.json"),
+        pearai: path.join(home, ".kiro", "settings", "mcp.json"),
+        pearai_alt: path.join(home, ".config", "pearai", "mcp.json"),
+        void: path.join(home, "Library", "Application Support", "Void", "mcp.json"),
+        vscode: path.join(home, "Library", "Application Support", "Code", "User", "mcp.json"),
+        zed: path.join(home, ".config", "zed", "settings.json"),
         codex: path.join(home, ".codex", "config.toml")
       };
     default:
       return {
         claude: path.join(home, ".config", "Claude", "claude_desktop_config.json"),
         cursor: path.join(home, ".cursor", "mcp.json"),
+        windsurf: path.join(home, ".codeium", "windsurf", "mcp_config.json"),
+        cline: path.join(home, ".config", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
+        roo: path.join(home, ".config", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "mcp_settings.json"),
+        continue: path.join(home, ".continue", "config.json"),
+        pearai: path.join(home, ".kiro", "settings", "mcp.json"),
+        pearai_alt: path.join(home, ".config", "pearai", "mcp.json"),
+        void: path.join(home, ".config", "Void", "mcp.json"),
+        vscode: path.join(home, ".config", "Code", "User", "mcp.json"),
+        zed: path.join(home, ".config", "zed", "settings.json"),
         codex: path.join(home, ".codex", "config.toml")
       };
   }
@@ -1207,8 +1272,24 @@ async function runPostInstallSetup({ binaryPath, logger } = {}) {
   const url = configUrlForPort(port);
   const codexUrl = configStreamableUrlForPort(port);
   const paths = clientConfigPaths();
-  upsertMcpServerJson(paths.claude, url);
-  upsertMcpServerJson(paths.cursor, url);
+  const jsonPaths = [
+    paths.claude,
+    paths.cursor,
+    paths.windsurf,
+    paths.cline,
+    paths.roo,
+    paths.continue,
+    paths.pearai,
+    paths.pearai_alt,
+    paths.void,
+    paths.vscode
+  ].filter(Boolean);
+  for (const jsonPath of jsonPaths) {
+    upsertMcpServerJson(jsonPath, url);
+  }
+  if (paths.zed) {
+    upsertZedConfig(paths.zed, url);
+  }
   upsertCodexConfig(paths.codex, codexUrl);
 
   const daemonRoot = ensureDaemonRoot();
@@ -1238,6 +1319,7 @@ module.exports = {
   upsertServerConfig,
   parseServerBind,
   upsertMcpServerJson,
+  upsertZedConfig,
   upsertCodexConfig,
   pickAvailablePort,
   configUrlForPort,

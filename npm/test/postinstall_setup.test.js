@@ -8,6 +8,7 @@ const {
   upsertServerConfig,
   parseServerBind,
   upsertMcpServerJson,
+  upsertZedConfig,
   upsertCodexConfig,
   configUrlForPort,
   configStreamableUrlForPort,
@@ -44,6 +45,58 @@ test("upsertMcpServerJson sets docdex url", () => {
   assert.equal(changed, true);
   const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
   assert.equal(parsed.mcpServers.docdex.url, url);
+});
+
+test("upsertMcpServerJson updates array entries", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-json-array-"));
+  const file = path.join(dir, "config.json");
+  fs.writeFileSync(
+    file,
+    JSON.stringify(
+      {
+        mcpServers: [{ name: "docdex", url: "http://localhost:7777/v1/mcp" }]
+      },
+      null,
+      2
+    )
+  );
+  const url = configUrlForPort(3000);
+  const changed = upsertMcpServerJson(file, url);
+  assert.equal(changed, true);
+  const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(parsed.mcpServers[0].url, url);
+});
+
+test("upsertMcpServerJson respects mcp_servers map", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-json-snake-"));
+  const file = path.join(dir, "config.json");
+  fs.writeFileSync(
+    file,
+    JSON.stringify(
+      {
+        mcp_servers: {
+          docdex: { url: "http://localhost:7777/v1/mcp" }
+        }
+      },
+      null,
+      2
+    )
+  );
+  const url = configUrlForPort(3000);
+  const changed = upsertMcpServerJson(file, url);
+  assert.equal(changed, true);
+  const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(parsed.mcp_servers.docdex.url, url);
+});
+
+test("upsertZedConfig sets experimental_mcp_servers", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-zed-"));
+  const file = path.join(dir, "settings.json");
+  const url = configUrlForPort(3000);
+  const changed = upsertZedConfig(file, url);
+  assert.equal(changed, true);
+  const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(parsed.experimental_mcp_servers.docdex.url, url);
 });
 
 test("upsertCodexConfig appends docdex server", () => {

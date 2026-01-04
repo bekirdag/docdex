@@ -38,7 +38,32 @@ const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
 const MAX_BINARY_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8192;
 const DOC_EXTENSIONS: &[&str] = &[".md", ".markdown", ".mdx", ".txt"];
-const CODE_EXTENSIONS: &[&str] = &[".rs", ".py", ".js", ".jsx", ".ts", ".tsx", ".go"];
+const CODE_EXTENSIONS: &[&str] = &[
+    ".rs",
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".go",
+    ".java",
+    ".cs",
+    ".c",
+    ".h",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".php",
+    ".kt",
+    ".kts",
+    ".swift",
+    ".rb",
+    ".lua",
+    ".dart",
+];
 const DEFAULT_EXTENSIONS: &[&str] = &[
     ".md",
     ".markdown",
@@ -51,6 +76,23 @@ const DEFAULT_EXTENSIONS: &[&str] = &[
     ".ts",
     ".tsx",
     ".go",
+    ".java",
+    ".cs",
+    ".c",
+    ".h",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".php",
+    ".kt",
+    ".kts",
+    ".swift",
+    ".rb",
+    ".lua",
+    ".dart",
 ];
 const DEFAULT_EXCLUDED_DIR_NAMES: &[&str] = &[
     // Core VCS / tooling
@@ -110,8 +152,13 @@ const DEFAULT_EXCLUDED_DIR_NAMES: &[&str] = &[
     // .NET / C# / Visual Studio
     "obj",
     ".vs",
+    ".nuget",
+    "testresults",
     // Swift / Xcode / Apple
     "deriveddata",
+    ".build",
+    ".swiftpm",
+    "carthage",
     // PHP / Composer
     "vendor",
     // Ruby / Bundler
@@ -121,6 +168,8 @@ const DEFAULT_EXCLUDED_DIR_NAMES: &[&str] = &[
     ".flutter-plugins",
     ".flutter-plugins-dependencies",
     ".pub-cache",
+    // Kotlin
+    ".kotlin",
     // Android
     ".android",
     // iOS / CocoaPods
@@ -133,6 +182,8 @@ const DEFAULT_EXCLUDED_DIR_NAMES: &[&str] = &[
     "cmakefiles",
     ".conan",
     "vcpkg_installed",
+    // Lua
+    ".luarocks",
     // Haskell
     ".stack-work",
     "dist-newstyle",

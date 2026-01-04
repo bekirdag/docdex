@@ -44,6 +44,20 @@ Install:
 ```bash
 npm i -g docdex
 ```
+Auto-configured MCP clients (when config files exist): Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Continue, VS Code, PearAI, Void, Zed, Codex. Restart clients after install.
+
+Supported auto-detected MCP clients (installation adds config when the file exists):
+- Claude Desktop
+- Cursor
+- Windsurf
+- Cline
+- Roo Code
+- Continue
+- VS Code
+- PearAI
+- Void
+- Zed
+- Codex
 
 Index a repo:
 ```bash
@@ -92,6 +106,7 @@ docdex = { url = "http://localhost:3210/v1/mcp" }
 
 ## Code intelligence
 Docdex exposes symbols, AST search, and impact graphs over HTTP. These endpoints help agents reason about structure, not just text.
+Supported AST/symbols languages: Rust, Python, JavaScript, TypeScript, Go, Java, C#, C/C++, PHP, Kotlin, Swift, Ruby, Lua, Dart.
 
 Symbols:
 ```bash

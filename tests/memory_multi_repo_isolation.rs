@@ -155,7 +155,10 @@ fn memory_isolation_multi_repo_requires_repo_id() -> Result<(), Box<dyn Error>> 
     let store_url = format!("http://127.0.0.1:{port}/v1/memory/store");
     let recall_url = format!("http://127.0.0.1:{port}/v1/memory/recall");
 
-    let missing_store = client.post(&store_url).json(&json!({ "text": "oops" })).send()?;
+    let missing_store = client
+        .post(&store_url)
+        .json(&json!({ "text": "oops" }))
+        .send()?;
     assert_eq!(missing_store.status(), reqwest::StatusCode::BAD_REQUEST);
 
     let store_one = client

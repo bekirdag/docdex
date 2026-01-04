@@ -533,7 +533,12 @@ pub(crate) fn resolve_repo_context(
     } else {
         false
     };
-    let selected = parse_repo_id(headers, query_repo_id, body_repo_id, require || explicit_required)?;
+    let selected = parse_repo_id(
+        headers,
+        query_repo_id,
+        body_repo_id,
+        require || explicit_required,
+    )?;
     let default_repo = RepoContext {
         repo_id: state.repo_id.clone(),
         legacy_repo_id: state.legacy_repo_id.clone(),
@@ -846,9 +851,7 @@ async fn memory_recall_handler(
         Ok(Ok(items)) => {
             let (items, dropped) = filter_memory_items_by_repo(items, &repo.repo_id);
             if dropped > 0 {
-                state
-                    .metrics
-                    .inc_memory_repo_mismatch(dropped as u64);
+                state.metrics.inc_memory_repo_mismatch(dropped as u64);
                 warn!(
                     target: "docdexd",
                     repo_id = %repo.repo_id,

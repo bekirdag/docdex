@@ -240,7 +240,7 @@ Notes:
 - Set a default agent with `[server].default_agent_id` or `docdexd serve --agent-id` (`DOCDEX_AGENT_ID`).
 
 ## Smithery local usage
-Smithery runs Docdex as a local MCP tool using stdio. The provided `smithery.yaml` uses `commandFunction` to map `repo_path` into:
+Smithery runs Docdex as a local MCP tool using stdio. The provided `smithery.yaml` uses a templated `args` list to map `repo_path` into:
 ```
 docdexd mcp --repo <repo_path> --log warn --max-results 8
 ```

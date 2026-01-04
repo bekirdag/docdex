@@ -160,9 +160,13 @@ function detectLibcFromRuntime(options) {
     return override;
   }
 
-  const report =
-    options?.report ??
-    (typeof process.report?.getReport === "function" ? process.report.getReport() : null);
+  const hasReportOverride =
+    options != null && Object.prototype.hasOwnProperty.call(options, "report");
+  const report = hasReportOverride
+    ? options.report
+    : typeof process.report?.getReport === "function"
+    ? process.report.getReport()
+    : null;
 
   const glibcVersion = report?.header?.glibcVersionRuntime;
   if (typeof glibcVersion === "string" && glibcVersion.trim()) return "gnu";

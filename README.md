@@ -3,6 +3,7 @@
 ![GitHub License](https://img.shields.io/github/license/bekirdag/docdex)
 ![GitHub Release](https://img.shields.io/github/v/release/bekirdag/docdex)
 ![Made with Rust](https://img.shields.io/badge/Made%20with-Rust-orange?logo=rust)
+[![MCP Badge](https://lobehub.com/badge/mcp/bekirdag-docdex)](https://lobehub.com/mcp/bekirdag-docdex)
 
 # Docdex
 

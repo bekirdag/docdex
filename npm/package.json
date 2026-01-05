@@ -2,7 +2,7 @@
   "name": "docdex",
   "version": "0.2.14",
   "mcpName": "io.github.bekirdag/docdex",
-  "description": "Docdex CLI as an npm-installable binary wrapper.",
+  "description": "Local-first documentation and code indexer with HTTP/MCP search, AST, and agent memory.",
   "bin": {
     "docdex": "bin/docdex.js",
     "docdexd": "bin/docdex.js"
@@ -40,12 +40,20 @@
   "bugs": {
     "url": "https://github.com/bekirdag/docdex/issues"
   },
-  "homepage": "https://github.com/bekirdag/docdex#readme",
+  "homepage": "https://docdex.org",
   "license": "MIT",
   "author": "bekir dağ",
   "keywords": [
     "docdex",
+    "documentation",
     "search",
+    "index",
+    "code-search",
+    "mcp",
+    "ai",
+    "agent",
+    "rag",
+    "knowledge-base",
     "cli"
   ],
   "publishConfig": {

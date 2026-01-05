@@ -63,14 +63,6 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         unshare_net,
         allow_ip,
     } = args;
-    let web_env = std::env::var("DOCDEX_WEB_ENABLED").ok();
-    if web_env
-        .as_deref()
-        .map(|value| value.trim().is_empty())
-        .unwrap_or(true)
-    {
-        std::env::set_var("DOCDEX_WEB_ENABLED", "1");
-    }
     let config = config::AppConfig::load_default().map_err(|err| {
         StartupError::new(
             "startup_config_invalid",
@@ -189,6 +181,15 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
     };
     let (enable_mcp, mcp_source) =
         resolve_mcp_enabled(enable_mcp, disable_mcp, config.server.enable_mcp);
+    let web_env = std::env::var("DOCDEX_WEB_ENABLED").ok();
+    if enable_mcp
+        && web_env
+            .as_deref()
+            .map(|value| value.trim().is_empty())
+            .unwrap_or(true)
+    {
+        std::env::set_var("DOCDEX_WEB_ENABLED", "1");
+    }
     let mcp_max_results = resolve_mcp_max_results();
     let mcp_rate_limit_per_min = resolve_mcp_rate_limit("DOCDEX_MCP_RATE_LIMIT_PER_MIN");
     let mcp_rate_limit_burst = resolve_mcp_rate_limit("DOCDEX_MCP_RATE_LIMIT_BURST");

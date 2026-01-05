@@ -8,6 +8,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { pipeline } = require("node:stream/promises");
 const crypto = require("node:crypto");
+const { spawn } = require("node:child_process");
 
 const pkg = require("../package.json");
 const {
@@ -294,9 +295,46 @@ function download(url, dest, redirects = 0) {
 
 async function extractTarball(archivePath, targetDir) {
   // Lazy import so unit tests can load this module without installing optional npm deps.
-  const tar = require("tar");
+  let tar;
+  try {
+    tar = require("tar");
+  } catch (err) {
+    if (err && err.code === "MODULE_NOT_FOUND") {
+      await extractTarballWithSystemTar(archivePath, targetDir);
+      return;
+    }
+    throw err;
+  }
   await fs.promises.mkdir(targetDir, { recursive: true });
   await tar.x({ file: archivePath, cwd: targetDir, gzip: true });
+}
+
+async function extractTarballWithSystemTar(archivePath, targetDir) {
+  await fs.promises.mkdir(targetDir, { recursive: true });
+  const args = ["-xzf", archivePath, "-C", targetDir];
+  await new Promise((resolve, reject) => {
+    const proc = spawn("tar", args, { stdio: "ignore" });
+    proc.on("error", (err) => {
+      reject(
+        new ArchiveInvalidError(
+          `tar module missing and system tar failed: ${err.message}`,
+          { archivePath }
+        )
+      );
+    });
+    proc.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(
+          new ArchiveInvalidError(
+            `system tar exited with code ${code}`,
+            { archivePath }
+          )
+        );
+      }
+    });
+  });
 }
 
 async function sha256File(filePath) {

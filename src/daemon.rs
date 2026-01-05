@@ -307,7 +307,7 @@ pub async fn serve(
     let repo_display = repo.display().to_string();
     let provider = llm_provider.trim();
     let agent_override = env_agent_override();
-    if daemon_mode {
+    if daemon_mode && enable_mcp {
         let enable_web = std::env::var("DOCDEX_WEB_ENABLED")
             .ok()
             .map(|value| value.trim().is_empty())

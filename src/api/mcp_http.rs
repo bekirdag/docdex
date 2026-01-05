@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tracing::warn;
 
 const SESSION_HEADER: &str = "x-docdex-mcp-session";
 
@@ -47,10 +48,9 @@ pub async fn mcp_request_handler(
         Some(method) if method == "initialize" => {
             let root_uri = extract_init_root(&payload);
             if require_repo && root_uri.is_none() {
-                return json_error(
-                    StatusCode::BAD_REQUEST,
-                    ERR_INVALID_ARGUMENT,
-                    "missing rootUri (required when multiple repos are active)",
+                warn!(
+                    target: "docdexd",
+                    "mcp initialize missing rootUri while multiple repos are active; default repo will be used"
                 );
             }
             match resolve_repo_for_mcp(&state, root_uri) {
@@ -153,10 +153,9 @@ pub async fn mcp_message_handler(
         normalize_initialize_payload(&mut payload);
         let root_uri = extract_init_root(&payload);
         if require_repo && root_uri.is_none() {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                ERR_INVALID_ARGUMENT,
-                "missing rootUri (required when multiple repos are active)",
+            warn!(
+                target: "docdexd",
+                "mcp initialize missing rootUri while multiple repos are active; default repo will be used"
             );
         }
         let repo_root = match resolve_repo_for_mcp(&state, root_uri) {
@@ -282,8 +281,11 @@ fn extract_root_from_params(params: &serde_json::Map<String, Value>) -> Option<S
     for key in [
         "rootUri",
         "workspace_root",
+        "workspaceRoot",
         "project_root",
+        "projectRoot",
         "repo_path",
+        "repoPath",
         "rootPath",
         "root_path",
     ] {
@@ -343,6 +345,20 @@ mod tests {
         });
         let root = extract_init_root(&payload);
         assert_eq!(root.as_deref(), Some(root_uri.as_str()));
+    }
+
+    #[test]
+    fn extract_init_root_accepts_workspace_root() {
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "workspaceRoot": "/workspace/project"
+            }
+        });
+        let root = extract_init_root(&payload);
+        assert_eq!(root.as_deref(), Some("/workspace/project"));
     }
 
     #[test]

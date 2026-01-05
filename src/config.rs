@@ -240,6 +240,10 @@ pub struct WebConfigSection {
     pub discovery_provider: String,
     #[serde(default = "default_web_user_agent")]
     pub user_agent: String,
+    #[serde(default)]
+    pub ddg_base_url: Option<String>,
+    #[serde(default)]
+    pub ddg_proxy_base_url: Option<String>,
     #[serde(default = "default_web_min_spacing_ms")]
     pub min_spacing_ms: u64,
     #[serde(default = "default_web_cache_ttl_secs")]
@@ -259,6 +263,8 @@ impl Default for WebConfigSection {
         Self {
             discovery_provider: default_discovery_provider(),
             user_agent: default_web_user_agent(),
+            ddg_base_url: None,
+            ddg_proxy_base_url: None,
             min_spacing_ms: default_web_min_spacing_ms(),
             cache_ttl_secs: default_web_cache_ttl_secs(),
             blocklist: Vec::new(),
@@ -277,6 +283,8 @@ pub struct WebScraperConfig {
     pub headless: bool,
     #[serde(default)]
     pub chrome_binary_path: Option<PathBuf>,
+    #[serde(default)]
+    pub user_data_dir: Option<PathBuf>,
     #[serde(default = "default_web_auto_install")]
     pub auto_install: bool,
     #[serde(default)]
@@ -293,6 +301,7 @@ impl Default for WebScraperConfig {
             engine: default_web_engine(),
             headless: default_web_headless(),
             chrome_binary_path: None,
+            user_data_dir: None,
             auto_install: default_web_auto_install(),
             browser_kind: None,
             request_delay_ms: default_request_delay_ms(),
@@ -569,8 +578,8 @@ fn default_discovery_provider() -> String {
     DEFAULT_DISCOVERY_PROVIDER.to_string()
 }
 
-fn default_web_user_agent() -> String {
-    format!("docdexd/{}", env!("CARGO_PKG_VERSION"))
+pub(crate) fn default_web_user_agent() -> String {
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".to_string()
 }
 
 fn default_web_min_spacing_ms() -> u64 {

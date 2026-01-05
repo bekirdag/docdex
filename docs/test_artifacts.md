@@ -118,6 +118,7 @@
 - src/project_map/tests.rs
 - src/orchestrator/budget_tests.rs
 - src/orchestrator/plan_tests.rs
+- src/orchestrator/web_config.rs
 - src/llm/tests.rs
 - src/setup/state.rs
 - src/setup/ui.rs
@@ -133,6 +134,8 @@
 - src/daemon/lock.rs
 - src/daemon/multi_repo.rs
 - src/index/mod.rs
+- src/web/chrome.rs
+- src/web/ddg.rs
 
 ## Benchmarks
 - benches/indexing_bench.rs

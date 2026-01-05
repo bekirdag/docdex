@@ -42,6 +42,7 @@ pub struct StatePathsDebug {
     pub cache_libs_dir: String,
     pub profiles_dir: String,
     pub profiles_sync_dir: String,
+    pub browser_profiles_dir: String,
     pub locks_dir: String,
     pub logs_dir: String,
 }
@@ -92,6 +93,10 @@ impl StateLayout {
         self.profiles_dir().join("sync")
     }
 
+    pub fn browser_profiles_dir(&self) -> PathBuf {
+        self.base_dir.join("browser_profiles")
+    }
+
     pub fn ensure_global_dirs(&self) -> Result<()> {
         ensure_state_dir_secure(&self.base_dir)?;
         ensure_state_dir_secure(&self.repos_dir())?;
@@ -100,6 +105,7 @@ impl StateLayout {
         ensure_state_dir_secure(&self.cache_libs_dir())?;
         ensure_state_dir_secure(&self.profiles_dir())?;
         ensure_state_dir_secure(&self.profiles_sync_dir())?;
+        ensure_state_dir_secure(&self.browser_profiles_dir())?;
         ensure_state_dir_secure(&self.locks_dir())?;
         ensure_state_dir_secure(&self.logs_dir())?;
         Ok(())
@@ -164,6 +170,7 @@ impl StatePaths {
             cache_libs_dir: self.layout.cache_libs_dir().display().to_string(),
             profiles_dir: self.layout.profiles_dir().display().to_string(),
             profiles_sync_dir: self.layout.profiles_sync_dir().display().to_string(),
+            browser_profiles_dir: self.layout.browser_profiles_dir().display().to_string(),
             locks_dir: self.layout.locks_dir().display().to_string(),
             logs_dir: self.layout.logs_dir().display().to_string(),
         }
@@ -471,6 +478,7 @@ mod tests {
         assert!(paths.layout().base_dir().exists());
         assert!(paths.layout().cache_web_dir().exists());
         assert!(paths.layout().cache_libs_dir().exists());
+        assert!(paths.layout().browser_profiles_dir().exists());
         assert!(paths.layout().locks_dir().exists());
         assert!(paths.layout().logs_dir().exists());
         assert!(paths.repo_root().exists());

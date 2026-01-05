@@ -2,10 +2,13 @@ use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use regex::Regex;
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, REFERER};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::time::Duration;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use url::{Host, Url};
 
 use crate::error::{
@@ -19,6 +22,13 @@ use crate::web::WebConfig;
 
 const PROVIDER: &str = "duckduckgo_html";
 const MAX_DDG_RESULTS: usize = 50;
+const DDG_PREFETCH_PAUSE_MIN_MS: u64 = 1_000;
+const DDG_PREFETCH_PAUSE_MAX_MS: u64 = 2_000;
+const DDG_TYPING_DELAY_MIN_MS: u64 = 50;
+const DDG_TYPING_DELAY_MAX_MS: u64 = 200;
+const DDG_TYPING_PAUSE_MS: u64 = 350;
+const DDG_TYPING_MAX_TOTAL_MS: u64 = 2_000;
+const DDG_LITE_FALLBACK_URL: &str = "https://lite.duckduckgo.com/lite/";
 
 static RESULT_LINK_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
@@ -26,6 +36,13 @@ static RESULT_LINK_RE: Lazy<Regex> = Lazy::new(|| {
     )
     .expect("valid ddg regex")
 });
+static MARKDOWN_LINK_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"\((https?://[^\s)]+)\)"#).expect("valid markdown link regex")
+});
+static DDG_CLIENTS: Lazy<Mutex<HashMap<String, reqwest::Client>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+static DDG_PREFETCHED_HOSTS: Lazy<Mutex<HashSet<String>>> =
+    Lazy::new(|| Mutex::new(HashSet::new()));
 
 pub struct DdgDiscovery {
     config: WebConfig,
@@ -47,17 +64,17 @@ pub struct WebDiscoveryResponse {
     pub results: Vec<WebDiscoveryResult>,
 }
 
+struct DiscoveryResponses {
+    response_for_cache: WebDiscoveryResponse,
+    response: WebDiscoveryResponse,
+}
+
 impl DdgDiscovery {
     pub fn new(config: WebConfig) -> Result<Self> {
-        let mut builder = reqwest::Client::builder()
-            .user_agent(config.user_agent.clone())
-            .timeout(config.request_timeout);
-        if is_loopback_url(&config.ddg_base_url) {
-            builder = builder.no_proxy();
-        }
-        let client = builder.build().context("build ddg client")?;
+        let client = resolve_ddg_client(&config)?;
         let pacer_config = DdgDiscoveryPolicyConfig {
             min_spacing: config.policy.min_spacing,
+            jitter_ms: config.policy.jitter_ms,
             base_backoff: config.policy.base_backoff,
             max_backoff: config.policy.max_backoff,
             max_consecutive_failures: config.policy.max_consecutive_failures.max(1) as u32,
@@ -96,6 +113,8 @@ impl DdgDiscovery {
         let attempts = self.config.policy.max_attempts.max(1);
         let url = build_ddg_url(&self.config.ddg_base_url, query)?;
         let cache_key = ddg_cache_key(&self.config.ddg_base_url, query);
+        let mut proxy_attempted = false;
+        let proxy_base_url = self.config.ddg_proxy_base_url.as_ref();
 
         if let Some(layout) = self.cache_layout.as_ref() {
             if let Ok(Some(payload)) =
@@ -116,11 +135,27 @@ impl DdgDiscovery {
             }
         }
         let mut last_error: Option<anyhow::Error> = None;
+        let mut fallback_attempted = false;
+        let fallback_base_url = ddg_lite_fallback_base(&self.config.ddg_base_url);
 
         for attempt in 0..attempts {
             loop {
                 let backoff = { self.pacer.lock().check_or_backoff() };
                 if let Err(err) = backoff {
+                    if let Some(response) = self
+                        .maybe_proxy_discovery(
+                            proxy_base_url,
+                            &mut proxy_attempted,
+                            query,
+                            limit,
+                            cache_limit,
+                            &cache_key,
+                            &mut last_error,
+                        )
+                        .await
+                    {
+                        return Ok(response);
+                    }
                     if err.code == ERR_BACKOFF_REQUIRED {
                         if let Some(delay) = retry_after_from_error(&err) {
                             tokio::time::sleep(delay).await;
@@ -132,7 +167,16 @@ impl DdgDiscovery {
                 break;
             }
 
-            match self.client.get(url.clone()).send().await {
+            self.prefetch_homepage(&self.config.ddg_base_url).await;
+            self.humanized_delay(query).await;
+            let referer = ddg_referer(&self.config.ddg_base_url);
+            match self
+                .client
+                .get(url.clone())
+                .header(REFERER, referer)
+                .send()
+                .await
+            {
                 Ok(resp) => {
                     let status = resp.status();
                     if status.is_success() {
@@ -142,29 +186,67 @@ impl DdgDiscovery {
                                 format!("duckduckgo discovery failed: {err}"),
                             )
                         })?;
-                        let links = extract_links(&body);
-                        let deduped = dedupe_urls(links);
-                        let filtered = filter_blocked_urls(deduped, &self.blocklist);
-                        let response_for_cache =
-                            build_response_for_limit(query, filtered, cache_limit);
-                        let response = build_response_for_limit(
-                            query,
-                            response_for_cache
-                                .results
-                                .iter()
-                                .map(|result| result.url.clone())
-                                .collect(),
-                            limit,
-                        );
-                        self.pacer.lock().record_success();
-                        if let Some(layout) = self.cache_layout.as_ref() {
-                            if self.config.cache_ttl.as_secs() > 0 {
-                                if let Ok(payload) = serde_json::to_vec(&response_for_cache) {
-                                    let _ = cache::write_cache_entry(layout, &cache_key, &payload);
-                                }
+                        if is_ddg_anomaly_page(&body) {
+                            let (backoff_error, failures, max_failures, stop_backoff) = {
+                                let mut pacer = self.pacer.lock();
+                                let err = pacer.record_failure();
+                                let failures = pacer.consecutive_failures();
+                                let max_failures = pacer.config().max_consecutive_failures;
+                                let stop_backoff = pacer.config().stop_backoff;
+                                (err, failures, max_failures, stop_backoff)
+                            };
+                            if let Some(response) = self
+                                .maybe_proxy_discovery(
+                                    proxy_base_url,
+                                    &mut proxy_attempted,
+                                    query,
+                                    limit,
+                                    cache_limit,
+                                    &cache_key,
+                                    &mut last_error,
+                                )
+                                .await
+                            {
+                                return Ok(response);
                             }
+                            if let Some(response) = self
+                                .maybe_fallback_discovery(
+                                    fallback_base_url.as_ref(),
+                                    &mut fallback_attempted,
+                                    query,
+                                    limit,
+                                    cache_limit,
+                                    &cache_key,
+                                    &mut last_error,
+                                )
+                                .await
+                            {
+                                return Ok(response);
+                            }
+                            if failures >= max_failures && !stop_backoff.is_zero() {
+                                return Err(backoff_error.into());
+                            }
+                            let retry_after = retry_after_from_error(&backoff_error)
+                                .unwrap_or_else(|| Duration::from_millis(0));
+                            if attempt + 1 < attempts {
+                                if !retry_after.is_zero() {
+                                    tokio::time::sleep(retry_after).await;
+                                }
+                                continue;
+                            }
+                            return Err(backoff_with_message(
+                                backoff_error,
+                                "duckduckgo discovery blocked (anomaly page)",
+                            )
+                            .into());
                         }
-                        return Ok(response);
+                        let links = extract_links(&body);
+                        let filtered = self.filter_links(links);
+                        let responses =
+                            build_discovery_responses(query, filtered, limit, cache_limit);
+                        self.pacer.lock().record_success();
+                        self.cache_response(&cache_key, &responses.response_for_cache);
+                        return Ok(responses.response);
                     }
 
                     let (backoff_error, failures, max_failures, stop_backoff) = {
@@ -175,6 +257,34 @@ impl DdgDiscovery {
                         let stop_backoff = pacer.config().stop_backoff;
                         (err, failures, max_failures, stop_backoff)
                     };
+                    if let Some(response) = self
+                        .maybe_proxy_discovery(
+                            proxy_base_url,
+                            &mut proxy_attempted,
+                            query,
+                            limit,
+                            cache_limit,
+                            &cache_key,
+                            &mut last_error,
+                        )
+                        .await
+                    {
+                        return Ok(response);
+                    }
+                    if let Some(response) = self
+                        .maybe_fallback_discovery(
+                            fallback_base_url.as_ref(),
+                            &mut fallback_attempted,
+                            query,
+                            limit,
+                            cache_limit,
+                            &cache_key,
+                            &mut last_error,
+                        )
+                        .await
+                    {
+                        return Ok(response);
+                    }
                     if failures >= max_failures && !stop_backoff.is_zero() {
                         return Err(backoff_error.into());
                     }
@@ -211,6 +321,34 @@ impl DdgDiscovery {
                         let stop_backoff = pacer.config().stop_backoff;
                         (err, failures, max_failures, stop_backoff)
                     };
+                    if let Some(response) = self
+                        .maybe_proxy_discovery(
+                            proxy_base_url,
+                            &mut proxy_attempted,
+                            query,
+                            limit,
+                            cache_limit,
+                            &cache_key,
+                            &mut last_error,
+                        )
+                        .await
+                    {
+                        return Ok(response);
+                    }
+                    if let Some(response) = self
+                        .maybe_fallback_discovery(
+                            fallback_base_url.as_ref(),
+                            &mut fallback_attempted,
+                            query,
+                            limit,
+                            cache_limit,
+                            &cache_key,
+                            &mut last_error,
+                        )
+                        .await
+                    {
+                        return Ok(response);
+                    }
                     if failures >= max_failures && !stop_backoff.is_zero() {
                         return Err(backoff_error.into());
                     }
@@ -231,12 +369,211 @@ impl DdgDiscovery {
         };
         Err(AppError::new(ERR_INTERNAL_ERROR, message).into())
     }
+
+    fn filter_links(&self, links: Vec<String>) -> Vec<String> {
+        let deduped = dedupe_urls(links);
+        filter_blocked_urls(deduped, &self.blocklist)
+    }
+
+    fn cache_response(&self, cache_key: &str, response: &WebDiscoveryResponse) {
+        if let Some(layout) = self.cache_layout.as_ref() {
+            if self.config.cache_ttl.as_secs() > 0 {
+                if let Ok(payload) = serde_json::to_vec(response) {
+                    let _ = cache::write_cache_entry(layout, cache_key, &payload);
+                }
+            }
+        }
+    }
+
+    async fn maybe_proxy_discovery(
+        &self,
+        proxy_base_url: Option<&Url>,
+        proxy_attempted: &mut bool,
+        query: &str,
+        limit: usize,
+        cache_limit: usize,
+        cache_key: &str,
+        last_error: &mut Option<anyhow::Error>,
+    ) -> Option<WebDiscoveryResponse> {
+        if *proxy_attempted || proxy_base_url.is_none() {
+            return None;
+        }
+        *proxy_attempted = true;
+        let proxy_base_url = proxy_base_url?;
+        match self
+            .try_proxy_discovery(proxy_base_url, query, limit, cache_limit, cache_key)
+            .await
+        {
+            Ok(Some(response)) => Some(response),
+            Ok(None) => None,
+            Err(err) => {
+                *last_error = Some(err);
+                None
+            }
+        }
+    }
+
+    async fn maybe_fallback_discovery(
+        &self,
+        fallback_base_url: Option<&Url>,
+        fallback_attempted: &mut bool,
+        query: &str,
+        limit: usize,
+        cache_limit: usize,
+        cache_key: &str,
+        last_error: &mut Option<anyhow::Error>,
+    ) -> Option<WebDiscoveryResponse> {
+        if *fallback_attempted || fallback_base_url.is_none() {
+            return None;
+        }
+        *fallback_attempted = true;
+        let fallback_base_url = fallback_base_url?;
+        match self
+            .try_fallback_discovery(fallback_base_url, query, limit, cache_limit, cache_key)
+            .await
+        {
+            Ok(Some(response)) => Some(response),
+            Ok(None) => None,
+            Err(err) => {
+                *last_error = Some(err);
+                None
+            }
+        }
+    }
+
+    async fn try_fallback_discovery(
+        &self,
+        fallback_base_url: &Url,
+        query: &str,
+        limit: usize,
+        cache_limit: usize,
+        cache_key: &str,
+    ) -> Result<Option<WebDiscoveryResponse>> {
+        self.prefetch_homepage(fallback_base_url).await;
+        self.humanized_delay(query).await;
+        let referer = ddg_referer(fallback_base_url);
+        let fallback_url = build_ddg_url(fallback_base_url, query)?;
+        let resp = self
+            .client
+            .get(fallback_url)
+            .header(REFERER, referer)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        let body = resp.text().await.map_err(|err| {
+            AppError::new(
+                ERR_INTERNAL_ERROR,
+                format!("duckduckgo fallback discovery failed: {err}"),
+            )
+        })?;
+        if is_ddg_anomaly_page(&body) {
+            return Ok(None);
+        }
+        let links = extract_links(&body);
+        let filtered = self.filter_links(links);
+        if filtered.is_empty() {
+            return Ok(None);
+        }
+        let responses = build_discovery_responses(query, filtered, limit, cache_limit);
+        self.cache_response(cache_key, &responses.response_for_cache);
+        Ok(Some(responses.response))
+    }
+
+    async fn prefetch_homepage(&self, base_url: &Url) {
+        let Some(host) = base_url.host_str() else {
+            return;
+        };
+        let host = host.trim().to_ascii_lowercase();
+        if host.is_empty() {
+            return;
+        }
+        {
+            let mut guard = DDG_PREFETCHED_HOSTS.lock();
+            if guard.contains(&host) {
+                return;
+            }
+            guard.insert(host.clone());
+        }
+        let mut url = base_url.clone();
+        url.set_query(None);
+        let _ = self.client.get(url).send().await;
+        let pause = random_delay_ms(DDG_PREFETCH_PAUSE_MIN_MS, DDG_PREFETCH_PAUSE_MAX_MS);
+        if !pause.is_zero() {
+            tokio::time::sleep(pause).await;
+        }
+    }
+
+    async fn humanized_delay(&self, query: &str) {
+        let delay = typing_delay_for_query(query);
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+    }
+
+    async fn try_proxy_discovery(
+        &self,
+        proxy_base_url: &Url,
+        query: &str,
+        limit: usize,
+        cache_limit: usize,
+        cache_key: &str,
+    ) -> Result<Option<WebDiscoveryResponse>> {
+        let proxy_url = build_ddg_url(proxy_base_url, query)?;
+        let resp = self.client.get(proxy_url).send().await?;
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        let body = resp.text().await.map_err(|err| {
+            AppError::new(
+                ERR_INTERNAL_ERROR,
+                format!("duckduckgo proxy discovery failed: {err}"),
+            )
+        })?;
+        if is_ddg_anomaly_page(&body) {
+            return Ok(None);
+        }
+        let links = extract_links(&body);
+        let filtered = self.filter_links(links);
+        if filtered.is_empty() {
+            return Ok(None);
+        }
+        let responses = build_discovery_responses(query, filtered, limit, cache_limit);
+        self.cache_response(cache_key, &responses.response_for_cache);
+        Ok(Some(responses.response))
+    }
 }
 
 fn build_ddg_url(base: &Url, query: &str) -> Result<Url> {
     let mut url = base.clone();
     url.query_pairs_mut().append_pair("q", query);
     Ok(url)
+}
+
+fn ddg_referer(base: &Url) -> HeaderValue {
+    let mut url = base.clone();
+    url.set_query(None);
+    HeaderValue::from_str(url.as_str()).unwrap_or_else(|_| HeaderValue::from_static(""))
+}
+
+fn ddg_lite_fallback_base(base: &Url) -> Option<Url> {
+    if !base
+        .host_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .ends_with("duckduckgo.com")
+    {
+        return None;
+    }
+    if base
+        .as_str()
+        .to_ascii_lowercase()
+        .contains("lite.duckduckgo.com")
+    {
+        return None;
+    }
+    Url::parse(DDG_LITE_FALLBACK_URL).ok()
 }
 
 fn is_loopback_url(url: &Url) -> bool {
@@ -267,6 +604,25 @@ fn build_response_for_limit(query: &str, urls: Vec<String>, limit: usize) -> Web
     }
 }
 
+fn build_discovery_responses(
+    query: &str,
+    urls: Vec<String>,
+    limit: usize,
+    cache_limit: usize,
+) -> DiscoveryResponses {
+    let response_for_cache = build_response_for_limit(query, urls, cache_limit);
+    let limited_urls = response_for_cache
+        .results
+        .iter()
+        .map(|result| result.url.clone())
+        .collect();
+    let response = build_response_for_limit(query, limited_urls, limit);
+    DiscoveryResponses {
+        response_for_cache,
+        response,
+    }
+}
+
 fn extract_links(html: &str) -> Vec<String> {
     let mut out = Vec::new();
     for caps in RESULT_LINK_RE.captures_iter(html) {
@@ -280,7 +636,33 @@ fn extract_links(html: &str) -> Vec<String> {
             out.push(href);
         }
     }
+    if !out.is_empty() {
+        return out;
+    }
+    extract_markdown_links(html)
+}
+
+fn extract_markdown_links(markdown: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let content = markdown
+        .split("Markdown Content:")
+        .nth(1)
+        .unwrap_or(markdown);
+    for caps in MARKDOWN_LINK_RE.captures_iter(content) {
+        if let Some(m) = caps.get(1) {
+            out.push(m.as_str().to_string());
+        }
+    }
     out
+}
+
+fn is_ddg_anomaly_page(html: &str) -> bool {
+    let body = html.to_ascii_lowercase();
+    body.contains("anomaly.js")
+        || body.contains("anomaly-modal")
+        || body.contains("challenge-form")
+        || body.contains("cc=botnet")
+        || body.contains("cc=sre")
 }
 
 fn html_unescape_attr(value: &str) -> String {
@@ -321,6 +703,92 @@ fn backoff_with_message(err: AppError, message: impl Into<String>) -> AppError {
         message: message.into(),
         details: err.details,
     }
+}
+
+fn resolve_ddg_client(config: &WebConfig) -> Result<reqwest::Client> {
+    let key = ddg_client_key(config);
+    if let Some(existing) = DDG_CLIENTS.lock().get(&key) {
+        return Ok(existing.clone());
+    }
+    let client = build_ddg_client(config)?;
+    DDG_CLIENTS.lock().insert(key, client.clone());
+    Ok(client)
+}
+
+fn ddg_client_key(config: &WebConfig) -> String {
+    let loopback = is_loopback_url(&config.ddg_base_url);
+    let host = config.ddg_base_url.host_str().unwrap_or_default();
+    format!("{}|{}|{}", config.user_agent, host, loopback)
+}
+
+fn build_ddg_client(config: &WebConfig) -> Result<reqwest::Client> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        ACCEPT,
+        HeaderValue::from_static(
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        ),
+    );
+    headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
+    let mut builder = reqwest::Client::builder()
+        .default_headers(headers)
+        .user_agent(config.user_agent.clone())
+        .timeout(config.request_timeout)
+        .cookie_store(true);
+    if is_loopback_url(&config.ddg_base_url) {
+        builder = builder.no_proxy();
+    }
+    builder.build().context("build ddg client")
+}
+
+fn typing_delay_for_query(query: &str) -> Duration {
+    let chars = query.chars().count().max(1) as u64;
+    let mut seed = random_seed() ^ hash_query(query);
+    let mut total_ms = 0u64;
+    for idx in 0..chars {
+        seed = lcg_next(seed);
+        let span = DDG_TYPING_DELAY_MAX_MS.saturating_sub(DDG_TYPING_DELAY_MIN_MS);
+        let jitter = if span == 0 {
+            DDG_TYPING_DELAY_MIN_MS
+        } else {
+            DDG_TYPING_DELAY_MIN_MS + (seed % (span + 1))
+        };
+        total_ms = total_ms.saturating_add(jitter);
+        if idx > 0 && idx % 8 == 0 {
+            total_ms = total_ms.saturating_add(DDG_TYPING_PAUSE_MS);
+        }
+        if total_ms >= DDG_TYPING_MAX_TOTAL_MS {
+            total_ms = DDG_TYPING_MAX_TOTAL_MS;
+            break;
+        }
+    }
+    Duration::from_millis(total_ms)
+}
+
+fn random_delay_ms(min_ms: u64, max_ms: u64) -> Duration {
+    if max_ms <= min_ms {
+        return Duration::from_millis(min_ms);
+    }
+    let span = max_ms - min_ms;
+    let jitter = random_seed() % (span + 1);
+    Duration::from_millis(min_ms + jitter)
+}
+
+fn random_seed() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64
+}
+
+fn hash_query(query: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    query.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn lcg_next(seed: u64) -> u64 {
+    seed.wrapping_mul(6364136223846793005).wrapping_add(1)
 }
 
 fn normalize_blocklist(entries: &[String]) -> Vec<String> {
@@ -389,5 +857,44 @@ mod tests {
         assert_eq!(links.len(), 2);
         assert!(links[0].contains("duckduckgo.com/l/"));
         assert_eq!(links[1], "https://example.com/other");
+    }
+
+    #[test]
+    fn extract_links_from_markdown() {
+        let markdown = r#"
+Title: Example
+
+Markdown Content:
+[Result](http://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdoc)
+[Other](https://example.org/other)
+"#;
+        let links = extract_links(markdown);
+        assert_eq!(links.len(), 2);
+        assert!(links[0].contains("duckduckgo.com/l/"));
+        assert_eq!(links[1], "https://example.org/other");
+    }
+
+    #[test]
+    fn detects_anomaly_page() {
+        let html = r#"
+            <form id="challenge-form" action="//duckduckgo.com/anomaly.js?sv=html&cc=botnet"></form>
+        "#;
+        assert!(is_ddg_anomaly_page(html));
+        assert!(!is_ddg_anomaly_page("<a class=\"result__a\" href=\"https://example.com\">ok</a>"));
+    }
+
+    #[test]
+    fn typing_delay_stays_within_expected_bounds() {
+        let query = "docdex ddg hardening";
+        let chars = query.chars().count().max(1) as u64;
+        let pause_count = chars / 8;
+        let min_ms = chars * DDG_TYPING_DELAY_MIN_MS + pause_count * DDG_TYPING_PAUSE_MS;
+        let max_ms = chars * DDG_TYPING_DELAY_MAX_MS + pause_count * DDG_TYPING_PAUSE_MS;
+        let delay = typing_delay_for_query(query);
+        let ms = delay.as_millis() as u64;
+        let max_ms = max_ms.min(DDG_TYPING_MAX_TOTAL_MS);
+        let min_ms = min_ms.min(DDG_TYPING_MAX_TOTAL_MS);
+        assert!(ms >= min_ms, "delay {ms}ms below min {min_ms}ms");
+        assert!(ms <= max_ms, "delay {ms}ms above max {max_ms}ms");
     }
 }

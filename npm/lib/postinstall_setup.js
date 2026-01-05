@@ -434,6 +434,14 @@ function resolveBinaryPath({ binaryPath } = {}) {
   return null;
 }
 
+function resolveMcpBinaryPath(binaryPath) {
+  if (!binaryPath) return null;
+  const dir = path.dirname(binaryPath);
+  const name = process.platform === "win32" ? "docdex-mcp-server.exe" : "docdex-mcp-server";
+  const candidate = path.join(dir, name);
+  return fs.existsSync(candidate) ? candidate : null;
+}
+
 function ensureDaemonRoot() {
   const root = daemonRootPath();
   fs.mkdirSync(root, { recursive: true });
@@ -987,7 +995,7 @@ async function maybePromptOllamaModel({
   return { status: "skipped", reason: "invalid_selection" };
 }
 
-function registerStartup({ binaryPath, port, repoRoot, logger }) {
+function registerStartup({ binaryPath, mcpBinaryPath, port, repoRoot, logger }) {
   if (!binaryPath) return { ok: false, reason: "missing_binary" };
   const args = [
     "daemon",
@@ -1001,12 +1009,21 @@ function registerStartup({ binaryPath, port, repoRoot, logger }) {
     "warn",
     "--secure-mode=false"
   ];
+  const envMcpBin = mcpBinaryPath ? `DOCDEX_MCP_SERVER_BIN=${mcpBinaryPath}` : null;
 
   if (process.platform === "darwin") {
     const plistPath = path.join(os.homedir(), "Library", "LaunchAgents", "com.docdex.daemon.plist");
     const logDir = path.join(os.homedir(), ".docdex", "logs");
     fs.mkdirSync(logDir, { recursive: true });
     const programArgs = [binaryPath, ...args];
+    const envVars = [
+      "    <key>DOCDEX_BROWSER_AUTO_INSTALL</key>\n",
+      "    <string>0</string>\n"
+    ];
+    if (mcpBinaryPath) {
+      envVars.push("    <key>DOCDEX_MCP_SERVER_BIN</key>\n");
+      envVars.push(`    <string>${mcpBinaryPath}</string>\n`);
+    }
     const plist = `<?xml version="1.0" encoding="UTF-8"?>\n` +
       `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n` +
       `<plist version="1.0">\n` +
@@ -1015,8 +1032,7 @@ function registerStartup({ binaryPath, port, repoRoot, logger }) {
       `  <string>com.docdex.daemon</string>\n` +
       `  <key>EnvironmentVariables</key>\n` +
       `  <dict>\n` +
-      `    <key>DOCDEX_BROWSER_AUTO_INSTALL</key>\n` +
-      `    <string>0</string>\n` +
+      envVars.join("") +
       `  </dict>\n` +
       `  <key>ProgramArguments</key>\n` +
       `  <array>\n` +
@@ -1057,13 +1073,14 @@ function registerStartup({ binaryPath, port, repoRoot, logger }) {
       "[Service]",
       `ExecStart=${binaryPath} ${args.join(" ")}`,
       "Environment=DOCDEX_BROWSER_AUTO_INSTALL=0",
+      envMcpBin ? `Environment=${envMcpBin}` : null,
       "Restart=always",
       "RestartSec=2",
       "",
       "[Install]",
       "WantedBy=default.target",
       ""
-    ].join("\n");
+    ].filter(Boolean).join("\n");
     fs.writeFileSync(unitPath, unit);
     const reload = spawnSync("systemctl", ["--user", "daemon-reload"]);
     const enable = spawnSync("systemctl", ["--user", "enable", "--now", "docdexd.service"]);
@@ -1075,8 +1092,12 @@ function registerStartup({ binaryPath, port, repoRoot, logger }) {
   if (process.platform === "win32") {
     const taskName = "Docdex Daemon";
     const joinedArgs = args.map((arg) => `"${arg}"`).join(" ");
+    const envParts = ['set "DOCDEX_BROWSER_AUTO_INSTALL=0"'];
+    if (mcpBinaryPath) {
+      envParts.push(`set "DOCDEX_MCP_SERVER_BIN=${mcpBinaryPath}"`);
+    }
     const taskArgs =
-      `"cmd.exe" /c "set DOCDEX_BROWSER_AUTO_INSTALL=0 && \"${binaryPath}\" ${joinedArgs}"`;
+      `"cmd.exe" /c "${envParts.join(" && ")} && \"${binaryPath}\" ${joinedArgs}"`;
     const create = spawnSync("schtasks", [
       "/Create",
       "/F",
@@ -1100,8 +1121,12 @@ function registerStartup({ binaryPath, port, repoRoot, logger }) {
   return { ok: false, reason: "unsupported_platform" };
 }
 
-function startDaemonNow({ binaryPath, port, repoRoot }) {
+function startDaemonNow({ binaryPath, mcpBinaryPath, port, repoRoot }) {
   if (!binaryPath) return false;
+  const extraEnv = {};
+  if (mcpBinaryPath) {
+    extraEnv.DOCDEX_MCP_SERVER_BIN = mcpBinaryPath;
+  }
   const child = spawn(
     binaryPath,
     [
@@ -1121,7 +1146,8 @@ function startDaemonNow({ binaryPath, port, repoRoot }) {
       detached: true,
       env: {
         ...process.env,
-        DOCDEX_BROWSER_AUTO_INSTALL: "0"
+        DOCDEX_BROWSER_AUTO_INSTALL: "0",
+        ...extraEnv
       }
     }
   );
@@ -1300,7 +1326,14 @@ async function runPostInstallSetup({ binaryPath, logger } = {}) {
 
   const daemonRoot = ensureDaemonRoot();
   const resolvedBinary = resolveBinaryPath({ binaryPath });
-  const startup = registerStartup({ binaryPath: resolvedBinary, port, repoRoot: daemonRoot, logger: log });
+  const resolvedMcpBinary = resolveMcpBinaryPath(resolvedBinary);
+  const startup = registerStartup({
+    binaryPath: resolvedBinary,
+    mcpBinaryPath: resolvedMcpBinary,
+    port,
+    repoRoot: daemonRoot,
+    logger: log
+  });
   if (!startup.ok) {
     if (!startupFailureReported()) {
       log.warn?.("[docdex] startup registration failed; run the daemon manually:");
@@ -1311,7 +1344,7 @@ async function runPostInstallSetup({ binaryPath, logger } = {}) {
     clearStartupFailure();
   }
 
-  startDaemonNow({ binaryPath: resolvedBinary, port, repoRoot: daemonRoot });
+  startDaemonNow({ binaryPath: resolvedBinary, mcpBinaryPath: resolvedMcpBinary, port, repoRoot: daemonRoot });
   const setupLaunch = launchSetupWizard({ binaryPath: resolvedBinary, logger: log });
   if (!setupLaunch.ok && setupLaunch.reason !== "skipped") {
     log.warn?.("[docdex] setup wizard did not launch. Run `docdex setup`.");

@@ -10,7 +10,9 @@ fn state_layout_creates_profile_dirs() -> Result<(), Box<dyn std::error::Error>>
 
     let profiles_dir = layout.profiles_dir();
     let profiles_sync_dir = layout.profiles_sync_dir();
+    let browser_profiles_dir = layout.browser_profiles_dir();
     assert!(profiles_dir.exists());
     assert!(profiles_sync_dir.exists());
+    assert!(browser_profiles_dir.exists());
     Ok(())
 }

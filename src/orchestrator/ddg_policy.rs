@@ -11,6 +11,7 @@ pub const DDG_DISCOVERY_SCOPE: &str = "global";
 #[derive(Clone, Debug)]
 pub struct DdgDiscoveryPolicyConfig {
     pub min_spacing: Duration,
+    pub jitter_ms: u64,
     pub base_backoff: Duration,
     pub max_backoff: Duration,
     pub max_consecutive_failures: u32,
@@ -21,6 +22,7 @@ impl Default for DdgDiscoveryPolicyConfig {
     fn default() -> Self {
         Self {
             min_spacing: Duration::from_millis(2_000),
+            jitter_ms: 0,
             base_backoff: Duration::from_millis(2_000),
             max_backoff: Duration::from_millis(30_000),
             max_consecutive_failures: 5,
@@ -45,6 +47,7 @@ impl DdgDiscoveryPolicyConfig {
 pub struct DdgDiscoveryPacer {
     config: DdgDiscoveryPolicyConfig,
     last_attempt_at: Option<Instant>,
+    last_spacing_jitter: Duration,
     backoff_until: Option<Instant>,
     consecutive_failures: u32,
 }
@@ -54,6 +57,7 @@ impl DdgDiscoveryPacer {
         Self {
             config: config.normalized(),
             last_attempt_at: None,
+            last_spacing_jitter: Duration::ZERO,
             backoff_until: None,
             consecutive_failures: 0,
         }
@@ -78,6 +82,7 @@ impl DdgDiscoveryPacer {
             }
         }
         self.last_attempt_at = Some(now);
+        self.last_spacing_jitter = self.jitter();
         Ok(())
     }
 
@@ -95,7 +100,7 @@ impl DdgDiscoveryPacer {
         let capped_failures = self
             .consecutive_failures
             .min(self.config.max_consecutive_failures);
-        let mut next = now + self.backoff_duration(capped_failures);
+        let mut next = now + self.backoff_duration(capped_failures) + self.jitter();
         if self.consecutive_failures >= self.config.max_consecutive_failures
             && !self.config.stop_backoff.is_zero()
         {
@@ -109,7 +114,9 @@ impl DdgDiscoveryPacer {
     }
 
     fn next_allowed_at(&self) -> Option<Instant> {
-        let spacing_ready = self.last_attempt_at.map(|at| at + self.config.min_spacing);
+        let spacing_ready = self
+            .last_attempt_at
+            .map(|at| at + self.config.min_spacing + self.last_spacing_jitter);
         match (spacing_ready, self.backoff_until) {
             (Some(spacing), Some(backoff)) => Some(spacing.max(backoff)),
             (Some(spacing), None) => Some(spacing),
@@ -142,6 +149,17 @@ impl DdgDiscoveryPacer {
         Duration::from_millis(delay_ms)
     }
 
+    fn jitter(&self) -> Duration {
+        if self.config.jitter_ms == 0 {
+            return Duration::ZERO;
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos() as u64;
+        Duration::from_millis(nanos % (self.config.jitter_ms + 1))
+    }
+
     fn backoff_error(&self, retry_after: Duration) -> AppError {
         let retry_after_ms = retry_after.as_millis().min(u128::from(u64::MAX)) as u64;
         let retry_at = ChronoDuration::from_std(retry_after)
@@ -169,6 +187,7 @@ mod tests {
     fn enforces_min_spacing_between_attempts() {
         let config = DdgDiscoveryPolicyConfig {
             min_spacing: Duration::from_millis(500),
+            jitter_ms: 0,
             base_backoff: Duration::from_millis(1_000),
             max_backoff: Duration::from_millis(5_000),
             max_consecutive_failures: 3,
@@ -193,6 +212,7 @@ mod tests {
     fn applies_exponential_backoff_and_stop_window() {
         let config = DdgDiscoveryPolicyConfig {
             min_spacing: Duration::from_millis(0),
+            jitter_ms: 0,
             base_backoff: Duration::from_millis(1_000),
             max_backoff: Duration::from_millis(4_000),
             max_consecutive_failures: 3,

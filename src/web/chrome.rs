@@ -1,9 +1,10 @@
 use anyhow::{anyhow, Context, Result};
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 use tokio::process::Command;
 use tokio_tungstenite::connect_async;
@@ -12,6 +13,7 @@ use url::Url;
 
 use crate::browser_session::{BrowserSession, BrowserSessionOptions};
 use crate::orchestrator::web_config::WebConfig;
+use crate::state_layout::ensure_state_dir_secure;
 use crate::util;
 
 #[derive(Clone, Debug)]
@@ -20,6 +22,7 @@ pub struct ChromeFetchConfig {
     pub headless: bool,
     pub user_agent: String,
     pub timeout: Duration,
+    pub user_data_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -31,6 +34,68 @@ pub struct ChromeFetchResult {
     pub final_url: Option<String>,
 }
 
+const CHROME_THINK_DELAY_MIN_MS: u64 = 150;
+const CHROME_THINK_DELAY_MAX_MS: u64 = 650;
+const CHROME_WINDOW_SIZE: &str = "1920,1080";
+const WEBDRIVER_OVERRIDE_SCRIPT: &str =
+    "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });";
+
+enum UserDataDir {
+    Temp(TempDir),
+    Persistent(PathBuf),
+}
+
+impl UserDataDir {
+    fn new(config: &ChromeFetchConfig) -> Result<Self> {
+        if let Some(path) = config.user_data_dir.as_ref() {
+            ensure_state_dir_secure(path)
+                .with_context(|| format!("ensure chrome user data dir {}", path.display()))?;
+            return Ok(UserDataDir::Persistent(path.clone()));
+        }
+        Ok(UserDataDir::Temp(
+            TempDir::new().context("create chrome user data directory")?,
+        ))
+    }
+
+    fn path(&self) -> &Path {
+        match self {
+            UserDataDir::Temp(dir) => dir.path(),
+            UserDataDir::Persistent(path) => path.as_path(),
+        }
+    }
+
+    fn clear_devtools_port(&self) {
+        let port_file = self.path().join("DevToolsActivePort");
+        let _ = fs::remove_file(port_file);
+    }
+}
+
+fn chrome_common_args(config: &ChromeFetchConfig, user_data_dir: &Path) -> Vec<String> {
+    let mut args = Vec::new();
+    if config.headless {
+        args.push("--headless=new".to_string());
+    }
+    args.push("--disable-gpu".to_string());
+    args.push("--disable-extensions".to_string());
+    args.push("--disable-dev-shm-usage".to_string());
+    args.push("--disable-blink-features=AutomationControlled".to_string());
+    args.push("--no-sandbox".to_string());
+    args.push("--no-first-run".to_string());
+    args.push("--no-default-browser-check".to_string());
+    args.push("--remote-allow-origins=*".to_string());
+    args.push(format!("--window-size={}", CHROME_WINDOW_SIZE));
+    args.push(format!(
+        "--user-data-dir={}",
+        user_data_dir.display()
+    ));
+    args.push("--disable-background-timer-throttling".to_string());
+    args.push("--disable-backgrounding-occluded-windows".to_string());
+    args.push("--disable-renderer-backgrounding".to_string());
+    args.push("--run-all-compositor-stages-before-draw".to_string());
+    args.push(format!("--user-agent={}", config.user_agent));
+    args
+}
+
 impl ChromeFetchConfig {
     pub fn from_web_config(config: &WebConfig) -> Option<Self> {
         let chrome_binary = util::detect_browser_binary(config.chrome_binary_path.as_deref())?.path;
@@ -39,35 +104,19 @@ impl ChromeFetchConfig {
             headless: config.scraper_headless,
             user_agent: config.user_agent.clone(),
             timeout: config.page_load_timeout,
+            user_data_dir: config.scraper_user_data_dir.clone(),
         })
     }
 }
 
 pub async fn fetch_dom(url: &Url, config: &ChromeFetchConfig) -> Result<ChromeFetchResult> {
     let mut command = Command::new(&config.chrome_binary);
-    let user_data_dir = TempDir::new().context("create chrome user data directory")?;
-    if config.headless {
-        command.arg("--headless=new");
-    }
-    command.arg("--disable-gpu");
-    command.arg("--disable-extensions");
-    command.arg("--disable-dev-shm-usage");
-    command.arg("--no-sandbox");
-    command.arg("--no-first-run");
-    command.arg("--no-default-browser-check");
-    command.arg("--incognito");
-    command.arg("--remote-allow-origins=*");
-    command.arg(format!(
-        "--user-data-dir={}",
-        user_data_dir.path().display()
-    ));
-    command.arg("--remote-debugging-address=127.0.0.1");
-    command.arg("--remote-debugging-port=0");
-    command.arg("--disable-background-timer-throttling");
-    command.arg("--disable-backgrounding-occluded-windows");
-    command.arg("--disable-renderer-backgrounding");
-    command.arg("--run-all-compositor-stages-before-draw");
-    command.arg(format!("--user-agent={}", config.user_agent));
+    let user_data_dir = UserDataDir::new(config)?;
+    user_data_dir.clear_devtools_port();
+    let mut args = chrome_common_args(config, user_data_dir.path());
+    args.push("--remote-debugging-address=127.0.0.1".to_string());
+    args.push("--remote-debugging-port=0".to_string());
+    command.args(args);
     command.arg("about:blank");
     command.stdout(Stdio::null());
     command.stderr(Stdio::null());
@@ -83,9 +132,9 @@ pub async fn fetch_dom(url: &Url, config: &ChromeFetchConfig) -> Result<ChromeFe
     let target_url = url.clone();
     let cdp_result = session
         .run_scoped(timeout, std::future::pending::<()>(), async move {
-            let _guard = user_data_dir;
+            let user_data_dir = user_data_dir;
             let deadline = Instant::now() + timeout;
-            let port = wait_for_devtools_port(_guard.path(), remaining(deadline)).await?;
+            let port = wait_for_devtools_port(user_data_dir.path(), remaining(deadline)).await?;
             let ws_url = create_cdp_target(port, remaining(deadline)).await?;
             let result = fetch_dom_via_cdp(&ws_url, &target_url, remaining(deadline)).await?;
             Ok(result)
@@ -105,23 +154,9 @@ pub async fn fetch_dom(url: &Url, config: &ChromeFetchConfig) -> Result<ChromeFe
 
 async fn fetch_dom_dump_dom(url: &Url, config: &ChromeFetchConfig) -> Result<ChromeFetchResult> {
     let mut command = Command::new(&config.chrome_binary);
-    let user_data_dir = TempDir::new().context("create chrome user data directory")?;
-    if config.headless {
-        command.arg("--headless=new");
-    }
-    command.arg("--disable-gpu");
-    command.arg("--disable-extensions");
-    command.arg("--disable-dev-shm-usage");
-    command.arg("--no-sandbox");
-    command.arg("--no-first-run");
-    command.arg("--no-default-browser-check");
-    command.arg("--incognito");
-    command.arg("--remote-allow-origins=*");
-    command.arg(format!(
-        "--user-data-dir={}",
-        user_data_dir.path().display()
-    ));
-    command.arg(format!("--user-agent={}", config.user_agent));
+    let user_data_dir = UserDataDir::new(config)?;
+    let args = chrome_common_args(config, user_data_dir.path());
+    command.args(args);
     command.arg("--virtual-time-budget=15000");
     command.arg("--dump-dom");
     command.arg(url.as_str());
@@ -430,8 +465,13 @@ async fn fetch_dom_via_cdp(
     client.call("Network.enable", json!({}), None).await?;
     client.call("Page.enable", json!({}), None).await?;
     client.call("Runtime.enable", json!({}), None).await?;
+    inject_webdriver_override(&mut client).await?;
 
     let mut tracker = NetworkIdleTracker::new();
+    let think_delay = random_delay_ms(CHROME_THINK_DELAY_MIN_MS, CHROME_THINK_DELAY_MAX_MS);
+    if !think_delay.is_zero() {
+        tokio::time::sleep(think_delay).await;
+    }
     let nav_result = client
         .call(
             "Page.navigate",
@@ -496,6 +536,17 @@ async fn fetch_dom_via_cdp(
     })
 }
 
+async fn inject_webdriver_override(client: &mut CdpClient) -> Result<()> {
+    client
+        .call(
+            "Page.addScriptToEvaluateOnNewDocument",
+            json!({ "source": WEBDRIVER_OVERRIDE_SCRIPT }),
+            None,
+        )
+        .await?;
+    Ok(())
+}
+
 async fn eval_string(client: &mut CdpClient, expression: &str) -> Result<String> {
     let eval = client
         .call(
@@ -556,5 +607,43 @@ async fn capture_dom_text(
         }
         last_value = value;
         tokio::time::sleep(poll_interval).await;
+    }
+}
+
+fn random_delay_ms(min_ms: u64, max_ms: u64) -> Duration {
+    if max_ms <= min_ms {
+        return Duration::from_millis(min_ms);
+    }
+    let span = max_ms - min_ms;
+    let jitter = random_seed() % (span + 1);
+    Duration::from_millis(min_ms + jitter)
+}
+
+fn random_seed() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chrome_common_args_include_stealth_flags() {
+        let config = ChromeFetchConfig {
+            chrome_binary: PathBuf::from("/bin/chrome"),
+            headless: true,
+            user_agent: "Mozilla/5.0 (X11; Linux x86_64)".to_string(),
+            timeout: Duration::from_secs(5),
+            user_data_dir: Some(PathBuf::from("profile_dir")),
+        };
+        let args = chrome_common_args(&config, Path::new("profile_dir"));
+        assert!(args.contains(&"--headless=new".to_string()));
+        assert!(args.contains(&"--disable-blink-features=AutomationControlled".to_string()));
+        assert!(args.contains(&format!("--window-size={}", CHROME_WINDOW_SIZE)));
+        assert!(args.contains(&"--user-data-dir=profile_dir".to_string()));
+        assert!(!args.iter().any(|arg| arg == "--incognito"));
     }
 }

@@ -106,6 +106,7 @@ fn build_config(base_url: Url, request_timeout: Duration) -> WebConfig {
         enabled: true,
         user_agent: "docdexd-test".to_string(),
         ddg_base_url: base_url,
+        ddg_proxy_base_url: None,
         request_timeout,
         max_results: 5,
         policy: SpacingBackoffPolicy {
@@ -125,6 +126,7 @@ fn build_config(base_url: Url, request_timeout: Duration) -> WebConfig {
         scraper_engine: "chrome".to_string(),
         scraper_headless: true,
         chrome_binary_path: None,
+        scraper_user_data_dir: None,
         page_load_timeout: Duration::from_secs(1),
     }
 }

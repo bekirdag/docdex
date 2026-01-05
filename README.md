@@ -5,6 +5,10 @@
 ![Made with Rust](https://img.shields.io/badge/Made%20with-Rust-orange?logo=rust)
 [![MCP Badge](https://lobehub.com/badge/mcp/bekirdag-docdex)](https://lobehub.com/mcp/bekirdag-docdex)
 
+<a href="https://glama.ai/mcp/servers/@bekirdag/docdex">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@bekirdag/docdex/badge" />
+</a>
+
 # Docdex
 
 > **Turn your repository into fast, private context that humans and AI can trust.**

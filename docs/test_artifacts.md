@@ -128,6 +128,7 @@
 - src/setup/config.rs
 - src/setup/hardware.rs
 - src/ollama/tests.rs
+- src/api/mcp_http.rs
 - src/cli/http_client/tests.rs
 - src/repo_manager/resolution/tests.rs
 - src/cli/tests.rs

@@ -235,27 +235,16 @@ fn is_notification(payload: &Value, method: Option<&str>) -> bool {
 
 fn extract_init_root(payload: &Value) -> Option<String> {
     let params = payload.get("params")?.as_object()?;
-    for key in ["rootUri", "workspace_root", "project_root", "repo_path"] {
-        if let Some(value) = params.get(key).and_then(|value| value.as_str()) {
-            return Some(value.to_string());
-        }
-    }
-    None
+    extract_root_from_params(params)
 }
 
 fn extract_project_root(payload: &Value) -> Option<String> {
     let params = payload.get("params")?.as_object()?;
-    for key in ["project_root", "repo_path", "rootUri", "workspace_root"] {
-        if let Some(value) = params.get(key).and_then(|value| value.as_str()) {
-            return Some(value.to_string());
-        }
+    if let Some(root) = extract_root_from_params(params) {
+        return Some(root);
     }
     if let Some(args) = params.get("arguments").and_then(|value| value.as_object()) {
-        for key in ["project_root", "repo_path"] {
-            if let Some(value) = args.get(key).and_then(|value| value.as_str()) {
-                return Some(value.to_string());
-            }
-        }
+        return extract_root_from_params(args);
     }
     None
 }
@@ -270,7 +259,9 @@ fn normalize_initialize_payload(payload: &mut Value) {
     let root_uri = params
         .get("rootUri")
         .and_then(|value| value.as_str())
-        .map(|value| value.to_string());
+        .map(|value| value.to_string())
+        .or_else(|| extract_root_from_array(params.get("roots")))
+        .or_else(|| extract_root_from_array(params.get("workspaceFolders")));
     if root_uri.is_none() {
         return;
     }
@@ -278,10 +269,117 @@ fn normalize_initialize_payload(payload: &mut Value) {
         return;
     }
     let root_uri = root_uri.unwrap();
+    if !params.contains_key("rootUri") {
+        params.insert("rootUri".to_string(), Value::String(root_uri.clone()));
+    }
     let workspace_root = parse_root_uri(&root_uri)
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or(root_uri);
     params.insert("workspace_root".to_string(), Value::String(workspace_root));
+}
+
+fn extract_root_from_params(params: &serde_json::Map<String, Value>) -> Option<String> {
+    for key in [
+        "rootUri",
+        "workspace_root",
+        "project_root",
+        "repo_path",
+        "rootPath",
+        "root_path",
+    ] {
+        if let Some(value) = params.get(key).and_then(|value| value.as_str()) {
+            return Some(value.to_string());
+        }
+    }
+    if let Some(root) = extract_root_from_array(params.get("roots")) {
+        return Some(root);
+    }
+    extract_root_from_array(params.get("workspaceFolders"))
+}
+
+fn extract_root_from_array(value: Option<&Value>) -> Option<String> {
+    let roots = value?.as_array()?;
+    for entry in roots {
+        if let Some(value) = entry.as_str() {
+            return Some(value.to_string());
+        }
+        if let Some(obj) = entry.as_object() {
+            for key in ["uri", "rootUri", "path", "rootPath", "root_path"] {
+                if let Some(value) = obj.get(key).and_then(|value| value.as_str()) {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::fs;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+    use url::Url;
+
+    #[test]
+    fn extract_init_root_accepts_roots_array() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo dir");
+        let root_uri = Url::from_directory_path(&repo_root)
+            .expect("file url")
+            .to_string();
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "roots": [
+                    { "uri": root_uri }
+                ]
+            }
+        });
+        let root = extract_init_root(&payload);
+        assert_eq!(root.as_deref(), Some(root_uri.as_str()));
+    }
+
+    #[test]
+    fn normalize_initialize_payload_sets_root_from_roots() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo dir");
+        let expected_root_uri = Url::from_directory_path(&repo_root)
+            .expect("file url")
+            .to_string();
+        let repo_root_str = repo_root.to_string_lossy().to_string();
+        let mut payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "roots": [
+                    { "uri": expected_root_uri }
+                ]
+            }
+        });
+        normalize_initialize_payload(&mut payload);
+        let params = payload.get("params").and_then(|value| value.as_object());
+        let root_uri = params
+            .and_then(|params| params.get("rootUri"))
+            .and_then(|value| value.as_str());
+        let workspace_root = params
+            .and_then(|params| params.get("workspace_root"))
+            .and_then(|value| value.as_str());
+        assert_eq!(root_uri, Some(expected_root_uri.as_str()));
+        let resolved = workspace_root
+            .map(PathBuf::from)
+            .and_then(|path| path.canonicalize().ok())
+            .unwrap_or_else(|| PathBuf::from(repo_root_str.as_str()));
+        let expected = repo_root.canonicalize().expect("canonical repo root");
+        assert_eq!(resolved, expected);
+    }
 }
 
 fn resolve_repo_for_mcp(state: &AppState, root_uri: Option<String>) -> Result<PathBuf, AppError> {

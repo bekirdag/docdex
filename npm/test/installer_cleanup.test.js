@@ -25,6 +25,8 @@ async function writeInstalledBinary({ distDir, isWin32, bytes }) {
   await ensureDir(distDir);
   const binaryPath = path.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
   await fs.promises.writeFile(binaryPath, bytes);
+  const mcpName = isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server";
+  await fs.promises.writeFile(path.join(distDir, mcpName), bytes);
   return binaryPath;
 }
 
@@ -118,6 +120,7 @@ test("installer cleanup: extract failure keeps prior install and removes staging
       extractTarballFn: async (_archivePath, targetDir) => {
         await ensureDir(targetDir);
         await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n", "utf8");
+        await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "new-binary\n", "utf8");
         throw new Error("boom: extract failed");
       }
     })
@@ -193,6 +196,7 @@ test("installer cleanup: chmod failure rolls back to prior install", async (t) =
       extractTarballFn: async (_archivePath, targetDir) => {
         await ensureDir(targetDir);
         await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n", "utf8");
+        await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "new-binary\n", "utf8");
       }
     })
   );

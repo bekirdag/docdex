@@ -179,6 +179,7 @@ test("installer rollback: keeps previous install runnable when extract fails", a
         extractedTo = targetDir;
         await ensureDir(targetDir);
         await fs.promises.writeFile(path.join(targetDir, "docdexd"), "partial\n");
+        await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "partial\n");
         throw new Error("extract failed");
       }
     }),
@@ -217,4 +218,3 @@ test("startup recovery: removes leftover backup after successful swap", async (t
   await recoverInterruptedInstall({ fsModule: fs, pathModule: path, distDir, isWin32, logger: null });
   assert.ok(!fs.existsSync(backupDir));
 });
-

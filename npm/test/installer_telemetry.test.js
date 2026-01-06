@@ -40,6 +40,8 @@ async function writeInstalledBinary({ distDir, isWin32, bytes }) {
   await ensureDir(distDir);
   const binaryPath = path.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
   await fs.promises.writeFile(binaryPath, bytes);
+  const mcpName = isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server";
+  await fs.promises.writeFile(path.join(distDir, mcpName), bytes);
   return binaryPath;
 }
 
@@ -161,6 +163,7 @@ test("installer telemetry: update emits stable outcomeCode=replace and downloadA
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
       await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n");
+      await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "new-binary\n");
     }
   });
 
@@ -224,6 +227,7 @@ test("installer telemetry: repair emits stable outcomeCode=repair", async (t) =>
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
       await fs.promises.writeFile(path.join(targetDir, "docdexd"), "repaired\n");
+      await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "repaired\n");
     }
   });
 

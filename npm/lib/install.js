@@ -882,6 +882,9 @@ function decideInstallAction({
   integrityResult
 }) {
   if (!discoveredInstalledState?.binaryPresent) return { outcome: "update", reason: "binary_missing" };
+  if (discoveredInstalledState.mcpBinaryPresent === false) {
+    return { outcome: "update", reason: "mcp_binary_missing" };
+  }
 
   if (discoveredInstalledState.metadataStatus !== "valid") {
     return {
@@ -916,6 +919,10 @@ function decideInstallAction({
 
 async function discoverInstalledState({ fsModule, pathModule, distDir, platformKey, isWin32 }) {
   const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+  const mcpBinaryPath = pathModule.join(
+    distDir,
+    isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server"
+  );
   const metadataPath = installMetadataPath(distDir, pathModule);
 
   const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
@@ -924,6 +931,7 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
       binaryPath,
       metadataPath,
       binaryPresent: false,
+      mcpBinaryPresent: false,
       installedVersion: null,
       metadata: null,
       metadataStatus: "unavailable",
@@ -937,6 +945,7 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
       binaryPath,
       metadataPath,
       binaryPresent: false,
+      mcpBinaryPresent: false,
       installedVersion: null,
       metadata: null,
       metadataStatus: "missing",
@@ -945,11 +954,13 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
     };
   }
 
+  const mcpBinaryPresent = existsSync(mcpBinaryPath);
   const metaResult = await readJsonFileIfPossible({ fsModule, filePath: metadataPath });
   const meta = metaResult.value;
   if (!isValidInstallMetadata(meta)) {
     return {
       binaryPath,
+      mcpBinaryPresent,
       metadataPath,
       binaryPresent: true,
       installedVersion: typeof meta?.version === "string" ? meta.version : null,
@@ -972,6 +983,7 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
 
   return {
     binaryPath,
+    mcpBinaryPresent,
     metadataPath,
     binaryPresent: true,
     installedVersion: meta.version,
@@ -1045,6 +1057,7 @@ async function determineLocalInstallerOutcome({
 
   const shouldVerifyIntegrity =
     discoveredInstalledState.binaryPresent &&
+    discoveredInstalledState.mcpBinaryPresent !== false &&
     !discoveredInstalledState.platformMismatch &&
     discoveredInstalledState.installedVersion === expectedVersion &&
     (normalizeSha256Hex(expectedBinarySha256) || discoveredInstalledState.metadataStatus === "valid");

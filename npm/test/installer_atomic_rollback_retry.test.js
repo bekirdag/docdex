@@ -25,6 +25,8 @@ async function writeInstalledBinary({ distDir, isWin32, bytes }) {
   await ensureDir(distDir);
   const binaryPath = path.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
   await fs.promises.writeFile(binaryPath, bytes);
+  const mcpName = isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server";
+  await fs.promises.writeFile(path.join(distDir, mcpName), bytes);
   return binaryPath;
 }
 
@@ -140,6 +142,7 @@ test("installer: extract failure preserves previous install and cleans temp/stag
           extractTargetDir = targetDir;
           await ensureDir(targetDir);
           await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n");
+          await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "new-binary\n");
           throw new Error("simulated extract failure");
         }
       }),
@@ -229,6 +232,7 @@ test("installer: swap failure rolls back to previous install and cleans artifact
         extractTarballFn: async (_archivePath, targetDir) => {
           await ensureDir(targetDir);
           await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n");
+          await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "new-binary\n");
         }
       }),
     (err) => {
@@ -313,6 +317,7 @@ test("installer: retry after interrupted swap cleans leftovers and succeeds", as
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
       await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n", "utf8");
+      await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "new-binary\n", "utf8");
     }
   });
 
@@ -391,6 +396,7 @@ test("installer: metadata write failure preserves previous install and cleans st
         extractTarballFn: async (_archivePath, targetDir) => {
           await ensureDir(targetDir);
           await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n", "utf8");
+          await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "new-binary\n", "utf8");
         },
         writeJsonFileAtomicFn: async () => {
           throw new Error("simulated metadata write failure");

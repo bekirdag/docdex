@@ -1,4 +1,5 @@
 use anyhow::Result;
+use serde::Deserialize;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -10,6 +11,8 @@ use which::which;
 pub enum BrowserKind {
     Chrome,
     Chromium,
+    Firefox,
+    Webkit,
     Edge,
     Brave,
     Vivaldi,
@@ -21,6 +24,8 @@ impl BrowserKind {
         match self {
             BrowserKind::Chrome => "chrome",
             BrowserKind::Chromium => "chromium",
+            BrowserKind::Firefox => "firefox",
+            BrowserKind::Webkit => "webkit",
             BrowserKind::Edge => "edge",
             BrowserKind::Brave => "brave",
             BrowserKind::Vivaldi => "vivaldi",
@@ -33,6 +38,7 @@ impl BrowserKind {
 pub enum BrowserSource {
     Env,
     Config,
+    Playwright,
     Which,
     KnownPath,
     AutoInstall,
@@ -43,6 +49,7 @@ impl BrowserSource {
         match self {
             BrowserSource::Env => "env",
             BrowserSource::Config => "config",
+            BrowserSource::Playwright => "playwright",
             BrowserSource::Which => "which",
             BrowserSource::KnownPath => "known_path",
             BrowserSource::AutoInstall => "auto_install",
@@ -186,6 +193,17 @@ pub fn detect_browser_candidates(config_path: Option<&Path>) -> Vec<BrowserCandi
             "config",
             path.to_path_buf(),
             BrowserSource::Config,
+        );
+    }
+
+    if let Some(path) = resolve_playwright_chromium_path() {
+        let _ = push_candidate(
+            &mut candidates,
+            &mut priority,
+            BrowserKind::Chromium,
+            "Playwright Chromium",
+            path,
+            BrowserSource::Playwright,
         );
     }
 
@@ -410,6 +428,56 @@ pub fn detect_browser_candidates(config_path: Option<&Path>) -> Vec<BrowserCandi
         );
     }
     candidates
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub(crate) struct PlaywrightManifest {
+    #[serde(default)]
+    pub installed_at: Option<String>,
+    #[serde(default)]
+    pub browsers_path: Option<PathBuf>,
+    #[serde(default)]
+    pub playwright_version: Option<String>,
+    pub browsers: Vec<PlaywrightBrowser>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub(crate) struct PlaywrightBrowser {
+    pub name: String,
+    pub path: PathBuf,
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
+pub(crate) fn resolve_playwright_chromium() -> Option<PlaywrightBrowser> {
+    let manifest = read_playwright_manifest()?;
+    for browser in manifest.browsers {
+        if browser.name.eq_ignore_ascii_case("chromium") && browser.path.is_file() {
+            return Some(browser);
+        }
+    }
+    None
+}
+
+fn resolve_playwright_chromium_path() -> Option<PathBuf> {
+    resolve_playwright_chromium().map(|browser| browser.path)
+}
+
+pub(crate) fn read_playwright_manifest() -> Option<PlaywrightManifest> {
+    let manifest_path = resolve_playwright_manifest_path()?;
+    let raw = std::fs::read_to_string(&manifest_path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+pub(crate) fn resolve_playwright_manifest_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("PLAYWRIGHT_BROWSERS_PATH") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed).join("manifest.json"));
+        }
+    }
+    let base_dir = crate::state_paths::default_state_base_dir().ok()?;
+    Some(base_dir.join("bin").join("playwright").join("manifest.json"))
 }
 
 fn resolve_state_log_path() -> Option<PathBuf> {

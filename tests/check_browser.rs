@@ -34,10 +34,10 @@ provider = "openai"
     let output = cmd.assert().success().get_output().stdout.clone();
     let payload: Value = serde_json::from_slice(&output).expect("json");
     let checks = payload["checks"].as_array().expect("checks array");
-    let chrome = checks
+    let browser = checks
         .iter()
-        .find(|entry| entry["name"] == "chrome")
-        .expect("chrome check");
-    let details = chrome["details"].as_object().expect("details object");
+        .find(|entry| entry["name"] == "browser")
+        .expect("browser check");
+    let details = browser["details"].as_object().expect("details object");
     assert!(details.contains_key("auto_install_enabled"));
 }

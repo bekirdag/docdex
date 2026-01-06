@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::fs;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -114,8 +115,9 @@ pub async fn fetch_dom(url: &Url, config: &ChromeFetchConfig) -> Result<ChromeFe
     let user_data_dir = UserDataDir::new(config)?;
     user_data_dir.clear_devtools_port();
     let mut args = chrome_common_args(config, user_data_dir.path());
+    let debug_port = pick_free_port().context("pick devtools port")?;
     args.push("--remote-debugging-address=127.0.0.1".to_string());
-    args.push("--remote-debugging-port=0".to_string());
+    args.push(format!("--remote-debugging-port={debug_port}"));
     command.args(args);
     command.arg("about:blank");
     command.stdout(Stdio::null());
@@ -132,10 +134,8 @@ pub async fn fetch_dom(url: &Url, config: &ChromeFetchConfig) -> Result<ChromeFe
     let target_url = url.clone();
     let cdp_result = session
         .run_scoped(timeout, std::future::pending::<()>(), async move {
-            let user_data_dir = user_data_dir;
             let deadline = Instant::now() + timeout;
-            let port = wait_for_devtools_port(user_data_dir.path(), remaining(deadline)).await?;
-            let ws_url = create_cdp_target(port, remaining(deadline)).await?;
+            let ws_url = create_cdp_target(debug_port, remaining(deadline)).await?;
             let result = fetch_dom_via_cdp(&ws_url, &target_url, remaining(deadline)).await?;
             Ok(result)
         })
@@ -188,27 +188,19 @@ async fn fetch_dom_dump_dom(url: &Url, config: &ChromeFetchConfig) -> Result<Chr
     })
 }
 
-async fn wait_for_devtools_port(dir: &Path, timeout: Duration) -> Result<u16> {
-    let port_file = dir.join("DevToolsActivePort");
-    let start = Instant::now();
-    loop {
-        if let Ok(contents) = std::fs::read_to_string(&port_file) {
-            if let Some(port_line) = contents.lines().next() {
-                let port: u16 = port_line.trim().parse().context("parse devtools port")?;
-                return Ok(port);
-            }
-        }
-        if start.elapsed() >= timeout {
-            return Err(anyhow!("devtools port not available within {timeout:?}"));
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
 fn remaining(deadline: Instant) -> Duration {
     deadline
         .checked_duration_since(Instant::now())
         .unwrap_or_else(|| Duration::from_millis(0))
+}
+
+fn pick_free_port() -> Result<u16> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).context("bind free port")?;
+    let port = listener
+        .local_addr()
+        .context("resolve free port")?
+        .port();
+    Ok(port)
 }
 
 async fn create_cdp_target(port: u16, timeout: Duration) -> Result<String> {

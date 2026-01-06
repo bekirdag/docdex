@@ -123,9 +123,10 @@ fn build_config(base_url: Url, request_timeout: Duration) -> WebConfig {
         blocklist: Vec::new(),
         boilerplate_phrases: Vec::new(),
         fetch_delay: Duration::ZERO,
-        scraper_engine: "chrome".to_string(),
+        scraper_engine: "playwright".to_string(),
         scraper_headless: true,
         chrome_binary_path: None,
+        scraper_browser_kind: None,
         scraper_user_data_dir: None,
         page_load_timeout: Duration::from_secs(1),
     }

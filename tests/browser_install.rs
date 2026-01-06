@@ -1,8 +1,8 @@
 use docdexd::web::browser_install;
 use once_cell::sync::Lazy;
 use std::ffi::OsString;
+use std::path::Path;
 use std::sync::Mutex;
-#[cfg(target_os = "linux")]
 use tempfile::TempDir;
 
 static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
@@ -18,6 +18,12 @@ impl EnvGuard {
         std::env::set_var(key, value);
         Self { key, prev }
     }
+
+    fn unset(key: &'static str) -> Self {
+        let prev = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, prev }
+    }
 }
 
 impl Drop for EnvGuard {
@@ -30,6 +36,32 @@ impl Drop for EnvGuard {
     }
 }
 
+fn touch_file(path: &Path) {
+    std::fs::create_dir_all(path.parent().unwrap()).expect("create parent dir");
+    std::fs::write(path, b"#!/bin/sh\necho test\n").expect("write file");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path).expect("metadata").permissions();
+        perms.set_mode(perms.mode() | 0o111);
+        std::fs::set_permissions(path, perms).expect("chmod");
+    }
+}
+
+fn write_playwright_manifest(root: &Path, chromium_path: &Path) {
+    let manifest_dir = root.join(".docdex").join("state").join("bin").join("playwright");
+    std::fs::create_dir_all(&manifest_dir).expect("create manifest dir");
+    let payload = serde_json::json!({
+        "installed_at": "2024-01-01T00:00:00Z",
+        "browsers_path": manifest_dir.to_string_lossy(),
+        "playwright_version": "1.2.3",
+        "browsers": [
+            { "name": "chromium", "version": "12345", "path": chromium_path }
+        ]
+    });
+    std::fs::write(manifest_dir.join("manifest.json"), payload.to_string()).expect("write manifest");
+}
+
 #[test]
 fn browser_install_respects_opt_out() {
     let _lock = ENV_LOCK.lock().unwrap();
@@ -39,108 +71,21 @@ fn browser_install_respects_opt_out() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
-fn browser_install_downloads_fixture() {
+fn browser_install_reads_playwright_manifest() {
     let _lock = ENV_LOCK.lock().unwrap();
-    let enabled = std::env::var("DOCDEX_TEST_ENABLE_BROWSER_INSTALL")
-        .ok()
-        .map(|value| value.trim().to_ascii_lowercase())
-        .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false);
-    if !enabled {
-        return;
-    }
-
     let temp = TempDir::new().expect("tempdir");
+    let chromium_path = temp.path().join("pw-chromium");
+    touch_file(&chromium_path);
+    write_playwright_manifest(temp.path(), &chromium_path);
+
     let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
     let _auto_install = EnvGuard::set("DOCDEX_BROWSER_AUTO_INSTALL", "1");
-
-    let zip_bytes = build_zip_fixture();
-    let checksum = sha256_hex(&zip_bytes);
-    let (base_url, shutdown) = spawn_zip_server(zip_bytes);
-
-    let _base = EnvGuard::set("DOCDEX_BROWSER_DOWNLOAD_BASE", &base_url);
-    let _version = EnvGuard::set("DOCDEX_BROWSER_VERSION", "fixture");
-    let _sha = EnvGuard::set("DOCDEX_BROWSER_SHA256", &checksum);
+    let _pw_path = EnvGuard::unset("PLAYWRIGHT_BROWSERS_PATH");
 
     let result = browser_install::install_if_missing(true).expect("install ok");
-    shutdown();
     let Some(result) = result else {
         panic!("expected install result");
     };
-    assert!(result.path.is_file());
-
-    let manifest_path = temp.path().join(".docdex/state/bin/chromium/manifest.json");
-    let manifest = std::fs::read_to_string(&manifest_path).expect("read manifest");
-    let parsed: serde_json::Value = serde_json::from_str(&manifest).expect("manifest json");
-    assert_eq!(
-        parsed.get("sha256").and_then(|value| value.as_str()),
-        Some(checksum.as_str())
-    );
-    assert_eq!(
-        parsed.get("path").and_then(|value| value.as_str()),
-        Some(result.path.to_string_lossy().as_ref())
-    );
-}
-
-#[cfg(target_os = "linux")]
-fn build_zip_fixture() -> Vec<u8> {
-    use std::io::Write;
-    use zip::write::FileOptions;
-    let cursor = std::io::Cursor::new(Vec::new());
-    let mut writer = zip::ZipWriter::new(cursor);
-    writer
-        .add_directory("chrome-linux64/", FileOptions::default())
-        .expect("add dir");
-    writer
-        .start_file("chrome-linux64/chrome", FileOptions::default())
-        .expect("start file");
-    writer
-        .write_all(b"#!/bin/sh\necho fixture\n")
-        .expect("write");
-    let cursor = writer.finish().expect("finish zip");
-    cursor.into_inner()
-}
-
-#[cfg(target_os = "linux")]
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::Digest;
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(bytes);
-    hex::encode(hasher.finalize())
-}
-
-#[cfg(target_os = "linux")]
-fn spawn_zip_server(bytes: Vec<u8>) -> (String, impl FnOnce()) {
-    use axum::{routing::get, Router};
-    use std::net::TcpListener;
-    use tokio::sync::oneshot;
-
-    let std_listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let addr = std_listener.local_addr().expect("addr");
-    let (tx, rx) = oneshot::channel::<()>();
-    let join = std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().expect("runtime");
-        rt.block_on(async move {
-            let payload = bytes;
-            let app = Router::new().route(
-                "/fixture/linux64/chrome-linux64.zip",
-                get(move || async move { payload.clone() }),
-            );
-            let listener = tokio::net::TcpListener::from_std(std_listener).expect("listener");
-            axum::serve(listener, app)
-                .with_graceful_shutdown(async move {
-                    let _ = rx.await;
-                })
-                .await
-                .expect("serve");
-        });
-    });
-
-    let base_url = format!("http://{}", addr);
-    let shutdown = move || {
-        let _ = tx.send(());
-        let _ = join.join();
-    };
-    (base_url, shutdown)
+    assert_eq!(result.path, chromium_path);
+    assert_eq!(result.version, "12345");
 }

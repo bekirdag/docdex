@@ -2,15 +2,24 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
 function readPackList() {
   const cwd = path.join(__dirname, "..");
-  const stdout = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
-    cwd,
-    encoding: "utf8"
-  });
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-npm-cache-"));
+  let stdout = "";
+  try {
+    stdout = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, npm_config_cache: cacheDir }
+    });
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
   const parsed = JSON.parse(stdout.trim());
   const info = Array.isArray(parsed) ? parsed[0] : parsed;
   const files = Array.isArray(info?.files) ? info.files : [];

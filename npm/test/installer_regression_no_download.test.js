@@ -2,6 +2,9 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
 const { resolvePlatformPolicy } = require("../lib/platform");
 const { describeFatalError, runInstaller, resolveInstallerDownloadPlan } = require("../lib/install");
@@ -199,10 +202,13 @@ test("installer: unpublished win32 arm64 fails before any plan resolution or dow
   assert.equal(repoSlugCalls, 0);
 });
 
-test("installer: supported runtime with missing manifest target triple never downloads/extracts the docdexd asset", async () => {
+test("installer: supported runtime with missing manifest target triple never downloads/extracts the docdexd asset", async (t) => {
   let downloadTextCalls = 0;
   let assetDownloadCalls = 0;
   let extractCalls = 0;
+
+  const distBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-regress-dist-"));
+  t.after(() => fs.promises.rm(distBaseDir, { recursive: true, force: true }));
 
   const base = "https://example.test/releases/download";
   const version = "0.0.0";
@@ -232,6 +238,7 @@ test("installer: supported runtime with missing manifest target triple never dow
   try {
     await runInstaller({
       logger: createNoopLogger(),
+      distBaseDir,
       detectPlatformKeyFn: () => "linux-x64-gnu",
       getVersionFn: () => version,
       parseRepoSlugFn: () => "owner/repo",
@@ -250,7 +257,8 @@ test("installer: supported runtime with missing manifest target triple never dow
       extractTarballFn: async () => {
         extractCalls += 1;
         throw new Error("unexpected extract");
-      }
+      },
+      env: {}
     });
   } catch (e) {
     err = e;

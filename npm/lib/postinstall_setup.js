@@ -19,6 +19,7 @@ const DEFAULT_OLLAMA_MODEL = "nomic-embed-text";
 const DEFAULT_OLLAMA_CHAT_MODEL = "phi3.5:3.8b";
 const DEFAULT_OLLAMA_CHAT_MODEL_SIZE_GIB = 2.2;
 const SETUP_PENDING_MARKER = "setup_pending.json";
+const AGENTS_DOC_FILENAME = "agents.md";
 
 function defaultConfigPath() {
   return path.join(os.homedir(), ".docdex", "config.toml");
@@ -153,6 +154,126 @@ function writeJson(pathname, value) {
   fs.writeFileSync(pathname, JSON.stringify(value, null, 2) + "\n");
 }
 
+function agentsDocSourcePath() {
+  return path.join(__dirname, "..", "assets", AGENTS_DOC_FILENAME);
+}
+
+function loadAgentInstructions() {
+  const sourcePath = agentsDocSourcePath();
+  if (!fs.existsSync(sourcePath)) return "";
+  try {
+    return fs.readFileSync(sourcePath, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function normalizeInstructionText(value) {
+  return String(value || "").trim();
+}
+
+function mergeInstructionText(existing, instructions) {
+  const next = normalizeInstructionText(instructions);
+  if (!next) return normalizeInstructionText(existing);
+  const current = normalizeInstructionText(existing);
+  if (!current) return next;
+  if (current.includes(next)) return current;
+  return `${current}\n\n${next}`;
+}
+
+function writeTextFile(pathname, contents) {
+  const next = contents.endsWith("\n") ? contents : `${contents}\n`;
+  let current = "";
+  if (fs.existsSync(pathname)) {
+    current = fs.readFileSync(pathname, "utf8");
+    if (current === next) return false;
+  }
+  fs.mkdirSync(path.dirname(pathname), { recursive: true });
+  fs.writeFileSync(pathname, next);
+  return true;
+}
+
+function upsertPromptFile(pathname, instructions, { prepend = false } = {}) {
+  const next = normalizeInstructionText(instructions);
+  if (!next) return false;
+  let current = "";
+  if (fs.existsSync(pathname)) {
+    current = fs.readFileSync(pathname, "utf8");
+    if (current.includes(next)) return false;
+  }
+  const currentTrimmed = normalizeInstructionText(current);
+  let merged = next;
+  if (currentTrimmed) {
+    merged = prepend ? `${next}\n\n${currentTrimmed}` : `${currentTrimmed}\n\n${next}`;
+  }
+  return writeTextFile(pathname, merged);
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function upsertYamlInstruction(pathname, key, instructions) {
+  const next = normalizeInstructionText(instructions);
+  if (!next) return false;
+  let current = "";
+  if (fs.existsSync(pathname)) {
+    current = fs.readFileSync(pathname, "utf8");
+  }
+  const keyRe = new RegExp(`^\\s*${escapeRegExp(key)}\\s*:`, "m");
+  if (keyRe.test(current)) {
+    if (current.includes(next)) return false;
+    return false;
+  }
+  const lines = next.split(/\r?\n/).map((line) => `  ${line}`);
+  const block = `${key}: |\n${lines.join("\n")}`;
+  const merged = current.trim() ? `${current.trim()}\n\n${block}` : block;
+  return writeTextFile(pathname, merged);
+}
+
+function upsertClaudeInstructions(pathname, instructions) {
+  const { value } = readJson(pathname);
+  if (typeof value !== "object" || value == null || Array.isArray(value)) return false;
+  const merged = mergeInstructionText(value.instructions, instructions);
+  if (!merged || merged === value.instructions) return false;
+  value.instructions = merged;
+  writeJson(pathname, value);
+  return true;
+}
+
+function upsertContinueInstructions(pathname, instructions) {
+  const { value } = readJson(pathname);
+  if (typeof value !== "object" || value == null || Array.isArray(value)) return false;
+  const merged = mergeInstructionText(value.systemMessage, instructions);
+  if (!merged || merged === value.systemMessage) return false;
+  value.systemMessage = merged;
+  writeJson(pathname, value);
+  return true;
+}
+
+function upsertZedInstructions(pathname, instructions) {
+  const { value } = readJson(pathname);
+  if (typeof value !== "object" || value == null || Array.isArray(value)) return false;
+  if (!value.assistant || typeof value.assistant !== "object" || Array.isArray(value.assistant)) {
+    value.assistant = {};
+  }
+  const merged = mergeInstructionText(value.assistant.system_prompt, instructions);
+  if (!merged || merged === value.assistant.system_prompt) return false;
+  value.assistant.system_prompt = merged;
+  writeJson(pathname, value);
+  return true;
+}
+
+function upsertVsCodeInstructions(pathname, instructionsPath) {
+  const { value } = readJson(pathname);
+  if (typeof value !== "object" || value == null || Array.isArray(value)) return false;
+  const key = "copilot.chat.codeGeneration.instructions";
+  if (value[key] === instructionsPath) return false;
+  value[key] = instructionsPath;
+  writeJson(pathname, value);
+  return true;
+}
+
 function upsertMcpServerJson(pathname, url) {
   const { value } = readJson(pathname);
   if (typeof value !== "object" || value == null || Array.isArray(value)) return false;
@@ -210,6 +331,7 @@ function upsertCodexConfig(pathname, url) {
     new RegExp(`^\\s*\\[${section}\\]\\s*$`, "m").test(contents);
   const hasNestedMcpServers = (contents) =>
     /^\s*\[mcp_servers\.[^\]]+\]\s*$/m.test(contents);
+  const legacyInstructionPath = "~/.docdex/agents.md";
   const parseTomlString = (value) => {
     const trimmed = value.trim();
     const quoted = trimmed.match(/^"(.*)"$/) || trimmed.match(/^'(.*)'$/);
@@ -336,6 +458,52 @@ function upsertCodexConfig(pathname, url) {
     return { contents: lines.join("\n"), updated };
   };
 
+  const removeLegacyInstructions = (text) => {
+    const lines = text.split(/\r?\n/);
+    const output = [];
+    let inFeatures = false;
+    let featuresHasEntries = false;
+    let buffer = [];
+    let updated = false;
+
+    const flushFeatures = () => {
+      if (!inFeatures) return;
+      if (featuresHasEntries) output.push(...buffer);
+      inFeatures = false;
+      featuresHasEntries = false;
+      buffer = [];
+    };
+
+    for (const line of lines) {
+      const section = line.match(/^\s*\[([^\]]+)\]\s*$/);
+      if (section) {
+        flushFeatures();
+        if (section[1].trim() === "features") {
+          inFeatures = true;
+          buffer = [line];
+          continue;
+        }
+        output.push(line);
+        continue;
+      }
+      if (inFeatures) {
+        const match = line.match(/^\s*experimental_instructions_file\s*=\s*(.+?)\s*$/);
+        if (match && parseTomlString(match[1]) === legacyInstructionPath) {
+          updated = true;
+          continue;
+        }
+        if (line.trim() && !line.trim().startsWith("#") && /=/.test(line)) {
+          featuresHasEntries = true;
+        }
+        buffer.push(line);
+        continue;
+      }
+      output.push(line);
+    }
+    flushFeatures();
+    return { contents: output.join("\n"), updated };
+  };
+
   let contents = "";
   if (fs.existsSync(pathname)) {
     contents = fs.readFileSync(pathname, "utf8");
@@ -346,6 +514,10 @@ function upsertCodexConfig(pathname, url) {
     contents = migrated.contents;
     updated = updated || migrated.migrated;
   }
+
+  const cleaned = removeLegacyInstructions(contents);
+  contents = cleaned.contents;
+  updated = updated || cleaned.updated;
 
   if (hasNestedMcpServers(contents)) {
     const nested = upsertDocdexNested(contents, url);
@@ -422,6 +594,67 @@ function clientConfigPaths() {
   }
 }
 
+function clientInstructionPaths() {
+  const home = os.homedir();
+  const appData = process.env.APPDATA || path.join(home, "AppData", "Roaming");
+  const userProfile = process.env.USERPROFILE || home;
+  const vscodeGlobalInstructions = path.join(home, ".vscode", "global_instructions.md");
+  const windsurfGlobalRules = path.join(userProfile, ".codeium", "windsurf", "memories", "global_rules.md");
+  const rooRules = path.join(home, ".roo", "rules", "docdex.md");
+  const pearaiAgent = path.join(home, ".config", "pearai", "agent.md");
+  const aiderConfig = path.join(home, ".aider.conf.yml");
+  const gooseConfig = path.join(home, ".config", "goose", "config.yaml");
+  const openInterpreterConfig = path.join(home, ".openinterpreter", "profiles", "default.yaml");
+  const codexAgents = path.join(userProfile, ".codex", "AGENTS.md");
+  switch (process.platform) {
+    case "win32":
+      return {
+        claude: path.join(appData, "Claude", "claude_desktop_config.json"),
+        continue: path.join(userProfile, ".continue", "config.json"),
+        zed: path.join(appData, "Zed", "settings.json"),
+        vscodeSettings: path.join(appData, "Code", "User", "settings.json"),
+        vscodeGlobalInstructions,
+        windsurfGlobalRules,
+        rooRules,
+        pearaiAgent,
+        aiderConfig,
+        gooseConfig,
+        openInterpreterConfig,
+        codexAgents
+      };
+    case "darwin":
+      return {
+        claude: path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
+        continue: path.join(home, ".continue", "config.json"),
+        zed: path.join(home, ".config", "zed", "settings.json"),
+        vscodeSettings: path.join(home, "Library", "Application Support", "Code", "User", "settings.json"),
+        vscodeGlobalInstructions,
+        windsurfGlobalRules,
+        rooRules,
+        pearaiAgent,
+        aiderConfig,
+        gooseConfig,
+        openInterpreterConfig,
+        codexAgents
+      };
+    default:
+      return {
+        claude: path.join(home, ".config", "Claude", "claude_desktop_config.json"),
+        continue: path.join(home, ".continue", "config.json"),
+        zed: path.join(home, ".config", "zed", "settings.json"),
+        vscodeSettings: path.join(home, ".config", "Code", "User", "settings.json"),
+        vscodeGlobalInstructions,
+        windsurfGlobalRules,
+        rooRules,
+        pearaiAgent,
+        aiderConfig,
+        gooseConfig,
+        openInterpreterConfig,
+        codexAgents
+      };
+  }
+}
+
 function resolveBinaryPath({ binaryPath } = {}) {
   if (binaryPath && fs.existsSync(binaryPath)) return binaryPath;
   try {
@@ -432,6 +665,66 @@ function resolveBinaryPath({ binaryPath } = {}) {
     if (!(err instanceof UnsupportedPlatformError)) throw err;
   }
   return null;
+}
+
+function applyAgentInstructions({ logger } = {}) {
+  const instructions = loadAgentInstructions();
+  if (!normalizeInstructionText(instructions)) return { ok: false, reason: "missing_instructions" };
+  const paths = clientInstructionPaths();
+  let updated = false;
+  const safeApply = (label, fn) => {
+    try {
+      const didUpdate = fn();
+      if (didUpdate) updated = true;
+      return didUpdate;
+    } catch (err) {
+      logger?.warn?.(`[docdex] agent instructions update failed for ${label}: ${err?.message || err}`);
+      return false;
+    }
+  };
+
+  if (paths.vscodeGlobalInstructions) {
+    safeApply("vscode-global", () =>
+      upsertPromptFile(paths.vscodeGlobalInstructions, instructions, { prepend: true })
+    );
+  }
+  if (paths.vscodeSettings && paths.vscodeGlobalInstructions) {
+    safeApply("vscode-settings", () => upsertVsCodeInstructions(paths.vscodeSettings, paths.vscodeGlobalInstructions));
+  }
+  if (paths.windsurfGlobalRules) {
+    safeApply("windsurf", () => upsertPromptFile(paths.windsurfGlobalRules, instructions, { prepend: true }));
+  }
+  if (paths.rooRules) {
+    safeApply("roo", () => upsertPromptFile(paths.rooRules, instructions));
+  }
+  if (paths.pearaiAgent) {
+    safeApply("pearai", () => upsertPromptFile(paths.pearaiAgent, instructions, { prepend: true }));
+  }
+  if (paths.claude) {
+    safeApply("claude", () => upsertClaudeInstructions(paths.claude, instructions));
+  }
+  if (paths.continue) {
+    safeApply("continue", () => upsertContinueInstructions(paths.continue, instructions));
+  }
+  if (paths.zed) {
+    safeApply("zed", () => upsertZedInstructions(paths.zed, instructions));
+  }
+  if (paths.aiderConfig) {
+    safeApply("aider", () => upsertYamlInstruction(paths.aiderConfig, "system-prompt", instructions));
+  }
+  if (paths.gooseConfig) {
+    safeApply("goose", () => upsertYamlInstruction(paths.gooseConfig, "instructions", instructions));
+  }
+  if (paths.openInterpreterConfig) {
+    safeApply("open-interpreter", () =>
+      upsertYamlInstruction(paths.openInterpreterConfig, "system_message", instructions)
+    );
+  }
+  if (paths.codexAgents) {
+    safeApply("codex", () => upsertPromptFile(paths.codexAgents, instructions));
+  }
+
+  return { ok: true, updated };
 }
 
 function resolveMcpBinaryPath(binaryPath) {
@@ -602,6 +895,14 @@ function getDiskFreeBytes() {
 
 function normalizeModelName(name) {
   return String(name || "").trim();
+}
+
+function isEmbeddingModelName(name) {
+  const normalized = normalizeModelName(name).toLowerCase();
+  if (!normalized) return false;
+  const base = normalized.split(":")[0];
+  const embed = DEFAULT_OLLAMA_MODEL.toLowerCase();
+  return base === embed || base.startsWith(`${embed}-`);
 }
 
 function readLlmDefaultModel(contents) {
@@ -861,6 +1162,10 @@ async function maybePromptOllamaModel({
 
   const forced = normalizeModelName(env.DOCDEX_OLLAMA_MODEL);
   if (forced) {
+    if (isEmbeddingModelName(forced)) {
+      logger?.warn?.(`[docdex] ${forced} is an embedding-only model; choose a chat model.`);
+      return { status: "skipped", reason: "embedding_only" };
+    }
     const installed = listOllamaModels() || [];
     const forcedLower = forced.toLowerCase();
     const hasForced = installed.some((model) => normalizeModelName(model).toLowerCase() === forcedLower);
@@ -915,7 +1220,7 @@ async function maybePromptOllamaModel({
 
   const normalizedInstalled = installed.map(normalizeModelName);
   const displayModels = normalizedInstalled.map((model) => {
-    const selectable = model.toLowerCase() !== DEFAULT_OLLAMA_MODEL.toLowerCase();
+    const selectable = !isEmbeddingModelName(model);
     return {
       model,
       label: selectable ? model : `${model} (embedding only)`,
@@ -970,6 +1275,11 @@ async function maybePromptOllamaModel({
     if (!pulled) return { status: "failed", reason: "pull_failed" };
     updateDefaultModelConfig(configPath, phiModel, logger);
     return { status: "installed", model: phiModel };
+  }
+  if (isEmbeddingModelName(normalizedAnswer)) {
+    const modelName = normalizedAnswer || DEFAULT_OLLAMA_MODEL;
+    logger?.warn?.(`[docdex] ${modelName} is an embedding-only model; choose a chat model.`);
+    return { status: "skipped", reason: "embedding_only" };
   }
   const numeric = Number.parseInt(answerLower, 10);
   if (Number.isFinite(numeric) && numeric >= 1 && numeric <= displayModels.length) {
@@ -1189,6 +1499,7 @@ function commandExists(cmd, spawnSyncFn) {
 function launchMacTerminal({ binaryPath, args, spawnSyncFn, logger }) {
   const command = [
     "DOCDEX_SETUP_AUTO=1",
+    "DOCDEX_SETUP_MODE=auto",
     `"${binaryPath}"`,
     ...args.map((arg) => `"${arg}"`)
   ].join(" ");
@@ -1209,7 +1520,7 @@ function launchMacTerminal({ binaryPath, args, spawnSyncFn, logger }) {
 }
 
 function launchLinuxTerminal({ binaryPath, args, spawnFn, spawnSyncFn }) {
-  const envArgs = ["env", "DOCDEX_SETUP_AUTO=1", binaryPath, ...args];
+  const envArgs = ["env", "DOCDEX_SETUP_AUTO=1", "DOCDEX_SETUP_MODE=auto", binaryPath, ...args];
   const candidates = [
     { cmd: "x-terminal-emulator", args: ["-e", ...envArgs] },
     { cmd: "gnome-terminal", args: ["--", ...envArgs] },
@@ -1248,7 +1559,7 @@ function launchSetupWizard({
   if (!binaryPath) return { ok: false, reason: "missing_binary" };
   if (shouldSkipSetup(env)) return { ok: false, reason: "skipped" };
 
-  const args = ["setup"];
+  const args = ["setup", "--auto"];
   if (platform === "linux" || platform === "darwin") {
     if (!canPrompt(stdin, stdout)) {
       return { ok: false, reason: "non_interactive" };
@@ -1265,7 +1576,7 @@ function launchSetupWizard({
 
   if (platform === "win32") {
     const quoted = `"${binaryPath}" ${args.map((arg) => `"${arg}"`).join(" ")}`;
-    const cmdline = `set DOCDEX_SETUP_AUTO=1 && ${quoted}`;
+    const cmdline = `set DOCDEX_SETUP_AUTO=1 && set DOCDEX_SETUP_MODE=auto && ${quoted}`;
     const result = spawnSyncFn("cmd", ["/c", "start", "", "cmd", "/c", cmdline]);
     if (result.status === 0) return { ok: true };
     logger?.warn?.(`[docdex] cmd start failed: ${result.stderr || "unknown error"}`);
@@ -1323,6 +1634,7 @@ async function runPostInstallSetup({ binaryPath, logger } = {}) {
     upsertZedConfig(paths.zed, url);
   }
   upsertCodexConfig(paths.codex, codexUrl);
+  applyAgentInstructions({ logger: log });
 
   const daemonRoot = ensureDaemonRoot();
   const resolvedBinary = resolveBinaryPath({ binaryPath });
@@ -1375,5 +1687,6 @@ module.exports = {
   hasInteractiveTty,
   canPromptWithTty,
   shouldSkipSetup,
-  launchSetupWizard
+  launchSetupWizard,
+  applyAgentInstructions
 };

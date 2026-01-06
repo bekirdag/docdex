@@ -27,7 +27,12 @@ async function ensureDir(dirPath) {
 async function writeBinary({ distDir, isWin32, bytes }) {
   await ensureDir(distDir);
   const binaryPath = path.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+  const mcpBinaryPath = path.join(
+    distDir,
+    isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server"
+  );
   await fs.promises.writeFile(binaryPath, bytes);
+  await fs.promises.writeFile(mcpBinaryPath, bytes);
   return binaryPath;
 }
 

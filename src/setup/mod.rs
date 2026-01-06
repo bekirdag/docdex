@@ -16,11 +16,14 @@ mod state_store;
 mod test_support;
 mod ui;
 
+const AGENTS_INSTRUCTIONS: &str = include_str!("../../npm/assets/agents.md");
+
 #[derive(Debug, Clone)]
 pub struct SetupOptions {
     pub non_interactive: bool,
     pub json: bool,
     pub force: bool,
+    pub auto: bool,
     pub ollama_path: Option<PathBuf>,
 }
 
@@ -42,6 +45,7 @@ pub(crate) fn run(args: SetupArgs) -> Result<()> {
         non_interactive: args.non_interactive,
         json: args.json,
         force: args.force,
+        auto: args.auto,
         ollama_path: args.ollama_path,
     };
     let summary = run_with_options(&options)?;
@@ -79,38 +83,6 @@ fn run_with_options(options: &SetupOptions) -> Result<SetupSummary> {
         });
     }
 
-    let force = options.force || env_bool("DOCDEX_SETUP_FORCE");
-    let auto_run = env_bool("DOCDEX_SETUP_AUTO");
-    if should_skip_due_to_status(force, auto_run)? {
-        if let Some(status) = state_store::read_status()? {
-            match status.status {
-                state_store::SetupStatus::Complete => {
-                    return Ok(SetupSummary {
-                        status: "complete".to_string(),
-                        message: "Setup already completed.".to_string(),
-                        models_installed: status.models_installed.clone(),
-                        default_model: status.default_model.clone(),
-                        timestamp_ms: status.timestamp_ms,
-                        error: status.error.clone(),
-                        steps: Vec::new(),
-                    });
-                }
-                state_store::SetupStatus::Deferred => {
-                    return Ok(SetupSummary {
-                        status: "deferred".to_string(),
-                        message: status.message.clone(),
-                        models_installed: status.models_installed.clone(),
-                        default_model: status.default_model.clone(),
-                        timestamp_ms: status.timestamp_ms,
-                        error: status.error.clone(),
-                        steps: Vec::new(),
-                    });
-                }
-                state_store::SetupStatus::Failed => {}
-            }
-        }
-    }
-
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
     if !interactive {
         return Ok(SetupSummary {
@@ -134,6 +106,9 @@ fn run_with_options(options: &SetupOptions) -> Result<SetupSummary> {
         let _ = state_store::write_failed(&summary.message);
     }
     state_store::write_status(&summary)?;
+    if let Err(err) = write_agent_instructions() {
+        eprintln!("[docdex] failed to write agents instructions: {err}");
+    }
     Ok(summary)
 }
 
@@ -149,25 +124,26 @@ fn env_bool(key: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn should_skip_due_to_status(force: bool, skip_deferred: bool) -> Result<bool> {
-    if force {
-        return Ok(false);
-    }
-    if let Some(status) = state_store::read_status()? {
-        match status.status {
-            state_store::SetupStatus::Complete => return Ok(true),
-            state_store::SetupStatus::Deferred => return Ok(skip_deferred),
-            state_store::SetupStatus::Failed => {}
-        }
-    }
-    Ok(false)
-}
-
 fn now_ms() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
+}
+
+fn write_agent_instructions() -> Result<()> {
+    let state_base = crate::state_paths::default_state_base_dir()?;
+    let root = state_base
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("resolve docdex state root"))?;
+    crate::state_layout::ensure_state_dir_secure(root)?;
+    let target = root.join("agents.md");
+    let existing = std::fs::read_to_string(&target).ok();
+    if existing.as_deref() == Some(AGENTS_INSTRUCTIONS) {
+        return Ok(());
+    }
+    std::fs::write(&target, AGENTS_INSTRUCTIONS).context("write agents instructions")?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -177,7 +153,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn force_ignores_completed_status() -> Result<()> {
+    fn setup_status_roundtrip_for_summary() -> Result<()> {
         let _guard = ENV_LOCK.lock().unwrap();
         let dir = TempDir::new()?;
         std::env::set_var("DOCDEX_STATE_DIR", dir.path());
@@ -191,48 +167,10 @@ mod tests {
             steps: Vec::new(),
         };
         state_store::write_status(&summary)?;
-        assert!(should_skip_due_to_status(false, true)?);
-        assert!(!should_skip_due_to_status(true, true)?);
-        std::env::remove_var("DOCDEX_STATE_DIR");
-        Ok(())
-    }
-
-    #[test]
-    fn deferred_status_skips_without_force() -> Result<()> {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let dir = TempDir::new()?;
-        std::env::set_var("DOCDEX_STATE_DIR", dir.path());
-        let summary = SetupSummary {
-            status: "deferred".to_string(),
-            message: "later".to_string(),
-            models_installed: Vec::new(),
-            default_model: None,
-            timestamp_ms: now_ms(),
-            error: None,
-            steps: Vec::new(),
-        };
-        state_store::write_status(&summary)?;
-        assert!(should_skip_due_to_status(false, true)?);
-        std::env::remove_var("DOCDEX_STATE_DIR");
-        Ok(())
-    }
-
-    #[test]
-    fn deferred_status_does_not_skip_when_allowed() -> Result<()> {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let dir = TempDir::new()?;
-        std::env::set_var("DOCDEX_STATE_DIR", dir.path());
-        let summary = SetupSummary {
-            status: "deferred".to_string(),
-            message: "later".to_string(),
-            models_installed: Vec::new(),
-            default_model: None,
-            timestamp_ms: now_ms(),
-            error: None,
-            steps: Vec::new(),
-        };
-        state_store::write_status(&summary)?;
-        assert!(!should_skip_due_to_status(false, false)?);
+        let status_path = dir.path().join("setup_status.json");
+        let raw = std::fs::read_to_string(&status_path)?;
+        let read: state_store::SetupStatusRecord = serde_json::from_str(&raw)?;
+        assert_eq!(read.status, state_store::SetupStatus::Complete);
         std::env::remove_var("DOCDEX_STATE_DIR");
         Ok(())
     }

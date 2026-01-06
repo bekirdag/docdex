@@ -22,7 +22,8 @@ const {
   pullOllamaModel,
   hasInteractiveTty,
   shouldSkipSetup,
-  launchSetupWizard
+  launchSetupWizard,
+  applyAgentInstructions
 } = require("../lib/postinstall_setup");
 
 test("upsertServerConfig adds server section when missing", () => {
@@ -130,6 +131,51 @@ test("upsertCodexConfig migrates legacy mcp_servers array", () => {
   const contents = fs.readFileSync(file, "utf8");
   assert.ok(!contents.includes("[[mcp_servers]]"));
   assert.ok(contents.includes(`docdex = { url = "${url}" }`) || contents.includes("[mcp_servers.docdex]"));
+});
+
+test("upsertCodexConfig removes legacy instructions entry", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-codex-instructions-"));
+  const file = path.join(dir, "config.toml");
+  fs.writeFileSync(
+    file,
+    [
+      "[features]",
+      'experimental_instructions_file = "~/.docdex/agents.md"',
+      "",
+      "[mcp_servers]",
+      'docdex = { url = "http://localhost:3000/sse" }',
+      ""
+    ].join("\n")
+  );
+  const url = configStreamableUrlForPort(3000);
+  const changed = upsertCodexConfig(file, url);
+  assert.equal(changed, true);
+  const contents = fs.readFileSync(file, "utf8");
+  assert.ok(!contents.includes('experimental_instructions_file = "~/.docdex/agents.md"'));
+});
+
+test("applyAgentInstructions appends codex AGENTS.md", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-codex-agents-"));
+  const prev = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    APPDATA: process.env.APPDATA
+  };
+  process.env.HOME = dir;
+  process.env.USERPROFILE = dir;
+  process.env.APPDATA = path.join(dir, "AppData", "Roaming");
+  try {
+    const result = applyAgentInstructions({ logger: { warn: () => {} } });
+    assert.equal(result.ok, true);
+    const target = path.join(dir, ".codex", "AGENTS.md");
+    assert.ok(fs.existsSync(target));
+    const contents = fs.readFileSync(target, "utf8");
+    assert.ok(contents.includes("# Docdex Agent Usage Instructions"));
+  } finally {
+    process.env.HOME = prev.HOME;
+    process.env.USERPROFILE = prev.USERPROFILE;
+    process.env.APPDATA = prev.APPDATA;
+  }
 });
 
 test("runPostInstallSetup does not call Ollama installers", () => {
@@ -242,8 +288,10 @@ test("launchSetupWizard uses linux terminal launcher when interactive", () => {
     "-e",
     "env",
     "DOCDEX_SETUP_AUTO=1",
+    "DOCDEX_SETUP_MODE=auto",
     "/tmp/docdexd",
-    "setup"
+    "setup",
+    "--auto"
   ]);
 });
 

@@ -404,9 +404,9 @@ New commands are added to the docdex binary to manage profiles manually, providi
 **Browser setup helpers (web tier dependency):**
 
 * **docdexd browser list/setup/install**  
-  * **Description:** Lists discovered headless-capable browsers, runs auto-discovery, and (on Linux) installs a pinned headless Chromium build when no browser is present.  
+  * **Description:** Lists discovered headless-capable browsers, runs auto-discovery, and installs a Playwright-managed Chromium build when no browser is present (macOS/Windows/Linux).  
   * **Usage:** docdexd browser list \| docdexd browser setup \| docdexd browser install  
-  * **Behavior:** Persists `web.scraper.chrome_binary_path` and `web.scraper.browser_kind` in `~/.docdex/config.toml`; `web.scraper.auto_install` defaults to true on Linux and false elsewhere (override with `DOCDEX_BROWSER_AUTO_INSTALL=0`).
+  * **Behavior:** Persists `web.scraper.chrome_binary_path` and `web.scraper.browser_kind` in `~/.docdex/config.toml`; `web.scraper.auto_install` defaults to true (override with `DOCDEX_BROWSER_AUTO_INSTALL=0`). Use `PLAYWRIGHT_BROWSERS_PATH` to override the Playwright cache location.
 
 ### **6.2 HTTP API Extensions**
 

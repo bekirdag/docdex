@@ -111,6 +111,7 @@
 - tests/browser_install.rs
 - tests/browser_cli.rs
 - tests/check_browser.rs
+- tests/web_scraper.rs
 
 ## Rust Unit/Component Tests
 - src/config/tests.rs
@@ -182,6 +183,7 @@
 - npm/test/postinstall_setup.test.js
 - npm/test/installer_local_fallback.test.js
 - npm/test/uninstall.test.js
+- npm/test/playwright_install.test.js
 
 ## Test Fixtures
 - npm/test/fixtures/archive/fake-archive.bin

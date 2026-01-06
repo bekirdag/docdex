@@ -90,6 +90,19 @@ pub fn list_models(bin: &Path) -> Result<Vec<String>> {
     }
 }
 
+pub fn list_models_if_running(bin: &Path) -> Result<Option<Vec<String>>> {
+    match list_models_once(bin) {
+        Ok(models) => Ok(Some(models)),
+        Err(err) => {
+            if is_connect_error(&err) {
+                Ok(None)
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
 pub fn pull_model(bin: &Path, model: &str) -> Result<()> {
     match pull_model_once(bin, model) {
         Ok(()) => Ok(()),

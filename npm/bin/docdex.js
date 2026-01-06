@@ -27,6 +27,24 @@ function printLines(lines, { stderr } = {}) {
   }
 }
 
+function readInstallMetadata({ fsModule, pathModule, basePath }) {
+  if (!fsModule || typeof fsModule.readFileSync !== "function") return null;
+  const metadataPath = pathModule.join(basePath, "docdexd-install.json");
+  try {
+    const raw = fsModule.readFileSync(metadataPath, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function formatInstallSource(meta) {
+  const source = meta?.archive?.source;
+  if (!source || typeof source !== "string") return "unknown";
+  if (source === "local") return "local binary";
+  return `release (${source})`;
+}
+
 function runDoctor() {
   const platform = process.platform;
   const arch = process.arch;
@@ -55,6 +73,9 @@ function runDoctor() {
     const targetTriple = targetTripleForPlatformKey(platformKey);
     const expectedAssetName = artifactName(platformKey);
     const expectedAssetPattern = assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAssetName });
+    const basePath = path.join(__dirname, "..", "dist", platformKey);
+    const installMeta = readInstallMetadata({ fsModule: fs, pathModule: path, basePath });
+    const installSource = formatInstallSource(installMeta);
 
     report = {
       exitCode: 0,
@@ -66,7 +87,8 @@ function runDoctor() {
         `[docdex] Platform key: ${platformKey}`,
         `[docdex] Expected target triple: ${targetTriple}`,
         `[docdex] Expected release asset: ${expectedAssetName}`,
-        `[docdex] Asset naming pattern: ${expectedAssetPattern}`
+        `[docdex] Asset naming pattern: ${expectedAssetPattern}`,
+        `[docdex] Install source: ${installSource}`
       ]
     };
   } catch (err) {

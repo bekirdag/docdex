@@ -24,17 +24,6 @@ pub struct SetupStatusRecord {
     pub error: Option<String>,
 }
 
-pub fn read_status() -> Result<Option<SetupStatusRecord>> {
-    let path = status_path()?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let raw = fs::read_to_string(&path)
-        .with_context(|| format!("read setup status {}", path.display()))?;
-    let parsed = serde_json::from_str(&raw).context("parse setup status")?;
-    Ok(Some(parsed))
-}
-
 pub fn write_status(summary: &crate::setup::SetupSummary) -> Result<()> {
     let status = match summary.status.as_str() {
         "complete" | "installed" => SetupStatus::Complete,
@@ -137,33 +126,4 @@ fn write_raw(path: &Path, payload: &str) -> Result<()> {
     fs::write(&tmp, payload).with_context(|| format!("write {}", tmp.display()))?;
     fs::rename(&tmp, path).with_context(|| format!("rename {}", path.display()))?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::setup::test_support::ENV_LOCK;
-    use tempfile::TempDir;
-
-    #[test]
-    fn status_roundtrip() -> Result<()> {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let dir = TempDir::new()?;
-        std::env::set_var("DOCDEX_STATE_DIR", dir.path());
-        let summary = crate::setup::SetupSummary {
-            status: "complete".to_string(),
-            message: "ok".to_string(),
-            models_installed: vec!["nomic-embed-text".to_string()],
-            default_model: Some("phi3.5:3.8b".to_string()),
-            timestamp_ms: 1,
-            error: None,
-            steps: Vec::new(),
-        };
-        write_status(&summary)?;
-        let read = read_status()?.expect("status present");
-        assert_eq!(read.status, SetupStatus::Complete);
-        assert_eq!(read.default_model.as_deref(), Some("phi3.5:3.8b"));
-        std::env::remove_var("DOCDEX_STATE_DIR");
-        Ok(())
-    }
 }

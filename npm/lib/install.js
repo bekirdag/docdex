@@ -40,6 +40,7 @@ const DEFAULT_INTEGRITY_CONFIG = Object.freeze({
 });
 const LOCAL_FALLBACK_ENV = "DOCDEX_LOCAL_FALLBACK";
 const LOCAL_BINARY_ENV = "DOCDEX_LOCAL_BINARY";
+const AGENTS_DOC_FILENAME = "agents.md";
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -197,6 +198,36 @@ function requestOptions() {
   const token = process.env.DOCDEX_GITHUB_TOKEN || process.env.GITHUB_TOKEN;
   if (token) headers.Authorization = `Bearer ${token}`;
   return { headers };
+}
+
+function agentsDocSourcePath() {
+  return path.join(__dirname, "..", "assets", AGENTS_DOC_FILENAME);
+}
+
+function agentsDocTargetPath() {
+  return path.join(os.homedir(), ".docdex", AGENTS_DOC_FILENAME);
+}
+
+function writeAgentInstructions() {
+  const sourcePath = agentsDocSourcePath();
+  if (!fs.existsSync(sourcePath)) return false;
+  let contents = "";
+  try {
+    contents = fs.readFileSync(sourcePath, "utf8");
+  } catch {
+    return false;
+  }
+  if (!contents.trim()) return false;
+  const targetPath = agentsDocTargetPath();
+  try {
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true, mode: 0o700 });
+    const existing = fs.existsSync(targetPath) ? fs.readFileSync(targetPath, "utf8") : null;
+    if (existing === contents) return false;
+    fs.writeFileSync(targetPath, contents);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function selectHttpClient(url) {
@@ -409,6 +440,45 @@ function parseEnvBool(value) {
   return null;
 }
 
+function readJsonSync({ fsModule, filePath }) {
+  try {
+    const raw = fsModule.readFileSync(filePath, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function readTextSync({ fsModule, filePath }) {
+  try {
+    return fsModule.readFileSync(filePath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function isDocdexRepoRoot({ baseDir, fsModule, pathModule }) {
+  const cargoPath = pathModule.join(baseDir, "Cargo.toml");
+  const npmPackagePath = pathModule.join(baseDir, "npm", "package.json");
+  if (!fsModule.existsSync(cargoPath) || !fsModule.existsSync(npmPackagePath)) return false;
+  const pkgJson = readJsonSync({ fsModule, filePath: npmPackagePath });
+  if (pkgJson?.name !== "docdex") return false;
+  const cargoToml = readTextSync({ fsModule, filePath: cargoPath });
+  return Boolean(cargoToml && /name\s*=\s*"docdexd"/.test(cargoToml));
+}
+
+function detectLocalRepoRootFromInitCwd({ env = process.env, fsModule = fs, pathModule = path } = {}) {
+  const initCwd = env?.INIT_CWD;
+  if (!initCwd) return null;
+  const candidate = pathModule.resolve(initCwd);
+  if (isDocdexRepoRoot({ baseDir: candidate, fsModule, pathModule })) return candidate;
+  const parent = pathModule.dirname(candidate);
+  if (parent && parent !== candidate && isDocdexRepoRoot({ baseDir: parent, fsModule, pathModule })) {
+    return parent;
+  }
+  return null;
+}
+
 function detectLocalRepoRoot({ pathModule, fsModule } = {}) {
   const pathImpl = pathModule || path;
   const fsImpl = fsModule || fs;
@@ -419,6 +489,45 @@ function detectLocalRepoRoot({ pathModule, fsModule } = {}) {
     return candidate;
   }
   return null;
+}
+
+function parseNpmConfigArgv(env) {
+  const raw = env?.npm_config_argv;
+  if (!raw || typeof raw !== "string") return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed?.original)) return parsed.original;
+    if (Array.isArray(parsed?.cooked)) return parsed.cooked;
+  } catch {}
+  return null;
+}
+
+function isLikelyLocalInstallArg(arg, pathModule) {
+  if (typeof arg !== "string" || !arg) return false;
+  if (arg === "." || arg === "..") return true;
+  if (arg.startsWith("file:")) return true;
+  if (arg.startsWith("./") || arg.startsWith("../")) return true;
+  if (pathModule.isAbsolute(arg)) return true;
+  return false;
+}
+
+function isNpmInstallCommand(argv) {
+  return argv.some((arg) => arg === "install" || arg === "i" || arg === "add");
+}
+
+function isLocalInstallRequest({ env, pathModule }) {
+  const argv = parseNpmConfigArgv(env);
+  if (!argv || !isNpmInstallCommand(argv)) return false;
+  return argv.some((arg) => isLikelyLocalInstallArg(arg, pathModule));
+}
+
+function shouldPreferLocalInstall({ env, localBinaryPath, pathModule }) {
+  if (!localBinaryPath) return false;
+  if (parseEnvBool(env?.[LOCAL_FALLBACK_ENV]) === false) return false;
+  if (env?.[LOCAL_BINARY_ENV]) return true;
+  if (!env?.INIT_CWD) return false;
+  if (env?.npm_lifecycle_event !== "postinstall") return false;
+  return isLocalInstallRequest({ env, pathModule });
 }
 
 function resolveLocalBinaryCandidate({
@@ -466,13 +575,20 @@ async function installFromLocalBinary({
     await fsModule.promises.chmod(destPath, 0o755).catch(() => {});
   }
   const mcpName = isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server";
-  const mcpSource = pathModule.join(pathModule.dirname(binaryPath), mcpName);
-  if (fsModule.existsSync(mcpSource)) {
+  const mcpCandidates = [
+    pathModule.join(pathModule.dirname(binaryPath), mcpName),
+    pathModule.join(pathModule.dirname(pathModule.dirname(binaryPath)), "release", mcpName),
+    pathModule.join(pathModule.dirname(pathModule.dirname(binaryPath)), "debug", mcpName)
+  ];
+  const mcpSource = mcpCandidates.find((candidate) => fsModule.existsSync(candidate));
+  if (mcpSource) {
     const mcpDest = pathModule.join(distDir, mcpName);
     await fsModule.promises.copyFile(mcpSource, mcpDest);
     if (!isWin32) {
       await fsModule.promises.chmod(mcpDest, 0o755).catch(() => {});
     }
+  } else {
+    logger?.warn?.(`[docdex] local MCP binary not found; expected near ${binaryPath}`);
   }
   const binarySha256 = await sha256FileFn(destPath);
   const metadata = {
@@ -1527,6 +1643,7 @@ async function verifyDownloadedFileIntegrity({
 async function runInstaller(options) {
   const opts = options || {};
   const logger = opts.logger || console;
+  const env = opts.env || process.env;
 
   const detectPlatformKeyFn = opts.detectPlatformKeyFn || detectPlatformKey;
   const targetTripleForPlatformKeyFn = opts.targetTripleForPlatformKeyFn || targetTripleForPlatformKey;
@@ -1545,8 +1662,19 @@ async function runInstaller(options) {
   const sha256FileFn = opts.sha256FileFn || sha256File;
   const writeJsonFileAtomicFn = opts.writeJsonFileAtomicFn || writeJsonFileAtomic;
   const restartFn = opts.restartFn;
-  const localRepoRoot = opts.localRepoRoot;
-  const localBinaryPath = opts.localBinaryPath;
+  const localRepoRoot =
+    opts.localRepoRoot ||
+    detectLocalRepoRootFromInitCwd({ env, fsModule, pathModule }) ||
+    detectLocalRepoRoot({ pathModule, fsModule });
+  const localBinaryPath =
+    opts.localBinaryPath ||
+    resolveLocalBinaryCandidate({
+      env,
+      platform: process.platform,
+      pathModule,
+      fsModule,
+      repoRoot: localRepoRoot
+    });
 
   const detectedPlatform = opts.platform || process.platform;
   const detectedArch = opts.arch || process.arch;
@@ -1630,6 +1758,24 @@ async function runInstaller(options) {
     };
   }
 
+  if (shouldPreferLocalInstall({ env, localBinaryPath, pathModule })) {
+    const localInstall = await installFromLocalBinary({
+      fsModule,
+      pathModule,
+      distDir,
+      binaryPath: localBinaryPath,
+      isWin32,
+      version,
+      platformKey,
+      targetTriple,
+      repoSlug: null,
+      sha256FileFn,
+      writeJsonFileAtomicFn,
+      logger
+    });
+    return localInstall;
+  }
+
   let repoSlug = null;
   let archive;
   let expectedSha256;
@@ -1652,7 +1798,7 @@ async function runInstaller(options) {
   } catch (err) {
     const fallback = await maybeInstallLocalFallback({
       err,
-      env: process.env,
+      env,
       fsModule,
       pathModule,
       distDir,
@@ -1949,6 +2095,11 @@ async function main() {
     await runPostInstallSetup({ binaryPath: result?.binaryPath });
   } catch (err) {
     console.warn(`[docdex] postinstall setup skipped: ${err?.message || err}`);
+  }
+  try {
+    writeAgentInstructions();
+  } catch (err) {
+    console.warn(`[docdex] agent instructions skipped: ${err?.message || err}`);
   }
   printPostInstallBanner();
 }

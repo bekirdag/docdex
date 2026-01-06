@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use anyhow::{anyhow, Result};
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -10,6 +11,11 @@ use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
+use url::Url;
+
+use crate::orchestrator::web_config::WebConfig;
+use crate::web::chrome::ChromeFetchResult;
+use crate::web::playwright::{fetch_dom as fetch_dom_playwright, PlaywrightFetchConfig};
 
 use crate::metrics;
 
@@ -701,6 +707,37 @@ async fn terminate_windows(pid: u32, force: bool) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("taskkill exited with {status}"))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ScraperEngine {
+    Playwright {
+        config: PlaywrightFetchConfig,
+    },
+}
+
+impl ScraperEngine {
+    pub fn from_web_config(config: &WebConfig) -> Result<Self> {
+        let engine = config.scraper_engine.trim().to_ascii_lowercase();
+        if !engine.is_empty() && engine != "playwright" {
+            warn!(
+                "web scraper engine {} is not supported; using playwright",
+                config.scraper_engine
+            );
+        }
+        let playwright_config = PlaywrightFetchConfig::from_web_config(config).ok_or_else(|| {
+            anyhow!("playwright fetch config unavailable; run `docdexd browser setup`")
+        })?;
+        Ok(ScraperEngine::Playwright {
+            config: playwright_config,
+        })
+    }
+
+    pub async fn fetch_dom(&self, url: &Url) -> Result<ChromeFetchResult> {
+        match self {
+            ScraperEngine::Playwright { config } => fetch_dom_playwright(url, config).await,
+        }
     }
 }
 

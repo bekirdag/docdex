@@ -178,6 +178,7 @@ test("docdex CLI wrapper: `doctor` prints platform diagnostics without checking 
   assert.ok(result.stdout.includes("[docdex] Expected target triple: aarch64-apple-darwin"));
   assert.ok(result.stdout.includes("[docdex] Expected release asset: docdexd-darwin-arm64.tar.gz"));
   assert.ok(result.stdout.includes("[docdex] Asset naming pattern: docdexd-<platformKey>.tar.gz"));
+  assert.ok(result.stdout.includes("[docdex] Install source:"));
   assert.equal(spawnCalls, 0);
   assert.equal(existsCalls, 0);
 });

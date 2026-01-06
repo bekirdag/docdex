@@ -46,7 +46,7 @@ Docdex v2.0 runs a per-repo local-first daemon (`docdexd serve`) and also suppor
 - **Waterfall retrieval** (per repo): Tier 1 local indexes (source \+ libs), Tier 2 zero-cost web discovery/fetch (DuckDuckGo HTML \+ guarded headless Chrome), Tier 3 local cognition/memory (Ollama chat/embeddings, sqlite-vec memory). Cached library docs are treated as local within Tier 1\.  
 - **Context assembly**: fixed priority Memory → Repo Code → Library/Web; token budget roughly 10% system prompt, 20% memory, 50% repo/library/web, 20% generation buffer. Budgeting happens before Ollama calls.  
 - **Isolation model**: per-repo state under `~/.docdex/state/repos/<fingerprint>/`; global caches (`cache/web`, `cache/libs`) are reused but ingested per repo. CLI/MCP require explicit repo id/path; HTTP uses the daemon repo by default and validates any provided repo id/path.  
-- **Hardware awareness**: daemon detects RAM/VRAM to recommend or constrain Ollama models (e.g., \<8GB ultra-light; ≥16GB default `phi3.5:3.8b`; ≥32GB \+ GPU suggests `llama3.1:70b` if present). No silent auto-install; npm postinstall may prompt and installs only on explicit confirmation.  
+- **Hardware awareness**: daemon detects RAM/VRAM to recommend or constrain Ollama models (e.g., \<8GB ultra-light; ≥16GB default `phi3.5:3.8b`; ≥32GB \+ GPU suggests `llama3.1:70b` if present). No silent auto-install of Ollama/models; npm postinstall may prompt and installs only on explicit confirmation.  
 - **Security posture**: binds to `127.0.0.1` by default; `--expose` demands token auth on HTTP, and MCP enforces `auth_token` when configured. No telemetry or paid/cloud services.  
 - **Scalability & reliability (per PDR scope)**: targets ≥8 concurrent repos by running separate per-repo daemons; local search p95 \< 50ms (\<20ms typical). Browser guard prevents zombie Chrome; web rate limits (≥2s DDG, ≥1s fetch) mitigate bans.  
 - **Out-of-scope (per section)**: new surfaces, cloud/vector backends, cross-repo memory, clustered/multi-tenant daemon topologies are explicitly excluded.
@@ -136,7 +136,7 @@ Assumptions
 
 - BM25 search is sufficient for Tier 1 initial ranking; rerank is optional/local only.  
 - `web_trigger_threshold` default 0.7 is configurable; same threshold used across surfaces unless overridden.  
-- Chrome availability and Ollama models are pre-installed or handled by setup flows; optional prompts may install on explicit confirmation (no silent auto-install).
+- Browser availability and Ollama models are handled by setup flows; Playwright auto-install is opt-out and controlled by config/flags.
 
 Open Questions & Risks
 
@@ -309,14 +309,14 @@ Config/state layer ensures typed configuration, RW validation, and deterministic
 - **Scalability/Reliability**: Bounded by `max_concurrent_fetches` and per-repo resources; state layout supports multiple per-repo daemons without cross-contamination. RW validation prevents partial init; locks directory guards browser lifecycle.  
 - **Security/Isolation**: Enforce localhost defaults; state paths scoped by fingerprint to prevent cross-repo bleed. No telemetry. Token auth handled at server layer; config/state manager just supplies bind info.  
 - **Observability**: Log config warnings (unknown provider), RW failures, and auto-create events. Additional metrics not requested in PDR.  
-- **DevOps**: Persistence across upgrades; Linux may auto-install headless Chromium if no browser is detected (opt-out supported), while macOS/Windows rely on installed browsers. No cloud dependencies.
+- **DevOps**: Persistence across upgrades; Playwright auto-installs a managed Chromium build on macOS/Windows/Linux when no browser is detected (opt-out supported), with system browsers as fallback. No cloud dependencies.
 
 **Open Questions & Risks**
 
 - Should config validation hard-fail on unknown keys or only warn? (PDR silent)  
 - Behavior when `global_state_dir` is moved or lacks perms after init—migrate vs. fail?  
 - Fingerprint collisions are improbable but not addressed; assume SHA256 sufficient.  
-- Chrome/browser path defaults on diverse OSes—multi-browser fallbacks and Linux auto-install need to remain deterministic.
+- Chrome/browser path defaults on diverse OSes—multi-browser fallbacks and Playwright auto-install need to remain deterministic.
 
 **Verification Strategy**
 
@@ -894,7 +894,7 @@ Repo-scoped CLI entry points exposed by `docdexd` (daemon) and `docdex` (wrapper
 
 - **DevOps**  
     
-  - Config at `~/.docdex/config.toml` auto-created; CLI should warn if provider ≠ Ollama. No silent auto-install of Ollama/Chrome per PDR (prompt-based installs only).
+  - Config at `~/.docdex/config.toml` auto-created; CLI should warn if provider ≠ Ollama. Ollama installs remain prompt-based; Playwright browser installs are opt-out and can run via setup/auto-install.
 
 
 - **Assumptions**  
@@ -1098,7 +1098,7 @@ Docdex relies solely on locally managed, zero-cost components for LLM/embeddings
 - Config at `~/.docdex/config.toml`; auto-created with localhost defaults. Validates RW access to `global_state_dir`.  
 - Key sections enforced: `[core]`, `[llm]`, `[search]`, `[web]`, `[web.scraper]`, `[memory]`, `[server]`. Warn if `provider` is unknown or missing required config.  
 - State layout under `~/.docdex/state/` with repo fingerprints; includes `index/`, `libs_index/`, `memory.db`, `symbols.db`, `dag.db`, `impact_graph.json`, `cache/web`, `cache/libs`, `locks/`.  
-- No silent auto-install of Ollama/Chrome; `llm-setup` provides guidance, and npm postinstall may prompt for explicit installs.
+- No silent auto-install of Ollama; Playwright browser installs are opt-out and run via setup/auto-install. `llm-setup` provides guidance, and npm postinstall may prompt for explicit installs.
 
 **Open Questions & Risks**
 
@@ -1157,7 +1157,7 @@ Architectural intent: keep a per-repo `docdexd` responsive on commodity machines
 **Browser and web fetch controls**
 
 - Headless browser guarded by a lifecycle manager: bounded concurrency (configurable, tied to `[core].max_concurrent_fetches`/web scraper settings), per-page load timeout (default 15s), and teardown to avoid zombie processes; locks directory used to serialize guard state.  
-- Browser discovery supports Chrome/Chromium/Edge/Brave/Vivaldi on macOS/Windows; Linux can auto-install Chromium if none is found and persist the resolved path.  
+- Browser discovery supports Chrome/Chromium/Edge/Brave/Vivaldi on macOS/Windows; Playwright auto-installs Chromium when none is found and persists the resolved path.  
 - Discovery rate limits: DuckDuckGo HTML queries spaced ≥2s; fetch rate limit ≥1 req/sec per domain; backoff on HTTP errors; respect blocklist; cache reused to avoid redundant fetches.  
 - Scraper uses readability cleanup; caches raw HTML \+ cleaned JSON under `cache/web/` with TTL from config.
 
@@ -1182,7 +1182,7 @@ Architectural intent: keep a per-repo `docdexd` responsive on commodity machines
 
 **DevOps/scalability**
 
-- No clustered multi-tenant mode; scale by running per-repo daemons and tuning fetch concurrency. State layout must remain upgrade-safe; no silent auto-install of Chrome/Ollama.
+- No clustered multi-tenant mode; scale by running per-repo daemons and tuning fetch concurrency. State layout must remain upgrade-safe; Ollama installs remain prompt-based and Playwright browser installs are opt-out.
 
 **Assumptions**
 
@@ -1212,7 +1212,7 @@ Docdex enforces local-first, zero-cost operation with explicit controls when the
 - **Data residency & locality**: All inference, embeddings, search, and state are local by default; no telemetry. Only zero-cost/open components (Ollama, Tantivy, DuckDuckGo HTML, headless Chrome, sqlite-vec, Tree-sitter) are permitted. Web access is gated (confidence-based or explicit) and cached locally. No cloud/vector DBs, no paid APIs.  
 - **Repo isolation**: Per-repo state under `~/.docdex/state/repos/<fingerprint>/` (indexes, memory.db, symbols.db, dag.db, impact_graph.json, libs\_index). Global caches (`cache/web`, `cache/libs`) are shared storage but ingested per repo without cross-contamination.  
 - **Process/browsing safeguards**: Headless Chrome guarded with locks and lifecycle checks to avoid zombie processes; rate limits enforced to reduce abuse risk. Locks directory under state for browser/process guards.  
-- **Configuration defaults**: Auto-created config favors privacy: localhost bind, Ollama provider, MCP enabled locally. Warnings if LLM provider differs from Ollama. No silent auto-install of dependencies (prompt-based only).  
+- **Configuration defaults**: Auto-created config favors privacy: localhost bind, Ollama provider, MCP enabled locally. Warnings if LLM provider differs from Ollama. Ollama installs remain prompt-based; Playwright browser installs are opt-out and can run via setup/auto-install.  
 - **Logging/observability**: PDR does not request telemetry; assume minimal local logs only. No remote log shipping described. Optional state logs via `DOCDEX_LOG_TO_STATE=1` write to `~/.docdex/state/logs/docdexd-<pid>.log`.  
 - **Dependencies**: Open-source/local-only; no paid keys. DuckDuckGo HTML for discovery; local Chrome for scraping; Ollama for LLM/embeddings.
 

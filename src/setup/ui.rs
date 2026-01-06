@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode},
@@ -14,16 +14,70 @@ use ratatui::{
     Terminal,
 };
 use std::io::{self, Stdout};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::fmt::Write;
 
 use super::config;
 use super::model::{CHAT_MODEL, CHAT_MODEL_SIZE_GIB, EMBED_MODEL};
 use super::ollama;
-use super::state::{SetupContext, SetupEvent, SetupState, StepKey, StepSnapshot, StepStatus};
+use super::state::{
+    SetupContext, SetupOutcome, SetupState, StepKey, StepSnapshot, StepStatus,
+};
 use super::SetupSummary;
 use crate::config as app_config;
 use crate::util;
+use crate::web::browser_install;
 use std::env;
+use std::collections::HashSet;
+
+const MENU_STEPS: [StepKey; 4] = [
+    StepKey::Ollama,
+    StepKey::EmbedModel,
+    StepKey::ChatModel,
+    StepKey::Browser,
+];
+
+pub(crate) struct MenuDetails {
+    ollama: String,
+    embed: String,
+    chat: String,
+    browser: String,
+    embed_options: Option<MenuOptions>,
+    chat_options: Option<MenuOptions>,
+    browser_options: Option<MenuOptions>,
+    browsers: Vec<util::PlaywrightBrowser>,
+}
+
+impl MenuDetails {
+    fn body_for(&self, step: StepKey) -> &str {
+        match step {
+            StepKey::Ollama => &self.ollama,
+            StepKey::EmbedModel => &self.embed,
+            StepKey::ChatModel => &self.chat,
+            StepKey::Browser => &self.browser,
+            _ => "Select a section to configure.",
+        }
+    }
+
+    fn options_for(&self, step: StepKey) -> Option<&MenuOptions> {
+        match step {
+            StepKey::EmbedModel => self.embed_options.as_ref(),
+            StepKey::ChatModel => self.chat_options.as_ref(),
+            StepKey::Browser => self.browser_options.as_ref(),
+            _ => None,
+        }
+    }
+
+    fn browsers(&self) -> &[util::PlaywrightBrowser] {
+        &self.browsers
+    }
+}
+
+#[derive(Clone)]
+struct MenuOptions {
+    choices: Vec<ModelChoice>,
+    default_index: usize,
+}
 
 pub trait WizardServices {
     fn resolve_ollama_path(
@@ -33,8 +87,15 @@ pub trait WizardServices {
     fn install_ollama(&self) -> Result<()>;
     fn ensure_ollama_service(&self, bin: &Path) -> Result<ollama::OllamaDaemonStatus>;
     fn list_models(&self, bin: &Path) -> Result<Vec<String>>;
+    fn list_models_if_running(&self, bin: &Path) -> Result<Option<Vec<String>>>;
     fn pull_model(&self, bin: &Path, model: &str) -> Result<()>;
     fn set_default_model(&self, model: &str) -> Result<()>;
+    fn set_embedding_model(&self, model: &str) -> Result<()>;
+    fn install_playwright_browsers(
+        &self,
+        browsers: &[String],
+    ) -> Result<Option<std::path::PathBuf>>;
+    fn set_browser_path(&self, path: &Path, kind: &str) -> Result<()>;
 }
 
 pub struct RealServices;
@@ -59,6 +120,10 @@ impl WizardServices for RealServices {
         ollama::list_models(bin)
     }
 
+    fn list_models_if_running(&self, bin: &Path) -> Result<Option<Vec<String>>> {
+        ollama::list_models_if_running(bin)
+    }
+
     fn pull_model(&self, bin: &Path, model: &str) -> Result<()> {
         ollama::pull_model(bin, model)
     }
@@ -66,9 +131,31 @@ impl WizardServices for RealServices {
     fn set_default_model(&self, model: &str) -> Result<()> {
         config::set_default_model(model).map(|_| ())
     }
+
+    fn set_embedding_model(&self, model: &str) -> Result<()> {
+        config::set_embedding_model(model).map(|_| ())
+    }
+
+    fn install_playwright_browsers(
+        &self,
+        browsers: &[String],
+    ) -> Result<Option<std::path::PathBuf>> {
+        let result = browser_install::install_playwright_browsers(browsers)?;
+        Ok(result.map(|entry| entry.path))
+    }
+
+    fn set_browser_path(&self, path: &Path, kind: &str) -> Result<()> {
+        config::set_browser_path(path, kind).map(|_| ())
+    }
 }
 
 pub trait WizardInput {
+    fn select_menu(
+        &mut self,
+        state: &SetupState,
+        steps: &[StepKey],
+        details: &MenuDetails,
+    ) -> Result<MenuAction>;
     fn confirm(&mut self, state: &SetupState, prompt: &str, default_yes: bool) -> Result<bool>;
     fn select_model(
         &mut self,
@@ -78,6 +165,13 @@ pub trait WizardInput {
     ) -> Result<Option<String>>;
     fn info(&mut self, state: &SetupState, message: &str) -> Result<()>;
     fn with_suspended_terminal<T, F: FnOnce() -> Result<T>>(&mut self, op: F) -> Result<T>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuAction {
+    SelectSection(StepKey),
+    SelectDefault { step: StepKey, value: String },
+    Exit,
 }
 
 pub fn run_wizard(context: SetupContext) -> Result<SetupSummary> {
@@ -92,6 +186,7 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
     services: &S,
 ) -> Result<SetupSummary> {
     let mut state = SetupState::new();
+    state.set_current(StepKey::Ollama);
     input.info(
         &state,
         &format!(
@@ -103,243 +198,867 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
         ),
     )?;
 
-    let install_override = env_bool("DOCDEX_OLLAMA_INSTALL");
-    let consent = match install_override {
-        Some(true) => true,
-        Some(false) => false,
-        None => input.confirm(&state, "Install Ollama and models now?", true)?,
-    };
-    if !consent {
-        state.apply(SetupEvent::ConsentDeclined);
-        return Ok(summary_from_state(
-            &state,
-            match install_override {
-                Some(false) => "Setup deferred (DOCDEX_OLLAMA_INSTALL=0).".to_string(),
-                _ => "Setup deferred. Run `docdex setup` later.".to_string(),
-            },
-            Vec::new(),
-            None,
-        ));
-    }
-
-    state.apply(SetupEvent::ConsentAccepted);
-    let ollama_path = if context.ollama_path.is_none() {
-        loop {
-            input.info(&state, "Installing Ollama...")?;
-            let install = input.with_suspended_terminal(|| services.install_ollama());
-            match install {
-                Ok(()) => {
-                    if let Some(path) = services.resolve_ollama_path(None) {
-                        state.apply(SetupEvent::OllamaReady);
-                        break path;
-                    }
-                    let err = "ollama installed but not found on PATH".to_string();
-                    state.apply(SetupEvent::OllamaFailed(err.clone()));
-                    if !prompt_retry(input, &state, "Ollama install failed. Retry?")? {
-                        state.mark_failed(err.clone());
-                        return Ok(summary_from_state(
-                            &state,
-                            format!("Setup failed: {err}"),
-                            Vec::new(),
-                            None,
-                        ));
-                    }
-                    state.apply(SetupEvent::OllamaRetry);
-                }
-                Err(err) => {
-                    let err = err.to_string();
-                    state.apply(SetupEvent::OllamaFailed(err.clone()));
-                    if !prompt_retry(input, &state, "Ollama install failed. Retry?")? {
-                        state.mark_failed(err.clone());
-                        return Ok(summary_from_state(
-                            &state,
-                            format!("Setup failed: {err}"),
-                            Vec::new(),
-                            None,
-                        ));
-                    }
-                    state.apply(SetupEvent::OllamaRetry);
-                }
-            }
-        }
-    } else {
-        state.apply(SetupEvent::OllamaReady);
-        context.ollama_path.clone().unwrap()
-    };
-
-    let ollama_status = loop {
-        input.info(&state, "Ensuring Ollama is running...")?;
-        let ensure = input.with_suspended_terminal(|| services.ensure_ollama_service(&ollama_path));
-        match ensure {
-            Ok(status) => break Some(status),
-            Err(err) => {
-                let err = err.to_string();
-                state.apply(SetupEvent::OllamaFailed(err.clone()));
-                if !prompt_retry(input, &state, "Ollama daemon failed to start. Retry?")? {
-                    state.mark_failed(err.clone());
-                    return Ok(summary_from_state(
-                        &state,
-                        format!("Setup failed: {err}"),
-                        Vec::new(),
-                        None,
-                    ));
-                }
-                state.apply(SetupEvent::OllamaRetry);
-            }
-        }
-    };
-
-    let mut models = services.list_models(&ollama_path).unwrap_or_default();
     let mut installed = Vec::new();
-    let model_prompt_override = env_bool("DOCDEX_OLLAMA_MODEL_PROMPT");
-    let assume_yes = env_bool("DOCDEX_OLLAMA_MODEL_ASSUME_Y").unwrap_or(false);
-    let prompt_models = model_prompt_override.unwrap_or(true);
+    let mut models = Vec::new();
+    let mut default_model: Option<String> = None;
+    let mut ollama_path = context.ollama_path.clone();
+    let mut ollama_status: Option<ollama::OllamaDaemonStatus> = None;
+    let mut abort_error: Option<String> = None;
 
-    if models.iter().any(|m| m.eq_ignore_ascii_case(EMBED_MODEL)) {
-        state.apply(SetupEvent::EmbedSkipped);
-    } else if !prompt_models {
-        state.apply(SetupEvent::EmbedSkipped);
-        input.info(
-            &state,
-            "Model prompts disabled; skipping embedding model install.",
-        )?;
-    } else if assume_yes
-        || input.confirm(
-            &state,
-            &format!("Install embedding model {EMBED_MODEL}?"),
-            true,
-        )?
-    {
-        loop {
-            input.info(&state, "Pulling embedding model...")?;
-            let pull =
-                input.with_suspended_terminal(|| services.pull_model(&ollama_path, EMBED_MODEL));
-            match pull {
-                Ok(()) => {
-                    installed.push(EMBED_MODEL.to_string());
-                    models = services
-                        .list_models(&ollama_path)
-                        .unwrap_or_else(|_| models.clone());
-                    state.apply(SetupEvent::EmbedInstalled);
+    loop {
+        let menu_details =
+            build_menu_details(&mut state, services, &mut ollama_path, &mut models);
+        let action = input.select_menu(&state, &MENU_STEPS, &menu_details)?;
+        let step = match action {
+            MenuAction::Exit => break,
+            MenuAction::SelectSection(step) => step,
+            MenuAction::SelectDefault { step, value } => {
+                if let Err(err) = apply_quick_default(
+                    step,
+                    &value,
+                    services,
+                    &mut state,
+                    &models,
+                    menu_details.browsers(),
+                    &mut default_model,
+                ) {
+                    abort_error = Some(err.to_string());
                     break;
                 }
-                Err(err) => {
-                    let err = err.to_string();
-                    state.apply(SetupEvent::EmbedFailed(err.clone()));
-                    if !prompt_retry(input, &state, "Embedding model install failed. Retry?")? {
-                        state.mark_failed(err.clone());
-                        return Ok(summary_from_state(
-                            &state,
-                            format!("Setup failed: {err}"),
-                            installed,
-                            None,
-                        ));
-                    }
-                    state.apply(SetupEvent::EmbedRetry);
-                }
+                continue;
             }
+        };
+        let result = match step {
+            StepKey::Ollama => configure_ollama_section(
+                &mut state,
+                input,
+                services,
+                &mut ollama_path,
+                &mut ollama_status,
+            ),
+            StepKey::EmbedModel => configure_embedding_section(
+                &mut state,
+                input,
+                services,
+                &mut ollama_path,
+                &mut ollama_status,
+                &mut models,
+                &mut installed,
+            ),
+            StepKey::ChatModel => configure_chat_section(
+                &context,
+                &mut state,
+                input,
+                services,
+                &mut ollama_path,
+                &mut ollama_status,
+                &mut models,
+                &mut installed,
+                &mut default_model,
+            ),
+            StepKey::Browser => configure_browser_section(&mut state, input, services),
+            _ => Ok(None),
+        }?;
+        if let Some(err) = result {
+            abort_error = Some(err);
+            break;
         }
-    } else {
-        state.apply(SetupEvent::EmbedSkipped);
     }
 
-    if !context.hardware.recommend_phi() {
-        state.apply(SetupEvent::ChatSkipped);
-        input.info(
-            &state,
-            "Chat model not recommended: low RAM or free disk. Skipping.",
-        )?;
-    } else if models.iter().any(|m| m.eq_ignore_ascii_case(CHAT_MODEL)) {
-        state.apply(SetupEvent::ChatSkipped);
-    } else if !prompt_models {
-        state.apply(SetupEvent::ChatSkipped);
-        input.info(
-            &state,
-            "Model prompts disabled; skipping chat model install.",
-        )?;
-    } else if assume_yes
-        || input.confirm(
-            &state,
-            &format!("Install chat model {CHAT_MODEL} (~{CHAT_MODEL_SIZE_GIB:.1} GiB)?"),
-            true,
-        )?
-    {
-        loop {
-            input.info(&state, "Pulling chat model...")?;
-            let pull =
-                input.with_suspended_terminal(|| services.pull_model(&ollama_path, CHAT_MODEL));
-            match pull {
-                Ok(()) => {
-                    installed.push(CHAT_MODEL.to_string());
-                    models = services
-                        .list_models(&ollama_path)
-                        .unwrap_or_else(|_| models.clone());
-                    state.apply(SetupEvent::ChatInstalled);
-                    break;
-                }
-                Err(err) => {
-                    let err = err.to_string();
-                    state.apply(SetupEvent::ChatFailed(err.clone()));
-                    if !prompt_retry(input, &state, "Chat model install failed. Retry?")? {
-                        state.mark_failed(err.clone());
-                        return Ok(summary_from_state(
-                            &state,
-                            format!("Setup failed: {err}"),
-                            installed,
-                            None,
-                        ));
-                    }
-                    state.apply(SetupEvent::ChatRetry);
-                }
-            }
-        }
-    } else {
-        state.apply(SetupEvent::ChatSkipped);
+    if let Some(err) = abort_error {
+        state.mark_failed(err);
     }
 
-    let default_model = if models.is_empty() {
-        state.apply(SetupEvent::DefaultSelected(None));
-        None
-    } else if !prompt_models {
-        state.apply(SetupEvent::DefaultSelected(None));
-        input.info(
-            &state,
-            "Model prompts disabled; skipping default model selection.",
-        )?;
-        None
-    } else {
-        let (choices, default_index) = build_model_choices(&models);
-        match default_index {
-            None => {
-                state.apply(SetupEvent::DefaultSelected(None));
-                input.info(
-                    &state,
-                    "No selectable chat models found; keeping existing default.",
-                )?;
-                None
-            }
-            Some(default_index) => {
-                let selected = input.select_model(&state, &choices, default_index)?;
-                state.apply(SetupEvent::DefaultSelected(selected.clone()));
-                if let Some(ref model) = selected {
-                    services.set_default_model(model)?;
-                }
-                selected
-            }
+    let outcome = derive_outcome(&state);
+    state.outcome = outcome;
+    let message = match outcome {
+        SetupOutcome::Failed => {
+            let err = state
+                .error
+                .clone()
+                .unwrap_or_else(|| "unknown error".to_string());
+            format!("Setup failed: {err}")
         }
-    };
-
-    Ok(summary_from_state(
-        &state,
-        format_completion_message(
+        SetupOutcome::Deferred => "Setup deferred. Run `docdex setup` later.".to_string(),
+        _ => format_completion_message(
             &models,
             default_model.as_deref(),
             ollama_status.as_ref(),
             installed.as_slice(),
         ),
-        installed,
-        default_model,
-    ))
+    };
+
+    Ok(summary_from_state(&state, message, installed, default_model))
+}
+
+fn build_menu_details<S: WizardServices>(
+    state: &mut SetupState,
+    services: &S,
+    ollama_path: &mut Option<PathBuf>,
+    models: &mut Vec<String>,
+) -> MenuDetails {
+    let resolved_path = if ollama_path.is_some() {
+        ollama_path.clone()
+    } else {
+        services.resolve_ollama_path(None)
+    };
+    if ollama_path.is_none() {
+        *ollama_path = resolved_path.clone();
+    }
+
+    let mut running_models = Vec::new();
+    let mut ollama_running: Option<bool> = None;
+    let mut ollama_err: Option<String> = None;
+    if let Some(path) = resolved_path.as_ref() {
+        match services.list_models_if_running(path) {
+            Ok(Some(list)) => {
+                running_models = list;
+                ollama_running = Some(true);
+            }
+            Ok(None) => {
+                ollama_running = Some(false);
+            }
+            Err(err) => {
+                ollama_err = Some(err.to_string());
+            }
+        }
+    }
+    let cached_models = if running_models.is_empty() {
+        models.clone()
+    } else {
+        running_models.clone()
+    };
+    if !running_models.is_empty() {
+        *models = running_models.clone();
+    }
+
+    let config_embed = resolve_config_embedding_model();
+    let config_default = resolve_config_default_model();
+    let embed_models = filter_embedding_models(&cached_models);
+    let chat_models = filter_chat_models(&cached_models);
+    let embed_installed = model_installed(&cached_models, &config_embed);
+    let chat_installed = config_default
+        .as_deref()
+        .map(|model| model_installed(&cached_models, model))
+        .unwrap_or(false);
+
+    let (ollama_status, ollama_detail) = match (resolved_path.as_ref(), ollama_running, ollama_err.as_ref()) {
+        (_, _, Some(err)) => (StepStatus::Failed, Some(err.to_string())),
+        (None, _, None) => (StepStatus::Pending, Some("not installed".to_string())),
+        (Some(_), Some(true), None) => (StepStatus::Done, Some("active".to_string())),
+        (Some(_), Some(false), None) => (StepStatus::Pending, Some("not running".to_string())),
+        (Some(_), None, None) => (StepStatus::Pending, Some("unknown".to_string())),
+    };
+    state.update_step(StepKey::Ollama, ollama_status, ollama_detail);
+
+    let embed_status = if resolved_path.is_none() {
+        StepStatus::Pending
+    } else if embed_installed {
+        StepStatus::Done
+    } else {
+        StepStatus::Pending
+    };
+    state.update_step(StepKey::EmbedModel, embed_status, Some(config_embed.clone()));
+
+    let chat_status = if resolved_path.is_none() {
+        StepStatus::Pending
+    } else if chat_installed {
+        StepStatus::Done
+    } else {
+        StepStatus::Pending
+    };
+    state.update_step(StepKey::ChatModel, chat_status, config_default.clone());
+
+    let browsers = list_playwright_browsers();
+    let config_browser = resolve_config_browser_kind();
+    let browser_installed = config_browser
+        .as_deref()
+        .map(|name| browsers.iter().any(|browser| browser.name.eq_ignore_ascii_case(name)))
+        .unwrap_or(false);
+    let browser_status = if browsers.is_empty() {
+        StepStatus::Pending
+    } else if browser_installed {
+        StepStatus::Done
+    } else {
+        StepStatus::Pending
+    };
+    state.update_step(StepKey::Browser, browser_status, config_browser.clone());
+
+    let mut ollama_body = String::new();
+    if let Some(path) = resolved_path.as_ref() {
+        let _ = writeln!(ollama_body, "Ollama path: {}", path.display());
+        match (ollama_running, ollama_err.as_ref()) {
+            (Some(true), _) => {
+                let _ = writeln!(ollama_body, "Status: running");
+                let _ = writeln!(
+                    ollama_body,
+                    "Installed models: {}",
+                    format_model_list(&cached_models)
+                );
+            }
+            (Some(false), _) => {
+                let _ = writeln!(ollama_body, "Status: installed but not running");
+                if !cached_models.is_empty() {
+                    let _ = writeln!(
+                        ollama_body,
+                        "Cached models: {}",
+                        format_model_list(&cached_models)
+                    );
+                }
+            }
+            (None, Some(err)) => {
+                let _ = writeln!(ollama_body, "Status: error ({err})");
+            }
+            _ => {
+                let _ = writeln!(ollama_body, "Status: unknown");
+            }
+        }
+    } else {
+        ollama_body.push_str("Ollama not detected.\nSelect this section to install.");
+    }
+
+    let mut embed_body = String::new();
+    if resolved_path.is_none() {
+        embed_body.push_str("Ollama not detected.\nInstall Ollama to configure embedding models.");
+    } else if ollama_running == Some(false) {
+        embed_body.push_str(
+            "Ollama detected but not running.\nStart Ollama to list embedding models.",
+        );
+    } else if let Some(err) = ollama_err.as_ref() {
+        let _ = writeln!(embed_body, "Ollama error: {err}");
+    } else {
+        let _ = writeln!(
+            embed_body,
+            "Installed embedding models: {}",
+            format_model_list(&embed_models)
+        );
+        let status = if embed_installed { "installed" } else { "missing" };
+        let _ = writeln!(
+            embed_body,
+            "Configured embedding model: {config_embed} ({status})"
+        );
+    }
+
+    let mut chat_body = String::new();
+    if resolved_path.is_none() {
+        chat_body.push_str("Ollama not detected.\nInstall Ollama to configure chat models.");
+    } else if ollama_running == Some(false) {
+        chat_body.push_str("Ollama detected but not running.\nStart Ollama to list chat models.");
+    } else if let Some(err) = ollama_err.as_ref() {
+        let _ = writeln!(chat_body, "Ollama error: {err}");
+    } else {
+        let _ = writeln!(
+            chat_body,
+            "Installed chat models: {}",
+            format_model_list(&chat_models)
+        );
+        let status = match config_default.as_deref() {
+            Some(model) if model_installed(&running_models, model) => "installed",
+            Some(_) => "missing",
+            None => "not set",
+        };
+        let _ = writeln!(
+            chat_body,
+            "Configured default chat model: {} ({status})",
+            config_default.as_deref().unwrap_or("not set")
+        );
+    }
+
+    let mut browser_body = String::new();
+    let installed_list = format_browser_list(&browsers);
+    let _ = writeln!(
+        browser_body,
+        "Installed Playwright browsers: {installed_list}"
+    );
+    let _ = writeln!(
+        browser_body,
+        "Configured default browser: {}",
+        config_browser.as_deref().unwrap_or("not set")
+    );
+    if browsers.is_empty() {
+        browser_body.push_str("\nSelect this section to install Playwright browsers.");
+    }
+
+    let embed_options = if embed_models.is_empty() {
+        None
+    } else {
+        let (choices, default_index) = build_model_choices(&embed_models, Some(&config_embed));
+        let default_index = default_index.unwrap_or(0);
+        Some(MenuOptions {
+            choices,
+            default_index,
+        })
+    };
+
+    let chat_options = if chat_models.is_empty() {
+        None
+    } else {
+        let (choices, default_index) =
+            build_model_choices(&chat_models, config_default.as_deref());
+        let default_index = default_index.unwrap_or(0);
+        Some(MenuOptions {
+            choices,
+            default_index,
+        })
+    };
+
+    let browser_options = if browsers.is_empty() {
+        None
+    } else {
+        let (choices, default_index) =
+            build_browser_choices(&browsers, config_browser.as_deref());
+        let default_index = default_index.unwrap_or(0);
+        Some(MenuOptions {
+            choices,
+            default_index,
+        })
+    };
+
+    MenuDetails {
+        ollama: ollama_body.trim_end().to_string(),
+        embed: embed_body.trim_end().to_string(),
+        chat: chat_body.trim_end().to_string(),
+        browser: browser_body.trim_end().to_string(),
+        embed_options,
+        chat_options,
+        browser_options,
+        browsers,
+    }
+}
+
+fn apply_quick_default<S: WizardServices>(
+    step: StepKey,
+    value: &str,
+    services: &S,
+    state: &mut SetupState,
+    models: &[String],
+    browsers: &[util::PlaywrightBrowser],
+    default_model: &mut Option<String>,
+) -> Result<()> {
+    match step {
+        StepKey::EmbedModel => {
+            if !model_installed(models, value) {
+                return Err(anyhow!("embedding model not found: {value}"));
+            }
+            services.set_embedding_model(value)?;
+            state.update_step(
+                StepKey::EmbedModel,
+                StepStatus::Done,
+                Some(value.to_string()),
+            );
+        }
+        StepKey::ChatModel => {
+            if !model_installed(models, value) {
+                return Err(anyhow!("chat model not found: {value}"));
+            }
+            services.set_default_model(value)?;
+            *default_model = Some(value.to_string());
+            state.update_step(
+                StepKey::ChatModel,
+                StepStatus::Done,
+                Some(value.to_string()),
+            );
+        }
+        StepKey::Browser => {
+            let browser = browsers
+                .iter()
+                .find(|browser| browser.name.eq_ignore_ascii_case(value))
+                .ok_or_else(|| anyhow!("browser not found: {value}"))?;
+            services.set_browser_path(&browser.path, &browser.name)?;
+            state.update_step(
+                StepKey::Browser,
+                StepStatus::Done,
+                Some(browser.name.clone()),
+            );
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn derive_outcome(state: &SetupState) -> SetupOutcome {
+    let mut any_done = false;
+    let mut any_skipped = false;
+    let mut any_failed = false;
+    for step in &state.steps {
+        match step.status {
+            StepStatus::Done => any_done = true,
+            StepStatus::Skipped => any_skipped = true,
+            StepStatus::Failed => any_failed = true,
+            StepStatus::Active | StepStatus::Pending => {}
+        }
+    }
+    if state.outcome == SetupOutcome::Failed || any_failed {
+        SetupOutcome::Failed
+    } else if state.outcome == SetupOutcome::Deferred && !any_done {
+        SetupOutcome::Deferred
+    } else if any_done || any_skipped {
+        SetupOutcome::Complete
+    } else {
+        SetupOutcome::Deferred
+    }
+}
+
+fn configure_ollama_section<I: WizardInput, S: WizardServices>(
+    state: &mut SetupState,
+    input: &mut I,
+    services: &S,
+    ollama_path: &mut Option<PathBuf>,
+    ollama_status: &mut Option<ollama::OllamaDaemonStatus>,
+) -> Result<Option<String>> {
+    state.set_current(StepKey::Ollama);
+    if let Err(err) = ensure_ollama_ready(state, input, services, ollama_path, ollama_status) {
+        return Ok(Some(err.to_string()));
+    }
+    if ollama_path.is_none() {
+        state.update_step(
+            StepKey::Ollama,
+            StepStatus::Skipped,
+            Some("not installed".to_string()),
+        );
+    } else {
+        let detail = if ollama_status
+            .as_ref()
+            .map(|status| status.running)
+            .unwrap_or(false)
+        {
+            "active".to_string()
+        } else {
+            "installed".to_string()
+        };
+        state.update_step(StepKey::Ollama, StepStatus::Done, Some(detail));
+    }
+    Ok(None)
+}
+
+fn configure_embedding_section<I: WizardInput, S: WizardServices>(
+    state: &mut SetupState,
+    input: &mut I,
+    services: &S,
+    ollama_path: &mut Option<PathBuf>,
+    ollama_status: &mut Option<ollama::OllamaDaemonStatus>,
+    models: &mut Vec<String>,
+    installed: &mut Vec<String>,
+) -> Result<Option<String>> {
+    state.set_current(StepKey::EmbedModel);
+    let path = match ensure_ollama_ready(state, input, services, ollama_path, ollama_status) {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            state.update_step(
+                StepKey::EmbedModel,
+                StepStatus::Skipped,
+                Some("ollama missing".to_string()),
+            );
+            return Ok(None);
+        }
+        Err(err) => return Ok(Some(err.to_string())),
+    };
+
+    let mut current_models = services.list_models(&path).unwrap_or_default();
+    *models = current_models.clone();
+    let config_embed = resolve_config_embedding_model();
+    let embed_installed = model_installed(&current_models, &config_embed);
+    let embed_list = format_model_list(&filter_embedding_models(&current_models));
+    let embed_status = if embed_installed {
+        "installed"
+    } else {
+        "missing"
+    };
+    input.info(
+        state,
+        &format!(
+            "Installed embedding models: {embed_list}\nConfigured embedding model: {config_embed} ({embed_status})"
+        ),
+    )?;
+
+    let model_prompt_override = env_bool("DOCDEX_OLLAMA_MODEL_PROMPT");
+    let assume_yes = env_bool("DOCDEX_OLLAMA_MODEL_ASSUME_Y").unwrap_or(false);
+    let prompt_models = model_prompt_override.unwrap_or(true);
+    if !prompt_models {
+        state.update_step(
+            StepKey::EmbedModel,
+            if embed_installed {
+                StepStatus::Done
+            } else {
+                StepStatus::Skipped
+            },
+            Some(config_embed),
+        );
+        input.info(
+            state,
+            "Model prompts disabled; skipping embedding model selection.",
+        )?;
+        return Ok(None);
+    }
+
+    if !model_installed(&current_models, EMBED_MODEL)
+        && (assume_yes
+            || input.confirm(
+                state,
+                &format!("Install embedding model {EMBED_MODEL}?"),
+                true,
+            )?)
+    {
+        loop {
+            input.info(state, "Pulling embedding model...")?;
+            let pull = input.with_suspended_terminal(|| services.pull_model(&path, EMBED_MODEL));
+            match pull {
+                Ok(()) => {
+                    installed.push(EMBED_MODEL.to_string());
+                    current_models = services
+                        .list_models(&path)
+                        .unwrap_or_else(|_| current_models.clone());
+                    *models = current_models.clone();
+                    break;
+                }
+                Err(err) => {
+                    let err = err.to_string();
+                    state.update_step(StepKey::EmbedModel, StepStatus::Failed, Some(err.clone()));
+                    if !prompt_retry(input, state, "Embedding model install failed. Retry?")? {
+                        return Ok(Some(err));
+                    }
+                }
+            }
+        }
+    }
+
+    let embed_models = filter_embedding_models(&current_models);
+    if embed_models.is_empty() {
+        state.update_step(
+            StepKey::EmbedModel,
+            StepStatus::Skipped,
+            Some("no embedding models".to_string()),
+        );
+        return Ok(None);
+    }
+
+    let (choices, default_index) = build_model_choices(&embed_models, Some(&config_embed));
+    let Some(default_index) = default_index else {
+        state.update_step(
+            StepKey::EmbedModel,
+            StepStatus::Skipped,
+            Some("no embedding models".to_string()),
+        );
+        return Ok(None);
+    };
+    let selected = input.select_model(state, &choices, default_index)?;
+    if let Some(model) = selected.as_deref() {
+        services.set_embedding_model(model)?;
+    }
+    let chosen = selected.or_else(|| {
+        if model_installed(&current_models, &config_embed) {
+            Some(config_embed.clone())
+        } else {
+            None
+        }
+    });
+    if let Some(model) = chosen {
+        state.update_step(StepKey::EmbedModel, StepStatus::Done, Some(model));
+    } else {
+        state.update_step(StepKey::EmbedModel, StepStatus::Skipped, None);
+    }
+    Ok(None)
+}
+
+fn configure_chat_section<I: WizardInput, S: WizardServices>(
+    context: &SetupContext,
+    state: &mut SetupState,
+    input: &mut I,
+    services: &S,
+    ollama_path: &mut Option<PathBuf>,
+    ollama_status: &mut Option<ollama::OllamaDaemonStatus>,
+    models: &mut Vec<String>,
+    installed: &mut Vec<String>,
+    default_model: &mut Option<String>,
+) -> Result<Option<String>> {
+    state.set_current(StepKey::ChatModel);
+    let path = match ensure_ollama_ready(state, input, services, ollama_path, ollama_status) {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            state.update_step(
+                StepKey::ChatModel,
+                StepStatus::Skipped,
+                Some("ollama missing".to_string()),
+            );
+            return Ok(None);
+        }
+        Err(err) => return Ok(Some(err.to_string())),
+    };
+
+    let mut current_models = services.list_models(&path).unwrap_or_default();
+    *models = current_models.clone();
+    let config_default = resolve_config_default_model();
+    let chat_models = filter_chat_models(&current_models);
+    let chat_list = format_model_list(&chat_models);
+    let chat_default_status = match config_default.as_deref() {
+        Some(model) if model_installed(&current_models, model) => "installed",
+        Some(_) => "missing",
+        None => "not set",
+    };
+    input.info(
+        state,
+        &format!(
+            "Installed chat models: {chat_list}\nConfigured default chat model: {} ({chat_default_status})",
+            config_default.as_deref().unwrap_or("not set")
+        ),
+    )?;
+
+    let model_prompt_override = env_bool("DOCDEX_OLLAMA_MODEL_PROMPT");
+    let assume_yes = env_bool("DOCDEX_OLLAMA_MODEL_ASSUME_Y").unwrap_or(false);
+    let prompt_models = model_prompt_override.unwrap_or(true);
+    if prompt_models && context.hardware.recommend_phi() {
+        if !model_installed(&current_models, CHAT_MODEL)
+            && (assume_yes
+                || input.confirm(
+                    state,
+                    &format!(
+                        "Install chat model {CHAT_MODEL} (~{CHAT_MODEL_SIZE_GIB:.1} GiB)?"
+                    ),
+                    true,
+                )?)
+        {
+            loop {
+                input.info(state, "Pulling chat model...")?;
+                let pull = input.with_suspended_terminal(|| services.pull_model(&path, CHAT_MODEL));
+                match pull {
+                    Ok(()) => {
+                        installed.push(CHAT_MODEL.to_string());
+                        current_models = services
+                            .list_models(&path)
+                            .unwrap_or_else(|_| current_models.clone());
+                        *models = current_models.clone();
+                        break;
+                    }
+                    Err(err) => {
+                        let err = err.to_string();
+                        state.update_step(
+                            StepKey::ChatModel,
+                            StepStatus::Failed,
+                            Some(err.clone()),
+                        );
+                        if !prompt_retry(input, state, "Chat model install failed. Retry?")? {
+                            return Ok(Some(err));
+                        }
+                    }
+                }
+            }
+        }
+    } else if !prompt_models {
+        input.info(
+            state,
+            "Model prompts disabled; skipping chat model selection.",
+        )?;
+        state.update_step(
+            StepKey::ChatModel,
+            if config_default
+                .as_deref()
+                .map(|model| model_installed(&current_models, model))
+                .unwrap_or(false)
+            {
+                StepStatus::Done
+            } else {
+                StepStatus::Skipped
+            },
+            config_default.clone(),
+        );
+        return Ok(None);
+    }
+
+    let chat_models = filter_chat_models(&current_models);
+    if chat_models.is_empty() {
+        state.update_step(
+            StepKey::ChatModel,
+            StepStatus::Skipped,
+            Some("no chat models".to_string()),
+        );
+        return Ok(None);
+    }
+
+    let (choices, default_index) =
+        build_model_choices(&chat_models, config_default.as_deref());
+    let Some(default_index) = default_index else {
+        state.update_step(
+            StepKey::ChatModel,
+            StepStatus::Skipped,
+            Some("no chat models".to_string()),
+        );
+        return Ok(None);
+    };
+    let selected = input.select_model(state, &choices, default_index)?;
+    if let Some(model) = selected.as_deref() {
+        services.set_default_model(model)?;
+        *default_model = Some(model.to_string());
+    }
+    let chosen = selected.or_else(|| {
+        config_default.clone().filter(|model| model_installed(&current_models, model))
+    });
+    if let Some(model) = chosen {
+        state.update_step(StepKey::ChatModel, StepStatus::Done, Some(model));
+    } else {
+        state.update_step(StepKey::ChatModel, StepStatus::Skipped, None);
+    }
+    Ok(None)
+}
+
+fn configure_browser_section<I: WizardInput, S: WizardServices>(
+    state: &mut SetupState,
+    input: &mut I,
+    services: &S,
+) -> Result<Option<String>> {
+    state.set_current(StepKey::Browser);
+    let mut browsers = list_playwright_browsers();
+    let installed_list = format_browser_list(&browsers);
+    input.info(
+        state,
+        &format!(
+            "Installed Playwright browsers: {installed_list}\nAvailable browsers: Chromium, Firefox, WebKit"
+        ),
+    )?;
+    let installed_set = browsers
+        .iter()
+        .map(|browser| browser.name.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    let browser_selection = resolve_browser_install_selection(input, state, &installed_set)?;
+    if !browser_selection.is_empty() {
+        let detail = browser_selection.join(", ");
+        loop {
+            input.info(
+                state,
+                &format!("Installing Playwright browsers: {detail}..."),
+            )?;
+            let install = input
+                .with_suspended_terminal(|| services.install_playwright_browsers(&browser_selection));
+            match install {
+                Ok(_) => {
+                    browsers = list_playwright_browsers();
+                    break;
+                }
+                Err(err) => {
+                    let err = err.to_string();
+                    state.update_step(StepKey::Browser, StepStatus::Failed, Some(err.clone()));
+                    if !prompt_retry(input, state, "Browser install failed. Retry?")? {
+                        return Ok(Some(err));
+                    }
+                }
+            }
+        }
+    }
+
+    if browsers.is_empty() {
+        state.update_step(
+            StepKey::Browser,
+            StepStatus::Skipped,
+            Some("no browsers".to_string()),
+        );
+        return Ok(None);
+    }
+
+    let config_browser = resolve_config_browser_kind();
+    let (choices, default_index) =
+        build_browser_choices(&browsers, config_browser.as_deref());
+    let Some(default_index) = default_index else {
+        state.update_step(
+            StepKey::Browser,
+            StepStatus::Skipped,
+            Some("no browsers".to_string()),
+        );
+        return Ok(None);
+    };
+    let selected = input.select_model(state, &choices, default_index)?;
+    let chosen = selected.or_else(|| {
+        config_browser
+            .clone()
+            .filter(|name| browsers.iter().any(|browser| browser.name.eq_ignore_ascii_case(name)))
+    });
+    if let Some(name) = chosen.clone() {
+        if let Some(browser) = browsers
+            .iter()
+            .find(|browser| browser.name.eq_ignore_ascii_case(&name))
+        {
+            services.set_browser_path(&browser.path, &browser.name)?;
+            state.update_step(StepKey::Browser, StepStatus::Done, Some(browser.name.clone()));
+            return Ok(None);
+        }
+    }
+    state.update_step(StepKey::Browser, StepStatus::Skipped, None);
+    Ok(None)
+}
+
+fn ensure_ollama_ready<I: WizardInput, S: WizardServices>(
+    state: &mut SetupState,
+    input: &mut I,
+    services: &S,
+    ollama_path: &mut Option<PathBuf>,
+    ollama_status: &mut Option<ollama::OllamaDaemonStatus>,
+) -> Result<Option<PathBuf>> {
+    if ollama_path.is_none() {
+        let install_override = env_bool("DOCDEX_OLLAMA_INSTALL");
+        let consent = match install_override {
+            Some(true) => true,
+            Some(false) => false,
+            None => input.confirm(
+                state,
+                "Ollama not detected. Do you want to download Ollama?",
+                true,
+            )?,
+        };
+        if !consent {
+            state.update_step(
+                StepKey::Ollama,
+                StepStatus::Skipped,
+                Some("not installed".to_string()),
+            );
+            state.outcome = SetupOutcome::Deferred;
+            return Ok(None);
+        }
+        loop {
+            input.info(state, "Installing Ollama...")?;
+            let install = input.with_suspended_terminal(|| services.install_ollama());
+            match install {
+                Ok(()) => {
+                    if let Some(path) = services.resolve_ollama_path(None) {
+                        *ollama_path = Some(path);
+                        break;
+                    }
+                    let err = "ollama installed but not found on PATH".to_string();
+                    state.update_step(StepKey::Ollama, StepStatus::Failed, Some(err.clone()));
+                    if !prompt_retry(input, state, "Ollama install failed. Retry?")? {
+                        return Err(anyhow!(err));
+                    }
+                }
+                Err(err) => {
+                    let err = err.to_string();
+                    state.update_step(StepKey::Ollama, StepStatus::Failed, Some(err.clone()));
+                    if !prompt_retry(input, state, "Ollama install failed. Retry?")? {
+                        return Err(anyhow!(err));
+                    }
+                }
+            }
+        }
+    }
+
+    let path = match ollama_path.clone() {
+        Some(path) => path,
+        None => return Ok(None),
+    };
+    loop {
+        input.info(state, "Ensuring Ollama is running...")?;
+        let ensure = input.with_suspended_terminal(|| services.ensure_ollama_service(&path));
+        match ensure {
+            Ok(status) => {
+                *ollama_status = Some(status);
+                state.update_step(StepKey::Ollama, StepStatus::Done, Some("active".to_string()));
+                return Ok(Some(path));
+            }
+            Err(err) => {
+                let err = err.to_string();
+                state.update_step(StepKey::Ollama, StepStatus::Failed, Some(err.clone()));
+                if !prompt_retry(input, state, "Ollama daemon failed to start. Retry?")? {
+                    return Err(anyhow!(err));
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -349,24 +1068,248 @@ pub struct ModelChoice {
     pub selectable: bool,
 }
 
-fn build_model_choices(models: &[String]) -> (Vec<ModelChoice>, Option<usize>) {
+fn is_embedding_model_name(model: &str) -> bool {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let base = trimmed.split(':').next().unwrap_or(trimmed);
+    let base_lower = base.to_ascii_lowercase();
+    let embed_lower = EMBED_MODEL.to_ascii_lowercase();
+    if base_lower.contains("embed") || base_lower.contains("embedding") {
+        return true;
+    }
+    base_lower == embed_lower || base_lower.starts_with(&format!("{embed_lower}-"))
+}
+
+fn filter_embedding_models(models: &[String]) -> Vec<String> {
+    models
+        .iter()
+        .filter(|model| is_embedding_model_name(model))
+        .cloned()
+        .collect()
+}
+
+fn filter_chat_models(models: &[String]) -> Vec<String> {
+    models
+        .iter()
+        .filter(|model| !is_embedding_model_name(model))
+        .cloned()
+        .collect()
+}
+
+fn model_installed(models: &[String], model: &str) -> bool {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    models
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(trimmed))
+}
+
+fn format_model_list(models: &[String]) -> String {
+    if models.is_empty() {
+        "none".to_string()
+    } else {
+        models.join(", ")
+    }
+}
+
+fn build_model_choices(
+    models: &[String],
+    current_default: Option<&str>,
+) -> (Vec<ModelChoice>, Option<usize>) {
     let mut choices = Vec::new();
     let mut default_index = None;
-    for model in models {
-        let selectable = !model.eq_ignore_ascii_case(EMBED_MODEL);
-        let label = if selectable {
-            model.clone()
-        } else {
-            format!("{model} (embedding only)")
-        };
-        if selectable && default_index.is_none() {
-            default_index = Some(choices.len());
+    for (idx, model) in models.iter().enumerate() {
+        if default_index.is_none() {
+            if let Some(default_model) = current_default {
+                if model.eq_ignore_ascii_case(default_model) {
+                    default_index = Some(idx);
+                }
+            }
         }
         choices.push(ModelChoice {
-            label,
+            label: model.clone(),
             value: model.clone(),
-            selectable,
+            selectable: true,
         });
+    }
+    if default_index.is_none() && !choices.is_empty() {
+        default_index = Some(0);
+    }
+    (choices, default_index)
+}
+
+fn resolve_browser_install_selection<I: WizardInput>(
+    input: &mut I,
+    state: &SetupState,
+    installed: &HashSet<String>,
+) -> Result<Vec<String>> {
+    if let Some(selection) = parse_browser_install_env()? {
+        return Ok(selection);
+    }
+
+    let mut selection = Vec::new();
+    if !installed.contains("chromium")
+        && input.confirm(state, "Install Playwright Chromium browser?", installed.is_empty())?
+    {
+        selection.push("chromium".to_string());
+    }
+    if !installed.contains("firefox")
+        && input.confirm(state, "Install Playwright Firefox browser?", false)?
+    {
+        selection.push("firefox".to_string());
+    }
+    if !installed.contains("webkit")
+        && input.confirm(state, "Install Playwright WebKit browser?", false)?
+    {
+        selection.push("webkit".to_string());
+    }
+    Ok(selection)
+}
+
+fn parse_browser_install_env() -> Result<Option<Vec<String>>> {
+    let raw = match env::var("DOCDEX_BROWSER_INSTALL") {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    if lowered == "none" || lowered == "skip" {
+        return Ok(Some(Vec::new()));
+    }
+
+    let mut selection = Vec::new();
+    let mut seen = HashSet::new();
+    for part in trimmed.split(',') {
+        let name = part.trim().to_ascii_lowercase();
+        if name.is_empty() {
+            continue;
+        }
+        if !matches!(name.as_str(), "chromium" | "firefox" | "webkit") {
+            return Err(anyhow!("unsupported browser in DOCDEX_BROWSER_INSTALL: {name}"));
+        }
+        if seen.insert(name.clone()) {
+            selection.push(name);
+        }
+    }
+
+    Ok(Some(selection))
+}
+
+fn resolve_config_embedding_model() -> String {
+    load_summary_config()
+        .and_then(|cfg| {
+            let trimmed = cfg.llm.embedding_model.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .unwrap_or_else(|| EMBED_MODEL.to_string())
+}
+
+fn resolve_config_default_model() -> Option<String> {
+    load_summary_config().and_then(|cfg| {
+        let trimmed = cfg.llm.default_model.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn resolve_config_browser_kind() -> Option<String> {
+    load_summary_config().and_then(|cfg| {
+        cfg.web.scraper.browser_kind.and_then(|kind| {
+            let trimmed = kind.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+    })
+}
+
+fn list_playwright_browsers() -> Vec<util::PlaywrightBrowser> {
+    let Some(manifest) = util::read_playwright_manifest() else {
+        return Vec::new();
+    };
+    let mut browsers: Vec<util::PlaywrightBrowser> = manifest
+        .browsers
+        .into_iter()
+        .filter(|browser| browser.path.is_file())
+        .collect();
+    browsers.sort_by_key(|browser| browser_order_index(&browser.name));
+    browsers
+}
+
+fn browser_order_index(name: &str) -> usize {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "chromium" => 0,
+        "firefox" => 1,
+        "webkit" => 2,
+        _ => 3,
+    }
+}
+
+fn browser_label(name: &str) -> String {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "chromium" => "Chromium".to_string(),
+        "firefox" => "Firefox".to_string(),
+        "webkit" => "WebKit".to_string(),
+        _ => name.to_string(),
+    }
+}
+
+fn format_browser_list(browsers: &[util::PlaywrightBrowser]) -> String {
+    if browsers.is_empty() {
+        "none".to_string()
+    } else {
+        browsers
+            .iter()
+            .map(|browser| browser_label(&browser.name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn build_browser_choices(
+    browsers: &[util::PlaywrightBrowser],
+    current_default: Option<&str>,
+) -> (Vec<ModelChoice>, Option<usize>) {
+    let mut choices = Vec::new();
+    let mut default_index = None;
+    for (idx, browser) in browsers.iter().enumerate() {
+        if default_index.is_none() {
+            if let Some(default_browser) = current_default {
+                if browser.name.eq_ignore_ascii_case(default_browser) {
+                    default_index = Some(idx);
+                }
+            }
+        }
+        let label = match browser.version.as_ref().map(|value| value.trim()) {
+            Some(value) if !value.is_empty() => {
+                format!("{} ({value})", browser_label(&browser.name))
+            }
+            _ => browser_label(&browser.name),
+        };
+        choices.push(ModelChoice {
+            label,
+            value: browser.name.clone(),
+            selectable: true,
+        });
+    }
+    if default_index.is_none() && !choices.is_empty() {
+        default_index = Some(0);
     }
     (choices, default_index)
 }
@@ -486,20 +1429,29 @@ fn load_summary_config() -> Option<app_config::AppConfig> {
 }
 
 fn resolve_browser_summary_from_config(config: &app_config::AppConfig) -> Option<String> {
-    config.web.scraper.chrome_binary_path.as_ref().map(|path| {
-        let kind = config
-            .web
-            .scraper
-            .browser_kind
-            .as_deref()
-            .unwrap_or("chrome");
-        format!("{kind} ({})", path.display())
-    })
+    let kind = config.web.scraper.browser_kind.as_deref()?;
+    let browsers = list_playwright_browsers();
+    browsers
+        .iter()
+        .find(|browser| browser.name.eq_ignore_ascii_case(kind))
+        .map(|browser| {
+            format!(
+                "{} ({})",
+                browser_label(&browser.name),
+                browser.path.display()
+            )
+        })
 }
 
 fn resolve_browser_summary_from_detection() -> Option<String> {
-    util::detect_browser_binary(None)
-        .map(|candidate| format!("{} ({})", candidate.kind.as_str(), candidate.path.display()))
+    let browsers = list_playwright_browsers();
+    browsers.first().map(|browser| {
+        format!(
+            "{} ({})",
+            browser_label(&browser.name),
+            browser.path.display()
+        )
+    })
 }
 
 fn prompt_retry<I: WizardInput>(input: &mut I, state: &SetupState, message: &str) -> Result<bool> {
@@ -543,6 +1495,10 @@ fn now_ms() -> u128 {
 struct TuiInput {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     selected_index: usize,
+    menu_index: usize,
+    menu_focus: MenuFocus,
+    option_index: usize,
+    option_step: Option<StepKey>,
 }
 
 impl TuiInput {
@@ -556,6 +1512,10 @@ impl TuiInput {
         Ok(Self {
             terminal,
             selected_index: 0,
+            menu_index: 0,
+            menu_focus: MenuFocus::Menu,
+            option_index: 0,
+            option_step: None,
         })
     }
 
@@ -565,6 +1525,7 @@ impl TuiInput {
         body: &str,
         hint: &str,
         list: Option<(&[ModelChoice], usize)>,
+        selected: StepKey,
     ) -> Result<()> {
         self.terminal.draw(|frame| {
             let layout = Layout::default()
@@ -577,7 +1538,7 @@ impl TuiInput {
                 .constraints([Constraint::Length(28), Constraint::Min(10)])
                 .split(layout[0]);
 
-            render_status_list(frame, content[0], &state.steps, state.current);
+            render_status_list(frame, content[0], &state.steps, selected);
             render_body(frame, content[1], body, list);
 
             let hints = Paragraph::new(hint)
@@ -597,7 +1558,125 @@ impl TuiInput {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuFocus {
+    Menu,
+    Options,
+}
+
 impl WizardInput for TuiInput {
+    fn select_menu(
+        &mut self,
+        state: &SetupState,
+        steps: &[StepKey],
+        details: &MenuDetails,
+    ) -> Result<MenuAction> {
+        if steps.is_empty() {
+            return Ok(MenuAction::Exit);
+        }
+        if self.menu_index >= steps.len() {
+            self.menu_index = 0;
+        }
+        loop {
+            let selected = steps[self.menu_index];
+            let options = details.options_for(selected);
+            if self.option_step != Some(selected) {
+                self.option_step = Some(selected);
+                self.option_index = options
+                    .map(|entry| entry.default_index.min(entry.choices.len().saturating_sub(1)))
+                    .unwrap_or(0);
+            }
+            let hint = match self.menu_focus {
+                MenuFocus::Menu => {
+                    if options.is_some() {
+                        "Up/Down=move, Right/Tab=options, Enter=open, Esc=finish"
+                    } else {
+                        "Up/Down=move, Enter=open, Esc=finish"
+                    }
+                }
+                MenuFocus::Options => "Up/Down=select, Left/Tab=menu, Enter=set default, Esc=finish",
+            };
+            self.draw_prompt(
+                state,
+                details.body_for(selected),
+                hint,
+                options.map(|entry| (entry.choices.as_slice(), self.option_index)),
+                selected,
+            )?;
+            match self.read_key()? {
+                KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('L') => {
+                    if options.is_some() {
+                        self.menu_focus = MenuFocus::Options;
+                    }
+                }
+                KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => {
+                    self.menu_focus = MenuFocus::Menu;
+                }
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                    match self.menu_focus {
+                        MenuFocus::Menu => {
+                            if self.menu_index == 0 {
+                                self.menu_index = steps.len() - 1;
+                            } else {
+                                self.menu_index = self.menu_index.saturating_sub(1);
+                            }
+                        }
+                        MenuFocus::Options => {
+                            if let Some(entry) = options {
+                                if let Some(next) = next_selectable_index(
+                                    &entry.choices,
+                                    self.option_index,
+                                    -1,
+                                ) {
+                                    self.option_index = next;
+                                }
+                            }
+                        }
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                    match self.menu_focus {
+                        MenuFocus::Menu => {
+                            self.menu_index = (self.menu_index + 1) % steps.len();
+                        }
+                        MenuFocus::Options => {
+                            if let Some(entry) = options {
+                                if let Some(next) = next_selectable_index(
+                                    &entry.choices,
+                                    self.option_index,
+                                    1,
+                                ) {
+                                    self.option_index = next;
+                                }
+                            }
+                        }
+                    }
+                }
+                KeyCode::Enter => match self.menu_focus {
+                    MenuFocus::Menu => return Ok(MenuAction::SelectSection(selected)),
+                    MenuFocus::Options => {
+                        if let Some(entry) = options {
+                            if let Some(choice) = entry.choices.get(self.option_index) {
+                                if choice.selectable {
+                                    return Ok(MenuAction::SelectDefault {
+                                        step: selected,
+                                        value: choice.value.clone(),
+                                    });
+                                }
+                            }
+                        } else {
+                            return Ok(MenuAction::SelectSection(selected));
+                        }
+                    }
+                },
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                    return Ok(MenuAction::Exit)
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn confirm(&mut self, state: &SetupState, prompt: &str, default_yes: bool) -> Result<bool> {
         let hint = if default_yes {
             "Y=yes, N=no, Enter=Yes, Esc=No"
@@ -605,7 +1684,7 @@ impl WizardInput for TuiInput {
             "Y=yes, N=no, Enter=No, Esc=No"
         };
         loop {
-            self.draw_prompt(state, prompt, hint, None)?;
+            self.draw_prompt(state, prompt, hint, None, state.current)?;
             match self.read_key()? {
                 KeyCode::Char('y') | KeyCode::Char('Y') => return Ok(true),
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => return Ok(false),
@@ -622,21 +1701,28 @@ impl WizardInput for TuiInput {
         default_index: usize,
     ) -> Result<Option<String>> {
         let hint = "Up/Down=move, Enter=select, Esc=skip";
+        let body = match state.current {
+            StepKey::ChatModel => "Select default chat model",
+            StepKey::EmbedModel => "Select default embedding model",
+            StepKey::Browser => "Select default Playwright browser",
+            _ => "Select option",
+        };
         self.selected_index = default_index.min(models.len().saturating_sub(1));
         loop {
             self.draw_prompt(
                 state,
-                "Select default model",
+                body,
                 hint,
                 Some((models, self.selected_index)),
+                state.current,
             )?;
             match self.read_key()? {
-                KeyCode::Up => {
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
                     if let Some(next) = next_selectable_index(models, self.selected_index, -1) {
                         self.selected_index = next;
                     }
                 }
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
                     if let Some(next) = next_selectable_index(models, self.selected_index, 1) {
                         self.selected_index = next;
                     }
@@ -655,7 +1741,7 @@ impl WizardInput for TuiInput {
     }
 
     fn info(&mut self, state: &SetupState, message: &str) -> Result<()> {
-        self.draw_prompt(state, message, "", None)
+        self.draw_prompt(state, message, "", None, state.current)
     }
 
     fn with_suspended_terminal<T, F: FnOnce() -> Result<T>>(&mut self, op: F) -> Result<T> {
@@ -694,11 +1780,17 @@ fn render_status_list(
     steps: &[StepSnapshot],
     current: StepKey,
 ) {
-    let items: Vec<ListItem> = steps
+    let items: Vec<ListItem> = MENU_STEPS
         .iter()
+        .filter_map(|key| steps.iter().find(|step| step.key == *key))
         .map(|step| {
             let status = step.status.label();
-            let label = format!("{}: {}", step.key.label(), status);
+            let label = match step.detail.as_ref().map(|value| value.trim()) {
+                Some(detail) if !detail.is_empty() => {
+                    format!("{}: {} ({detail})", step.key.label(), status)
+                }
+                _ => format!("{}: {}", step.key.label(), status),
+            };
             let mut style = match step.status {
                 StepStatus::Done => Style::default().fg(Color::Green),
                 StepStatus::Failed => Style::default().fg(Color::Red),
@@ -747,7 +1839,7 @@ fn render_body(
         let mut state = ListState::default();
         state.select(Some(selected));
         let list = List::new(list_items)
-            .block(Block::default().title("Models").borders(Borders::ALL))
+            .block(Block::default().title("Options").borders(Borders::ALL))
             .highlight_style(
                 Style::default()
                     .fg(Color::Yellow)
@@ -783,7 +1875,36 @@ mod tests {
     use super::*;
     use crate::setup::test_support::ENV_LOCK;
     use ratatui::backend::TestBackend;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+    use tempfile::TempDir;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn clear(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     struct ScriptedInput {
         answers: Vec<ScriptedAnswer>,
@@ -794,6 +1915,7 @@ mod tests {
     enum ScriptedAnswer {
         Confirm(bool),
         Select(Option<usize>),
+        Menu(Option<StepKey>),
     }
 
     impl ScriptedInput {
@@ -803,7 +1925,7 @@ mod tests {
 
         fn next(&mut self) -> ScriptedAnswer {
             if self.index >= self.answers.len() {
-                return ScriptedAnswer::Confirm(false);
+                return ScriptedAnswer::Menu(None);
             }
             let answer = self.answers[self.index].clone();
             self.index += 1;
@@ -812,6 +1934,21 @@ mod tests {
     }
 
     impl WizardInput for ScriptedInput {
+        fn select_menu(
+            &mut self,
+            _state: &SetupState,
+            steps: &[StepKey],
+            _details: &MenuDetails,
+        ) -> Result<MenuAction> {
+            match self.next() {
+                ScriptedAnswer::Menu(Some(choice)) => Ok(MenuAction::SelectSection(choice)),
+                ScriptedAnswer::Menu(None) => Ok(MenuAction::Exit),
+                _ => Ok(MenuAction::SelectSection(
+                    steps.first().copied().unwrap_or(StepKey::Ollama),
+                )),
+            }
+        }
+
         fn confirm(
             &mut self,
             _state: &SetupState,
@@ -820,7 +1957,7 @@ mod tests {
         ) -> Result<bool> {
             match self.next() {
                 ScriptedAnswer::Confirm(value) => Ok(value),
-                ScriptedAnswer::Select(_) => Ok(default_yes),
+                _ => Ok(default_yes),
             }
         }
 
@@ -836,7 +1973,7 @@ mod tests {
                     .filter(|choice| choice.selectable)
                     .map(|choice| choice.value.clone())),
                 ScriptedAnswer::Select(None) => Ok(None),
-                ScriptedAnswer::Confirm(_) => Ok(models
+                _ => Ok(models
                     .get(default_index)
                     .filter(|choice| choice.selectable)
                     .map(|choice| choice.value.clone())),
@@ -854,11 +1991,12 @@ mod tests {
 
     struct FakeServices {
         models: Vec<String>,
+        ollama_path: Option<PathBuf>,
     }
 
     impl WizardServices for FakeServices {
         fn resolve_ollama_path(&self, _explicit: Option<PathBuf>) -> Option<PathBuf> {
-            Some(PathBuf::from("/tmp/ollama"))
+            self.ollama_path.clone()
         }
 
         fn install_ollama(&self) -> Result<()> {
@@ -877,6 +2015,10 @@ mod tests {
             Ok(self.models.clone())
         }
 
+        fn list_models_if_running(&self, _bin: &Path) -> Result<Option<Vec<String>>> {
+            Ok(Some(self.models.clone()))
+        }
+
         fn pull_model(&self, _bin: &Path, _model: &str) -> Result<()> {
             Ok(())
         }
@@ -884,16 +2026,51 @@ mod tests {
         fn set_default_model(&self, _model: &str) -> Result<()> {
             Ok(())
         }
+
+        fn set_embedding_model(&self, _model: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn install_playwright_browsers(
+            &self,
+            _browsers: &[String],
+        ) -> Result<Option<PathBuf>> {
+            Ok(None)
+        }
+
+        fn set_browser_path(&self, _path: &Path, _kind: &str) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
     fn wizard_decline_records_deferred() -> Result<()> {
         let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("DOCDEX_OLLAMA_INSTALL");
-        std::env::remove_var("DOCDEX_OLLAMA_MODEL_PROMPT");
-        std::env::remove_var("DOCDEX_OLLAMA_MODEL_ASSUME_Y");
-        let mut input = ScriptedInput::new(vec![ScriptedAnswer::Confirm(false)]);
-        let services = FakeServices { models: vec![] };
+        let temp = TempDir::new()?;
+        let temp_home = temp.path().to_string_lossy();
+        let _home = EnvGuard::set("HOME", &temp_home);
+        let _user = EnvGuard::set("USERPROFILE", &temp_home);
+        let _appdata = EnvGuard::set(
+            "APPDATA",
+            &temp.path().join("AppData").join("Roaming").to_string_lossy(),
+        );
+        let _config = EnvGuard::set(
+            "DOCDEX_CONFIG_PATH",
+            &temp.path().join("config.toml").to_string_lossy(),
+        );
+        let _ollama_install = EnvGuard::clear("DOCDEX_OLLAMA_INSTALL");
+        let _ollama_prompt = EnvGuard::clear("DOCDEX_OLLAMA_MODEL_PROMPT");
+        let _ollama_assume = EnvGuard::clear("DOCDEX_OLLAMA_MODEL_ASSUME_Y");
+        let _browser_install = EnvGuard::clear("DOCDEX_BROWSER_INSTALL");
+        let mut input = ScriptedInput::new(vec![
+            ScriptedAnswer::Menu(Some(StepKey::Ollama)),
+            ScriptedAnswer::Confirm(false),
+            ScriptedAnswer::Menu(None),
+        ]);
+        let services = FakeServices {
+            models: vec![],
+            ollama_path: None,
+        };
         let context = SetupContext {
             hardware: super::super::hardware::SetupHardware {
                 total_memory_gb: 16.0,
@@ -913,14 +2090,15 @@ mod tests {
         std::env::remove_var("DOCDEX_OLLAMA_INSTALL");
         std::env::remove_var("DOCDEX_OLLAMA_MODEL_PROMPT");
         std::env::remove_var("DOCDEX_OLLAMA_MODEL_ASSUME_Y");
+        std::env::remove_var("DOCDEX_BROWSER_INSTALL");
         let mut input = ScriptedInput::new(vec![
-            ScriptedAnswer::Confirm(true),
-            ScriptedAnswer::Confirm(false),
-            ScriptedAnswer::Confirm(false),
-            ScriptedAnswer::Select(Some(1)),
+            ScriptedAnswer::Menu(Some(StepKey::ChatModel)),
+            ScriptedAnswer::Select(Some(0)),
+            ScriptedAnswer::Menu(None),
         ]);
         let services = FakeServices {
             models: vec![EMBED_MODEL.to_string(), CHAT_MODEL.to_string()],
+            ollama_path: Some(PathBuf::from("/tmp/ollama")),
         };
         let context = SetupContext {
             hardware: super::super::hardware::SetupHardware {
@@ -939,12 +2117,29 @@ mod tests {
     #[test]
     fn wizard_skips_default_selection_when_prompts_disabled() -> Result<()> {
         let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("DOCDEX_OLLAMA_INSTALL");
-        std::env::set_var("DOCDEX_OLLAMA_MODEL_PROMPT", "0");
-        std::env::remove_var("DOCDEX_OLLAMA_MODEL_ASSUME_Y");
-        let mut input = ScriptedInput::new(vec![ScriptedAnswer::Confirm(true)]);
+        let temp = TempDir::new()?;
+        let temp_home = temp.path().to_string_lossy();
+        let _home = EnvGuard::set("HOME", &temp_home);
+        let _user = EnvGuard::set("USERPROFILE", &temp_home);
+        let _appdata = EnvGuard::set(
+            "APPDATA",
+            &temp.path().join("AppData").join("Roaming").to_string_lossy(),
+        );
+        let _config = EnvGuard::set(
+            "DOCDEX_CONFIG_PATH",
+            &temp.path().join("config.toml").to_string_lossy(),
+        );
+        let _ollama_install = EnvGuard::clear("DOCDEX_OLLAMA_INSTALL");
+        let _ollama_prompt = EnvGuard::set("DOCDEX_OLLAMA_MODEL_PROMPT", "0");
+        let _ollama_assume = EnvGuard::clear("DOCDEX_OLLAMA_MODEL_ASSUME_Y");
+        let _browser_install = EnvGuard::clear("DOCDEX_BROWSER_INSTALL");
+        let mut input = ScriptedInput::new(vec![
+            ScriptedAnswer::Menu(Some(StepKey::ChatModel)),
+            ScriptedAnswer::Menu(None),
+        ]);
         let services = FakeServices {
             models: vec![EMBED_MODEL.to_string()],
+            ollama_path: Some(PathBuf::from("/tmp/ollama")),
         };
         let context = SetupContext {
             hardware: super::super::hardware::SetupHardware {
@@ -957,8 +2152,34 @@ mod tests {
         let summary = run_wizard_with_input(context, &mut input, &services)?;
         assert_eq!(summary.status, "complete");
         assert!(summary.default_model.is_none());
-        std::env::remove_var("DOCDEX_OLLAMA_MODEL_PROMPT");
         Ok(())
+    }
+
+    #[test]
+    fn build_model_choices_filters_embedding_models_from_chat() {
+        let models = vec![
+            "nomic-embed-text:latest".to_string(),
+            "nomic-embed-text-v1.5".to_string(),
+            "phi3.5:3.8b".to_string(),
+        ];
+        let chat_models = filter_chat_models(&models);
+        let (choices, default_index) = build_model_choices(&chat_models, None);
+        assert_eq!(choices.len(), 1);
+        assert_eq!(choices[0].value, "phi3.5:3.8b");
+        assert_eq!(default_index, Some(0));
+    }
+
+    #[test]
+    fn build_model_choices_filters_chat_models_from_embedding() {
+        let models = vec![
+            "nomic-embed-text-v1.5".to_string(),
+            "phi3.5:3.8b".to_string(),
+        ];
+        let embed_models = filter_embedding_models(&models);
+        let (choices, default_index) = build_model_choices(&embed_models, None);
+        assert_eq!(choices.len(), 1);
+        assert_eq!(choices[0].value, "nomic-embed-text-v1.5");
+        assert_eq!(default_index, Some(0));
     }
 
     #[test]
@@ -972,6 +2193,8 @@ mod tests {
             StepKey::EmbedModel,
             StepKey::ChatModel,
             StepKey::DefaultModel,
+            StepKey::EmbedDefault,
+            StepKey::Browser,
             StepKey::Summary,
         ] {
             state.current = step;

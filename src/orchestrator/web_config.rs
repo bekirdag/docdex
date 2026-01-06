@@ -25,6 +25,7 @@ pub struct WebConfig {
     pub scraper_engine: String,
     pub scraper_headless: bool,
     pub chrome_binary_path: Option<PathBuf>,
+    pub scraper_browser_kind: Option<String>,
     pub scraper_user_data_dir: Option<PathBuf>,
     pub page_load_timeout: Duration,
 }
@@ -86,9 +87,13 @@ impl WebConfig {
             boilerplate_phrases.extend(load_boilerplate_file(&path));
         }
         let boilerplate_phrases = normalize_phrases(boilerplate_phrases);
-        let scraper_engine = config_scraper_engine().unwrap_or_else(|| "chrome".to_string());
+        let scraper_engine = config_scraper_engine().unwrap_or_else(|| "playwright".to_string());
         let scraper_headless = config_scraper_headless().unwrap_or(true);
         let chrome_binary_path = config_scraper_chrome_binary();
+        let scraper_browser_kind = env::var("DOCDEX_PLAYWRIGHT_BROWSER")
+            .ok()
+            .and_then(|value| normalize_nonempty(value))
+            .or_else(config_scraper_browser_kind);
         let scraper_user_data_dir = env::var("DOCDEX_BROWSER_USER_DATA_DIR")
             .ok()
             .and_then(|value| normalize_nonempty(value))
@@ -122,6 +127,7 @@ impl WebConfig {
             scraper_engine,
             scraper_headless,
             chrome_binary_path,
+            scraper_browser_kind,
             scraper_user_data_dir,
             page_load_timeout,
         }
@@ -261,6 +267,15 @@ fn config_scraper_user_data_dir() -> Option<PathBuf> {
     config.web.scraper.user_data_dir
 }
 
+fn config_scraper_browser_kind() -> Option<String> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    config.web.scraper.browser_kind.clone()
+}
+
 fn config_blocklist() -> Option<Vec<String>> {
     let path = config::default_config_path().ok()?;
     if !path.exists() {
@@ -328,7 +343,7 @@ fn default_scraper_user_data_dir(engine: &str) -> Option<PathBuf> {
     layout.ensure_global_dirs().ok()?;
     let normalized = engine.trim().to_ascii_lowercase();
     let profile_dir = match normalized.as_str() {
-        "chrome" | "chromium" | "chromium-browser" => "chrome",
+        "chrome" | "chromium" | "chromium-browser" | "playwright" => "chrome",
         other if other.is_empty() => "chrome",
         other => other,
     };
@@ -405,6 +420,7 @@ mod tests {
 
         let mut config = config::AppConfig::default();
         config.core.global_state_dir = Some(state_dir.clone());
+        config.web.scraper.engine = "playwright".to_string();
         config.web.scraper.user_data_dir = None;
         config.apply_defaults()?;
         config::write_config(&config_path, &config)?;

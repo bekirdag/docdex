@@ -1,5 +1,5 @@
 use crate::config;
-use crate::util::{self, BrowserCandidate, BrowserSource};
+use crate::util::{self, BrowserCandidate, BrowserSource, BrowserKind};
 use crate::web::browser_install;
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -45,30 +45,9 @@ struct BrowserInstallResponse {
 
 async fn run_list() -> Result<()> {
     let config = config::AppConfig::load_default()?;
-    let mut candidates =
-        util::detect_browser_candidates(config.web.scraper.chrome_binary_path.as_deref());
-    if let Some(installed) = browser_install::resolve_installed_browser() {
-        let already_listed = candidates
-            .iter()
-            .any(|candidate| candidate.path == installed);
-        if !already_listed {
-            let priority = candidates
-                .iter()
-                .map(|candidate| candidate.priority)
-                .max()
-                .unwrap_or(0)
-                .saturating_add(1);
-            candidates.push(BrowserCandidate {
-                kind: util::BrowserKind::Chromium,
-                name: "Chromium (auto-install)".to_string(),
-                path: installed,
-                source: BrowserSource::AutoInstall,
-                priority,
-            });
-        }
-    }
+    let mut candidates = playwright_candidates();
     candidates.sort_by_key(|candidate| candidate.priority);
-    let selected = candidates.first().cloned();
+    let selected = resolve_selected_candidate(&candidates, config.web.scraper.browser_kind.as_deref());
     let response = BrowserListResponse {
         selected: selected.map(candidate_output),
         candidates: candidates.into_iter().map(candidate_output).collect(),
@@ -80,7 +59,8 @@ async fn run_list() -> Result<()> {
 
 async fn run_setup() -> Result<()> {
     let config = config::AppConfig::load_default()?;
-    let selected = util::detect_browser_binary(config.web.scraper.chrome_binary_path.as_deref());
+    let candidates = playwright_candidates();
+    let selected = resolve_selected_candidate(&candidates, config.web.scraper.browser_kind.as_deref());
     let config_path = config::default_config_path()?.to_string_lossy().to_string();
     let response = BrowserSetupResponse {
         selected: selected.map(candidate_output),
@@ -98,6 +78,15 @@ async fn run_install() -> Result<()> {
     if let Some(result) = install_result.as_ref() {
         config.web.scraper.chrome_binary_path = Some(result.path.clone());
         config.web.scraper.browser_kind = Some("chromium".to_string());
+        if !config
+            .web
+            .scraper
+            .engine
+            .trim()
+            .eq_ignore_ascii_case("playwright")
+        {
+            config.web.scraper.engine = "playwright".to_string();
+        }
         config::write_config(
             &config::default_config_path().context("resolve config path")?,
             &config,
@@ -123,6 +112,56 @@ fn candidate_output(candidate: BrowserCandidate) -> BrowserCandidateOutput {
         path: candidate.path.to_string_lossy().to_string(),
         priority: candidate.priority,
     }
+}
+
+fn playwright_candidates() -> Vec<BrowserCandidate> {
+    let Some(manifest) = util::read_playwright_manifest() else {
+        return Vec::new();
+    };
+    let mut priority = 0u32;
+    let mut out = Vec::new();
+    for browser in manifest.browsers.into_iter() {
+        if !browser.path.is_file() {
+            continue;
+        }
+        let name = browser.name.clone();
+        out.push(BrowserCandidate {
+            kind: playwright_kind(&name),
+            name,
+            path: browser.path,
+            source: BrowserSource::Playwright,
+            priority,
+        });
+        priority = priority.saturating_add(1);
+    }
+    out
+}
+
+fn playwright_kind(name: &str) -> BrowserKind {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "chromium" => BrowserKind::Chromium,
+        "firefox" => BrowserKind::Firefox,
+        "webkit" => BrowserKind::Webkit,
+        _ => BrowserKind::Custom,
+    }
+}
+
+fn resolve_selected_candidate(
+    candidates: &[BrowserCandidate],
+    desired: Option<&str>,
+) -> Option<BrowserCandidate> {
+    let desired = desired
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty());
+    if let Some(name) = desired {
+        if let Some(candidate) = candidates
+            .iter()
+            .find(|candidate| candidate.name.eq_ignore_ascii_case(name))
+        {
+            return Some(candidate.clone());
+        }
+    }
+    candidates.first().cloned()
 }
 
 fn resolve_auto_install_enabled(config: &config::AppConfig) -> bool {

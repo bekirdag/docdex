@@ -290,7 +290,11 @@ fn extract_root_from_params(params: &serde_json::Map<String, Value>) -> Option<S
         "root_path",
     ] {
         if let Some(value) = params.get(key).and_then(|value| value.as_str()) {
-            return Some(value.to_string());
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            return Some(trimmed.to_string());
         }
     }
     if let Some(root) = extract_root_from_array(params.get("roots")) {
@@ -303,12 +307,20 @@ fn extract_root_from_array(value: Option<&Value>) -> Option<String> {
     let roots = value?.as_array()?;
     for entry in roots {
         if let Some(value) = entry.as_str() {
-            return Some(value.to_string());
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            return Some(trimmed.to_string());
         }
         if let Some(obj) = entry.as_object() {
             for key in ["uri", "rootUri", "path", "rootPath", "root_path"] {
                 if let Some(value) = obj.get(key).and_then(|value| value.as_str()) {
-                    return Some(value.to_string());
+                    let trimmed = value.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    return Some(trimmed.to_string());
                 }
             }
         }
@@ -395,6 +407,22 @@ mod tests {
             .unwrap_or_else(|| PathBuf::from(repo_root_str.as_str()));
         let expected = repo_root.canonicalize().expect("canonical repo root");
         assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn extract_init_root_ignores_empty_strings() {
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "rootUri": "",
+                "workspaceRoot": "   ",
+                "roots": [""]
+            }
+        });
+        let root = extract_init_root(&payload);
+        assert!(root.is_none());
     }
 }
 

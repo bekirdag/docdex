@@ -8,7 +8,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { pipeline } = require("node:stream/promises");
 const crypto = require("node:crypto");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 
 const pkg = require("../package.json");
 const {
@@ -41,6 +41,8 @@ const DEFAULT_INTEGRITY_CONFIG = Object.freeze({
 const LOCAL_FALLBACK_ENV = "DOCDEX_LOCAL_FALLBACK";
 const LOCAL_BINARY_ENV = "DOCDEX_LOCAL_BINARY";
 const AGENTS_DOC_FILENAME = "agents.md";
+const PLAYWRIGHT_INSTALL_GUARD = "DOCDEX_INTERNAL_PLAYWRIGHT_INSTALL";
+const PLAYWRIGHT_SKIP_ENV = "DOCDEX_SKIP_PLAYWRIGHT_DEP_INSTALL";
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -227,6 +229,60 @@ function writeAgentInstructions() {
     return true;
   } catch {
     return false;
+  }
+}
+
+function resolvePlaywrightPackage() {
+  const baseDir = path.join(__dirname, "..");
+  try {
+    return require.resolve("playwright/package.json", { paths: [baseDir] });
+  } catch {}
+  try {
+    return require.resolve("playwright/package.json");
+  } catch {}
+  return null;
+}
+
+function resolveNpmCommand() {
+  const npmExec = process.env.npm_execpath;
+  if (npmExec) {
+    return { cmd: process.execPath, args: [npmExec] };
+  }
+  const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+  return { cmd: npmCmd, args: [] };
+}
+
+function ensurePlaywrightDependency({ logger = console } = {}) {
+  if (process.env[PLAYWRIGHT_SKIP_ENV]) return;
+  if (process.env[PLAYWRIGHT_INSTALL_GUARD]) return;
+  if (resolvePlaywrightPackage()) return;
+
+  const rootDir = path.join(__dirname, "..");
+  const { cmd, args } = resolveNpmCommand();
+  const installArgs = args.concat([
+    "install",
+    "--no-save",
+    "--ignore-scripts",
+    "--no-package-lock",
+    "--no-audit",
+    "--no-fund",
+    "playwright"
+  ]);
+  const result = spawnSync(cmd, installArgs, {
+    cwd: rootDir,
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      [PLAYWRIGHT_INSTALL_GUARD]: "1"
+    }
+  });
+  if (result.error || (typeof result.status === "number" && result.status !== 0)) {
+    const message = result.error?.message || `npm exit status ${result.status}`;
+    logger.warn?.(`[docdex] Playwright dependency install failed: ${message}`);
+    return;
+  }
+  if (!resolvePlaywrightPackage()) {
+    logger.warn?.("[docdex] Playwright dependency still missing after install attempt");
   }
 }
 
@@ -2120,6 +2176,11 @@ async function main() {
     writeAgentInstructions();
   } catch (err) {
     console.warn(`[docdex] agent instructions skipped: ${err?.message || err}`);
+  }
+  try {
+    ensurePlaywrightDependency();
+  } catch (err) {
+    console.warn(`[docdex] playwright dependency check skipped: ${err?.message || err}`);
   }
   printPostInstallBanner();
 }

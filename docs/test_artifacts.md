@@ -158,6 +158,7 @@
 - npm/test/installer_regression_no_download.test.js
 - npm/test/installer_version_resolution.test.js
 - npm/test/cli_wrapper_parity.test.js
+- npm/test/update_check.test.js
 - npm/test/packaging_guardrails.test.js
 - npm/test/installer_e2e_matrix.test.js
 - npm/test/installer_atomic_rollback_retry.test.js

@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
+const pkg = require("../package.json");
 const {
   artifactName,
   detectLibcFromRuntime,
@@ -13,6 +14,7 @@ const {
   assetPatternForPlatformKey,
   UnsupportedPlatformError
 } = require("../lib/platform");
+const { checkForUpdateOnce } = require("../lib/update_check");
 
 function isDoctorCommand(argv) {
   const sub = argv[0];
@@ -139,7 +141,7 @@ function runDoctor() {
   process.exit(report.exitCode);
 }
 
-function run() {
+async function run() {
   const argv = process.argv.slice(2);
   if (isDoctorCommand(argv)) {
     runDoctor();
@@ -164,9 +166,11 @@ function run() {
       }
       console.error("[docdex] Next steps: use a supported platform or build from source (Rust).");
       process.exit(err.exitCode || 3);
+      return;
     }
     console.error(`[docdex] failed to detect platform: ${err?.message || String(err)}`);
     process.exit(1);
+    return;
   }
 
   const basePath = path.join(__dirname, "..", "dist", platformKey);
@@ -186,11 +190,24 @@ function run() {
       console.error(`[docdex] Asset naming pattern: ${assetPatternForPlatformKey(platformKey)}`);
     } catch {}
     process.exit(1);
+    return;
   }
+
+  await checkForUpdateOnce({
+    currentVersion: pkg.version,
+    env: process.env,
+    stdout: process.stdout,
+    stderr: process.stderr,
+    logger: console
+  });
 
   const env = { ...process.env };
   if (!env.DOCDEX_MCP_SERVER_BIN && fs.existsSync(mcpBinaryPath)) {
     env.DOCDEX_MCP_SERVER_BIN = mcpBinaryPath;
+  }
+  const fetcherPath = path.join(__dirname, "..", "lib", "playwright_fetch.js");
+  if (!env.DOCDEX_PLAYWRIGHT_FETCHER && fs.existsSync(fetcherPath)) {
+    env.DOCDEX_PLAYWRIGHT_FETCHER = fetcherPath;
   }
   const child = spawn(binaryPath, process.argv.slice(2), { stdio: "inherit", env });
   child.on("exit", (code) => process.exit(code ?? 1));
@@ -200,4 +217,7 @@ function run() {
   });
 }
 
-run();
+run().catch((err) => {
+  console.error(`[docdex] unexpected error: ${err?.message || String(err)}`);
+  process.exit(1);
+});

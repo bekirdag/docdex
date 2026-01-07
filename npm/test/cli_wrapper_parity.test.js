@@ -7,7 +7,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { createRequire } = require("node:module");
 
-function runScriptWithMocks(scriptPath, { mocks, argv }) {
+async function runScriptWithMocks(scriptPath, { mocks, argv, env, platform, arch, stdoutIsTTY, stderrIsTTY } = {}) {
   const realRequire = createRequire(scriptPath);
   const code = fs.readFileSync(scriptPath, "utf8").replace(/^#!.*\n/, "");
 
@@ -26,32 +26,33 @@ function runScriptWithMocks(scriptPath, { mocks, argv }) {
     },
     process: {
       argv: argv || ["node", scriptPath],
-      platform: "darwin",
-      arch: "arm64",
-      env: {},
+      platform: platform || "darwin",
+      arch: arch || "arm64",
+      env: env || {},
+      stdout: { isTTY: Boolean(stdoutIsTTY) },
+      stderr: { isTTY: Boolean(stderrIsTTY) },
       exit: (code) => {
         exitCode = code;
-        const err = new Error("process.exit");
-        err.__EXIT__ = true;
-        throw err;
       }
     },
+    setTimeout,
+    clearTimeout,
+    setImmediate,
+    clearImmediate,
+    queueMicrotask,
     require: (request) => {
       if (mocks && Object.prototype.hasOwnProperty.call(mocks, request)) return mocks[request];
       return realRequire(request);
     }
   };
 
-  try {
-    vm.runInNewContext(code, sandbox, { filename: scriptPath });
-  } catch (err) {
-    if (!err || err.__EXIT__ !== true) throw err;
-  }
+  vm.runInNewContext(code, sandbox, { filename: scriptPath });
+  await new Promise((resolve) => setImmediate(resolve));
 
   return { exitCode, stdout: stdout.join("\n"), stderr: stderr.join("\n") };
 }
 
-test("docdex CLI wrapper: unsupported platform exits non-zero and does not attempt to run binaries", () => {
+test("docdex CLI wrapper: unsupported platform exits non-zero and does not attempt to run binaries", async () => {
   let spawnCalls = 0;
   let existsCalls = 0;
 
@@ -79,7 +80,7 @@ test("docdex CLI wrapper: unsupported platform exits non-zero and does not attem
   };
 
   const scriptPath = path.join(__dirname, "..", "bin", "docdex.js");
-  const result = runScriptWithMocks(scriptPath, {
+  const result = await runScriptWithMocks(scriptPath, {
     mocks: {
       "../lib/platform": platformModule,
       "node:child_process": {
@@ -106,7 +107,7 @@ test("docdex CLI wrapper: unsupported platform exits non-zero and does not attem
   assert.equal(existsCalls, 0);
 });
 
-test("docdex CLI wrapper: supported platform with missing local binary exits non-zero without 'unsupported platform'", () => {
+test("docdex CLI wrapper: supported platform with missing local binary exits non-zero without 'unsupported platform'", async () => {
   let spawnCalls = 0;
 
   const platformModule = {
@@ -117,7 +118,7 @@ test("docdex CLI wrapper: supported platform with missing local binary exits non
   };
 
   const scriptPath = path.join(__dirname, "..", "bin", "docdex.js");
-  const result = runScriptWithMocks(scriptPath, {
+  const result = await runScriptWithMocks(scriptPath, {
     mocks: {
       "../lib/platform": platformModule,
       "node:child_process": {
@@ -138,7 +139,7 @@ test("docdex CLI wrapper: supported platform with missing local binary exits non
   assert.equal(spawnCalls, 0);
 });
 
-test("docdex CLI wrapper: `doctor` prints platform diagnostics without checking local binaries", () => {
+test("docdex CLI wrapper: `doctor` prints platform diagnostics without checking local binaries", async () => {
   let spawnCalls = 0;
   let existsCalls = 0;
 
@@ -152,7 +153,7 @@ test("docdex CLI wrapper: `doctor` prints platform diagnostics without checking 
   };
 
   const scriptPath = path.join(__dirname, "..", "bin", "docdex.js");
-  const result = runScriptWithMocks(scriptPath, {
+  const result = await runScriptWithMocks(scriptPath, {
     mocks: {
       "../lib/platform": platformModule,
       "node:child_process": {
@@ -184,7 +185,7 @@ test("docdex CLI wrapper: `doctor` prints platform diagnostics without checking 
   assert.equal(existsCalls, 0);
 });
 
-test("docdex CLI wrapper: sets DOCDEX_MCP_SERVER_BIN when bundled mcp binary exists", () => {
+test("docdex CLI wrapper: sets DOCDEX_MCP_SERVER_BIN when bundled mcp binary exists", async () => {
   let spawnEnv = null;
 
   const platformModule = {
@@ -193,7 +194,7 @@ test("docdex CLI wrapper: sets DOCDEX_MCP_SERVER_BIN when bundled mcp binary exi
   };
 
   const scriptPath = path.join(__dirname, "..", "bin", "docdex.js");
-  const result = runScriptWithMocks(scriptPath, {
+  const result = await runScriptWithMocks(scriptPath, {
     mocks: {
       "../lib/platform": platformModule,
       "node:child_process": {
@@ -220,7 +221,7 @@ test("docdex CLI wrapper: sets DOCDEX_MCP_SERVER_BIN when bundled mcp binary exi
   );
 });
 
-test("docdex MCP wrapper: launches bundled mcp server binary", () => {
+test("docdex MCP wrapper: launches bundled mcp server binary", async () => {
   let spawnCmd = null;
   let spawnArgs = null;
 
@@ -232,7 +233,7 @@ test("docdex MCP wrapper: launches bundled mcp server binary", () => {
   };
 
   const scriptPath = path.join(__dirname, "..", "bin", "docdex-mcp-server.js");
-  const result = runScriptWithMocks(scriptPath, {
+  const result = await runScriptWithMocks(scriptPath, {
     mocks: {
       "../lib/platform": platformModule,
       "node:child_process": {
@@ -260,7 +261,7 @@ test("docdex MCP wrapper: launches bundled mcp server binary", () => {
   assert.deepEqual(spawnArgs, ["--version"]);
 });
 
-test("docdex CLI wrapper: `doctor` exits non-zero and reports unsupported platform", () => {
+test("docdex CLI wrapper: `doctor` exits non-zero and reports unsupported platform", async () => {
   let spawnCalls = 0;
   let existsCalls = 0;
 
@@ -294,7 +295,7 @@ test("docdex CLI wrapper: `doctor` exits non-zero and reports unsupported platfo
   };
 
   const scriptPath = path.join(__dirname, "..", "bin", "docdex.js");
-  const result = runScriptWithMocks(scriptPath, {
+  const result = await runScriptWithMocks(scriptPath, {
     mocks: {
       "../lib/platform": platformModule,
       "node:child_process": {

@@ -24,7 +24,8 @@ const {
   hasInteractiveTty,
   shouldSkipSetup,
   launchSetupWizard,
-  applyAgentInstructions
+  applyAgentInstructions,
+  buildDaemonEnv
 } = require("../lib/postinstall_setup");
 
 test("upsertServerConfig adds server section when missing", () => {
@@ -224,6 +225,16 @@ test("runPostInstallSetup does not call Ollama installers", () => {
   const source = runPostInstallSetup.toString();
   assert.equal(source.includes("maybeInstallOllama"), false);
   assert.equal(source.includes("maybePromptOllamaModel"), false);
+});
+
+test("buildDaemonEnv includes playwright fetcher when bundled", () => {
+  const expectedFetcher = path.join(__dirname, "..", "lib", "playwright_fetch.js");
+  const env = buildDaemonEnv({ mcpBinaryPath: "/tmp/docdex-mcp" });
+  assert.equal(env.DOCDEX_BROWSER_AUTO_INSTALL, "0");
+  assert.equal(env.DOCDEX_MCP_SERVER_BIN, "/tmp/docdex-mcp");
+  if (fs.existsSync(expectedFetcher)) {
+    assert.equal(env.DOCDEX_PLAYWRIGHT_FETCHER, expectedFetcher);
+  }
 });
 
 test("resolveOllamaInstallMode respects env overrides", () => {

@@ -1464,8 +1464,26 @@ async function maybePromptOllamaModel({
   return { status: "skipped", reason: "invalid_selection" };
 }
 
+function resolvePlaywrightFetcherPath() {
+  const candidate = path.join(__dirname, "playwright_fetch.js");
+  return fs.existsSync(candidate) ? candidate : null;
+}
+
+function buildDaemonEnvPairs({ mcpBinaryPath } = {}) {
+  const pairs = [["DOCDEX_BROWSER_AUTO_INSTALL", "0"]];
+  if (mcpBinaryPath) pairs.push(["DOCDEX_MCP_SERVER_BIN", mcpBinaryPath]);
+  const fetcher = resolvePlaywrightFetcherPath();
+  if (fetcher) pairs.push(["DOCDEX_PLAYWRIGHT_FETCHER", fetcher]);
+  return pairs;
+}
+
+function buildDaemonEnv({ mcpBinaryPath } = {}) {
+  return Object.fromEntries(buildDaemonEnvPairs({ mcpBinaryPath }));
+}
+
 function registerStartup({ binaryPath, mcpBinaryPath, port, repoRoot, logger }) {
   if (!binaryPath) return { ok: false, reason: "missing_binary" };
+  const envPairs = buildDaemonEnvPairs({ mcpBinaryPath });
   const args = [
     "daemon",
     "--repo",
@@ -1478,21 +1496,16 @@ function registerStartup({ binaryPath, mcpBinaryPath, port, repoRoot, logger }) 
     "warn",
     "--secure-mode=false"
   ];
-  const envMcpBin = mcpBinaryPath ? `DOCDEX_MCP_SERVER_BIN=${mcpBinaryPath}` : null;
 
   if (process.platform === "darwin") {
     const plistPath = path.join(os.homedir(), "Library", "LaunchAgents", "com.docdex.daemon.plist");
     const logDir = path.join(os.homedir(), ".docdex", "logs");
     fs.mkdirSync(logDir, { recursive: true });
     const programArgs = [binaryPath, ...args];
-    const envVars = [
-      "    <key>DOCDEX_BROWSER_AUTO_INSTALL</key>\n",
-      "    <string>0</string>\n"
-    ];
-    if (mcpBinaryPath) {
-      envVars.push("    <key>DOCDEX_MCP_SERVER_BIN</key>\n");
-      envVars.push(`    <string>${mcpBinaryPath}</string>\n`);
-    }
+    const envVars = envPairs.flatMap(([key, value]) => [
+      `    <key>${key}</key>\n`,
+      `    <string>${value}</string>\n`
+    ]);
     const plist = `<?xml version="1.0" encoding="UTF-8"?>\n` +
       `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n` +
       `<plist version="1.0">\n` +
@@ -1534,6 +1547,7 @@ function registerStartup({ binaryPath, mcpBinaryPath, port, repoRoot, logger }) 
     const systemdDir = path.join(os.homedir(), ".config", "systemd", "user");
     const unitPath = path.join(systemdDir, "docdexd.service");
     fs.mkdirSync(systemdDir, { recursive: true });
+    const envLines = envPairs.map(([key, value]) => `Environment=${key}=${value}`);
     const unit = [
       "[Unit]",
       "Description=Docdex daemon",
@@ -1541,8 +1555,7 @@ function registerStartup({ binaryPath, mcpBinaryPath, port, repoRoot, logger }) 
       "",
       "[Service]",
       `ExecStart=${binaryPath} ${args.join(" ")}`,
-      "Environment=DOCDEX_BROWSER_AUTO_INSTALL=0",
-      envMcpBin ? `Environment=${envMcpBin}` : null,
+      ...envLines,
       "Restart=always",
       "RestartSec=2",
       "",
@@ -1561,10 +1574,7 @@ function registerStartup({ binaryPath, mcpBinaryPath, port, repoRoot, logger }) 
   if (process.platform === "win32") {
     const taskName = "Docdex Daemon";
     const joinedArgs = args.map((arg) => `"${arg}"`).join(" ");
-    const envParts = ['set "DOCDEX_BROWSER_AUTO_INSTALL=0"'];
-    if (mcpBinaryPath) {
-      envParts.push(`set "DOCDEX_MCP_SERVER_BIN=${mcpBinaryPath}"`);
-    }
+    const envParts = envPairs.map(([key, value]) => `set "${key}=${value}"`);
     const taskArgs =
       `"cmd.exe" /c "${envParts.join(" && ")} && \"${binaryPath}\" ${joinedArgs}"`;
     const create = spawnSync("schtasks", [
@@ -1592,10 +1602,7 @@ function registerStartup({ binaryPath, mcpBinaryPath, port, repoRoot, logger }) 
 
 function startDaemonNow({ binaryPath, mcpBinaryPath, port, repoRoot }) {
   if (!binaryPath) return false;
-  const extraEnv = {};
-  if (mcpBinaryPath) {
-    extraEnv.DOCDEX_MCP_SERVER_BIN = mcpBinaryPath;
-  }
+  const extraEnv = buildDaemonEnv({ mcpBinaryPath });
   const child = spawn(
     binaryPath,
     [
@@ -1615,7 +1622,6 @@ function startDaemonNow({ binaryPath, mcpBinaryPath, port, repoRoot }) {
       detached: true,
       env: {
         ...process.env,
-        DOCDEX_BROWSER_AUTO_INSTALL: "0",
         ...extraEnv
       }
     }
@@ -1847,5 +1853,6 @@ module.exports = {
   canPromptWithTty,
   shouldSkipSetup,
   launchSetupWizard,
-  applyAgentInstructions
+  applyAgentInstructions,
+  buildDaemonEnv
 };

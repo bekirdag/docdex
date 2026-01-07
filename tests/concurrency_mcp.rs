@@ -25,12 +25,20 @@ struct McpHarness {
 }
 
 impl McpHarness {
-    fn spawn(repo: &Path) -> Result<Self, BoxError> {
+    fn spawn(repo: &Path, state_dir: &Path) -> Result<Self, BoxError> {
         let repo_str = repo.to_string_lossy().to_string();
         let mut cmd = Command::new(docdex_bin());
         cmd.env("DOCDEX_WEB_ENABLED", "0");
         cmd.env("DOCDEX_ENABLE_MEMORY", "0");
-        cmd.args(["mcp", "--repo", repo_str.as_str(), "--log", "warn"]);
+        cmd.args([
+            "mcp",
+            "--repo",
+            repo_str.as_str(),
+            "--log",
+            "warn",
+            "--state-dir",
+            &state_dir.to_string_lossy(),
+        ]);
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -58,7 +66,7 @@ impl McpHarness {
     }
 }
 
-fn run_docdex<I, S>(args: I) -> Result<(), BoxError>
+fn run_docdex<I, S>(args: I, state_dir: &Path) -> Result<(), BoxError>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
@@ -66,8 +74,9 @@ where
     let output = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
-        .env("DOCDEX_ENABLE_MEMORY", "0")
         .args(args)
+        .arg("--state-dir")
+        .arg(state_dir)
         .output()?;
     if !output.status.success() {
         return Err(std::io::Error::new(
@@ -211,12 +220,13 @@ fn run_search_and_open(
 fn mcp_concurrency_same_repo_isolated() -> Result<(), BoxError> {
     let repo = TempDir::new()?;
     write_repo(repo.path())?;
+    let state_dir = repo.path().join(".docdex-state");
 
     let repo_root = repo.path().to_string_lossy().to_string();
-    run_docdex(["index", "--repo", repo_root.as_str()])?;
+    run_docdex(["index", "--repo", repo_root.as_str()], &state_dir)?;
 
-    let harness_a = McpHarness::spawn(repo.path())?;
-    let harness_b = McpHarness::spawn(repo.path())?;
+    let harness_a = McpHarness::spawn(repo.path(), &state_dir)?;
+    let harness_b = McpHarness::spawn(repo.path(), &state_dir)?;
 
     let barrier = Arc::new(Barrier::new(3));
     let barrier_a = barrier.clone();

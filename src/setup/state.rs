@@ -31,6 +31,7 @@ pub enum StepKey {
     ChatModel,
     DefaultModel,
     EmbedDefault,
+    Playwright,
     Browser,
     Summary,
 }
@@ -44,6 +45,7 @@ impl StepKey {
             StepKey::ChatModel => "Chat Model",
             StepKey::DefaultModel => "Default Chat Model",
             StepKey::EmbedDefault => "Default Embedding Model",
+            StepKey::Playwright => "Playwright",
             StepKey::Browser => "Browser",
             StepKey::Summary => "Summary",
         }
@@ -139,6 +141,11 @@ impl SetupState {
             },
             StepSnapshot {
                 key: StepKey::EmbedDefault,
+                status: StepStatus::Pending,
+                detail: None,
+            },
+            StepSnapshot {
+                key: StepKey::Playwright,
                 status: StepStatus::Pending,
                 detail: None,
             },

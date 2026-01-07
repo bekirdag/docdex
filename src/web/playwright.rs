@@ -7,6 +7,7 @@ use url::Url;
 
 use crate::orchestrator::web_config::WebConfig;
 use crate::util;
+use crate::web::browser_install;
 use crate::web::chrome::ChromeFetchResult;
 
 const FETCHER_ENV: &str = "DOCDEX_PLAYWRIGHT_FETCHER";
@@ -37,6 +38,9 @@ impl PlaywrightFetchConfig {
                 .as_deref()
                 .unwrap_or("chromium"),
         );
+        if !browser_install::playwright_dependency_status().installed {
+            return None;
+        }
         let manifest = util::read_playwright_manifest()?;
         let installed = manifest
             .browsers
@@ -91,6 +95,9 @@ pub async fn fetch_dom(url: &Url, config: &PlaywrightFetchConfig) -> Result<Chro
     }
     if let Some(path) = config.browsers_path.as_ref() {
         command.env("PLAYWRIGHT_BROWSERS_PATH", path);
+    }
+    if let Some(node_path) = browser_install::playwright_dependency_status().node_path {
+        command.env("NODE_PATH", browser_install::merge_node_path(&node_path));
     }
 
     let output = command

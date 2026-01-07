@@ -355,10 +355,12 @@ fn startup_failure_emits_single_error_envelope_for_rate_limit_config() -> Result
 {
     let repo = setup_repo()?;
     let repo_arg = repo.path().to_string_lossy().to_string();
+    let state_dir = TempDir::new()?;
     let output = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_STATE_DIR", state_dir.path())
         .args([
             "serve",
             "--repo",

@@ -74,7 +74,8 @@ fn run_with_options(options: &SetupOptions) -> Result<SetupSummary> {
     if options.non_interactive {
         return Ok(SetupSummary {
             status: "skipped".to_string(),
-            message: "Run `docdex setup` in a terminal to install Ollama and models.".to_string(),
+            message: "Run `docdex setup` in a terminal to install Ollama, Playwright, and models."
+                .to_string(),
             models_installed: Vec::new(),
             default_model: None,
             timestamp_ms: now_ms(),

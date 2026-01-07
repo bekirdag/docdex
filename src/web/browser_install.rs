@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use fs4::FileExt;
+use serde::Deserialize;
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -9,6 +11,9 @@ const INSTALL_LOCK_NAME: &str = "browser_install.lock";
 const DEFAULT_BROWSERS: &str = "chromium";
 const ALLOWED_BROWSERS: [&str; 3] = ["chromium", "firefox", "webkit"];
 const INSTALLER_ENV: &str = "DOCDEX_PLAYWRIGHT_INSTALLER";
+const NODE_PATH_ENV: &str = "NODE_PATH";
+const PLAYWRIGHT_NODE_PATH_ENV: &str = "DOCDEX_PLAYWRIGHT_NODE_PATH";
+const PLAYWRIGHT_NODE_DIR_NAME: &str = "playwright-node";
 
 #[derive(Debug, Clone)]
 pub struct BrowserInstallResult {
@@ -16,8 +21,73 @@ pub struct BrowserInstallResult {
     pub version: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct PlaywrightDependencyStatus {
+    pub installed: bool,
+    pub version: Option<String>,
+    pub node_path: Option<PathBuf>,
+}
+
 pub fn resolve_installed_browser() -> Option<PathBuf> {
     crate::util::resolve_playwright_chromium().map(|browser| browser.path)
+}
+
+pub fn playwright_dependency_status() -> PlaywrightDependencyStatus {
+    let node_path = resolve_playwright_node_path();
+    let version = node_path
+        .as_ref()
+        .and_then(|path| read_playwright_version(&path.join("playwright").join("package.json")));
+    PlaywrightDependencyStatus {
+        installed: node_path.is_some(),
+        version,
+        node_path,
+    }
+}
+
+pub fn install_playwright_dependency() -> Result<PlaywrightDependencyStatus> {
+    let status = playwright_dependency_status();
+    if status.installed {
+        return Ok(status);
+    }
+    let base_dir =
+        crate::state_paths::default_state_base_dir().context("resolve docdex state dir")?;
+    let install_root = resolve_playwright_dependency_root(&base_dir);
+    fs::create_dir_all(&install_root).with_context(|| {
+        format!(
+            "create playwright dependency dir {}",
+            install_root.display()
+        )
+    })?;
+
+    let (cmd, args) = resolve_npm_command();
+    let mut command = Command::new(cmd);
+    command
+        .args(args)
+        .arg("install")
+        .arg("--no-save")
+        .arg("--ignore-scripts")
+        .arg("--no-package-lock")
+        .arg("--no-audit")
+        .arg("--no-fund")
+        .arg("playwright")
+        .current_dir(&install_root)
+        .env("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1");
+    let status = command
+        .status()
+        .with_context(|| format!("spawn playwright dependency install in {}", install_root.display()))?;
+    if !status.success() {
+        return Err(anyhow!(
+            "playwright dependency install failed with status {status}"
+        ));
+    }
+
+    let status = playwright_dependency_status();
+    if !status.installed {
+        return Err(anyhow!(
+            "playwright dependency install completed but playwright was not found"
+        ));
+    }
+    Ok(status)
 }
 
 pub fn install_if_missing(auto_install: bool) -> Result<Option<BrowserInstallResult>> {
@@ -55,6 +125,7 @@ pub fn install_if_missing(auto_install: bool) -> Result<Option<BrowserInstallRes
         return Ok(Some(to_install_result(existing)));
     }
 
+    install_playwright_dependency()?;
     let install_result = run_playwright_install(&install_dir, &selected);
     lock_file.unlock().ok();
     install_result?;
@@ -69,6 +140,11 @@ pub fn install_playwright_browsers(browsers: &[String]) -> Result<Option<Browser
     let selected = normalize_browser_list(browsers, &[])?;
     if selected.is_empty() {
         return Ok(None);
+    }
+    if !playwright_dependency_status().installed {
+        return Err(anyhow!(
+            "playwright dependency not installed; run `docdex setup` to install Playwright"
+        ));
     }
 
     let base_dir =
@@ -129,7 +205,11 @@ fn run_playwright_install(install_dir: &Path, browsers: &[String]) -> Result<()>
     } else {
         browsers.join(",")
     };
+    let node_path = resolve_playwright_node_path().ok_or_else(|| {
+        anyhow!("playwright dependency not installed; run `docdex setup` to install Playwright")
+    })?;
     let installer = resolve_playwright_installer_path()?;
+    let merged_node_path = merge_node_path(&node_path);
     let status = Command::new("node")
         .arg(installer.as_os_str())
         .arg("--browsers")
@@ -138,6 +218,7 @@ fn run_playwright_install(install_dir: &Path, browsers: &[String]) -> Result<()>
         .arg(install_dir)
         .env("PLAYWRIGHT_BROWSERS_PATH", install_dir)
         .env("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "0")
+        .env(NODE_PATH_ENV, merged_node_path)
         .status()
         .with_context(|| format!("spawn playwright installer {}", installer.display()))?;
     if status.success() {
@@ -214,6 +295,125 @@ fn resolve_playwright_installer_path() -> Result<PathBuf> {
     Err(anyhow!(
         "Playwright installer script not found; set DOCDEX_PLAYWRIGHT_INSTALLER to npm/lib/playwright_install.js"
     ))
+}
+
+fn resolve_playwright_node_path() -> Option<PathBuf> {
+    if let Some(path) = resolve_node_path_env_override() {
+        let candidate = if path.ends_with("node_modules") {
+            path.clone()
+        } else {
+            path.join("node_modules")
+        };
+        if playwright_package_present(&candidate) {
+            return Some(candidate);
+        }
+        if playwright_package_present(&path) {
+            return Some(path);
+        }
+    }
+
+    if let Ok(installer) = resolve_playwright_installer_path() {
+        if let Some(parent) = installer.parent() {
+            if let Some(node_path) = find_playwright_in_ancestors(parent, 6) {
+                return Some(node_path);
+            }
+        }
+    }
+
+    let base_dir = crate::state_paths::default_state_base_dir().ok()?;
+    let node_path = resolve_playwright_dependency_node_modules(&base_dir);
+    if playwright_package_present(&node_path) {
+        return Some(node_path);
+    }
+    None
+}
+
+fn resolve_playwright_dependency_root(base_dir: &Path) -> PathBuf {
+    if let Some(path) = resolve_node_path_env_override() {
+        if path.ends_with("node_modules") {
+            if let Some(parent) = path.parent() {
+                return parent.to_path_buf();
+            }
+        }
+        return path;
+    }
+    base_dir.join("bin").join(PLAYWRIGHT_NODE_DIR_NAME)
+}
+
+fn resolve_playwright_dependency_node_modules(base_dir: &Path) -> PathBuf {
+    if let Some(path) = resolve_node_path_env_override() {
+        if path.ends_with("node_modules") {
+            return path;
+        }
+        return path.join("node_modules");
+    }
+    resolve_playwright_dependency_root(base_dir).join("node_modules")
+}
+
+fn resolve_node_path_env_override() -> Option<PathBuf> {
+    let raw = std::env::var(PLAYWRIGHT_NODE_PATH_ENV).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(trimmed))
+    }
+}
+
+fn find_playwright_in_ancestors(start: &Path, max_depth: usize) -> Option<PathBuf> {
+    let mut cursor = Some(start);
+    for _ in 0..=max_depth {
+        if let Some(dir) = cursor {
+            let candidate = dir.join("node_modules");
+            if playwright_package_present(&candidate) {
+                return Some(candidate);
+            }
+            cursor = dir.parent();
+        } else {
+            break;
+        }
+    }
+    None
+}
+
+fn playwright_package_present(node_modules: &Path) -> bool {
+    node_modules
+        .join("playwright")
+        .join("package.json")
+        .is_file()
+}
+
+#[derive(Deserialize)]
+struct PlaywrightPackageMeta {
+    version: Option<String>,
+}
+
+fn read_playwright_version(path: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let parsed: PlaywrightPackageMeta = serde_json::from_str(&raw).ok()?;
+    parsed.version
+}
+
+fn resolve_npm_command() -> (OsString, Vec<OsString>) {
+    if let Ok(execpath) = std::env::var("npm_execpath") {
+        if !execpath.trim().is_empty() {
+            return (OsString::from("node"), vec![OsString::from(execpath)]);
+        }
+    }
+    let cmd = if cfg!(windows) { "npm.cmd" } else { "npm" };
+    (OsString::from(cmd), Vec::new())
+}
+
+pub(crate) fn merge_node_path(node_path: &Path) -> OsString {
+    let extra = node_path.to_string_lossy();
+    match std::env::var_os(NODE_PATH_ENV) {
+        Some(existing) if !existing.is_empty() => {
+            let sep = if cfg!(windows) { ";" } else { ":" };
+            let merged = format!("{extra}{sep}{}", existing.to_string_lossy());
+            OsString::from(merged)
+        }
+        _ => OsString::from(extra.as_ref()),
+    }
 }
 
 fn env_boolish(key: &str) -> Option<bool> {

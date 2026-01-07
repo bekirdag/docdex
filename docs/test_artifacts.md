@@ -122,7 +122,7 @@
 - src/orchestrator/web_config.rs
 - src/llm/tests.rs
 - src/setup/state.rs
-- src/setup/ui.rs
+- src/setup/ui.rs (Playwright browser inventory + selection tests)
 - src/setup/ollama.rs
 - src/setup/mod.rs
 - src/setup/state_store.rs
@@ -181,7 +181,7 @@
 - npm/test/platform.test.js
 - npm/test/installer_interrupted_installs.test.js
 - npm/test/postinstall_setup.test.js
-- npm/test/installer_local_fallback.test.js
+- npm/test/installer_local_fallback.test.js (local binary override)
 - npm/test/uninstall.test.js
 - npm/test/playwright_install.test.js
 

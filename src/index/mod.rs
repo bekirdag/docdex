@@ -1618,8 +1618,15 @@ mod file_decision_tests {
     fn decide_file_excludes_state_dir_before_prefix_rules() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
-            .expect("config");
+        let state_dir = repo_root.join(".docdex-state");
+        let config = IndexConfig::with_overrides(
+            &repo_root,
+            Some(state_dir.clone()),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )
+        .expect("config");
         let file = config.state_dir().join("doc.md");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
         fs::write(&file, "# state dir\n").expect("write file");

@@ -1806,6 +1806,25 @@ async function runInstaller(options) {
 
   const priorRunnable = existsSync ? existsSync(local.binaryPath) : false;
 
+  const forceLocalBinary = Boolean(env?.[LOCAL_BINARY_ENV]);
+  if (forceLocalBinary && localBinaryPath) {
+    const localInstall = await installFromLocalBinary({
+      fsModule,
+      pathModule,
+      distDir,
+      binaryPath: localBinaryPath,
+      isWin32,
+      version,
+      platformKey,
+      targetTriple,
+      repoSlug: null,
+      sha256FileFn,
+      writeJsonFileAtomicFn,
+      logger
+    });
+    return localInstall;
+  }
+
   if (local.outcome === "no-op") {
     logger.log("[docdex] Install outcome: no-op");
     await cleanupInstallArtifacts({

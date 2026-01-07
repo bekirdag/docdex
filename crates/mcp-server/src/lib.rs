@@ -616,8 +616,7 @@ pub async fn serve(
         let timeout_ms = std::env::var("DOCDEX_EMBEDDING_TIMEOUT_MS")
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
-            .unwrap_or(5000)
-            .max(1);
+            .unwrap_or(5000);
         Some(McpMemoryState {
             store: MemoryStore::new(indexer.state_dir()),
             embedder: OllamaEmbedder::new(base_url, model, Duration::from_millis(timeout_ms))?,

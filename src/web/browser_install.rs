@@ -7,6 +7,8 @@ use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::web::playwright_scripts;
+
 const INSTALL_LOCK_NAME: &str = "browser_install.lock";
 const DEFAULT_BROWSERS: &str = "chromium";
 const ALLOWED_BROWSERS: [&str; 3] = ["chromium", "firefox", "webkit"];
@@ -292,9 +294,9 @@ fn resolve_playwright_installer_path() -> Result<PathBuf> {
         }
     }
 
-    Err(anyhow!(
-        "Playwright installer script not found; set DOCDEX_PLAYWRIGHT_INSTALLER to npm/lib/playwright_install.js"
-    ))
+    playwright_scripts::ensure_playwright_installer_script().context(
+        "Playwright installer script not found; set DOCDEX_PLAYWRIGHT_INSTALLER to npm/lib/playwright_install.js",
+    )
 }
 
 fn resolve_playwright_node_path() -> Option<PathBuf> {

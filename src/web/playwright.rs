@@ -9,6 +9,7 @@ use crate::orchestrator::web_config::WebConfig;
 use crate::util;
 use crate::web::browser_install;
 use crate::web::chrome::ChromeFetchResult;
+use crate::web::playwright_scripts;
 
 const FETCHER_ENV: &str = "DOCDEX_PLAYWRIGHT_FETCHER";
 const INSTALLER_ENV: &str = "DOCDEX_PLAYWRIGHT_INSTALLER";
@@ -189,7 +190,7 @@ fn resolve_playwright_fetcher_path() -> Result<PathBuf> {
         }
     }
 
-    Err(anyhow!(
-        "Playwright fetcher script not found; set DOCDEX_PLAYWRIGHT_FETCHER to npm/lib/playwright_fetch.js"
-    ))
+    playwright_scripts::ensure_playwright_fetcher_script().context(
+        "Playwright fetcher script not found; set DOCDEX_PLAYWRIGHT_FETCHER to npm/lib/playwright_fetch.js",
+    )
 }

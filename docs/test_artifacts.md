@@ -138,6 +138,7 @@
 - src/index/mod.rs
 - src/web/chrome.rs
 - src/web/ddg.rs
+- src/web/playwright_scripts.rs
 
 ## Benchmarks
 - benches/indexing_bench.rs

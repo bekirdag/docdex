@@ -7,6 +7,7 @@ pub mod fetch;
 pub mod normalize;
 pub mod policy;
 pub mod playwright;
+pub mod playwright_scripts;
 pub mod readability;
 pub mod research;
 pub mod scraper;

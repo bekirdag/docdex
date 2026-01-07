@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use tracing::warn;
 
 use crate::error::{
@@ -348,6 +349,7 @@ pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn can_write_dir(path: &Path) -> bool {
     let probe = path.join(format!(
         ".docdex-perm-check-{}",

@@ -73,8 +73,9 @@ pub async fn fetch_dom(url: &Url, config: &PlaywrightFetchConfig) -> Result<Chro
     } else {
         config.timeout.as_millis().min(u128::from(u64::MAX)) as u64
     };
+    let node_bin = browser_install::resolve_node_binary()?;
 
-    let mut command = Command::new("node");
+    let mut command = Command::new(&node_bin);
     command
         .arg(script.as_os_str())
         .arg("--url")
@@ -104,7 +105,13 @@ pub async fn fetch_dom(url: &Url, config: &PlaywrightFetchConfig) -> Result<Chro
     let output = command
         .output()
         .await
-        .with_context(|| format!("spawn playwright fetcher {}", script.display()))?;
+        .with_context(|| {
+            format!(
+                "spawn playwright fetcher {} via {}",
+                script.display(),
+                node_bin.display()
+            )
+        })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let message = stderr.trim();

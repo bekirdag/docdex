@@ -315,6 +315,7 @@ Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary to
 - `DOCDEX_PLAYWRIGHT_BROWSER=chromium|firefox|webkit` to pick a Playwright browser (overrides `web.scraper.browser_kind`).
 - `DOCDEX_BROWSER_AUTO_INSTALL=0` to disable Playwright auto-install of Chromium.
 - `DOCDEX_PLAYWRIGHT_FETCHER=/path/to/npm/lib/playwright_fetch.js` to override the Playwright fetch helper.
+- `DOCDEX_NODE_BIN=/path/to/node` or `DOCDEX_PLAYWRIGHT_NODE_BIN=/path/to/node` to override the Node binary used for Playwright helpers.
 - `PLAYWRIGHT_BROWSERS_PATH=/path` to override the Playwright browser cache location.
 
 ## Ops and safety

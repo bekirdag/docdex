@@ -1794,6 +1794,7 @@ pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn can_write_dir(path: &Path) -> bool {
     let probe = path.join(format!(
         ".docdex-perm-check-{}",

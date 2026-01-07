@@ -6,6 +6,7 @@ use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use which::which;
 
 use crate::web::playwright_scripts;
 
@@ -15,6 +16,9 @@ const ALLOWED_BROWSERS: [&str; 3] = ["chromium", "firefox", "webkit"];
 const INSTALLER_ENV: &str = "DOCDEX_PLAYWRIGHT_INSTALLER";
 const NODE_PATH_ENV: &str = "NODE_PATH";
 const PLAYWRIGHT_NODE_PATH_ENV: &str = "DOCDEX_PLAYWRIGHT_NODE_PATH";
+const NODE_BIN_ENV: &str = "DOCDEX_NODE_BIN";
+const PLAYWRIGHT_NODE_BIN_ENV: &str = "DOCDEX_PLAYWRIGHT_NODE_BIN";
+const NVM_DIR_ENV: &str = "NVM_DIR";
 const PLAYWRIGHT_NODE_DIR_NAME: &str = "playwright-node";
 
 #[derive(Debug, Clone)]
@@ -210,9 +214,10 @@ fn run_playwright_install(install_dir: &Path, browsers: &[String]) -> Result<()>
     let node_path = resolve_playwright_node_path().ok_or_else(|| {
         anyhow!("playwright dependency not installed; run `docdex setup` to install Playwright")
     })?;
+    let node_bin = resolve_node_binary()?;
     let installer = resolve_playwright_installer_path()?;
     let merged_node_path = merge_node_path(&node_path);
-    let status = Command::new("node")
+    let status = Command::new(&node_bin)
         .arg(installer.as_os_str())
         .arg("--browsers")
         .arg(browser_list)
@@ -222,7 +227,13 @@ fn run_playwright_install(install_dir: &Path, browsers: &[String]) -> Result<()>
         .env("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "0")
         .env(NODE_PATH_ENV, merged_node_path)
         .status()
-        .with_context(|| format!("spawn playwright installer {}", installer.display()))?;
+        .with_context(|| {
+            format!(
+                "spawn playwright installer {} via {}",
+                installer.display(),
+                node_bin.display()
+            )
+        })?;
     if status.success() {
         Ok(())
     } else {
@@ -418,6 +429,188 @@ pub(crate) fn merge_node_path(node_path: &Path) -> OsString {
     }
 }
 
+pub(crate) fn resolve_node_binary() -> Result<PathBuf> {
+    if let Some(path) = node_bin_from_env(NODE_BIN_ENV)? {
+        return Ok(path);
+    }
+    if let Some(path) = node_bin_from_env(PLAYWRIGHT_NODE_BIN_ENV)? {
+        return Ok(path);
+    }
+    if let Ok(path) = which("node") {
+        return Ok(path);
+    }
+    if let Some(path) = resolve_node_from_nvm() {
+        return Ok(path);
+    }
+    if let Some(path) = resolve_node_from_common_paths() {
+        return Ok(path);
+    }
+    Err(anyhow!(
+        "node binary not found; set DOCDEX_NODE_BIN or DOCDEX_PLAYWRIGHT_NODE_BIN, or add node to PATH"
+    ))
+}
+
+fn node_bin_from_env(key: &str) -> Result<Option<PathBuf>> {
+    if let Ok(value) = std::env::var(key) {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        let path = PathBuf::from(trimmed);
+        if path.is_file() {
+            return Ok(Some(path));
+        }
+        return Err(anyhow!(
+            "node binary not found at {}; set {} to a valid node path",
+            path.display(),
+            key
+        ));
+    }
+    Ok(None)
+}
+
+fn resolve_node_from_nvm() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return None;
+    }
+    let base_dir = std::env::var_os(NVM_DIR_ENV)
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".nvm"))
+        })?;
+    let versions_dir = base_dir.join("versions").join("node");
+    if !versions_dir.is_dir() {
+        return None;
+    }
+    if let Some(path) = resolve_node_from_nvm_default(&base_dir, &versions_dir) {
+        return Some(path);
+    }
+    resolve_node_from_nvm_versions(&versions_dir)
+}
+
+fn resolve_node_from_nvm_default(base_dir: &Path, versions_dir: &Path) -> Option<PathBuf> {
+    let default_alias_path = base_dir.join("alias").join("default");
+    let default_alias = std::fs::read_to_string(default_alias_path).ok()?;
+    let target = default_alias.trim();
+    if target.is_empty() {
+        return None;
+    }
+    if let Some(version) = normalize_nvm_version(target) {
+        return node_path_for_version(versions_dir, &version);
+    }
+    if let Some(version) = resolve_nvm_alias(base_dir, target) {
+        return node_path_for_version(versions_dir, &version);
+    }
+    None
+}
+
+fn resolve_nvm_alias(base_dir: &Path, alias: &str) -> Option<String> {
+    let alias_path = base_dir.join("alias").join(alias);
+    let alias_target = std::fs::read_to_string(alias_path).ok()?;
+    normalize_nvm_version(alias_target.trim())
+}
+
+fn normalize_nvm_version(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let normalized = trimmed.trim_start_matches('v');
+    let mut chars = normalized.chars();
+    if !chars.next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        return None;
+    }
+    Some(format!("v{}", normalized))
+}
+
+fn resolve_node_from_nvm_versions(versions_dir: &Path) -> Option<PathBuf> {
+    let mut best: Option<(PathBuf, (u32, u32, u32))> = None;
+    let entries = std::fs::read_dir(versions_dir).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let version = parse_node_version(&name)?;
+        let candidate = entry.path().join("bin").join(node_filename());
+        if candidate.is_file() {
+            let replace = match best {
+                None => true,
+                Some((_, best_version)) => version > best_version,
+            };
+            if replace {
+                best = Some((candidate, version));
+            }
+        }
+    }
+    best.map(|(path, _)| path)
+}
+
+fn parse_node_version(name: &str) -> Option<(u32, u32, u32)> {
+    let trimmed = name.trim().trim_start_matches('v');
+    let mut parts = trimmed.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts.next().and_then(|value| value.parse::<u32>().ok()).unwrap_or(0);
+    let patch = parts.next().and_then(|value| value.parse::<u32>().ok()).unwrap_or(0);
+    Some((major, minor, patch))
+}
+
+fn node_path_for_version(versions_dir: &Path, version: &str) -> Option<PathBuf> {
+    let candidate = versions_dir.join(version).join("bin").join(node_filename());
+    if candidate.is_file() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+fn resolve_node_from_common_paths() -> Option<PathBuf> {
+    if cfg!(windows) {
+        let mut candidates = Vec::new();
+        if let Some(program_files) = std::env::var_os("ProgramFiles") {
+            candidates.push(PathBuf::from(program_files).join("nodejs").join("node.exe"));
+        }
+        if let Some(program_files) = std::env::var_os("ProgramFiles(x86)") {
+            candidates.push(PathBuf::from(program_files).join("nodejs").join("node.exe"));
+        }
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            candidates.push(
+                PathBuf::from(local_app_data)
+                    .join("Programs")
+                    .join("nodejs")
+                    .join("node.exe"),
+            );
+        }
+        for candidate in candidates {
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        return None;
+    }
+
+    let candidates = [
+        "/usr/bin/node",
+        "/usr/local/bin/node",
+        "/opt/homebrew/bin/node",
+        "/opt/homebrew/opt/node/bin/node",
+        "/snap/bin/node",
+    ];
+    for candidate in candidates {
+        let path = Path::new(candidate);
+        if path.is_file() {
+            return Some(path.to_path_buf());
+        }
+    }
+    None
+}
+
+fn node_filename() -> &'static str {
+    if cfg!(windows) {
+        "node.exe"
+    } else {
+        "node"
+    }
+}
+
 fn env_boolish(key: &str) -> Option<bool> {
     let raw = std::env::var(key).ok()?;
     let trimmed = raw.trim().to_ascii_lowercase();
@@ -425,5 +618,91 @@ fn env_boolish(key: &str) -> Option<bool> {
         "1" | "true" | "t" | "yes" | "y" | "on" => Some(true),
         "0" | "false" | "f" | "no" | "n" | "off" => Some(false),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use once_cell::sync::Lazy;
+    use std::ffi::OsString;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            Self { saved: Vec::new() }
+        }
+
+        fn set_var(&mut self, key: &'static str, value: Option<OsString>) {
+            let existing = std::env::var_os(key);
+            self.saved.push((key, existing));
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in self.saved.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_node_binary_prefers_env_override() -> Result<()> {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new()?;
+        let node_path = temp.path().join("node");
+        std::fs::write(&node_path, "node")?;
+        let mut env = EnvGuard::new();
+        env.set_var(NODE_BIN_ENV, Some(node_path.as_os_str().to_os_string()));
+        env.set_var(PLAYWRIGHT_NODE_BIN_ENV, Option::<OsString>::None);
+        env.set_var(NVM_DIR_ENV, Option::<OsString>::None);
+        let resolved = resolve_node_binary()?;
+        assert_eq!(resolved, node_path);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_node_binary_uses_nvm_default_when_missing_on_path() -> Result<()> {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new()?;
+        let nvm_dir = temp.path().join(".nvm");
+        let versions_dir = nvm_dir.join("versions").join("node");
+        let v18 = versions_dir.join("v18.19.0").join("bin");
+        let v20 = versions_dir.join("v20.10.0").join("bin");
+        std::fs::create_dir_all(&v18)?;
+        std::fs::create_dir_all(&v20)?;
+        std::fs::write(v18.join("node"), "node")?;
+        std::fs::write(v20.join("node"), "node")?;
+        std::fs::create_dir_all(nvm_dir.join("alias"))?;
+        std::fs::write(nvm_dir.join("alias").join("default"), "v20.10.0\n")?;
+        let empty_path = temp.path().join("empty-path");
+        std::fs::create_dir_all(&empty_path)?;
+
+        let mut env = EnvGuard::new();
+        env.set_var(NODE_BIN_ENV, Option::<OsString>::None);
+        env.set_var(PLAYWRIGHT_NODE_BIN_ENV, Option::<OsString>::None);
+        env.set_var(NVM_DIR_ENV, Some(nvm_dir.as_os_str().to_os_string()));
+        env.set_var("HOME", Some(temp.path().as_os_str().to_os_string()));
+        env.set_var("USERPROFILE", Some(temp.path().as_os_str().to_os_string()));
+        env.set_var("PATH", Some(empty_path.as_os_str().to_os_string()));
+
+        let resolved = resolve_node_binary()?;
+        assert_eq!(resolved, v20.join("node"));
+        Ok(())
     }
 }

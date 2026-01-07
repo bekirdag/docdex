@@ -136,6 +136,7 @@
 - src/daemon/lock.rs
 - src/daemon/multi_repo.rs
 - src/index/mod.rs
+- src/web/browser_install.rs
 - src/web/chrome.rs
 - src/web/ddg.rs
 - src/web/playwright_scripts.rs

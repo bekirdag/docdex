@@ -3006,12 +3006,16 @@ async fn security_middleware(
     State(state): State<AppState>,
     connect_info: Option<ConnectInfo<SocketAddr>>,
     request_id: Option<axum::extract::Extension<RequestId>>,
-    request: axum::http::Request<axum::body::Body>,
+    mut request: axum::http::Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, Response> {
     let request_id = request_id
         .map(|ext| ext.0)
         .unwrap_or_else(|| RequestId(Uuid::new_v4().to_string()));
+    let has_request_id = request.extensions().get::<RequestId>().is_some();
+    if !has_request_id {
+        request.extensions_mut().insert::<RequestId>(request_id.clone());
+    }
     let addr = connect_info
         .map(|info| info.0)
         .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)));

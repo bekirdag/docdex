@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const { version: PACKAGE_VERSION } = require("../package.json");
 
 const {
   upsertServerConfig,
@@ -154,7 +155,7 @@ test("upsertCodexConfig removes legacy instructions entry", () => {
   assert.ok(!contents.includes('experimental_instructions_file = "~/.docdex/agents.md"'));
 });
 
-test("applyAgentInstructions appends codex AGENTS.md", () => {
+test("applyAgentInstructions appends versioned docdex block once", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-codex-agents-"));
   const prev = {
     HOME: process.env.HOME,
@@ -167,10 +168,51 @@ test("applyAgentInstructions appends codex AGENTS.md", () => {
   try {
     const result = applyAgentInstructions({ logger: { warn: () => {} } });
     assert.equal(result.ok, true);
+    const second = applyAgentInstructions({ logger: { warn: () => {} } });
+    assert.equal(second.ok, true);
     const target = path.join(dir, ".codex", "AGENTS.md");
     assert.ok(fs.existsSync(target));
     const contents = fs.readFileSync(target, "utf8");
+    const startMarker = `---- START OF DOCDEX INFO V${PACKAGE_VERSION} ----`;
+    assert.ok(contents.includes(startMarker));
+    assert.ok(contents.includes("---- END OF DOCDEX INFO -----"));
     assert.ok(contents.includes("# Docdex Agent Usage Instructions"));
+    assert.equal(contents.split(startMarker).length - 1, 1);
+  } finally {
+    process.env.HOME = prev.HOME;
+    process.env.USERPROFILE = prev.USERPROFILE;
+    process.env.APPDATA = prev.APPDATA;
+  }
+});
+
+test("applyAgentInstructions replaces older docdex block", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-codex-agents-old-"));
+  const prev = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    APPDATA: process.env.APPDATA
+  };
+  process.env.HOME = dir;
+  process.env.USERPROFILE = dir;
+  process.env.APPDATA = path.join(dir, "AppData", "Roaming");
+  try {
+    const target = path.join(dir, ".codex", "AGENTS.md");
+    const oldBlock = [
+      "---- START OF DOCDEX INFO V0.2.17 ----",
+      "OLD DOCDEX INSTRUCTIONS",
+      "---- END OF DOCDEX INFO -----"
+    ].join("\n");
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, `Some other rules\n\n${oldBlock}\n\nKeep this line\n`);
+    const result = applyAgentInstructions({ logger: { warn: () => {} } });
+    assert.equal(result.ok, true);
+    const contents = fs.readFileSync(target, "utf8");
+    assert.ok(contents.includes("Some other rules"));
+    assert.ok(contents.includes("Keep this line"));
+    assert.ok(!contents.includes("OLD DOCDEX INSTRUCTIONS"));
+    assert.ok(!contents.includes("V0.2.17"));
+    assert.ok(contents.includes(`---- START OF DOCDEX INFO V${PACKAGE_VERSION} ----`));
+    assert.ok(contents.includes("---- END OF DOCDEX INFO -----"));
   } finally {
     process.env.HOME = prev.HOME;
     process.env.USERPROFILE = prev.USERPROFILE;

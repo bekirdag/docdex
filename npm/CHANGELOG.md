@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.19
+- Playwright issue fix
+- Agents md adding command manually
+- Agents md append repeat fix
+
 ## 0.2.16
 - Repo memory now tags items with `repoId` and filters recalls to prevent cross-repo leakage in multi-repo daemons.
 - MCP HTTP requires explicit repo selection when multiple repos are active.

@@ -20,6 +20,8 @@ const DEFAULT_OLLAMA_CHAT_MODEL = "phi3.5:3.8b";
 const DEFAULT_OLLAMA_CHAT_MODEL_SIZE_GIB = 2.2;
 const SETUP_PENDING_MARKER = "setup_pending.json";
 const AGENTS_DOC_FILENAME = "agents.md";
+const DOCDEX_INFO_START_PREFIX = "---- START OF DOCDEX INFO V";
+const DOCDEX_INFO_END = "---- END OF DOCDEX INFO -----";
 
 function defaultConfigPath() {
   return path.join(os.homedir(), ".docdex", "config.toml");
@@ -158,6 +160,18 @@ function agentsDocSourcePath() {
   return path.join(__dirname, "..", "assets", AGENTS_DOC_FILENAME);
 }
 
+function resolvePackageVersion() {
+  const packagePath = path.join(__dirname, "..", "package.json");
+  if (!fs.existsSync(packagePath)) return "unknown";
+  try {
+    const raw = fs.readFileSync(packagePath, "utf8");
+    const parsed = JSON.parse(raw);
+    return typeof parsed.version === "string" && parsed.version.trim() ? parsed.version.trim() : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 function loadAgentInstructions() {
   const sourcePath = agentsDocSourcePath();
   if (!fs.existsSync(sourcePath)) return "";
@@ -172,13 +186,123 @@ function normalizeInstructionText(value) {
   return String(value || "").trim();
 }
 
-function mergeInstructionText(existing, instructions) {
+function docdexBlockStart(version) {
+  return `${DOCDEX_INFO_START_PREFIX}${version} ----`;
+}
+
+function buildDocdexInstructionBlock(instructions) {
+  const next = normalizeInstructionText(instructions);
+  if (!next) return "";
+  const version = resolvePackageVersion();
+  return `${docdexBlockStart(version)}\n${next}\n${DOCDEX_INFO_END}`;
+}
+
+function extractDocdexBlockBody(text) {
+  const match = String(text || "").match(
+    new RegExp(
+      `${escapeRegExp(DOCDEX_INFO_START_PREFIX)}[^\\r\\n]* ----\\r?\\n([\\s\\S]*?)\\r?\\n${escapeRegExp(
+        DOCDEX_INFO_END
+      )}`
+    )
+  );
+  return match ? normalizeInstructionText(match[1]) : "";
+}
+
+function extractDocdexBlockVersion(text) {
+  const match = String(text || "").match(
+    new RegExp(`${escapeRegExp(DOCDEX_INFO_START_PREFIX)}([^\\s]+) ----`)
+  );
+  return match ? match[1] : null;
+}
+
+function hasDocdexBlockVersion(text, version) {
+  if (!version) return false;
+  return String(text || "").includes(docdexBlockStart(version));
+}
+
+function stripDocdexBlocks(text) {
+  const re = new RegExp(
+    `${escapeRegExp(DOCDEX_INFO_START_PREFIX)}[^\\r\\n]* ----\\r?\\n[\\s\\S]*?\\r?\\n${escapeRegExp(
+      DOCDEX_INFO_END
+    )}\\r?\\n?`,
+    "g"
+  );
+  return String(text || "").replace(re, "").trim();
+}
+
+function stripDocdexBlocksExcept(text, version) {
+  if (!version) return stripDocdexBlocks(text);
+  const source = String(text || "");
+  const re = new RegExp(
+    `${escapeRegExp(DOCDEX_INFO_START_PREFIX)}[^\\r\\n]* ----\\r?\\n[\\s\\S]*?\\r?\\n${escapeRegExp(
+      DOCDEX_INFO_END
+    )}\\r?\\n?`,
+    "g"
+  );
+  let result = "";
+  let lastIndex = 0;
+  let match;
+  while ((match = re.exec(source))) {
+    const before = source.slice(lastIndex, match.index);
+    result += before;
+    const block = match[0];
+    const blockVersion = extractDocdexBlockVersion(block);
+    if (blockVersion === version) {
+      result += block;
+    }
+    lastIndex = match.index + block.length;
+  }
+  result += source.slice(lastIndex);
+  return result;
+}
+
+function stripLegacyDocdexBodySegment(segment, body) {
+  if (!body) return String(segment || "");
+  const normalizedSegment = String(segment || "").replace(/\r\n/g, "\n");
+  const normalizedBody = String(body || "").replace(/\r\n/g, "\n");
+  if (!normalizedBody.trim()) return normalizedSegment;
+  const re = new RegExp(`\\n?${escapeRegExp(normalizedBody)}\\n?`, "g");
+  return normalizedSegment.replace(re, "\n").replace(/\n{3,}/g, "\n\n");
+}
+
+function stripLegacyDocdexBody(text, body) {
+  if (!body) return String(text || "");
+  const source = String(text || "").replace(/\r\n/g, "\n");
+  const re = new RegExp(
+    `${escapeRegExp(DOCDEX_INFO_START_PREFIX)}[^\\n]* ----\\n[\\s\\S]*?\\n${escapeRegExp(DOCDEX_INFO_END)}\\n?`,
+    "g"
+  );
+  let result = "";
+  let lastIndex = 0;
+  let match;
+  while ((match = re.exec(source))) {
+    const before = source.slice(lastIndex, match.index);
+    result += stripLegacyDocdexBodySegment(before, body);
+    result += match[0];
+    lastIndex = match.index + match[0].length;
+  }
+  result += stripLegacyDocdexBodySegment(source.slice(lastIndex), body);
+  return result;
+}
+
+function mergeInstructionText(existing, instructions, { prepend = false } = {}) {
   const next = normalizeInstructionText(instructions);
   if (!next) return normalizeInstructionText(existing);
-  const current = normalizeInstructionText(existing);
+  const existingText = String(existing || "");
+  const current = normalizeInstructionText(existingText);
   if (!current) return next;
-  if (current.includes(next)) return current;
-  return `${current}\n\n${next}`;
+  const version = extractDocdexBlockVersion(next);
+  if (version) {
+    const body = extractDocdexBlockBody(next);
+    const cleaned = stripLegacyDocdexBody(existingText, body);
+    const withoutOldBlocks = stripDocdexBlocksExcept(cleaned, version);
+    if (hasDocdexBlockVersion(withoutOldBlocks, version)) return withoutOldBlocks;
+    const remainder = normalizeInstructionText(stripDocdexBlocks(withoutOldBlocks));
+    if (!remainder) return next;
+    return prepend ? `${next}\n\n${remainder}` : `${remainder}\n\n${next}`;
+  }
+  if (existingText.includes(next)) return existingText;
+  return prepend ? `${next}\n\n${current}` : `${current}\n\n${next}`;
 }
 
 function writeTextFile(pathname, contents) {
@@ -199,13 +323,10 @@ function upsertPromptFile(pathname, instructions, { prepend = false } = {}) {
   let current = "";
   if (fs.existsSync(pathname)) {
     current = fs.readFileSync(pathname, "utf8");
-    if (current.includes(next)) return false;
   }
-  const currentTrimmed = normalizeInstructionText(current);
-  let merged = next;
-  if (currentTrimmed) {
-    merged = prepend ? `${next}\n\n${currentTrimmed}` : `${currentTrimmed}\n\n${next}`;
-  }
+  const merged = mergeInstructionText(current, instructions, { prepend });
+  if (!merged) return false;
+  if (merged === current) return false;
   return writeTextFile(pathname, merged);
 }
 
@@ -220,13 +341,51 @@ function upsertYamlInstruction(pathname, key, instructions) {
   if (fs.existsSync(pathname)) {
     current = fs.readFileSync(pathname, "utf8");
   }
-  const keyRe = new RegExp(`^\\s*${escapeRegExp(key)}\\s*:`, "m");
-  if (keyRe.test(current)) {
-    if (current.includes(next)) return false;
-    return false;
+  const lines = current.split(/\r?\n/);
+  const blockRe = new RegExp(`^(\\s*)${escapeRegExp(key)}\\s*:\\s*(\\|[+-]?)?\\s*$`);
+  for (let idx = 0; idx < lines.length; idx += 1) {
+    const match = lines[idx].match(blockRe);
+    if (!match) continue;
+    const indent = match[1] || "";
+    const blockIndent = `${indent}  `;
+    let existingBlock = "";
+    let blockEnd = idx + 1;
+    if (match[2]) {
+      for (let j = idx + 1; j < lines.length; j += 1) {
+        const line = lines[j];
+        if (!line.trim()) {
+          blockEnd = j + 1;
+          continue;
+        }
+        const leading = line.match(/^\s*/)[0].length;
+        if (leading <= indent.length) break;
+        blockEnd = j + 1;
+      }
+      const blockLines = lines.slice(idx + 1, blockEnd);
+      existingBlock = blockLines
+        .map((line) => {
+          if (!line.trim()) return "";
+          return line.startsWith(blockIndent) ? line.slice(blockIndent.length) : line.trimStart();
+        })
+        .join("\n");
+    } else {
+      const inlineMatch = lines[idx].match(new RegExp(`^(\\s*)${escapeRegExp(key)}\\s*:\\s*(.*)$`));
+      existingBlock = inlineMatch ? inlineMatch[2].trim() : "";
+    }
+    const merged = mergeInstructionText(existingBlock, instructions);
+    if (!merged) return false;
+    if (normalizeInstructionText(merged) === normalizeInstructionText(existingBlock) && match[2]) return false;
+    const mergedLines = merged.split(/\r?\n/).map((line) => `${blockIndent}${line}`);
+    const updatedLines = [
+      ...lines.slice(0, idx),
+      `${indent}${key}: |`,
+      ...mergedLines,
+      ...lines.slice(match[2] ? blockEnd : idx + 1)
+    ];
+    return writeTextFile(pathname, updatedLines.join("\n").trimEnd());
   }
-  const lines = next.split(/\r?\n/).map((line) => `  ${line}`);
-  const block = `${key}: |\n${lines.join("\n")}`;
+  const contentLines = next.split(/\r?\n/).map((line) => `  ${line}`);
+  const block = `${key}: |\n${contentLines.join("\n")}`;
   const merged = current.trim() ? `${current.trim()}\n\n${block}` : block;
   return writeTextFile(pathname, merged);
 }
@@ -668,7 +827,7 @@ function resolveBinaryPath({ binaryPath } = {}) {
 }
 
 function applyAgentInstructions({ logger } = {}) {
-  const instructions = loadAgentInstructions();
+  const instructions = buildDocdexInstructionBlock(loadAgentInstructions());
   if (!normalizeInstructionText(instructions)) return { ok: false, reason: "missing_instructions" };
   const paths = clientInstructionPaths();
   let updated = false;

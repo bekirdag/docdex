@@ -183,6 +183,7 @@
 - npm/test/platform.test.js
 - npm/test/installer_interrupted_installs.test.js
 - npm/test/postinstall_setup.test.js
+- npm/test/postinstall_setup_agent_blocks.test.js
 - npm/test/installer_local_fallback.test.js (local binary override)
 - npm/test/uninstall.test.js
 - npm/test/playwright_install.test.js

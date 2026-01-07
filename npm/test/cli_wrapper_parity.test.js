@@ -28,6 +28,7 @@ function runScriptWithMocks(scriptPath, { mocks, argv }) {
       argv: argv || ["node", scriptPath],
       platform: "darwin",
       arch: "arm64",
+      env: {},
       exit: (code) => {
         exitCode = code;
         const err = new Error("process.exit");
@@ -181,6 +182,82 @@ test("docdex CLI wrapper: `doctor` prints platform diagnostics without checking 
   assert.ok(result.stdout.includes("[docdex] Install source:"));
   assert.equal(spawnCalls, 0);
   assert.equal(existsCalls, 0);
+});
+
+test("docdex CLI wrapper: sets DOCDEX_MCP_SERVER_BIN when bundled mcp binary exists", () => {
+  let spawnEnv = null;
+
+  const platformModule = {
+    UnsupportedPlatformError: class UnsupportedPlatformError extends Error {},
+    detectPlatformKey: () => "darwin-arm64"
+  };
+
+  const scriptPath = path.join(__dirname, "..", "bin", "docdex.js");
+  const result = runScriptWithMocks(scriptPath, {
+    mocks: {
+      "../lib/platform": platformModule,
+      "node:child_process": {
+        spawn: (_cmd, _args, opts) => {
+          spawnEnv = opts?.env || null;
+          return {
+            on: (event, handler) => {
+              if (event === "exit") handler(0);
+            }
+          };
+        }
+      },
+      "node:fs": { existsSync: () => true },
+      "node:path": require("node:path")
+    },
+    argv: ["node", scriptPath, "--version"]
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.ok(spawnEnv);
+  assert.equal(
+    spawnEnv.DOCDEX_MCP_SERVER_BIN,
+    path.join(__dirname, "..", "dist", "darwin-arm64", "docdex-mcp-server")
+  );
+});
+
+test("docdex MCP wrapper: launches bundled mcp server binary", () => {
+  let spawnCmd = null;
+  let spawnArgs = null;
+
+  const platformModule = {
+    UnsupportedPlatformError: class UnsupportedPlatformError extends Error {},
+    detectPlatformKey: () => "darwin-arm64",
+    targetTripleForPlatformKey: () => "aarch64-apple-darwin",
+    assetPatternForPlatformKey: () => "docdexd-<platformKey>.tar.gz (e.g. docdexd-darwin-arm64.tar.gz)"
+  };
+
+  const scriptPath = path.join(__dirname, "..", "bin", "docdex-mcp-server.js");
+  const result = runScriptWithMocks(scriptPath, {
+    mocks: {
+      "../lib/platform": platformModule,
+      "node:child_process": {
+        spawn: (cmd, args) => {
+          spawnCmd = cmd;
+          spawnArgs = args;
+          return {
+            on: (event, handler) => {
+              if (event === "exit") handler(0);
+            }
+          };
+        }
+      },
+      "node:fs": { existsSync: () => true },
+      "node:path": require("node:path")
+    },
+    argv: ["node", scriptPath, "--version"]
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(
+    spawnCmd,
+    path.join(__dirname, "..", "dist", "darwin-arm64", "docdex-mcp-server")
+  );
+  assert.deepEqual(spawnArgs, ["--version"]);
 });
 
 test("docdex CLI wrapper: `doctor` exits non-zero and reports unsupported platform", () => {

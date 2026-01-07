@@ -55,9 +55,7 @@ pub async fn mcp_request_handler(
             }
             match resolve_repo_for_mcp(&state, root_uri) {
                 Ok(root) => {
-                    if !state.multi_repo {
-                        router.set_default_repo(root.clone()).await;
-                    }
+                    router.set_default_repo(root.clone()).await;
                     Some(root)
                 }
                 Err(err) => {
@@ -74,11 +72,15 @@ pub async fn mcp_request_handler(
                     }
                 }
             } else if require_repo {
-                return json_error(
-                    StatusCode::BAD_REQUEST,
-                    ERR_INVALID_ARGUMENT,
-                    "missing project_root/repo_path (required when multiple repos are active)",
-                );
+                if let Some(default_repo) = router.default_repo_root().await {
+                    Some(default_repo)
+                } else {
+                    return json_error(
+                        StatusCode::BAD_REQUEST,
+                        ERR_INVALID_ARGUMENT,
+                        "missing project_root/repo_path (required when multiple repos are active)",
+                    );
+                }
             } else {
                 None
             }
@@ -188,17 +190,28 @@ pub async fn mcp_message_handler(
         }
     } else if router.session_repo_root(&session_id).await.is_none() {
         if require_repo {
+            if let Some(default_repo) = router.default_repo_root().await {
+                if let Err(err) = router.bind_session(&session_id, &default_repo).await {
+                    return json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        ERR_INTERNAL_ERROR,
+                        format!("mcp proxy failed: {err}"),
+                    );
+                }
+            } else {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    ERR_INVALID_ARGUMENT,
+                    "missing project_root/repo_path (required when multiple repos are active)",
+                );
+            }
+        } else {
             return json_error(
                 StatusCode::BAD_REQUEST,
                 ERR_INVALID_ARGUMENT,
-                "missing project_root/repo_path (required when multiple repos are active)",
+                "missing initialize (call initialize with rootUri or send project_root)",
             );
         }
-        return json_error(
-            StatusCode::BAD_REQUEST,
-            ERR_INVALID_ARGUMENT,
-            "missing initialize (call initialize with rootUri or send project_root)",
-        );
     }
     match router.enqueue_for_session(&session_id, payload).await {
         Ok(ack) => Json(ack).into_response(),

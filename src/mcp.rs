@@ -159,6 +159,10 @@ impl McpProxyRouter {
         *guard = Some(normalized);
     }
 
+    pub async fn default_repo_root(&self) -> Option<PathBuf> {
+        self.default_repo.read().await.clone()
+    }
+
     pub async fn create_session(&self) -> (String, mpsc::Receiver<Value>) {
         let session_id = format!("mcp-{}", uuid::Uuid::new_v4());
         let (tx, rx) = mpsc::channel(64);

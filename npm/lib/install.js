@@ -542,14 +542,34 @@ function resolveLocalBinaryCandidate({
     const resolved = pathModule.resolve(explicit);
     if (fsModule.existsSync(resolved)) return resolved;
   }
+  const isWin32 = platform === "win32";
+  const mcpName = isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server";
   const root = repoRoot || detectLocalRepoRoot({ pathModule, fsModule });
   if (!root) return null;
   const binaryName = platform === "win32" ? "docdexd.exe" : "docdexd";
   const releasePath = pathModule.join(root, "target", "release", binaryName);
-  if (fsModule.existsSync(releasePath)) return releasePath;
+  if (fsModule.existsSync(releasePath)) {
+    if (localMcpPresent({ fsModule, pathModule, binaryPath: releasePath, mcpName })) {
+      return releasePath;
+    }
+  }
   const debugPath = pathModule.join(root, "target", "debug", binaryName);
-  if (fsModule.existsSync(debugPath)) return debugPath;
+  if (fsModule.existsSync(debugPath)) {
+    if (localMcpPresent({ fsModule, pathModule, binaryPath: debugPath, mcpName })) {
+      return debugPath;
+    }
+  }
   return null;
+}
+
+function localMcpPresent({ fsModule, pathModule, binaryPath, mcpName }) {
+  const dir = pathModule.dirname(binaryPath);
+  const candidates = [
+    pathModule.join(dir, mcpName),
+    pathModule.join(pathModule.dirname(dir), "release", mcpName),
+    pathModule.join(pathModule.dirname(dir), "debug", mcpName)
+  ];
+  return candidates.some((candidate) => fsModule.existsSync(candidate));
 }
 
 async function installFromLocalBinary({

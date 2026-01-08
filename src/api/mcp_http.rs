@@ -273,7 +273,11 @@ async fn handle_mcp_single(
                     Some(root)
                 }
                 Err(err) => {
-                    return Err(json_error(status_for_app_error(err.code), err.code, err.message));
+                    return Err(json_error(
+                        status_for_app_error(err.code),
+                        err.code,
+                        err.message,
+                    ));
                 }
             }
         }

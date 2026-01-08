@@ -430,10 +430,7 @@ mod tests {
             "DOCDEX_BROWSER_AUTO_INSTALL",
             "DOCDEX_BROWSER_USER_DATA_DIR",
         ]);
-        env.set(
-            "DOCDEX_CONFIG_PATH",
-            config_path.to_string_lossy().as_ref(),
-        );
+        env.set("DOCDEX_CONFIG_PATH", config_path.to_string_lossy().as_ref());
         env.set("DOCDEX_BROWSER_AUTO_INSTALL", "0");
         env.clear("DOCDEX_BROWSER_USER_DATA_DIR");
 

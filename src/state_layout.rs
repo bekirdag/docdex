@@ -351,10 +351,7 @@ pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
 
 #[cfg(unix)]
 fn can_write_dir(path: &Path) -> bool {
-    let probe = path.join(format!(
-        ".docdex-perm-check-{}",
-        std::process::id()
-    ));
+    let probe = path.join(format!(".docdex-perm-check-{}", std::process::id()));
     match fs::OpenOptions::new()
         .write(true)
         .create_new(true)

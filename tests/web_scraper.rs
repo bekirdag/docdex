@@ -1,13 +1,13 @@
 use docdexd::orchestrator::web_policy::SpacingBackoffPolicy;
 use docdexd::web::scraper::ScraperEngine;
 use docdexd::web::WebConfig;
-use std::time::Duration;
-use url::Url;
 use once_cell::sync::Lazy;
 use std::ffi::OsString;
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::Duration;
 use tempfile::TempDir;
+use url::Url;
 
 static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
@@ -58,7 +58,8 @@ fn write_playwright_manifest(root: &Path, browsers: &[(&str, &Path)]) {
         "playwright_version": "1.2.3",
         "browsers": browser_entries
     });
-    std::fs::write(manifest_dir.join("manifest.json"), payload.to_string()).expect("write manifest");
+    std::fs::write(manifest_dir.join("manifest.json"), payload.to_string())
+        .expect("write manifest");
 }
 
 fn base_config() -> WebConfig {

@@ -712,9 +712,7 @@ async fn terminate_windows(pid: u32, force: bool) -> Result<(), String> {
 
 #[derive(Clone, Debug)]
 pub enum ScraperEngine {
-    Playwright {
-        config: PlaywrightFetchConfig,
-    },
+    Playwright { config: PlaywrightFetchConfig },
 }
 
 impl ScraperEngine {
@@ -726,9 +724,10 @@ impl ScraperEngine {
                 config.scraper_engine
             );
         }
-        let playwright_config = PlaywrightFetchConfig::from_web_config(config).ok_or_else(|| {
-            anyhow!("playwright fetch config unavailable; run `docdexd browser setup`")
-        })?;
+        let playwright_config =
+            PlaywrightFetchConfig::from_web_config(config).ok_or_else(|| {
+                anyhow!("playwright fetch config unavailable; run `docdexd browser setup`")
+            })?;
         Ok(ScraperEngine::Playwright {
             config: playwright_config,
         })

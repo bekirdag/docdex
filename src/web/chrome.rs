@@ -85,10 +85,7 @@ fn chrome_common_args(config: &ChromeFetchConfig, user_data_dir: &Path) -> Vec<S
     args.push("--no-default-browser-check".to_string());
     args.push("--remote-allow-origins=*".to_string());
     args.push(format!("--window-size={}", CHROME_WINDOW_SIZE));
-    args.push(format!(
-        "--user-data-dir={}",
-        user_data_dir.display()
-    ));
+    args.push(format!("--user-data-dir={}", user_data_dir.display()));
     args.push("--disable-background-timer-throttling".to_string());
     args.push("--disable-backgrounding-occluded-windows".to_string());
     args.push("--disable-renderer-backgrounding".to_string());
@@ -196,10 +193,7 @@ fn remaining(deadline: Instant) -> Duration {
 
 fn pick_free_port() -> Result<u16> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).context("bind free port")?;
-    let port = listener
-        .local_addr()
-        .context("resolve free port")?
-        .port();
+    let port = listener.local_addr().context("resolve free port")?.port();
     Ok(port)
 }
 

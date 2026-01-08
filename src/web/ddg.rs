@@ -36,9 +36,8 @@ static RESULT_LINK_RE: Lazy<Regex> = Lazy::new(|| {
     )
     .expect("valid ddg regex")
 });
-static MARKDOWN_LINK_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"\((https?://[^\s)]+)\)"#).expect("valid markdown link regex")
-});
+static MARKDOWN_LINK_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"\((https?://[^\s)]+)\)"#).expect("valid markdown link regex"));
 static DDG_CLIENTS: Lazy<Mutex<HashMap<String, reqwest::Client>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 static DDG_PREFETCHED_HOSTS: Lazy<Mutex<HashSet<String>>> =
@@ -725,9 +724,7 @@ fn build_ddg_client(config: &WebConfig) -> Result<reqwest::Client> {
     let mut headers = HeaderMap::new();
     headers.insert(
         ACCEPT,
-        HeaderValue::from_static(
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        ),
+        HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
     );
     headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
     let mut builder = reqwest::Client::builder()
@@ -880,7 +877,9 @@ Markdown Content:
             <form id="challenge-form" action="//duckduckgo.com/anomaly.js?sv=html&cc=botnet"></form>
         "#;
         assert!(is_ddg_anomaly_page(html));
-        assert!(!is_ddg_anomaly_page("<a class=\"result__a\" href=\"https://example.com\">ok</a>"));
+        assert!(!is_ddg_anomaly_page(
+            "<a class=\"result__a\" href=\"https://example.com\">ok</a>"
+        ));
     }
 
     #[test]

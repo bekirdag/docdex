@@ -477,7 +477,12 @@ pub(crate) fn resolve_playwright_manifest_path() -> Option<PathBuf> {
         }
     }
     let base_dir = crate::state_paths::default_state_base_dir().ok()?;
-    Some(base_dir.join("bin").join("playwright").join("manifest.json"))
+    Some(
+        base_dir
+            .join("bin")
+            .join("playwright")
+            .join("manifest.json"),
+    )
 }
 
 fn resolve_state_log_path() -> Option<PathBuf> {

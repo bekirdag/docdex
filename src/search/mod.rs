@@ -3014,7 +3014,9 @@ async fn security_middleware(
         .unwrap_or_else(|| RequestId(Uuid::new_v4().to_string()));
     let has_request_id = request.extensions().get::<RequestId>().is_some();
     if !has_request_id {
-        request.extensions_mut().insert::<RequestId>(request_id.clone());
+        request
+            .extensions_mut()
+            .insert::<RequestId>(request_id.clone());
     }
     let addr = connect_info
         .map(|info| info.0)

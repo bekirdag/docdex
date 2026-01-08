@@ -13,8 +13,8 @@ use crate::orchestrator::{
 use crate::tier2::Tier2Config;
 use crate::util;
 use crate::web;
-use crate::web::scraper::ScraperEngine;
 use crate::web::readability::extract_readable_text;
+use crate::web::scraper::ScraperEngine;
 use crate::web::status::fetch_status;
 use anyhow::Result;
 use reqwest::Method;

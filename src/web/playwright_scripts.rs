@@ -4,10 +4,14 @@ use std::path::{Path, PathBuf};
 
 const FETCHER_NAME: &str = "playwright_fetch.js";
 const INSTALLER_NAME: &str = "playwright_install.js";
-const FETCHER_SCRIPT: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/npm/lib/playwright_fetch.js"));
-const INSTALLER_SCRIPT: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/npm/lib/playwright_install.js"));
+const FETCHER_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/npm/lib/playwright_fetch.js"
+));
+const INSTALLER_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/npm/lib/playwright_install.js"
+));
 
 pub fn ensure_playwright_fetcher_script() -> Result<PathBuf> {
     ensure_script(FETCHER_NAME, FETCHER_SCRIPT)
@@ -18,7 +22,8 @@ pub fn ensure_playwright_installer_script() -> Result<PathBuf> {
 }
 
 fn ensure_script(name: &str, contents: &str) -> Result<PathBuf> {
-    let base_dir = crate::state_paths::default_state_base_dir().context("resolve docdex state dir")?;
+    let base_dir =
+        crate::state_paths::default_state_base_dir().context("resolve docdex state dir")?;
     let scripts_dir = base_dir.join("bin").join("playwright-scripts");
     fs::create_dir_all(&scripts_dir)
         .with_context(|| format!("create playwright scripts dir {}", scripts_dir.display()))?;

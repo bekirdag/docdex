@@ -275,9 +275,9 @@ fn extract_docdex_block_body(text: &str) -> Option<String> {
         regex::escape(DOCDEX_INFO_END)
     );
     let re = Regex::new(&pattern).ok()?;
-    re.captures(text).and_then(|cap| cap.get(1)).map(|m| {
-        normalize_instruction_text(m.as_str())
-    })
+    re.captures(text)
+        .and_then(|cap| cap.get(1))
+        .map(|m| normalize_instruction_text(m.as_str()))
 }
 
 fn collapse_blank_lines(text: &str) -> String {
@@ -357,7 +357,10 @@ fn strip_legacy_docdex_body(text: &str, body: &str) -> String {
     let mut result = String::new();
     let mut last = 0usize;
     for m in re.find_iter(&source) {
-        result.push_str(&strip_legacy_docdex_body_segment(&source[last..m.start()], body));
+        result.push_str(&strip_legacy_docdex_body_segment(
+            &source[last..m.start()],
+            body,
+        ));
         result.push_str(m.as_str());
         last = m.end();
     }
@@ -462,7 +465,8 @@ fn read_json(path: &Path) -> Result<Value> {
     if raw.trim().is_empty() {
         return Ok(Value::Object(serde_json::Map::new()));
     }
-    let parsed = serde_json::from_str(&raw).unwrap_or_else(|_| Value::Object(serde_json::Map::new()));
+    let parsed =
+        serde_json::from_str(&raw).unwrap_or_else(|_| Value::Object(serde_json::Map::new()));
     Ok(parsed)
 }
 
@@ -576,7 +580,10 @@ fn upsert_zed_instructions(path: &Path, instructions: &str) -> Result<bool> {
         .map(|value| value.is_object())
         .unwrap_or(false)
     {
-        obj.insert("assistant".to_string(), Value::Object(serde_json::Map::new()));
+        obj.insert(
+            "assistant".to_string(),
+            Value::Object(serde_json::Map::new()),
+        );
     }
     let assistant = obj
         .get_mut("assistant")
@@ -604,7 +611,10 @@ fn remove_zed_instructions(path: &Path) -> Result<bool> {
         Some(obj) => obj,
         None => return Ok(false),
     };
-    let assistant = match obj.get_mut("assistant").and_then(|value| value.as_object_mut()) {
+    let assistant = match obj
+        .get_mut("assistant")
+        .and_then(|value| value.as_object_mut())
+    {
         Some(assistant) => assistant,
         None => return Ok(false),
     };
@@ -730,7 +740,8 @@ fn remove_yaml_instruction(path: &Path, key: &str) -> Result<bool> {
                 index += 1;
             }
             let block_text = block_lines.join("\n");
-            if block_text.contains(DOCDEX_INFO_START_PREFIX) && block_text.contains(DOCDEX_INFO_END) {
+            if block_text.contains(DOCDEX_INFO_START_PREFIX) && block_text.contains(DOCDEX_INFO_END)
+            {
                 removed = true;
                 continue;
             }

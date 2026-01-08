@@ -11,10 +11,10 @@ use crate::state_layout::StateLayout;
 use crate::tier2::{Tier2Unavailable, Tier2UnavailableReason};
 use crate::util;
 use crate::web::cache;
-use crate::web::scraper::ScraperEngine;
 use crate::web::ddg::{DdgDiscovery, WebDiscoveryResponse, WebDiscoveryResult};
 use crate::web::normalize::{dedupe_urls, unwrap_ddg_redirect};
 use crate::web::readability::extract_readable_text;
+use crate::web::scraper::ScraperEngine;
 use crate::web::status::fetch_status;
 use crate::web::WebConfig;
 use anyhow::Context;
@@ -2542,8 +2542,9 @@ async fn fetch_web_documents(
                         if debug_enabled {
                             if let Some(final_url) = fetch_result.final_url.as_ref() {
                                 if final_url == "about:blank" {
-                                    debug_notes
-                                        .push("browser navigation stayed on about:blank".to_string());
+                                    debug_notes.push(
+                                        "browser navigation stayed on about:blank".to_string(),
+                                    );
                                 }
                             } else {
                                 debug_notes.push("browser final_url missing".to_string());

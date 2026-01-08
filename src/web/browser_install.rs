@@ -78,9 +78,12 @@ pub fn install_playwright_dependency() -> Result<PlaywrightDependencyStatus> {
         .arg("playwright")
         .current_dir(&install_root)
         .env("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1");
-    let status = command
-        .status()
-        .with_context(|| format!("spawn playwright dependency install in {}", install_root.display()))?;
+    let status = command.status().with_context(|| {
+        format!(
+            "spawn playwright dependency install in {}",
+            install_root.display()
+        )
+    })?;
     if !status.success() {
         return Err(anyhow!(
             "playwright dependency install failed with status {status}"
@@ -189,9 +192,7 @@ pub fn install_playwright_browsers(browsers: &[String]) -> Result<Option<Browser
 fn to_install_result(browser: crate::util::PlaywrightBrowser) -> BrowserInstallResult {
     BrowserInstallResult {
         path: browser.path,
-        version: browser
-            .version
-            .unwrap_or_else(|| "installed".to_string()),
+        version: browser.version.unwrap_or_else(|| "installed".to_string()),
     }
 }
 
@@ -475,9 +476,7 @@ fn resolve_node_from_nvm() -> Option<PathBuf> {
     }
     let base_dir = std::env::var_os(NVM_DIR_ENV)
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".nvm"))
-        })?;
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".nvm")))?;
     let versions_dir = base_dir.join("versions").join("node");
     if !versions_dir.is_dir() {
         return None;
@@ -548,8 +547,14 @@ fn parse_node_version(name: &str) -> Option<(u32, u32, u32)> {
     let trimmed = name.trim().trim_start_matches('v');
     let mut parts = trimmed.split('.');
     let major = parts.next()?.parse::<u32>().ok()?;
-    let minor = parts.next().and_then(|value| value.parse::<u32>().ok()).unwrap_or(0);
-    let patch = parts.next().and_then(|value| value.parse::<u32>().ok()).unwrap_or(0);
+    let minor = parts
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+    let patch = parts
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
     Some((major, minor, patch))
 }
 

@@ -645,7 +645,10 @@ fn http_search_skip_local_search_without_access_log() -> Result<(), Box<dyn Erro
     );
     let payload: Value = response.json()?;
     assert!(
-        payload.get("hits").and_then(|value| value.as_array()).is_some(),
+        payload
+            .get("hits")
+            .and_then(|value| value.as_array())
+            .is_some(),
         "expected /search response to include hits"
     );
     child.kill().ok();

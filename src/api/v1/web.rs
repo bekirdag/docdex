@@ -11,8 +11,8 @@ use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDE
 use crate::search::{json_error, json_error_with_details, AppState};
 use crate::util;
 use crate::web;
-use crate::web::scraper::ScraperEngine;
 use crate::web::readability::extract_readable_text;
+use crate::web::scraper::ScraperEngine;
 use crate::web::status::fetch_status;
 
 #[derive(Deserialize)]

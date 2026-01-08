@@ -34,10 +34,7 @@ struct PlaywrightFetchResponse {
 impl PlaywrightFetchConfig {
     pub fn from_web_config(config: &WebConfig) -> Option<Self> {
         let browser = normalize_playwright_browser(
-            config
-                .scraper_browser_kind
-                .as_deref()
-                .unwrap_or("chromium"),
+            config.scraper_browser_kind.as_deref().unwrap_or("chromium"),
         );
         if !browser_install::playwright_dependency_status().installed {
             return None;
@@ -102,16 +99,13 @@ pub async fn fetch_dom(url: &Url, config: &PlaywrightFetchConfig) -> Result<Chro
         command.env("NODE_PATH", browser_install::merge_node_path(&node_path));
     }
 
-    let output = command
-        .output()
-        .await
-        .with_context(|| {
-            format!(
-                "spawn playwright fetcher {} via {}",
-                script.display(),
-                node_bin.display()
-            )
-        })?;
+    let output = command.output().await.with_context(|| {
+        format!(
+            "spawn playwright fetcher {} via {}",
+            script.display(),
+            node_bin.display()
+        )
+    })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let message = stderr.trim();

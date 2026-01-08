@@ -49,7 +49,11 @@ fn touch_file(path: &Path) {
 }
 
 fn write_playwright_manifest(root: &Path, chromium_path: &Path) {
-    let manifest_dir = root.join(".docdex").join("state").join("bin").join("playwright");
+    let manifest_dir = root
+        .join(".docdex")
+        .join("state")
+        .join("bin")
+        .join("playwright");
     std::fs::create_dir_all(&manifest_dir).expect("create manifest dir");
     let payload = serde_json::json!({
         "installed_at": "2024-01-01T00:00:00Z",
@@ -59,7 +63,8 @@ fn write_playwright_manifest(root: &Path, chromium_path: &Path) {
             { "name": "chromium", "version": "12345", "path": chromium_path }
         ]
     });
-    std::fs::write(manifest_dir.join("manifest.json"), payload.to_string()).expect("write manifest");
+    std::fs::write(manifest_dir.join("manifest.json"), payload.to_string())
+        .expect("write manifest");
 }
 
 #[test]

@@ -13,22 +13,20 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Terminal,
 };
+use std::fmt::Write;
 use std::io::{self, Stdout};
 use std::path::{Path, PathBuf};
-use std::fmt::Write;
 
 use super::config;
 use super::model::{CHAT_MODEL, CHAT_MODEL_SIZE_GIB, EMBED_MODEL};
 use super::ollama;
-use super::state::{
-    SetupContext, SetupOutcome, SetupState, StepKey, StepSnapshot, StepStatus,
-};
+use super::state::{SetupContext, SetupOutcome, SetupState, StepKey, StepSnapshot, StepStatus};
 use super::SetupSummary;
 use crate::config as app_config;
 use crate::util;
 use crate::web::browser_install;
-use std::env;
 use std::collections::{HashMap, HashSet};
+use std::env;
 
 const MENU_STEPS: [StepKey; 5] = [
     StepKey::Ollama,
@@ -95,8 +93,7 @@ pub trait WizardServices {
     fn set_default_model(&self, model: &str) -> Result<()>;
     fn set_embedding_model(&self, model: &str) -> Result<()>;
     fn playwright_dependency_status(&self) -> browser_install::PlaywrightDependencyStatus;
-    fn install_playwright_dependency(&self)
-        -> Result<browser_install::PlaywrightDependencyStatus>;
+    fn install_playwright_dependency(&self) -> Result<browser_install::PlaywrightDependencyStatus>;
     fn install_playwright_browsers(
         &self,
         browsers: &[String],
@@ -146,9 +143,7 @@ impl WizardServices for RealServices {
         browser_install::playwright_dependency_status()
     }
 
-    fn install_playwright_dependency(
-        &self,
-    ) -> Result<browser_install::PlaywrightDependencyStatus> {
+    fn install_playwright_dependency(&self) -> Result<browser_install::PlaywrightDependencyStatus> {
         browser_install::install_playwright_dependency()
     }
 
@@ -222,8 +217,7 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
     let mut abort_error: Option<String> = None;
 
     loop {
-        let menu_details =
-            build_menu_details(&mut state, services, &mut ollama_path, &mut models);
+        let menu_details = build_menu_details(&mut state, services, &mut ollama_path, &mut models);
         let action = input.select_menu(&state, &MENU_STEPS, &menu_details)?;
         let step = match action {
             MenuAction::Exit => break,
@@ -305,7 +299,12 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
         ),
     };
 
-    Ok(summary_from_state(&state, message, installed, default_model))
+    Ok(summary_from_state(
+        &state,
+        message,
+        installed,
+        default_model,
+    ))
 }
 
 fn build_menu_details<S: WizardServices>(
@@ -359,13 +358,14 @@ fn build_menu_details<S: WizardServices>(
         .map(|model| model_installed(&cached_models, model))
         .unwrap_or(false);
 
-    let (ollama_status, ollama_detail) = match (resolved_path.as_ref(), ollama_running, ollama_err.as_ref()) {
-        (_, _, Some(err)) => (StepStatus::Failed, Some(err.to_string())),
-        (None, _, None) => (StepStatus::Pending, Some("not installed".to_string())),
-        (Some(_), Some(true), None) => (StepStatus::Done, Some("active".to_string())),
-        (Some(_), Some(false), None) => (StepStatus::Pending, Some("not running".to_string())),
-        (Some(_), None, None) => (StepStatus::Pending, Some("unknown".to_string())),
-    };
+    let (ollama_status, ollama_detail) =
+        match (resolved_path.as_ref(), ollama_running, ollama_err.as_ref()) {
+            (_, _, Some(err)) => (StepStatus::Failed, Some(err.to_string())),
+            (None, _, None) => (StepStatus::Pending, Some("not installed".to_string())),
+            (Some(_), Some(true), None) => (StepStatus::Done, Some("active".to_string())),
+            (Some(_), Some(false), None) => (StepStatus::Pending, Some("not running".to_string())),
+            (Some(_), None, None) => (StepStatus::Pending, Some("unknown".to_string())),
+        };
     state.update_step(StepKey::Ollama, ollama_status, ollama_detail);
 
     let embed_status = if resolved_path.is_none() {
@@ -375,7 +375,11 @@ fn build_menu_details<S: WizardServices>(
     } else {
         StepStatus::Pending
     };
-    state.update_step(StepKey::EmbedModel, embed_status, Some(config_embed.clone()));
+    state.update_step(
+        StepKey::EmbedModel,
+        embed_status,
+        Some(config_embed.clone()),
+    );
 
     let chat_status = if resolved_path.is_none() {
         StepStatus::Pending
@@ -465,9 +469,8 @@ fn build_menu_details<S: WizardServices>(
     if resolved_path.is_none() {
         embed_body.push_str("Ollama not detected.\nInstall Ollama to configure embedding models.");
     } else if ollama_running == Some(false) {
-        embed_body.push_str(
-            "Ollama detected but not running.\nStart Ollama to list embedding models.",
-        );
+        embed_body
+            .push_str("Ollama detected but not running.\nStart Ollama to list embedding models.");
     } else if let Some(err) = ollama_err.as_ref() {
         let _ = writeln!(embed_body, "Ollama error: {err}");
     } else {
@@ -476,7 +479,11 @@ fn build_menu_details<S: WizardServices>(
             "Installed embedding models: {}",
             format_model_list(&embed_models)
         );
-        let status = if embed_installed { "installed" } else { "missing" };
+        let status = if embed_installed {
+            "installed"
+        } else {
+            "missing"
+        };
         let _ = writeln!(
             embed_body,
             "Configured embedding model: {config_embed} ({status})"
@@ -510,23 +517,17 @@ fn build_menu_details<S: WizardServices>(
 
     let mut playwright_body = String::new();
     if playwright_status.installed {
-        let version = playwright_status
-            .version
-            .as_deref()
-            .unwrap_or("unknown");
+        let version = playwright_status.version.as_deref().unwrap_or("unknown");
         let _ = writeln!(
             playwright_body,
             "Playwright dependency: installed ({version})"
         );
         if let Some(node_path) = playwright_status.node_path.as_ref() {
-            let _ = writeln!(
-                playwright_body,
-                "Node module path: {}",
-                node_path.display()
-            );
+            let _ = writeln!(playwright_body, "Node module path: {}", node_path.display());
         }
     } else {
-        playwright_body.push_str("Playwright dependency not detected.\nSelect this section to install it.");
+        playwright_body
+            .push_str("Playwright dependency not detected.\nSelect this section to install it.");
     }
 
     let mut browser_body = String::new();
@@ -558,8 +559,7 @@ fn build_menu_details<S: WizardServices>(
     let chat_options = if chat_models.is_empty() {
         None
     } else {
-        let (choices, default_index) =
-            build_model_choices(&chat_models, config_default.as_deref());
+        let (choices, default_index) = build_model_choices(&chat_models, config_default.as_deref());
         let default_index = default_index.unwrap_or(0);
         Some(MenuOptions {
             choices,
@@ -570,8 +570,7 @@ fn build_menu_details<S: WizardServices>(
     let browser_options = if browsers.is_empty() {
         None
     } else {
-        let (choices, default_index) =
-            build_browser_choices(&browsers, config_browser.as_deref());
+        let (choices, default_index) = build_browser_choices(&browsers, config_browser.as_deref());
         let default_index = default_index.unwrap_or(0);
         Some(MenuOptions {
             choices,
@@ -884,9 +883,7 @@ fn configure_chat_section<I: WizardInput, S: WizardServices>(
             && (assume_yes
                 || input.confirm(
                     state,
-                    &format!(
-                        "Install chat model {CHAT_MODEL} (~{CHAT_MODEL_SIZE_GIB:.1} GiB)?"
-                    ),
+                    &format!("Install chat model {CHAT_MODEL} (~{CHAT_MODEL_SIZE_GIB:.1} GiB)?"),
                     true,
                 )?)
         {
@@ -947,8 +944,7 @@ fn configure_chat_section<I: WizardInput, S: WizardServices>(
         return Ok(None);
     }
 
-    let (choices, default_index) =
-        build_model_choices(&chat_models, config_default.as_deref());
+    let (choices, default_index) = build_model_choices(&chat_models, config_default.as_deref());
     let Some(default_index) = default_index else {
         state.update_step(
             StepKey::ChatModel,
@@ -963,7 +959,9 @@ fn configure_chat_section<I: WizardInput, S: WizardServices>(
         *default_model = Some(model.to_string());
     }
     let chosen = selected.or_else(|| {
-        config_default.clone().filter(|model| model_installed(&current_models, model))
+        config_default
+            .clone()
+            .filter(|model| model_installed(&current_models, model))
     });
     if let Some(model) = chosen {
         state.update_step(StepKey::ChatModel, StepStatus::Done, Some(model));
@@ -995,9 +993,7 @@ fn configure_browser_section<I: WizardInput, S: WizardServices>(
     let installed_list = format_browser_list(&browsers);
     input.info(
         state,
-        &format!(
-            "Playwright browser inventory:\n{installed_list}"
-        ),
+        &format!("Playwright browser inventory:\n{installed_list}"),
     )?;
     let installed_set = browsers
         .iter()
@@ -1012,8 +1008,9 @@ fn configure_browser_section<I: WizardInput, S: WizardServices>(
                 state,
                 &format!("Installing Playwright browsers: {detail}..."),
             )?;
-            let install = input
-                .with_suspended_terminal(|| services.install_playwright_browsers(&browser_selection));
+            let install = input.with_suspended_terminal(|| {
+                services.install_playwright_browsers(&browser_selection)
+            });
             match install {
                 Ok(_) => {
                     browsers = list_playwright_browsers();
@@ -1040,8 +1037,7 @@ fn configure_browser_section<I: WizardInput, S: WizardServices>(
     }
 
     let config_browser = resolve_config_browser_kind();
-    let (choices, default_index) =
-        build_browser_choices(&browsers, config_browser.as_deref());
+    let (choices, default_index) = build_browser_choices(&browsers, config_browser.as_deref());
     let Some(default_index) = default_index else {
         state.update_step(
             StepKey::Browser,
@@ -1052,13 +1048,11 @@ fn configure_browser_section<I: WizardInput, S: WizardServices>(
     };
     let selected = input.select_model(state, &choices, default_index)?;
     let chosen = selected.or_else(|| {
-        config_browser
-            .clone()
-            .filter(|name| {
-                browsers
-                    .iter()
-                    .any(|browser| browser.installed && browser.name.eq_ignore_ascii_case(name))
-            })
+        config_browser.clone().filter(|name| {
+            browsers
+                .iter()
+                .any(|browser| browser.installed && browser.name.eq_ignore_ascii_case(name))
+        })
     });
     if let Some(name) = chosen.clone() {
         if let Some(browser) = browsers
@@ -1070,7 +1064,11 @@ fn configure_browser_section<I: WizardInput, S: WizardServices>(
                 .as_ref()
                 .ok_or_else(|| anyhow!("browser path missing: {}", browser.name))?;
             services.set_browser_path(path, &browser.name)?;
-            state.update_step(StepKey::Browser, StepStatus::Done, Some(browser.name.clone()));
+            state.update_step(
+                StepKey::Browser,
+                StepStatus::Done,
+                Some(browser.name.clone()),
+            );
             return Ok(None);
         }
     }
@@ -1128,11 +1126,7 @@ fn configure_playwright_section<I: WizardInput, S: WizardServices>(
             }
             Err(err) => {
                 let err = err.to_string();
-                state.update_step(
-                    StepKey::Playwright,
-                    StepStatus::Failed,
-                    Some(err.clone()),
-                );
+                state.update_step(StepKey::Playwright, StepStatus::Failed, Some(err.clone()));
                 if !prompt_retry(input, state, "Playwright install failed. Retry?")? {
                     return Ok(Some(err));
                 }
@@ -1205,7 +1199,11 @@ fn ensure_ollama_ready<I: WizardInput, S: WizardServices>(
         match ensure {
             Ok(status) => {
                 *ollama_status = Some(status);
-                state.update_step(StepKey::Ollama, StepStatus::Done, Some("active".to_string()));
+                state.update_step(
+                    StepKey::Ollama,
+                    StepStatus::Done,
+                    Some("active".to_string()),
+                );
                 return Ok(Some(path));
             }
             Err(err) => {
@@ -1321,7 +1319,11 @@ fn resolve_browser_install_selection<I: WizardInput>(
 
     let mut selection = Vec::new();
     if !installed.contains("chromium")
-        && input.confirm(state, "Install Playwright Chromium browser?", installed.is_empty())?
+        && input.confirm(
+            state,
+            "Install Playwright Chromium browser?",
+            installed.is_empty(),
+        )?
     {
         selection.push("chromium".to_string());
     }
@@ -1360,7 +1362,9 @@ fn parse_browser_install_env() -> Result<Option<Vec<String>>> {
             continue;
         }
         if !matches!(name.as_str(), "chromium" | "firefox" | "webkit") {
-            return Err(anyhow!("unsupported browser in DOCDEX_BROWSER_INSTALL: {name}"));
+            return Err(anyhow!(
+                "unsupported browser in DOCDEX_BROWSER_INSTALL: {name}"
+            ));
         }
         if seen.insert(name.clone()) {
             selection.push(name);
@@ -1445,7 +1449,11 @@ fn list_playwright_browsers() -> Vec<BrowserStatus> {
     browsers.sort_by(|left, right| {
         browser_order_index(&left.name)
             .cmp(&browser_order_index(&right.name))
-            .then_with(|| left.name.to_ascii_lowercase().cmp(&right.name.to_ascii_lowercase()))
+            .then_with(|| {
+                left.name
+                    .to_ascii_lowercase()
+                    .cmp(&right.name.to_ascii_lowercase())
+            })
     });
     browsers
 }
@@ -1670,9 +1678,10 @@ fn resolve_browser_summary_from_config(config: &app_config::AppConfig) -> Option
         .iter()
         .find(|browser| browser.installed && browser.name.eq_ignore_ascii_case(kind))
         .and_then(|browser| {
-            browser.path.as_ref().map(|path| {
-                format!("{} ({})", browser_label(&browser.name), path.display())
-            })
+            browser
+                .path
+                .as_ref()
+                .map(|path| format!("{} ({})", browser_label(&browser.name), path.display()))
         })
 }
 
@@ -1682,9 +1691,10 @@ fn resolve_browser_summary_from_detection() -> Option<String> {
         .iter()
         .find(|browser| browser.installed)
         .and_then(|browser| {
-            browser.path.as_ref().map(|path| {
-                format!("{} ({})", browser_label(&browser.name), path.display())
-            })
+            browser
+                .path
+                .as_ref()
+                .map(|path| format!("{} ({})", browser_label(&browser.name), path.display()))
         })
 }
 
@@ -1817,7 +1827,11 @@ impl WizardInput for TuiInput {
             if self.option_step != Some(selected) {
                 self.option_step = Some(selected);
                 self.option_index = options
-                    .map(|entry| entry.default_index.min(entry.choices.len().saturating_sub(1)))
+                    .map(|entry| {
+                        entry
+                            .default_index
+                            .min(entry.choices.len().saturating_sub(1))
+                    })
                     .unwrap_or(0);
             }
             let hint = match self.menu_focus {
@@ -1828,7 +1842,9 @@ impl WizardInput for TuiInput {
                         "Up/Down=move, Enter=open, Esc=finish"
                     }
                 }
-                MenuFocus::Options => "Up/Down=select, Left/Tab=menu, Enter=set default, Esc=finish",
+                MenuFocus::Options => {
+                    "Up/Down=select, Left/Tab=menu, Enter=set default, Esc=finish"
+                }
             };
             self.draw_prompt(
                 state,
@@ -1846,46 +1862,38 @@ impl WizardInput for TuiInput {
                 KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => {
                     self.menu_focus = MenuFocus::Menu;
                 }
-                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
-                    match self.menu_focus {
-                        MenuFocus::Menu => {
-                            if self.menu_index == 0 {
-                                self.menu_index = steps.len() - 1;
-                            } else {
-                                self.menu_index = self.menu_index.saturating_sub(1);
-                            }
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => match self.menu_focus {
+                    MenuFocus::Menu => {
+                        if self.menu_index == 0 {
+                            self.menu_index = steps.len() - 1;
+                        } else {
+                            self.menu_index = self.menu_index.saturating_sub(1);
                         }
-                        MenuFocus::Options => {
-                            if let Some(entry) = options {
-                                if let Some(next) = next_selectable_index(
-                                    &entry.choices,
-                                    self.option_index,
-                                    -1,
-                                ) {
-                                    self.option_index = next;
-                                }
+                    }
+                    MenuFocus::Options => {
+                        if let Some(entry) = options {
+                            if let Some(next) =
+                                next_selectable_index(&entry.choices, self.option_index, -1)
+                            {
+                                self.option_index = next;
                             }
                         }
                     }
-                }
-                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
-                    match self.menu_focus {
-                        MenuFocus::Menu => {
-                            self.menu_index = (self.menu_index + 1) % steps.len();
-                        }
-                        MenuFocus::Options => {
-                            if let Some(entry) = options {
-                                if let Some(next) = next_selectable_index(
-                                    &entry.choices,
-                                    self.option_index,
-                                    1,
-                                ) {
-                                    self.option_index = next;
-                                }
+                },
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => match self.menu_focus {
+                    MenuFocus::Menu => {
+                        self.menu_index = (self.menu_index + 1) % steps.len();
+                    }
+                    MenuFocus::Options => {
+                        if let Some(entry) = options {
+                            if let Some(next) =
+                                next_selectable_index(&entry.choices, self.option_index, 1)
+                            {
+                                self.option_index = next;
                             }
                         }
                     }
-                }
+                },
                 KeyCode::Enter => match self.menu_focus {
                     MenuFocus::Menu => return Ok(MenuAction::SelectSection(selected)),
                     MenuFocus::Options => {
@@ -2284,10 +2292,7 @@ mod tests {
             })
         }
 
-        fn install_playwright_browsers(
-            &self,
-            _browsers: &[String],
-        ) -> Result<Option<PathBuf>> {
+        fn install_playwright_browsers(&self, _browsers: &[String]) -> Result<Option<PathBuf>> {
             Ok(None)
         }
 
@@ -2305,7 +2310,11 @@ mod tests {
         let _user = EnvGuard::set("USERPROFILE", &temp_home);
         let _appdata = EnvGuard::set(
             "APPDATA",
-            &temp.path().join("AppData").join("Roaming").to_string_lossy(),
+            &temp
+                .path()
+                .join("AppData")
+                .join("Roaming")
+                .to_string_lossy(),
         );
         let _config = EnvGuard::set(
             "DOCDEX_CONFIG_PATH",
@@ -2378,7 +2387,11 @@ mod tests {
         let _user = EnvGuard::set("USERPROFILE", &temp_home);
         let _appdata = EnvGuard::set(
             "APPDATA",
-            &temp.path().join("AppData").join("Roaming").to_string_lossy(),
+            &temp
+                .path()
+                .join("AppData")
+                .join("Roaming")
+                .to_string_lossy(),
         );
         let _config = EnvGuard::set(
             "DOCDEX_CONFIG_PATH",
@@ -2442,10 +2455,7 @@ mod tests {
     fn list_playwright_browsers_includes_uninstalled_defaults() -> Result<()> {
         let _guard = ENV_LOCK.lock().unwrap();
         let temp = TempDir::new()?;
-        let _env = EnvGuard::set(
-            "PLAYWRIGHT_BROWSERS_PATH",
-            &temp.path().to_string_lossy(),
-        );
+        let _env = EnvGuard::set("PLAYWRIGHT_BROWSERS_PATH", &temp.path().to_string_lossy());
         let browsers = list_playwright_browsers();
         assert!(browsers
             .iter()

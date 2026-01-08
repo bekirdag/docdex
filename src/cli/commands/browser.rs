@@ -1,5 +1,5 @@
 use crate::config;
-use crate::util::{self, BrowserCandidate, BrowserSource, BrowserKind};
+use crate::util::{self, BrowserCandidate, BrowserKind, BrowserSource};
 use crate::web::browser_install;
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -47,7 +47,8 @@ async fn run_list() -> Result<()> {
     let config = config::AppConfig::load_default()?;
     let mut candidates = playwright_candidates();
     candidates.sort_by_key(|candidate| candidate.priority);
-    let selected = resolve_selected_candidate(&candidates, config.web.scraper.browser_kind.as_deref());
+    let selected =
+        resolve_selected_candidate(&candidates, config.web.scraper.browser_kind.as_deref());
     let response = BrowserListResponse {
         selected: selected.map(candidate_output),
         candidates: candidates.into_iter().map(candidate_output).collect(),
@@ -60,7 +61,8 @@ async fn run_list() -> Result<()> {
 async fn run_setup() -> Result<()> {
     let config = config::AppConfig::load_default()?;
     let candidates = playwright_candidates();
-    let selected = resolve_selected_candidate(&candidates, config.web.scraper.browser_kind.as_deref());
+    let selected =
+        resolve_selected_candidate(&candidates, config.web.scraper.browser_kind.as_deref());
     let config_path = config::default_config_path()?.to_string_lossy().to_string();
     let response = BrowserSetupResponse {
         selected: selected.map(candidate_output),

@@ -32,7 +32,8 @@ fn browser_list_reports_playwright_selection() {
             { "name": "chromium", "version": "12345", "path": chromium_path }
         ]
     });
-    std::fs::write(manifest_dir.join("manifest.json"), payload.to_string()).expect("write manifest");
+    std::fs::write(manifest_dir.join("manifest.json"), payload.to_string())
+        .expect("write manifest");
 
     let mut cmd = Command::new(common::docdex_bin());
     cmd.env("DOCDEX_WEB_ENABLED", "0");
@@ -67,7 +68,8 @@ fn browser_setup_reports_playwright_browser() {
             { "name": "chromium", "version": "12345", "path": chromium_path }
         ]
     });
-    std::fs::write(manifest_dir.join("manifest.json"), payload.to_string()).expect("write manifest");
+    std::fs::write(manifest_dir.join("manifest.json"), payload.to_string())
+        .expect("write manifest");
 
     let mut cmd = Command::new(common::docdex_bin());
     cmd.env("DOCDEX_WEB_ENABLED", "0");

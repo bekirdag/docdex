@@ -23,7 +23,7 @@ pub struct McpSessionQuery {
 
 pub async fn mcp_request_handler(
     State(state): State<AppState>,
-    Json(mut payload): Json<Value>,
+    Json(payload): Json<Value>,
 ) -> Response {
     let Some(router) = state.mcp_router.as_ref() else {
         return json_error(
@@ -32,67 +32,13 @@ pub async fn mcp_request_handler(
             "mcp proxy is not enabled",
         );
     };
-    let method = extract_method(&payload).map(str::to_string);
-    if is_notification(&payload, method.as_deref()) {
-        return StatusCode::NO_CONTENT.into_response();
-    }
-    if method.as_deref() == Some("initialize") {
-        normalize_initialize_payload(&mut payload);
-    }
-    let require_repo = state
-        .repos
-        .as_ref()
-        .map(|manager| state.multi_repo && manager.repo_count() > 1)
-        .unwrap_or(false);
-    let repo_root = match method {
-        Some(method) if method == "initialize" => {
-            let root_uri = extract_init_root(&payload);
-            if require_repo && root_uri.is_none() {
-                warn!(
-                    target: "docdexd",
-                    "mcp initialize missing rootUri while multiple repos are active; default repo will be used"
-                );
-            }
-            match resolve_repo_for_mcp(&state, root_uri) {
-                Ok(root) => {
-                    router.set_default_repo(root.clone()).await;
-                    Some(root)
-                }
-                Err(err) => {
-                    return json_error(status_for_app_error(err.code), err.code, err.message);
-                }
-            }
-        }
-        _ => {
-            if let Some(root_uri) = extract_project_root(&payload) {
-                match resolve_repo_for_mcp(&state, Some(root_uri)) {
-                    Ok(root) => Some(root),
-                    Err(err) => {
-                        return json_error(status_for_app_error(err.code), err.code, err.message);
-                    }
-                }
-            } else if require_repo {
-                if let Some(default_repo) = router.default_repo_root().await {
-                    Some(default_repo)
-                } else {
-                    return json_error(
-                        StatusCode::BAD_REQUEST,
-                        ERR_INVALID_ARGUMENT,
-                        "missing project_root/repo_path (required when multiple repos are active)",
-                    );
-                }
-            } else {
-                None
-            }
-        }
-    };
-    match router.call(repo_root.as_deref(), payload).await {
-        Ok(response) => Json(response).into_response(),
-        Err(err) => json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            ERR_INTERNAL_ERROR,
-            format!("mcp proxy failed: {err}"),
-        ),
+    match payload {
+        Value::Array(batch) => handle_mcp_batch(&state, router, batch).await,
+        payload => match handle_mcp_single(&state, router, payload).await {
+            Ok(Some(response)) => Json(response).into_response(),
+            Ok(None) => StatusCode::NO_CONTENT.into_response(),
+            Err(response) => response,
+        },
     }
 }
 
@@ -259,6 +205,113 @@ fn extract_project_root(payload: &Value) -> Option<String> {
         return extract_root_from_params(args);
     }
     None
+}
+
+async fn handle_mcp_batch(
+    state: &AppState,
+    router: &crate::mcp::McpProxyRouter,
+    batch: Vec<Value>,
+) -> Response {
+    if batch.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "mcp batch must contain at least one request",
+        );
+    }
+    let mut responses = Vec::new();
+    for payload in batch {
+        match handle_mcp_single(state, router, payload).await {
+            Ok(Some(response)) => responses.push(response),
+            Ok(None) => {}
+            Err(response) => return response,
+        }
+    }
+    if responses.is_empty() {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        Json(Value::Array(responses)).into_response()
+    }
+}
+
+async fn handle_mcp_single(
+    state: &AppState,
+    router: &crate::mcp::McpProxyRouter,
+    mut payload: Value,
+) -> Result<Option<Value>, Response> {
+    if !payload.is_object() {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "mcp request must be a JSON object",
+        ));
+    }
+    let method = extract_method(&payload).map(str::to_string);
+    if is_notification(&payload, method.as_deref()) {
+        return Ok(None);
+    }
+    if method.as_deref() == Some("initialize") {
+        normalize_initialize_payload(&mut payload);
+    }
+    let require_repo = state
+        .repos
+        .as_ref()
+        .map(|manager| state.multi_repo && manager.repo_count() > 1)
+        .unwrap_or(false);
+    let repo_root = match method {
+        Some(method) if method == "initialize" => {
+            let root_uri = extract_init_root(&payload);
+            if require_repo && root_uri.is_none() {
+                warn!(
+                    target: "docdexd",
+                    "mcp initialize missing rootUri while multiple repos are active; default repo will be used"
+                );
+            }
+            match resolve_repo_for_mcp(state, root_uri) {
+                Ok(root) => {
+                    router.set_default_repo(root.clone()).await;
+                    Some(root)
+                }
+                Err(err) => {
+                    return Err(json_error(status_for_app_error(err.code), err.code, err.message));
+                }
+            }
+        }
+        _ => {
+            if let Some(root_uri) = extract_project_root(&payload) {
+                match resolve_repo_for_mcp(state, Some(root_uri)) {
+                    Ok(root) => Some(root),
+                    Err(err) => {
+                        return Err(json_error(
+                            status_for_app_error(err.code),
+                            err.code,
+                            err.message,
+                        ));
+                    }
+                }
+            } else if require_repo {
+                if let Some(default_repo) = router.default_repo_root().await {
+                    Some(default_repo)
+                } else {
+                    return Err(json_error(
+                        StatusCode::BAD_REQUEST,
+                        ERR_INVALID_ARGUMENT,
+                        "missing project_root/repo_path (required when multiple repos are active)",
+                    ));
+                }
+            } else {
+                None
+            }
+        }
+    };
+    match router.call(repo_root.as_deref(), payload).await {
+        Ok(response) => Ok(Some(response)),
+        Err(err) => Err(json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            format!("mcp proxy failed: {err}"),
+        )),
+    }
 }
 
 fn normalize_initialize_payload(payload: &mut Value) {

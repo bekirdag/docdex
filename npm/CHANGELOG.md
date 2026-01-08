@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.20
+## 0.2.21
 - Prompt for npm updates at CLI start (TTY-only, opt-out via `DOCDEX_UPDATE_CHECK=0`).
 - Export bundled Playwright fetcher for daemon startup (launchd/systemd/schtasks + immediate spawn).
 - Pass `DOCDEX_PLAYWRIGHT_FETCHER` in the npm wrapper when launching the daemon.

@@ -40,7 +40,7 @@ test("checkForUpdate logs when a newer version exists", async () => {
     env: { DOCDEX_UPDATE_CHECK: "1" },
     stdout: { isTTY: true },
     stderr: { isTTY: true },
-    httpsModule: createHttpsMock({ body: JSON.stringify({ version: "0.2.20" }) }),
+    httpsModule: createHttpsMock({ body: JSON.stringify({ version: "0.2.21" }) }),
     logger
   });
 

@@ -111,6 +111,7 @@
 - tests/browser_install.rs
 - tests/browser_cli.rs
 - tests/check_browser.rs
+- tests/web_scraper.rs
 
 ## Rust Unit/Component Tests
 - src/config/tests.rs
@@ -118,21 +119,27 @@
 - src/project_map/tests.rs
 - src/orchestrator/budget_tests.rs
 - src/orchestrator/plan_tests.rs
+- src/orchestrator/web_config.rs
 - src/llm/tests.rs
 - src/setup/state.rs
-- src/setup/ui.rs
+- src/setup/ui.rs (Playwright browser inventory + selection tests)
 - src/setup/ollama.rs
 - src/setup/mod.rs
 - src/setup/state_store.rs
 - src/setup/config.rs
 - src/setup/hardware.rs
 - src/ollama/tests.rs
+- src/api/mcp_http.rs
 - src/cli/http_client/tests.rs
 - src/repo_manager/resolution/tests.rs
 - src/cli/tests.rs
 - src/daemon/lock.rs
 - src/daemon/multi_repo.rs
 - src/index/mod.rs
+- src/web/browser_install.rs
+- src/web/chrome.rs
+- src/web/ddg.rs
+- src/web/playwright_scripts.rs
 
 ## Benchmarks
 - benches/indexing_bench.rs
@@ -151,6 +158,7 @@
 - npm/test/installer_regression_no_download.test.js
 - npm/test/installer_version_resolution.test.js
 - npm/test/cli_wrapper_parity.test.js
+- npm/test/update_check.test.js
 - npm/test/packaging_guardrails.test.js
 - npm/test/installer_e2e_matrix.test.js
 - npm/test/installer_atomic_rollback_retry.test.js
@@ -176,8 +184,10 @@
 - npm/test/platform.test.js
 - npm/test/installer_interrupted_installs.test.js
 - npm/test/postinstall_setup.test.js
-- npm/test/installer_local_fallback.test.js
+- npm/test/postinstall_setup_agent_blocks.test.js
+- npm/test/installer_local_fallback.test.js (local binary override)
 - npm/test/uninstall.test.js
+- npm/test/playwright_install.test.js
 
 ## Test Fixtures
 - npm/test/fixtures/archive/fake-archive.bin

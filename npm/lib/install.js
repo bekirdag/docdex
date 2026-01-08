@@ -8,6 +8,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { pipeline } = require("node:stream/promises");
 const crypto = require("node:crypto");
+const { spawn, spawnSync } = require("node:child_process");
 
 const pkg = require("../package.json");
 const {
@@ -39,6 +40,9 @@ const DEFAULT_INTEGRITY_CONFIG = Object.freeze({
 });
 const LOCAL_FALLBACK_ENV = "DOCDEX_LOCAL_FALLBACK";
 const LOCAL_BINARY_ENV = "DOCDEX_LOCAL_BINARY";
+const AGENTS_DOC_FILENAME = "agents.md";
+const PLAYWRIGHT_INSTALL_GUARD = "DOCDEX_INTERNAL_PLAYWRIGHT_INSTALL";
+const PLAYWRIGHT_SKIP_ENV = "DOCDEX_SKIP_PLAYWRIGHT_DEP_INSTALL";
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -198,6 +202,90 @@ function requestOptions() {
   return { headers };
 }
 
+function agentsDocSourcePath() {
+  return path.join(__dirname, "..", "assets", AGENTS_DOC_FILENAME);
+}
+
+function agentsDocTargetPath() {
+  return path.join(os.homedir(), ".docdex", AGENTS_DOC_FILENAME);
+}
+
+function writeAgentInstructions() {
+  const sourcePath = agentsDocSourcePath();
+  if (!fs.existsSync(sourcePath)) return false;
+  let contents = "";
+  try {
+    contents = fs.readFileSync(sourcePath, "utf8");
+  } catch {
+    return false;
+  }
+  if (!contents.trim()) return false;
+  const targetPath = agentsDocTargetPath();
+  try {
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true, mode: 0o700 });
+    const existing = fs.existsSync(targetPath) ? fs.readFileSync(targetPath, "utf8") : null;
+    if (existing === contents) return false;
+    fs.writeFileSync(targetPath, contents);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolvePlaywrightPackage() {
+  const baseDir = path.join(__dirname, "..");
+  try {
+    return require.resolve("playwright/package.json", { paths: [baseDir] });
+  } catch {}
+  try {
+    return require.resolve("playwright/package.json");
+  } catch {}
+  return null;
+}
+
+function resolveNpmCommand() {
+  const npmExec = process.env.npm_execpath;
+  if (npmExec) {
+    return { cmd: process.execPath, args: [npmExec] };
+  }
+  const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+  return { cmd: npmCmd, args: [] };
+}
+
+function ensurePlaywrightDependency({ logger = console } = {}) {
+  if (process.env[PLAYWRIGHT_SKIP_ENV]) return;
+  if (process.env[PLAYWRIGHT_INSTALL_GUARD]) return;
+  if (resolvePlaywrightPackage()) return;
+
+  const rootDir = path.join(__dirname, "..");
+  const { cmd, args } = resolveNpmCommand();
+  const installArgs = args.concat([
+    "install",
+    "--no-save",
+    "--ignore-scripts",
+    "--no-package-lock",
+    "--no-audit",
+    "--no-fund",
+    "playwright"
+  ]);
+  const result = spawnSync(cmd, installArgs, {
+    cwd: rootDir,
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      [PLAYWRIGHT_INSTALL_GUARD]: "1"
+    }
+  });
+  if (result.error || (typeof result.status === "number" && result.status !== 0)) {
+    const message = result.error?.message || `npm exit status ${result.status}`;
+    logger.warn?.(`[docdex] Playwright dependency install failed: ${message}`);
+    return;
+  }
+  if (!resolvePlaywrightPackage()) {
+    logger.warn?.("[docdex] Playwright dependency still missing after install attempt");
+  }
+}
+
 function selectHttpClient(url) {
   try {
     const protocol = new URL(url).protocol;
@@ -294,9 +382,46 @@ function download(url, dest, redirects = 0) {
 
 async function extractTarball(archivePath, targetDir) {
   // Lazy import so unit tests can load this module without installing optional npm deps.
-  const tar = require("tar");
+  let tar;
+  try {
+    tar = require("tar");
+  } catch (err) {
+    if (err && err.code === "MODULE_NOT_FOUND") {
+      await extractTarballWithSystemTar(archivePath, targetDir);
+      return;
+    }
+    throw err;
+  }
   await fs.promises.mkdir(targetDir, { recursive: true });
   await tar.x({ file: archivePath, cwd: targetDir, gzip: true });
+}
+
+async function extractTarballWithSystemTar(archivePath, targetDir) {
+  await fs.promises.mkdir(targetDir, { recursive: true });
+  const args = ["-xzf", archivePath, "-C", targetDir];
+  await new Promise((resolve, reject) => {
+    const proc = spawn("tar", args, { stdio: "ignore" });
+    proc.on("error", (err) => {
+      reject(
+        new ArchiveInvalidError(
+          `tar module missing and system tar failed: ${err.message}`,
+          { archivePath }
+        )
+      );
+    });
+    proc.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(
+          new ArchiveInvalidError(
+            `system tar exited with code ${code}`,
+            { archivePath }
+          )
+        );
+      }
+    });
+  });
 }
 
 async function sha256File(filePath) {
@@ -371,6 +496,45 @@ function parseEnvBool(value) {
   return null;
 }
 
+function readJsonSync({ fsModule, filePath }) {
+  try {
+    const raw = fsModule.readFileSync(filePath, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function readTextSync({ fsModule, filePath }) {
+  try {
+    return fsModule.readFileSync(filePath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function isDocdexRepoRoot({ baseDir, fsModule, pathModule }) {
+  const cargoPath = pathModule.join(baseDir, "Cargo.toml");
+  const npmPackagePath = pathModule.join(baseDir, "npm", "package.json");
+  if (!fsModule.existsSync(cargoPath) || !fsModule.existsSync(npmPackagePath)) return false;
+  const pkgJson = readJsonSync({ fsModule, filePath: npmPackagePath });
+  if (pkgJson?.name !== "docdex") return false;
+  const cargoToml = readTextSync({ fsModule, filePath: cargoPath });
+  return Boolean(cargoToml && /name\s*=\s*"docdexd"/.test(cargoToml));
+}
+
+function detectLocalRepoRootFromInitCwd({ env = process.env, fsModule = fs, pathModule = path } = {}) {
+  const initCwd = env?.INIT_CWD;
+  if (!initCwd) return null;
+  const candidate = pathModule.resolve(initCwd);
+  if (isDocdexRepoRoot({ baseDir: candidate, fsModule, pathModule })) return candidate;
+  const parent = pathModule.dirname(candidate);
+  if (parent && parent !== candidate && isDocdexRepoRoot({ baseDir: parent, fsModule, pathModule })) {
+    return parent;
+  }
+  return null;
+}
+
 function detectLocalRepoRoot({ pathModule, fsModule } = {}) {
   const pathImpl = pathModule || path;
   const fsImpl = fsModule || fs;
@@ -381,6 +545,45 @@ function detectLocalRepoRoot({ pathModule, fsModule } = {}) {
     return candidate;
   }
   return null;
+}
+
+function parseNpmConfigArgv(env) {
+  const raw = env?.npm_config_argv;
+  if (!raw || typeof raw !== "string") return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed?.original)) return parsed.original;
+    if (Array.isArray(parsed?.cooked)) return parsed.cooked;
+  } catch {}
+  return null;
+}
+
+function isLikelyLocalInstallArg(arg, pathModule) {
+  if (typeof arg !== "string" || !arg) return false;
+  if (arg === "." || arg === "..") return true;
+  if (arg.startsWith("file:")) return true;
+  if (arg.startsWith("./") || arg.startsWith("../")) return true;
+  if (pathModule.isAbsolute(arg)) return true;
+  return false;
+}
+
+function isNpmInstallCommand(argv) {
+  return argv.some((arg) => arg === "install" || arg === "i" || arg === "add");
+}
+
+function isLocalInstallRequest({ env, pathModule }) {
+  const argv = parseNpmConfigArgv(env);
+  if (!argv || !isNpmInstallCommand(argv)) return false;
+  return argv.some((arg) => isLikelyLocalInstallArg(arg, pathModule));
+}
+
+function shouldPreferLocalInstall({ env, localBinaryPath, pathModule }) {
+  if (!localBinaryPath) return false;
+  if (parseEnvBool(env?.[LOCAL_FALLBACK_ENV]) === false) return false;
+  if (env?.[LOCAL_BINARY_ENV]) return true;
+  if (!env?.INIT_CWD) return false;
+  if (env?.npm_lifecycle_event !== "postinstall") return false;
+  return isLocalInstallRequest({ env, pathModule });
 }
 
 function resolveLocalBinaryCandidate({
@@ -395,14 +598,34 @@ function resolveLocalBinaryCandidate({
     const resolved = pathModule.resolve(explicit);
     if (fsModule.existsSync(resolved)) return resolved;
   }
+  const isWin32 = platform === "win32";
+  const mcpName = isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server";
   const root = repoRoot || detectLocalRepoRoot({ pathModule, fsModule });
   if (!root) return null;
   const binaryName = platform === "win32" ? "docdexd.exe" : "docdexd";
   const releasePath = pathModule.join(root, "target", "release", binaryName);
-  if (fsModule.existsSync(releasePath)) return releasePath;
+  if (fsModule.existsSync(releasePath)) {
+    if (localMcpPresent({ fsModule, pathModule, binaryPath: releasePath, mcpName })) {
+      return releasePath;
+    }
+  }
   const debugPath = pathModule.join(root, "target", "debug", binaryName);
-  if (fsModule.existsSync(debugPath)) return debugPath;
+  if (fsModule.existsSync(debugPath)) {
+    if (localMcpPresent({ fsModule, pathModule, binaryPath: debugPath, mcpName })) {
+      return debugPath;
+    }
+  }
   return null;
+}
+
+function localMcpPresent({ fsModule, pathModule, binaryPath, mcpName }) {
+  const dir = pathModule.dirname(binaryPath);
+  const candidates = [
+    pathModule.join(dir, mcpName),
+    pathModule.join(pathModule.dirname(dir), "release", mcpName),
+    pathModule.join(pathModule.dirname(dir), "debug", mcpName)
+  ];
+  return candidates.some((candidate) => fsModule.existsSync(candidate));
 }
 
 async function installFromLocalBinary({
@@ -428,13 +651,20 @@ async function installFromLocalBinary({
     await fsModule.promises.chmod(destPath, 0o755).catch(() => {});
   }
   const mcpName = isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server";
-  const mcpSource = pathModule.join(pathModule.dirname(binaryPath), mcpName);
-  if (fsModule.existsSync(mcpSource)) {
+  const mcpCandidates = [
+    pathModule.join(pathModule.dirname(binaryPath), mcpName),
+    pathModule.join(pathModule.dirname(pathModule.dirname(binaryPath)), "release", mcpName),
+    pathModule.join(pathModule.dirname(pathModule.dirname(binaryPath)), "debug", mcpName)
+  ];
+  const mcpSource = mcpCandidates.find((candidate) => fsModule.existsSync(candidate));
+  if (mcpSource) {
     const mcpDest = pathModule.join(distDir, mcpName);
     await fsModule.promises.copyFile(mcpSource, mcpDest);
     if (!isWin32) {
       await fsModule.promises.chmod(mcpDest, 0o755).catch(() => {});
     }
+  } else {
+    logger?.warn?.(`[docdex] local MCP binary not found; expected near ${binaryPath}`);
   }
   const binarySha256 = await sha256FileFn(destPath);
   const metadata = {
@@ -844,6 +1074,9 @@ function decideInstallAction({
   integrityResult
 }) {
   if (!discoveredInstalledState?.binaryPresent) return { outcome: "update", reason: "binary_missing" };
+  if (discoveredInstalledState.mcpBinaryPresent === false) {
+    return { outcome: "update", reason: "mcp_binary_missing" };
+  }
 
   if (discoveredInstalledState.metadataStatus !== "valid") {
     return {
@@ -878,6 +1111,10 @@ function decideInstallAction({
 
 async function discoverInstalledState({ fsModule, pathModule, distDir, platformKey, isWin32 }) {
   const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+  const mcpBinaryPath = pathModule.join(
+    distDir,
+    isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server"
+  );
   const metadataPath = installMetadataPath(distDir, pathModule);
 
   const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
@@ -886,6 +1123,7 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
       binaryPath,
       metadataPath,
       binaryPresent: false,
+      mcpBinaryPresent: false,
       installedVersion: null,
       metadata: null,
       metadataStatus: "unavailable",
@@ -899,6 +1137,7 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
       binaryPath,
       metadataPath,
       binaryPresent: false,
+      mcpBinaryPresent: false,
       installedVersion: null,
       metadata: null,
       metadataStatus: "missing",
@@ -907,11 +1146,13 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
     };
   }
 
+  const mcpBinaryPresent = existsSync(mcpBinaryPath);
   const metaResult = await readJsonFileIfPossible({ fsModule, filePath: metadataPath });
   const meta = metaResult.value;
   if (!isValidInstallMetadata(meta)) {
     return {
       binaryPath,
+      mcpBinaryPresent,
       metadataPath,
       binaryPresent: true,
       installedVersion: typeof meta?.version === "string" ? meta.version : null,
@@ -934,6 +1175,7 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
 
   return {
     binaryPath,
+    mcpBinaryPresent,
     metadataPath,
     binaryPresent: true,
     installedVersion: meta.version,
@@ -1007,6 +1249,7 @@ async function determineLocalInstallerOutcome({
 
   const shouldVerifyIntegrity =
     discoveredInstalledState.binaryPresent &&
+    discoveredInstalledState.mcpBinaryPresent !== false &&
     !discoveredInstalledState.platformMismatch &&
     discoveredInstalledState.installedVersion === expectedVersion &&
     (normalizeSha256Hex(expectedBinarySha256) || discoveredInstalledState.metadataStatus === "valid");
@@ -1476,6 +1719,7 @@ async function verifyDownloadedFileIntegrity({
 async function runInstaller(options) {
   const opts = options || {};
   const logger = opts.logger || console;
+  const env = opts.env || process.env;
 
   const detectPlatformKeyFn = opts.detectPlatformKeyFn || detectPlatformKey;
   const targetTripleForPlatformKeyFn = opts.targetTripleForPlatformKeyFn || targetTripleForPlatformKey;
@@ -1494,8 +1738,19 @@ async function runInstaller(options) {
   const sha256FileFn = opts.sha256FileFn || sha256File;
   const writeJsonFileAtomicFn = opts.writeJsonFileAtomicFn || writeJsonFileAtomic;
   const restartFn = opts.restartFn;
-  const localRepoRoot = opts.localRepoRoot;
-  const localBinaryPath = opts.localBinaryPath;
+  const localRepoRoot =
+    opts.localRepoRoot ||
+    detectLocalRepoRootFromInitCwd({ env, fsModule, pathModule }) ||
+    detectLocalRepoRoot({ pathModule, fsModule });
+  const localBinaryPath =
+    opts.localBinaryPath ||
+    resolveLocalBinaryCandidate({
+      env,
+      platform: process.platform,
+      pathModule,
+      fsModule,
+      repoRoot: localRepoRoot
+    });
 
   const detectedPlatform = opts.platform || process.platform;
   const detectedArch = opts.arch || process.arch;
@@ -1551,6 +1806,25 @@ async function runInstaller(options) {
 
   const priorRunnable = existsSync ? existsSync(local.binaryPath) : false;
 
+  const forceLocalBinary = Boolean(env?.[LOCAL_BINARY_ENV]);
+  if (forceLocalBinary && localBinaryPath) {
+    const localInstall = await installFromLocalBinary({
+      fsModule,
+      pathModule,
+      distDir,
+      binaryPath: localBinaryPath,
+      isWin32,
+      version,
+      platformKey,
+      targetTriple,
+      repoSlug: null,
+      sha256FileFn,
+      writeJsonFileAtomicFn,
+      logger
+    });
+    return localInstall;
+  }
+
   if (local.outcome === "no-op") {
     logger.log("[docdex] Install outcome: no-op");
     await cleanupInstallArtifacts({
@@ -1579,6 +1853,24 @@ async function runInstaller(options) {
     };
   }
 
+  if (shouldPreferLocalInstall({ env, localBinaryPath, pathModule })) {
+    const localInstall = await installFromLocalBinary({
+      fsModule,
+      pathModule,
+      distDir,
+      binaryPath: localBinaryPath,
+      isWin32,
+      version,
+      platformKey,
+      targetTriple,
+      repoSlug: null,
+      sha256FileFn,
+      writeJsonFileAtomicFn,
+      logger
+    });
+    return localInstall;
+  }
+
   let repoSlug = null;
   let archive;
   let expectedSha256;
@@ -1601,7 +1893,7 @@ async function runInstaller(options) {
   } catch (err) {
     const fallback = await maybeInstallLocalFallback({
       err,
-      env: process.env,
+      env,
       fsModule,
       pathModule,
       distDir,
@@ -1898,6 +2190,16 @@ async function main() {
     await runPostInstallSetup({ binaryPath: result?.binaryPath });
   } catch (err) {
     console.warn(`[docdex] postinstall setup skipped: ${err?.message || err}`);
+  }
+  try {
+    writeAgentInstructions();
+  } catch (err) {
+    console.warn(`[docdex] agent instructions skipped: ${err?.message || err}`);
+  }
+  try {
+    ensurePlaywrightDependency();
+  } catch (err) {
+    console.warn(`[docdex] playwright dependency check skipped: ${err?.message || err}`);
   }
   printPostInstallBanner();
 }

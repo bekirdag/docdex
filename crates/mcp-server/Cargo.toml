@@ -1,6 +1,6 @@
 [package]
 name = "docdex-mcp-server"
-version = "0.2.14"
+version = "0.2.21"
 edition = "2021"
 
 [dependencies]

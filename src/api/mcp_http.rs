@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tracing::warn;
 
 const SESSION_HEADER: &str = "x-docdex-mcp-session";
 
@@ -22,7 +23,7 @@ pub struct McpSessionQuery {
 
 pub async fn mcp_request_handler(
     State(state): State<AppState>,
-    Json(mut payload): Json<Value>,
+    Json(payload): Json<Value>,
 ) -> Response {
     let Some(router) = state.mcp_router.as_ref() else {
         return json_error(
@@ -31,66 +32,13 @@ pub async fn mcp_request_handler(
             "mcp proxy is not enabled",
         );
     };
-    let method = extract_method(&payload).map(str::to_string);
-    if is_notification(&payload, method.as_deref()) {
-        return StatusCode::NO_CONTENT.into_response();
-    }
-    if method.as_deref() == Some("initialize") {
-        normalize_initialize_payload(&mut payload);
-    }
-    let require_repo = state
-        .repos
-        .as_ref()
-        .map(|manager| state.multi_repo && manager.repo_count() > 1)
-        .unwrap_or(false);
-    let repo_root = match method {
-        Some(method) if method == "initialize" => {
-            let root_uri = extract_init_root(&payload);
-            if require_repo && root_uri.is_none() {
-                return json_error(
-                    StatusCode::BAD_REQUEST,
-                    ERR_INVALID_ARGUMENT,
-                    "missing rootUri (required when multiple repos are active)",
-                );
-            }
-            match resolve_repo_for_mcp(&state, root_uri) {
-                Ok(root) => {
-                    if !state.multi_repo {
-                        router.set_default_repo(root.clone()).await;
-                    }
-                    Some(root)
-                }
-                Err(err) => {
-                    return json_error(status_for_app_error(err.code), err.code, err.message);
-                }
-            }
-        }
-        _ => {
-            if let Some(root_uri) = extract_project_root(&payload) {
-                match resolve_repo_for_mcp(&state, Some(root_uri)) {
-                    Ok(root) => Some(root),
-                    Err(err) => {
-                        return json_error(status_for_app_error(err.code), err.code, err.message);
-                    }
-                }
-            } else if require_repo {
-                return json_error(
-                    StatusCode::BAD_REQUEST,
-                    ERR_INVALID_ARGUMENT,
-                    "missing project_root/repo_path (required when multiple repos are active)",
-                );
-            } else {
-                None
-            }
-        }
-    };
-    match router.call(repo_root.as_deref(), payload).await {
-        Ok(response) => Json(response).into_response(),
-        Err(err) => json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            ERR_INTERNAL_ERROR,
-            format!("mcp proxy failed: {err}"),
-        ),
+    match payload {
+        Value::Array(batch) => handle_mcp_batch(&state, router, batch).await,
+        payload => match handle_mcp_single(&state, router, payload).await {
+            Ok(Some(response)) => Json(response).into_response(),
+            Ok(None) => StatusCode::NO_CONTENT.into_response(),
+            Err(response) => response,
+        },
     }
 }
 
@@ -153,10 +101,9 @@ pub async fn mcp_message_handler(
         normalize_initialize_payload(&mut payload);
         let root_uri = extract_init_root(&payload);
         if require_repo && root_uri.is_none() {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                ERR_INVALID_ARGUMENT,
-                "missing rootUri (required when multiple repos are active)",
+            warn!(
+                target: "docdexd",
+                "mcp initialize missing rootUri while multiple repos are active; default repo will be used"
             );
         }
         let repo_root = match resolve_repo_for_mcp(&state, root_uri) {
@@ -189,17 +136,28 @@ pub async fn mcp_message_handler(
         }
     } else if router.session_repo_root(&session_id).await.is_none() {
         if require_repo {
+            if let Some(default_repo) = router.default_repo_root().await {
+                if let Err(err) = router.bind_session(&session_id, &default_repo).await {
+                    return json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        ERR_INTERNAL_ERROR,
+                        format!("mcp proxy failed: {err}"),
+                    );
+                }
+            } else {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    ERR_INVALID_ARGUMENT,
+                    "missing project_root/repo_path (required when multiple repos are active)",
+                );
+            }
+        } else {
             return json_error(
                 StatusCode::BAD_REQUEST,
                 ERR_INVALID_ARGUMENT,
-                "missing project_root/repo_path (required when multiple repos are active)",
+                "missing initialize (call initialize with rootUri or send project_root)",
             );
         }
-        return json_error(
-            StatusCode::BAD_REQUEST,
-            ERR_INVALID_ARGUMENT,
-            "missing initialize (call initialize with rootUri or send project_root)",
-        );
     }
     match router.enqueue_for_session(&session_id, payload).await {
         Ok(ack) => Json(ack).into_response(),
@@ -235,29 +193,129 @@ fn is_notification(payload: &Value, method: Option<&str>) -> bool {
 
 fn extract_init_root(payload: &Value) -> Option<String> {
     let params = payload.get("params")?.as_object()?;
-    for key in ["rootUri", "workspace_root", "project_root", "repo_path"] {
-        if let Some(value) = params.get(key).and_then(|value| value.as_str()) {
-            return Some(value.to_string());
-        }
-    }
-    None
+    extract_root_from_params(params)
 }
 
 fn extract_project_root(payload: &Value) -> Option<String> {
     let params = payload.get("params")?.as_object()?;
-    for key in ["project_root", "repo_path", "rootUri", "workspace_root"] {
-        if let Some(value) = params.get(key).and_then(|value| value.as_str()) {
-            return Some(value.to_string());
-        }
+    if let Some(root) = extract_root_from_params(params) {
+        return Some(root);
     }
     if let Some(args) = params.get("arguments").and_then(|value| value.as_object()) {
-        for key in ["project_root", "repo_path"] {
-            if let Some(value) = args.get(key).and_then(|value| value.as_str()) {
-                return Some(value.to_string());
-            }
-        }
+        return extract_root_from_params(args);
     }
     None
+}
+
+async fn handle_mcp_batch(
+    state: &AppState,
+    router: &crate::mcp::McpProxyRouter,
+    batch: Vec<Value>,
+) -> Response {
+    if batch.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "mcp batch must contain at least one request",
+        );
+    }
+    let mut responses = Vec::new();
+    for payload in batch {
+        match handle_mcp_single(state, router, payload).await {
+            Ok(Some(response)) => responses.push(response),
+            Ok(None) => {}
+            Err(response) => return response,
+        }
+    }
+    if responses.is_empty() {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        Json(Value::Array(responses)).into_response()
+    }
+}
+
+async fn handle_mcp_single(
+    state: &AppState,
+    router: &crate::mcp::McpProxyRouter,
+    mut payload: Value,
+) -> Result<Option<Value>, Response> {
+    if !payload.is_object() {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "mcp request must be a JSON object",
+        ));
+    }
+    let method = extract_method(&payload).map(str::to_string);
+    if is_notification(&payload, method.as_deref()) {
+        return Ok(None);
+    }
+    if method.as_deref() == Some("initialize") {
+        normalize_initialize_payload(&mut payload);
+    }
+    let require_repo = state
+        .repos
+        .as_ref()
+        .map(|manager| state.multi_repo && manager.repo_count() > 1)
+        .unwrap_or(false);
+    let repo_root = match method {
+        Some(method) if method == "initialize" => {
+            let root_uri = extract_init_root(&payload);
+            if require_repo && root_uri.is_none() {
+                warn!(
+                    target: "docdexd",
+                    "mcp initialize missing rootUri while multiple repos are active; default repo will be used"
+                );
+            }
+            match resolve_repo_for_mcp(state, root_uri) {
+                Ok(root) => {
+                    router.set_default_repo(root.clone()).await;
+                    Some(root)
+                }
+                Err(err) => {
+                    return Err(json_error(
+                        status_for_app_error(err.code),
+                        err.code,
+                        err.message,
+                    ));
+                }
+            }
+        }
+        _ => {
+            if let Some(root_uri) = extract_project_root(&payload) {
+                match resolve_repo_for_mcp(state, Some(root_uri)) {
+                    Ok(root) => Some(root),
+                    Err(err) => {
+                        return Err(json_error(
+                            status_for_app_error(err.code),
+                            err.code,
+                            err.message,
+                        ));
+                    }
+                }
+            } else if require_repo {
+                if let Some(default_repo) = router.default_repo_root().await {
+                    Some(default_repo)
+                } else {
+                    return Err(json_error(
+                        StatusCode::BAD_REQUEST,
+                        ERR_INVALID_ARGUMENT,
+                        "missing project_root/repo_path (required when multiple repos are active)",
+                    ));
+                }
+            } else {
+                None
+            }
+        }
+    };
+    match router.call(repo_root.as_deref(), payload).await {
+        Ok(response) => Ok(Some(response)),
+        Err(err) => Err(json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            format!("mcp proxy failed: {err}"),
+        )),
+    }
 }
 
 fn normalize_initialize_payload(payload: &mut Value) {
@@ -270,7 +328,9 @@ fn normalize_initialize_payload(payload: &mut Value) {
     let root_uri = params
         .get("rootUri")
         .and_then(|value| value.as_str())
-        .map(|value| value.to_string());
+        .map(|value| value.to_string())
+        .or_else(|| extract_root_from_array(params.get("roots")))
+        .or_else(|| extract_root_from_array(params.get("workspaceFolders")));
     if root_uri.is_none() {
         return;
     }
@@ -278,10 +338,162 @@ fn normalize_initialize_payload(payload: &mut Value) {
         return;
     }
     let root_uri = root_uri.unwrap();
+    if !params.contains_key("rootUri") {
+        params.insert("rootUri".to_string(), Value::String(root_uri.clone()));
+    }
     let workspace_root = parse_root_uri(&root_uri)
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or(root_uri);
     params.insert("workspace_root".to_string(), Value::String(workspace_root));
+}
+
+fn extract_root_from_params(params: &serde_json::Map<String, Value>) -> Option<String> {
+    for key in [
+        "rootUri",
+        "workspace_root",
+        "workspaceRoot",
+        "project_root",
+        "projectRoot",
+        "repo_path",
+        "repoPath",
+        "rootPath",
+        "root_path",
+    ] {
+        if let Some(value) = params.get(key).and_then(|value| value.as_str()) {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            return Some(trimmed.to_string());
+        }
+    }
+    if let Some(root) = extract_root_from_array(params.get("roots")) {
+        return Some(root);
+    }
+    extract_root_from_array(params.get("workspaceFolders"))
+}
+
+fn extract_root_from_array(value: Option<&Value>) -> Option<String> {
+    let roots = value?.as_array()?;
+    for entry in roots {
+        if let Some(value) = entry.as_str() {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            return Some(trimmed.to_string());
+        }
+        if let Some(obj) = entry.as_object() {
+            for key in ["uri", "rootUri", "path", "rootPath", "root_path"] {
+                if let Some(value) = obj.get(key).and_then(|value| value.as_str()) {
+                    let trimmed = value.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::fs;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+    use url::Url;
+
+    #[test]
+    fn extract_init_root_accepts_roots_array() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo dir");
+        let root_uri = Url::from_directory_path(&repo_root)
+            .expect("file url")
+            .to_string();
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "roots": [
+                    { "uri": root_uri }
+                ]
+            }
+        });
+        let root = extract_init_root(&payload);
+        assert_eq!(root.as_deref(), Some(root_uri.as_str()));
+    }
+
+    #[test]
+    fn extract_init_root_accepts_workspace_root() {
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "workspaceRoot": "/workspace/project"
+            }
+        });
+        let root = extract_init_root(&payload);
+        assert_eq!(root.as_deref(), Some("/workspace/project"));
+    }
+
+    #[test]
+    fn normalize_initialize_payload_sets_root_from_roots() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo dir");
+        let expected_root_uri = Url::from_directory_path(&repo_root)
+            .expect("file url")
+            .to_string();
+        let repo_root_str = repo_root.to_string_lossy().to_string();
+        let mut payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "roots": [
+                    { "uri": expected_root_uri }
+                ]
+            }
+        });
+        normalize_initialize_payload(&mut payload);
+        let params = payload.get("params").and_then(|value| value.as_object());
+        let root_uri = params
+            .and_then(|params| params.get("rootUri"))
+            .and_then(|value| value.as_str());
+        let workspace_root = params
+            .and_then(|params| params.get("workspace_root"))
+            .and_then(|value| value.as_str());
+        assert_eq!(root_uri, Some(expected_root_uri.as_str()));
+        let resolved = workspace_root
+            .map(PathBuf::from)
+            .and_then(|path| path.canonicalize().ok())
+            .unwrap_or_else(|| PathBuf::from(repo_root_str.as_str()));
+        let expected = repo_root.canonicalize().expect("canonical repo root");
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn extract_init_root_ignores_empty_strings() {
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "rootUri": "",
+                "workspaceRoot": "   ",
+                "roots": [""]
+            }
+        });
+        let root = extract_init_root(&payload);
+        assert!(root.is_none());
+    }
 }
 
 fn resolve_repo_for_mcp(state: &AppState, root_uri: Option<String>) -> Result<PathBuf, AppError> {

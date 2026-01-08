@@ -1,18 +1,25 @@
 use anyhow::{anyhow, Context, Result};
 use fs4::FileExt;
-use serde_json::Value;
-use sha2::{Digest, Sha256};
-use std::fs::{self, File, OpenOptions};
-use std::io::Read;
+use serde::Deserialize;
+use std::collections::HashSet;
+use std::ffi::OsString;
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::process::Command;
+use which::which;
 
-const INSTALL_DIR_NAME: &str = "chromium";
+use crate::web::playwright_scripts;
+
 const INSTALL_LOCK_NAME: &str = "browser_install.lock";
-const MANIFEST_FILE: &str = "manifest.json";
-const DEFAULT_MANIFEST_URL: &str =
-    "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json";
-const DEFAULT_PLATFORM: &str = "linux64";
+const DEFAULT_BROWSERS: &str = "chromium";
+const ALLOWED_BROWSERS: [&str; 3] = ["chromium", "firefox", "webkit"];
+const INSTALLER_ENV: &str = "DOCDEX_PLAYWRIGHT_INSTALLER";
+const NODE_PATH_ENV: &str = "NODE_PATH";
+const PLAYWRIGHT_NODE_PATH_ENV: &str = "DOCDEX_PLAYWRIGHT_NODE_PATH";
+const NODE_BIN_ENV: &str = "DOCDEX_NODE_BIN";
+const PLAYWRIGHT_NODE_BIN_ENV: &str = "DOCDEX_PLAYWRIGHT_NODE_BIN";
+const NVM_DIR_ENV: &str = "NVM_DIR";
+const PLAYWRIGHT_NODE_DIR_NAME: &str = "playwright-node";
 
 #[derive(Debug, Clone)]
 pub struct BrowserInstallResult {
@@ -20,46 +27,93 @@ pub struct BrowserInstallResult {
     pub version: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct PlaywrightDependencyStatus {
+    pub installed: bool,
+    pub version: Option<String>,
+    pub node_path: Option<PathBuf>,
+}
+
 pub fn resolve_installed_browser() -> Option<PathBuf> {
-    if !cfg!(target_os = "linux") {
-        return None;
-    }
-    let base_dir = crate::state_paths::default_state_base_dir().ok()?;
-    let install_dir = base_dir.join("bin").join(INSTALL_DIR_NAME);
-    let manifest_path = install_dir.join(MANIFEST_FILE);
-    let raw = fs::read_to_string(manifest_path).ok()?;
-    let parsed: Value = serde_json::from_str(&raw).ok()?;
-    let path = parsed
-        .get("path")
-        .and_then(|value| value.as_str())
-        .map(PathBuf::from)?;
-    if path.is_file() {
-        Some(path)
-    } else {
-        None
+    crate::util::resolve_playwright_chromium().map(|browser| browser.path)
+}
+
+pub fn playwright_dependency_status() -> PlaywrightDependencyStatus {
+    let node_path = resolve_playwright_node_path();
+    let version = node_path
+        .as_ref()
+        .and_then(|path| read_playwright_version(&path.join("playwright").join("package.json")));
+    PlaywrightDependencyStatus {
+        installed: node_path.is_some(),
+        version,
+        node_path,
     }
 }
 
-pub fn install_if_missing(auto_install: bool) -> Result<Option<BrowserInstallResult>> {
-    if !cfg!(target_os = "linux") {
-        return Ok(None);
+pub fn install_playwright_dependency() -> Result<PlaywrightDependencyStatus> {
+    let status = playwright_dependency_status();
+    if status.installed {
+        return Ok(status);
     }
+    let base_dir =
+        crate::state_paths::default_state_base_dir().context("resolve docdex state dir")?;
+    let install_root = resolve_playwright_dependency_root(&base_dir);
+    fs::create_dir_all(&install_root).with_context(|| {
+        format!(
+            "create playwright dependency dir {}",
+            install_root.display()
+        )
+    })?;
+
+    let (cmd, args) = resolve_npm_command();
+    let mut command = Command::new(cmd);
+    command
+        .args(args)
+        .arg("install")
+        .arg("--no-save")
+        .arg("--ignore-scripts")
+        .arg("--no-package-lock")
+        .arg("--no-audit")
+        .arg("--no-fund")
+        .arg("playwright")
+        .current_dir(&install_root)
+        .env("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1");
+    let status = command.status().with_context(|| {
+        format!(
+            "spawn playwright dependency install in {}",
+            install_root.display()
+        )
+    })?;
+    if !status.success() {
+        return Err(anyhow!(
+            "playwright dependency install failed with status {status}"
+        ));
+    }
+
+    let status = playwright_dependency_status();
+    if !status.installed {
+        return Err(anyhow!(
+            "playwright dependency install completed but playwright was not found"
+        ));
+    }
+    Ok(status)
+}
+
+pub fn install_if_missing(auto_install: bool) -> Result<Option<BrowserInstallResult>> {
     let auto_install = env_boolish("DOCDEX_BROWSER_AUTO_INSTALL").unwrap_or(auto_install);
     if !auto_install {
         return Ok(None);
     }
-    if let Some(existing) = resolve_installed_browser() {
-        return Ok(Some(BrowserInstallResult {
-            path: existing,
-            version: "installed".to_string(),
-        }));
+    if let Some(existing) = crate::util::resolve_playwright_chromium() {
+        return Ok(Some(to_install_result(existing)));
     }
 
     let base_dir =
         crate::state_paths::default_state_base_dir().context("resolve docdex state dir")?;
-    let install_dir = base_dir.join("bin").join(INSTALL_DIR_NAME);
+    let install_dir = resolve_playwright_install_dir(&base_dir)?;
     fs::create_dir_all(&install_dir)
-        .with_context(|| format!("create browser install dir {}", install_dir.display()))?;
+        .with_context(|| format!("create playwright install dir {}", install_dir.display()))?;
+    let selected = normalize_browser_list(&[], &[DEFAULT_BROWSERS])?;
 
     let lock_dir = base_dir.join("locks");
     fs::create_dir_all(&lock_dir)
@@ -75,264 +129,491 @@ pub fn install_if_missing(auto_install: bool) -> Result<Option<BrowserInstallRes
         .lock_exclusive()
         .with_context(|| "browser install lock busy")?;
 
-    let result = install_chromium(&install_dir)?;
-    lock_file.unlock().ok();
-    Ok(Some(result))
-}
-
-fn install_chromium(install_dir: &Path) -> Result<BrowserInstallResult> {
-    let download = resolve_download_spec()?;
-    let version_dir = install_dir.join(&download.version);
-    let manifest_path = install_dir.join(MANIFEST_FILE);
-    let archive_path = install_dir.join(format!("chrome-{}.zip", download.version));
-
-    if !version_dir.exists() {
-        download_archive(&download.url, &archive_path)?;
-        verify_sha256(&archive_path, &download.sha256)?;
-        extract_zip(&archive_path, &version_dir)?;
+    if let Some(existing) = crate::util::resolve_playwright_chromium() {
+        lock_file.unlock().ok();
+        return Ok(Some(to_install_result(existing)));
     }
 
-    let chrome_path = version_dir.join("chrome-linux64").join("chrome");
-    if !chrome_path.is_file() {
+    install_playwright_dependency()?;
+    let install_result = run_playwright_install(&install_dir, &selected);
+    lock_file.unlock().ok();
+    install_result?;
+
+    let installed = crate::util::resolve_playwright_chromium().ok_or_else(|| {
+        anyhow!("playwright install completed but chromium entry missing from manifest")
+    })?;
+    Ok(Some(to_install_result(installed)))
+}
+
+pub fn install_playwright_browsers(browsers: &[String]) -> Result<Option<BrowserInstallResult>> {
+    let selected = normalize_browser_list(browsers, &[])?;
+    if selected.is_empty() {
+        return Ok(None);
+    }
+    if !playwright_dependency_status().installed {
         return Err(anyhow!(
-            "installed browser binary not found at {}",
-            chrome_path.display()
+            "playwright dependency not installed; run `docdex setup` to install Playwright"
         ));
     }
-    ensure_executable(&chrome_path)?;
 
-    write_manifest(
-        &manifest_path,
-        &download.version,
-        &download.url,
-        &download.sha256,
-        &chrome_path,
-    )?;
+    let base_dir =
+        crate::state_paths::default_state_base_dir().context("resolve docdex state dir")?;
+    let install_dir = resolve_playwright_install_dir(&base_dir)?;
+    fs::create_dir_all(&install_dir)
+        .with_context(|| format!("create playwright install dir {}", install_dir.display()))?;
 
-    Ok(BrowserInstallResult {
-        path: chrome_path,
-        version: download.version,
-    })
-}
+    let lock_dir = base_dir.join("locks");
+    fs::create_dir_all(&lock_dir)
+        .with_context(|| format!("create browser lock dir {}", lock_dir.display()))?;
+    let lock_path = lock_dir.join(INSTALL_LOCK_NAME);
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("open install lock {}", lock_path.display()))?;
+    lock_file
+        .lock_exclusive()
+        .with_context(|| "browser install lock busy")?;
 
-struct DownloadSpec {
-    version: String,
-    url: String,
-    sha256: String,
-}
+    let install_result = run_playwright_install(&install_dir, &selected);
+    lock_file.unlock().ok();
+    install_result?;
 
-fn resolve_download_spec() -> Result<DownloadSpec> {
-    let override_base = env_string("DOCDEX_BROWSER_DOWNLOAD_BASE");
-    let override_version = env_string("DOCDEX_BROWSER_VERSION");
-    let override_sha = env_string("DOCDEX_BROWSER_SHA256");
-
-    if let (Some(base), Some(version), Some(sha256)) = (
-        override_base.as_ref(),
-        override_version.as_ref(),
-        override_sha.as_ref(),
-    ) {
-        let url = format!("{base}/{version}/linux64/chrome-linux64.zip");
-        return Ok(DownloadSpec {
-            version: version.clone(),
-            url,
-            sha256: sha256.clone(),
-        });
+    if selected.iter().any(|name| name == "chromium") {
+        let installed = crate::util::resolve_playwright_chromium().ok_or_else(|| {
+            anyhow!("playwright install completed but chromium entry missing from manifest")
+        })?;
+        return Ok(Some(to_install_result(installed)));
     }
+    Ok(None)
+}
 
-    let manifest_url = override_base.unwrap_or_else(|| DEFAULT_MANIFEST_URL.to_string());
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .context("build browser manifest client")?;
-    let manifest: Value = client
-        .get(&manifest_url)
-        .send()
-        .context("download browser manifest")?
-        .error_for_status()
-        .context("browser manifest http error")?
-        .json()
-        .context("parse browser manifest JSON")?;
+fn to_install_result(browser: crate::util::PlaywrightBrowser) -> BrowserInstallResult {
+    BrowserInstallResult {
+        path: browser.path,
+        version: browser.version.unwrap_or_else(|| "installed".to_string()),
+    }
+}
 
-    let channels = manifest
-        .get("channels")
-        .and_then(|value| value.as_object())
-        .ok_or_else(|| anyhow!("browser manifest missing channels"))?;
-    let stable = channels
-        .get("Stable")
-        .ok_or_else(|| anyhow!("browser manifest missing Stable channel"))?;
-    let version = stable
-        .get("version")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| anyhow!("browser manifest missing version"))?;
-    let downloads = stable
-        .get("downloads")
-        .and_then(|value| value.get("chrome"))
-        .and_then(|value| value.as_array())
-        .ok_or_else(|| anyhow!("browser manifest missing downloads"))?;
-
-    for entry in downloads {
-        let platform = entry
-            .get("platform")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        if platform != DEFAULT_PLATFORM {
-            continue;
+fn resolve_playwright_install_dir(base_dir: &Path) -> Result<PathBuf> {
+    if let Ok(path) = std::env::var("PLAYWRIGHT_BROWSERS_PATH") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
         }
-        let url = entry
-            .get("url")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| anyhow!("browser manifest missing download url"))?;
-        let sha256 = entry
-            .get("sha256")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| anyhow!("browser manifest missing download checksum"))?;
-        return Ok(DownloadSpec {
-            version: version.to_string(),
-            url: url.to_string(),
-            sha256: sha256.to_string(),
-        });
+    }
+    Ok(base_dir.join("bin").join("playwright"))
+}
+
+fn run_playwright_install(install_dir: &Path, browsers: &[String]) -> Result<()> {
+    let browser_list = if browsers.is_empty() {
+        DEFAULT_BROWSERS.to_string()
+    } else {
+        browsers.join(",")
+    };
+    let node_path = resolve_playwright_node_path().ok_or_else(|| {
+        anyhow!("playwright dependency not installed; run `docdex setup` to install Playwright")
+    })?;
+    let node_bin = resolve_node_binary()?;
+    let installer = resolve_playwright_installer_path()?;
+    let merged_node_path = merge_node_path(&node_path);
+    let status = Command::new(&node_bin)
+        .arg(installer.as_os_str())
+        .arg("--browsers")
+        .arg(browser_list)
+        .arg("--path")
+        .arg(install_dir)
+        .env("PLAYWRIGHT_BROWSERS_PATH", install_dir)
+        .env("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "0")
+        .env(NODE_PATH_ENV, merged_node_path)
+        .status()
+        .with_context(|| {
+            format!(
+                "spawn playwright installer {} via {}",
+                installer.display(),
+                node_bin.display()
+            )
+        })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("playwright installer failed with status {status}"))
+    }
+}
+
+fn normalize_browser_list(browsers: &[String], defaults: &[&str]) -> Result<Vec<String>> {
+    let mut selected = Vec::new();
+    let mut seen = HashSet::new();
+    let mut raw = Vec::new();
+
+    if browsers.is_empty() {
+        raw.extend(defaults.iter().map(|value| value.to_string()));
+    } else {
+        raw.extend(browsers.iter().cloned());
     }
 
+    for value in raw {
+        for part in value.split(',') {
+            let trimmed = part.trim().to_ascii_lowercase();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if !ALLOWED_BROWSERS.contains(&trimmed.as_str()) {
+                return Err(anyhow!("unsupported browser: {trimmed}"));
+            }
+            if seen.insert(trimmed.clone()) {
+                selected.push(trimmed);
+            }
+        }
+    }
+
+    Ok(selected)
+}
+
+fn resolve_playwright_installer_path() -> Result<PathBuf> {
+    if let Ok(value) = std::env::var(INSTALLER_ENV) {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            let path = PathBuf::from(trimmed);
+            if path.is_file() {
+                return Ok(path);
+            }
+            return Err(anyhow!(
+                "Playwright installer not found at {}; set DOCDEX_PLAYWRIGHT_INSTALLER to npm/lib/playwright_install.js",
+                path.display()
+            ));
+        }
+    }
+
+    let exe = std::env::current_exe().context("resolve current exe")?;
+    let mut cursor = exe
+        .parent()
+        .ok_or_else(|| anyhow!("resolve current exe directory"))?
+        .to_path_buf();
+
+    for _ in 0..8 {
+        let candidate = cursor.join("lib").join("playwright_install.js");
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+        let candidate = cursor.join("npm").join("lib").join("playwright_install.js");
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+        if !cursor.pop() {
+            break;
+        }
+    }
+
+    playwright_scripts::ensure_playwright_installer_script().context(
+        "Playwright installer script not found; set DOCDEX_PLAYWRIGHT_INSTALLER to npm/lib/playwright_install.js",
+    )
+}
+
+fn resolve_playwright_node_path() -> Option<PathBuf> {
+    if let Some(path) = resolve_node_path_env_override() {
+        let candidate = if path.ends_with("node_modules") {
+            path.clone()
+        } else {
+            path.join("node_modules")
+        };
+        if playwright_package_present(&candidate) {
+            return Some(candidate);
+        }
+        if playwright_package_present(&path) {
+            return Some(path);
+        }
+    }
+
+    if let Ok(installer) = resolve_playwright_installer_path() {
+        if let Some(parent) = installer.parent() {
+            if let Some(node_path) = find_playwright_in_ancestors(parent, 6) {
+                return Some(node_path);
+            }
+        }
+    }
+
+    let base_dir = crate::state_paths::default_state_base_dir().ok()?;
+    let node_path = resolve_playwright_dependency_node_modules(&base_dir);
+    if playwright_package_present(&node_path) {
+        return Some(node_path);
+    }
+    None
+}
+
+fn resolve_playwright_dependency_root(base_dir: &Path) -> PathBuf {
+    if let Some(path) = resolve_node_path_env_override() {
+        if path.ends_with("node_modules") {
+            if let Some(parent) = path.parent() {
+                return parent.to_path_buf();
+            }
+        }
+        return path;
+    }
+    base_dir.join("bin").join(PLAYWRIGHT_NODE_DIR_NAME)
+}
+
+fn resolve_playwright_dependency_node_modules(base_dir: &Path) -> PathBuf {
+    if let Some(path) = resolve_node_path_env_override() {
+        if path.ends_with("node_modules") {
+            return path;
+        }
+        return path.join("node_modules");
+    }
+    resolve_playwright_dependency_root(base_dir).join("node_modules")
+}
+
+fn resolve_node_path_env_override() -> Option<PathBuf> {
+    let raw = std::env::var(PLAYWRIGHT_NODE_PATH_ENV).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(trimmed))
+    }
+}
+
+fn find_playwright_in_ancestors(start: &Path, max_depth: usize) -> Option<PathBuf> {
+    let mut cursor = Some(start);
+    for _ in 0..=max_depth {
+        if let Some(dir) = cursor {
+            let candidate = dir.join("node_modules");
+            if playwright_package_present(&candidate) {
+                return Some(candidate);
+            }
+            cursor = dir.parent();
+        } else {
+            break;
+        }
+    }
+    None
+}
+
+fn playwright_package_present(node_modules: &Path) -> bool {
+    node_modules
+        .join("playwright")
+        .join("package.json")
+        .is_file()
+}
+
+#[derive(Deserialize)]
+struct PlaywrightPackageMeta {
+    version: Option<String>,
+}
+
+fn read_playwright_version(path: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let parsed: PlaywrightPackageMeta = serde_json::from_str(&raw).ok()?;
+    parsed.version
+}
+
+fn resolve_npm_command() -> (OsString, Vec<OsString>) {
+    if let Ok(execpath) = std::env::var("npm_execpath") {
+        if !execpath.trim().is_empty() {
+            return (OsString::from("node"), vec![OsString::from(execpath)]);
+        }
+    }
+    let cmd = if cfg!(windows) { "npm.cmd" } else { "npm" };
+    (OsString::from(cmd), Vec::new())
+}
+
+pub(crate) fn merge_node_path(node_path: &Path) -> OsString {
+    let extra = node_path.to_string_lossy();
+    match std::env::var_os(NODE_PATH_ENV) {
+        Some(existing) if !existing.is_empty() => {
+            let sep = if cfg!(windows) { ";" } else { ":" };
+            let merged = format!("{extra}{sep}{}", existing.to_string_lossy());
+            OsString::from(merged)
+        }
+        _ => OsString::from(extra.as_ref()),
+    }
+}
+
+pub(crate) fn resolve_node_binary() -> Result<PathBuf> {
+    if let Some(path) = node_bin_from_env(NODE_BIN_ENV)? {
+        return Ok(path);
+    }
+    if let Some(path) = node_bin_from_env(PLAYWRIGHT_NODE_BIN_ENV)? {
+        return Ok(path);
+    }
+    if let Ok(path) = which("node") {
+        return Ok(path);
+    }
+    if let Some(path) = resolve_node_from_nvm() {
+        return Ok(path);
+    }
+    if let Some(path) = resolve_node_from_common_paths() {
+        return Ok(path);
+    }
     Err(anyhow!(
-        "browser manifest missing linux64 download (platform {})",
-        DEFAULT_PLATFORM
+        "node binary not found; set DOCDEX_NODE_BIN or DOCDEX_PLAYWRIGHT_NODE_BIN, or add node to PATH"
     ))
 }
 
-fn download_archive(url: &str, dest: &Path) -> Result<()> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .context("build browser download client")?;
-    let partial_path = dest.with_extension("partial");
-    let mut start = 0u64;
-    if let Ok(metadata) = fs::metadata(&partial_path) {
-        if metadata.is_file() {
-            start = metadata.len();
+fn node_bin_from_env(key: &str) -> Result<Option<PathBuf>> {
+    if let Ok(value) = std::env::var(key) {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
         }
+        let path = PathBuf::from(trimmed);
+        if path.is_file() {
+            return Ok(Some(path));
+        }
+        return Err(anyhow!(
+            "node binary not found at {}; set {} to a valid node path",
+            path.display(),
+            key
+        ));
     }
-
-    let mut request = client.get(url);
-    if start > 0 {
-        request = request.header(reqwest::header::RANGE, format!("bytes={start}-"));
-    }
-
-    let mut response = request.send().context("download browser archive")?;
-    let status = response.status();
-    if start > 0 && status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE && partial_path.is_file() {
-        fs::rename(&partial_path, dest)
-            .with_context(|| format!("finalize browser archive {}", dest.display()))?;
-        return Ok(());
-    }
-    if start > 0 && status != reqwest::StatusCode::PARTIAL_CONTENT {
-        let _ = fs::remove_file(&partial_path);
-        start = 0;
-        response = client.get(url).send().context("download browser archive")?;
-    }
-
-    let mut response = response
-        .error_for_status()
-        .context("browser archive http error")?;
-    let mut file = if start > 0 {
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&partial_path)
-            .with_context(|| format!("open browser archive {}", partial_path.display()))?
-    } else {
-        File::create(&partial_path)
-            .with_context(|| format!("create browser archive {}", partial_path.display()))?
-    };
-
-    let copy_result = std::io::copy(&mut response, &mut file)
-        .with_context(|| format!("write browser archive {}", partial_path.display()));
-    if let Err(err) = copy_result {
-        let _ = fs::remove_file(&partial_path);
-        return Err(err);
-    }
-
-    fs::rename(&partial_path, dest)
-        .with_context(|| format!("finalize browser archive {}", dest.display()))?;
-    Ok(())
+    Ok(None)
 }
 
-fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
-    let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 8192];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
+fn resolve_node_from_nvm() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return None;
     }
-    let actual = hex::encode(hasher.finalize());
-    if actual.eq_ignore_ascii_case(expected) {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "browser archive checksum mismatch: expected {expected}, got {actual}"
-        ))
+    let base_dir = std::env::var_os(NVM_DIR_ENV)
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".nvm")))?;
+    let versions_dir = base_dir.join("versions").join("node");
+    if !versions_dir.is_dir() {
+        return None;
     }
+    if let Some(path) = resolve_node_from_nvm_default(&base_dir, &versions_dir) {
+        return Some(path);
+    }
+    resolve_node_from_nvm_versions(&versions_dir)
 }
 
-fn extract_zip(archive: &Path, dest: &Path) -> Result<()> {
-    let file = File::open(archive)
-        .with_context(|| format!("open browser archive {}", archive.display()))?;
-    let mut archive = zip::ZipArchive::new(file).context("open browser zip")?;
-    if dest.exists() {
-        fs::remove_dir_all(dest)
-            .with_context(|| format!("remove existing browser dir {}", dest.display()))?;
+fn resolve_node_from_nvm_default(base_dir: &Path, versions_dir: &Path) -> Option<PathBuf> {
+    let default_alias_path = base_dir.join("alias").join("default");
+    let default_alias = std::fs::read_to_string(default_alias_path).ok()?;
+    let target = default_alias.trim();
+    if target.is_empty() {
+        return None;
     }
-    fs::create_dir_all(dest).with_context(|| format!("create browser dir {}", dest.display()))?;
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).context("read browser zip entry")?;
-        let outpath = dest.join(entry.name());
-        if entry.name().ends_with('/') {
-            fs::create_dir_all(&outpath)?;
-        } else {
-            if let Some(parent) = outpath.parent() {
-                fs::create_dir_all(parent)?;
+    if let Some(version) = normalize_nvm_version(target) {
+        return node_path_for_version(versions_dir, &version);
+    }
+    if let Some(version) = resolve_nvm_alias(base_dir, target) {
+        return node_path_for_version(versions_dir, &version);
+    }
+    None
+}
+
+fn resolve_nvm_alias(base_dir: &Path, alias: &str) -> Option<String> {
+    let alias_path = base_dir.join("alias").join(alias);
+    let alias_target = std::fs::read_to_string(alias_path).ok()?;
+    normalize_nvm_version(alias_target.trim())
+}
+
+fn normalize_nvm_version(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let normalized = trimmed.trim_start_matches('v');
+    let mut chars = normalized.chars();
+    if !chars.next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        return None;
+    }
+    Some(format!("v{}", normalized))
+}
+
+fn resolve_node_from_nvm_versions(versions_dir: &Path) -> Option<PathBuf> {
+    let mut best: Option<(PathBuf, (u32, u32, u32))> = None;
+    let entries = std::fs::read_dir(versions_dir).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let version = parse_node_version(&name)?;
+        let candidate = entry.path().join("bin").join(node_filename());
+        if candidate.is_file() {
+            let replace = match best {
+                None => true,
+                Some((_, best_version)) => version > best_version,
+            };
+            if replace {
+                best = Some((candidate, version));
             }
-            let mut outfile = File::create(&outpath)?;
-            std::io::copy(&mut entry, &mut outfile)?;
         }
     }
-    Ok(())
+    best.map(|(path, _)| path)
 }
 
-fn ensure_executable(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(path)?.permissions();
-        perms.set_mode(perms.mode() | 0o111);
-        fs::set_permissions(path, perms)?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
-    Ok(())
+fn parse_node_version(name: &str) -> Option<(u32, u32, u32)> {
+    let trimmed = name.trim().trim_start_matches('v');
+    let mut parts = trimmed.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+    let patch = parts
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+    Some((major, minor, patch))
 }
 
-fn write_manifest(
-    path: &Path,
-    version: &str,
-    url: &str,
-    sha256: &str,
-    chrome_path: &Path,
-) -> Result<()> {
-    let payload = serde_json::json!({
-        "version": version,
-        "url": url,
-        "sha256": sha256,
-        "path": chrome_path.to_string_lossy(),
-    });
-    fs::write(path, serde_json::to_string_pretty(&payload)?)
-        .with_context(|| format!("write browser manifest {}", path.display()))?;
-    Ok(())
+fn node_path_for_version(versions_dir: &Path, version: &str) -> Option<PathBuf> {
+    let candidate = versions_dir.join(version).join("bin").join(node_filename());
+    if candidate.is_file() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+fn resolve_node_from_common_paths() -> Option<PathBuf> {
+    if cfg!(windows) {
+        let mut candidates = Vec::new();
+        if let Some(program_files) = std::env::var_os("ProgramFiles") {
+            candidates.push(PathBuf::from(program_files).join("nodejs").join("node.exe"));
+        }
+        if let Some(program_files) = std::env::var_os("ProgramFiles(x86)") {
+            candidates.push(PathBuf::from(program_files).join("nodejs").join("node.exe"));
+        }
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            candidates.push(
+                PathBuf::from(local_app_data)
+                    .join("Programs")
+                    .join("nodejs")
+                    .join("node.exe"),
+            );
+        }
+        for candidate in candidates {
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        return None;
+    }
+
+    let candidates = [
+        "/usr/bin/node",
+        "/usr/local/bin/node",
+        "/opt/homebrew/bin/node",
+        "/opt/homebrew/opt/node/bin/node",
+        "/snap/bin/node",
+    ];
+    for candidate in candidates {
+        let path = Path::new(candidate);
+        if path.is_file() {
+            return Some(path.to_path_buf());
+        }
+    }
+    None
+}
+
+fn node_filename() -> &'static str {
+    if cfg!(windows) {
+        "node.exe"
+    } else {
+        "node"
+    }
 }
 
 fn env_boolish(key: &str) -> Option<bool> {
@@ -345,9 +626,88 @@ fn env_boolish(key: &str) -> Option<bool> {
     }
 }
 
-fn env_string(key: &str) -> Option<String> {
-    std::env::var(key)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use once_cell::sync::Lazy;
+    use std::ffi::OsString;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            Self { saved: Vec::new() }
+        }
+
+        fn set_var(&mut self, key: &'static str, value: Option<OsString>) {
+            let existing = std::env::var_os(key);
+            self.saved.push((key, existing));
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in self.saved.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_node_binary_prefers_env_override() -> Result<()> {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new()?;
+        let node_path = temp.path().join("node");
+        std::fs::write(&node_path, "node")?;
+        let mut env = EnvGuard::new();
+        env.set_var(NODE_BIN_ENV, Some(node_path.as_os_str().to_os_string()));
+        env.set_var(PLAYWRIGHT_NODE_BIN_ENV, Option::<OsString>::None);
+        env.set_var(NVM_DIR_ENV, Option::<OsString>::None);
+        let resolved = resolve_node_binary()?;
+        assert_eq!(resolved, node_path);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_node_binary_uses_nvm_default_when_missing_on_path() -> Result<()> {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new()?;
+        let nvm_dir = temp.path().join(".nvm");
+        let versions_dir = nvm_dir.join("versions").join("node");
+        let v18 = versions_dir.join("v18.19.0").join("bin");
+        let v20 = versions_dir.join("v20.10.0").join("bin");
+        std::fs::create_dir_all(&v18)?;
+        std::fs::create_dir_all(&v20)?;
+        std::fs::write(v18.join("node"), "node")?;
+        std::fs::write(v20.join("node"), "node")?;
+        std::fs::create_dir_all(nvm_dir.join("alias"))?;
+        std::fs::write(nvm_dir.join("alias").join("default"), "v20.10.0\n")?;
+        let empty_path = temp.path().join("empty-path");
+        std::fs::create_dir_all(&empty_path)?;
+
+        let mut env = EnvGuard::new();
+        env.set_var(NODE_BIN_ENV, Option::<OsString>::None);
+        env.set_var(PLAYWRIGHT_NODE_BIN_ENV, Option::<OsString>::None);
+        env.set_var(NVM_DIR_ENV, Some(nvm_dir.as_os_str().to_os_string()));
+        env.set_var("HOME", Some(temp.path().as_os_str().to_os_string()));
+        env.set_var("USERPROFILE", Some(temp.path().as_os_str().to_os_string()));
+        env.set_var("PATH", Some(empty_path.as_os_str().to_os_string()));
+
+        let resolved = resolve_node_binary()?;
+        assert_eq!(resolved, v20.join("node"));
+        Ok(())
+    }
 }

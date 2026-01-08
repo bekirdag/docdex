@@ -7,6 +7,7 @@ use crate::ollama;
 use crate::profiles::ProfileManager;
 use crate::state_layout::StateLayout;
 use crate::symbols::SymbolsStore;
+use crate::util;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -1120,62 +1121,46 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
             }
         }
 
-        let engine = config.web.scraper.engine.trim();
-        let engine_lower = engine.to_ascii_lowercase();
-        let needs_chrome = matches!(
-            engine_lower.as_str(),
-            "chrome" | "chromium" | "chromium-browser"
-        );
-        if needs_chrome {
-            let auto_install_enabled = env_boolish("DOCDEX_BROWSER_AUTO_INSTALL")
-                .unwrap_or(config.web.scraper.auto_install);
-            let candidate = crate::util::detect_browser_binary(
-                config.web.scraper.chrome_binary_path.as_deref(),
-            );
-            if let Some(candidate) = candidate {
-                checks.push(CheckItem {
-                    name: "chrome",
-                    status: "ok",
-                    message: format!("browser available ({})", candidate.kind.as_str()),
-                    details: Some(json!({
-                        "path": candidate.path.to_string_lossy(),
-                        "kind": candidate.kind.as_str(),
-                        "source": candidate.source.as_str(),
-                        "auto_install_enabled": auto_install_enabled,
-                        "configured_kind": config.web.scraper.browser_kind.as_deref(),
-                    })),
-                });
-            } else {
-                checks.push(CheckItem {
-                    name: "chrome",
-                    status: "warn",
-                    message: "browser binary not found (web scraping disabled)".to_string(),
-                    details: config
-                        .web
-                        .scraper
-                        .chrome_binary_path
-                        .as_ref()
-                        .map(|path| {
-                            json!({
-                                "path": path.to_string_lossy(),
-                                "auto_install_enabled": auto_install_enabled,
-                                "install_hint": "docdexd browser setup",
-                            })
-                        })
-                        .or_else(|| {
-                            Some(json!({
-                                "auto_install_enabled": auto_install_enabled,
-                                "install_hint": "docdexd browser setup",
-                            }))
-                        }),
-                });
+        let auto_install_enabled =
+            env_boolish("DOCDEX_BROWSER_AUTO_INSTALL").unwrap_or(config.web.scraper.auto_install);
+        let playwright_details = resolve_playwright_details();
+        let browser_available = playwright_details
+            .as_ref()
+            .and_then(|details| details.get("browsers"))
+            .and_then(|value| value.as_array())
+            .map(|browsers| !browsers.is_empty())
+            .unwrap_or(false);
+        if browser_available {
+            let mut details = json!({
+                "auto_install_enabled": auto_install_enabled,
+                "configured_kind": config.web.scraper.browser_kind.as_deref(),
+            });
+            if let Some(playwright) = playwright_details {
+                if let Some(map) = details.as_object_mut() {
+                    map.insert("playwright".to_string(), playwright);
+                }
             }
-        } else {
             checks.push(CheckItem {
-                name: "chrome",
+                name: "browser",
+                status: "ok",
+                message: "playwright browsers available".to_string(),
+                details: Some(details),
+            });
+        } else {
+            let mut details = json!({
+                "auto_install_enabled": auto_install_enabled,
+                "install_hint": "docdexd browser setup",
+            });
+            if let Some(playwright) = playwright_details {
+                if let Some(map) = details.as_object_mut() {
+                    map.insert("playwright".to_string(), playwright);
+                }
+            }
+            checks.push(CheckItem {
+                name: "browser",
                 status: "warn",
-                message: format!("web scraper engine is {engine}; skipping chrome check"),
-                details: None,
+                message: "playwright browsers not installed (web scraping disabled)".to_string(),
+                details: Some(details),
             });
         }
     } else {
@@ -1193,7 +1178,7 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
             "symbols_db",
             "symbols_parser",
             "impact_graph",
-            "chrome",
+            "browser",
         ] {
             checks.push(CheckItem {
                 name,
@@ -1310,6 +1295,40 @@ fn env_boolish(key: &str) -> Option<bool> {
         "0" | "false" | "f" | "no" | "n" | "off" => Some(false),
         _ => None,
     }
+}
+
+fn resolve_playwright_details() -> Option<serde_json::Value> {
+    let manifest_path = util::resolve_playwright_manifest_path()?;
+    let mut payload = json!({
+        "manifest_path": manifest_path.to_string_lossy(),
+    });
+    let Some(manifest) = util::read_playwright_manifest() else {
+        return Some(payload);
+    };
+    let browsers: Vec<_> = manifest
+        .browsers
+        .iter()
+        .map(|browser| {
+            json!({
+                "name": browser.name,
+                "version": browser.version,
+                "path": browser.path.to_string_lossy(),
+            })
+        })
+        .collect();
+    if let Some(map) = payload.as_object_mut() {
+        map.insert("browsers".to_string(), json!(browsers));
+        if let Some(installed_at) = manifest.installed_at.as_ref() {
+            map.insert("installed_at".to_string(), json!(installed_at));
+        }
+        if let Some(path) = manifest.browsers_path.as_ref() {
+            map.insert("browsers_path".to_string(), json!(path.to_string_lossy()));
+        }
+        if let Some(version) = manifest.playwright_version.as_ref() {
+            map.insert("playwright_version".to_string(), json!(version));
+        }
+    }
+    Some(payload)
 }
 
 fn resolve_mcp_spawn_timeout_ms() -> Option<u64> {

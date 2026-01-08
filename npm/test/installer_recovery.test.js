@@ -27,7 +27,12 @@ async function ensureDir(dirPath) {
 async function writeBinary({ distDir, isWin32, bytes }) {
   await ensureDir(distDir);
   const binaryPath = path.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+  const mcpBinaryPath = path.join(
+    distDir,
+    isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server"
+  );
   await fs.promises.writeFile(binaryPath, bytes);
+  await fs.promises.writeFile(mcpBinaryPath, bytes);
   return binaryPath;
 }
 
@@ -179,6 +184,7 @@ test("installer rollback: keeps previous install runnable when extract fails", a
         extractedTo = targetDir;
         await ensureDir(targetDir);
         await fs.promises.writeFile(path.join(targetDir, "docdexd"), "partial\n");
+        await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "partial\n");
         throw new Error("extract failed");
       }
     }),
@@ -217,4 +223,3 @@ test("startup recovery: removes leftover backup after successful swap", async (t
   await recoverInterruptedInstall({ fsModule: fs, pathModule: path, distDir, isWin32, logger: null });
   assert.ok(!fs.existsSync(backupDir));
 });
-

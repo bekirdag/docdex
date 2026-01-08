@@ -7,12 +7,14 @@ use url::Url;
 
 use crate::config;
 use crate::orchestrator::web_policy::SpacingBackoffPolicy;
+use crate::state_layout::StateLayout;
 
 #[derive(Clone, Debug)]
 pub struct WebConfig {
     pub enabled: bool,
     pub user_agent: String,
     pub ddg_base_url: Url,
+    pub ddg_proxy_base_url: Option<Url>,
     pub request_timeout: Duration,
     pub max_results: usize,
     pub policy: SpacingBackoffPolicy,
@@ -23,6 +25,8 @@ pub struct WebConfig {
     pub scraper_engine: String,
     pub scraper_headless: bool,
     pub chrome_binary_path: Option<PathBuf>,
+    pub scraper_browser_kind: Option<String>,
+    pub scraper_user_data_dir: Option<PathBuf>,
     pub page_load_timeout: Duration,
 }
 
@@ -30,12 +34,23 @@ impl WebConfig {
     pub fn from_env() -> Self {
         let enabled = env_bool("DOCDEX_WEB_ENABLED", false);
         let user_agent = env::var("DOCDEX_WEB_USER_AGENT")
-            .unwrap_or_else(|_| format!("docdexd/{}", env!("CARGO_PKG_VERSION")));
+            .ok()
+            .and_then(|value| normalize_nonempty(value))
+            .or_else(config_user_agent)
+            .unwrap_or_else(config::default_web_user_agent);
         let base_url = env::var("DOCDEX_DDG_BASE_URL")
-            .unwrap_or_else(|_| "https://html.duckduckgo.com/html/".to_string());
+            .ok()
+            .and_then(|value| normalize_nonempty(value))
+            .or_else(config_ddg_base_url)
+            .unwrap_or_else(|| "https://html.duckduckgo.com/html/".to_string());
         let ddg_base_url = Url::parse(&base_url).unwrap_or_else(|_| {
             Url::parse("https://html.duckduckgo.com/html/").expect("default url is valid")
         });
+        let ddg_proxy_base_url = env::var("DOCDEX_DDG_PROXY_BASE_URL")
+            .ok()
+            .and_then(|value| normalize_nonempty(value))
+            .or_else(config_ddg_proxy_base_url)
+            .and_then(|value| Url::parse(&value).ok());
         let max_results = env_u64("DOCDEX_WEB_MAX_RESULTS", 20).max(1) as usize;
         let request_timeout_ms = env_u64("DOCDEX_WEB_REQUEST_TIMEOUT_MS", 10_000).max(1);
         let min_spacing_ms = env::var("DOCDEX_WEB_MIN_SPACING_MS")
@@ -72,9 +87,19 @@ impl WebConfig {
             boilerplate_phrases.extend(load_boilerplate_file(&path));
         }
         let boilerplate_phrases = normalize_phrases(boilerplate_phrases);
-        let scraper_engine = config_scraper_engine().unwrap_or_else(|| "chrome".to_string());
+        let scraper_engine = config_scraper_engine().unwrap_or_else(|| "playwright".to_string());
         let scraper_headless = config_scraper_headless().unwrap_or(true);
         let chrome_binary_path = config_scraper_chrome_binary();
+        let scraper_browser_kind = env::var("DOCDEX_PLAYWRIGHT_BROWSER")
+            .ok()
+            .and_then(|value| normalize_nonempty(value))
+            .or_else(config_scraper_browser_kind);
+        let scraper_user_data_dir = env::var("DOCDEX_BROWSER_USER_DATA_DIR")
+            .ok()
+            .and_then(|value| normalize_nonempty(value))
+            .map(PathBuf::from)
+            .or_else(config_scraper_user_data_dir)
+            .or_else(|| default_scraper_user_data_dir(&scraper_engine));
         let page_load_timeout_secs = config_page_load_timeout_secs().unwrap_or(15);
         let page_load_timeout = Duration::from_secs(page_load_timeout_secs.max(1));
 
@@ -82,6 +107,7 @@ impl WebConfig {
             enabled,
             user_agent,
             ddg_base_url,
+            ddg_proxy_base_url,
             request_timeout: Duration::from_millis(request_timeout_ms),
             max_results,
             policy: SpacingBackoffPolicy {
@@ -101,6 +127,8 @@ impl WebConfig {
             scraper_engine,
             scraper_headless,
             chrome_binary_path,
+            scraper_browser_kind,
+            scraper_user_data_dir,
             page_load_timeout,
         }
     }
@@ -129,6 +157,42 @@ fn env_f64(key: &str, default: f64) -> f64 {
         .ok()
         .and_then(|value| value.trim().parse::<f64>().ok())
         .unwrap_or(default)
+}
+
+fn normalize_nonempty(value: String) -> Option<String> {
+    let trimmed = value.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn config_user_agent() -> Option<String> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    normalize_nonempty(config.web.user_agent)
+}
+
+fn config_ddg_base_url() -> Option<String> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    config.web.ddg_base_url.and_then(normalize_nonempty)
+}
+
+fn config_ddg_proxy_base_url() -> Option<String> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    config.web.ddg_proxy_base_url.and_then(normalize_nonempty)
 }
 
 fn config_cache_ttl_secs() -> Option<u64> {
@@ -194,6 +258,24 @@ fn config_scraper_chrome_binary() -> Option<PathBuf> {
     config.web.scraper.chrome_binary_path
 }
 
+fn config_scraper_user_data_dir() -> Option<PathBuf> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    config.web.scraper.user_data_dir
+}
+
+fn config_scraper_browser_kind() -> Option<String> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    config.web.scraper.browser_kind.clone()
+}
+
 fn config_blocklist() -> Option<Vec<String>> {
     let path = config::default_config_path().ok()?;
     if !path.exists() {
@@ -254,6 +336,20 @@ fn normalize_phrases(values: Vec<String>) -> Vec<String> {
     out
 }
 
+fn default_scraper_user_data_dir(engine: &str) -> Option<PathBuf> {
+    let config = config::AppConfig::load_default().ok()?;
+    let base_dir = config.core.global_state_dir?;
+    let layout = StateLayout::new(base_dir);
+    layout.ensure_global_dirs().ok()?;
+    let normalized = engine.trim().to_ascii_lowercase();
+    let profile_dir = match normalized.as_str() {
+        "chrome" | "chromium" | "chromium-browser" | "playwright" => "chrome",
+        other if other.is_empty() => "chrome",
+        other => other,
+    };
+    Some(layout.browser_profiles_dir().join(profile_dir))
+}
+
 fn load_boilerplate_file(path: &PathBuf) -> Vec<String> {
     let data = match fs::read_to_string(path) {
         Ok(data) => data,
@@ -265,4 +361,82 @@ fn load_boilerplate_file(path: &PathBuf) -> Vec<String> {
         .filter(|line| !line.starts_with('#'))
         .map(|line| line.to_ascii_lowercase())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use once_cell::sync::Lazy;
+    use std::sync::{Mutex, MutexGuard};
+    use tempfile::TempDir;
+
+    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    struct EnvSnapshot {
+        entries: Vec<(&'static str, Option<String>)>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl EnvSnapshot {
+        fn new(keys: &[&'static str]) -> Self {
+            let lock = ENV_LOCK.lock().expect("env lock");
+            let entries = keys
+                .iter()
+                .map(|key| (*key, std::env::var(key).ok()))
+                .collect();
+            Self {
+                entries,
+                _lock: lock,
+            }
+        }
+
+        fn set(&self, key: &'static str, value: &str) {
+            std::env::set_var(key, value);
+        }
+
+        fn clear(&self, key: &'static str) {
+            std::env::remove_var(key);
+        }
+    }
+
+    impl Drop for EnvSnapshot {
+        fn drop(&mut self) {
+            for (key, value) in &self.entries {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resolves_default_scraper_user_data_dir_from_state_dir(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = TempDir::new()?;
+        let state_dir = temp.path().join("state");
+        let config_path = temp.path().join("config.toml");
+
+        let mut config = config::AppConfig::default();
+        config.core.global_state_dir = Some(state_dir.clone());
+        config.web.scraper.engine = "playwright".to_string();
+        config.web.scraper.user_data_dir = None;
+        config.apply_defaults()?;
+        config::write_config(&config_path, &config)?;
+
+        let env = EnvSnapshot::new(&[
+            "DOCDEX_CONFIG_PATH",
+            "DOCDEX_BROWSER_AUTO_INSTALL",
+            "DOCDEX_BROWSER_USER_DATA_DIR",
+        ]);
+        env.set("DOCDEX_CONFIG_PATH", config_path.to_string_lossy().as_ref());
+        env.set("DOCDEX_BROWSER_AUTO_INSTALL", "0");
+        env.clear("DOCDEX_BROWSER_USER_DATA_DIR");
+
+        let web_config = WebConfig::from_env();
+        let expected = state_dir.join("browser_profiles").join("chrome");
+        assert_eq!(web_config.scraper_user_data_dir, Some(expected));
+        Ok(())
+    }
 }

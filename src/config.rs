@@ -21,7 +21,7 @@ const DEFAULT_PROFILE_EMBED_MODEL: &str = "nomic-embed-text-v1.5";
 const DEFAULT_PROFILE_EMBED_DIM: usize = 768;
 const DEFAULT_MEMORY_BACKEND: &str = "sqlite";
 const DEFAULT_DISCOVERY_PROVIDER: &str = "duckduckgo_html";
-const DEFAULT_WEB_ENGINE: &str = "chrome";
+const DEFAULT_WEB_ENGINE: &str = "playwright";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -240,6 +240,10 @@ pub struct WebConfigSection {
     pub discovery_provider: String,
     #[serde(default = "default_web_user_agent")]
     pub user_agent: String,
+    #[serde(default)]
+    pub ddg_base_url: Option<String>,
+    #[serde(default)]
+    pub ddg_proxy_base_url: Option<String>,
     #[serde(default = "default_web_min_spacing_ms")]
     pub min_spacing_ms: u64,
     #[serde(default = "default_web_cache_ttl_secs")]
@@ -259,6 +263,8 @@ impl Default for WebConfigSection {
         Self {
             discovery_provider: default_discovery_provider(),
             user_agent: default_web_user_agent(),
+            ddg_base_url: None,
+            ddg_proxy_base_url: None,
             min_spacing_ms: default_web_min_spacing_ms(),
             cache_ttl_secs: default_web_cache_ttl_secs(),
             blocklist: Vec::new(),
@@ -277,6 +283,8 @@ pub struct WebScraperConfig {
     pub headless: bool,
     #[serde(default)]
     pub chrome_binary_path: Option<PathBuf>,
+    #[serde(default)]
+    pub user_data_dir: Option<PathBuf>,
     #[serde(default = "default_web_auto_install")]
     pub auto_install: bool,
     #[serde(default)]
@@ -293,6 +301,7 @@ impl Default for WebScraperConfig {
             engine: default_web_engine(),
             headless: default_web_headless(),
             chrome_binary_path: None,
+            user_data_dir: None,
             auto_install: default_web_auto_install(),
             browser_kind: None,
             request_delay_ms: default_request_delay_ms(),
@@ -569,8 +578,8 @@ fn default_discovery_provider() -> String {
     DEFAULT_DISCOVERY_PROVIDER.to_string()
 }
 
-fn default_web_user_agent() -> String {
-    format!("docdexd/{}", env!("CARGO_PKG_VERSION"))
+pub(crate) fn default_web_user_agent() -> String {
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".to_string()
 }
 
 fn default_web_min_spacing_ms() -> u64 {
@@ -589,58 +598,53 @@ fn default_web_engine() -> String {
 }
 
 fn apply_browser_defaults(config: &mut AppConfig) -> bool {
-    let engine = config.web.scraper.engine.trim().to_ascii_lowercase();
-    let needs_chrome = matches!(engine.as_str(), "chrome" | "chromium" | "chromium-browser");
-    if !needs_chrome {
-        return false;
-    }
     let mut updated = false;
+    if !config
+        .web
+        .scraper
+        .engine
+        .trim()
+        .eq_ignore_ascii_case("playwright")
+    {
+        config.web.scraper.engine = "playwright".to_string();
+        updated = true;
+    }
+    if config
+        .web
+        .scraper
+        .browser_kind
+        .as_deref()
+        .map(|kind| kind.trim().is_empty())
+        .unwrap_or(true)
+    {
+        config.web.scraper.browser_kind = Some("chromium".to_string());
+        updated = true;
+    }
     if let Some(path) = config.web.scraper.chrome_binary_path.as_ref() {
         if !path.is_file() {
             config.web.scraper.chrome_binary_path = None;
-            config.web.scraper.browser_kind = None;
             updated = true;
         }
     }
-    if config.web.scraper.chrome_binary_path.is_some() {
-        return updated;
-    }
 
-    if let Some(candidate) = crate::util::detect_browser_binary(None) {
-        if candidate.source != crate::util::BrowserSource::Env {
-            config.web.scraper.chrome_binary_path = Some(candidate.path);
-            config.web.scraper.browser_kind = Some(candidate.kind.as_str().to_string());
-            updated = true;
+    let resolved = crate::web::browser_install::resolve_installed_browser();
+
+    match resolved {
+        Some(path) => {
+            if config.web.scraper.chrome_binary_path.as_ref() != Some(&path) {
+                config.web.scraper.chrome_binary_path = Some(path);
+                updated = true;
+            }
         }
-        return updated;
-    }
-
-    let auto_install_enabled = resolve_auto_install_enabled(config);
-    if auto_install_enabled {
-        if let Ok(Some(result)) =
-            crate::web::browser_install::install_if_missing(auto_install_enabled)
-        {
-            config.web.scraper.chrome_binary_path = Some(result.path);
-            config.web.scraper.browser_kind = Some("chromium".to_string());
-            updated = true;
+        None => {
+            if config.web.scraper.chrome_binary_path.is_some() {
+                config.web.scraper.chrome_binary_path = None;
+                updated = true;
+            }
         }
     }
 
     updated
-}
-
-fn resolve_auto_install_enabled(config: &AppConfig) -> bool {
-    env_boolish("DOCDEX_BROWSER_AUTO_INSTALL").unwrap_or(config.web.scraper.auto_install)
-}
-
-fn env_boolish(key: &str) -> Option<bool> {
-    let raw = std::env::var(key).ok()?;
-    let trimmed = raw.trim().to_ascii_lowercase();
-    match trimmed.as_str() {
-        "1" | "true" | "t" | "yes" | "y" | "on" => Some(true),
-        "0" | "false" | "f" | "no" | "n" | "off" => Some(false),
-        _ => None,
-    }
 }
 
 fn default_web_headless() -> bool {
@@ -648,7 +652,7 @@ fn default_web_headless() -> bool {
 }
 
 fn default_web_auto_install() -> bool {
-    cfg!(target_os = "linux")
+    true
 }
 
 fn default_request_delay_ms() -> u64 {

@@ -2,6 +2,8 @@ use anyhow::{anyhow, Result};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use tracing::warn;
 
 use crate::error::{
     repo_resolution_details, AppError, ERR_INVALID_ARGUMENT, ERR_MISSING_REPO_PATH,
@@ -42,6 +44,7 @@ pub struct StatePathsDebug {
     pub cache_libs_dir: String,
     pub profiles_dir: String,
     pub profiles_sync_dir: String,
+    pub browser_profiles_dir: String,
     pub locks_dir: String,
     pub logs_dir: String,
 }
@@ -92,6 +95,10 @@ impl StateLayout {
         self.profiles_dir().join("sync")
     }
 
+    pub fn browser_profiles_dir(&self) -> PathBuf {
+        self.base_dir.join("browser_profiles")
+    }
+
     pub fn ensure_global_dirs(&self) -> Result<()> {
         ensure_state_dir_secure(&self.base_dir)?;
         ensure_state_dir_secure(&self.repos_dir())?;
@@ -100,6 +107,7 @@ impl StateLayout {
         ensure_state_dir_secure(&self.cache_libs_dir())?;
         ensure_state_dir_secure(&self.profiles_dir())?;
         ensure_state_dir_secure(&self.profiles_sync_dir())?;
+        ensure_state_dir_secure(&self.browser_profiles_dir())?;
         ensure_state_dir_secure(&self.locks_dir())?;
         ensure_state_dir_secure(&self.logs_dir())?;
         Ok(())
@@ -164,6 +172,7 @@ impl StatePaths {
             cache_libs_dir: self.layout.cache_libs_dir().display().to_string(),
             profiles_dir: self.layout.profiles_dir().display().to_string(),
             profiles_sync_dir: self.layout.profiles_sync_dir().display().to_string(),
+            browser_profiles_dir: self.layout.browser_profiles_dir().display().to_string(),
             locks_dir: self.layout.locks_dir().display().to_string(),
             logs_dir: self.layout.logs_dir().display().to_string(),
         }
@@ -318,7 +327,19 @@ pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
         if current != 0o700 {
             let mut perms = metadata.permissions();
             perms.set_mode(0o700);
-            fs::set_permissions(path, perms)?;
+            if let Err(err) = fs::set_permissions(path, perms) {
+                let is_perm_err = err.kind() == std::io::ErrorKind::PermissionDenied
+                    || err.raw_os_error() == Some(1);
+                if is_perm_err && can_write_dir(path) {
+                    warn!(
+                        target: "docdexd",
+                        error = %err,
+                        "state dir permissions could not be tightened; continuing with existing perms"
+                    );
+                } else {
+                    return Err(err.into());
+                }
+            }
         }
     }
     #[cfg(not(unix))]
@@ -326,6 +347,22 @@ pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
         fs::create_dir_all(path)?;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn can_write_dir(path: &Path) -> bool {
+    let probe = path.join(format!(".docdex-perm-check-{}", std::process::id()));
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 fn normalize_for_error(path: &Path) -> String {
@@ -471,6 +508,7 @@ mod tests {
         assert!(paths.layout().base_dir().exists());
         assert!(paths.layout().cache_web_dir().exists());
         assert!(paths.layout().cache_libs_dir().exists());
+        assert!(paths.layout().browser_profiles_dir().exists());
         assert!(paths.layout().locks_dir().exists());
         assert!(paths.layout().logs_dir().exists());
         assert!(paths.repo_root().exists());

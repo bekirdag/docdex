@@ -3,10 +3,21 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { execFileSync } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 function getNpmCommand() {
   return process.platform === "win32" ? "npm.cmd" : "npm";
+}
+
+function withTempNpmCache(run) {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-npm-cache-"));
+  try {
+    return run(cacheDir);
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
 }
 
 test("npm tarball excludes native docdexd binaries", () => {
@@ -14,11 +25,14 @@ test("npm tarball excludes native docdexd binaries", () => {
   let stdout = "";
 
   try {
-    stdout = execFileSync(getNpmCommand(), ["pack", "--dry-run", "--json", "--ignore-scripts"], {
-      cwd: pkgRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"]
-    });
+    stdout = withTempNpmCache((cacheDir) =>
+      execFileSync(getNpmCommand(), ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+        cwd: pkgRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, npm_config_cache: cacheDir }
+      })
+    );
   } catch (err) {
     const message = err?.stderr ? String(err.stderr) : err?.message || String(err);
     throw new Error(`npm pack failed: ${message}`);

@@ -179,6 +179,9 @@ Setup overrides:
 - `DOCDEX_OLLAMA_INSTALL=1|0`: auto-accept or skip the Ollama install prompt.
 - `DOCDEX_OLLAMA_MODEL_PROMPT=1|0`: force model prompts on/off.
 - `DOCDEX_OLLAMA_MODEL_ASSUME_Y=1`: auto-accept recommended model installs.
+- `DOCDEX_BROWSER_INSTALL=chromium,firefox,webkit`: preselect Playwright browsers to install (comma-separated; use `skip` to opt out).
+
+The setup wizard also offers Playwright browser installation; Chromium is selected by default and you can opt into Firefox/WebKit.
 
 Manual setup:
 ```bash
@@ -308,7 +311,12 @@ Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary to
 - `DOCDEX_OFFLINE=1` to force offline.
 - `DOCDEX_WEB_*` knobs for thresholds, timeouts, cache TTL, and backoff.
 - `DOCDEX_WEB_BROWSER` / `DOCDEX_CHROME_PATH` to set a browser binary.
-- `DOCDEX_BROWSER_AUTO_INSTALL=0` to disable Linux auto-install of Chromium.
+- `web.scraper.engine` in `config.toml` can be `chrome` (default) or `playwright`.
+- `DOCDEX_PLAYWRIGHT_BROWSER=chromium|firefox|webkit` to pick a Playwright browser (overrides `web.scraper.browser_kind`).
+- `DOCDEX_BROWSER_AUTO_INSTALL=0` to disable Playwright auto-install of Chromium.
+- `DOCDEX_PLAYWRIGHT_FETCHER=/path/to/npm/lib/playwright_fetch.js` to override the Playwright fetch helper.
+- `DOCDEX_NODE_BIN=/path/to/node` or `DOCDEX_PLAYWRIGHT_NODE_BIN=/path/to/node` to override the Node binary used for Playwright helpers.
+- `PLAYWRIGHT_BROWSERS_PATH=/path` to override the Playwright browser cache location.
 
 ## Ops and safety
 - Health check: `GET /healthz`.

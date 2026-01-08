@@ -3,6 +3,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { execFileSync } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const cwd = path.resolve(__dirname, "..");
@@ -22,11 +24,18 @@ const bannedMatchers = [
 const normalizePath = (value) => value.replace(/\\/g, "/");
 
 const getPackList = () => {
-  const stdout = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-npm-cache-"));
+  let stdout = "";
+  try {
+    stdout = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, npm_config_cache: cacheDir },
+    });
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
 
   let parsed;
   try {

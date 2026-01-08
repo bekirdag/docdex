@@ -768,6 +768,8 @@ pub(crate) struct SetupArgs {
     pub json: bool,
     #[arg(long, help = "Always run setup even if already completed")]
     pub force: bool,
+    #[arg(long, hide = true)]
+    pub auto: bool,
     #[arg(
         long,
         env = "DOCDEX_OLLAMA_PATH",

@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const { version: PACKAGE_VERSION } = require("../package.json");
 
 const {
   upsertServerConfig,
@@ -22,7 +23,9 @@ const {
   pullOllamaModel,
   hasInteractiveTty,
   shouldSkipSetup,
-  launchSetupWizard
+  launchSetupWizard,
+  applyAgentInstructions,
+  buildDaemonEnv
 } = require("../lib/postinstall_setup");
 
 test("upsertServerConfig adds server section when missing", () => {
@@ -132,10 +135,106 @@ test("upsertCodexConfig migrates legacy mcp_servers array", () => {
   assert.ok(contents.includes(`docdex = { url = "${url}" }`) || contents.includes("[mcp_servers.docdex]"));
 });
 
+test("upsertCodexConfig removes legacy instructions entry", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-codex-instructions-"));
+  const file = path.join(dir, "config.toml");
+  fs.writeFileSync(
+    file,
+    [
+      "[features]",
+      'experimental_instructions_file = "~/.docdex/agents.md"',
+      "",
+      "[mcp_servers]",
+      'docdex = { url = "http://localhost:3000/sse" }',
+      ""
+    ].join("\n")
+  );
+  const url = configStreamableUrlForPort(3000);
+  const changed = upsertCodexConfig(file, url);
+  assert.equal(changed, true);
+  const contents = fs.readFileSync(file, "utf8");
+  assert.ok(!contents.includes('experimental_instructions_file = "~/.docdex/agents.md"'));
+});
+
+test("applyAgentInstructions appends versioned docdex block once", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-codex-agents-"));
+  const prev = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    APPDATA: process.env.APPDATA
+  };
+  process.env.HOME = dir;
+  process.env.USERPROFILE = dir;
+  process.env.APPDATA = path.join(dir, "AppData", "Roaming");
+  try {
+    const result = applyAgentInstructions({ logger: { warn: () => {} } });
+    assert.equal(result.ok, true);
+    const second = applyAgentInstructions({ logger: { warn: () => {} } });
+    assert.equal(second.ok, true);
+    const target = path.join(dir, ".codex", "AGENTS.md");
+    assert.ok(fs.existsSync(target));
+    const contents = fs.readFileSync(target, "utf8");
+    const startMarker = `---- START OF DOCDEX INFO V${PACKAGE_VERSION} ----`;
+    assert.ok(contents.includes(startMarker));
+    assert.ok(contents.includes("---- END OF DOCDEX INFO -----"));
+    assert.ok(contents.includes("# Docdex Agent Usage Instructions"));
+    assert.equal(contents.split(startMarker).length - 1, 1);
+  } finally {
+    process.env.HOME = prev.HOME;
+    process.env.USERPROFILE = prev.USERPROFILE;
+    process.env.APPDATA = prev.APPDATA;
+  }
+});
+
+test("applyAgentInstructions replaces older docdex block", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-codex-agents-old-"));
+  const prev = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    APPDATA: process.env.APPDATA
+  };
+  process.env.HOME = dir;
+  process.env.USERPROFILE = dir;
+  process.env.APPDATA = path.join(dir, "AppData", "Roaming");
+  try {
+    const target = path.join(dir, ".codex", "AGENTS.md");
+    const oldBlock = [
+      "---- START OF DOCDEX INFO V0.2.17 ----",
+      "OLD DOCDEX INSTRUCTIONS",
+      "---- END OF DOCDEX INFO -----"
+    ].join("\n");
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, `Some other rules\n\n${oldBlock}\n\nKeep this line\n`);
+    const result = applyAgentInstructions({ logger: { warn: () => {} } });
+    assert.equal(result.ok, true);
+    const contents = fs.readFileSync(target, "utf8");
+    assert.ok(contents.includes("Some other rules"));
+    assert.ok(contents.includes("Keep this line"));
+    assert.ok(!contents.includes("OLD DOCDEX INSTRUCTIONS"));
+    assert.ok(!contents.includes("V0.2.17"));
+    assert.ok(contents.includes(`---- START OF DOCDEX INFO V${PACKAGE_VERSION} ----`));
+    assert.ok(contents.includes("---- END OF DOCDEX INFO -----"));
+  } finally {
+    process.env.HOME = prev.HOME;
+    process.env.USERPROFILE = prev.USERPROFILE;
+    process.env.APPDATA = prev.APPDATA;
+  }
+});
+
 test("runPostInstallSetup does not call Ollama installers", () => {
   const source = runPostInstallSetup.toString();
   assert.equal(source.includes("maybeInstallOllama"), false);
   assert.equal(source.includes("maybePromptOllamaModel"), false);
+});
+
+test("buildDaemonEnv includes playwright fetcher when bundled", () => {
+  const expectedFetcher = path.join(__dirname, "..", "lib", "playwright_fetch.js");
+  const env = buildDaemonEnv({ mcpBinaryPath: "/tmp/docdex-mcp" });
+  assert.equal(env.DOCDEX_BROWSER_AUTO_INSTALL, "0");
+  assert.equal(env.DOCDEX_MCP_SERVER_BIN, "/tmp/docdex-mcp");
+  if (fs.existsSync(expectedFetcher)) {
+    assert.equal(env.DOCDEX_PLAYWRIGHT_FETCHER, expectedFetcher);
+  }
 });
 
 test("resolveOllamaInstallMode respects env overrides", () => {
@@ -242,8 +341,10 @@ test("launchSetupWizard uses linux terminal launcher when interactive", () => {
     "-e",
     "env",
     "DOCDEX_SETUP_AUTO=1",
+    "DOCDEX_SETUP_MODE=auto",
     "/tmp/docdexd",
-    "setup"
+    "setup",
+    "--auto"
   ]);
 });
 

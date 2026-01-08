@@ -25,6 +25,8 @@ async function writeInstalledBinary({ distDir, isWin32, bytes }) {
   await ensureDir(distDir);
   const binaryPath = path.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
   await fs.promises.writeFile(binaryPath, bytes);
+  const mcpName = isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server";
+  await fs.promises.writeFile(path.join(distDir, mcpName), bytes);
   return binaryPath;
 }
 
@@ -267,6 +269,7 @@ test("installer contract: swap failure rolls back and leaves prior install runna
       extractTarballFn: async (_archivePath, targetDir) => {
         await ensureDir(targetDir);
         await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n", "utf8");
+        await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "new-binary\n", "utf8");
       }
     });
   } catch (e) {
@@ -330,6 +333,7 @@ test("installer contract: restart failure rolls back to previous install", async
       extractTarballFn: async (_archivePath, targetDir) => {
         await ensureDir(targetDir);
         await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n", "utf8");
+        await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "new-binary\n", "utf8");
       },
       restartFn: async () => {
         throw new Error("restart boom");
@@ -404,6 +408,7 @@ test("installer contract: interrupted run artifacts do not block reinstall and a
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
       await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n", "utf8");
+      await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "new-binary\n", "utf8");
     }
   });
 
@@ -707,6 +712,7 @@ test("installer contract: initial swap failure leaves no runnable binary and cle
       extractTarballFn: async (_archivePath, targetDir) => {
         await ensureDir(targetDir);
         await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n", "utf8");
+        await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "new-binary\n", "utf8");
       }
     });
   } catch (e) {

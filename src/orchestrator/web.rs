@@ -11,10 +11,10 @@ use crate::state_layout::StateLayout;
 use crate::tier2::{Tier2Unavailable, Tier2UnavailableReason};
 use crate::util;
 use crate::web::cache;
-use crate::web::chrome::{fetch_dom, ChromeFetchConfig};
 use crate::web::ddg::{DdgDiscovery, WebDiscoveryResponse, WebDiscoveryResult};
 use crate::web::normalize::{dedupe_urls, unwrap_ddg_redirect};
 use crate::web::readability::extract_readable_text;
+use crate::web::scraper::ScraperEngine;
 use crate::web::status::fetch_status;
 use crate::web::WebConfig;
 use anyhow::Context;
@@ -27,7 +27,6 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
-use which::which;
 
 const DEFAULT_WEB_TRIGGER_THRESHOLD: f32 = 0.7;
 const DEFAULT_WEB_MIN_MATCH_RATIO: f32 = 0.2;
@@ -2370,28 +2369,9 @@ async fn fetch_web_documents(
     let summary_client = load_web_summary_client(llm_model, llm_agent);
     let debug_enabled = env_boolish("DOCDEX_WEB_DEBUG").unwrap_or(false);
     let early_stop_score = early_stop_score.clamp(0.0, 1.0);
-    if !config.scraper_engine.trim().eq_ignore_ascii_case("chrome") {
-        return vec![WebFetchResult {
-            url: String::new(),
-            status: None,
-            fetched_at_epoch_ms: None,
-            cached: false,
-            content: None,
-            ai_digested_content: None,
-            ai_digested_kind: None,
-            relevance_score: None,
-            debug_html: None,
-            debug_dom_text: None,
-            error: Some(format!(
-                "web fetch engine is {}; only chrome is supported",
-                config.scraper_engine
-            )),
-            debug: None,
-        }];
-    }
-    let chrome_config = match ChromeFetchConfig::from_web_config(config) {
-        Some(config) => config,
-        None => {
+    let scraper = match ScraperEngine::from_web_config(config) {
+        Ok(scraper) => scraper,
+        Err(err) => {
             return vec![WebFetchResult {
                 url: String::new(),
                 status: None,
@@ -2403,10 +2383,7 @@ async fn fetch_web_documents(
                 relevance_score: None,
                 debug_html: None,
                 debug_dom_text: None,
-                error: Some(
-                    "web fetch chrome binary not configured; run `docdexd browser setup`"
-                        .to_string(),
-                ),
+                error: Some(err.to_string()),
                 debug: None,
             }];
         }
@@ -2548,7 +2525,7 @@ async fn fetch_web_documents(
                     });
                     continue;
                 }
-                match fetch_dom(&url, &chrome_config).await {
+                match scraper.fetch_dom(&url).await {
                     Ok(fetch_result) => {
                         status = fetch_result.status.or(status_probe);
                         let html = fetch_result.html;
@@ -2566,11 +2543,11 @@ async fn fetch_web_documents(
                             if let Some(final_url) = fetch_result.final_url.as_ref() {
                                 if final_url == "about:blank" {
                                     debug_notes.push(
-                                        "chrome navigation stayed on about:blank".to_string(),
+                                        "browser navigation stayed on about:blank".to_string(),
                                     );
                                 }
                             } else {
-                                debug_notes.push("chrome final_url missing".to_string());
+                                debug_notes.push("browser final_url missing".to_string());
                             }
                         }
                         code_blocks = extract_code_blocks(&html);
@@ -4816,13 +4793,13 @@ mod tests {
             enabled: true,
             trigger_threshold: 0.45,
             min_local_match_ratio: 0.2,
-            browser_hint: Some("chrome".to_string()),
+            browser_hint: Some("playwright".to_string()),
             browser_available: false,
         };
         let status = evaluate_gate_status("req", &gate, Some(0.1), Some(0.1), None, false, false);
         assert_eq!(status.status, WebDiscoveryStatusCode::Unavailable);
         assert_eq!(status.reason.as_deref(), Some("missing_dependency"));
-        assert!(status.message.as_deref().unwrap().contains("chrome"));
+        assert!(status.message.as_deref().unwrap().contains("playwright"));
     }
 
     #[test]
@@ -4937,13 +4914,17 @@ pub(crate) fn resolve_browser_available(hint: Option<&str>) -> bool {
         if Path::new(path).is_file() {
             return true;
         }
-        if which(path).is_ok() {
-            return true;
-        }
         return false;
     }
 
-    util::detect_browser_binary(None).is_some()
+    util::read_playwright_manifest()
+        .map(|manifest| {
+            manifest
+                .browsers
+                .iter()
+                .any(|browser| browser.path.is_file())
+        })
+        .unwrap_or(false)
 }
 
 fn resolve_web_limit(requested: Option<usize>, fallback: usize) -> usize {

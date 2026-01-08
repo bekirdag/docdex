@@ -124,12 +124,38 @@ pub(crate) fn parse_root_uri(raw: &str) -> Result<PathBuf, AppError> {
                 format!("unsupported rootUri scheme: {}", url.scheme()),
             ));
         }
-        let path = url.to_file_path().map_err(|_| {
-            AppError::new(ERR_INVALID_ARGUMENT, "rootUri must be a local file path")
-        })?;
-        return Ok(path);
+        if let Ok(path) = url.to_file_path() {
+            return Ok(path);
+        }
+        if url.has_host() {
+            let mut sanitized = url.clone();
+            let _ = sanitized.set_host(None);
+            if let Ok(path) = sanitized.to_file_path() {
+                return Ok(path);
+            }
+        }
+        let fallback = url.path();
+        if !fallback.is_empty() {
+            return Ok(PathBuf::from(fallback));
+        }
+        return Err(AppError::new(
+            ERR_INVALID_ARGUMENT,
+            "rootUri must be a local file path",
+        ));
     }
     Ok(PathBuf::from(trimmed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_root_uri_accepts_file_uri_with_host() {
+        let parsed = parse_root_uri("file://localhost/home/docdex").expect("parse");
+        assert_eq!(parsed, PathBuf::from("/home/docdex"));
+    }
 }
 
 fn looks_like_windows_path(value: &str) -> bool {

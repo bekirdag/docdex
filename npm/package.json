@@ -1,15 +1,17 @@
 {
   "name": "docdex",
-  "version": "0.2.14",
+  "version": "0.2.21",
   "mcpName": "io.github.bekirdag/docdex",
   "description": "Local-first documentation and code indexer with HTTP/MCP search, AST, and agent memory.",
   "bin": {
     "docdex": "bin/docdex.js",
-    "docdexd": "bin/docdex.js"
+    "docdexd": "bin/docdex.js",
+    "docdex-mcp-server": "bin/docdex-mcp-server.js"
   },
   "files": [
     "bin",
     "lib",
+    "assets",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
@@ -60,6 +62,7 @@
     "access": "public"
   },
   "dependencies": {
+    "playwright": "^1.49.0",
     "tar": "^6.2.1"
   }
 }

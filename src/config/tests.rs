@@ -85,3 +85,10 @@ fn apply_defaults_sets_profile_embedding_dim() -> Result<(), Box<dyn std::error:
     );
     Ok(())
 }
+
+#[test]
+fn default_web_user_agent_looks_like_browser() {
+    let ua = default_web_user_agent();
+    assert!(ua.contains("Mozilla/5.0"));
+    assert!(!ua.to_ascii_lowercase().contains("docdexd/"));
+}

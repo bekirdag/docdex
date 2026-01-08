@@ -1618,8 +1618,15 @@ mod file_decision_tests {
     fn decide_file_excludes_state_dir_before_prefix_rules() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
-            .expect("config");
+        let state_dir = repo_root.join(".docdex-state");
+        let config = IndexConfig::with_overrides(
+            &repo_root,
+            Some(state_dir.clone()),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )
+        .expect("config");
         let file = config.state_dir().join("doc.md");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
         fs::write(&file, "# state dir\n").expect("write file");
@@ -1765,7 +1772,19 @@ pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
         if current != 0o700 {
             let mut perms = metadata.permissions();
             perms.set_mode(0o700);
-            fs::set_permissions(path, perms)?;
+            if let Err(err) = fs::set_permissions(path, perms) {
+                let is_perm_err = err.kind() == std::io::ErrorKind::PermissionDenied
+                    || err.raw_os_error() == Some(1);
+                if is_perm_err && can_write_dir(path) {
+                    warn!(
+                        target: "docdexd",
+                        error = %err,
+                        "state dir permissions could not be tightened; continuing with existing perms"
+                    );
+                } else {
+                    return Err(err.into());
+                }
+            }
         }
     }
     #[cfg(not(unix))]
@@ -1773,6 +1792,22 @@ pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
         fs::create_dir_all(path)?;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn can_write_dir(path: &Path) -> bool {
+    let probe = path.join(format!(".docdex-perm-check-{}", std::process::id()));
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 fn normalize_for_error(path: &Path) -> String {

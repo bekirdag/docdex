@@ -2,6 +2,7 @@
 
 use docdexd::config;
 use once_cell::sync::Lazy;
+use serde_json::json;
 use std::ffi::OsString;
 use std::path::Path;
 use std::sync::Mutex;
@@ -60,6 +61,25 @@ fn config_persists_detected_browser_path() {
     let chrome_path = bin_dir.join("google-chrome");
     touch_file(&chrome_path);
 
+    let pw_dir = temp
+        .path()
+        .join(".docdex")
+        .join("state")
+        .join("bin")
+        .join("playwright");
+    std::fs::create_dir_all(&pw_dir).expect("create pw dir");
+    let chromium_path = temp.path().join("pw-chromium");
+    touch_file(&chromium_path);
+    let payload = json!({
+        "installed_at": "2024-01-01T00:00:00Z",
+        "browsers_path": pw_dir.to_string_lossy(),
+        "playwright_version": "1.2.3",
+        "browsers": [
+            { "name": "chromium", "version": "12345", "path": chromium_path }
+        ]
+    });
+    std::fs::write(pw_dir.join("manifest.json"), payload.to_string()).expect("write manifest");
+
     let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
     let _path_guard = EnvGuard::set("PATH", bin_dir.to_string_lossy().as_ref());
     let _auto_install = EnvGuard::set("DOCDEX_BROWSER_AUTO_INSTALL", "0");
@@ -71,13 +91,38 @@ fn config_persists_detected_browser_path() {
     let config = config::load_config_from_path(&config_path).expect("load config");
     assert_eq!(
         config.web.scraper.chrome_binary_path.as_ref(),
-        Some(&chrome_path)
+        Some(&chromium_path)
     );
-    assert_eq!(config.web.scraper.browser_kind.as_deref(), Some("chrome"));
+    assert_eq!(config.web.scraper.browser_kind.as_deref(), Some("chromium"));
 
     let reload = config::load_config_from_path(&config_path).expect("reload config");
     assert_eq!(
         reload.web.scraper.chrome_binary_path.as_ref(),
-        Some(&chrome_path)
+        Some(&chromium_path)
     );
+}
+
+#[test]
+#[cfg(not(target_os = "windows"))]
+fn config_preserves_user_data_dir() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = TempDir::new().expect("tempdir");
+    let user_dir = temp.path().join("profiles").join("chrome");
+    std::fs::create_dir_all(&user_dir).expect("create profile dir");
+
+    let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let _auto_install = EnvGuard::set("DOCDEX_BROWSER_AUTO_INSTALL", "0");
+    let _env_browser = EnvGuard::unset("DOCDEX_WEB_BROWSER");
+    let _chrome_path_env = EnvGuard::unset("DOCDEX_CHROME_PATH");
+    let _chrome_path_env_alias = EnvGuard::unset("CHROME_PATH");
+
+    let config_path = temp.path().join("docdex.toml");
+    let payload = format!(
+        "[web.scraper]\nuser_data_dir = \"{}\"\n",
+        user_dir.to_string_lossy()
+    );
+    std::fs::write(&config_path, payload).expect("write config");
+
+    let config = config::load_config_from_path(&config_path).expect("load config");
+    assert_eq!(config.web.scraper.user_data_dir.as_ref(), Some(&user_dir));
 }

@@ -13,8 +13,8 @@ use crate::orchestrator::{
 use crate::tier2::Tier2Config;
 use crate::util;
 use crate::web;
-use crate::web::chrome::{fetch_dom, ChromeFetchConfig};
 use crate::web::readability::extract_readable_text;
+use crate::web::scraper::ScraperEngine;
 use crate::web::status::fetch_status;
 use anyhow::Result;
 use reqwest::Method;
@@ -26,10 +26,21 @@ use uuid::Uuid;
 
 pub async fn run_search(query: String, limit: usize) -> Result<()> {
     if !crate::cli::cli_local_mode() {
-        return run_search_via_http(&query, limit).await;
+        match run_search_via_http(&query, limit).await {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                if !should_fallback_to_local(&err) {
+                    return Err(err);
+                }
+                eprintln!(
+                    "docdexd web-search: http endpoint unavailable; falling back to local ({err})"
+                );
+            }
+        }
     }
     util::init_logging("warn")?;
-    let config = web::WebConfig::from_env();
+    let mut config = web::WebConfig::from_env();
+    config.enabled = true;
     let discovery = web::ddg::DdgDiscovery::new(config)?;
     let response = discovery.discover(&query, limit).await?;
     println!("{}", serde_json::to_string_pretty(&response)?);
@@ -38,7 +49,17 @@ pub async fn run_search(query: String, limit: usize) -> Result<()> {
 
 pub async fn run_fetch(url: String) -> Result<()> {
     if !crate::cli::cli_local_mode() {
-        return run_fetch_via_http(&url).await;
+        match run_fetch_via_http(&url).await {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                if !should_fallback_to_local(&err) {
+                    return Err(err);
+                }
+                eprintln!(
+                    "docdexd web-fetch: http endpoint unavailable; falling back to local ({err})"
+                );
+            }
+        }
     }
     util::init_logging("warn")?;
     let config = web::WebConfig::from_env();
@@ -59,21 +80,13 @@ pub async fn run_fetch(url: String) -> Result<()> {
             }
         }
     }
-    if !config.scraper_engine.trim().eq_ignore_ascii_case("chrome") {
-        anyhow::bail!(
-            "web fetch engine is {}; only chrome is supported",
-            config.scraper_engine
-        );
-    }
-    let chrome_config = ChromeFetchConfig::from_web_config(&config).ok_or_else(|| {
-        AppError::new(
-            ERR_MISSING_DEPENDENCY,
-            "chrome binary not configured; run `docdexd browser setup`",
-        )
+    let scraper = ScraperEngine::from_web_config(&config).map_err(|err| {
+        let message = err.to_string();
+        AppError::new(ERR_MISSING_DEPENDENCY, message)
     })?;
     web::fetch::enforce_domain_delay(&url, config.fetch_delay).await;
     let status_probe = fetch_status(&url, &config.user_agent, config.request_timeout).await;
-    let fetch_result = fetch_dom(&url, &chrome_config).await?;
+    let fetch_result = scraper.fetch_dom(&url).await?;
     let status = fetch_result.status.or(status_probe);
     let body = extract_readable_text(&fetch_result.html, &url).unwrap_or_else(|| {
         let cleaned = ammonia::Builder::default()
@@ -261,7 +274,17 @@ pub async fn run_rag(
 
 pub async fn run_cache_flush() -> Result<()> {
     if !crate::cli::cli_local_mode() {
-        return run_cache_flush_via_http().await;
+        match run_cache_flush_via_http().await {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                if !should_fallback_to_local(&err) {
+                    return Err(err);
+                }
+                eprintln!(
+                    "docdexd web-cache-flush: http endpoint unavailable; falling back to local ({err})"
+                );
+            }
+        }
     }
     let Some(layout) = web::cache::cache_layout_from_config() else {
         println!("web cache is not configured");
@@ -322,4 +345,14 @@ async fn emit_json_or_error(resp: reqwest::Response, label: &str) -> Result<()> 
     let value: Value = serde_json::from_str(&text)?;
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
+}
+
+fn should_fallback_to_local(err: &anyhow::Error) -> bool {
+    if let Some(reqwest_err) = err.downcast_ref::<reqwest::Error>() {
+        return reqwest_err.is_connect() || reqwest_err.is_timeout();
+    }
+    let message = err.to_string().to_lowercase();
+    message.contains("error sending request")
+        || message.contains("connection refused")
+        || message.contains("connection error")
 }

@@ -18,55 +18,74 @@ fn touch_file(path: &Path) {
 }
 
 #[test]
-fn browser_list_reports_env_selection() {
+fn browser_list_reports_playwright_selection() {
     let temp = TempDir::new().expect("tempdir");
-    let env_path = temp.path().join("env-browser");
-    touch_file(&env_path);
+    let chromium_path = temp.path().join("pw-chromium");
+    touch_file(&chromium_path);
+    let manifest_dir = temp.path().join("playwright");
+    std::fs::create_dir_all(&manifest_dir).expect("create manifest dir");
+    let payload = serde_json::json!({
+        "installed_at": "2024-01-01T00:00:00Z",
+        "browsers_path": manifest_dir.to_string_lossy(),
+        "playwright_version": "1.2.3",
+        "browsers": [
+            { "name": "chromium", "version": "12345", "path": chromium_path }
+        ]
+    });
+    std::fs::write(manifest_dir.join("manifest.json"), payload.to_string())
+        .expect("write manifest");
 
     let mut cmd = Command::new(common::docdex_bin());
     cmd.env("DOCDEX_WEB_ENABLED", "0");
     cmd.args(["browser", "list"])
         .env("DOCDEX_CLI_LOCAL", "1")
         .env("HOME", temp.path())
-        .env("DOCDEX_WEB_BROWSER", &env_path)
+        .env("PLAYWRIGHT_BROWSERS_PATH", &manifest_dir)
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_BROWSER_AUTO_INSTALL", "0");
     let output = cmd.assert().success().get_output().stdout.clone();
     let payload: Value = serde_json::from_slice(&output).expect("json");
     assert_eq!(
         payload["selected"]["path"],
-        env_path.to_string_lossy().as_ref()
+        chromium_path.to_string_lossy().as_ref()
     );
-    assert_eq!(payload["selected"]["source"], "env");
+    assert_eq!(payload["selected"]["source"], "playwright");
 }
 
 #[test]
 #[cfg(not(target_os = "windows"))]
-fn browser_setup_persists_detected_binary() {
+fn browser_setup_reports_playwright_browser() {
     let temp = TempDir::new().expect("tempdir");
-    let bin_dir = temp.path().join("bin");
-    std::fs::create_dir_all(&bin_dir).expect("create bin dir");
-    let chrome_path = bin_dir.join("google-chrome");
-    touch_file(&chrome_path);
+    let chromium_path = temp.path().join("pw-chromium");
+    touch_file(&chromium_path);
+    let manifest_dir = temp.path().join("playwright");
+    std::fs::create_dir_all(&manifest_dir).expect("create manifest dir");
+    let payload = serde_json::json!({
+        "installed_at": "2024-01-01T00:00:00Z",
+        "browsers_path": manifest_dir.to_string_lossy(),
+        "playwright_version": "1.2.3",
+        "browsers": [
+            { "name": "chromium", "version": "12345", "path": chromium_path }
+        ]
+    });
+    std::fs::write(manifest_dir.join("manifest.json"), payload.to_string())
+        .expect("write manifest");
 
     let mut cmd = Command::new(common::docdex_bin());
     cmd.env("DOCDEX_WEB_ENABLED", "0");
     cmd.args(["browser", "setup"])
         .env("DOCDEX_CLI_LOCAL", "1")
         .env("HOME", temp.path())
-        .env("PATH", &bin_dir)
-        .env("DOCDEX_WEB_BROWSER", "")
-        .env("DOCDEX_CHROME_PATH", "")
-        .env("CHROME_PATH", "")
+        .env("PLAYWRIGHT_BROWSERS_PATH", &manifest_dir)
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_BROWSER_AUTO_INSTALL", "0");
     let output = cmd.assert().success().get_output().stdout.clone();
     let payload: Value = serde_json::from_slice(&output).expect("json");
     assert_eq!(
         payload["selected"]["path"],
-        chrome_path.to_string_lossy().as_ref()
+        chromium_path.to_string_lossy().as_ref()
     );
-    assert_eq!(payload["selected"]["source"], "config");
+    assert_eq!(payload["selected"]["source"], "playwright");
 }
 
 #[test]

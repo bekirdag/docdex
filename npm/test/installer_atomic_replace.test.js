@@ -25,6 +25,7 @@ async function writeInstalledBinary({ distDir, bytes }) {
   await ensureDir(distDir);
   const binaryPath = path.join(distDir, "docdexd");
   await fs.promises.writeFile(binaryPath, bytes);
+  await fs.promises.writeFile(path.join(distDir, "docdex-mcp-server"), bytes);
   return binaryPath;
 }
 
@@ -195,6 +196,7 @@ test("installer atomic replace: failed swap rolls back to the previous install",
       extractTarballFn: async (_archivePath, targetDir) => {
         await ensureDir(targetDir);
         await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n");
+        await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "new-binary\n");
       }
     });
   } catch (e) {

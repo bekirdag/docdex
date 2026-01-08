@@ -26,6 +26,7 @@ fn ensure_daemon_skips_setup() {
             non_interactive: true,
             json: false,
             force: false,
+            auto: false,
             ollama_path: None,
         },
     };

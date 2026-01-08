@@ -164,6 +164,9 @@ if [[ "${DOCDEX_RUN_EXTENDED_TESTS:-0}" == "1" ]]; then
   if command -v npm >/dev/null 2>&1 && [[ -f "${ROOT_DIR}/npm/package.json" ]]; then
     run_step "extended_node" bash -c "cd \"${ROOT_DIR}/npm\" && npm test"
   fi
+  if [[ -f "${ROOT_DIR}/scripts/test_playwright_install.sh" ]]; then
+    run_step "extended_playwright_install" bash "${ROOT_DIR}/scripts/test_playwright_install.sh"
+  fi
 fi
 
 log "summary:"

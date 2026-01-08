@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
+const pkg = require("../package.json");
 const {
   artifactName,
   detectLibcFromRuntime,
@@ -13,6 +14,7 @@ const {
   assetPatternForPlatformKey,
   UnsupportedPlatformError
 } = require("../lib/platform");
+const { checkForUpdateOnce } = require("../lib/update_check");
 
 function isDoctorCommand(argv) {
   const sub = argv[0];
@@ -25,6 +27,24 @@ function printLines(lines, { stderr } = {}) {
     if (stderr) console.error(line);
     else console.log(line);
   }
+}
+
+function readInstallMetadata({ fsModule, pathModule, basePath }) {
+  if (!fsModule || typeof fsModule.readFileSync !== "function") return null;
+  const metadataPath = pathModule.join(basePath, "docdexd-install.json");
+  try {
+    const raw = fsModule.readFileSync(metadataPath, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function formatInstallSource(meta) {
+  const source = meta?.archive?.source;
+  if (!source || typeof source !== "string") return "unknown";
+  if (source === "local") return "local binary";
+  return `release (${source})`;
 }
 
 function runDoctor() {
@@ -55,6 +75,9 @@ function runDoctor() {
     const targetTriple = targetTripleForPlatformKey(platformKey);
     const expectedAssetName = artifactName(platformKey);
     const expectedAssetPattern = assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAssetName });
+    const basePath = path.join(__dirname, "..", "dist", platformKey);
+    const installMeta = readInstallMetadata({ fsModule: fs, pathModule: path, basePath });
+    const installSource = formatInstallSource(installMeta);
 
     report = {
       exitCode: 0,
@@ -66,7 +89,8 @@ function runDoctor() {
         `[docdex] Platform key: ${platformKey}`,
         `[docdex] Expected target triple: ${targetTriple}`,
         `[docdex] Expected release asset: ${expectedAssetName}`,
-        `[docdex] Asset naming pattern: ${expectedAssetPattern}`
+        `[docdex] Asset naming pattern: ${expectedAssetPattern}`,
+        `[docdex] Install source: ${installSource}`
       ]
     };
   } catch (err) {
@@ -117,7 +141,7 @@ function runDoctor() {
   process.exit(report.exitCode);
 }
 
-function run() {
+async function run() {
   const argv = process.argv.slice(2);
   if (isDoctorCommand(argv)) {
     runDoctor();
@@ -142,15 +166,21 @@ function run() {
       }
       console.error("[docdex] Next steps: use a supported platform or build from source (Rust).");
       process.exit(err.exitCode || 3);
+      return;
     }
     console.error(`[docdex] failed to detect platform: ${err?.message || String(err)}`);
     process.exit(1);
+    return;
   }
 
   const basePath = path.join(__dirname, "..", "dist", platformKey);
   const binaryPath = path.join(
     basePath,
     process.platform === "win32" ? "docdexd.exe" : "docdexd"
+  );
+  const mcpBinaryPath = path.join(
+    basePath,
+    process.platform === "win32" ? "docdex-mcp-server.exe" : "docdex-mcp-server"
   );
 
   if (!fs.existsSync(binaryPath)) {
@@ -160,9 +190,26 @@ function run() {
       console.error(`[docdex] Asset naming pattern: ${assetPatternForPlatformKey(platformKey)}`);
     } catch {}
     process.exit(1);
+    return;
   }
 
-  const child = spawn(binaryPath, process.argv.slice(2), { stdio: "inherit" });
+  await checkForUpdateOnce({
+    currentVersion: pkg.version,
+    env: process.env,
+    stdout: process.stdout,
+    stderr: process.stderr,
+    logger: console
+  });
+
+  const env = { ...process.env };
+  if (!env.DOCDEX_MCP_SERVER_BIN && fs.existsSync(mcpBinaryPath)) {
+    env.DOCDEX_MCP_SERVER_BIN = mcpBinaryPath;
+  }
+  const fetcherPath = path.join(__dirname, "..", "lib", "playwright_fetch.js");
+  if (!env.DOCDEX_PLAYWRIGHT_FETCHER && fs.existsSync(fetcherPath)) {
+    env.DOCDEX_PLAYWRIGHT_FETCHER = fetcherPath;
+  }
+  const child = spawn(binaryPath, process.argv.slice(2), { stdio: "inherit", env });
   child.on("exit", (code) => process.exit(code ?? 1));
   child.on("error", (err) => {
     console.error(`[docdex] failed to launch binary: ${err.message}`);
@@ -170,4 +217,7 @@ function run() {
   });
 }
 
-run();
+run().catch((err) => {
+  console.error(`[docdex] unexpected error: ${err?.message || String(err)}`);
+  process.exit(1);
+});

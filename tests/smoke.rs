@@ -613,6 +613,50 @@ fn http_search_missing_index_returns_error_code() -> Result<(), Box<dyn Error>> 
 }
 
 #[test]
+fn http_search_skip_local_search_without_access_log() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut child = spawn_server_with_args(
+        state_root.path(),
+        repo.path(),
+        host,
+        port,
+        &["--secure-mode=false", "--access-log=false"],
+        None,
+    )?;
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://{host}:{port}/search");
+    let response = client
+        .get(&url)
+        .query(&[
+            ("q", "docdex"),
+            ("limit", "1"),
+            ("skip_local_search", "true"),
+        ])
+        .send()?;
+    assert!(
+        response.status().is_success(),
+        "expected /search to succeed without access log enabled"
+    );
+    let payload: Value = response.json()?;
+    assert!(
+        payload
+            .get("hits")
+            .and_then(|value| value.as_array())
+            .is_some(),
+        "expected /search response to include hits"
+    );
+    child.kill().ok();
+    child.wait().ok();
+    Ok(())
+}
+
+#[test]
 fn http_search_validation_error_on_empty_or_invalid_query() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;

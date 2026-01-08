@@ -67,7 +67,97 @@ async function ensureMcpBinary(platformKey) {
   return binaryPath;
 }
 
-async function run() {
+const DEFAULT_LOG_LEVEL = "warn";
+const DEFAULT_MAX_RESULTS = 8;
+
+function normalizeConfig(config) {
+  const repoPath = typeof config?.repo_path === "string" && config.repo_path.trim()
+    ? config.repo_path
+    : ".";
+  const logLevel = typeof config?.log_level === "string" && config.log_level.trim()
+    ? config.log_level
+    : DEFAULT_LOG_LEVEL;
+  const maxResults =
+    Number.isInteger(config?.max_results) && config.max_results > 0
+      ? config.max_results
+      : DEFAULT_MAX_RESULTS;
+
+  return { repoPath, logLevel, maxResults };
+}
+
+function buildArgs(config) {
+  return [
+    "--repo",
+    config.repoPath,
+    "--log",
+    config.logLevel,
+    "--max-results",
+    String(config.maxResults)
+  ];
+}
+
+function resolveCliArgs(argv) {
+  const config = {};
+  const passthrough = [];
+  let sawConfig = false;
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--repo" && argv[i + 1]) {
+      config.repo_path = argv[i + 1];
+      sawConfig = true;
+      i += 1;
+      continue;
+    }
+    if (arg === "--log" && argv[i + 1]) {
+      config.log_level = argv[i + 1];
+      sawConfig = true;
+      i += 1;
+      continue;
+    }
+    if (arg === "--max-results" && argv[i + 1]) {
+      const parsed = Number.parseInt(argv[i + 1], 10);
+      if (!Number.isNaN(parsed)) {
+        config.max_results = parsed;
+        sawConfig = true;
+      }
+      i += 1;
+      continue;
+    }
+    const kvMatch = arg.match(/^([^=]+)=(.*)$/);
+    if (kvMatch) {
+      const [, key, rawValue] = kvMatch;
+      if (key === "repo_path") {
+        config.repo_path = rawValue;
+        sawConfig = true;
+        continue;
+      }
+      if (key === "log_level") {
+        config.log_level = rawValue;
+        sawConfig = true;
+        continue;
+      }
+      if (key === "max_results") {
+        const parsed = Number.parseInt(rawValue, 10);
+        if (!Number.isNaN(parsed)) {
+          config.max_results = parsed;
+          sawConfig = true;
+          continue;
+        }
+      }
+    }
+    passthrough.push(arg);
+  }
+
+  if (!sawConfig) {
+    return argv;
+  }
+
+  const resolved = normalizeConfig(config);
+  return [...buildArgs(resolved), ...passthrough];
+}
+
+async function spawnMcpServer(args, logger) {
   let platformKey;
   try {
     platformKey = detectPlatformKey();
@@ -84,15 +174,43 @@ async function run() {
   const binaryPath = await ensureMcpBinary(platformKey);
   if (!binaryPath) return;
 
-  const child = spawn(binaryPath, process.argv.slice(2), { stdio: "inherit" });
+  const child = spawn(binaryPath, args, { stdio: "inherit" });
   child.on("exit", (code) => process.exit(code ?? 1));
   child.on("error", (err) => {
-    console.error(`[docdex] failed to launch MCP server: ${err.message}`);
+    if (logger?.error) {
+      logger.error({ error: err }, "Failed to launch MCP server");
+    } else {
+      console.error(`[docdex] failed to launch MCP server: ${err.message}`);
+    }
+    process.exit(1);
+  });
+
+  await new Promise((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", reject);
+  });
+}
+
+function createServer({ config, logger }) {
+  return {
+    async connect() {
+      const resolved = normalizeConfig(config);
+      await spawnMcpServer(buildArgs(resolved), logger);
+    }
+  };
+}
+
+async function runCli() {
+  await spawnMcpServer(resolveCliArgs(process.argv.slice(2)));
+}
+
+if (require.main === module) {
+  runCli().catch((err) => {
+    console.error(`[docdex] unexpected error: ${err?.message || String(err)}`);
     process.exit(1);
   });
 }
 
-run().catch((err) => {
-  console.error(`[docdex] unexpected error: ${err?.message || String(err)}`);
-  process.exit(1);
-});
+module.exports = {
+  default: createServer
+};

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.22
+- Add Smithery session config schema metadata (titles/descriptions, defaults, example config) for local MCP sessions.
+- Enrich MCP tools with titles, descriptions, parameter descriptions, and annotations to improve Smithery scoring.
+- Expose MCP prompts and resources (with titles/mime types/annotations) for onboarding, incident triage, and refactor planning.
+
 ## 0.2.21
 - Prompt for npm updates at CLI start (TTY-only, opt-out via `DOCDEX_UPDATE_CHECK=0`).
 - Export bundled Playwright fetcher for daemon startup (launchd/systemd/schtasks + immediate spawn).

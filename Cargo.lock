@@ -66,7 +66,7 @@ dependencies = [
 
 [[package]]
 name = "allocator-api2"
-version = "0.2.21"
+version = "0.2.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
@@ -727,7 +727,7 @@ dependencies = [
 
 [[package]]
 name = "docdex-mcp-server"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "anyhow",
  "chrono",
@@ -745,7 +745,7 @@ dependencies = [
 
 [[package]]
 name = "docdexd"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "aes-gcm",
  "ammonia",
@@ -2279,7 +2279,7 @@ checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "ppv-lite86"
-version = "0.2.21"
+version = "0.2.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [

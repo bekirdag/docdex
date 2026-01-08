@@ -62,6 +62,17 @@ fn write_playwright_manifest(root: &Path, browsers: &[(&str, &Path)]) {
         .expect("write manifest");
 }
 
+fn write_playwright_node_modules(root: &Path) -> std::path::PathBuf {
+    let playwright_dir = root.join("node_modules").join("playwright");
+    std::fs::create_dir_all(&playwright_dir).expect("create playwright node_modules");
+    std::fs::write(
+        playwright_dir.join("package.json"),
+        r#"{"version":"0.0.0"}"#,
+    )
+    .expect("write playwright package.json");
+    root.join("node_modules")
+}
+
 fn base_config() -> WebConfig {
     WebConfig {
         enabled: true,
@@ -105,9 +116,14 @@ fn playwright_engine_uses_browser_kind() {
         temp.path(),
         &[("chromium", &chromium_path), ("firefox", &firefox_path)],
     );
+    let node_modules = write_playwright_node_modules(temp.path());
     let _pw_path = EnvGuard::set(
         "PLAYWRIGHT_BROWSERS_PATH",
         temp.path().join("playwright").to_string_lossy().as_ref(),
+    );
+    let _pw_node_path = EnvGuard::set(
+        "DOCDEX_PLAYWRIGHT_NODE_PATH",
+        node_modules.to_string_lossy().as_ref(),
     );
 
     let mut config = base_config();
@@ -116,13 +132,9 @@ fn playwright_engine_uses_browser_kind() {
     config.scraper_headless = false;
 
     let scraper = ScraperEngine::from_web_config(&config).expect("scraper");
-    match scraper {
-        ScraperEngine::Playwright { config } => {
-            assert_eq!(config.browser, "firefox");
-            assert!(!config.headless);
-        }
-        _ => panic!("expected playwright engine"),
-    }
+    let ScraperEngine::Playwright { config } = scraper;
+    assert_eq!(config.browser, "firefox");
+    assert!(!config.headless);
 }
 
 #[test]
@@ -132,9 +144,14 @@ fn scraper_engine_defaults_to_playwright() {
     let chromium_path = temp.path().join("pw-chromium");
     touch_file(&chromium_path);
     write_playwright_manifest(temp.path(), &[("chromium", &chromium_path)]);
+    let node_modules = write_playwright_node_modules(temp.path());
     let _pw_path = EnvGuard::set(
         "PLAYWRIGHT_BROWSERS_PATH",
         temp.path().join("playwright").to_string_lossy().as_ref(),
+    );
+    let _pw_node_path = EnvGuard::set(
+        "DOCDEX_PLAYWRIGHT_NODE_PATH",
+        node_modules.to_string_lossy().as_ref(),
     );
 
     let mut config = base_config();

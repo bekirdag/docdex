@@ -374,7 +374,10 @@ struct RpcError {
 #[derive(Serialize)]
 struct ToolDefinition {
     name: &'static str,
+    title: &'static str,
     description: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    annotations: Option<serde_json::Value>,
     #[serde(rename = "inputSchema")]
     input_schema: serde_json::Value,
 }
@@ -557,12 +560,53 @@ struct ResourceReadParams {
 }
 
 #[derive(Serialize)]
+struct ResourceDefinition {
+    uri: String,
+    name: String,
+    title: String,
+    description: String,
+    #[serde(rename = "mimeType")]
+    mime_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    annotations: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
 struct ResourceTemplate {
     name: &'static str,
+    title: &'static str,
     description: &'static str,
     #[serde(rename = "uriTemplate")]
     uri_template: &'static str,
+    #[serde(rename = "mimeType")]
+    mime_type: &'static str,
     variables: &'static [&'static str],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    annotations: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct PromptArgument {
+    name: &'static str,
+    description: &'static str,
+    required: bool,
+}
+
+#[derive(Serialize)]
+struct PromptDefinition {
+    name: &'static str,
+    title: &'static str,
+    description: &'static str,
+    arguments: Vec<PromptArgument>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    annotations: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct PromptGetParams {
+    name: String,
+    #[serde(default)]
+    arguments: Option<serde_json::Value>,
 }
 
 pub async fn serve(
@@ -686,6 +730,13 @@ struct McpServer {
     tool_rate_limit: Option<RateLimiter<()>>,
     auth_token: Option<String>,
     authorized: bool,
+}
+
+fn annotations_with_priority(priority: f32) -> serde_json::Value {
+    json!({
+        "audience": ["assistant"],
+        "priority": priority
+    })
 }
 
 impl McpServer {
@@ -897,6 +948,7 @@ impl McpServer {
                     "tools": { "listChanged": false },
                     "resources": { "listChanged": false },
                     "resourceTemplates": { "listChanged": false },
+                    "prompts": { "listChanged": false },
                 });
                 if let Some(req_caps) = init_params.capabilities {
                     if let Some(obj) = caps.as_object_mut() {
@@ -928,10 +980,59 @@ impl McpServer {
                 result: Some(json!({ "tools": self.tool_defs() })),
                 error: None,
             })),
+            "prompts/list" => Ok(Some(RpcResponse {
+                jsonrpc: JSONRPC_VERSION,
+                id: id.clone(),
+                result: Some(json!({ "prompts": self.prompt_defs() })),
+                error: None,
+            })),
+            "prompts/get" => {
+                let params_res: Result<PromptGetParams, _> =
+                    serde_json::from_value(req.params.clone().unwrap_or_default());
+                let params = match params_res {
+                    Ok(p) => p,
+                    Err(err) => {
+                        return Ok(Some(RpcResponse {
+                            jsonrpc: JSONRPC_VERSION,
+                            id: id.clone(),
+                            result: None,
+                            error: Some(rpc_error(
+                                ERR_INVALID_PARAMS,
+                                default_message_for_code("invalid_params"),
+                                "invalid_params",
+                                Some(err.to_string()),
+                                None,
+                                Some(json!({ "validation": "serde", "method": "prompts/get" })),
+                            )),
+                        }))
+                    }
+                };
+                match self.prompt_payload(&params.name, params.arguments.as_ref()) {
+                    Some(value) => Ok(Some(RpcResponse {
+                        jsonrpc: JSONRPC_VERSION,
+                        id: id.clone(),
+                        result: Some(value),
+                        error: None,
+                    })),
+                    None => Ok(Some(RpcResponse {
+                        jsonrpc: JSONRPC_VERSION,
+                        id: id.clone(),
+                        result: None,
+                        error: Some(rpc_error(
+                            ERR_INVALID_PARAMS,
+                            "unknown prompt name",
+                            "invalid_params",
+                            None,
+                            None,
+                            None,
+                        )),
+                    })),
+                }
+            }
             "resources/list" => Ok(Some(RpcResponse {
                 jsonrpc: JSONRPC_VERSION,
                 id: id.clone(),
-                result: Some(json!({ "resources": Vec::<serde_json::Value>::new() })),
+                result: Some(json!({ "resources": self.resource_defs() })),
                 error: None,
             })),
             "resources/templates/list" => Ok(Some(RpcResponse {
@@ -1578,8 +1679,10 @@ impl McpServer {
         vec![
             ToolDefinition {
                 name: "docdex_search",
+                title: "Search Repo",
                 description:
                     "Search repo docs/code and return hits with rel_path/path, summary, snippet, and doc_id.",
+                annotations: Some(annotations_with_priority(0.9)),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1604,8 +1707,10 @@ impl McpServer {
             },
             ToolDefinition {
                 name: "docdex_web_research",
+                title: "Web Research",
                 description:
                     "Run local search plus web discovery/fetch and return the combined response (requires web enabled).",
+                annotations: Some(annotations_with_priority(0.6)),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1627,8 +1732,10 @@ impl McpServer {
             },
             ToolDefinition {
                 name: "docdex_index",
+                title: "Index Repo",
                 description:
                     "Rebuild the index (or ingest specific files) for the current repo root; use after large changes or stale results.",
+                annotations: Some(annotations_with_priority(0.7)),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1644,8 +1751,10 @@ impl McpServer {
             },
             ToolDefinition {
                 name: "docdex_files",
+                title: "List Files",
                 description:
                     "List indexed documents (rel_path/doc_id/token_estimate) for the current repo.",
+                annotations: Some(annotations_with_priority(0.6)),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1658,8 +1767,10 @@ impl McpServer {
             },
             ToolDefinition {
                 name: "docdex_open",
+                title: "Open File",
                 description:
                     "Read a file from the repo (optional line window); rejects paths outside the repo.",
+                annotations: Some(annotations_with_priority(0.6)),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1674,8 +1785,10 @@ impl McpServer {
             },
             ToolDefinition {
                 name: "docdex_stats",
+                title: "Repo Stats",
                 description:
                     "Inspect index metadata: doc count, state dir, size on disk, and last update time.",
+                annotations: Some(annotations_with_priority(0.5)),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1686,8 +1799,10 @@ impl McpServer {
             },
             ToolDefinition {
                 name: "docdex_repo_inspect",
+                title: "Repo Inspect",
                 description:
                     "Inspect how Docdex resolves repo identity (normalized path, fingerprint, and any shared-state mapping).",
+                annotations: Some(annotations_with_priority(0.5)),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1698,7 +1813,9 @@ impl McpServer {
             },
             ToolDefinition {
                 name: "docdex_symbols",
+                title: "Symbols",
                 description: "Read the symbol extraction result for a file, including per-file outcome (ok/skipped/failed).",
+                annotations: Some(annotations_with_priority(0.7)),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1711,7 +1828,9 @@ impl McpServer {
             },
             ToolDefinition {
                 name: "docdex_ast",
+                title: "AST",
                 description: "Read Tree-sitter AST nodes for a file, including per-file outcome (ok/skipped/failed).",
+                annotations: Some(annotations_with_priority(0.7)),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1725,7 +1844,9 @@ impl McpServer {
             },
             ToolDefinition {
                 name: "docdex_impact_diagnostics",
+                title: "Impact Diagnostics",
                 description: "List unresolved dynamic import diagnostics by file.",
+                annotations: Some(annotations_with_priority(0.7)),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1739,7 +1860,9 @@ impl McpServer {
             },
             ToolDefinition {
                 name: "docdex_memory_save",
+                title: "Save Memory",
                 description: "Store a memory item (requires DOCDEX_ENABLE_MEMORY=1).",
+                annotations: Some(annotations_with_priority(0.5)),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1753,7 +1876,9 @@ impl McpServer {
             },
             ToolDefinition {
                 name: "docdex_memory_store",
+                title: "Store Memory",
                 description: "Store a memory item (requires DOCDEX_ENABLE_MEMORY=1).",
+                annotations: Some(annotations_with_priority(0.5)),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1767,7 +1892,9 @@ impl McpServer {
             },
             ToolDefinition {
                 name: "docdex_memory_recall",
+                title: "Recall Memory",
                 description: "Recall memory items by semantic similarity (requires DOCDEX_ENABLE_MEMORY=1).",
+                annotations: Some(annotations_with_priority(0.5)),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1781,7 +1908,9 @@ impl McpServer {
             },
             ToolDefinition {
                 name: "docdex_save_preference",
+                title: "Save Preference",
                 description: "Store a global profile preference for an agent (profile memory, async evolution).",
+                annotations: Some(annotations_with_priority(0.4)),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1797,7 +1926,9 @@ impl McpServer {
             },
             ToolDefinition {
                 name: "docdex_get_profile",
+                title: "Get Profile",
                 description: "Fetch profile preferences for an agent (profile memory).",
+                annotations: Some(annotations_with_priority(0.4)),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1810,13 +1941,206 @@ impl McpServer {
         ]
     }
 
+    fn prompt_defs(&self) -> Vec<PromptDefinition> {
+        vec![
+            PromptDefinition {
+                name: "docdex_onboarding",
+                title: "Onboard a Repo",
+                description: "Guide a new contributor through the repo with Docdex tools.",
+                arguments: vec![
+                    PromptArgument {
+                        name: "topic",
+                        description: "Area or concept to focus on (e.g., auth, billing)",
+                        required: false,
+                    },
+                    PromptArgument {
+                        name: "depth",
+                        description: "Depth of the walkthrough (quick or deep)",
+                        required: false,
+                    },
+                ],
+                annotations: Some(annotations_with_priority(0.6)),
+            },
+            PromptDefinition {
+                name: "docdex_incident_triage",
+                title: "Incident Triage",
+                description: "Triage a production issue using Docdex search + impact data.",
+                arguments: vec![
+                    PromptArgument {
+                        name: "symptom",
+                        description: "Symptom or error summary",
+                        required: true,
+                    },
+                    PromptArgument {
+                        name: "log_snippet",
+                        description: "Optional log snippet for context",
+                        required: false,
+                    },
+                ],
+                annotations: Some(annotations_with_priority(0.6)),
+            },
+            PromptDefinition {
+                name: "docdex_refactor_plan",
+                title: "Refactor Plan",
+                description: "Plan a refactor using Docdex symbols and impact graph.",
+                arguments: vec![
+                    PromptArgument {
+                        name: "target",
+                        description: "What you want to refactor (module, file, API)",
+                        required: true,
+                    },
+                    PromptArgument {
+                        name: "constraints",
+                        description: "Optional constraints (performance, compatibility)",
+                        required: false,
+                    },
+                ],
+                annotations: Some(annotations_with_priority(0.5)),
+            },
+        ]
+    }
+
+    fn prompt_payload(
+        &self,
+        name: &str,
+        args: Option<&serde_json::Value>,
+    ) -> Option<serde_json::Value> {
+        let args = args.and_then(|value| value.as_object());
+        match name {
+            "docdex_onboarding" => {
+                let topic = args
+                    .and_then(|value| value.get("topic"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("the codebase");
+                let depth = args
+                    .and_then(|value| value.get("depth"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("quick");
+                let text = format!(
+                    "You are onboarding a new contributor. Use Docdex tools to map {topic}.\n\
+Depth: {depth}.\n\
+Steps:\n\
+1) Run docdex_search for the entry points.\n\
+2) Use docdex_open to read key files.\n\
+3) Use docdex_symbols/docdex_ast for structure.\n\
+4) Use docdex_impact_diagnostics for dependency risks.\n\
+Return a short summary and a next-questions list."
+                );
+                Some(json!({
+                    "name": name,
+                    "title": "Onboard a Repo",
+                    "description": "Guide a new contributor through the repo with Docdex tools.",
+                    "messages": [
+                        { "role": "system", "content": [{ "type": "text", "text": text }] }
+                    ]
+                }))
+            }
+            "docdex_incident_triage" => {
+                let symptom = args
+                    .and_then(|value| value.get("symptom"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown incident");
+                let log_snippet = args
+                    .and_then(|value| value.get("log_snippet"))
+                    .and_then(|value| value.as_str());
+                let mut text = format!(
+                    "Triage the incident: {symptom}.\n\
+Use docdex_search to find the code paths, then docdex_open for details. \
+Use docdex_impact_diagnostics to spot risky dependencies."
+                );
+                if let Some(snippet) = log_snippet {
+                    text.push_str("\nLog snippet:\n");
+                    text.push_str(snippet);
+                }
+                Some(json!({
+                    "name": name,
+                    "title": "Incident Triage",
+                    "description": "Triage a production issue using Docdex search + impact data.",
+                    "messages": [
+                        { "role": "system", "content": [{ "type": "text", "text": text }] }
+                    ]
+                }))
+            }
+            "docdex_refactor_plan" => {
+                let target = args
+                    .and_then(|value| value.get("target"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("the target area");
+                let constraints = args
+                    .and_then(|value| value.get("constraints"))
+                    .and_then(|value| value.as_str());
+                let mut text = format!(
+                    "Plan a refactor for {target}.\n\
+Use docdex_symbols/docdex_ast to map structure, then docdex_impact_diagnostics to list affected modules.\n\
+Produce a phased plan with risks and tests to run."
+                );
+                if let Some(extra) = constraints {
+                    text.push_str("\nConstraints:\n");
+                    text.push_str(extra);
+                }
+                Some(json!({
+                    "name": name,
+                    "title": "Refactor Plan",
+                    "description": "Plan a refactor using Docdex symbols and impact graph.",
+                    "messages": [
+                        { "role": "system", "content": [{ "type": "text", "text": text }] }
+                    ]
+                }))
+            }
+            _ => None,
+        }
+    }
+
+    fn resource_defs(&self) -> Vec<ResourceDefinition> {
+        let mut resources = Vec::new();
+        let candidates = [
+            (
+                "README.md",
+                "repo_readme",
+                "Repo README",
+                "Primary project README in the repo root.",
+                "text/markdown",
+            ),
+            (
+                "docs/overview.md",
+                "docs_overview",
+                "Docs Overview",
+                "High-level documentation overview.",
+                "text/markdown",
+            ),
+            (
+                "docs/usage.md",
+                "docs_usage",
+                "Usage Guide",
+                "Docdex usage guide for this repo.",
+                "text/markdown",
+            ),
+        ];
+        for (path, name, title, description, mime_type) in candidates {
+            if self.repo_root.join(path).is_file() {
+                resources.push(ResourceDefinition {
+                    uri: format!("docdex://{path}"),
+                    name: format!("docdex_{name}"),
+                    title: title.to_string(),
+                    description: description.to_string(),
+                    mime_type: mime_type.to_string(),
+                    annotations: Some(annotations_with_priority(0.3)),
+                });
+            }
+        }
+        resources
+    }
+
     fn resource_templates(&self) -> Vec<ResourceTemplate> {
         vec![ResourceTemplate {
             name: "docdex_file",
+            title: "Docdex File",
             description:
                 "Read a file from the current repo (delegates to docdex_open); vars: {path}.",
             uri_template: "docdex://{path}",
+            mime_type: "text/plain",
             variables: &["path"],
+            annotations: Some(annotations_with_priority(0.3)),
         }]
     }
 

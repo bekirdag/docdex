@@ -12,14 +12,20 @@ startCommand:
       ]
     })
 configSchema:
+  title: "Docdex MCP session config"
+  description: "Configure the local Docdex MCP server session."
   type: "object"
+  additionalProperties: false
+  required: []
   properties:
     repo_path:
       type: "string"
+      title: "Repo path"
       description: "Repo root to index for the local Docdex MCP server"
       default: "."
     log_level:
       type: "string"
+      title: "Log level"
       description: "Log level for MCP server output"
       enum:
         - "trace"
@@ -31,7 +37,10 @@ configSchema:
     max_results:
       type: "integer"
       minimum: 1
+      title: "Max results"
       description: "Max results to return per tool call (server clamps to its max)"
       default: 8
 exampleConfig:
   repo_path: "."
+  log_level: "warn"
+  max_results: 8

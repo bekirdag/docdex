@@ -8,7 +8,9 @@ const os = require("node:os");
 const path = require("node:path");
 
 function getNpmCommand() {
-  return process.platform === "win32" ? "npm.cmd" : "npm";
+  const npmExec = process.env.npm_execpath;
+  if (npmExec) return { cmd: process.execPath, args: [npmExec] };
+  return { cmd: process.platform === "win32" ? "npm.cmd" : "npm", args: [] };
 }
 
 function withTempNpmCache(run) {
@@ -23,14 +25,19 @@ function withTempNpmCache(run) {
 test("npm tarball excludes native docdexd binaries", () => {
   const pkgRoot = path.resolve(__dirname, "..");
   let stdout = "";
+  const { cmd, args } = getNpmCommand();
 
   try {
     stdout = withTempNpmCache((cacheDir) =>
-      execFileSync(getNpmCommand(), ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+      execFileSync(cmd, args.concat(["pack", "--dry-run", "--json", "--ignore-scripts"]), {
         cwd: pkgRoot,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, npm_config_cache: cacheDir }
+        env: {
+          ...process.env,
+          npm_config_cache: cacheDir,
+          npm_config_loglevel: "silent"
+        }
       })
     );
   } catch (err) {

@@ -1,3 +1,4 @@
+[![Website](https://img.shields.io/badge/website-docdex.org-blue)](https://docdex.org)
 [![smithery badge](https://smithery.ai/badge/bekirdag/docdex)](https://smithery.ai/server/bekirdag/docdex)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/bekirdag/docdex/release.yml?branch=main)
 ![GitHub License](https://img.shields.io/github/license/bekirdag/docdex)

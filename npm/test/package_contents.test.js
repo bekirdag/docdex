@@ -7,15 +7,27 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
+function resolveNpmCommand() {
+  const npmExec = process.env.npm_execpath;
+  if (npmExec) return { cmd: process.execPath, args: [npmExec] };
+  const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+  return { cmd: npmCmd, args: [] };
+}
+
 function readPackList() {
   const cwd = path.join(__dirname, "..");
   const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-npm-cache-"));
   let stdout = "";
+  const { cmd, args } = resolveNpmCommand();
   try {
-    stdout = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+    stdout = execFileSync(cmd, args.concat(["pack", "--dry-run", "--json", "--ignore-scripts"]), {
       cwd,
       encoding: "utf8",
-      env: { ...process.env, npm_config_cache: cacheDir }
+      env: {
+        ...process.env,
+        npm_config_cache: cacheDir,
+        npm_config_loglevel: "silent"
+      }
     });
   } finally {
     fs.rmSync(cacheDir, { recursive: true, force: true });

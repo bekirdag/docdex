@@ -9,6 +9,13 @@ const path = require("node:path");
 
 const cwd = path.resolve(__dirname, "..");
 
+const resolveNpmCommand = () => {
+  const npmExec = process.env.npm_execpath;
+  if (npmExec) return { cmd: process.execPath, args: [npmExec] };
+  const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+  return { cmd: npmCmd, args: [] };
+};
+
 const bannedMatchers = [
   { pattern: /(^|\/)docdexd(\.exe)?$/i, reason: "docdexd binary" },
   { pattern: /(^|\/)docdexd-.*\.(tar\.gz|zip)$/i, reason: "docdexd release archive" },
@@ -26,12 +33,17 @@ const normalizePath = (value) => value.replace(/\\/g, "/");
 const getPackList = () => {
   const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-npm-cache-"));
   let stdout = "";
+  const { cmd, args } = resolveNpmCommand();
   try {
-    stdout = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+    stdout = execFileSync(cmd, args.concat(["pack", "--dry-run", "--json", "--ignore-scripts"]), {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, npm_config_cache: cacheDir },
+      env: {
+        ...process.env,
+        npm_config_cache: cacheDir,
+        npm_config_loglevel: "silent"
+      },
     });
   } finally {
     fs.rmSync(cacheDir, { recursive: true, force: true });

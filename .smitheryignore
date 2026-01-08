@@ -1,0 +1,4 @@
+# Avoid Smithery treating the repo as a Node project.
+package.json
+package-lock.json
+node_modules

@@ -1,4 +1,4 @@
-[![smithery badge](https://smithery.ai/badge/@bekirdag/docdex)](https://smithery.ai/server/@bekirdag/docdex)
+[![smithery badge](https://smithery.ai/badge/bekirdag/docdex)](https://smithery.ai/server/bekirdag/docdex)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/bekirdag/docdex/release.yml?branch=main)
 ![GitHub License](https://img.shields.io/github/license/bekirdag/docdex)
 ![GitHub Release](https://img.shields.io/github/v/release/bekirdag/docdex)

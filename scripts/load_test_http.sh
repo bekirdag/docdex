@@ -7,6 +7,12 @@ CONCURRENCY="${DOCDEX_LOAD_CONCURRENCY:-4}"
 TIMEOUT_SECS="${DOCDEX_LOAD_TIMEOUT_SECS:-5}"
 REQUEST_PATH="${DOCDEX_LOAD_PATH:-/search?q=docdex&limit=5&skip_local_search=true}"
 MAX_ERROR_RATE="${DOCDEX_LOAD_MAX_ERROR_RATE:-0}"
+AUTH_TOKEN="${DOCDEX_AUTH_TOKEN:-}"
+
+CURL_AUTH_ARGS=()
+if [[ -n "${AUTH_TOKEN//[[:space:]]/}" ]]; then
+  CURL_AUTH_ARGS=(-H "Authorization: Bearer ${AUTH_TOKEN}")
+fi
 
 log() {
   printf "[load-http] %s\n" "$*" >&2
@@ -26,7 +32,7 @@ worker() {
   local ok=0
   local fail=0
   while [[ "$(date +%s)" -lt "${end_epoch}" ]]; do
-    if curl -fsS --max-time "${TIMEOUT_SECS}" "${BASE_URL}${REQUEST_PATH}" >/dev/null 2>&1; then
+    if curl -fsS --max-time "${TIMEOUT_SECS}" "${CURL_AUTH_ARGS[@]}" "${BASE_URL}${REQUEST_PATH}" >/dev/null 2>&1; then
       ok=$((ok + 1))
     else
       fail=$((fail + 1))

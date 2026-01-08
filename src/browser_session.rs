@@ -734,6 +734,30 @@ mod tests {
     use tempfile::TempDir;
 
     #[cfg(unix)]
+    fn resolve_shell() -> Option<std::path::PathBuf> {
+        const CANDIDATES: [&str; 2] = ["/bin/sh", "/usr/bin/sh"];
+        for candidate in CANDIDATES {
+            let path = std::path::Path::new(candidate);
+            if path.exists() {
+                return Some(path.to_path_buf());
+            }
+        }
+        if let Some(shell) = std::env::var_os("SHELL") {
+            let path = std::path::PathBuf::from(shell);
+            if path.exists() {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    #[cfg(unix)]
+    fn shell_command() -> Option<Command> {
+        let shell = resolve_shell()?;
+        Some(Command::new(shell))
+    }
+
+    #[cfg(unix)]
     fn process_group_alive(pgid: i32) -> bool {
         let rc = unsafe { nix::libc::killpg(pgid, 0) };
         if rc == 0 {
@@ -765,7 +789,13 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let lock_path = temp.path().join("locks").join("browser.lock");
 
-        let mut cmd = Command::new("sh");
+        let mut cmd = match shell_command() {
+            Some(cmd) => cmd,
+            None => {
+                eprintln!("skipping: no POSIX shell found");
+                return;
+            }
+        };
         cmd.arg("-c").arg("sleep 1000");
 
         let session = BrowserSession::spawn(
@@ -799,7 +829,13 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let lock_path = temp.path().join("locks").join("browser.lock");
 
-        let mut cmd = Command::new("sh");
+        let mut cmd = match shell_command() {
+            Some(cmd) => cmd,
+            None => {
+                eprintln!("skipping: no POSIX shell found");
+                return;
+            }
+        };
         cmd.arg("-c").arg("sleep 1000");
 
         let session = BrowserSession::spawn(
@@ -841,7 +877,13 @@ mod tests {
         let lock_path = temp.path().join("locks").join("browser.lock");
         let pid_file = temp.path().join("child.pid");
 
-        let mut cmd = Command::new("sh");
+        let mut cmd = match shell_command() {
+            Some(cmd) => cmd,
+            None => {
+                eprintln!("skipping: no POSIX shell found");
+                return;
+            }
+        };
         cmd.arg("-c")
             .arg(r#"sleep 1000 & echo $! > "$1"; wait"#)
             .arg("sh")
@@ -1133,7 +1175,13 @@ mod tests {
             .build()
             .expect("runtime");
         rt.block_on(async {
-            let mut cmd = Command::new("sh");
+            let mut cmd = match shell_command() {
+                Some(cmd) => cmd,
+                None => {
+                    eprintln!("skipping: no POSIX shell found");
+                    return;
+                }
+            };
             cmd.arg("-c").arg("sleep 1000");
             let session = BrowserSession::spawn(cmd, BrowserSessionOptions::without_lock())
                 .await

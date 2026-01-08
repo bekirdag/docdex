@@ -745,6 +745,30 @@ mod tests {
     #[cfg(unix)]
     use super::*;
 
+    #[cfg(unix)]
+    fn resolve_shell() -> Option<std::path::PathBuf> {
+        const CANDIDATES: [&str; 2] = ["/bin/sh", "/usr/bin/sh"];
+        for candidate in CANDIDATES {
+            let path = std::path::Path::new(candidate);
+            if path.exists() {
+                return Some(path.to_path_buf());
+            }
+        }
+        if let Some(shell) = std::env::var_os("SHELL") {
+            let path = std::path::PathBuf::from(shell);
+            if path.exists() {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    #[cfg(unix)]
+    fn shell_command() -> Option<tokio::process::Command> {
+        let shell = resolve_shell()?;
+        Some(tokio::process::Command::new(shell))
+    }
+
     fn prometheus_counter(text: &str, name: &str) -> u64 {
         for line in text.lines() {
             if line.starts_with(name) {
@@ -763,8 +787,6 @@ mod tests {
     async fn reaps_orphaned_process_after_grace() {
         use std::io;
         use tempfile::TempDir;
-        use tokio::process::Command;
-
         let before = crate::metrics::global().render_prometheus();
         let before_reaped = prometheus_counter(&before, "docdex_chrome_watchdog_reaped_total");
 
@@ -781,7 +803,13 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let pid_file = temp.path().join("orphan.pid");
 
-        let mut cmd = Command::new("sh");
+        let mut cmd = match shell_command() {
+            Some(cmd) => cmd,
+            None => {
+                eprintln!("skipping: no POSIX shell found");
+                return;
+            }
+        };
         cmd.arg("-c")
             .arg(r#"nohup sleep 1000 >/dev/null 2>&1 & echo $! > "$1""#)
             .arg("sh")
@@ -859,8 +887,6 @@ mod tests {
     async fn does_not_reap_active_session_without_opt_in_timeouts() {
         use std::io;
         use tempfile::TempDir;
-        use tokio::process::Command;
-
         let watchdog = ChromeWatchdog::start(ChromeWatchdogConfig {
             scan_interval: Duration::from_millis(50),
             orphan_reap_after: Duration::from_millis(100),
@@ -874,7 +900,13 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let pid_file = temp.path().join("active.pid");
 
-        let mut cmd = Command::new("sh");
+        let mut cmd = match shell_command() {
+            Some(cmd) => cmd,
+            None => {
+                eprintln!("skipping: no POSIX shell found");
+                return;
+            }
+        };
         cmd.arg("-c")
             .arg(r#"nohup sleep 1000 >/dev/null 2>&1 & echo $! > "$1""#)
             .arg("sh")

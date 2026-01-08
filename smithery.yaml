@@ -1,12 +1,11 @@
 target: 'local'
-dockerfile: './Dockerfile'
 startCommand:
   type: "stdio"
   commandFunction: |-
     (config) => ({
-      command: 'docdexd',
+      command: 'node',
       args: [
-        'mcp',
+        'smithery/entry.js',
         '--repo',
         config.repo_path,
         '--log',

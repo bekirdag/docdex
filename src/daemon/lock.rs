@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use fs4::FileExt;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -49,14 +49,15 @@ pub fn default_lock_path() -> Result<PathBuf> {
             return Ok(PathBuf::from(trimmed));
         }
     }
-    let state_dir = crate::state_paths::default_state_base_dir()?;
-    let Some(root) = state_dir.parent() else {
-        return Err(anyhow!(
-            "unable to resolve daemon lock path from {}",
-            state_dir.display()
-        ));
-    };
-    Ok(root.join("daemon.lock"))
+    if let Ok(state_dir) = crate::state_paths::default_state_base_dir() {
+        if let Some(root) = state_dir.parent() {
+            return Ok(root.join("locks").join("daemon.lock"));
+        }
+    }
+    Ok(std::env::temp_dir()
+        .join("docdex")
+        .join("locks")
+        .join("daemon.lock"))
 }
 
 pub fn acquire_lock_at_path(path: &Path, port: u16) -> Result<DaemonLock> {
@@ -221,10 +222,50 @@ fn probe_health(port: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use once_cell::sync::Lazy;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::{Mutex, MutexGuard};
     use std::thread;
     use tempfile::TempDir;
+
+    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    struct EnvGuard {
+        prev: Vec<(&'static str, Option<String>)>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn new(keys: &[&'static str]) -> Self {
+            let lock = ENV_LOCK.lock().expect("env lock");
+            let prev = keys
+                .iter()
+                .map(|key| (*key, std::env::var(*key).ok()))
+                .collect();
+            Self { prev, _lock: lock }
+        }
+
+        fn set(&self, key: &'static str, value: &str) {
+            std::env::set_var(key, value);
+        }
+
+        fn clear(&self, key: &'static str) {
+            std::env::remove_var(key);
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, prev) in &self.prev {
+                if let Some(value) = prev {
+                    std::env::set_var(*key, value);
+                } else {
+                    std::env::remove_var(*key);
+                }
+            }
+        }
+    }
 
     fn unused_port() -> Option<u16> {
         match TcpListener::bind("127.0.0.1:0") {
@@ -251,6 +292,67 @@ mod tests {
             }
         });
         Some((port, handle))
+    }
+
+    #[test]
+    fn default_lock_path_prefers_env_override() -> Result<()> {
+        let dir = TempDir::new()?;
+        let guard = EnvGuard::new(&[
+            "DOCDEX_DAEMON_LOCK_PATH",
+            "HOME",
+            "USERPROFILE",
+            "HOMEDRIVE",
+            "HOMEPATH",
+        ]);
+        let custom = dir.path().join("custom.lock");
+        guard.set("DOCDEX_DAEMON_LOCK_PATH", custom.to_string_lossy().as_ref());
+        let resolved = default_lock_path()?;
+        assert_eq!(resolved, custom);
+        Ok(())
+    }
+
+    #[test]
+    fn default_lock_path_uses_home_locks_dir() -> Result<()> {
+        let dir = TempDir::new()?;
+        let guard = EnvGuard::new(&[
+            "DOCDEX_DAEMON_LOCK_PATH",
+            "HOME",
+            "USERPROFILE",
+            "HOMEDRIVE",
+            "HOMEPATH",
+        ]);
+        guard.clear("DOCDEX_DAEMON_LOCK_PATH");
+        guard.set("HOME", dir.path().to_string_lossy().as_ref());
+        guard.clear("USERPROFILE");
+        guard.clear("HOMEDRIVE");
+        guard.clear("HOMEPATH");
+        let resolved = default_lock_path()?;
+        let expected = dir.path().join(".docdex").join("locks").join("daemon.lock");
+        assert_eq!(resolved, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn default_lock_path_falls_back_to_temp_dir() -> Result<()> {
+        let guard = EnvGuard::new(&[
+            "DOCDEX_DAEMON_LOCK_PATH",
+            "HOME",
+            "USERPROFILE",
+            "HOMEDRIVE",
+            "HOMEPATH",
+        ]);
+        guard.clear("DOCDEX_DAEMON_LOCK_PATH");
+        guard.clear("HOME");
+        guard.clear("USERPROFILE");
+        guard.clear("HOMEDRIVE");
+        guard.clear("HOMEPATH");
+        let resolved = default_lock_path()?;
+        let expected = std::env::temp_dir()
+            .join("docdex")
+            .join("locks")
+            .join("daemon.lock");
+        assert_eq!(resolved, expected);
+        Ok(())
     }
 
     #[test]

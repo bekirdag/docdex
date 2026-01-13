@@ -269,6 +269,7 @@ Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary to
 - State/index directory: `~/.docdex/state/repos/<fingerprint>/index` by default (override with `--state-dir` / `DOCDEX_STATE_DIR`).
 - HTTP API: defaults to `127.0.0.1:3210` when serving.
 - Docdex data stays local under `~/.docdex/state` unless overridden.
+- Daemon lock: `~/.docdex/locks/daemon.lock` by default (override with `DOCDEX_DAEMON_LOCK_PATH`; falls back to OS temp dir when home is unavailable).
 - Logs: set `DOCDEX_LOG_TO_STATE=1` to also write `~/.docdex/state/logs/docdexd-<pid>.log`.
 
 ## Configuration reference

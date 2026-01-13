@@ -298,7 +298,7 @@ impl LibsIndexer {
             tantivy::SnippetGenerator::create(&searcher, tantivy_query.as_ref(), self.body_field)
                 .ok();
         if let Some(generator) = snippet_generator.as_mut() {
-            generator.set_max_num_chars(420);
+            generator.set_max_num_chars(super::MAX_SNIPPET_CHARS);
         }
 
         let top_docs = searcher.search(&tantivy_query, &TopDocs::with_limit(limit))?;
@@ -327,34 +327,52 @@ impl LibsIndexer {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
 
-            let (snippet, snippet_origin) = snippet_generator
+            let (snippet, snippet_origin, snippet_truncated) = snippet_generator
                 .as_ref()
                 .and_then(|gen| {
                     let snippet = gen.snippet_from_doc(&retrieved);
-                    let fragment = snippet.fragment().trim().to_string();
+                    let fragment = snippet.fragment().trim();
                     if fragment.is_empty() {
                         None
                     } else {
-                        Some((fragment, SearchSnippetOrigin::Query))
+                        let inferred_truncated = fragment
+                            .chars()
+                            .count()
+                            >= super::MAX_SNIPPET_CHARS.saturating_sub(1);
+                        super::line_safe_snippet_for_fragment(
+                            body,
+                            fragment,
+                            super::MAX_SNIPPET_CHARS,
+                        )
+                        .map(|(text, snippet_truncated, _start, _end)| {
+                            (
+                                text,
+                                SearchSnippetOrigin::Query,
+                                snippet_truncated || inferred_truncated,
+                            )
+                        })
                     }
                 })
                 .or_else(|| {
                     preview_snippet_from_body(body, 40)
-                        .map(|text| (text, SearchSnippetOrigin::Preview))
+                        .map(|(text, truncated)| (text, SearchSnippetOrigin::Preview, truncated))
                 })
-                .unwrap_or_else(|| (summary.clone(), SearchSnippetOrigin::Summary));
+                .unwrap_or_else(|| (summary.clone(), SearchSnippetOrigin::Summary, false));
 
+            let kind = crate::index::DocumentKind::Doc;
+            let doc_type = super::document_type_for_path(&rel_path, kind);
             results.push(Hit {
                 doc_id,
                 rel_path,
                 path,
-                kind: crate::index::DocumentKind::Doc,
+                kind,
+                doc_type,
                 score,
                 summary,
                 snippet,
                 token_estimate,
                 snippet_origin: Some(snippet_origin),
-                snippet_truncated: Some(false),
+                snippet_truncated: Some(snippet_truncated),
                 line_start: None,
                 line_end: None,
             });
@@ -410,10 +428,13 @@ impl LibsIndexer {
             .get_first(self.token_field)
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
+        let kind = crate::index::DocumentKind::Doc;
+        let doc_type = super::document_type_for_path(&rel_path, kind);
         DocSnapshot {
             doc_id: doc_id.to_string(),
             rel_path,
-            kind: crate::index::DocumentKind::Doc,
+            kind,
+            doc_type,
             summary,
             token_estimate,
         }
@@ -439,18 +460,37 @@ impl LibsIndexer {
                 if let Ok(mut generator) =
                     tantivy::SnippetGenerator::create(&searcher, parsed.as_ref(), self.body_field)
                 {
-                    generator.set_max_num_chars(420);
+                    generator.set_max_num_chars(super::MAX_SNIPPET_CHARS);
                     let snippet = generator.snippet_from_doc(doc);
                     let fragment = snippet.fragment().trim();
                     if !fragment.is_empty() {
-                        return Ok(Some(SnippetResult {
-                            text: fragment.to_string(),
-                            html: Some(snippet.to_html()),
-                            truncated: false,
-                            origin: SnippetOrigin::Query,
-                            line_start: None,
-                            line_end: None,
-                        }));
+                        let inferred_truncated =
+                            fragment.chars().count() >= super::MAX_SNIPPET_CHARS.saturating_sub(1);
+                        let body = doc
+                            .get_first(self.body_field)
+                            .and_then(|v| v.as_text())
+                            .unwrap_or_default();
+                        if let Some((text, snippet_truncated, _start, _end)) =
+                            super::line_safe_snippet_for_fragment(
+                                body,
+                                fragment,
+                                super::MAX_SNIPPET_CHARS,
+                            )
+                        {
+                            let html = if text.trim() == fragment {
+                                Some(snippet.to_html())
+                            } else {
+                                None
+                            };
+                            return Ok(Some(SnippetResult {
+                                text,
+                                html,
+                                truncated: snippet_truncated || inferred_truncated,
+                                origin: SnippetOrigin::Query,
+                                line_start: None,
+                                line_end: None,
+                            }));
+                        }
                     }
                 }
             }
@@ -459,14 +499,17 @@ impl LibsIndexer {
             .get_first(self.body_field)
             .and_then(|v| v.as_text())
             .unwrap_or_default();
-        let preview = preview_snippet_from_body(body, fallback_lines).unwrap_or_default();
-        if preview.trim().is_empty() {
+        let preview = preview_snippet_from_body(body, fallback_lines);
+        let Some((preview_text, preview_truncated)) = preview else {
+            return Ok(None);
+        };
+        if preview_text.trim().is_empty() {
             return Ok(None);
         }
         Ok(Some(SnippetResult {
-            text: preview,
+            text: preview_text,
             html: None,
-            truncated: false,
+            truncated: preview_truncated,
             origin: SnippetOrigin::Preview,
             line_start: None,
             line_end: None,
@@ -1128,27 +1171,32 @@ fn sanitize_query(input: &str) -> String {
         .join(" ")
 }
 
-fn preview_snippet_from_body(body: &str, max_lines: usize) -> Option<String> {
+fn preview_snippet_from_body(body: &str, max_lines: usize) -> Option<(String, bool)> {
     if max_lines == 0 {
         return None;
     }
-    let mut lines = Vec::new();
-    for line in body.lines() {
+    let mut lines: Vec<(usize, String)> = Vec::new();
+    let mut truncated = false;
+    for (idx, line) in body.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-        lines.push(trimmed.to_string());
+        lines.push((idx + 1, trimmed.to_string()));
         if lines.len() >= max_lines {
+            truncated = true;
             break;
         }
     }
     if lines.is_empty() {
         return None;
     }
-    let joined = lines.join(" ");
-    let snippet = joined.chars().take(420).collect::<String>();
-    Some(snippet)
+    let (snippet, snippet_truncated, _, _) =
+        super::line_safe_snippet_from_lines(&lines, super::MAX_SNIPPET_CHARS);
+    if snippet.trim().is_empty() {
+        return None;
+    }
+    Some((snippet, truncated || snippet_truncated))
 }
 
 fn estimate_tokens(text: &str) -> u64 {

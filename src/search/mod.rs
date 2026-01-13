@@ -7,8 +7,8 @@ use crate::error::{
     ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
 };
 use crate::index::{
-    DocSnapshot, Hit, Indexer, SearchError, SearchQueryMeta, SearchSnippetOrigin, SnippetOrigin,
-    SnippetResult,
+    DocSnapshot, Hit, Indexer, QueryRewrite, SearchError, SearchQueryMeta, SearchSnippetOrigin,
+    SnippetOrigin, SnippetResult,
 };
 use crate::libs::LibsIndexer;
 use crate::mcp::McpProxyRouter;
@@ -38,6 +38,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::path::{Component, Path as FsPath};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
@@ -2308,6 +2309,7 @@ fn build_symbol_hit(
         rel_path: snapshot.rel_path.clone(),
         path: snapshot.rel_path.clone(),
         kind: snapshot.kind,
+        doc_type: snapshot.doc_type,
         score: SYMBOL_SCORE_BASE + boost,
         summary: snapshot.summary,
         snippet: snippet_text,
@@ -2362,6 +2364,7 @@ fn build_ast_hit(
         rel_path: snapshot.rel_path.clone(),
         path: snapshot.rel_path.clone(),
         kind: snapshot.kind,
+        doc_type: snapshot.doc_type,
         score: AST_SCORE_BASE + boost,
         summary: snapshot.summary,
         snippet: snippet_text,
@@ -2555,6 +2558,96 @@ pub(crate) fn normalize_score(score: f32) -> f32 {
     (score / (score + TOP_SCORE_NORMALIZATION_K)).clamp(0.0, 1.0)
 }
 
+fn normalize_rel_path_input(raw: &str, repo_root: &FsPath) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.contains("://") {
+        return None;
+    }
+    let raw_path = FsPath::new(trimmed);
+    if raw_path.is_absolute() {
+        let rel = raw_path.strip_prefix(repo_root).ok()?;
+        if rel
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+        {
+            return None;
+        }
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        return if rel_str.is_empty() { None } else { Some(rel_str) };
+    }
+    let cleaned = trimmed.replace('\\', "/");
+    let cleaned = cleaned.trim_start_matches("./").trim_start_matches('/');
+    if cleaned.is_empty() {
+        return None;
+    }
+    let rel_path = FsPath::new(cleaned);
+    if rel_path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return None;
+    }
+    Some(cleaned.to_string())
+}
+
+fn is_explicit_path_query(rel_path: &str) -> bool {
+    let lowered = rel_path.to_ascii_lowercase();
+    lowered.ends_with(".yaml") || lowered.ends_with(".yml") || lowered.ends_with(".json")
+}
+
+fn hit_from_snapshot(snapshot: DocSnapshot, snippet: Option<SnippetResult>) -> Hit {
+    let (snippet_text, snippet_origin, snippet_truncated, line_start, line_end) =
+        if let Some(snippet) = snippet {
+            let origin = match snippet.origin {
+                SnippetOrigin::Query => SearchSnippetOrigin::Query,
+                SnippetOrigin::Preview => SearchSnippetOrigin::Preview,
+            };
+            (
+                snippet.text,
+                origin,
+                snippet.truncated,
+                snippet.line_start,
+                snippet.line_end,
+            )
+        } else {
+            (
+                snapshot.summary.clone(),
+                SearchSnippetOrigin::Summary,
+                false,
+                None,
+                None,
+            )
+        };
+    Hit {
+        doc_id: snapshot.doc_id,
+        rel_path: snapshot.rel_path.clone(),
+        path: snapshot.rel_path,
+        kind: snapshot.kind,
+        doc_type: snapshot.doc_type,
+        score: 1.0,
+        summary: snapshot.summary,
+        snippet: snippet_text,
+        token_estimate: snapshot.token_estimate,
+        snippet_origin: Some(snippet_origin),
+        snippet_truncated: Some(snippet_truncated),
+        line_start,
+        line_end,
+    }
+}
+
+fn path_hit_for_query(indexer: &Indexer, query: &str, window: usize) -> Result<Option<Hit>> {
+    let Some(rel_path) = normalize_rel_path_input(query, indexer.repo_root()) else {
+        return Ok(None);
+    };
+    if !is_explicit_path_query(&rel_path) {
+        return Ok(None);
+    }
+    let Some((doc, snippet)) = indexer.snapshot_with_snippet(&rel_path, None, window)? else {
+        return Ok(None);
+    };
+    Ok(Some(hit_from_snapshot(doc, snippet)))
+}
+
 fn merge_hits(repo_hits: Vec<Hit>, libs_hits: Vec<Hit>, limit: usize) -> Vec<Hit> {
     if libs_hits.is_empty() {
         return repo_hits;
@@ -2693,6 +2786,114 @@ async fn search_handler(
             ),
         )
         .into_response();
+    }
+
+    if !skip_local_search {
+        match path_hit_for_query(&repo.indexer, query, DEFAULT_SNIPPET_WINDOW) {
+            Ok(Some(hit)) => {
+                let mut hits = vec![hit];
+                let query_meta = Some(SearchQueryMeta {
+                    raw: query.to_string(),
+                    effective: query.to_string(),
+                    rewrite: QueryRewrite::None,
+                });
+                let max_tokens = params.max_tokens;
+                let snippet_policy = if state.security.disable_snippet_text {
+                    SnippetPolicy::Disabled
+                } else if params.snippets == Some(false) {
+                    SnippetPolicy::SummaryOnly
+                } else {
+                    SnippetPolicy::Full
+                };
+
+                let hits_before_pruning = hits.len();
+                let mut pruned: Vec<PrunedHitMeta> = Vec::new();
+                if let Some(budget) = max_tokens {
+                    hits.retain(|hit| {
+                        if hit.token_estimate <= budget {
+                            true
+                        } else {
+                            pruned.push(PrunedHitMeta {
+                                doc_id: hit.doc_id.clone(),
+                                rel_path: hit.rel_path.clone(),
+                                score: hit.score,
+                                token_estimate: hit.token_estimate,
+                                reason: format!(
+                                    "token_estimate {}/{} exceeds max_tokens",
+                                    hit.token_estimate, budget
+                                ),
+                            });
+                            false
+                        }
+                    });
+                }
+
+                if !matches!(snippet_policy, SnippetPolicy::Full) {
+                    for hit in hits.iter_mut() {
+                        hit.snippet.clear();
+                    }
+                }
+
+                let top_score = hits.first().map(|hit| hit.score);
+                let token_estimate_sum_kept = hits.iter().map(|hit| hit.token_estimate).sum();
+                let selected_sources = hits
+                    .iter()
+                    .map(|hit| SelectedSourceMeta {
+                        doc_id: hit.doc_id.clone(),
+                        rel_path: hit.rel_path.clone(),
+                        score: hit.score,
+                        token_estimate: hit.token_estimate,
+                        snippet_origin: hit.snippet_origin.clone(),
+                        snippet_truncated: hit.snippet_truncated,
+                    })
+                    .collect::<Vec<_>>();
+
+                let context_assembly = ContextAssemblyMeta {
+                    requested_limit: params.limit,
+                    effective_limit: limit,
+                    snippet_policy,
+                    max_tokens,
+                    token_budget_mode: "per_hit_token_estimate",
+                    hits_before_pruning,
+                    hits_after_pruning: hits.len(),
+                    token_estimate_sum_kept,
+                    pruned,
+                    selected_sources,
+                };
+                let meta = build_search_meta(&repo.indexer, query_meta, Some(context_assembly)).ok();
+                let top_score_normalized = top_score.map(normalize_score);
+                let response = SearchResponse {
+                    hits,
+                    top_score,
+                    top_score_camel: top_score,
+                    top_score_normalized: top_score_normalized,
+                    top_score_normalized_camel: top_score_normalized,
+                    web_context: None,
+                    web_discovery: None,
+                    impact_context: None,
+                    profile_context: None,
+                    memory_context: None,
+                    symbols_context: None,
+                    meta,
+                };
+                return Json(response).into_response();
+            }
+            Ok(None) => {}
+            Err(err) => {
+                state.metrics.inc_error();
+                warn!(
+                    target: "docdexd",
+                    error = ?err,
+                    request_id = %request_id.0,
+                    "path lookup failed"
+                );
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("internal error (request id: {})", request_id.0),
+                )
+                    .into_response();
+            }
+        }
     }
 
     let include_libs = params.include_libs.unwrap_or(true);
@@ -2851,12 +3052,12 @@ async fn search_handler(
                     .into_response();
             }
             if let Some(app) = err.downcast_ref::<AppError>() {
-                return json_error(
-                    status_for_app_error(app.code),
-                    app.code,
-                    app.message.clone(),
-                )
-                .into_response();
+                let status = status_for_app_error(app.code);
+                if let Some(details) = app.details.clone() {
+                    return json_error_with_details(status, app.code, app.message.clone(), details)
+                        .into_response();
+                }
+                return json_error(status, app.code, app.message.clone()).into_response();
             }
             state.metrics.inc_error();
             warn!(
@@ -2931,8 +3132,22 @@ async fn snippet_handler(
             None => Ok(None),
         }
     } else {
-        repo.indexer
+        match repo
+            .indexer
             .snapshot_with_snippet(&doc_id, params.q.as_deref(), window)
+        {
+            Ok(Some(result)) => Ok(Some(result)),
+            Ok(None) => {
+                if let Some(normalized) = normalize_rel_path_input(&doc_id, repo.indexer.repo_root())
+                {
+                    repo.indexer
+                        .snapshot_with_snippet(&normalized, params.q.as_deref(), window)
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(err) => Err(err),
+        }
     };
     match snapshot {
         Ok(Some((doc, snippet))) => {
@@ -3218,5 +3433,37 @@ fn path_template(path: &str) -> String {
         "/snippet/:doc_id".to_string()
     } else {
         path.to_string()
+    }
+}
+
+#[cfg(test)]
+mod path_lookup_tests {
+    use super::{path_hit_for_query, DEFAULT_SNIPPET_WINDOW};
+    use crate::index::{IndexConfig, Indexer};
+    use anyhow::Result;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn open_by_path_resolves_yaml() -> Result<()> {
+        let repo = TempDir::new()?;
+        let state_root = TempDir::new()?;
+        let openapi_dir = repo.path().join("openapi");
+        fs::create_dir_all(&openapi_dir)?;
+        fs::write(openapi_dir.join("spec.yaml"), "openapi: 3.0.0\n")?;
+
+        let config = IndexConfig::with_overrides(
+            repo.path(),
+            Some(state_root.path().to_path_buf()),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )?;
+        let indexer = Indexer::with_config(repo.path().to_path_buf(), config)?;
+        indexer.reindex_all().await?;
+
+        let hit = path_hit_for_query(&indexer, "openapi/spec.yaml", DEFAULT_SNIPPET_WINDOW)?;
+        assert!(hit.is_some(), "expected open-by-path hit for yaml");
+        Ok(())
     }
 }

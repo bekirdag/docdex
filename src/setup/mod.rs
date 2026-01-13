@@ -13,7 +13,7 @@ pub(crate) mod ollama;
 mod state;
 mod state_store;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 mod ui;
 
 const AGENTS_INSTRUCTIONS: &str = include_str!("../../npm/assets/agents.md");

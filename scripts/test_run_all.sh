@@ -127,11 +127,21 @@ if command -v node >/dev/null 2>&1 && [[ -f "${ROOT_DIR}/npm/test/installer_loca
   run_step "unit_node_installer_local" node --test "${ROOT_DIR}/npm/test/installer_local_fallback.test.js"
 fi
 if command -v node >/dev/null 2>&1 && [[ -f "${ROOT_DIR}/npm/test/uninstall.test.js" ]]; then
-  run_step "unit_node_uninstall" node --test "${ROOT_DIR}/npm/test/uninstall.test.js"
+run_step "unit_node_uninstall" node --test "${ROOT_DIR}/npm/test/uninstall.test.js"
 fi
+run_step "unit_daemon_lock_path" cargo test --lib default_lock_path_
+run_step "unit_auto_reindex" cargo test --lib with_config_auto_reindexes_stale_index
+run_step "unit_open_by_path" cargo test --lib open_by_path_resolves_yaml
+run_step "unit_doc_type" cargo test --lib doc_type_classifies_paths
+run_step "unit_snippet_integrity" cargo test --lib line_safe_snippet_
 run_step "unit_ignore_rules" cargo test --lib file_decision_tests
 run_step "unit_repo_manager_lru" cargo test --lib repo_manager_
 run_step "integration" cargo test --tests
+run_step "integration_daemon_ollama_optional" cargo test --test daemon_ollama_optional
+run_step "integration_http_auto_reindex" cargo test --test http_search_auto_reindex
+run_step "integration_snippet_open_by_path" cargo test --test http_snippet_open_by_path
+run_step "integration_http_doc_type" cargo test --test http_search_doc_type
+run_step "integration_http_ignore_default_patterns" cargo test --test http_ignore_default_patterns
 
 if start_api_server; then
   run_step "api_http" env DOCDEX_HTTP_BASE_URL="${API_BASE_URL}" "${ROOT_DIR}/scripts/test_api_http.sh"

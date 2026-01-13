@@ -330,19 +330,13 @@ pub async fn serve(
             std::env::set_var("DOCDEX_WEB_ENABLED", "1");
         }
     }
-    if !provider.eq_ignore_ascii_case("ollama") && agent_override.is_none() {
-        return Err(StartupError::new(
-            "startup_config_invalid",
-            format!("unsupported llm provider `{provider}`; only ollama is supported"),
-        )
-        .with_hint("Set [llm].provider = \"ollama\" in ~/.docdex/config.toml.")
-        .into());
-    }
     if !provider.eq_ignore_ascii_case("ollama") {
-        if let Some(agent) = agent_override.as_deref() {
+        if provider.is_empty() {
+            warn!("llm provider is empty; LLM features will be disabled");
+        } else if let Some(agent) = agent_override.as_deref() {
             warn!("llm provider `{provider}` allowed via agent override `{agent}`");
         } else {
-            warn!("llm provider `{provider}` may disable LLM features without an agent override");
+            warn!("llm provider `{provider}` is not supported; LLM features will be disabled");
         }
     }
 
@@ -452,25 +446,26 @@ pub async fn serve(
             .map(Arc::new)
     };
     let memory_embedder = if enable_memory {
-        let model = embedding_model.trim().to_string();
-        if model.is_empty() {
-            return Err(StartupError::new(
-                "startup_config_invalid",
-                "--embedding-model must not be empty when memory is enabled",
-            )
-            .with_hint("Set --embedding-model (or DOCDEX_EMBEDDING_MODEL) to an Ollama embedding model identifier.")
-            .into());
+        let model = embedding_model.trim();
+        let base_url = ollama_base_url.trim();
+        if model.is_empty() || base_url.is_empty() {
+            warn!(
+                "embedding base URL/model not configured; memory endpoints are disabled"
+            );
+            None
+        } else {
+            let timeout = Duration::from_millis(embedding_timeout_ms);
+            match OllamaEmbedder::new(base_url.to_string(), model.to_string(), timeout) {
+                Ok(embedder) => Some(embedder),
+                Err(err) => {
+                    warn!(
+                        error = ?err,
+                        "embedding configuration invalid; memory endpoints are disabled"
+                    );
+                    None
+                }
+            }
         }
-        let timeout = Duration::from_millis(embedding_timeout_ms);
-        let embedder = OllamaEmbedder::new(ollama_base_url.clone(), model.clone(), timeout)
-            .map_err(|err| {
-                StartupError::new(
-                    "startup_config_invalid",
-                    format!("invalid embedding base URL: {err}"),
-                )
-                .with_hint("Expected a URL like http://127.0.0.1:11434")
-            })?;
-        Some(embedder)
     } else {
         None
     };

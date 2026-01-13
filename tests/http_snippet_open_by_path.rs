@@ -1,0 +1,138 @@
+use reqwest::blocking::Client;
+use serde_json::Value;
+use std::error::Error;
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+use tempfile::TempDir;
+
+fn docdex_bin() -> PathBuf {
+    std::env::set_var("DOCDEX_CLI_LOCAL", "1");
+    std::env::set_var("DOCDEX_WEB_ENABLED", "0");
+    assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
+}
+
+fn write_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
+    let openapi_dir = repo_root.join("openapi");
+    std::fs::create_dir_all(&openapi_dir)?;
+    std::fs::write(
+        openapi_dir.join("spec.yaml"),
+        "openapi: 3.0.0\ninfo:\n  title: Docdex\n",
+    )?;
+    Ok(())
+}
+
+fn run_index(state_root: &Path, repo_root: &Path) -> Result<(), Box<dyn Error>> {
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
+        .args([
+            "index",
+            "--repo",
+            repo_root.to_string_lossy().as_ref(),
+            "--state-dir",
+            state_root.to_string_lossy().as_ref(),
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "docdexd index failed: {}\nstdout: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn pick_free_port() -> Option<u16> {
+    match TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => Some(listener.local_addr().ok()?.port()),
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            eprintln!("skipping snippet-by-path test: TCP bind not permitted");
+            None
+        }
+        Err(err) => panic!("bind ephemeral port: {err}"),
+    }
+}
+
+fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
+    let client = Client::builder().timeout(Duration::from_secs(1)).build()?;
+    let url = format!("http://{host}:{port}/healthz");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        match client.get(&url).send() {
+            Ok(resp) if resp.status().is_success() => return Ok(()),
+            _ => thread::sleep(Duration::from_millis(200)),
+        }
+    }
+    Err("docdexd healthz endpoint did not respond in time".into())
+}
+
+fn spawn_server(state_root: &Path, repo_root: &Path, port: u16) -> Result<Child, Box<dyn Error>> {
+    let repo_arg = repo_root.to_string_lossy().to_string();
+    Ok(Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
+        .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_STATE_DIR", state_root)
+        .args([
+            "serve",
+            "--repo",
+            repo_arg.as_str(),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--log",
+            "warn",
+            "--secure-mode=false",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?)
+}
+
+struct ChildGuard(Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn http_snippet_resolves_yaml_path() -> Result<(), Box<dyn Error>> {
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let repo = TempDir::new()?;
+    let state_root = TempDir::new()?;
+    write_repo(repo.path())?;
+    run_index(state_root.path(), repo.path())?;
+
+    let child = spawn_server(state_root.path(), repo.path(), port)?;
+    let _guard = ChildGuard(child);
+    wait_for_health("127.0.0.1", port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let url = format!("http://127.0.0.1:{port}/snippet/openapi/spec.yaml");
+    let resp = client.get(&url).send()?;
+    assert!(resp.status().is_success(), "expected success, got {}", resp.status());
+    let payload: Value = resp.json()?;
+    let doc = payload
+        .get("doc")
+        .and_then(|value| value.as_object())
+        .ok_or("missing doc payload")?;
+    let rel_path = doc
+        .get("rel_path")
+        .or_else(|| doc.get("relPath"))
+        .and_then(|value| value.as_str())
+        .ok_or("missing rel_path")?;
+    assert_eq!(rel_path, "openapi/spec.yaml");
+    Ok(())
+}

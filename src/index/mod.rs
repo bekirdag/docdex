@@ -80,6 +80,7 @@ const DEFAULT_EXCLUDED_DIR_NAMES: &[&str] = &[
     ".idea",
     ".vscode",
     ".cache",
+    ".mcoda",
     "tmp",
     "temp",
     ".hg",
@@ -206,6 +207,7 @@ const DEFAULT_EXCLUDED_RELATIVE_PREFIXES: &[&str] = &[
     ".docdex/",
     ".docdex/logs/",
     ".docdex/tmp/",
+    ".mcoda/",
     ".gpt-creator/logs/",
     ".gpt-creator/tmp/",
     ".mastercoda/logs/",
@@ -260,6 +262,15 @@ impl DocumentKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocType {
+    Pdr,
+    Sds,
+    Openapi,
+    Code,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Hit {
     pub doc_id: String,
@@ -267,6 +278,8 @@ pub struct Hit {
     // Stable search contract alias for `rel_path` (preferred by downstream clients).
     pub path: String,
     pub kind: DocumentKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_type: Option<DocType>,
     pub score: f32,
     pub summary: String,
     pub snippet: String,
@@ -331,6 +344,8 @@ pub struct DocSnapshot {
     pub doc_id: String,
     pub rel_path: String,
     pub kind: DocumentKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_type: Option<DocType>,
     pub summary: String,
     pub token_estimate: u64,
 }
@@ -456,6 +471,32 @@ impl Indexer {
     }
 
     pub fn with_config(repo_root: PathBuf, config: IndexConfig) -> Result<Self> {
+        Self::open_with_auto_reindex(repo_root, config, false)
+    }
+
+    pub fn with_config_read_only(repo_root: PathBuf, config: IndexConfig) -> Result<Self> {
+        Self::open_with_auto_reindex(repo_root, config, true)
+    }
+
+    fn open_with_auto_reindex(
+        repo_root: PathBuf,
+        config: IndexConfig,
+        read_only: bool,
+    ) -> Result<Self> {
+        match Self::open_indexer(repo_root.clone(), config.clone(), read_only) {
+            Ok(indexer) => Ok(indexer),
+            Err(err) => {
+                if is_stale_index_error(&err) {
+                    Self::reindex_stale_index(&repo_root, &config)?;
+                    Self::open_indexer(repo_root, config, read_only)
+                } else {
+                    Err(err)
+                }
+            }
+        }
+    }
+
+    fn open_indexer(repo_root: PathBuf, config: IndexConfig, read_only: bool) -> Result<Self> {
         if !repo_root.exists() {
             return Err(missing_repo_path_error(&repo_root).into());
         }
@@ -467,6 +508,17 @@ impl Indexer {
             .into());
         }
         let repo_root = repo_root.canonicalize().context("resolve repo root")?;
+        if read_only && !config.state_dir().exists() {
+            return Err(AppError::new(
+                ERR_MISSING_INDEX,
+                format!(
+                    "index not found at {}; run `docdexd index --repo {}` first",
+                    config.state_dir().display(),
+                    repo_root.display()
+                ),
+            )
+            .into());
+        }
         let created_state_dir = !config.state_dir().exists();
         if created_state_dir {
             ensure_state_dir_secure(config.state_dir())?;
@@ -478,8 +530,10 @@ impl Indexer {
         } else {
             Index::create_in_dir(config.state_dir(), schema.clone())?
         };
-        ensure_state_dir_secure(config.state_dir())?;
-        hold_after_state_dir_created();
+        if !read_only {
+            ensure_state_dir_secure(config.state_dir())?;
+            hold_after_state_dir_created();
+        }
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommit)
@@ -501,13 +555,36 @@ impl Indexer {
             .get_field("token_estimate")
             .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
         let kind_field = schema.get_field("kind").ok();
-        let writer = index.writer(MAX_INDEX_RAM_BYTES)?;
+        let writer = if read_only {
+            None
+        } else {
+            Some(index.writer(MAX_INDEX_RAM_BYTES)?)
+        };
+        let warn_on_error = !read_only;
         let symbols_store = if config.symbols_enabled() {
-            symbols::open_symbols_store(&repo_root, config.state_dir(), true)
+            symbols::open_symbols_store(&repo_root, config.state_dir(), warn_on_error)
         } else {
             None
         };
-        if let Err(err) = crate::repo_manager::record_repo_opened(&repo_root, config.state_dir()) {
+        if read_only {
+            if let Err(err) =
+                crate::repo_manager::validate_repo_state_dir(&repo_root, config.state_dir())
+            {
+                if let Some(identity) =
+                    err.downcast_ref::<crate::repo_manager::RepoIdentityError>()
+                {
+                    return Err(repo_state_mismatch_error(
+                        &repo_root,
+                        Some(config.state_dir()),
+                        identity,
+                    )
+                    .into());
+                }
+                return Err(err).context("validate repo identity metadata");
+            }
+        } else if let Err(err) =
+            crate::repo_manager::record_repo_opened(&repo_root, config.state_dir())
+        {
             if let Some(identity) = err.downcast_ref::<crate::repo_manager::RepoIdentityError>() {
                 return Err(repo_state_mismatch_error(
                     &repo_root,
@@ -529,92 +606,27 @@ impl Indexer {
             summary_field,
             token_field,
             kind_field,
-            writer: Some(Arc::new(Mutex::new(writer))),
+            writer: writer.map(|writer| Arc::new(Mutex::new(writer))),
             symbols_store,
         })
     }
 
-    pub fn with_config_read_only(repo_root: PathBuf, config: IndexConfig) -> Result<Self> {
-        if !repo_root.exists() {
-            return Err(missing_repo_path_error(&repo_root).into());
+    fn reindex_stale_index(repo_root: &Path, config: &IndexConfig) -> Result<()> {
+        let state_dir = config.state_dir();
+        if state_dir.exists() {
+            fs::remove_dir_all(state_dir)
+                .with_context(|| format!("remove stale index {}", state_dir.display()))?;
         }
-        if !repo_root.is_dir() {
-            return Err(AppError::new(
-                ERR_INVALID_ARGUMENT,
-                format!("repo root is not a directory: {}", repo_root.display()),
-            )
-            .into());
-        }
-        let repo_root = repo_root.canonicalize().context("resolve repo root")?;
-        if !config.state_dir().exists() {
-            return Err(AppError::new(
-                ERR_MISSING_INDEX,
-                format!(
-                    "index not found at {}; run `docdexd index --repo {}` first",
-                    config.state_dir().display(),
-                    repo_root.display()
-                ),
-            )
-            .into());
-        }
-        let index = Index::open_in_dir(config.state_dir())
-            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
-        let reader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommit)
-            .try_into()?;
-        let schema = index.schema();
-        let doc_id_field = schema
-            .get_field("doc_id")
-            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
-        let path_field = schema
-            .get_field("rel_path")
-            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
-        let body_field = schema
-            .get_field("body")
-            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
-        let summary_field = schema
-            .get_field("summary")
-            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
-        let token_field = schema
-            .get_field("token_estimate")
-            .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
-        let kind_field = schema.get_field("kind").ok();
-        let symbols_store = if config.symbols_enabled() {
-            symbols::open_symbols_store(&repo_root, config.state_dir(), false)
-        } else {
-            None
-        };
-        if let Err(err) =
-            crate::repo_manager::validate_repo_state_dir(&repo_root, config.state_dir())
-        {
-            if let Some(identity) = err.downcast_ref::<crate::repo_manager::RepoIdentityError>() {
-                return Err(repo_state_mismatch_error(
-                    &repo_root,
-                    Some(config.state_dir()),
-                    identity,
-                )
-                .into());
-            }
-            return Err(err).context("validate repo identity metadata");
-        }
-        Ok(Self {
-            repo_root,
-            config,
-            index,
-            reader,
-            doc_id_field,
-            path_field,
-            body_field,
-            summary_field,
-            token_field,
-            kind_field,
-            writer: None,
-            symbols_store,
-        })
+        let indexer = Self::open_indexer(repo_root.to_path_buf(), config.clone(), false)?;
+        indexer.reindex_all_blocking()?;
+        Ok(())
     }
 
     pub async fn reindex_all(&self) -> Result<()> {
+        self.reindex_all_blocking()
+    }
+
+    fn reindex_all_blocking(&self) -> Result<()> {
         let writer_arc = self.writer()?;
         let mut writer = writer_arc.lock();
         writer.delete_all_documents()?;
@@ -791,6 +803,7 @@ impl Indexer {
                 .and_then(|v| v.as_text().map(|s| s.to_string()))
                 .unwrap_or_default();
             let kind = self.document_kind_from_doc(&retrieved, &rel_path);
+            let doc_type = document_type_for_path(&rel_path, kind);
             let token_estimate = retrieved
                 .get_first(self.token_field)
                 .and_then(|v| v.as_u64())
@@ -800,20 +813,22 @@ impl Indexer {
                 .as_ref()
                 .and_then(|gen| {
                     let snippet = gen.snippet_from_doc(&retrieved);
-                    let fragment = snippet.fragment().trim().to_string();
+                    let fragment = snippet.fragment().trim();
                     if fragment.is_empty() {
                         None
                     } else {
-                        let range = line_range_for_fragment(&body_text, &fragment);
                         let inferred_truncated =
                             fragment.chars().count() >= MAX_SNIPPET_CHARS.saturating_sub(1);
-                        Some((
-                            fragment,
-                            SearchSnippetOrigin::Query,
-                            inferred_truncated,
-                            range.map(|r| r.0),
-                            range.map(|r| r.1),
-                        ))
+                        line_safe_snippet_for_fragment(&body_text, fragment, MAX_SNIPPET_CHARS)
+                            .map(|(text, snippet_truncated, start_line, end_line)| {
+                                (
+                                    text,
+                                    SearchSnippetOrigin::Query,
+                                    snippet_truncated || inferred_truncated,
+                                    Some(start_line),
+                                    Some(end_line),
+                                )
+                            })
                     }
                 })
                 .or_else(|| {
@@ -848,6 +863,7 @@ impl Indexer {
                 rel_path,
                 path,
                 kind,
+                doc_type,
                 score,
                 summary,
                 snippet,
@@ -913,21 +929,18 @@ impl Indexer {
         if preview_lines.is_empty() {
             return Ok(None);
         }
-        let (snippet, snippet_truncated) = condense_snippet(
-            &preview_lines
-                .iter()
-                .map(|(_, text)| text.clone())
-                .collect::<Vec<_>>(),
-            MAX_SNIPPET_CHARS,
-        );
+        let (snippet, snippet_truncated, start_line, end_line) =
+            line_safe_snippet_from_lines(&preview_lines, MAX_SNIPPET_CHARS);
         if snippet.is_empty() {
             return Ok(None);
         }
-        let start_line = preview_lines.first().map(|(line, _)| *line).unwrap_or(1);
-        let end_line = preview_lines
-            .last()
-            .map(|(line, _)| *line)
-            .unwrap_or(start_line);
+        let start_line = start_line.unwrap_or_else(|| {
+            preview_lines
+                .first()
+                .map(|(line, _)| *line)
+                .unwrap_or(1)
+        });
+        let end_line = end_line.unwrap_or(start_line);
         Ok(Some((
             snippet,
             truncated || snippet_truncated,
@@ -1250,6 +1263,7 @@ impl Indexer {
             .and_then(|v| v.as_text().map(|s| s.to_string()))
             .unwrap_or_default();
         let kind = self.document_kind_from_doc(doc, &rel_path);
+        let doc_type = document_type_for_path(&rel_path, kind);
         let token_estimate = doc
             .get_first(self.token_field)
             .and_then(|v| v.as_u64())
@@ -1258,6 +1272,7 @@ impl Indexer {
             doc_id: doc_id.to_string(),
             rel_path,
             kind,
+            doc_type,
             summary,
             token_estimate,
         }
@@ -1288,14 +1303,29 @@ impl Indexer {
                     let snippet = generator.snippet_from_doc(doc);
                     let fragment = snippet.fragment().trim();
                     if !fragment.is_empty() {
-                        return Ok(Some(SnippetResult {
-                            text: fragment.to_string(),
-                            html: Some(snippet.to_html()),
-                            truncated: false,
-                            origin: SnippetOrigin::Query,
-                            line_start: None,
-                            line_end: None,
-                        }));
+                        let inferred_truncated =
+                            fragment.chars().count() >= MAX_SNIPPET_CHARS.saturating_sub(1);
+                        let body_text = doc
+                            .get_first(self.body_field)
+                            .and_then(|v| v.as_text())
+                            .unwrap_or_default();
+                        if let Some((text, snippet_truncated, start_line, end_line)) =
+                            line_safe_snippet_for_fragment(body_text, fragment, MAX_SNIPPET_CHARS)
+                        {
+                            let html = if text.trim() == fragment {
+                                Some(snippet.to_html())
+                            } else {
+                                None
+                            };
+                            return Ok(Some(SnippetResult {
+                                text,
+                                html,
+                                truncated: snippet_truncated || inferred_truncated,
+                                origin: SnippetOrigin::Query,
+                                line_start: Some(start_line),
+                                line_end: Some(end_line),
+                            }));
+                        }
                     }
                 }
             }
@@ -1394,6 +1424,32 @@ fn document_kind_for_path(rel_path: &str) -> DocumentKind {
         }
     }
     DocumentKind::Doc
+}
+
+fn document_type_for_path(rel_path: &str, kind: DocumentKind) -> Option<DocType> {
+    if matches!(kind, DocumentKind::Code) {
+        return Some(DocType::Code);
+    }
+    let lowered = rel_path.to_ascii_lowercase();
+    if lowered.starts_with("pdr/")
+        || lowered.contains("/pdr/")
+        || lowered.contains("pdr_")
+        || lowered.contains("pdr-")
+    {
+        return Some(DocType::Pdr);
+    }
+    if lowered.starts_with("sds/")
+        || lowered.contains("/sds/")
+        || lowered.contains("sds_")
+        || lowered.contains("sds-")
+    {
+        return Some(DocType::Sds);
+    }
+    if lowered.starts_with("openapi/") || lowered.contains("/openapi/") || lowered.contains("openapi")
+    {
+        return Some(DocType::Openapi);
+    }
+    None
 }
 
 impl Indexer {
@@ -1596,7 +1652,7 @@ mod file_decision_tests {
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
         let config = IndexConfig::with_overrides(
             &repo_root,
-            None,
+            Some(repo_root.join(".docdex-state")),
             Vec::new(),
             vec!["docs/".into(), "docs/private/".into()],
             true,
@@ -1642,8 +1698,14 @@ mod file_decision_tests {
     fn decide_file_excludes_default_vendor_dir() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
-            .expect("config");
+        let config = IndexConfig::with_overrides(
+            &repo_root,
+            Some(repo_root.join(".docdex-state")),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )
+        .expect("config");
         let file = repo_root.join("vendor/doc.md");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
         fs::write(&file, "# vendor\n").expect("write file");
@@ -1659,11 +1721,67 @@ mod file_decision_tests {
     }
 
     #[test]
+    fn decide_file_excludes_default_tool_artifacts() {
+        let repo = TempDir::new().expect("temp repo");
+        let repo_root = repo.path().canonicalize().expect("canonical repo root");
+        let config = IndexConfig::with_overrides(
+            &repo_root,
+            Some(repo_root.join(".docdex-state")),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )
+        .expect("config");
+
+        let mcoda_file = repo_root.join(".mcoda/notes.md");
+        fs::create_dir_all(mcoda_file.parent().expect("parent dir")).expect("mkdir");
+        fs::write(&mcoda_file, "# mcoda\n").expect("write mcoda file");
+        let decision = decide_file(&mcoda_file, &repo_root, &config);
+        assert_eq!(decision.decision, FileDecisionOutcome::Exclude);
+        assert_eq!(
+            decision.reason,
+            FileDecisionReason::ExcludedPrefix {
+                prefix: ".mcoda/".to_string()
+            }
+        );
+
+        let node_file = repo_root.join("node_modules/pkg/readme.md");
+        fs::create_dir_all(node_file.parent().expect("parent dir")).expect("mkdir");
+        fs::write(&node_file, "# node\n").expect("write node file");
+        let decision = decide_file(&node_file, &repo_root, &config);
+        assert_eq!(decision.decision, FileDecisionOutcome::Exclude);
+        assert_eq!(
+            decision.reason,
+            FileDecisionReason::ExcludedDirName {
+                name: "node_modules".to_string()
+            }
+        );
+
+        let build_file = repo_root.join("build/output.md");
+        fs::create_dir_all(build_file.parent().expect("parent dir")).expect("mkdir");
+        fs::write(&build_file, "# build\n").expect("write build file");
+        let decision = decide_file(&build_file, &repo_root, &config);
+        assert_eq!(decision.decision, FileDecisionOutcome::Exclude);
+        assert_eq!(
+            decision.reason,
+            FileDecisionReason::ExcludedDirName {
+                name: "build".to_string()
+            }
+        );
+    }
+
+    #[test]
     fn decide_file_excludes_outside_repo() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
-            .expect("config");
+        let config = IndexConfig::with_overrides(
+            &repo_root,
+            Some(repo_root.join(".docdex-state")),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )
+        .expect("config");
 
         let other = TempDir::new().expect("other repo");
         let outside = other.path().join("note.md");
@@ -1678,8 +1796,14 @@ mod file_decision_tests {
     fn decide_file_excludes_large_binary() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
-            .expect("config");
+        let config = IndexConfig::with_overrides(
+            &repo_root,
+            Some(repo_root.join(".docdex-state")),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )
+        .expect("config");
         let binary_path = repo_root.join("large.md");
         let blob = vec![0u8; (MAX_BINARY_FILE_BYTES as usize) + 1];
         fs::write(&binary_path, blob).expect("write binary");
@@ -1697,8 +1821,14 @@ mod file_decision_tests {
     fn decide_file_includes_supported_extensions() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
-            .expect("config");
+        let config = IndexConfig::with_overrides(
+            &repo_root,
+            Some(repo_root.join(".docdex-state")),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )
+        .expect("config");
         let file = repo_root.join("docs/notes.txt");
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
         fs::write(&file, "hello\n").expect("write file");
@@ -1722,8 +1852,14 @@ mod file_decision_tests {
         let file = repo_root.join("ignored.md");
         fs::write(&file, "ignore me\n").expect("write file");
 
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
-            .expect("config");
+        let config = IndexConfig::with_overrides(
+            &repo_root,
+            Some(repo_root.join(".docdex-state")),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )
+        .expect("config");
         let decision = decide_file(&file, &repo_root, &config);
         assert_eq!(decision.decision, FileDecisionOutcome::Exclude);
         assert_eq!(decision.reason, FileDecisionReason::IgnoredByPattern);
@@ -1739,8 +1875,14 @@ mod file_decision_tests {
         fs::create_dir_all(file.parent().expect("parent dir")).expect("mkdir");
         fs::write(&file, "ignore me\n").expect("write file");
 
-        let config = IndexConfig::with_overrides(&repo_root, None, Vec::new(), Vec::new(), true)
-            .expect("config");
+        let config = IndexConfig::with_overrides(
+            &repo_root,
+            Some(repo_root.join(".docdex-state")),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )
+        .expect("config");
         let decision = decide_file(&file, &repo_root, &config);
         assert_eq!(decision.decision, FileDecisionOutcome::Exclude);
         assert_eq!(decision.reason, FileDecisionReason::IgnoredByPattern);
@@ -1884,6 +2026,17 @@ fn stale_index_error(state_dir: &Path, repo_root: Option<&Path>) -> AppError {
             reindex_hint
         ),
     )
+    .with_details(serde_json::json!({
+        "staleIndex": true,
+        "stateDir": state_dir.display().to_string(),
+        "reindexHint": reindex_hint,
+    }))
+}
+
+fn is_stale_index_error(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<AppError>()
+        .map(|app| app.code == ERR_STALE_INDEX)
+        .unwrap_or(false)
 }
 
 fn repo_state_mismatch_error(
@@ -2241,45 +2394,81 @@ fn truncate_to_limit(text: &str, max_chars: usize) -> (String, bool) {
     (truncated, true)
 }
 
-fn condense_snippet(lines: &[String], max_chars: usize) -> (String, bool) {
+fn line_safe_snippet_from_lines(
+    lines: &[(usize, String)],
+    max_chars: usize,
+) -> (String, bool, Option<usize>, Option<usize>) {
     if lines.is_empty() {
-        return (String::new(), false);
+        return (String::new(), false, None, None);
     }
-    let joined = lines
-        .iter()
-        .map(|line| line.trim())
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    if joined.is_empty() {
-        return (String::new(), false);
-    }
-    let normalized = collapse_whitespace(&joined);
-    let mut snippet = String::new();
-    let mut total_chars = 0usize;
-    for part in SENTENCE_SPLIT_RE.split(&normalized) {
-        let sentence = part.trim();
-        if sentence.is_empty() {
-            continue;
-        }
-        if !snippet.is_empty() {
-            snippet.push(' ');
-            total_chars += 1;
-        }
-        snippet.push_str(sentence);
-        total_chars += sentence.chars().count();
-        if total_chars >= max_chars {
+    let mut selected: Vec<(usize, String)> = Vec::new();
+    let mut used_chars = 0usize;
+    let mut truncated = false;
+    for (line_no, line) in lines {
+        if max_chars == 0 {
+            truncated = true;
             break;
         }
+        let line_text = line.trim_end();
+        let line_len = line_text.chars().count();
+        let extra = if selected.is_empty() { 0 } else { 1 };
+        if !selected.is_empty() && used_chars + extra + line_len > max_chars {
+            truncated = true;
+            break;
+        }
+        if selected.is_empty() && line_len > max_chars {
+            selected.push((*line_no, line_text.to_string()));
+            truncated = lines.len() > 1;
+            break;
+        }
+        selected.push((*line_no, line_text.to_string()));
+        used_chars += line_len + extra;
     }
-    if snippet.is_empty() {
-        return (String::new(), false);
+    if selected.is_empty() {
+        return (String::new(), truncated, None, None);
     }
-    if total_chars > max_chars || snippet.chars().count() > max_chars {
-        let (truncated, _) = truncate_to_limit(&snippet, max_chars);
-        return (truncated, true);
+    if selected.len() < lines.len() {
+        truncated = true;
     }
-    (snippet, false)
+    let mut snippet = selected
+        .iter()
+        .map(|(_, line)| line.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if truncated && !snippet.is_empty() && !snippet.ends_with('…') {
+        snippet.push('\n');
+        snippet.push('…');
+    }
+    let start_line = selected.first().map(|(line_no, _)| *line_no);
+    let end_line = selected.last().map(|(line_no, _)| *line_no);
+    (snippet, truncated, start_line, end_line)
+}
+
+fn line_safe_snippet_for_fragment(
+    body: &str,
+    fragment: &str,
+    max_chars: usize,
+) -> Option<(String, bool, usize, usize)> {
+    let (start_line, end_line) = line_range_for_fragment(body, fragment)?;
+    let lines = body
+        .lines()
+        .enumerate()
+        .filter_map(|(idx, line)| {
+            let line_no = idx + 1;
+            if line_no < start_line || line_no > end_line {
+                return None;
+            }
+            Some((line_no, line.to_string()))
+        })
+        .collect::<Vec<_>>();
+    let (snippet, truncated, safe_start, safe_end) =
+        line_safe_snippet_from_lines(&lines, max_chars);
+    if snippet.trim().is_empty() {
+        return None;
+    }
+    let start = safe_start.unwrap_or(start_line);
+    let end = safe_end.unwrap_or(end_line);
+    Some((snippet, truncated, start, end))
 }
 
 fn is_safe_rel_path(rel_path: &str) -> bool {
@@ -2317,7 +2506,6 @@ static MARKDOWN_LINK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\[([^\]]+)\]\([
 static INLINE_CODE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"`([^`]+)`").unwrap());
 static HTML_TAG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"<[^>]+>").unwrap());
 static MULTISPACE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
-static SENTENCE_SPLIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[.!?]+\s+").unwrap());
 static ORDERED_LIST_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(?:\d+[\.)])+").unwrap());
 
 fn line_range_for_fragment(body: &str, fragment: &str) -> Option<(usize, usize)> {
@@ -2383,6 +2571,7 @@ mod tests {
             rel_path: rel_path.to_string(),
             path: rel_path.to_string(),
             kind: DocumentKind::Doc,
+            doc_type: None,
             score,
             summary: String::new(),
             snippet: String::new(),
@@ -2415,6 +2604,111 @@ mod tests {
                 (1.0, "docs/a.md", "c"),
                 (1.0, "docs/b.md", "b"),
             ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod snippet_integrity_tests {
+    use super::{line_safe_snippet_for_fragment, line_safe_snippet_from_lines, MAX_SNIPPET_CHARS};
+
+    #[test]
+    fn line_safe_snippet_from_fragment_returns_full_line() {
+        let body = "alpha beta\ngamma delta\nepsilon zeta\n";
+        let fragment = "mma del";
+        let (snippet, truncated, start, end) =
+            line_safe_snippet_for_fragment(body, fragment, MAX_SNIPPET_CHARS)
+                .expect("snippet");
+        assert_eq!(snippet, "gamma delta");
+        assert!(!truncated);
+        assert_eq!(start, 2);
+        assert_eq!(end, 2);
+    }
+
+    #[test]
+    fn line_safe_snippet_does_not_cut_lines_on_budget() {
+        let lines = vec![
+            (1, "alpha beta".to_string()),
+            (2, "gamma delta".to_string()),
+        ];
+        let (snippet, truncated, start, end) = line_safe_snippet_from_lines(&lines, 12);
+        assert_eq!(snippet, "alpha beta\n…");
+        assert!(truncated);
+        assert_eq!(start, Some(1));
+        assert_eq!(end, Some(1));
+    }
+}
+
+#[cfg(test)]
+mod reindex_tests {
+    use super::{IndexConfig, Indexer};
+    use anyhow::Result;
+    use std::fs;
+    use tantivy::schema::{Schema, STORED, TEXT};
+    use tantivy::{doc, Index};
+    use tempfile::TempDir;
+
+    fn write_repo(repo_root: &std::path::Path) -> Result<()> {
+        fs::create_dir_all(repo_root)?;
+        fs::write(repo_root.join("doc.md"), "# Fixture\n\nSCHEMA_TOKEN\n")?;
+        Ok(())
+    }
+
+    fn create_incompatible_index(index_dir: &std::path::Path) -> Result<()> {
+        fs::create_dir_all(index_dir)?;
+        let mut builder = Schema::builder();
+        let title = builder.add_text_field("legacy_title", TEXT | STORED);
+        let schema = builder.build();
+        let index = Index::create_in_dir(index_dir, schema)?;
+        let mut writer = index.writer(15_000_000)?;
+        writer.add_document(doc!(title => "legacy"))?;
+        writer.commit()?;
+        Ok(())
+    }
+
+    #[test]
+    fn with_config_auto_reindexes_stale_index() -> Result<()> {
+        let repo = TempDir::new()?;
+        write_repo(repo.path())?;
+        let state_root = TempDir::new()?;
+        let config = IndexConfig::with_overrides(
+            repo.path(),
+            Some(state_root.path().to_path_buf()),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )?;
+        let index_dir = config.state_dir().to_path_buf();
+        create_incompatible_index(&index_dir)?;
+
+        let indexer = Indexer::with_config(repo.path().to_path_buf(), config)?;
+        let hits = indexer.search("SCHEMA_TOKEN", 1)?;
+        assert!(!hits.is_empty(), "expected hits after auto reindex");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod doc_type_tests {
+    use super::{document_type_for_path, DocType, DocumentKind};
+
+    #[test]
+    fn doc_type_classifies_paths() {
+        assert_eq!(
+            document_type_for_path("docs/pdr/overview.md", DocumentKind::Doc),
+            Some(DocType::Pdr)
+        );
+        assert_eq!(
+            document_type_for_path("docs/sds/sds.md", DocumentKind::Doc),
+            Some(DocType::Sds)
+        );
+        assert_eq!(
+            document_type_for_path("openapi/mcoda.yaml", DocumentKind::Doc),
+            Some(DocType::Openapi)
+        );
+        assert_eq!(
+            document_type_for_path("src/main.rs", DocumentKind::Code),
+            Some(DocType::Code)
         );
     }
 }

@@ -66,14 +66,8 @@ fn create_incompatible_index(index_dir: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn parse_error(stderr: &[u8]) -> Result<Value, Box<dyn Error>> {
-    let raw = String::from_utf8_lossy(stderr);
-    let trimmed = raw.trim();
-    Ok(serde_json::from_str(trimmed)?)
-}
-
 #[test]
-fn cli_query_reports_schema_mismatch() -> Result<(), Box<dyn Error>> {
+fn cli_query_auto_reindexes_schema_mismatch() -> Result<(), Box<dyn Error>> {
     let repo = TempDir::new()?;
     write_repo(repo.path())?;
     let state_root = TempDir::new()?;
@@ -94,29 +88,18 @@ fn cli_query_reports_schema_mismatch() -> Result<(), Box<dyn Error>> {
             "1",
         ])
         .output()?;
-    assert!(!output.status.success(), "expected non-zero exit");
-    let payload = parse_error(&output.stderr)?;
-    assert_eq!(
-        payload
-            .get("error")
-            .and_then(|e| e.get("code"))
-            .and_then(|v| v.as_str()),
-        Some("stale_index")
-    );
-    assert!(
-        payload
-            .get("error")
-            .and_then(|e| e.get("message"))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .contains("schema mismatch"),
-        "expected schema mismatch message; got: {payload}"
-    );
+    assert!(output.status.success(), "expected zero exit");
+    let payload: Value = serde_json::from_slice(&output.stdout)?;
+    let hits = payload
+        .get("hits")
+        .and_then(|value| value.as_array())
+        .ok_or("missing hits array")?;
+    assert!(!hits.is_empty(), "expected hits after auto reindex");
     Ok(())
 }
 
 #[test]
-fn reindex_does_not_clobber_incompatible_schema() -> Result<(), Box<dyn Error>> {
+fn reindex_rebuilds_incompatible_schema() -> Result<(), Box<dyn Error>> {
     let repo = TempDir::new()?;
     write_repo(repo.path())?;
     let state_root = TempDir::new()?;
@@ -131,21 +114,16 @@ fn reindex_does_not_clobber_incompatible_schema() -> Result<(), Box<dyn Error>> 
         .env("DOCDEX_STATE_DIR", state_root.path())
         .args(["index", "--repo", repo.path().to_string_lossy().as_ref()])
         .output()?;
-    assert!(!output.status.success(), "expected non-zero exit");
-    let payload = parse_error(&output.stderr)?;
-    assert_eq!(
-        payload
-            .get("error")
-            .and_then(|e| e.get("code"))
-            .and_then(|v| v.as_str()),
-        Some("stale_index")
-    );
-
+    assert!(output.status.success(), "expected zero exit");
     let after = fs::read_to_string(&meta_path)?;
-    assert!(after.contains("legacy_title"));
-    assert_eq!(
-        before, after,
-        "expected schema metadata to remain unchanged"
+    assert_ne!(before, after, "expected schema metadata to be rebuilt");
+    assert!(
+        after.contains("doc_id"),
+        "expected rebuilt schema to include doc_id; got: {after}"
+    );
+    assert!(
+        !after.contains("legacy_title"),
+        "expected legacy schema field to be removed; got: {after}"
     );
     Ok(())
 }

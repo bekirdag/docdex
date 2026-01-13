@@ -73,7 +73,7 @@ curl -sS --max-time 10 "http://127.0.0.1:${PORT}/v1/mcp" \
 
 curl -sS --max-time 10 "http://127.0.0.1:${PORT}/v1/mcp" \
   -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' >/dev/null
+  -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{\"project_root\":\"${REPO_ROOT}\"}}" >/dev/null
 
 call_payload=$(cat <<EOF
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"docdex_web_research","arguments":{"query":"PHP array reverse code sample","limit":5,"web_limit":5,"skip_local_search":true,"force_web":true,"project_root":"$REPO_ROOT"}}}

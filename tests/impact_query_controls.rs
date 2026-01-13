@@ -119,7 +119,26 @@ fn spawn_server(
         .spawn()?)
 }
 
-fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
+fn start_server_with_health(
+    state_root: &Path,
+    repo_root: &Path,
+    host: &str,
+) -> Result<Option<(Child, u16)>, Box<dyn Error>> {
+    for _ in 0..3 {
+        let Some(port) = pick_free_port() else {
+            return Ok(None);
+        };
+        let mut server = spawn_server(state_root, repo_root, host, port)?;
+        if wait_for_health(host, port, &mut server).is_ok() {
+            return Ok(Some((server, port)));
+        }
+        let _ = server.kill();
+        let _ = server.wait();
+    }
+    Err("docdexd healthz endpoint did not respond in time".into())
+}
+
+fn wait_for_health(host: &str, port: u16, child: &mut Child) -> Result<(), Box<dyn Error>> {
     let client = Client::builder().timeout(Duration::from_secs(1)).build()?;
     let url = format!("http://{host}:{port}/healthz");
     let timeout_secs = std::env::var("DOCDEX_TEST_HEALTH_TIMEOUT_SECS")
@@ -128,6 +147,9 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
         .unwrap_or(120);
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     while Instant::now() < deadline {
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!("docdexd exited before health check: {status}").into());
+        }
         match client.get(&url).send() {
             Ok(resp) if resp.status().is_success() => return Ok(()),
             _ => thread::sleep(Duration::from_millis(200)),
@@ -248,12 +270,12 @@ fn impact_enforces_max_edges_and_sets_truncated() -> Result<(), Box<dyn Error>> 
     let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
     write_impact_graph(&state_dir)?;
 
-    let Some(port) = pick_free_port() else {
+    let host = "127.0.0.1";
+    let Some((mut server, port)) =
+        start_server_with_health(state_root.path(), repo.path(), host)?
+    else {
         return Ok(());
     };
-    let host = "127.0.0.1";
-    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
-    wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/v1/graph/impact");
@@ -295,12 +317,12 @@ fn impact_max_edges_zero_returns_empty_and_truncated() -> Result<(), Box<dyn Err
     let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
     write_impact_graph(&state_dir)?;
 
-    let Some(port) = pick_free_port() else {
+    let host = "127.0.0.1";
+    let Some((mut server, port)) =
+        start_server_with_health(state_root.path(), repo.path(), host)?
+    else {
         return Ok(());
     };
-    let host = "127.0.0.1";
-    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
-    wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/v1/graph/impact");
@@ -336,12 +358,12 @@ fn impact_enforces_max_depth() -> Result<(), Box<dyn Error>> {
     let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
     write_impact_graph(&state_dir)?;
 
-    let Some(port) = pick_free_port() else {
+    let host = "127.0.0.1";
+    let Some((mut server, port)) =
+        start_server_with_health(state_root.path(), repo.path(), host)?
+    else {
         return Ok(());
     };
-    let host = "127.0.0.1";
-    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
-    wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/v1/graph/impact");
@@ -393,12 +415,12 @@ fn impact_max_depth_zero_returns_empty_and_truncated() -> Result<(), Box<dyn Err
     let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
     write_impact_graph(&state_dir)?;
 
-    let Some(port) = pick_free_port() else {
+    let host = "127.0.0.1";
+    let Some((mut server, port)) =
+        start_server_with_health(state_root.path(), repo.path(), host)?
+    else {
         return Ok(());
     };
-    let host = "127.0.0.1";
-    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
-    wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/v1/graph/impact");
@@ -434,12 +456,12 @@ fn impact_filters_edge_types() -> Result<(), Box<dyn Error>> {
     let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
     write_impact_graph(&state_dir)?;
 
-    let Some(port) = pick_free_port() else {
+    let host = "127.0.0.1";
+    let Some((mut server, port)) =
+        start_server_with_health(state_root.path(), repo.path(), host)?
+    else {
         return Ok(());
     };
-    let host = "127.0.0.1";
-    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
-    wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/v1/graph/impact");
@@ -489,12 +511,12 @@ fn impact_reports_applied_limits_and_not_truncated_by_default() -> Result<(), Bo
     let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
     write_impact_graph(&state_dir)?;
 
-    let Some(port) = pick_free_port() else {
+    let host = "127.0.0.1";
+    let Some((mut server, port)) =
+        start_server_with_health(state_root.path(), repo.path(), host)?
+    else {
         return Ok(());
     };
-    let host = "127.0.0.1";
-    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
-    wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/v1/graph/impact");
@@ -537,12 +559,12 @@ fn impact_edge_types_does_not_expand_through_excluded_edges() -> Result<(), Box<
         }),
     )?;
 
-    let Some(port) = pick_free_port() else {
+    let host = "127.0.0.1";
+    let Some((mut server, port)) =
+        start_server_with_health(state_root.path(), repo.path(), host)?
+    else {
         return Ok(());
     };
-    let host = "127.0.0.1";
-    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
-    wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/v1/graph/impact");
@@ -618,12 +640,12 @@ fn impact_diagnostics_lists_entries() -> Result<(), Box<dyn Error>> {
         }),
     )?;
 
-    let Some(port) = pick_free_port() else {
+    let host = "127.0.0.1";
+    let Some((mut server, port)) =
+        start_server_with_health(state_root.path(), repo.path(), host)?
+    else {
         return Ok(());
     };
-    let host = "127.0.0.1";
-    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
-    wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/v1/graph/impact/diagnostics");
@@ -681,12 +703,12 @@ fn impact_diagnostics_filters_by_file() -> Result<(), Box<dyn Error>> {
         }),
     )?;
 
-    let Some(port) = pick_free_port() else {
+    let host = "127.0.0.1";
+    let Some((mut server, port)) =
+        start_server_with_health(state_root.path(), repo.path(), host)?
+    else {
         return Ok(());
     };
-    let host = "127.0.0.1";
-    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
-    wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/v1/graph/impact/diagnostics");
@@ -716,12 +738,12 @@ fn impact_invalid_params_return_invalid_argument_with_field_details() -> Result<
     let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
     write_impact_graph(&state_dir)?;
 
-    let Some(port) = pick_free_port() else {
+    let host = "127.0.0.1";
+    let Some((mut server, port)) =
+        start_server_with_health(state_root.path(), repo.path(), host)?
+    else {
         return Ok(());
     };
-    let host = "127.0.0.1";
-    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
-    wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/v1/graph/impact");
@@ -762,12 +784,12 @@ fn impact_non_integer_params_return_invalid_argument_with_field_details(
     let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
     write_impact_graph(&state_dir)?;
 
-    let Some(port) = pick_free_port() else {
+    let host = "127.0.0.1";
+    let Some((mut server, port)) =
+        start_server_with_health(state_root.path(), repo.path(), host)?
+    else {
         return Ok(());
     };
-    let host = "127.0.0.1";
-    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
-    wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/v1/graph/impact");
@@ -803,12 +825,12 @@ fn impact_missing_file_returns_invalid_argument_with_field_details() -> Result<(
     let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
     write_impact_graph(&state_dir)?;
 
-    let Some(port) = pick_free_port() else {
+    let host = "127.0.0.1";
+    let Some((mut server, port)) =
+        start_server_with_health(state_root.path(), repo.path(), host)?
+    else {
         return Ok(());
     };
-    let host = "127.0.0.1";
-    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
-    wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/v1/graph/impact");
@@ -845,12 +867,12 @@ fn impact_edge_types_empty_returns_invalid_argument_with_field_details(
     let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
     write_impact_graph(&state_dir)?;
 
-    let Some(port) = pick_free_port() else {
+    let host = "127.0.0.1";
+    let Some((mut server, port)) =
+        start_server_with_health(state_root.path(), repo.path(), host)?
+    else {
         return Ok(());
     };
-    let host = "127.0.0.1";
-    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
-    wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/v1/graph/impact");

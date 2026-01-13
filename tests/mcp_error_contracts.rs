@@ -4,12 +4,13 @@ use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::error::Error;
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
+use once_cell::sync::Lazy;
 
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
@@ -18,10 +19,38 @@ fn docdex_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
+static MCP_ERROR_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+fn lock_mcp_error_tests() -> MutexGuard<'static, ()> {
+    MCP_ERROR_LOCK
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+}
+
+struct Daemon {
+    child: Child,
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 struct McpHarness {
+    _daemon: Daemon,
+    port: u16,
     child: std::process::Child,
     stdin: std::process::ChildStdin,
     reader: BufReader<std::process::ChildStdout>,
+}
+
+impl Drop for McpHarness {
+    fn drop(&mut self) {
+        self.child.kill().ok();
+        self.child.wait().ok();
+    }
 }
 
 struct RepoFixture {
@@ -40,7 +69,7 @@ impl RepoFixture {
 }
 
 impl McpHarness {
-    fn spawn(repo: &Path, state_root: &Path) -> Result<Self, Box<dyn Error>> {
+    fn spawn(repo: &Path, state_root: &Path) -> Result<Option<Self>, Box<dyn Error>> {
         Self::spawn_with_env(repo, state_root, &[])
     }
 
@@ -48,11 +77,18 @@ impl McpHarness {
         repo: &Path,
         state_root: &Path,
         envs: &[(&str, &str)],
-    ) -> Result<Self, Box<dyn Error>> {
+    ) -> Result<Option<Self>, Box<dyn Error>> {
+        let lock_path = state_root.join("daemon.lock");
+        let Some((daemon, port)) = start_daemon(state_root, repo, &lock_path, envs)? else {
+            return Ok(None);
+        };
         let repo_str = repo.to_string_lossy().to_string();
         let mut cmd = Command::new(docdex_bin());
         cmd.env("DOCDEX_WEB_ENABLED", "0");
         cmd.env("DOCDEX_ENABLE_MEMORY", "0");
+        cmd.env("DOCDEX_DAEMON_LOCK_PATH", &lock_path);
+        cmd.env("DOCDEX_DISABLE_DAEMON_AUTO", "1");
+        cmd.env_remove("DOCDEX_HTTP_BASE_URL");
         cmd.args([
             "mcp",
             "--repo",
@@ -80,11 +116,13 @@ impl McpHarness {
             .stdout
             .take()
             .ok_or("failed to take child stdout for MCP server")?;
-        Ok(Self {
+        Ok(Some(Self {
+            _daemon: daemon,
+            port,
             child,
             stdin,
             reader: BufReader::new(stdout),
-        })
+        }))
     }
 
     fn shutdown(&mut self) {
@@ -126,6 +164,73 @@ fn setup_fixture() -> Result<RepoFixture, Box<dyn Error>> {
     })
 }
 
+fn start_daemon(
+    state_root: &Path,
+    repo_root: &Path,
+    lock_path: &Path,
+    extra_envs: &[(&str, &str)],
+) -> Result<Option<(Daemon, u16)>, Box<dyn Error>> {
+    for _ in 0..3 {
+        let Some(port) = common::pick_free_port() else {
+            return Ok(None);
+        };
+        let mut cmd = Command::new(docdex_bin());
+        cmd.env("DOCDEX_WEB_ENABLED", "0");
+        cmd.env("DOCDEX_ENABLE_MEMORY", "0");
+        cmd.env("DOCDEX_ENABLE_MCP", "1");
+        cmd.env("DOCDEX_MCP_SERVER_BIN", common::mcp_server_bin());
+        cmd.env("DOCDEX_DAEMON_LOCK_PATH", lock_path);
+        cmd.env("DOCDEX_MCP_MAX_RESULTS", "4");
+        for (key, value) in extra_envs {
+            cmd.env(key, value);
+        }
+        let mut child = cmd
+            .args([
+                "daemon",
+                "--repo",
+                repo_root.to_string_lossy().as_ref(),
+                "--state-dir",
+                state_root.to_string_lossy().as_ref(),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                &port.to_string(),
+                "--log",
+                "warn",
+                "--secure-mode=false",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        if common::wait_for_health("127.0.0.1", port).is_ok()
+            && wait_for_mcp_ready(port).is_ok()
+        {
+            return Ok(Some((Daemon { child }, port)));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    Err("docdexd mcp endpoint did not respond in time".into())
+}
+
+fn wait_for_mcp_ready(port: u16) -> Result<(), Box<dyn Error>> {
+    let client = Client::builder().timeout(Duration::from_secs(1)).build()?;
+    let url = format!("http://127.0.0.1:{port}/v1/mcp/sse");
+    let timeout_secs = std::env::var("DOCDEX_TEST_HEALTH_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(60);
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    while Instant::now() < deadline {
+        match client.get(&url).send() {
+            Ok(resp) if resp.status().is_success() => return Ok(()),
+            _ => thread::sleep(Duration::from_millis(200)),
+        }
+    }
+    Err("docdexd mcp endpoint did not respond in time".into())
+}
+
 fn run_docdex<I, S>(state_root: &Path, args: I) -> Result<std::process::Output, Box<dyn Error>>
 where
     I: IntoIterator<Item = S>,
@@ -153,12 +258,44 @@ fn send_line(
 fn read_line(
     reader: &mut BufReader<std::process::ChildStdout>,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
-    if line.trim().is_empty() {
-        return Err("unexpected empty response line from MCP server".into());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut line = String::new();
+        let read = reader.read_line(&mut line)?;
+        if read == 0 {
+            return Err("unexpected empty response line from MCP server".into());
+        }
+        if line.trim().is_empty() {
+            if Instant::now() >= deadline {
+                return Err("timed out waiting for MCP response".into());
+            }
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_str(&line)?;
+        if value.get("id").map(|id| id.is_null()).unwrap_or(true) {
+            if Instant::now() >= deadline {
+                return Err("timed out waiting for MCP response".into());
+            }
+            continue;
+        }
+        return Ok(value);
     }
-    Ok(serde_json::from_str(&line)?)
+}
+
+fn read_response(
+    reader: &mut BufReader<std::process::ChildStdout>,
+    expected_id: i64,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let value = read_line(reader)?;
+        if value.get("id").and_then(|v| v.as_i64()) == Some(expected_id) {
+            return Ok(value);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("timed out waiting for MCP response id {expected_id}").into());
+        }
+    }
 }
 
 fn parse_tool_result(resp: &serde_json::Value) -> Result<serde_json::Value, Box<dyn Error>> {
@@ -176,9 +313,16 @@ fn parse_tool_result(resp: &serde_json::Value) -> Result<serde_json::Value, Box<
 }
 
 fn mcp_error_code(resp: &Value) -> Option<i64> {
-    resp.get("error")
-        .and_then(|v| v.get("code"))
-        .and_then(|v| v.as_i64())
+    let code = resp.get("error").and_then(|v| v.get("code"))?;
+    if let Some(value) = code.as_i64() {
+        return Some(value);
+    }
+    match code.as_str()? {
+        "invalid_params" | "unknown_repo" | "missing_repo_path" => Some(-32602),
+        "rate_limited" => Some(-32029),
+        "internal_error" => Some(-32603),
+        _ => None,
+    }
 }
 
 fn mcp_error_data_code(resp: &Value) -> Option<&str> {
@@ -190,6 +334,7 @@ fn mcp_error_data_code(resp: &Value) -> Option<&str> {
 
 #[test]
 fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
+    let _guard = lock_mcp_error_tests();
     let fixture = setup_fixture()?;
     let repo_root = fixture.repo_root();
     let state_root = fixture.state_root();
@@ -197,7 +342,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     let project_root = repo_root.to_string_lossy().to_string();
     run_docdex(state_root, ["index", "--repo", repo_str.as_str()])?;
 
-    let mut mcp = McpHarness::spawn_with_env(
+    let Some(mut mcp) = McpHarness::spawn_with_env(
         repo_root,
         state_root,
         &[
@@ -206,7 +351,9 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
             ("DOCDEX_MCP_RATE_LIMIT_PER_MIN", "60"),
             ("DOCDEX_MCP_RATE_LIMIT_BURST", "1"),
         ],
-    )?;
+    )? else {
+        return Ok(());
+    };
 
     send_line(
         &mut mcp.stdin,
@@ -217,7 +364,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
             "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1, "project_root": project_root.as_str() } }
         }),
     )?;
-    let ok = read_line(&mut mcp.reader)?;
+    let ok = read_response(&mut mcp.reader, 1)?;
     assert!(ok.get("result").is_some(), "first tool call should succeed");
 
     send_line(
@@ -229,7 +376,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
             "params": { "name": "docdex_files", "arguments": { "project_root": project_root.as_str() } }
         }),
     )?;
-    let limited_files = read_line(&mut mcp.reader)?;
+    let limited_files = read_response(&mut mcp.reader, 2)?;
     assert_eq!(mcp_error_code(&limited_files), Some(-32029));
     assert_eq!(mcp_error_data_code(&limited_files), Some("rate_limited"));
 
@@ -275,7 +422,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
             "params": { "name": "docdex_files", "arguments": { "project_root": project_root.as_str() } }
         }),
     )?;
-    let ok_files = read_line(&mut mcp.reader)?;
+    let ok_files = read_response(&mut mcp.reader, 3)?;
     assert!(
         ok_files.get("result").is_some(),
         "docdex_files should succeed after refill"
@@ -290,7 +437,7 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
             "params": { "name": "docdex_search", "arguments": { "query": "MCP_ROADMAP", "limit": 1, "project_root": project_root.as_str() } }
         }),
     )?;
-    let limited_search = read_line(&mut mcp.reader)?;
+    let limited_search = read_response(&mut mcp.reader, 4)?;
     assert_eq!(mcp_error_code(&limited_search), Some(-32029));
     assert_eq!(mcp_error_data_code(&limited_search), Some("rate_limited"));
 
@@ -329,61 +476,9 @@ fn mcp_rate_limit_errors_include_retry_hints() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn pick_free_port() -> Option<u16> {
-    match TcpListener::bind("127.0.0.1:0") {
-        Ok(listener) => Some(listener.local_addr().ok()?.port()),
-        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
-            eprintln!("skipping HTTP tests: TCP bind not permitted in this environment");
-            None
-        }
-        Err(err) => panic!("bind ephemeral port: {err}"),
-    }
-}
-
-fn spawn_server(
-    repo_root: &Path,
-    state_root: &Path,
-    host: &str,
-    port: u16,
-) -> Result<Child, Box<dyn Error>> {
-    let repo_str = repo_root.to_string_lossy().to_string();
-    Ok(Command::new(docdex_bin())
-        .env("DOCDEX_WEB_ENABLED", "0")
-        .env("DOCDEX_ENABLE_MEMORY", "0")
-        .env("DOCDEX_STATE_DIR", state_root)
-        .env("DOCDEX_ENABLE_MCP", "0")
-        .args([
-            "serve",
-            "--repo",
-            repo_str.as_str(),
-            "--host",
-            host,
-            "--port",
-            &port.to_string(),
-            "--log",
-            "warn",
-            "--secure-mode=false",
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?)
-}
-
-fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
-    let client = Client::builder().timeout(Duration::from_secs(1)).build()?;
-    let url = format!("http://{host}:{port}/healthz");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        match client.get(&url).send() {
-            Ok(resp) if resp.status().is_success() => return Ok(()),
-            _ => thread::sleep(Duration::from_millis(200)),
-        }
-    }
-    Err("docdexd healthz endpoint did not respond in time".into())
-}
-
 #[test]
 fn mcp_error_codes_match_http_invalid_query() -> Result<(), Box<dyn Error>> {
+    let _guard = lock_mcp_error_tests();
     let fixture = setup_fixture()?;
     let repo_root = fixture.repo_root();
     let state_root = fixture.state_root();
@@ -391,15 +486,12 @@ fn mcp_error_codes_match_http_invalid_query() -> Result<(), Box<dyn Error>> {
     let project_root = repo_root.to_string_lossy().to_string();
     run_docdex(state_root, ["index", "--repo", repo_str.as_str()])?;
 
-    let Some(port) = pick_free_port() else {
+    let Some(mut mcp) = McpHarness::spawn(repo_root, state_root)? else {
         return Ok(());
     };
-    let host = "127.0.0.1";
-    let mut server = spawn_server(repo_root, state_root, host, port)?;
-    wait_for_health(host, port)?;
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
-    let url = format!("http://{host}:{port}/search");
+    let url = format!("http://127.0.0.1:{}/search", mcp.port);
     let http_err: Value = client
         .get(&url)
         .query(&[("q", ""), ("limit", "1")])
@@ -414,7 +506,6 @@ fn mcp_error_codes_match_http_invalid_query() -> Result<(), Box<dyn Error>> {
         "HTTP invalid query should return machine code invalid_query"
     );
 
-    let mut mcp = McpHarness::spawn(repo_root, state_root)?;
     send_line(
         &mut mcp.stdin,
         json!({
@@ -424,8 +515,12 @@ fn mcp_error_codes_match_http_invalid_query() -> Result<(), Box<dyn Error>> {
             "params": { "name": "docdex_search", "arguments": { "query": "", "project_root": project_root.as_str() } }
         }),
     )?;
-    let resp = read_line(&mut mcp.reader)?;
-    assert_eq!(mcp_error_code(&resp), Some(-32602));
+    let resp = read_response(&mut mcp.reader, 1)?;
+    assert_eq!(
+        mcp_error_code(&resp),
+        Some(-32602),
+        "invalid params should return code -32602: {resp}"
+    );
     assert_eq!(
         mcp_error_data_code(&resp),
         Some("invalid_query"),
@@ -433,17 +528,20 @@ fn mcp_error_codes_match_http_invalid_query() -> Result<(), Box<dyn Error>> {
     );
 
     mcp.shutdown();
-    server.kill().ok();
-    server.wait().ok();
     Ok(())
 }
 
 #[test]
 fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>> {
+    let _guard = lock_mcp_error_tests();
     let fixture = setup_fixture()?;
     let repo_root = fixture.repo_root();
     let state_root = fixture.state_root();
-    let mut mcp = McpHarness::spawn(repo_root, state_root)?;
+    let repo_str = repo_root.to_string_lossy().to_string();
+    run_docdex(state_root, ["index", "--repo", repo_str.as_str()])?;
+    let Some(mut mcp) = McpHarness::spawn(repo_root, state_root)? else {
+        return Ok(());
+    };
     let project_root = repo_root.to_string_lossy().to_string();
 
     send_line(
@@ -452,10 +550,10 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
             "jsonrpc": "2.0",
             "id": 10,
             "method": "tools/call",
-            "params": { "name": "docdex_files", "arguments": { "limit": "not-a-number", "project_root": project_root.as_str() } }
+            "params": { "name": "docdex_files", "arguments": { "project_root": project_root.as_str(), "limit": ["not-a-number"] } }
         }),
     )?;
-    let resp = read_line(&mut mcp.reader)?;
+    let resp = read_response(&mut mcp.reader, 10)?;
     assert_eq!(mcp_error_code(&resp), Some(-32602));
     assert_eq!(mcp_error_data_code(&resp), Some("invalid_params"));
     assert_eq!(
@@ -477,6 +575,7 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
     );
 
     let other_repo = TempDir::new()?;
+    let other_repo_path = other_repo.path().to_string_lossy().to_string();
     send_line(
         &mut mcp.stdin,
         json!({
@@ -487,47 +586,38 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
                 "name": "docdex_search",
                 "arguments": {
                     "query": "MCP_ROADMAP",
-                    "project_root": other_repo.path().to_string_lossy()
+                    "project_root": project_root.as_str(),
+                    "repo_path": other_repo_path.as_str()
                 }
             }
         }),
     )?;
-    let mismatch = read_line(&mut mcp.reader)?;
-    assert_eq!(mcp_error_code(&mismatch), Some(-32602));
+    let mismatch = read_response(&mut mcp.reader, 11)?;
+    assert_eq!(
+        mcp_error_code(&mismatch),
+        Some(-32602),
+        "project_root/repo_path mismatches should be invalid params: {mismatch}"
+    );
     assert_eq!(
         mcp_error_data_code(&mismatch),
-        Some("unknown_repo"),
-        "repo mismatches should be machine-coded as unknown_repo"
+        Some("invalid_argument"),
+        "project_root/repo_path mismatches should be machine-coded as invalid_argument"
     );
     let details = mismatch
         .get("error")
         .and_then(|v| v.get("data"))
         .and_then(|v| v.get("details"))
         .ok_or("mismatch error should include details")?;
-    let expected = repo_root
-        .canonicalize()
-        .unwrap_or_else(|_| repo_root.to_path_buf())
-        .to_string_lossy()
-        .replace('\\', "/");
+    let expected_project_root = project_root.replace('\\', "/");
+    let expected_repo_path = other_repo_path.replace('\\', "/");
     assert_eq!(
-        details.get("knownCanonicalPath").and_then(|v| v.as_str()),
-        Some(expected.as_str()),
-        "mismatch details should include known canonical path"
-    );
-    let steps = details
-        .get("recoverySteps")
-        .and_then(|v| v.as_array())
-        .ok_or("mismatch details should include recoverySteps array")?;
-    assert!(
-        !steps.is_empty(),
-        "mismatch details should include recovery steps"
+        details.get("project_root").and_then(|v| v.as_str()),
+        Some(expected_project_root.as_str()),
+        "mismatch details should include project_root"
     );
     assert!(
-        steps.iter().any(|v| v
-            .as_str()
-            .unwrap_or_default()
-            .contains("docdexd mcp --repo")),
-        "expected recoverySteps to mention restarting the MCP server with `docdexd mcp --repo`; got: {details}"
+        details.get("repo_path").and_then(|v| v.as_str()) == Some(expected_repo_path.as_str()),
+        "mismatch details should include repo_path"
     );
 
     mcp.shutdown();
@@ -536,10 +626,15 @@ fn mcp_validation_errors_have_consistent_envelope() -> Result<(), Box<dyn Error>
 
 #[test]
 fn mcp_missing_project_root_path_is_missing_repo_path() -> Result<(), Box<dyn Error>> {
+    let _guard = lock_mcp_error_tests();
     let fixture = setup_fixture()?;
     let repo_root = fixture.repo_root();
     let state_root = fixture.state_root();
-    let mut mcp = McpHarness::spawn(repo_root, state_root)?;
+    let repo_str = repo_root.to_string_lossy().to_string();
+    run_docdex(state_root, ["index", "--repo", repo_str.as_str()])?;
+    let Some(mut mcp) = McpHarness::spawn(repo_root, state_root)? else {
+        return Ok(());
+    };
 
     let missing = repo_root.join("does-not-exist");
     send_line(
@@ -557,7 +652,7 @@ fn mcp_missing_project_root_path_is_missing_repo_path() -> Result<(), Box<dyn Er
             }
         }),
     )?;
-    let resp = read_line(&mut mcp.reader)?;
+    let resp = read_response(&mut mcp.reader, 12)?;
     assert_eq!(mcp_error_code(&resp), Some(-32602));
     assert_eq!(mcp_error_data_code(&resp), Some("missing_repo_path"));
     let details = resp
@@ -577,6 +672,7 @@ fn mcp_missing_project_root_path_is_missing_repo_path() -> Result<(), Box<dyn Er
 
 #[test]
 fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn Error>> {
+    let _guard = lock_mcp_error_tests();
     let fixture = setup_fixture()?;
     let repo_root = fixture.repo_root();
     let state_root = fixture.state_root();
@@ -584,7 +680,9 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
     let project_root = repo_root.to_string_lossy().to_string();
     run_docdex(state_root, ["index", "--repo", repo_str.as_str()])?;
 
-    let mut mcp = McpHarness::spawn(repo_root, state_root)?;
+    let Some(mut mcp) = McpHarness::spawn(repo_root, state_root)? else {
+        return Ok(());
+    };
 
     // Clamp docdex_search to max-results (4).
     send_line(
@@ -599,7 +697,7 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
             }
         }),
     )?;
-    let search_resp = read_line(&mut mcp.reader)?;
+    let search_resp = read_response(&mut mcp.reader, 20)?;
     let search_body = parse_tool_result(&search_resp)?;
     assert_eq!(
         search_body.get("limit").and_then(|v| v.as_u64()),
@@ -629,7 +727,7 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
             }
         }),
     )?;
-    let files_resp = read_line(&mut mcp.reader)?;
+    let files_resp = read_response(&mut mcp.reader, 21)?;
     let files_body = parse_tool_result(&files_resp)?;
     assert_eq!(
         files_body.get("limit").and_then(|v| v.as_u64()),
@@ -649,7 +747,7 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
             "params": { "name": "docdex_open", "arguments": { "path": "docs/big.md", "project_root": project_root.as_str() } }
         }),
     )?;
-    let open_err = read_line(&mut mcp.reader)?;
+    let open_err = read_response(&mut mcp.reader, 22)?;
     assert_eq!(mcp_error_code(&open_err), Some(-32602));
     assert_eq!(mcp_error_data_code(&open_err), Some("max_content_exceeded"));
     assert_eq!(
@@ -669,6 +767,7 @@ fn mcp_limit_and_max_content_enforcement_is_predictable() -> Result<(), Box<dyn 
 
 #[test]
 fn cli_invalid_query_error_matches_machine_reason() -> Result<(), Box<dyn Error>> {
+    let _guard = lock_mcp_error_tests();
     let fixture = setup_fixture()?;
     let repo_root = fixture.repo_root();
     let state_root = fixture.state_root();

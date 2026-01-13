@@ -150,7 +150,7 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
     };
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
-    let sse_url = format!("http://127.0.0.1:{port}/sse");
+    let sse_url = format!("http://127.0.0.1:{port}/v1/mcp/sse");
     let sse_resp = client.get(&sse_url).send()?;
     let session_id = sse_resp
         .headers()
@@ -160,6 +160,29 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         .to_string();
 
     let mut reader = BufReader::new(sse_resp);
+
+    let uninit_payload = json!({
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "tools/list",
+        "params": {}
+    });
+    let uninit_resp = client
+        .post(format!("http://127.0.0.1:{port}/v1/mcp/message"))
+        .header("x-docdex-mcp-session", session_id.clone())
+        .json(&uninit_payload)
+        .send()?;
+    assert_eq!(uninit_resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let uninit_body: serde_json::Value = uninit_resp.json()?;
+    let uninit_message = uninit_body
+        .get("error")
+        .and_then(|value| value.get("message"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    assert!(
+        uninit_message.contains("initialize"),
+        "expected initialize hint, got: {uninit_message}"
+    );
 
     let init_payload = json!({
         "jsonrpc": "2.0",
@@ -279,6 +302,41 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
     assert!(
         reported_override_root.contains(&expected_override_root),
         "stats override project_root mismatch: {override_root}"
+    );
+
+    let stats_followup_payload = json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": { "name": "docdex_stats", "arguments": {} }
+    });
+    let stats_followup_ack = client
+        .post(format!("http://127.0.0.1:{port}/v1/mcp/message"))
+        .header("x-docdex-mcp-session", session_id.clone())
+        .json(&stats_followup_payload)
+        .send()?;
+    assert!(stats_followup_ack.status().is_success());
+
+    let stats_followup_resp =
+        read_next_sse(&mut reader).ok_or("missing stats followup response")?;
+    let stats_followup_text = stats_followup_resp
+        .get("result")
+        .and_then(|value| value.get("content"))
+        .and_then(|value| value.as_array())
+        .and_then(|value| value.first())
+        .and_then(|value| value.get("text"))
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("stats followup missing content: {stats_followup_resp}"))?;
+    let stats_followup_json: serde_json::Value = serde_json::from_str(stats_followup_text)
+        .map_err(|err| format!("stats followup invalid json ({err}): {stats_followup_text}"))?;
+    let followup_root = stats_followup_json
+        .get("project_root")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("stats followup missing project_root: {stats_followup_json}"))?;
+    let reported_followup_root = normalize_windows_path(followup_root);
+    assert!(
+        reported_followup_root.contains(&expected_override_root),
+        "stats followup project_root mismatch: {followup_root}"
     );
 
     let direct_resp = client

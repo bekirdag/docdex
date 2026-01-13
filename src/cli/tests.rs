@@ -47,7 +47,7 @@ fn ensure_daemon_for_index_and_hint() {
 }
 
 #[test]
-fn ensure_daemon_for_mcp_sets_repo_hint() {
+fn ensure_daemon_skips_mcp_auto_start() {
     let temp = TempDir::new().expect("temp dir");
     let repo = repo_args(temp.path().to_path_buf());
     let cmd = Command::Mcp {
@@ -56,9 +56,10 @@ fn ensure_daemon_for_mcp_sets_repo_hint() {
         max_results: 8,
         rate_limit_per_min: 0,
         rate_limit_burst: 0,
+        start_daemon: false,
         auth_token: None,
     };
-    assert!(should_ensure_daemon(&cmd));
+    assert!(!should_ensure_daemon(&cmd));
     let hint = repo_hint_for_command(&cmd).expect("repo hint");
     assert_eq!(hint, repo.repo_root());
 }

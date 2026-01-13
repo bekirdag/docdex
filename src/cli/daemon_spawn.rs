@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use crate::daemon::lock;
 use anyhow::{anyhow, Context, Result};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
@@ -17,6 +18,8 @@ const DETACHED_PROCESS: u32 = 0x00000008;
 #[cfg(windows)]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 
+const MCP_AUTO_START_TIMEOUT_SECS: u64 = 10;
+
 pub fn ensure_daemon_running(config: &AppConfig, repo_hint: Option<PathBuf>) -> Result<()> {
     if std::env::var_os("DOCDEX_DISABLE_DAEMON_AUTO").is_some() {
         return Ok(());
@@ -27,6 +30,50 @@ pub fn ensure_daemon_running(config: &AppConfig, repo_hint: Option<PathBuf>) -> 
     }
     spawn_daemon(addr, repo_hint)?;
     Ok(())
+}
+
+pub(crate) fn mcp_auto_start_enabled(requested: bool) -> Result<bool> {
+    if !requested {
+        return Ok(false);
+    }
+    if std::env::var_os("DOCDEX_DISABLE_DAEMON_AUTO").is_some() {
+        return Err(anyhow!(
+            "auto-start disabled via DOCDEX_DISABLE_DAEMON_AUTO; unset it or start the daemon manually with `docdexd daemon --repo <path>`"
+        ));
+    }
+    if std::env::var_os("DOCDEX_HTTP_BASE_URL").is_some() {
+        return Err(anyhow!(
+            "DOCDEX_HTTP_BASE_URL is set; auto-start would be ignored. Unset it or start the daemon manually with `docdexd daemon --repo <path>`"
+        ));
+    }
+    Ok(true)
+}
+
+pub fn ensure_daemon_running_for_mcp(repo_hint: Option<PathBuf>) -> Result<lock::DaemonLockMetadata> {
+    let lock_path = lock::default_lock_path()?;
+    if let Some(metadata) = lock::read_running_metadata_at_path(&lock_path)? {
+        return Ok(metadata);
+    }
+    let timeout = Duration::from_secs(MCP_AUTO_START_TIMEOUT_SECS);
+    if lock::read_metadata(&lock_path)?.is_some() {
+        if let Some(metadata) = lock::wait_for_running_metadata_at_path(&lock_path, timeout)? {
+            return Ok(metadata);
+        }
+    }
+    let config = AppConfig::load_default().context("load config for MCP auto-start")?;
+    let addr = parse_bind_addr(&config.server.http_bind_addr)?;
+    spawn_daemon(addr, repo_hint.clone())?;
+    if let Some(metadata) = lock::wait_for_running_metadata_at_path(&lock_path, timeout)? {
+        return Ok(metadata);
+    }
+    let repo_hint_display = repo_hint
+        .as_ref()
+        .map(|repo| repo.display().to_string())
+        .unwrap_or_else(|| "<path>".to_string());
+    Err(anyhow!(
+        "docdex daemon did not become healthy within {}s; start it manually with `docdexd daemon --repo {repo_hint_display}`",
+        MCP_AUTO_START_TIMEOUT_SECS
+    ))
 }
 
 fn parse_bind_addr(value: &str) -> Result<SocketAddr> {
@@ -89,4 +136,80 @@ fn spawn_daemon(addr: SocketAddr, repo_hint: Option<PathBuf>) -> Result<()> {
     }
     let _child = cmd.spawn().context("spawn daemon")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mcp_auto_start_enabled;
+    use once_cell::sync::Lazy;
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    struct EnvGuard {
+        prev: Vec<(&'static str, Option<String>)>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn set(vars: &[(&'static str, &str)]) -> Self {
+            let lock = ENV_LOCK.lock().expect("env lock");
+            let mut prev = Vec::new();
+            for (key, value) in vars {
+                let old = std::env::var(key).ok();
+                std::env::set_var(key, value);
+                prev.push((*key, old));
+            }
+            Self { prev, _lock: lock }
+        }
+
+        fn clear(keys: &[&'static str]) -> Self {
+            let lock = ENV_LOCK.lock().expect("env lock");
+            let mut prev = Vec::new();
+            for key in keys {
+                let old = std::env::var(key).ok();
+                std::env::remove_var(key);
+                prev.push((*key, old));
+            }
+            Self { prev, _lock: lock }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.prev {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mcp_auto_start_disabled_when_not_requested() {
+        let _env = EnvGuard::clear(&["DOCDEX_DISABLE_DAEMON_AUTO", "DOCDEX_HTTP_BASE_URL"]);
+        assert_eq!(mcp_auto_start_enabled(false).unwrap(), false);
+    }
+
+    #[test]
+    fn mcp_auto_start_enabled_when_requested() {
+        let _env = EnvGuard::clear(&["DOCDEX_DISABLE_DAEMON_AUTO", "DOCDEX_HTTP_BASE_URL"]);
+        assert_eq!(mcp_auto_start_enabled(true).unwrap(), true);
+    }
+
+    #[test]
+    fn mcp_auto_start_rejects_disabled_env() {
+        let _env = EnvGuard::set(&[("DOCDEX_DISABLE_DAEMON_AUTO", "1")]);
+        let err = mcp_auto_start_enabled(true).unwrap_err().to_string();
+        assert!(err.contains("DOCDEX_DISABLE_DAEMON_AUTO"));
+    }
+
+    #[test]
+    fn mcp_auto_start_rejects_base_url_override() {
+        let _env = EnvGuard::set(&[("DOCDEX_HTTP_BASE_URL", "http://127.0.0.1:3333")]);
+        let err = mcp_auto_start_enabled(true).unwrap_err().to_string();
+        assert!(err.contains("DOCDEX_HTTP_BASE_URL"));
+    }
 }

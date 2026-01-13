@@ -14,7 +14,6 @@ type BoxError = Box<dyn Error + Send + Sync>;
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
     std::env::set_var("DOCDEX_WEB_ENABLED", "0");
-    std::env::set_var("DOCDEX_MCP_SERVER_BIN", common::mcp_server_bin());
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
@@ -25,11 +24,18 @@ struct McpHarness {
 }
 
 impl McpHarness {
-    fn spawn(repo: &Path, state_dir: &Path) -> Result<Self, BoxError> {
+    fn spawn(repo: &Path, state_dir: &Path, lock_path: &Path) -> Result<Self, BoxError> {
         let repo_str = repo.to_string_lossy().to_string();
         let mut cmd = Command::new(docdex_bin());
         cmd.env("DOCDEX_WEB_ENABLED", "0");
         cmd.env("DOCDEX_ENABLE_MEMORY", "0");
+        cmd.env("DOCDEX_DISABLE_DAEMON_AUTO", "1");
+        cmd.env("DOCDEX_DAEMON_LOCK_PATH", lock_path);
+        cmd.env_remove("DOCDEX_HTTP_BASE_URL");
+        cmd.env(
+            "DOCDEX_MCP_SERVER_BIN",
+            state_dir.join("missing-docdex-mcp-server"),
+        );
         cmd.args([
             "mcp",
             "--repo",
@@ -66,6 +72,43 @@ impl McpHarness {
     }
 }
 
+fn spawn_daemon(
+    repo: &Path,
+    state_dir: &Path,
+    lock_path: &Path,
+    port: u16,
+) -> Result<std::process::Child, BoxError> {
+    let repo_str = repo.to_string_lossy().to_string();
+    let mut cmd = Command::new(docdex_bin());
+    cmd.env("DOCDEX_WEB_ENABLED", "0");
+    cmd.env("DOCDEX_ENABLE_MEMORY", "0");
+    cmd.env("DOCDEX_ENABLE_MCP", "1");
+    cmd.env("DOCDEX_DAEMON_LOCK_PATH", lock_path);
+    cmd.args([
+        "daemon",
+        "--repo",
+        repo_str.as_str(),
+        "--state-dir",
+        &state_dir.to_string_lossy(),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        &port.to_string(),
+        "--log",
+        "warn",
+        "--secure-mode=false",
+    ]);
+    let child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    common::wait_for_health("127.0.0.1", port).map_err(|err| {
+        std::io::Error::new(std::io::ErrorKind::Other, err.to_string())
+    })?;
+    Ok(child)
+}
+
 fn run_docdex<I, S>(args: I, state_dir: &Path) -> Result<(), BoxError>
 where
     I: IntoIterator<Item = S>,
@@ -98,14 +141,14 @@ fn write_repo(repo_root: &Path) -> Result<(), BoxError> {
         docs_dir.join("alpha.md"),
         r#"# Alpha
 
-CONCURRENCY_ALPHA
+ALPHA5E8F1C
 "#,
     )?;
     std::fs::write(
         docs_dir.join("beta.md"),
         r#"# Beta
 
-CONCURRENCY_BETA
+BETAC3D7A9
 "#,
     )?;
     Ok(())
@@ -225,8 +268,14 @@ fn mcp_concurrency_same_repo_isolated() -> Result<(), BoxError> {
     let repo_root = repo.path().to_string_lossy().to_string();
     run_docdex(["index", "--repo", repo_root.as_str()], &state_dir)?;
 
-    let harness_a = McpHarness::spawn(repo.path(), &state_dir)?;
-    let harness_b = McpHarness::spawn(repo.path(), &state_dir)?;
+    let Some(port) = common::pick_free_port() else {
+        return Ok(());
+    };
+    let lock_path = state_dir.join("daemon.lock");
+    let mut daemon = spawn_daemon(repo.path(), &state_dir, &lock_path, port)?;
+
+    let harness_a = McpHarness::spawn(repo.path(), &state_dir, &lock_path)?;
+    let harness_b = McpHarness::spawn(repo.path(), &state_dir, &lock_path)?;
 
     let barrier = Arc::new(Barrier::new(3));
     let barrier_a = barrier.clone();
@@ -238,9 +287,9 @@ fn mcp_concurrency_same_repo_isolated() -> Result<(), BoxError> {
         run_search_and_open(
             harness_a,
             repo_project_root.as_str(),
-            "CONCURRENCY_ALPHA",
+            "ALPHA5E8F1C",
             "docs/alpha.md",
-            "CONCURRENCY_ALPHA",
+            "ALPHA5E8F1C",
         )
     });
     let repo_project_root_b = repo_root.clone();
@@ -249,9 +298,9 @@ fn mcp_concurrency_same_repo_isolated() -> Result<(), BoxError> {
         run_search_and_open(
             harness_b,
             repo_project_root_b.as_str(),
-            "CONCURRENCY_BETA",
+            "BETAC3D7A9",
             "docs/beta.md",
-            "CONCURRENCY_BETA",
+            "BETAC3D7A9",
         )
     });
 
@@ -259,5 +308,8 @@ fn mcp_concurrency_same_repo_isolated() -> Result<(), BoxError> {
 
     handle_a.join().expect("alpha thread panicked")?;
     handle_b.join().expect("beta thread panicked")?;
+
+    daemon.kill().ok();
+    daemon.wait().ok();
     Ok(())
 }

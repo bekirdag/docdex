@@ -7,6 +7,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 fn write_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
@@ -46,14 +47,17 @@ impl ServerHarness {
         embedding_base_url: &str,
     ) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo_root.to_string_lossy().to_string();
+        let lock_path = state_root.join("daemon.lock");
         let child = Command::new(docdex_bin())
             .env("DOCDEX_WEB_ENABLED", "0")
             .env("DOCDEX_ENABLE_MEMORY", "0")
             .env("DOCDEX_STATE_DIR", state_root)
-            .env("DOCDEX_ENABLE_MCP", "0")
+            .env("DOCDEX_DAEMON_LOCK_PATH", lock_path)
+            .env("DOCDEX_ENABLE_MCP", "1")
+            .env("DOCDEX_MCP_SERVER_BIN", mcp_server_bin())
             .env("HOME", home_dir)
             .args([
-                "serve",
+                "daemon",
                 "--repo",
                 repo_str.as_str(),
                 "--host",
@@ -134,12 +138,21 @@ fn send_line(
 fn read_line(
     reader: &mut BufReader<std::process::ChildStdout>,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
-    if line.trim().is_empty() {
-        return Err("unexpected empty response line from MCP server".into());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut line = String::new();
+        let read = reader.read_line(&mut line)?;
+        if read == 0 {
+            return Err("unexpected empty response line from MCP server".into());
+        }
+        if line.trim().is_empty() {
+            if Instant::now() >= deadline {
+                return Err("timed out waiting for MCP response".into());
+            }
+            continue;
+        }
+        return Ok(serde_json::from_str(&line)?);
     }
-    Ok(serde_json::from_str(&line)?)
 }
 
 fn parse_tool_result(resp: &serde_json::Value) -> Result<serde_json::Value, Box<dyn Error>> {
@@ -147,12 +160,12 @@ fn parse_tool_result(resp: &serde_json::Value) -> Result<serde_json::Value, Box<
         .get("result")
         .and_then(|v| v.get("content"))
         .and_then(|v| v.as_array())
-        .ok_or("tool result missing content array")?;
+        .ok_or_else(|| format!("tool result missing content array: {resp}"))?;
     let first_text = content
         .first()
         .and_then(|v| v.get("text"))
         .and_then(|v| v.as_str())
-        .ok_or("tool result missing text content")?;
+        .ok_or_else(|| format!("tool result missing text content: {resp}"))?;
     Ok(serde_json::from_str(first_text)?)
 }
 

@@ -1,6 +1,9 @@
 use crate::api::v1::initialize::{parse_root_uri, resolve_initialize};
-use crate::error::{AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY};
-use crate::search::{json_error, status_for_app_error, AppState};
+use crate::error::{
+    repo_resolution_details, AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
+    ERR_MISSING_DEPENDENCY, ERR_MISSING_REPO_PATH,
+};
+use crate::search::{json_error, json_error_with_details, status_for_app_error, AppState};
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -11,7 +14,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
-use tracing::warn;
 
 const SESSION_HEADER: &str = "x-docdex-mcp-session";
 
@@ -89,24 +91,22 @@ pub async fn mcp_message_handler(
         );
     };
     let method = extract_method(&payload).map(str::to_string);
-    let require_repo = state
-        .repos
-        .as_ref()
-        .map(|manager| state.multi_repo && manager.repo_count() > 1)
-        .unwrap_or(false);
     if is_notification(&payload, method.as_deref()) {
         return StatusCode::NO_CONTENT.into_response();
     }
     if method.as_deref() == Some("initialize") {
         normalize_initialize_payload(&mut payload);
-        let root_uri = extract_init_root(&payload);
-        if require_repo && root_uri.is_none() {
-            warn!(
-                target: "docdexd",
-                "mcp initialize missing rootUri while multiple repos are active; default repo will be used"
-            );
-        }
-        let repo_root = match resolve_repo_for_mcp(&state, root_uri) {
+        let root_uri = match extract_init_root(&payload) {
+            Some(root_uri) => root_uri,
+            None => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    ERR_INVALID_ARGUMENT,
+                    "missing initialize rootUri (set params.rootUri or roots/workspaceFolders)",
+                );
+            }
+        };
+        let repo_root = match resolve_repo_for_mcp(&state, Some(root_uri)) {
             Ok(root) => root,
             Err(err) => {
                 return json_error(status_for_app_error(err.code), err.code, err.message);
@@ -119,44 +119,45 @@ pub async fn mcp_message_handler(
                 format!("mcp proxy failed: {err}"),
             );
         }
-    } else if let Some(root_uri) = extract_project_root(&payload) {
-        match resolve_repo_for_mcp(&state, Some(root_uri)) {
-            Ok(repo_root) => {
-                if let Err(err) = router.bind_session(&session_id, &repo_root).await {
-                    return json_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        ERR_INTERNAL_ERROR,
-                        format!("mcp proxy failed: {err}"),
-                    );
-                }
-            }
-            Err(err) => {
-                return json_error(status_for_app_error(err.code), err.code, err.message);
-            }
-        }
-    } else if router.session_repo_root(&session_id).await.is_none() {
-        if require_repo {
-            if let Some(default_repo) = router.default_repo_root().await {
-                if let Err(err) = router.bind_session(&session_id, &default_repo).await {
-                    return json_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        ERR_INTERNAL_ERROR,
-                        format!("mcp proxy failed: {err}"),
-                    );
-                }
-            } else {
+    } else {
+        let bound_root = match router.session_repo_root(&session_id).await {
+            Some(root) => root,
+            None => {
                 return json_error(
                     StatusCode::BAD_REQUEST,
                     ERR_INVALID_ARGUMENT,
-                    "missing project_root/repo_path (required when multiple repos are active)",
+                    "missing initialize (call initialize with rootUri before MCP requests)",
                 );
             }
-        } else {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                ERR_INVALID_ARGUMENT,
-                "missing initialize (call initialize with rootUri or send project_root)",
-            );
+        };
+        if let Some(root_uri) = extract_project_root(&payload) {
+            match resolve_repo_for_mcp(&state, Some(root_uri)) {
+                Ok(repo_root) => {
+                    let should_init = bound_root != repo_root;
+                    if let Err(err) = router.bind_session(&session_id, &repo_root).await {
+                        return json_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            ERR_INTERNAL_ERROR,
+                            format!("mcp proxy failed: {err}"),
+                        );
+                    }
+                    if should_init {
+                        if let Err(err) = router
+                            .enqueue_internal_initialize(&session_id, &repo_root)
+                            .await
+                        {
+                            return json_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                ERR_INTERNAL_ERROR,
+                                format!("mcp proxy failed: {err}"),
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    return app_error_response(err);
+                }
+            }
         }
     }
     match router.enqueue_for_session(&session_id, payload).await {
@@ -253,60 +254,36 @@ async fn handle_mcp_single(
     if method.as_deref() == Some("initialize") {
         normalize_initialize_payload(&mut payload);
     }
-    let require_repo = state
-        .repos
-        .as_ref()
-        .map(|manager| state.multi_repo && manager.repo_count() > 1)
-        .unwrap_or(false);
-    let repo_root = match method {
-        Some(method) if method == "initialize" => {
-            let root_uri = extract_init_root(&payload);
-            if require_repo && root_uri.is_none() {
-                warn!(
-                    target: "docdexd",
-                    "mcp initialize missing rootUri while multiple repos are active; default repo will be used"
-                );
+    let repo_root = if method.as_deref() == Some("initialize") {
+        let root_uri = match extract_init_root(&payload) {
+            Some(root_uri) => root_uri,
+            None => {
+                return Err(json_error(
+                    StatusCode::BAD_REQUEST,
+                    ERR_INVALID_ARGUMENT,
+                    "missing initialize rootUri (set params.rootUri or roots/workspaceFolders)",
+                ));
             }
-            match resolve_repo_for_mcp(state, root_uri) {
-                Ok(root) => {
-                    router.set_default_repo(root.clone()).await;
-                    Some(root)
-                }
-                Err(err) => {
-                    return Err(json_error(
-                        status_for_app_error(err.code),
-                        err.code,
-                        err.message,
-                    ));
-                }
+        };
+        match resolve_repo_for_mcp(state, Some(root_uri)) {
+            Ok(root) => Some(root),
+            Err(err) => {
+                return Err(app_error_response(err));
             }
         }
-        _ => {
-            if let Some(root_uri) = extract_project_root(&payload) {
-                match resolve_repo_for_mcp(state, Some(root_uri)) {
-                    Ok(root) => Some(root),
-                    Err(err) => {
-                        return Err(json_error(
-                            status_for_app_error(err.code),
-                            err.code,
-                            err.message,
-                        ));
-                    }
-                }
-            } else if require_repo {
-                if let Some(default_repo) = router.default_repo_root().await {
-                    Some(default_repo)
-                } else {
-                    return Err(json_error(
-                        StatusCode::BAD_REQUEST,
-                        ERR_INVALID_ARGUMENT,
-                        "missing project_root/repo_path (required when multiple repos are active)",
-                    ));
-                }
-            } else {
-                None
+    } else if let Some(root_uri) = extract_project_root(&payload) {
+        match resolve_repo_for_mcp(state, Some(root_uri)) {
+            Ok(root) => Some(root),
+            Err(err) => {
+                return Err(app_error_response(err));
             }
         }
+    } else {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "missing initialize (call initialize with rootUri) or include project_root/repo_path",
+        ));
     };
     match router.call(repo_root.as_deref(), payload).await {
         Ok(response) => Ok(Some(response)),
@@ -315,6 +292,15 @@ async fn handle_mcp_single(
             ERR_INTERNAL_ERROR,
             format!("mcp proxy failed: {err}"),
         )),
+    }
+}
+
+fn app_error_response(err: AppError) -> Response {
+    let status = status_for_app_error(err.code);
+    if let Some(details) = err.details {
+        json_error_with_details(status, err.code, err.message, details)
+    } else {
+        json_error(status, err.code, err.message)
     }
 }
 
@@ -401,11 +387,94 @@ fn extract_root_from_array(value: Option<&Value>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::{Query, State};
+    use axum::http::{HeaderMap, HeaderValue, StatusCode};
+    use crate::search::SecurityConfig;
+    use http_body_util::BodyExt;
     use serde_json::json;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use tempfile::TempDir;
     use url::Url;
+
+    async fn build_test_state() -> Result<(AppState, TempDir), Box<dyn std::error::Error>> {
+        let temp = TempDir::new()?;
+        fs::create_dir_all(temp.path())?;
+        let state_dir = temp.path().join("state");
+        let index_config = crate::index::IndexConfig::with_overrides(
+            temp.path(),
+            Some(state_dir),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )?;
+        let indexer = Arc::new(crate::index::Indexer::with_config(
+            temp.path().to_path_buf(),
+            index_config,
+        )?);
+        let repo_id = crate::repo_manager::repo_fingerprint_sha256(temp.path())?;
+        let legacy_repo_id =
+            crate::repo_manager::fingerprint::legacy_repo_id_for_root(temp.path());
+        let security = SecurityConfig::from_options(
+            None,
+            &[],
+            10,
+            1024,
+            1024,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
+        )?;
+        let repo_args = crate::config::RepoArgs {
+            repo: temp.path().to_path_buf(),
+            state_dir: None,
+            exclude_prefix: Vec::new(),
+            exclude_dir: Vec::new(),
+            enable_symbol_extraction: true,
+        };
+        let mcp_router = Some(
+            crate::mcp::spawn_proxy_for_serve(
+                repo_args,
+                "warn".to_string(),
+                4,
+                0,
+                0,
+                false,
+                String::new(),
+                String::new(),
+                0,
+                None,
+                None,
+            )
+            .await?,
+        );
+        let state = AppState {
+            repo_id,
+            legacy_repo_id,
+            indexer,
+            libs_indexer: None,
+            security,
+            access_log: false,
+            audit: None,
+            metrics: Arc::new(crate::metrics::Metrics::default()),
+            memory: None,
+            profile_state: None,
+            features: crate::config::FeatureFlagsConfig::default(),
+            default_agent_id: None,
+            max_answer_tokens: 256,
+            llm_base_url: "http://127.0.0.1".to_string(),
+            llm_default_model: "test".to_string(),
+            repos: None,
+            multi_repo: false,
+            mcp_router,
+        };
+        Ok((state, temp))
+    }
 
     #[test]
     fn extract_init_root_accepts_roots_array() {
@@ -494,9 +563,60 @@ mod tests {
         let root = extract_init_root(&payload);
         assert!(root.is_none());
     }
+
+    #[tokio::test]
+    async fn mcp_message_rejects_uninitialized_session() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (state, _temp) = build_test_state().await?;
+        let router = state
+            .mcp_router
+            .as_ref()
+            .expect("mcp router")
+            .clone();
+        let (session_id, _rx) = router.create_session().await;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(SESSION_HEADER, HeaderValue::from_str(&session_id)?);
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        });
+        let response = mcp_message_handler(
+            State(state),
+            Query(McpSessionQuery { session_id: None }),
+            headers,
+            Json(payload),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response.into_body().collect().await?.to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&body)?;
+        let message = payload
+            .get("error")
+            .and_then(|value| value.get("message"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        assert!(
+            message.contains("initialize"),
+            "expected initialize hint, got: {message}"
+        );
+        Ok(())
+    }
 }
 
 fn resolve_repo_for_mcp(state: &AppState, root_uri: Option<String>) -> Result<PathBuf, AppError> {
+    if let Some(root_uri) = root_uri.as_deref() {
+        let candidate = parse_root_uri(root_uri)?;
+        if !candidate.exists() {
+            let normalized = candidate.to_string_lossy().replace('\\', "/");
+            let details = repo_resolution_details(normalized, None, None, Vec::new());
+            return Err(
+                AppError::new(ERR_MISSING_REPO_PATH, "repo path not found").with_details(details),
+            );
+        }
+    }
     let init = resolve_initialize(state, root_uri.as_deref())?;
     Ok(PathBuf::from(init.repo_root))
 }

@@ -256,6 +256,19 @@ fn env_agent_override() -> Option<String> {
         })
 }
 
+fn mcp_http_base_url(host: &str, port: u16) -> String {
+    let host = match host {
+        "0.0.0.0" | "::" => "127.0.0.1",
+        _ => host,
+    };
+    let host = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    format!("http://{host}:{port}")
+}
+
 pub async fn serve(
     repo: PathBuf,
     host: String,
@@ -307,6 +320,7 @@ pub async fn serve(
     let repo_display = repo.display().to_string();
     let provider = llm_provider.trim();
     let agent_override = env_agent_override();
+    let mcp_http_base_url = mcp_http_base_url(&host, port);
     if daemon_mode && enable_mcp {
         let enable_web = std::env::var("DOCDEX_WEB_ENABLED")
             .ok()
@@ -334,10 +348,10 @@ pub async fn serve(
 
     let _daemon_lock = if daemon_mode {
         let lock_path = lock::default_lock_path().ok();
-        let lock = lock::DaemonLock::acquire(port).map_err(|err| {
+        let outcome = lock::acquire_or_reuse(port).map_err(|err| {
             let mut error = StartupError::new(
                 "startup_daemon_locked",
-                format!("docdex daemon already running or lock unavailable: {err}"),
+                format!("docdex daemon lock unavailable: {err}"),
             );
             if let Some(ref path) = lock_path {
                 if let Ok(Some(metadata)) = lock::read_metadata(path) {
@@ -356,7 +370,26 @@ pub async fn serve(
             }
             error
         })?;
-        Some(lock)
+        match outcome {
+            lock::DaemonLockOutcome::Acquired(lock) => Some(lock),
+            lock::DaemonLockOutcome::AlreadyRunning(metadata) => {
+                if let Some(path) = lock_path {
+                    println!(
+                        "docdex daemon already running (pid={} port={}, lock={})",
+                        metadata.pid,
+                        metadata.port,
+                        path.display()
+                    );
+                } else {
+                    println!(
+                        "docdex daemon already running (pid={} port={})",
+                        metadata.pid,
+                        metadata.port
+                    );
+                }
+                return Ok(());
+            }
+        }
     } else {
         None
     };
@@ -521,93 +554,48 @@ pub async fn serve(
         None
     };
 
-    let mut mcp_child = None;
     let mut mcp_router = None;
     if enable_mcp {
-        if daemon_mode {
-            let result = mcp::spawn_proxy_for_serve(
-                mcp_repo_args,
-                log_level.clone(),
-                mcp_max_results,
-                mcp_rate_limit_per_min,
-                mcp_rate_limit_burst,
-                enable_memory,
-                ollama_base_url.clone(),
-                embedding_model.clone(),
-                embedding_timeout_ms,
-                mcp_auth_token.clone(),
-            )
-            .await;
-            match result {
-                Ok(router) => {
-                    info!(
-                        target: "docdexd",
-                        source = %mcp_enable_source.as_str(),
-                        "mcp proxy started"
-                    );
-                    mcp_router = Some(router);
-                }
-                Err(err) => {
-                    debug!(
-                        target: "docdexd",
-                        source = %mcp_enable_source.as_str(),
-                        error = ?err,
-                        "mcp proxy failed to start"
-                    );
-                    return Err(StartupError::new(
-                        "startup_mcp_failed",
-                        format!("mcp proxy failed to start: {err}"),
-                    )
-                    .with_hint("Install/build the docdex-mcp-server binary or disable MCP auto-start.")
-                    .with_remediation(vec![
-                        "Build the MCP server: `cargo build -p docdex-mcp-server`.".to_string(),
-                        "Or disable MCP auto-start: `docdexd serve --disable-mcp` (or set DOCDEX_ENABLE_MCP=0).".to_string(),
-                    ])
-                    .into());
-                }
+        let result = mcp::spawn_proxy_for_serve(
+            mcp_repo_args,
+            log_level.clone(),
+            mcp_max_results,
+            mcp_rate_limit_per_min,
+            mcp_rate_limit_burst,
+            enable_memory,
+            ollama_base_url.clone(),
+            embedding_model.clone(),
+            embedding_timeout_ms,
+            Some(mcp_http_base_url.clone()),
+            mcp_auth_token.clone(),
+        )
+        .await;
+        match result {
+            Ok(router) => {
+                info!(
+                    target: "docdexd",
+                    source = %mcp_enable_source.as_str(),
+                    "mcp proxy started"
+                );
+                mcp_router = Some(router);
             }
-        } else {
-            let result = mcp::spawn_for_serve(
-                mcp_repo_args,
-                log_level.clone(),
-                mcp_max_results,
-                mcp_rate_limit_per_min,
-                mcp_rate_limit_burst,
-                enable_memory,
-                ollama_base_url.clone(),
-                embedding_model.clone(),
-                embedding_timeout_ms,
-                mcp_auth_token.clone(),
-            )
-            .await;
-            match result {
-                Ok(child) => {
-                    info!(
-                        target: "docdexd",
-                        source = %mcp_enable_source.as_str(),
-                        pid = child.id().unwrap_or(0),
-                        "mcp server started"
-                    );
-                    mcp_child = Some(child);
-                }
-                Err(err) => {
-                    debug!(
-                        target: "docdexd",
-                        source = %mcp_enable_source.as_str(),
-                        error = ?err,
-                        "mcp server failed to start"
-                    );
-                    return Err(StartupError::new(
-                        "startup_mcp_failed",
-                        format!("mcp server failed to start: {err}"),
-                    )
-                    .with_hint("Install/build the docdex-mcp-server binary or disable MCP auto-start.")
-                    .with_remediation(vec![
-                        "Build the MCP server: `cargo build -p docdex-mcp-server`.".to_string(),
-                        "Or disable MCP auto-start: `docdexd serve --disable-mcp` (or set DOCDEX_ENABLE_MCP=0).".to_string(),
-                    ])
-                    .into());
-                }
+            Err(err) => {
+                debug!(
+                    target: "docdexd",
+                    source = %mcp_enable_source.as_str(),
+                    error = ?err,
+                    "mcp proxy failed to start"
+                );
+                return Err(StartupError::new(
+                    "startup_mcp_failed",
+                    format!("mcp proxy failed to start: {err}"),
+                )
+                .with_hint("Install/build the docdex-mcp-server binary or disable MCP auto-start.")
+                .with_remediation(vec![
+                    "Build the MCP server: `cargo build -p docdex-mcp-server`.".to_string(),
+                    "Or disable MCP auto-start: `docdexd serve --disable-mcp` (or set DOCDEX_ENABLE_MCP=0).".to_string(),
+                ])
+                .into());
             }
         }
     } else {
@@ -817,12 +805,6 @@ pub async fn serve(
         }
     }
     let result = axum::serve(listener, make_service).await;
-    if let Some(mut child) = mcp_child.take() {
-        if let Err(err) = child.kill().await {
-            warn!(target: "docdexd", error = ?err, "failed to stop mcp server");
-        }
-        let _ = child.wait().await;
-    }
     match result {
         Ok(()) => {
             info!(

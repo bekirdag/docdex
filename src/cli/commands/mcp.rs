@@ -8,6 +8,7 @@ pub async fn run(
     max_results: usize,
     rate_limit_per_min: u32,
     rate_limit_burst: u32,
+    start_daemon: bool,
     auth_token: Option<String>,
 ) -> Result<()> {
     let max_results = std::env::var("DOCDEX_MCP_MAX_RESULTS")
@@ -15,6 +16,10 @@ pub async fn run(
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(max_results)
         .max(1);
+    let repo_root = repo.repo_root();
+    if crate::cli::daemon_spawn::mcp_auto_start_enabled(start_daemon)? {
+        crate::cli::daemon_spawn::ensure_daemon_running_for_mcp(Some(repo_root))?;
+    }
     mcp::serve(
         repo,
         log,

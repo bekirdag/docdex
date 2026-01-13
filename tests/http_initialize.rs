@@ -109,6 +109,22 @@ fn start_daemon(state_root: &Path, repo_root: &Path, port: u16) -> Result<Daemon
     Ok(Daemon { child })
 }
 
+fn start_daemon_with_health(
+    state_root: &Path,
+    repo_root: &Path,
+) -> Result<Option<(Daemon, u16)>, Box<dyn Error>> {
+    for _ in 0..3 {
+        let Some(port) = pick_free_port() else {
+            return Ok(None);
+        };
+        let daemon = start_daemon(state_root, repo_root, port)?;
+        if wait_for_health(port).is_ok() {
+            return Ok(Some((daemon, port)));
+        }
+    }
+    Err("docdexd healthz endpoint did not respond in time".into())
+}
+
 fn file_uri(path: &Path) -> String {
     Url::from_directory_path(path)
         .expect("file uri")
@@ -157,12 +173,9 @@ fn initialize_returns_repo_id_and_status() -> Result<(), Box<dyn Error>> {
         ["index", "--repo", repo.path().to_str().unwrap()],
     )?;
 
-    let port = match pick_free_port() {
-        Some(port) => port,
-        None => return Ok(()),
+    let Some((_daemon, port)) = start_daemon_with_health(state_dir.path(), repo.path())? else {
+        return Ok(());
     };
-    let _daemon = start_daemon(state_dir.path(), repo.path(), port)?;
-    wait_for_health(port)?;
 
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
@@ -197,12 +210,9 @@ fn initialize_rejects_unknown_repo() -> Result<(), Box<dyn Error>> {
         ["index", "--repo", repo.path().to_str().unwrap()],
     )?;
 
-    let port = match pick_free_port() {
-        Some(port) => port,
-        None => return Ok(()),
+    let Some((_daemon, port)) = start_daemon_with_health(state_dir.path(), repo.path())? else {
+        return Ok(());
     };
-    let _daemon = start_daemon(state_dir.path(), repo.path(), port)?;
-    wait_for_health(port)?;
 
     let other = TempDir::new()?;
     write_repo(other.path())?;
@@ -229,12 +239,9 @@ fn initialize_triggers_indexing_when_unindexed() -> Result<(), Box<dyn Error>> {
     write_repo(repo.path())?;
     let state_dir = TempDir::new()?;
 
-    let port = match pick_free_port() {
-        Some(port) => port,
-        None => return Ok(()),
+    let Some((_daemon, port)) = start_daemon_with_health(state_dir.path(), repo.path())? else {
+        return Ok(());
     };
-    let _daemon = start_daemon(state_dir.path(), repo.path(), port)?;
-    wait_for_health(port)?;
 
     let client = Client::builder()
         .timeout(Duration::from_secs(2))

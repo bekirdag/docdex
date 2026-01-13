@@ -706,6 +706,14 @@ pub(crate) enum Command {
         rate_limit_burst: u32,
         #[arg(
             long,
+            env = "DOCDEX_MCP_AUTO_START",
+            default_value_t = false,
+            action = ArgAction::SetTrue,
+            help = "Auto-start the daemon when running the MCP stdio proxy"
+        )]
+        start_daemon: bool,
+        #[arg(
+            long,
             env = "DOCDEX_AUTH_TOKEN",
             help = "Optional bearer token required by MCP initialize"
         )]
@@ -997,7 +1005,11 @@ pub async fn run() -> Result<()> {
 fn should_ensure_daemon(command: &Command) -> bool {
     !matches!(
         command,
-        Command::Serve { .. } | Command::Daemon { .. } | Command::HelpAll | Command::Setup { .. }
+        Command::Serve { .. }
+            | Command::Daemon { .. }
+            | Command::HelpAll
+            | Command::Setup { .. }
+            | Command::Mcp { .. }
     )
 }
 

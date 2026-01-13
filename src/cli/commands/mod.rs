@@ -154,6 +154,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             max_results,
             rate_limit_per_min,
             rate_limit_burst,
+            start_daemon,
             auth_token,
         } => {
             mcp::run(
@@ -162,6 +163,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
                 max_results,
                 rate_limit_per_min,
                 rate_limit_burst,
+                start_daemon,
                 auth_token,
             )
             .await

@@ -63,9 +63,13 @@ fi
 pick_free_port() {
   python3 - <<'PY'
 import socket
-with socket.socket() as s:
-    s.bind(("127.0.0.1", 0))
-    print(s.getsockname()[1])
+import sys
+try:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        print(s.getsockname()[1])
+except PermissionError:
+    sys.exit(2)
 PY
 }
 
@@ -92,7 +96,18 @@ fi
 
 PORT="${DOCDEX_DAEMON_PORT:-}"
 if [[ -z "${PORT}" ]]; then
+  set +e
   PORT="$(pick_free_port)"
+  status=$?
+  set -e
+  if [[ "${status}" == "2" ]]; then
+    log "skipping single-daemon test: TCP bind not permitted in this environment"
+    exit 0
+  fi
+  if [[ "${status}" != "0" ]]; then
+    log "failed to pick a free port"
+    exit 1
+  fi
 fi
 
 BASE_URL="http://127.0.0.1:${PORT}"
@@ -166,8 +181,42 @@ if ! rg "docdex" "${HOME}/Library/Application Support/Claude/claude_desktop_conf
 fi
 
 log "checking single-daemon lock rejection"
-if "${DOCDEX_BIN}" daemon --repo "${REPO_ROOT}" --host 127.0.0.1 --port "${PORT}" --log warn --secure-mode=false >/dev/null 2>&1; then
-  log "expected second daemon to fail but it succeeded"
+SECOND_OUTPUT="$("${DOCDEX_BIN}" daemon --repo "${REPO_ROOT}" --host 127.0.0.1 --port "${PORT}" --log warn --secure-mode=false 2>&1)"
+if ! printf "%s" "${SECOND_OUTPUT}" | grep -q "already running"; then
+  log "expected already-running message but got: ${SECOND_OUTPUT}"
+  exit 1
+fi
+if ! printf "%s" "${SECOND_OUTPUT}" | grep -q "pid="; then
+  log "expected pid in already-running message but got: ${SECOND_OUTPUT}"
+  exit 1
+fi
+if ! printf "%s" "${SECOND_OUTPUT}" | grep -q "port=${PORT}"; then
+  log "expected port in already-running message but got: ${SECOND_OUTPUT}"
+  exit 1
+fi
+
+log "checking stale lock recovery"
+if [[ -f "${LOCK_PATH}" ]]; then
+  pid="$(python3 - <<PY
+import json
+try:
+    with open("${LOCK_PATH}", "r", encoding="utf-8") as f:
+        data=json.load(f)
+    print(data.get("pid",""))
+except Exception:
+    print("")
+PY
+)"
+  if [[ -n "${pid}" ]]; then
+    kill "${pid}" >/dev/null 2>&1 || true
+  fi
+fi
+sleep 0.3
+
+log "starting daemon after stale lock"
+"${DOCDEX_BIN}" daemon --repo "${REPO_ROOT}" --host 127.0.0.1 --port "${PORT}" --log warn --secure-mode=false >/dev/null 2>&1 &
+if ! wait_for_health "${BASE_URL}"; then
+  log "daemon did not restart after stale lock"
   exit 1
 fi
 

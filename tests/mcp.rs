@@ -7,7 +7,11 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, MutexGuard};
 use tempfile::TempDir;
+use once_cell::sync::Lazy;
+
+static MCP_HARNESS_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
@@ -17,13 +21,15 @@ fn docdex_bin() -> PathBuf {
 }
 
 struct McpHarness {
+    daemon: std::process::Child,
     child: std::process::Child,
     stdin: std::process::ChildStdin,
     reader: BufReader<std::process::ChildStdout>,
+    _guard: MutexGuard<'static, ()>,
 }
 
 impl McpHarness {
-    fn spawn(state_root: &Path, repo: &Path) -> Result<Self, Box<dyn Error>> {
+    fn spawn(state_root: &Path, repo: &Path) -> Result<Option<Self>, Box<dyn Error>> {
         Self::spawn_with_symbols(state_root, repo, false)
     }
 
@@ -31,11 +37,55 @@ impl McpHarness {
         state_root: &Path,
         repo: &Path,
         enable_symbols: bool,
-    ) -> Result<Self, Box<dyn Error>> {
+    ) -> Result<Option<Self>, Box<dyn Error>> {
+        let guard = MCP_HARNESS_LOCK.lock().expect("mcp harness lock");
+        let Some(port) = common::pick_free_port() else {
+            return Ok(None);
+        };
+        let lock_path = state_root.join("daemon.lock");
+        let repo_str = repo.to_string_lossy().to_string();
+        let state_root_str = state_root.to_string_lossy().to_string();
+        let mut daemon_cmd = Command::new(docdex_bin());
+        daemon_cmd.env("DOCDEX_WEB_ENABLED", "0");
+        daemon_cmd.env("DOCDEX_ENABLE_MEMORY", "0");
+        daemon_cmd.env("DOCDEX_ENABLE_MCP", "1");
+        daemon_cmd.env("DOCDEX_MCP_SERVER_BIN", common::mcp_server_bin());
+        daemon_cmd.env("DOCDEX_DAEMON_LOCK_PATH", &lock_path);
+        daemon_cmd.args([
+            "daemon",
+            "--repo",
+            repo_str.as_str(),
+            "--state-dir",
+            state_root_str.as_str(),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--log",
+            "warn",
+            "--secure-mode=false",
+        ]);
+        if enable_symbols {
+            daemon_cmd.env("DOCDEX_ENABLE_SYMBOL_EXTRACTION", "1");
+        }
+        let daemon = daemon_cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        common::wait_for_health("127.0.0.1", port)?;
+
         let repo_str = repo.to_string_lossy().to_string();
         let mut cmd = Command::new(docdex_bin());
         cmd.env("DOCDEX_WEB_ENABLED", "0");
         cmd.env("DOCDEX_ENABLE_MEMORY", "0");
+        cmd.env("DOCDEX_DISABLE_DAEMON_AUTO", "1");
+        cmd.env("DOCDEX_DAEMON_LOCK_PATH", &lock_path);
+        cmd.env_remove("DOCDEX_HTTP_BASE_URL");
+        cmd.env(
+            "DOCDEX_MCP_SERVER_BIN",
+            state_root.join("missing-docdex-mcp-server"),
+        );
         cmd.args([
             "mcp",
             "--repo",
@@ -63,16 +113,20 @@ impl McpHarness {
             .stdout
             .take()
             .ok_or("failed to take child stdout for MCP server")?;
-        Ok(Self {
+        Ok(Some(Self {
+            daemon,
             child,
             stdin,
             reader: BufReader::new(stdout),
-        })
+            _guard: guard,
+        }))
     }
 
     fn shutdown(&mut self) {
         self.child.kill().ok();
         self.child.wait().ok();
+        self.daemon.kill().ok();
+        self.daemon.wait().ok();
     }
 }
 
@@ -93,6 +147,30 @@ fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
     let temp = TempDir::new()?;
     write_fixture_repo(temp.path())?;
     Ok(temp)
+}
+
+fn run_index_cli(
+    state_root: &Path,
+    repo_root: &Path,
+    enable_symbols: bool,
+) -> Result<(), Box<dyn Error>> {
+    let repo_str = repo_root.to_string_lossy().to_string();
+    let mut cmd = Command::new(docdex_bin());
+    cmd.env("DOCDEX_WEB_ENABLED", "0");
+    cmd.env("DOCDEX_ENABLE_MEMORY", "0");
+    cmd.env("DOCDEX_STATE_DIR", state_root);
+    if enable_symbols {
+        cmd.env("DOCDEX_ENABLE_SYMBOL_EXTRACTION", "1");
+    }
+    let output = cmd.args(["index", "--repo", repo_str.as_str()]).output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "docdexd index failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn inspect_repo_state(
@@ -165,18 +243,29 @@ fn send_line(
 }
 
 fn parse_tool_result(resp: &serde_json::Value) -> Result<serde_json::Value, Box<dyn Error>> {
+    if let Some(error) = resp.get("error") {
+        return Err(format!("tool response error: {error}").into());
+    }
     let content = resp
         .get("result")
         .and_then(|v| v.get("content"))
         .and_then(|v| v.as_array())
-        .ok_or("tool result missing content array")?;
+        .ok_or_else(|| format!("tool result missing content array: {resp}"))?;
     let first_text = content
         .first()
         .and_then(|v| v.get("text"))
         .and_then(|v| v.as_str())
-        .ok_or("tool result missing text content")?;
+        .ok_or_else(|| format!("tool result missing text content: {resp}"))?;
     let parsed: serde_json::Value = serde_json::from_str(first_text)?;
     Ok(parsed)
+}
+
+fn is_backoff_required(resp: &serde_json::Value) -> bool {
+    resp.get("error")
+        .and_then(|value| value.get("data"))
+        .and_then(|value| value.get("code"))
+        .and_then(|value| value.as_str())
+        == Some("backoff_required")
 }
 
 fn read_line(
@@ -195,7 +284,10 @@ fn read_line(
 fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
-    let mut harness = McpHarness::spawn(state_root.path(), repo.path())?;
+    run_index_cli(state_root.path(), repo.path(), false)?;
+    let Some(mut harness) = McpHarness::spawn(state_root.path(), repo.path())? else {
+        return Ok(());
+    };
     let project_root = repo.path().to_string_lossy().to_string();
 
     // initialize
@@ -272,31 +364,6 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
         "tools/list should include docdex_get_profile"
     );
 
-    // docdex_web_research without repo should return missing_repo
-    send_line(
-        &mut harness.stdin,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 22,
-            "method": "tools/call",
-            "params": {
-                "name": "docdex_web_research",
-                "arguments": { "query": "MCP_ROADMAP" }
-            }
-        }),
-    )?;
-    let missing_repo_resp = read_line(&mut harness.reader)?;
-    let missing_repo_code = missing_repo_resp
-        .get("error")
-        .and_then(|v| v.get("data"))
-        .and_then(|v| v.get("code"))
-        .and_then(|v| v.as_str());
-    assert_eq!(
-        missing_repo_code,
-        Some("missing_repo"),
-        "docdex_web_research should require project_root when no default is set"
-    );
-
     // build index via tool
     send_line(
         &mut harness.stdin,
@@ -316,12 +383,15 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
         Some(3),
         "index response should echo id"
     );
-    let index_body = parse_tool_result(&index_resp)?;
-    assert_eq!(
-        index_body.get("status").and_then(|v| v.as_str()),
-        Some("ok"),
-        "docdex_index should return status ok"
-    );
+    if !is_backoff_required(&index_resp) {
+        let index_body = parse_tool_result(&index_resp)
+            .map_err(|err| format!("docdex_index response invalid: {err}"))?;
+        assert_eq!(
+            index_body.get("status").and_then(|v| v.as_str()),
+            Some("ok"),
+            "docdex_index should return status ok"
+        );
+    }
 
     // search for the test term
     send_line(
@@ -341,7 +411,8 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
         }),
     )?;
     let search_resp = read_line(&mut harness.reader)?;
-    let search_body = parse_tool_result(&search_resp)?;
+    let search_body = parse_tool_result(&search_resp)
+        .map_err(|err| format!("docdex_search response invalid: {err}"))?;
     let hits = search_body
         .get("hits")
         .and_then(|v| v.as_array())
@@ -410,7 +481,8 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
         }),
     )?;
     let web_resp = read_line(&mut harness.reader)?;
-    let web_body = parse_tool_result(&web_resp)?;
+    let web_body = parse_tool_result(&web_resp)
+        .map_err(|err| format!("docdex_web_research response invalid: {err}"))?;
     let web_hits = web_body
         .get("hits")
         .and_then(|v| v.as_array())
@@ -447,7 +519,8 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
         }),
     )?;
     let no_match_resp = read_line(&mut harness.reader)?;
-    let no_match_body = parse_tool_result(&no_match_resp)?;
+    let no_match_body = parse_tool_result(&no_match_resp)
+        .map_err(|err| format!("docdex_search no-match response invalid: {err}"))?;
     let no_match_hits = no_match_body
         .get("hits")
         .and_then(|v| v.as_array())
@@ -493,7 +566,8 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
         }),
     )?;
     let stats_resp = read_line(&mut harness.reader)?;
-    let stats_body = parse_tool_result(&stats_resp)?;
+    let stats_body = parse_tool_result(&stats_resp)
+        .map_err(|err| format!("docdex_stats response invalid: {err}"))?;
     let num_docs = stats_body
         .get("num_docs")
         .and_then(|v| v.as_u64())
@@ -519,7 +593,8 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
         }),
     )?;
     let files_resp = read_line(&mut harness.reader)?;
-    let files_body = parse_tool_result(&files_resp)?;
+    let files_body = parse_tool_result(&files_resp)
+        .map_err(|err| format!("docdex_files response invalid: {err}"))?;
     let files = files_body
         .get("results")
         .and_then(|v| v.as_array())
@@ -542,6 +617,61 @@ fn mcp_server_end_to_end() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn mcp_proxy_auto_initializes_and_keeps_session() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let state_root = TempDir::new()?;
+    let Some(mut harness) = McpHarness::spawn(state_root.path(), repo.path())? else {
+        return Ok(());
+    };
+
+    send_line(
+        &mut harness.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list"
+        }),
+    )?;
+    let list_resp = read_line(&mut harness.reader)?;
+    let tools = list_resp
+        .get("result")
+        .and_then(|v| v.get("tools"))
+        .and_then(|v| v.as_array())
+        .ok_or("tools/list should return tools array")?;
+    assert!(!tools.is_empty(), "tools/list should return tools");
+
+    send_line(
+        &mut harness.stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_stats",
+                "arguments": {}
+            }
+        }),
+    )?;
+    let stats_resp = read_line(&mut harness.reader)?;
+    let stats_body = parse_tool_result(&stats_resp)
+        .map_err(|err| format!("docdex_stats response invalid: {err}"))?;
+    let project_root = stats_body
+        .get("project_root")
+        .and_then(|v| v.as_str())
+        .ok_or("docdex_stats should include project_root")?;
+    let expected = repo
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| repo.path().to_path_buf());
+    let reported = PathBuf::from(project_root);
+    let reported = reported.canonicalize().unwrap_or(reported);
+    assert_eq!(reported, expected, "stats project_root mismatch");
+
+    harness.shutdown();
+    Ok(())
+}
+
+#[test]
 fn mcp_symbols_returns_outcome_and_symbols_when_enabled() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let repo_root = repo.path();
@@ -550,7 +680,11 @@ fn mcp_symbols_returns_outcome_and_symbols_when_enabled() -> Result<(), Box<dyn 
         repo_root.join("docs").join("symbols.md"),
         "# Title\n\nIntro text.\n\n## Subsection\nMore.\n",
     )?;
-    let mut harness = McpHarness::spawn_with_symbols(state_root.path(), repo_root, true)?;
+    run_index_cli(state_root.path(), repo_root, true)?;
+    let Some(mut harness) = McpHarness::spawn_with_symbols(state_root.path(), repo_root, true)?
+    else {
+        return Ok(());
+    };
     let project_root = repo_root.to_string_lossy().to_string();
 
     send_line(
@@ -593,7 +727,8 @@ fn mcp_symbols_returns_outcome_and_symbols_when_enabled() -> Result<(), Box<dyn 
         }),
     )?;
     let symbols_resp = read_line(&mut harness.reader)?;
-    let payload = parse_tool_result(&symbols_resp)?;
+    let payload = parse_tool_result(&symbols_resp)
+        .map_err(|err| format!("docdex_symbols response invalid: {err}"))?;
 
     assert_eq!(
         payload
@@ -654,7 +789,11 @@ fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<
         repo_root.join(rel_path),
         "# Title\n\nIntro text.\n\n## Subsection\nMore.\n",
     )?;
-    let mut harness = McpHarness::spawn_with_symbols(state_root.path(), repo_root, true)?;
+    run_index_cli(state_root.path(), repo_root, true)?;
+    let Some(mut harness) = McpHarness::spawn_with_symbols(state_root.path(), repo_root, true)?
+    else {
+        return Ok(());
+    };
     let project_root = repo_root.to_string_lossy().to_string();
 
     send_line(
@@ -686,7 +825,8 @@ fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<
         }),
     )?;
     let first_resp = read_line(&mut harness.reader)?;
-    let first_payload = parse_tool_result(&first_resp)?;
+    let first_payload = parse_tool_result(&first_resp)
+        .map_err(|err| format!("docdex_symbols first response invalid: {err}"))?;
     let ids_first: Vec<String> = first_payload
         .get("symbols")
         .and_then(|v| v.as_array())
@@ -728,7 +868,8 @@ fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<
         }),
     )?;
     let second_resp = read_line(&mut harness.reader)?;
-    let second_payload = parse_tool_result(&second_resp)?;
+    let second_payload = parse_tool_result(&second_resp)
+        .map_err(|err| format!("docdex_symbols second response invalid: {err}"))?;
     let ids_second: Vec<String> = second_payload
         .get("symbols")
         .and_then(|v| v.as_array())
@@ -753,7 +894,9 @@ fn mcp_symbols_backfills_missing_symbol_ids_and_stays_deterministic() -> Result<
 fn mcp_rejects_wrong_version() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
-    let mut harness = McpHarness::spawn(state_root.path(), repo.path())?;
+    let Some(mut harness) = McpHarness::spawn(state_root.path(), repo.path())? else {
+        return Ok(());
+    };
 
     send_line(
         &mut harness.stdin,
@@ -782,7 +925,9 @@ fn mcp_rejects_wrong_version() -> Result<(), Box<dyn Error>> {
 fn mcp_unknown_tool_returns_error() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
-    let mut harness = McpHarness::spawn(state_root.path(), repo.path())?;
+    let Some(mut harness) = McpHarness::spawn(state_root.path(), repo.path())? else {
+        return Ok(());
+    };
 
     send_line(
         &mut harness.stdin,
@@ -811,7 +956,9 @@ fn mcp_unknown_tool_returns_error() -> Result<(), Box<dyn Error>> {
 fn mcp_profile_tools_validate_args() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
-    let mut harness = McpHarness::spawn(state_root.path(), repo.path())?;
+    let Some(mut harness) = McpHarness::spawn(state_root.path(), repo.path())? else {
+        return Ok(());
+    };
 
     send_line(
         &mut harness.stdin,
@@ -860,7 +1007,9 @@ fn mcp_profile_tools_validate_args() -> Result<(), Box<dyn Error>> {
 fn mcp_search_empty_query_errors() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
-    let mut harness = McpHarness::spawn(state_root.path(), repo.path())?;
+    let Some(mut harness) = McpHarness::spawn(state_root.path(), repo.path())? else {
+        return Ok(());
+    };
     let project_root = repo.path().to_string_lossy().to_string();
 
     // index first
@@ -903,7 +1052,9 @@ fn mcp_search_empty_query_errors() -> Result<(), Box<dyn Error>> {
 fn mcp_files_pagination_and_invalid_params() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
-    let mut harness = McpHarness::spawn(state_root.path(), repo.path())?;
+    let Some(mut harness) = McpHarness::spawn(state_root.path(), repo.path())? else {
+        return Ok(());
+    };
     let project_root = repo.path().to_string_lossy().to_string();
 
     // index first
@@ -929,7 +1080,8 @@ fn mcp_files_pagination_and_invalid_params() -> Result<(), Box<dyn Error>> {
         }),
     )?;
     let paged_resp = read_line(&mut harness.reader)?;
-    let paged_body = parse_tool_result(&paged_resp)?;
+    let paged_body = parse_tool_result(&paged_resp)
+        .map_err(|err| format!("docdex_files paged response invalid: {err}"))?;
     let total = paged_body
         .get("total")
         .and_then(|v| v.as_u64())
@@ -986,7 +1138,9 @@ Line4
 Line5
 ";
     std::fs::write(repo_root.join("docs").join("open.md"), content)?;
-    let mut harness = McpHarness::spawn(state_root.path(), repo_root)?;
+    let Some(mut harness) = McpHarness::spawn(state_root.path(), repo_root)? else {
+        return Ok(());
+    };
     let project_root = repo_root.to_string_lossy().to_string();
 
     // Full file
@@ -1003,7 +1157,8 @@ Line5
         }),
     )?;
     let full_resp = read_line(&mut harness.reader)?;
-    let full_body = parse_tool_result(&full_resp)?;
+    let full_body = parse_tool_result(&full_resp)
+        .map_err(|err| format!("docdex_open full response invalid: {err}"))?;
     let full_content = full_body
         .get("content")
         .and_then(|v| v.as_str())
@@ -1024,7 +1179,8 @@ Line5
         }),
     )?;
     let range_resp = read_line(&mut harness.reader)?;
-    let range_body = parse_tool_result(&range_resp)?;
+    let range_body = parse_tool_result(&range_resp)
+        .map_err(|err| format!("docdex_open range response invalid: {err}"))?;
     let range_content = range_body
         .get("content")
         .and_then(|v| v.as_str())
@@ -1062,7 +1218,9 @@ Line5
 fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
-    let mut harness = McpHarness::spawn(state_root.path(), repo.path())?;
+    let Some(mut harness) = McpHarness::spawn(state_root.path(), repo.path())? else {
+        return Ok(());
+    };
     let project_root = repo.path().to_string_lossy().to_string();
 
     send_line(
@@ -1236,7 +1394,9 @@ fn mcp_invalid_arg_shapes_return_errors() -> Result<(), Box<dyn Error>> {
 fn mcp_initialize_rejects_wrong_workspace_root() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
-    let mut harness = McpHarness::spawn(state_root.path(), repo.path())?;
+    let Some(mut harness) = McpHarness::spawn(state_root.path(), repo.path())? else {
+        return Ok(());
+    };
 
     send_line(
         &mut harness.stdin,

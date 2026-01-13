@@ -1,7 +1,7 @@
 use crate::mcp_proxy::McpProxy;
 use anyhow::{anyhow, Context, Result};
-use serde_json::Value;
-use std::collections::HashMap;
+use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, RwLock};
 use which::which;
+use uuid::Uuid;
 
 const MCP_SERVER_BIN_ENV: &str = "DOCDEX_MCP_SERVER_BIN";
 const MCP_SERVER_BIN_NAME: &str = "docdex-mcp-server";
@@ -23,31 +24,11 @@ pub async fn serve(
     rate_limit_burst: u32,
     auth_token: Option<String>,
 ) -> Result<()> {
-    let memory_settings = resolve_memory_settings()?;
-    let options = McpSpawnOptions {
-        repo,
-        log_level: log,
-        max_results,
-        rate_limit_per_min,
-        rate_limit_burst,
-        memory_enabled: memory_settings.enabled,
-        embedding_base_url: Some(memory_settings.base_url),
-        embedding_model: Some(memory_settings.model),
-        embedding_timeout_ms: Some(memory_settings.timeout_ms),
-        auth_token,
-        detach_stdio: false,
-        capture_stdio: false,
-    };
-    let mut child = spawn_mcp(options).await?;
-    let status = child
-        .wait()
-        .await
-        .with_context(|| format!("launch {MCP_SERVER_BIN_NAME}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(anyhow!("{MCP_SERVER_BIN_NAME} exited with status {status}"))
-    }
+    let _ = (log, max_results, rate_limit_per_min, rate_limit_burst);
+    let base_url = crate::cli::http_client::resolve_base_url_with_lock()
+        .context("resolve MCP daemon base URL")?;
+    let repo_root = repo.repo_root();
+    crate::mcp_proxy::McpHttpProxy::run(repo_root, base_url, auth_token).await
 }
 
 pub async fn spawn_for_serve(
@@ -60,6 +41,7 @@ pub async fn spawn_for_serve(
     embedding_base_url: String,
     embedding_model: String,
     embedding_timeout_ms: u64,
+    docdex_http_base_url: Option<String>,
     auth_token: Option<String>,
 ) -> Result<Child> {
     let options = McpSpawnOptions {
@@ -72,6 +54,7 @@ pub async fn spawn_for_serve(
         embedding_base_url: Some(embedding_base_url),
         embedding_model: Some(embedding_model),
         embedding_timeout_ms: Some(embedding_timeout_ms),
+        docdex_http_base_url,
         auth_token,
         detach_stdio: true,
         capture_stdio: false,
@@ -89,8 +72,10 @@ pub async fn spawn_proxy_for_serve(
     embedding_base_url: String,
     embedding_model: String,
     embedding_timeout_ms: u64,
+    docdex_http_base_url: Option<String>,
     auth_token: Option<String>,
 ) -> Result<Arc<McpProxyRouter>> {
+    let _ = resolve_mcp_server_binary()?;
     let config = McpProxyConfig {
         repo,
         log_level,
@@ -101,6 +86,7 @@ pub async fn spawn_proxy_for_serve(
         embedding_base_url,
         embedding_model,
         embedding_timeout_ms,
+        docdex_http_base_url,
         auth_token,
     };
     Ok(McpProxyRouter::new(config))
@@ -110,7 +96,6 @@ pub struct McpProxyRouter {
     config: McpProxyConfig,
     children: RwLock<HashMap<PathBuf, Arc<McpProxy>>>,
     sessions: RwLock<HashMap<String, RouterSession>>,
-    default_repo: RwLock<Option<PathBuf>>,
 }
 
 #[derive(Clone)]
@@ -124,6 +109,7 @@ pub(crate) struct McpProxyConfig {
     embedding_base_url: String,
     embedding_model: String,
     embedding_timeout_ms: u64,
+    docdex_http_base_url: Option<String>,
     auth_token: Option<String>,
 }
 
@@ -131,6 +117,7 @@ struct RouterSession {
     sender: mpsc::Sender<Value>,
     last_active: Instant,
     binding: Option<SessionBinding>,
+    internal_inits: HashSet<String>,
 }
 
 #[derive(Clone)]
@@ -142,25 +129,13 @@ struct SessionBinding {
 
 impl McpProxyRouter {
     pub(crate) fn new(config: McpProxyConfig) -> Arc<Self> {
-        let default_repo = normalize_repo_root(&config.repo.repo_root());
         let router = Arc::new(Self {
             config,
             children: RwLock::new(HashMap::new()),
             sessions: RwLock::new(HashMap::new()),
-            default_repo: RwLock::new(Some(default_repo)),
         });
         McpProxyRouter::spawn_cleanup(router.clone());
         router
-    }
-
-    pub async fn set_default_repo(&self, repo_root: PathBuf) {
-        let normalized = normalize_repo_root(&repo_root);
-        let mut guard = self.default_repo.write().await;
-        *guard = Some(normalized);
-    }
-
-    pub async fn default_repo_root(&self) -> Option<PathBuf> {
-        self.default_repo.read().await.clone()
     }
 
     pub async fn create_session(&self) -> (String, mpsc::Receiver<Value>) {
@@ -172,6 +147,7 @@ impl McpProxyRouter {
                 sender: tx,
                 last_active: Instant::now(),
                 binding: None,
+                internal_inits: HashSet::new(),
             },
         );
         (session_id, rx)
@@ -263,15 +239,44 @@ impl McpProxyRouter {
         }
     }
 
+    pub async fn enqueue_internal_initialize(
+        self: &Arc<Self>,
+        session_id: &str,
+        repo_root: &Path,
+    ) -> Result<()> {
+        let init_id = format!("docdex-init-{}", Uuid::new_v4());
+        {
+            let mut sessions = self.sessions.write().await;
+            let entry = sessions
+                .get_mut(session_id)
+                .ok_or_else(|| anyhow!("unknown mcp session"))?;
+            entry.last_active = Instant::now();
+            entry.internal_inits.insert(init_id.clone());
+        }
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": init_id,
+            "method": "initialize",
+            "params": { "workspace_root": repo_root.to_string_lossy().to_string() }
+        });
+        if let Err(err) = self.enqueue_for_session(session_id, payload).await {
+            let mut sessions = self.sessions.write().await;
+            if let Some(entry) = sessions.get_mut(session_id) {
+                entry.internal_inits.remove(&init_id);
+            }
+            return Err(err);
+        }
+        Ok(())
+    }
+
     pub async fn call(&self, repo_root: Option<&Path>, payload: Value) -> Result<Value> {
         let repo_root = match repo_root {
             Some(root) => normalize_repo_root(root),
-            None => self
-                .default_repo
-                .read()
-                .await
-                .clone()
-                .ok_or_else(|| anyhow!("missing default repo for mcp request"))?,
+            None => {
+                return Err(anyhow!(
+                    "missing repo binding for mcp request (call initialize with rootUri or include project_root)"
+                ));
+            }
         };
         let child = self.ensure_child(&repo_root).await?;
         let attempt = child.call(payload.clone()).await;
@@ -325,6 +330,7 @@ impl McpProxyRouter {
             embedding_base_url: Some(self.config.embedding_base_url.clone()),
             embedding_model: Some(self.config.embedding_model.clone()),
             embedding_timeout_ms: Some(self.config.embedding_timeout_ms),
+            docdex_http_base_url: self.config.docdex_http_base_url.clone(),
             auth_token: self.config.auth_token.clone(),
             detach_stdio: false,
             capture_stdio: true,
@@ -349,10 +355,22 @@ impl McpProxyRouter {
         sender: &mpsc::Sender<Value>,
         payload: Value,
     ) {
-        let _ = sender.send(payload).await;
-        if let Some(entry) = self.sessions.write().await.get_mut(session_id) {
-            entry.last_active = Instant::now();
+        let mut suppress = false;
+        {
+            let mut sessions = self.sessions.write().await;
+            if let Some(entry) = sessions.get_mut(session_id) {
+                entry.last_active = Instant::now();
+                if let Some(id) = payload.get("id").and_then(|value| value.as_str()) {
+                    if entry.internal_inits.remove(id) {
+                        suppress = true;
+                    }
+                }
+            }
         }
+        if suppress {
+            return;
+        }
+        let _ = sender.send(payload).await;
     }
 
     fn spawn_cleanup(router: Arc<Self>) {
@@ -410,16 +428,10 @@ struct McpSpawnOptions {
     embedding_base_url: Option<String>,
     embedding_model: Option<String>,
     embedding_timeout_ms: Option<u64>,
+    docdex_http_base_url: Option<String>,
     auth_token: Option<String>,
     detach_stdio: bool,
     capture_stdio: bool,
-}
-
-struct McpMemorySettings {
-    enabled: bool,
-    base_url: String,
-    model: String,
-    timeout_ms: u64,
 }
 
 async fn spawn_mcp(options: McpSpawnOptions) -> Result<Child> {
@@ -492,6 +504,11 @@ fn build_mcp_command(options: &McpSpawnOptions) -> Result<Command> {
     if let Some(timeout_ms) = options.embedding_timeout_ms {
         cmd.env("DOCDEX_EMBEDDING_TIMEOUT_MS", timeout_ms.to_string());
     }
+    if let Some(base_url) = options.docdex_http_base_url.as_ref() {
+        if !base_url.trim().is_empty() {
+            cmd.env("DOCDEX_HTTP_BASE_URL", base_url);
+        }
+    }
     if let Some(token) = options.auth_token.as_ref() {
         if !token.trim().is_empty() {
             cmd.arg("--auth-token").arg(token.trim());
@@ -501,35 +518,6 @@ fn build_mcp_command(options: &McpSpawnOptions) -> Result<Command> {
         cmd.env("DOCDEX_WEB_ENABLED", "1");
     }
     Ok(cmd)
-}
-
-fn resolve_memory_settings() -> Result<McpMemorySettings> {
-    let config = crate::config::AppConfig::load_default()
-        .context("load config for MCP memory enablement")?;
-    let enabled = env_boolish("DOCDEX_ENABLE_MEMORY").unwrap_or(config.memory.enabled);
-    let base_url = std::env::var("DOCDEX_EMBEDDING_BASE_URL")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .or_else(|| {
-            std::env::var("DOCDEX_OLLAMA_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-        })
-        .unwrap_or_else(|| config.llm.base_url.clone());
-    let model = std::env::var("DOCDEX_EMBEDDING_MODEL")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| config.llm.embedding_model.clone());
-    let timeout_ms = std::env::var("DOCDEX_EMBEDDING_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(0);
-    Ok(McpMemorySettings {
-        enabled,
-        base_url,
-        model,
-        timeout_ms,
-    })
 }
 
 pub(crate) fn resolve_mcp_server_binary() -> Result<PathBuf> {
@@ -582,14 +570,4 @@ fn sibling_binary(dir: &Path, name: &str) -> Option<PathBuf> {
         }
     }
     None
-}
-
-fn env_boolish(key: &str) -> Option<bool> {
-    let raw = std::env::var(key).ok()?;
-    let trimmed = raw.trim().to_ascii_lowercase();
-    match trimmed.as_str() {
-        "1" | "true" | "t" | "yes" | "y" | "on" => Some(true),
-        "0" | "false" | "f" | "no" | "n" | "off" => Some(false),
-        _ => None,
-    }
 }

@@ -6,6 +6,8 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
+const DEFAULT_MCP_BASE_URL: &str = "http://127.0.0.1:3210";
+
 fn home_dir() -> Result<PathBuf> {
     let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     let value = std::env::var(key).with_context(|| format!("{key} not set"))?;
@@ -14,6 +16,87 @@ fn home_dir() -> Result<PathBuf> {
 
 fn app_data_dir() -> Option<PathBuf> {
     std::env::var("APPDATA").ok().map(PathBuf::from)
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct McpEndpointInfo {
+    pub(crate) base_url: String,
+    pub(crate) running: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct McpEndpointUrls {
+    pub(crate) sse_url: String,
+    pub(crate) http_url: String,
+}
+
+pub(crate) fn resolve_mcp_endpoint_info() -> McpEndpointInfo {
+    if let Ok(Some(metadata)) = crate::daemon::lock::read_running_metadata() {
+        return McpEndpointInfo {
+            base_url: format!("http://127.0.0.1:{}", metadata.port),
+            running: true,
+        };
+    }
+    let base_url = crate::cli::http_client::resolve_base_url()
+        .unwrap_or_else(|_| DEFAULT_MCP_BASE_URL.to_string());
+    McpEndpointInfo {
+        base_url,
+        running: false,
+    }
+}
+
+pub(crate) fn mcp_endpoint_urls(base_url: &str) -> McpEndpointUrls {
+    let base = base_url.trim_end_matches('/');
+    McpEndpointUrls {
+        sse_url: format!("{base}/v1/mcp/sse"),
+        http_url: format!("{base}/v1/mcp"),
+    }
+}
+
+fn mcp_add_banner_lines(
+    info: &McpEndpointInfo,
+    repo_root: &Path,
+    log: &str,
+    max_results: usize,
+) -> Vec<String> {
+    let urls = mcp_endpoint_urls(&info.base_url);
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "[docdexd mcp-add] Shared MCP endpoint (HTTP/SSE): {}",
+        urls.sse_url
+    ));
+    lines.push(format!(
+        "[docdexd mcp-add] MCP JSON-RPC endpoint: {}",
+        urls.http_url
+    ));
+    if !info.running {
+        lines.push(format!(
+            "[docdexd mcp-add] Daemon not running. Start it with: docdexd daemon --repo {}",
+            repo_root.display()
+        ));
+        lines.push(format!(
+            "[docdexd mcp-add] Default MCP base URL: {}",
+            info.base_url
+        ));
+    }
+    lines.push(format!(
+        "[docdexd mcp-add] Legacy stdio proxy: docdexd mcp --repo {} --log {} --max-results {}",
+        repo_root.display(),
+        log,
+        max_results
+    ));
+    lines
+}
+
+fn print_mcp_add_banner(
+    info: &McpEndpointInfo,
+    repo_root: &Path,
+    log: &str,
+    max_results: usize,
+) {
+    for line in mcp_add_banner_lines(info, repo_root, log, max_results) {
+        println!("{line}");
+    }
 }
 
 pub fn run(
@@ -28,6 +111,10 @@ pub fn run(
         .unwrap_or(std::env::current_dir().context("determine current directory")?)
         .canonicalize()
         .context("resolve repo root")?;
+    if !remove {
+        let endpoint_info = resolve_mcp_endpoint_info();
+        print_mcp_add_banner(&endpoint_info, &repo_root, &log, max_results);
+    }
     let targets: Vec<&str> = if all {
         vec![
             "codex",
@@ -65,6 +152,58 @@ pub fn run(
         handle_mcp_add(target, &repo_root, &log, max_results, remove, installed)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mcp_add_banner_lines, McpEndpointInfo};
+    use std::path::PathBuf;
+
+    fn repo_path() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(r"C:\repo")
+        } else {
+            PathBuf::from("/repo")
+        }
+    }
+
+    #[test]
+    fn mcp_add_banner_includes_http_endpoints() {
+        let info = McpEndpointInfo {
+            base_url: "http://127.0.0.1:4000".to_string(),
+            running: true,
+        };
+        let repo_root = repo_path();
+        let lines = mcp_add_banner_lines(&info, &repo_root, "warn", 8);
+        let repo_display = repo_root.display().to_string();
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("http://127.0.0.1:4000/v1/mcp/sse")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("http://127.0.0.1:4000/v1/mcp")));
+        assert!(lines.iter().any(|line| {
+            line.contains("Legacy stdio proxy")
+                && line.contains(&format!("--repo {repo_display}"))
+        }));
+        assert!(!lines.iter().any(|line| line.contains("Start it with")));
+    }
+
+    #[test]
+    fn mcp_add_banner_includes_start_hint_when_not_running() {
+        let info = McpEndpointInfo {
+            base_url: "http://127.0.0.1:3210".to_string(),
+            running: false,
+        };
+        let repo_root = repo_path();
+        let lines = mcp_add_banner_lines(&info, &repo_root, "info", 12);
+        let repo_display = repo_root.display().to_string();
+        assert!(lines.iter().any(|line| line.contains("Default MCP base URL")));
+        assert!(lines.iter().any(|line| {
+            line.contains("Start it with")
+                && line.contains(&format!("docdexd daemon --repo {repo_display}"))
+        }));
+    }
 }
 
 fn continue_config_path() -> Result<PathBuf> {
@@ -753,7 +892,7 @@ fn handle_mcp_add(
             }
         }
         "amp" => {
-            println!("Sourcegraph amp expects HTTP/SSE; register your HTTP endpoint, e.g., `amp mcp add docdex http://localhost:5273/.mcp/v1`.");
+            println!("Sourcegraph amp expects HTTP/SSE; register your HTTP endpoint, e.g., `amp mcp add docdex http://localhost:5273/v1/mcp/sse`.");
         }
         "forge" => {
             println!(

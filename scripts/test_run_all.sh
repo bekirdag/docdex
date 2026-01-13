@@ -85,14 +85,13 @@ start_api_server() {
   rm -f "${API_SERVER_LOCK_PATH}"
   DOCDEX_STATE_DIR="${API_SERVER_STATE_DIR}" \
     DOCDEX_DAEMON_LOCK_PATH="${API_SERVER_LOCK_PATH}" \
-    DOCDEX_ENABLE_MCP=0 \
+    DOCDEX_ENABLE_MCP=1 \
     "${DOCDEX_BIN}" daemon \
     --repo "${ROOT_DIR}" \
     --host 127.0.0.1 \
     --port "${port}" \
     --log warn \
     --secure-mode=false \
-    --disable-mcp \
     >/dev/null 2>&1 &
   API_SERVER_PID=$!
   if ! wait_for_health "${API_BASE_URL}"; then

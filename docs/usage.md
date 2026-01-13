@@ -38,7 +38,7 @@ Installer notes:
 - Platform diagnostics (no download): `docdex doctor` (alias `docdex diagnostics`).
 
 Postinstall behavior:
-- Docdex registers a local daemon and writes MCP client config pointing to `http://localhost:<port>/sse` (Codex uses `http://localhost:<port>/v1/mcp`).
+- Docdex registers a local daemon and writes MCP client config pointing to `http://localhost:<port>/v1/mcp/sse` (Codex uses `http://localhost:<port>/v1/mcp`).
 - Auto-configured clients (when config files are present): Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Continue, VS Code, PearAI, Void, Zed, Codex. Restart clients after install.
 - If Ollama is missing, the installer can prompt to install it and the default embedding model.
 - Skip prompts with `DOCDEX_OLLAMA_INSTALL=0` or `DOCDEX_OLLAMA_MODEL_PROMPT=0`.
@@ -64,7 +64,7 @@ docdexd index --repo /path/to/repo
 
 docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 3210 --log warn --secure-mode=false
 
-# singleton daemon (shared MCP over /sse)
+# singleton daemon (shared MCP over /v1/mcp/sse)
 
 docdexd daemon --repo /path/to/repo --host 127.0.0.1 --port 3210 --log warn --secure-mode=false
 
@@ -84,8 +84,8 @@ Notes:
 ## Operating modes
 - `index`: builds the repo index and code intelligence artifacts.
 - `serve`: starts the per-repo HTTP API with watcher.
-- `daemon`: singleton service that hosts shared MCP over HTTP/SSE (`/sse`).
-- `mcp`: legacy stdio MCP server for local, per-repo use.
+- `daemon`: singleton service that hosts shared MCP over HTTP/SSE (`/v1/mcp/sse`).
+- `mcp`: legacy stdio proxy to the shared daemon for local, per-repo bindings.
 
 ## Repo scoping (multi-repo daemon)
 When a singleton daemon has more than one repo mounted, the daemon requires an explicit repo scope.
@@ -112,14 +112,14 @@ Supported auto-detected MCP clients (installation adds config when the file exis
 - Codex
 
 ### Shared MCP (daemon, HTTP/SSE)
-Start the daemon and point clients at `http://localhost:<port>/sse`.
+Start the daemon and point clients at `http://localhost:<port>/v1/mcp/sse`.
 
 JSON config example (Cursor, Continue, Cline, Claude Desktop devtools):
 ```json
 {
   "mcpServers": {
     "docdex": {
-      "url": "http://localhost:3210/sse"
+      "url": "http://localhost:3210/v1/mcp/sse"
     }
   }
 }
@@ -132,10 +132,15 @@ docdex = { url = "http://localhost:3210/v1/mcp" }
 ```
 
 ### Legacy stdio MCP
-Run a per-repo MCP server over stdio:
+Use the stdio proxy (per-repo binding) to attach to the shared daemon:
 ```bash
 docdexd mcp --repo /path/to/repo --log warn --max-results 8
 ```
+To auto-start the daemon when it is not running:
+```bash
+docdexd mcp --repo /path/to/repo --log warn --max-results 8 --start-daemon
+```
+Or set `DOCDEX_MCP_AUTO_START=1` for the same effect.
 
 ## HTTP API
 
@@ -276,6 +281,7 @@ Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary to
 - `DOCDEX_HTTP_BASE_URL`: override daemon base URL for CLI.
 - `DOCDEX_HTTP_TIMEOUT_MS`: override CLI HTTP timeout (default 30000).
 - `DOCDEX_CLI_LOCAL=1`: run CLI in-process.
+- `DOCDEX_MCP_AUTO_START=1`: auto-start the daemon when running `docdexd mcp`.
 - `DOCDEX_ENABLE_SYMBOL_EXTRACTION`: deprecated (no-op).
 
 ### Security and serving

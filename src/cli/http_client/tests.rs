@@ -1,4 +1,4 @@
-use super::{normalize_base_url, CliHttpClient};
+use super::{normalize_base_url, resolve_base_url_with_lock, CliHttpClient};
 use once_cell::sync::Lazy;
 use reqwest::Method;
 use std::sync::{Mutex, MutexGuard};
@@ -78,5 +78,35 @@ fn with_repo_adds_repo_id_header() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
     assert!(!header.is_empty(), "expected repo id header");
+    Ok(())
+}
+
+#[test]
+fn resolve_base_url_with_lock_prefers_env() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let lock_path = temp.path().join("daemon.lock");
+    let lock = crate::daemon::lock::acquire_lock_at_path(&lock_path, 4321)?;
+    drop(lock);
+    let _env = EnvGuard::set(&[
+        ("DOCDEX_DAEMON_LOCK_PATH", lock_path.to_str().unwrap()),
+        ("DOCDEX_HTTP_BASE_URL", "http://127.0.0.1:5555"),
+    ]);
+    let resolved = resolve_base_url_with_lock()?;
+    assert_eq!(resolved, "http://127.0.0.1:5555");
+    Ok(())
+}
+
+#[test]
+fn resolve_base_url_with_lock_uses_lock_metadata() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let lock_path = temp.path().join("daemon.lock");
+    let lock = crate::daemon::lock::acquire_lock_at_path(&lock_path, 4321)?;
+    drop(lock);
+    let _env = EnvGuard::set(&[
+        ("DOCDEX_DAEMON_LOCK_PATH", lock_path.to_str().unwrap()),
+        ("DOCDEX_HTTP_BASE_URL", ""),
+    ]);
+    let resolved = resolve_base_url_with_lock()?;
+    assert_eq!(resolved, "http://127.0.0.1:4321");
     Ok(())
 }

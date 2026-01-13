@@ -25,12 +25,15 @@ struct McpHarness {
 }
 
 impl McpHarness {
-    fn spawn(repo: &Path, state_root: &Path) -> Result<Self, BoxError> {
+    fn spawn(repo: &Path, state_root: &Path, lock_path: &Path) -> Result<Self, BoxError> {
         let repo_str = repo.to_string_lossy().to_string();
         let mut cmd = Command::new(docdex_bin());
         cmd.env("DOCDEX_WEB_ENABLED", "0");
         cmd.env("DOCDEX_ENABLE_MEMORY", "0");
         cmd.env("DOCDEX_STATE_DIR", state_root);
+        cmd.env("DOCDEX_DAEMON_LOCK_PATH", lock_path);
+        cmd.env("DOCDEX_DISABLE_DAEMON_AUTO", "1");
+        cmd.env_remove("DOCDEX_HTTP_BASE_URL");
         cmd.args(["mcp", "--repo", repo_str.as_str(), "--log", "warn"]);
         let mut child = cmd
             .stdin(Stdio::piped())
@@ -57,6 +60,59 @@ impl McpHarness {
         self.child.kill().ok();
         self.child.wait().ok();
     }
+}
+
+struct Daemon {
+    child: std::process::Child,
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn start_daemon(
+    state_root: &Path,
+    repo_root: &Path,
+    lock_path: &Path,
+) -> Result<Option<Daemon>, BoxError> {
+    for _ in 0..3 {
+        let Some(port) = common::pick_free_port() else {
+            return Ok(None);
+        };
+        let mut child = Command::new(docdex_bin())
+            .env("DOCDEX_WEB_ENABLED", "0")
+            .env("DOCDEX_ENABLE_MEMORY", "0")
+            .env("DOCDEX_ENABLE_MCP", "1")
+            .env("DOCDEX_MCP_SERVER_BIN", common::mcp_server_bin())
+            .env("DOCDEX_DAEMON_LOCK_PATH", lock_path)
+            .args([
+                "daemon",
+                "--repo",
+                repo_root.to_string_lossy().as_ref(),
+                "--state-dir",
+                state_root.to_string_lossy().as_ref(),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                &port.to_string(),
+                "--log",
+                "warn",
+                "--secure-mode=false",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        if common::wait_for_health("127.0.0.1", port).is_ok() {
+            return Ok(Some(Daemon { child }));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    Err("docdexd healthz endpoint did not respond in time".into())
 }
 
 fn run_docdex<I, S>(state_root: &Path, args: I) -> Result<(), BoxError>
@@ -218,14 +274,18 @@ fn mcp_multi_repo_concurrency_is_isolated() -> Result<(), BoxError> {
     let repo_a = setup_repo("a-only.md", "REPO_A_TOKEN")?;
     let repo_b = setup_repo("b-only.md", "REPO_B_TOKEN")?;
     let state_root = TempDir::new()?;
+    let lock_path = state_root.path().join("daemon.lock");
 
     let repo_a_root = repo_a.path().to_string_lossy().to_string();
     let repo_b_root = repo_b.path().to_string_lossy().to_string();
     run_docdex(state_root.path(), ["index", "--repo", repo_a_root.as_str()])?;
     run_docdex(state_root.path(), ["index", "--repo", repo_b_root.as_str()])?;
 
-    let harness_a = McpHarness::spawn(repo_a.path(), state_root.path())?;
-    let harness_b = McpHarness::spawn(repo_b.path(), state_root.path())?;
+    let Some(_daemon) = start_daemon(state_root.path(), repo_a.path(), &lock_path)? else {
+        return Ok(());
+    };
+    let harness_a = McpHarness::spawn(repo_a.path(), state_root.path(), &lock_path)?;
+    let harness_b = McpHarness::spawn(repo_b.path(), state_root.path(), &lock_path)?;
 
     let barrier = Arc::new(Barrier::new(3));
     let barrier_a = barrier.clone();

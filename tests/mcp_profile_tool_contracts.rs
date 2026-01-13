@@ -66,7 +66,8 @@ impl ServerHarness {
             .env("DOCDEX_WEB_ENABLED", "0")
             .env("DOCDEX_ENABLE_MEMORY", "0")
             .env("DOCDEX_STATE_DIR", state_root)
-            .env("DOCDEX_ENABLE_MCP", "0")
+            .env("DOCDEX_ENABLE_MCP", "1")
+            .env("DOCDEX_MCP_SERVER_BIN", mcp_server_bin())
             .env("HOME", home_dir)
             .args([
                 "serve",

@@ -5,7 +5,7 @@ use std::error::Error;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use tempfile::TempDir;
 
 fn docdex_bin() -> PathBuf {
@@ -38,18 +38,80 @@ fn run_index(state_root: &Path, repo_root: &Path) -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
+struct Daemon {
+    child: Child,
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn start_daemon(
+    state_root: &Path,
+    repo_root: &Path,
+    lock_path: &Path,
+    auth_token: &str,
+) -> Result<Option<Daemon>, Box<dyn Error>> {
+    for _ in 0..3 {
+        let Some(port) = common::pick_free_port() else {
+            return Ok(None);
+        };
+        let mut child = Command::new(docdex_bin())
+            .env("DOCDEX_WEB_ENABLED", "0")
+            .env("DOCDEX_ENABLE_MEMORY", "0")
+            .env("DOCDEX_ENABLE_MCP", "1")
+            .env("DOCDEX_MCP_SERVER_BIN", common::mcp_server_bin())
+            .env("DOCDEX_DAEMON_LOCK_PATH", lock_path)
+            .env("DOCDEX_AUTH_TOKEN", auth_token)
+            .args([
+                "daemon",
+                "--repo",
+                repo_root.to_string_lossy().as_ref(),
+                "--state-dir",
+                state_root.to_string_lossy().as_ref(),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                &port.to_string(),
+                "--log",
+                "warn",
+                "--secure-mode=false",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        if common::wait_for_health("127.0.0.1", port).is_ok() {
+            return Ok(Some(Daemon { child }));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    Err("docdexd healthz endpoint did not respond in time".into())
+}
+
 #[test]
 fn mcp_initialize_requires_auth_token_when_configured() -> Result<(), Box<dyn Error>> {
     let repo = TempDir::new()?;
     write_fixture_repo(repo.path())?;
     let state_root = TempDir::new()?;
     run_index(state_root.path(), repo.path())?;
+    let lock_path = state_root.path().join("daemon.lock");
+    let auth_token = "secret-token";
+    let Some(_daemon) = start_daemon(state_root.path(), repo.path(), &lock_path, auth_token)? else {
+        return Ok(());
+    };
 
     let mut child = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
-        .env("DOCDEX_AUTH_TOKEN", "secret-token")
+        .env("DOCDEX_AUTH_TOKEN", auth_token)
+        .env("DOCDEX_DAEMON_LOCK_PATH", &lock_path)
+        .env("DOCDEX_DISABLE_DAEMON_AUTO", "1")
         .args([
             "mcp",
             "--repo",

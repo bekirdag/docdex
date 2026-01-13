@@ -74,7 +74,7 @@ pub(crate) fn resolve_http_connect_timeout_ms(default_timeout_ms: u64) -> u64 {
         .max(1)
 }
 
-fn resolve_base_url() -> Result<String> {
+pub(crate) fn resolve_base_url() -> Result<String> {
     if let Some(raw) = env_non_empty("DOCDEX_HTTP_BASE_URL") {
         return Ok(normalize_base_url(&raw));
     }
@@ -86,6 +86,20 @@ fn resolve_base_url() -> Result<String> {
         ));
     }
     Ok(normalize_base_url(bind_addr))
+}
+
+pub(crate) fn resolve_base_url_with_lock() -> Result<String> {
+    if let Some(raw) = env_non_empty("DOCDEX_HTTP_BASE_URL") {
+        return Ok(normalize_base_url(&raw));
+    }
+    if let Ok(path) = crate::daemon::lock::default_lock_path() {
+        if let Ok(Some(metadata)) = crate::daemon::lock::read_metadata(&path) {
+            if metadata.port != 0 {
+                return Ok(format!("http://127.0.0.1:{}", metadata.port));
+            }
+        }
+    }
+    resolve_base_url()
 }
 
 fn normalize_base_url(raw: &str) -> String {

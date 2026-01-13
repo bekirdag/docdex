@@ -134,13 +134,7 @@ pub async fn index_ingest_handler(
     }
     let file_path = PathBuf::from(file);
 
-    match indexer::ingest_file(
-        repo.indexer.repo_root().to_path_buf(),
-        repo.indexer.config().clone(),
-        file_path,
-    )
-    .await
-    {
+    match repo.indexer.ingest_file(file_path).await {
         Ok(report) => Json(report).into_response(),
         Err(err) => {
             state.metrics.inc_error();

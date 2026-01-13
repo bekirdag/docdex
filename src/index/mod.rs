@@ -37,7 +37,7 @@ use walkdir::WalkDir;
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
 const MAX_BINARY_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8192;
-const DOC_EXTENSIONS: &[&str] = &[".md", ".markdown", ".mdx", ".txt"];
+const DOC_EXTENSIONS: &[&str] = &[".md", ".markdown", ".mdx", ".txt", ".yaml", ".yml"];
 const CODE_EXTENSIONS: &[&str] = &[
     ".rs", ".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".java", ".cs", ".c", ".h", ".cc", ".cpp",
     ".cxx", ".hh", ".hpp", ".hxx", ".php", ".kt", ".kts", ".swift", ".rb", ".lua", ".dart",
@@ -47,6 +47,8 @@ const DEFAULT_EXTENSIONS: &[&str] = &[
     ".markdown",
     ".mdx",
     ".txt",
+    ".yaml",
+    ".yml",
     ".rs",
     ".py",
     ".js",

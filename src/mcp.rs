@@ -167,7 +167,7 @@ impl McpProxyRouter {
             if binding.repo_root == repo_root && binding.child.is_alive().await {
                 return Ok(());
             }
-            self.evict_child(&binding.repo_root).await;
+            self.evict_child(&binding.repo_root, false).await;
         }
         let child = self.ensure_child(&repo_root).await?;
         let (child_session_id, rx) = child.create_session().await;
@@ -219,7 +219,7 @@ impl McpProxyRouter {
         match attempt {
             Ok(resp) => Ok(resp),
             Err(err) if is_retryable_mcp_error(&err) => {
-                self.evict_child(&repo_root).await;
+                self.evict_child(&repo_root, true).await;
                 self.bind_session(session_id, &repo_root).await?;
                 let rebound = {
                     let mut sessions = self.sessions.write().await;
@@ -283,7 +283,7 @@ impl McpProxyRouter {
         match attempt {
             Ok(resp) => Ok(resp),
             Err(err) if is_retryable_mcp_error(&err) => {
-                self.evict_child(&repo_root).await;
+                self.evict_child(&repo_root, true).await;
                 let child = self.ensure_child(&repo_root).await?;
                 child.call(payload).await
             }
@@ -313,7 +313,7 @@ impl McpProxyRouter {
         }
         if let Some(existing) = self.children.read().await.get(&repo_root).cloned() {
             if !existing.is_alive().await {
-                self.evict_child(&repo_root).await;
+                self.evict_child(&repo_root, true).await;
             } else {
                 return Ok(existing);
             }
@@ -344,9 +344,14 @@ impl McpProxyRouter {
         Ok(child)
     }
 
-    async fn evict_child(&self, repo_root: &Path) {
+    async fn evict_child(&self, repo_root: &Path, force: bool) {
         let repo_root = normalize_repo_root(repo_root);
-        self.children.write().await.remove(&repo_root);
+        if !force && self.repo_root_in_use(&repo_root).await {
+            return;
+        }
+        if let Some(child) = self.children.write().await.remove(&repo_root) {
+            child.shutdown().await;
+        }
     }
 
     async fn forward_to_session(
@@ -391,6 +396,41 @@ impl McpProxyRouter {
             now.duration_since(entry.last_active)
                 < Duration::from_secs(MCP_ROUTER_SESSION_IDLE_SECS)
         });
+        let active_roots: HashSet<PathBuf> = sessions
+            .values()
+            .filter_map(|entry| entry.binding.as_ref().map(|binding| binding.repo_root.clone()))
+            .collect();
+        drop(sessions);
+        self.evict_inactive_children(&active_roots).await;
+    }
+
+    async fn repo_root_in_use(&self, repo_root: &Path) -> bool {
+        let sessions = self.sessions.read().await;
+        sessions.values().any(|entry| {
+            entry
+                .binding
+                .as_ref()
+                .map(|binding| binding.repo_root == repo_root)
+                .unwrap_or(false)
+        })
+    }
+
+    async fn evict_inactive_children(&self, active_roots: &HashSet<PathBuf>) {
+        let mut to_shutdown = Vec::new();
+        {
+            let mut children = self.children.write().await;
+            children.retain(|repo_root, child| {
+                if active_roots.contains(repo_root) {
+                    true
+                } else {
+                    to_shutdown.push(child.clone());
+                    false
+                }
+            });
+        }
+        for child in to_shutdown {
+            child.shutdown().await;
+        }
     }
 }
 

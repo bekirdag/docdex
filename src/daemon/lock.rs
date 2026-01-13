@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use fs4::FileExt;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -111,6 +111,9 @@ pub fn read_running_metadata_at_path(path: &Path) -> Result<Option<DaemonLockMet
         if probe_health(metadata.port) {
             return Ok(Some(metadata));
         }
+        if lock_held(path)? {
+            return Ok(Some(metadata));
+        }
     }
     Ok(None)
 }
@@ -170,7 +173,12 @@ fn acquire_or_reuse_at_path(path: &Path, port: u16) -> Result<DaemonLockOutcome>
     let metadata = match read_metadata_strict(path) {
         Ok(value) => value,
         Err(_) => {
-            remove_lock_file(path)?;
+            if lock_held(path)? {
+                return Err(anyhow!(
+                    "daemon lock held but metadata is unreadable; remove {} if the daemon is not running",
+                    path.display()
+                ));
+            }
             None
         }
     };
@@ -178,18 +186,25 @@ fn acquire_or_reuse_at_path(path: &Path, port: u16) -> Result<DaemonLockOutcome>
         if probe_health(metadata.port) {
             return Ok(DaemonLockOutcome::AlreadyRunning(metadata));
         }
-        remove_lock_file(path)?;
+        if lock_held(path)? {
+            return Ok(DaemonLockOutcome::AlreadyRunning(metadata));
+        }
     }
     let lock = acquire_lock_at_path(path, port)?;
     Ok(DaemonLockOutcome::Acquired(lock))
 }
 
-fn remove_lock_file(path: &Path) -> Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err.into()),
+fn lock_held(path: &Path) -> Result<bool> {
+    let file = match OpenOptions::new().read(true).write(true).open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err.into()),
+    };
+    if file.try_lock_exclusive().is_ok() {
+        let _ = file.unlock();
+        return Ok(false);
     }
+    Ok(true)
 }
 
 fn probe_health(port: u16) -> bool {

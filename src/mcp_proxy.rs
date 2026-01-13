@@ -160,6 +160,11 @@ impl McpProxy {
         }))
     }
 
+    pub async fn shutdown(&self) {
+        let mut child = self.child.lock().await;
+        let _ = child.kill().await;
+    }
+
     pub async fn create_session(&self) -> (String, mpsc::Receiver<Value>) {
         let session_id = format!("mcp-{}", uuid::Uuid::new_v4());
         let (tx, rx) = mpsc::channel(64);

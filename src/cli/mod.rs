@@ -17,7 +17,7 @@ use std::path::PathBuf;
     name = "docdexd",
     version,
     about = "Local documentation index/search daemon",
-    long_about = "Docdex indexes plain-text/markdown documentation under a workspace and serves top-k search/snippet results over HTTP or CLI. Defaults store data under ~/.docdex/state (scoped as repos/<repo_id>/index) and avoid common tool caches; override paths and exclusions with --state-dir/--exclude-* or matching env vars. Optional MCP server (`docdexd mcp`) exposes docdex_search/index/files/open/stats tools over stdio for MCP-aware clients; register it in your MCP client as server \"docdex\" with command: docdexd mcp --repo <repo> --log warn."
+    long_about = "Docdex indexes plain-text/markdown documentation under a workspace and serves top-k search/snippet results over HTTP or CLI. Defaults store data under ~/.docdex/state (scoped as repos/<repo_id>/index) and avoid common tool caches; override paths and exclusions with --state-dir/--exclude-* or matching env vars. The daemon exposes a shared MCP HTTP/SSE endpoint (e.g., /v1/mcp/sse). The `docdexd mcp` command is a legacy stdio proxy to the shared daemon for clients that require stdio."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -676,7 +676,7 @@ pub(crate) enum Command {
     },
     /// Run an MCP (Model Context Protocol) server over stdio.
     #[command(
-        long_about = "Run an MCP server over stdio. This command launches the companion `docdex-mcp-server` binary; if it is missing, build it with `cargo build -p docdex-mcp-server` or set DOCDEX_MCP_SERVER_BIN to the binary path."
+        long_about = "Run a legacy MCP stdio proxy that forwards to the shared daemon HTTP/SSE endpoint. Start `docdexd daemon` first (or pass --start-daemon)."
     )]
     Mcp {
         #[command(flatten)]

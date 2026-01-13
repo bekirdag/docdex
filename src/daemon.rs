@@ -381,6 +381,12 @@ pub async fn serve(
                         metadata.port
                     );
                 }
+                if metadata.port != 0 {
+                    println!(
+                        "Use the existing daemon at http://127.0.0.1:{} (set DOCDEX_HTTP_BASE_URL or configure your MCP client to use /v1/mcp/sse).",
+                        metadata.port
+                    );
+                }
                 return Ok(());
             }
         }

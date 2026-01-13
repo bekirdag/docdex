@@ -2,6 +2,8 @@ use anyhow::anyhow;
 use anyhow::Context;
 use anyhow::Result;
 use serde_json::json;
+use toml::map::Map as TomlMap;
+use toml::Value as TomlValue;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -80,7 +82,7 @@ fn mcp_add_banner_lines(
         ));
     }
     lines.push(format!(
-        "[docdexd mcp-add] Legacy stdio proxy: docdexd mcp --repo {} --log {} --max-results {}",
+        "[docdexd mcp-add] Legacy stdio proxy (connects to the shared daemon): docdexd mcp --repo {} --log {} --max-results {}",
         repo_root.display(),
         log,
         max_results
@@ -111,8 +113,9 @@ pub fn run(
         .unwrap_or(std::env::current_dir().context("determine current directory")?)
         .canonicalize()
         .context("resolve repo root")?;
+    let endpoint_info = resolve_mcp_endpoint_info();
+    let urls = mcp_endpoint_urls(&endpoint_info.base_url);
     if !remove {
-        let endpoint_info = resolve_mcp_endpoint_info();
         print_mcp_add_banner(&endpoint_info, &repo_root, &log, max_results);
     }
     let targets: Vec<&str> = if all {
@@ -149,7 +152,15 @@ pub fn run(
             if remove { "removing from" } else { "adding to" },
             target
         );
-        handle_mcp_add(target, &repo_root, &log, max_results, remove, installed)?;
+        handle_mcp_add(
+            target,
+            &repo_root,
+            &log,
+            max_results,
+            &urls,
+            remove,
+            installed,
+        )?;
     }
     Ok(())
 }
@@ -212,6 +223,11 @@ fn continue_config_path() -> Result<PathBuf> {
     Ok(path)
 }
 
+fn codex_config_path() -> Result<PathBuf> {
+    let home = home_dir()?;
+    Ok(home.join(".codex").join("config.toml"))
+}
+
 fn config_paths_for_agent(agent: &str) -> Result<Vec<PathBuf>> {
     let home = home_dir()?;
     let app_data = app_data_dir();
@@ -219,12 +235,18 @@ fn config_paths_for_agent(agent: &str) -> Result<Vec<PathBuf>> {
     if cfg!(windows) {
         let app_data = app_data.context("APPDATA not set")?;
         match agent {
+            "cursor" => {
+                paths.push(home.join(".cursor").join("mcp.json"));
+            }
             "windsurf" => {
                 paths.push(
                     home.join(".codeium")
                         .join("windsurf")
                         .join("mcp_config.json"),
                 );
+            }
+            "vscode" => {
+                paths.push(app_data.join("Code").join("User").join("mcp.json"));
             }
             "roo" => {
                 paths.push(
@@ -251,11 +273,23 @@ fn config_paths_for_agent(agent: &str) -> Result<Vec<PathBuf>> {
         }
     } else if cfg!(target_os = "macos") {
         match agent {
+            "cursor" => {
+                paths.push(home.join(".cursor").join("mcp.json"));
+            }
             "windsurf" => {
                 paths.push(
                     home.join(".codeium")
                         .join("windsurf")
                         .join("mcp_config.json"),
+                );
+            }
+            "vscode" => {
+                paths.push(
+                    home.join("Library")
+                        .join("Application Support")
+                        .join("Code")
+                        .join("User")
+                        .join("mcp.json"),
                 );
             }
             "roo" => {
@@ -289,12 +323,18 @@ fn config_paths_for_agent(agent: &str) -> Result<Vec<PathBuf>> {
         }
     } else {
         match agent {
+            "cursor" => {
+                paths.push(home.join(".cursor").join("mcp.json"));
+            }
             "windsurf" => {
                 paths.push(
                     home.join(".codeium")
                         .join("windsurf")
                         .join("mcp_config.json"),
                 );
+            }
+            "vscode" => {
+                paths.push(home.join(".config").join("Code").join("User").join("mcp.json"));
             }
             "roo" => {
                 paths.push(
@@ -323,7 +363,7 @@ fn config_paths_for_agent(agent: &str) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn upsert_mcp_entry(path: &Path, command: &str, args: Vec<String>) -> Result<()> {
+fn upsert_mcp_url_entry(path: &Path, url: &str) -> Result<()> {
     let mut contents = json!({});
     if path.exists() {
         let data = fs::read_to_string(path)?;
@@ -342,8 +382,7 @@ fn upsert_mcp_entry(path: &Path, command: &str, args: Vec<String>) -> Result<()>
         });
         let entry = json!({
             "name": "docdex",
-            "command": command,
-            "args": args
+            "url": url
         });
         if let Some(idx) = idx {
             mcp_servers[idx] = entry;
@@ -366,8 +405,7 @@ fn upsert_mcp_entry(path: &Path, command: &str, args: Vec<String>) -> Result<()>
         mcp_servers.insert(
             "docdex".to_string(),
             json!({
-                "command": command,
-                "args": args
+                "url": url
             }),
         );
     }
@@ -417,7 +455,7 @@ fn remove_mcp_entry(path: &Path, warn_only: bool) -> Result<()> {
     }
 }
 
-fn upsert_zed_entry(path: &Path, command: &str, args: Vec<String>) -> Result<()> {
+fn upsert_zed_entry(path: &Path, url: &str) -> Result<()> {
     let mut contents = json!({});
     if path.exists() {
         let data = fs::read_to_string(path)?;
@@ -434,8 +472,7 @@ fn upsert_zed_entry(path: &Path, command: &str, args: Vec<String>) -> Result<()>
     mcp_servers.insert(
         "docdex".to_string(),
         json!({
-            "command": command,
-            "args": args
+            "url": url
         }),
     );
     if let Some(parent) = path.parent() {
@@ -476,14 +513,111 @@ fn remove_zed_entry(path: &Path, warn_only: bool) -> Result<()> {
     }
 }
 
+fn upsert_codex_config(path: &Path, url: &str) -> Result<()> {
+    let mut root: TomlValue = if path.exists() {
+        let data = fs::read_to_string(path)?;
+        toml::from_str(&data).unwrap_or_else(|_| TomlValue::Table(TomlMap::new()))
+    } else {
+        TomlValue::Table(TomlMap::new())
+    };
+    let table = root
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("codex config root is not a table"))?;
+    let mut mcp_table = TomlMap::new();
+    if let Some(existing) = table.remove("mcp_servers") {
+        match existing {
+            TomlValue::Table(existing) => {
+                mcp_table = existing;
+            }
+            TomlValue::Array(entries) => {
+                for entry in entries {
+                    let Some(entry_table) = entry.as_table() else {
+                        continue;
+                    };
+                    let Some(name) = entry_table.get("name").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    let mut cleaned = entry_table.clone();
+                    cleaned.remove("name");
+                    mcp_table.insert(name.to_string(), TomlValue::Table(cleaned));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut docdex_entry = TomlMap::new();
+    docdex_entry.insert("url".to_string(), TomlValue::String(url.to_string()));
+    mcp_table.insert("docdex".to_string(), TomlValue::Table(docdex_entry));
+    table.insert("mcp_servers".to_string(), TomlValue::Table(mcp_table));
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let payload = toml::to_string_pretty(&root)?;
+    fs::write(path, payload)?;
+    Ok(())
+}
+
+fn remove_codex_config(path: &Path, warn_only: bool) -> Result<()> {
+    if !path.exists() {
+        if warn_only {
+            return Ok(());
+        }
+        return Err(anyhow!("config file not found: {}", path.display()));
+    }
+    let data = fs::read_to_string(path)?;
+    let mut root: TomlValue =
+        toml::from_str(&data).unwrap_or_else(|_| TomlValue::Table(TomlMap::new()));
+    let table = root
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("codex config root is not a table"))?;
+    let mut removed = false;
+    let mut remove_section = false;
+    if let Some(existing) = table.get_mut("mcp_servers") {
+        match existing {
+            TomlValue::Table(mcp_table) => {
+                removed = mcp_table.remove("docdex").is_some();
+                remove_section = mcp_table.is_empty();
+            }
+            TomlValue::Array(entries) => {
+                let before = entries.len();
+                entries.retain(|entry| {
+                    entry
+                        .get("name")
+                        .and_then(|value| value.as_str())
+                        .map(|name| name != "docdex")
+                        .unwrap_or(true)
+                });
+                removed = before != entries.len();
+                remove_section = entries.is_empty();
+            }
+            _ => {}
+        }
+    }
+    if remove_section {
+        table.remove("mcp_servers");
+    }
+    if !removed {
+        if warn_only {
+            return Ok(());
+        }
+        return Err(anyhow!("mcp_servers.docdex not found in {}", path.display()));
+    }
+    let payload = toml::to_string_pretty(&root)?;
+    fs::write(path, payload)?;
+    Ok(())
+}
+
 fn is_cmd_available(cmd: &str) -> bool {
     which::which(cmd).is_ok()
 }
 
 fn agent_available(agent: &str, repo_root: &Path) -> bool {
     match agent {
-        "codex" => is_cmd_available("codex"),
-        "cursor" | "cursor-cli" => is_cmd_available("cursor"),
+        "codex" => codex_config_path().map(|p| p.exists()).unwrap_or(false),
+        "cursor" => config_paths_for_agent(agent)
+            .map(|paths| paths.iter().any(|path| path.exists()))
+            .unwrap_or(false),
+        "cursor-cli" => is_cmd_available("cursor"),
         "claude" | "claude-cli" => is_cmd_available("claude"),
         "continue" => continue_config_path().map(|p| p.exists()).unwrap_or(false),
         "cline" => repo_root.join(".vscode").exists(),
@@ -492,7 +626,9 @@ fn agent_available(agent: &str, repo_root: &Path) -> bool {
             .unwrap_or(false),
         "droid" | "factory" => is_cmd_available("droid"),
         "gemini" => is_cmd_available("gemini"),
-        "vscode" => is_cmd_available("code"),
+        "vscode" => config_paths_for_agent(agent)
+            .map(|paths| paths.iter().any(|path| path.exists()))
+            .unwrap_or(false),
         "amp" => is_cmd_available("amp"),
         "forge" => is_cmd_available("forge"),
         "copilot" => is_cmd_available("copilot"),
@@ -502,73 +638,30 @@ fn agent_available(agent: &str, repo_root: &Path) -> bool {
     }
 }
 
-fn stdio_args(repo_root: &Path, log: &str, max_results: usize) -> Vec<String> {
-    vec![
-        "mcp".to_string(),
-        "--repo".to_string(),
-        repo_root.display().to_string(),
-        "--log".to_string(),
-        log.to_string(),
-        "--max-results".to_string(),
-        max_results.to_string(),
-    ]
-}
-
 fn handle_mcp_add(
     agent: &str,
     repo_root: &Path,
     log: &str,
     max_results: usize,
+    urls: &McpEndpointUrls,
     remove: bool,
     installed: bool,
 ) -> Result<()> {
     match agent {
         "codex" => {
-            if !installed {
-                println!(
-                    "Codex not detected; run manually: codex mcp {} docdex -- docdexd mcp --repo {} --log {} --max-results {}",
-                    if remove { "remove" } else { "add" },
-                    repo_root.display(),
-                    log,
-                    max_results
-                );
-                return Ok(());
-            }
-            let mut cmd = std::process::Command::new("codex");
             if remove {
-                cmd.args(["mcp", "remove", "docdex"]);
-            } else {
-                cmd.args([
-                    "mcp",
-                    "add",
-                    "docdex",
-                    "--",
-                    "docdexd",
-                    "mcp",
-                    "--repo",
-                    &repo_root.display().to_string(),
-                    "--log",
-                    log,
-                    "--max-results",
-                    &max_results.to_string(),
-                ]);
-            }
-            let status = cmd.status().context("run codex mcp command")?;
-            if status.success() {
+                let path = codex_config_path()?;
+                remove_codex_config(&path, true)?;
                 println!(
-                    "Codex MCP {} complete for repo {}",
-                    if remove { "remove" } else { "add" },
-                    repo_root.display()
+                    "Removed docdex from Codex config at {} (if it existed)",
+                    path.display()
                 );
             } else {
+                let path = codex_config_path()?;
+                upsert_codex_config(&path, &urls.http_url)?;
                 println!(
-                    "Codex MCP {} failed with status {}; run manually: codex mcp {} docdex -- docdexd mcp --repo {} --log {} --max-results {}",
-                    if remove { "remove" } else { "add" },
-                    status,
-                    if remove { "remove" } else { "add" },
-                    repo_root.display(),
-                    log,
-                    max_results
+                    "Added docdex to Codex config at {}",
+                    path.display()
                 );
             }
         }
@@ -578,8 +671,7 @@ fn handle_mcp_add(
                 remove_mcp_entry(&path, false)?;
                 println!("Removed docdex from Continue config at {}", path.display());
             } else {
-                let args = stdio_args(repo_root, log, max_results);
-                upsert_mcp_entry(&path, "docdexd", args)?;
+                upsert_mcp_url_entry(&path, &urls.sse_url)?;
                 println!("Added docdex to Continue config at {}", path.display());
             }
         }
@@ -592,8 +684,7 @@ fn handle_mcp_add(
                     path.display()
                 );
             } else {
-                let args = stdio_args(repo_root, log, max_results);
-                upsert_mcp_entry(&path, "docdexd", args)?;
+                upsert_mcp_url_entry(&path, &urls.sse_url)?;
                 println!("Added docdex to Cline settings at {}", path.display());
             }
         }
@@ -605,11 +696,9 @@ fn handle_mcp_add(
                 } else {
                     for path in &paths {
                         println!(
-                            "{agent}: create or edit {} and set mcpServers.docdex to command: docdexd mcp --repo {} --log {} --max-results {}",
+                            "{agent}: create or edit {} and set mcpServers.docdex.url to {}",
                             path.display(),
-                            repo_root.display(),
-                            log,
-                            max_results
+                            urls.sse_url
                         );
                     }
                 }
@@ -623,8 +712,7 @@ fn handle_mcp_add(
                         path.display()
                     );
                 } else {
-                    let args = stdio_args(repo_root, log, max_results);
-                    upsert_mcp_entry(path, "docdexd", args)?;
+                    upsert_mcp_url_entry(path, &urls.sse_url)?;
                     println!("Added docdex to {agent} config at {}", path.display());
                 }
             }
@@ -637,11 +725,9 @@ fn handle_mcp_add(
                 } else {
                     for path in &paths {
                         println!(
-                            "{agent}: edit {} and set experimental_mcp_servers.docdex to command: docdexd mcp --repo {} --log {} --max-results {}",
+                            "{agent}: edit {} and set experimental_mcp_servers.docdex.url to {}",
                             path.display(),
-                            repo_root.display(),
-                            log,
-                            max_results
+                            urls.sse_url
                         );
                     }
                 }
@@ -655,24 +741,38 @@ fn handle_mcp_add(
                         path.display()
                     );
                 } else {
-                    let args = stdio_args(repo_root, log, max_results);
-                    upsert_zed_entry(path, "docdexd", args)?;
+                    upsert_zed_entry(path, &urls.sse_url)?;
                     println!("Added docdex to {agent} config at {}", path.display());
                 }
             }
         }
         "cursor" => {
-            if remove {
-                println!(
-                    "Cursor UI: remove the MCP server named docdex from Settings -> MCP Servers."
-                );
-            } else {
-                println!(
-                    "Cursor UI: add docdex with command: docdexd mcp --repo {} --log {} --max-results {}",
-                    repo_root.display(),
-                    log,
-                    max_results
-                );
+            let paths = config_paths_for_agent(agent)?;
+            if !installed {
+                if paths.is_empty() {
+                    println!("{agent}: no config path could be resolved.");
+                } else {
+                    for path in &paths {
+                        println!(
+                            "{agent}: create or edit {} and set mcpServers.docdex.url to {}",
+                            path.display(),
+                            urls.sse_url
+                        );
+                    }
+                }
+                return Ok(());
+            }
+            for path in &paths {
+                if remove {
+                    remove_mcp_entry(path, true)?;
+                    println!(
+                        "Removed docdex from {agent} config at {} (if it existed)",
+                        path.display()
+                    );
+                } else {
+                    upsert_mcp_url_entry(path, &urls.sse_url)?;
+                    println!("Added docdex to {agent} config at {}", path.display());
+                }
             }
         }
         "cursor-cli" => {
@@ -681,20 +781,7 @@ fn handle_mcp_add(
                 if remove {
                     cmd.args(["mcp", "remove", "docdex"]);
                 } else {
-                    cmd.args([
-                        "mcp",
-                        "add",
-                        "docdex",
-                        "--",
-                        "docdexd",
-                        "mcp",
-                        "--repo",
-                        &repo_root.display().to_string(),
-                        "--log",
-                        log,
-                        "--max-results",
-                        &max_results.to_string(),
-                    ]);
+                    cmd.args(["mcp", "add", "docdex", &urls.sse_url]);
                 }
                 let status = cmd.status().context("run cursor mcp command")?;
                 if status.success() {
@@ -705,22 +792,18 @@ fn handle_mcp_add(
                     );
                 } else {
                     println!(
-                        "Cursor CLI MCP {} failed with status {}; run manually: cursor mcp {} docdex -- docdexd mcp --repo {} --log {} --max-results {}",
+                        "Cursor CLI MCP {} failed with status {}; run manually: cursor mcp {} docdex {}",
                         if remove { "remove" } else { "add" },
                         status,
                         if remove { "remove" } else { "add" },
-                        repo_root.display(),
-                        log,
-                        max_results
+                        urls.sse_url
                     );
                 }
             } else {
                 println!(
-                    "Cursor CLI not detected; run manually: cursor mcp {} docdex -- docdexd mcp --repo {} --log {} --max-results {}",
+                    "Cursor CLI not detected; run manually: cursor mcp {} docdex {}",
                     if remove { "remove" } else { "add" },
-                    repo_root.display(),
-                    log,
-                    max_results
+                    urls.sse_url
                 );
             }
         }
@@ -788,132 +871,106 @@ fn handle_mcp_add(
         "droid" | "factory" => {
             if installed && !remove {
                 let mut cmd = std::process::Command::new("droid");
-                cmd.args([
-                    "mcp",
-                    "add",
-                    "docdex",
-                    &format!(
-                        "docdexd mcp --repo {} --log {} --max-results {}",
-                        repo_root.display(),
-                        log,
-                        max_results
-                    ),
-                ]);
+                cmd.args(["mcp", "add", "docdex", &urls.sse_url]);
                 let status = cmd.status().context("run droid mcp command")?;
                 if status.success() {
                     println!(
-                        "Factory/Kiro MCP add complete for repo {}",
-                        repo_root.display()
+                        "Factory/Kiro MCP add complete for {}",
+                        urls.sse_url
                     );
                 } else {
                     println!(
-                        "Factory/Kiro MCP add failed with status {}; run manually: droid mcp add docdex \"docdexd mcp --repo {} --log {} --max-results {}\"",
-                        status,
-                        repo_root.display(),
-                        log,
-                        max_results
+                        "Factory/Kiro MCP add failed with status {}; run manually: droid mcp add docdex {}",
+                        status, urls.sse_url
                     );
                 }
             } else {
                 println!(
-                    "Factory/Kiro CLI: run manually {} docdex with `droid mcp add docdex \"docdexd mcp --repo {} --log {} --max-results {}\"`",
+                    "Factory/Kiro CLI: run manually {} docdex with `droid mcp add docdex {}`",
                     if remove { "remove" } else { "add" },
-                    repo_root.display(),
-                    log,
-                    max_results
+                    urls.sse_url
                 );
             }
         }
         "gemini" => {
             if installed && !remove {
                 let mut cmd = std::process::Command::new("gemini");
-                cmd.args([
-                    "mcp",
-                    "add",
-                    "docdex",
-                    "docdexd",
-                    "mcp",
-                    "--repo",
-                    &repo_root.display().to_string(),
-                    "--log",
-                    log,
-                    "--max-results",
-                    &max_results.to_string(),
-                ]);
+                cmd.args(["mcp", "add", "docdex", &urls.sse_url]);
                 let status = cmd.status().context("run gemini mcp command")?;
                 if status.success() {
-                    println!("Gemini MCP add complete for repo {}", repo_root.display());
+                    println!("Gemini MCP add complete for {}", urls.sse_url);
                 } else {
                     println!(
-                        "Gemini MCP add failed with status {}; run manually: gemini mcp add docdex docdexd mcp --repo {} --log {} --max-results {}",
-                        status,
-                        repo_root.display(),
-                        log,
-                        max_results
+                        "Gemini MCP add failed with status {}; run manually: gemini mcp add docdex {}",
+                        status, urls.sse_url
                     );
                 }
             } else {
                 println!(
-                    "Gemini CLI {} manually: gemini mcp {} docdex docdexd mcp --repo {} --log {} --max-results {}",
+                    "Gemini CLI {} manually: gemini mcp {} docdex {}",
                     if remove { "remove" } else { "add" },
                     if remove { "remove" } else { "add" },
-                    repo_root.display(),
-                    log,
-                    max_results
+                    urls.sse_url
                 );
             }
         }
         "vscode" => {
-            let payload = format!(
-                "{{\"name\":\"docdex\",\"command\":\"docdexd\",\"args\":[\"mcp\",\"--repo\",\"{}\",\"--log\",\"{}\",\"--max-results\",\"{}\"]}}",
-                repo_root.display(),
-                log,
-                max_results
-            );
-            if installed && !remove {
-                let status = std::process::Command::new("code")
-                    .args(["--add-mcp", &payload])
-                    .status()
-                    .context("run code --add-mcp")?;
-                if status.success() {
-                    println!("VS Code MCP add complete via CLI.");
+            let paths = config_paths_for_agent(agent)?;
+            if !installed {
+                if paths.is_empty() {
+                    println!("{agent}: no config path could be resolved.");
                 } else {
-                    println!(
-                        "VS Code CLI add failed with status {}; add manually with `code --add-mcp '{payload}'`",
-                        status
-                    );
+                    for path in &paths {
+                        println!(
+                            "{agent}: create or edit {} and set mcpServers.docdex.url to {}",
+                            path.display(),
+                            urls.sse_url
+                        );
+                    }
                 }
-            } else {
-                println!(
-                    "VS Code CLI {} manually with: code --add-mcp '{}'",
-                    if remove { "remove" } else { "add" },
-                    payload
-                );
+                return Ok(());
+            }
+            for path in &paths {
+                if remove {
+                    remove_mcp_entry(path, true)?;
+                    println!(
+                        "Removed docdex from {agent} config at {} (if it existed)",
+                        path.display()
+                    );
+                } else {
+                    upsert_mcp_url_entry(path, &urls.sse_url)?;
+                    println!("Added docdex to {agent} config at {}", path.display());
+                }
             }
         }
         "amp" => {
-            println!("Sourcegraph amp expects HTTP/SSE; register your HTTP endpoint, e.g., `amp mcp add docdex http://localhost:5273/v1/mcp/sse`.");
+            println!(
+                "Sourcegraph amp expects HTTP/SSE; register your endpoint: amp mcp add docdex {}",
+                urls.sse_url
+            );
         }
         "forge" => {
             println!(
-                "Forge Code CLI: forge mcp import '[{{\"name\":\"docdex\",\"type\":\"stdio\",\"command\":\"docdexd\",\"args\":[\"mcp\",\"--repo\",\"{}\",\"--log\",\"{}\",\"--max-results\",\"{}\"]}}]'",
-                repo_root.display(),
-                log,
-                max_results
+                "Forge Code CLI: register docdex with the HTTP/SSE endpoint {}",
+                urls.sse_url
             );
         }
         "copilot" => {
-            println!("GitHub Copilot CLI: start a session and run `/mcp add docdex`, command: docdexd mcp --repo {} --log {} --max-results {}", repo_root.display(), log, max_results);
+            println!(
+                "GitHub Copilot CLI: add docdex with HTTP/SSE endpoint {} (legacy stdio proxy: docdexd mcp --repo <repo> --log warn --max-results 8)",
+                urls.sse_url
+            );
         }
         "warp" => {
-            println!("Warp: add docdex in settings pointing to `docdexd mcp --repo {} --log {} --max-results {}`", repo_root.display(), log, max_results);
+            println!(
+                "Warp: add docdex in settings pointing to {} (legacy stdio proxy: docdexd mcp --repo <repo> --log warn --max-results 8)",
+                urls.sse_url
+            );
         }
         "grok" => {
             println!(
-                "Grok MCP client: register docdex with command: docdexd mcp --repo {} --log {} --max-results {}",
-                repo_root.display(),
-                log,
-                max_results
+                "Grok MCP client: register docdex with HTTP/SSE endpoint {}",
+                urls.sse_url
             );
         }
         _ => println!("Unsupported agent: {agent}"),

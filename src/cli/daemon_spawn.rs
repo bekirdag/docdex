@@ -141,10 +141,8 @@ fn spawn_daemon(addr: SocketAddr, repo_hint: Option<PathBuf>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::mcp_auto_start_enabled;
-    use once_cell::sync::Lazy;
-    use std::sync::{Mutex, MutexGuard};
-
-    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+    use crate::setup::test_support::ENV_LOCK;
+    use std::sync::MutexGuard;
 
     struct EnvGuard {
         prev: Vec<(&'static str, Option<String>)>,

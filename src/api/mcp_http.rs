@@ -120,20 +120,14 @@ pub async fn mcp_message_handler(
             );
         }
     } else {
-        let bound_root = match router.session_repo_root(&session_id).await {
-            Some(root) => root,
-            None => {
-                return json_error(
-                    StatusCode::BAD_REQUEST,
-                    ERR_INVALID_ARGUMENT,
-                    "missing initialize (call initialize with rootUri before MCP requests)",
-                );
-            }
-        };
+        let bound_root = router.session_repo_root(&session_id).await;
         if let Some(root_uri) = extract_project_root(&payload) {
             match resolve_repo_for_mcp(&state, Some(root_uri)) {
                 Ok(repo_root) => {
-                    let should_init = bound_root != repo_root;
+                    let should_init = bound_root
+                        .as_ref()
+                        .map(|root| root != &repo_root)
+                        .unwrap_or(true);
                     if let Err(err) = router.bind_session(&session_id, &repo_root).await {
                         return json_error(
                             StatusCode::INTERNAL_SERVER_ERROR,
@@ -158,6 +152,12 @@ pub async fn mcp_message_handler(
                     return app_error_response(err);
                 }
             }
+        } else if bound_root.is_none() {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                "missing initialize (call initialize with rootUri before MCP requests)",
+            );
         }
     }
     match router.enqueue_for_session(&session_id, payload).await {

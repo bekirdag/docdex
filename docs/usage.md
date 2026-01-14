@@ -48,7 +48,7 @@ Postinstall behavior:
 - Requires Rust (stable) and Cargo.
 - Build: `cargo build --release`
 - Install: `cargo install --path .`
-- MCP server: build `docdex-mcp-server` as well, or set `DOCDEX_MCP_SERVER_BIN`.
+- MCP is served by the daemon over HTTP/SSE; no separate MCP server binary is required for normal usage.
 
 ### Uninstall
 - `npm uninstall -g docdex` stops the daemon, removes its startup registration, and deletes Docdex MCP entries from supported client config files.
@@ -60,11 +60,11 @@ Postinstall behavior:
 
 docdexd index --repo /path/to/repo
 
-# serve HTTP API with watcher
+# serve HTTP API with watcher (legacy; singleton lock enforced)
 
 docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 3210 --log warn --secure-mode=false
 
-# singleton daemon (shared MCP over /v1/mcp/sse)
+# singleton daemon (shared MCP over /v1/mcp/sse; preferred)
 
 docdexd daemon --repo /path/to/repo --host 127.0.0.1 --port 3210 --log warn --secure-mode=false
 
@@ -83,7 +83,7 @@ Notes:
 
 ## Operating modes
 - `index`: builds the repo index and code intelligence artifacts.
-- `serve`: starts the per-repo HTTP API with watcher.
+- `serve`: legacy per-repo HTTP API with watcher; a global singleton lock prevents multiple servers from starting.
 - `daemon`: singleton service that hosts shared MCP over HTTP/SSE (`/v1/mcp/sse`).
 - `mcp`: legacy stdio proxy to the shared daemon for local, per-repo bindings.
 
@@ -113,6 +113,9 @@ Supported auto-detected MCP clients (installation adds config when the file exis
 
 ### Shared MCP (daemon, HTTP/SSE)
 Start the daemon and point clients at `http://localhost:<port>/v1/mcp/sse`.
+
+Notes:
+- `docdex-mcp-server` is legacy. If the daemon is already running, it refuses to start and points clients at the shared MCP endpoint.
 
 JSON config example (Cursor, Continue, Cline, Claude Desktop devtools):
 ```json
@@ -322,7 +325,7 @@ Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary to
 - `DOCDEX_PLAYWRIGHT_BROWSER=chromium|firefox|webkit` to pick a Playwright browser (overrides `web.scraper.browser_kind`).
 - `DOCDEX_BROWSER_AUTO_INSTALL=0` to disable Playwright auto-install of Chromium.
 - `DOCDEX_PLAYWRIGHT_FETCHER=/path/to/npm/lib/playwright_fetch.js` to override the Playwright fetch helper.
-- `DOCDEX_NODE_BIN=/path/to/node` or `DOCDEX_PLAYWRIGHT_NODE_BIN=/path/to/node` to override the Node binary used for Playwright helpers.
+- `DOCDEX_NODE_BIN=/path/to/node` or `DOCDEX_PLAYWRIGHT_NODE_BIN=/path/to/node` to override the Node binary used for Playwright helpers (defaults to the Node path recorded in the Playwright manifest when available).
 - `PLAYWRIGHT_BROWSERS_PATH=/path` to override the Playwright browser cache location.
 
 ## Ops and safety

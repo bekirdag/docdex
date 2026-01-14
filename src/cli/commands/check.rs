@@ -1,7 +1,6 @@
 use crate::config;
 use crate::dag::logging as dag_logging;
 use crate::hardware;
-use crate::mcp;
 use crate::memory::MemoryStore;
 use crate::ollama;
 use crate::profiles::ProfileManager;
@@ -16,8 +15,6 @@ use std::fs;
 use std::io::ErrorKind;
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::thread;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -271,69 +268,29 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
             });
         } else {
             let env_bin = env_non_empty("DOCDEX_MCP_SERVER_BIN");
-            match mcp::resolve_mcp_server_binary() {
-                Ok(path) => {
-                    let mut spawn_ok = None;
-                    let mut spawn_details = None;
-                    if mcp_spawn_check {
-                        let timeout = Duration::from_millis(mcp_spawn_timeout_ms);
-                        let probe = probe_mcp_spawn(&path, timeout);
-                        spawn_ok = Some(probe.ok);
-                        spawn_details = Some(json!({
-                            "spawn_status": probe.status,
-                            "spawn_exit_code": probe.exit_code,
-                            "spawn_timeout_ms": probe.timeout_ms,
-                            "spawn_error": probe.error,
-                        }));
-                    }
-                    let status = if spawn_ok == Some(false) {
-                        "fail"
-                    } else {
-                        "ok"
-                    };
-                    let message = if spawn_ok == Some(false) {
-                        "mcp server binary resolved but spawn check failed".to_string()
-                    } else if mcp_spawn_check {
-                        "mcp server binary resolved (spawn check ok)".to_string()
-                    } else {
-                        "mcp server binary resolved".to_string()
-                    };
-                    if status == "fail" {
-                        success = false;
-                    }
-                    checks.push(CheckItem {
-                        name: "mcp_ready",
-                        status,
-                        message,
-                        details: Some(json!({
-                            "enabled": true,
-                            "source": mcp_source,
-                            "env_value": mcp_env_value,
-                            "binary": path.to_string_lossy(),
-                            "binary_override": env_bin,
-                            "spawn_check": mcp_spawn_check,
-                            "spawn_ok": spawn_ok,
-                            "spawn_timeout_ms": mcp_spawn_timeout_ms,
-                            "spawn_details": spawn_details,
-                        })),
-                    });
-                }
-                Err(err) => {
-                    checks.push(CheckItem {
-                        name: "mcp_ready",
-                        status: "fail",
-                        message: format!("mcp server binary resolution failed: {err}"),
-                        details: Some(json!({
-                            "enabled": true,
-                            "source": mcp_source,
-                            "env_value": mcp_env_value,
-                            "binary_override": env_bin,
-                            "error": err.to_string(),
-                        })),
-                    });
-                    success = false;
-                }
-            }
+            let spawn_details = if mcp_spawn_check {
+                Some(json!({
+                    "spawn_status": "skipped",
+                    "spawn_timeout_ms": mcp_spawn_timeout_ms,
+                    "spawn_error": "mcp served by daemon; no standalone spawn required",
+                }))
+            } else {
+                None
+            };
+            checks.push(CheckItem {
+                name: "mcp_ready",
+                status: "ok",
+                message: "mcp served by daemon HTTP/SSE".to_string(),
+                details: Some(json!({
+                    "enabled": true,
+                    "source": mcp_source,
+                    "env_value": mcp_env_value,
+                    "binary_override": env_bin,
+                    "spawn_check": mcp_spawn_check,
+                    "spawn_timeout_ms": mcp_spawn_timeout_ms,
+                    "spawn_details": spawn_details,
+                })),
+            });
         }
 
         let provider = config.llm.provider.trim();
@@ -1363,89 +1320,6 @@ fn probe_bind(addr: SocketAddr) -> Result<(), BindProbeError> {
                 message,
                 error: Some(err.to_string()),
             })
-        }
-    }
-}
-
-struct McpSpawnProbe {
-    ok: bool,
-    status: &'static str,
-    exit_code: Option<i32>,
-    timeout_ms: Option<u64>,
-    error: Option<String>,
-}
-
-fn probe_mcp_spawn(path: &Path, timeout: Duration) -> McpSpawnProbe {
-    let mut cmd = if cfg!(windows) {
-        let ext = path
-            .extension()
-            .and_then(|value| value.to_str())
-            .map(|value| value.to_ascii_lowercase());
-        if matches!(ext.as_deref(), Some("cmd") | Some("bat")) {
-            let mut cmd = Command::new("cmd.exe");
-            cmd.arg("/C").arg(path);
-            cmd
-        } else {
-            Command::new(path)
-        }
-    } else {
-        Command::new(path)
-    };
-    cmd.arg("--help");
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::null());
-    cmd.stderr(Stdio::null());
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(err) => {
-            return McpSpawnProbe {
-                ok: false,
-                status: "spawn_error",
-                exit_code: None,
-                timeout_ms: Some(timeout.as_millis().min(u128::from(u64::MAX)) as u64),
-                error: Some(err.to_string()),
-            }
-        }
-    };
-
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let ok = status.success();
-                return McpSpawnProbe {
-                    ok,
-                    status: if ok { "ok" } else { "exit" },
-                    exit_code: status.code(),
-                    timeout_ms: Some(timeout.as_millis().min(u128::from(u64::MAX)) as u64),
-                    error: None,
-                };
-            }
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return McpSpawnProbe {
-                        ok: false,
-                        status: "timeout",
-                        exit_code: None,
-                        timeout_ms: Some(timeout.as_millis().min(u128::from(u64::MAX)) as u64),
-                        error: None,
-                    };
-                }
-                thread::sleep(Duration::from_millis(25));
-            }
-            Err(err) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return McpSpawnProbe {
-                    ok: false,
-                    status: "spawn_error",
-                    exit_code: None,
-                    timeout_ms: Some(timeout.as_millis().min(u128::from(u64::MAX)) as u64),
-                    error: Some(err.to_string()),
-                };
-            }
         }
     }
 }

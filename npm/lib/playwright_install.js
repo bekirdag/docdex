@@ -124,6 +124,7 @@ function buildManifest({
   playwright,
   browsersJson,
   playwrightVersion,
+  nodeBin = process.execPath,
   now = new Date(),
   allowMissing = false,
   logger = console
@@ -147,6 +148,7 @@ function buildManifest({
     installed_at: now.toISOString(),
     browsers_path: browsersPath,
     playwright_version: playwrightVersion,
+    node_bin: nodeBin,
     browsers: installed
   };
 }

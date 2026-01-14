@@ -75,7 +75,6 @@ pub async fn spawn_proxy_for_serve(
     docdex_http_base_url: Option<String>,
     auth_token: Option<String>,
 ) -> Result<Arc<McpProxyRouter>> {
-    let _ = resolve_mcp_server_binary()?;
     let config = McpProxyConfig {
         repo,
         log_level,
@@ -495,17 +494,56 @@ async fn spawn_mcp(options: McpSpawnOptions) -> Result<Child> {
 }
 
 async fn spawn_mcp_proxy(options: McpSpawnOptions) -> Result<Arc<McpProxy>> {
-    let mut cmd = build_mcp_command(&options)?;
-    cmd.stdin(Stdio::piped());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::inherit());
-    cmd.kill_on_drop(true);
-    let mut child = cmd
-        .spawn()
-        .with_context(|| format!("launch {MCP_SERVER_BIN_NAME}"))?;
-    let stdin = child.stdin.take().context("capture mcp stdin")?;
-    let stdout = child.stdout.take().context("capture mcp stdout")?;
-    Ok(McpProxy::new(child, stdin, stdout))
+    apply_mcp_env(&options);
+    let service = build_mcp_service(&options)?;
+    Ok(McpProxy::new(service))
+}
+
+fn build_mcp_service(options: &McpSpawnOptions) -> Result<crate::mcp_server::McpService> {
+    let repo_root = options.repo.repo_root();
+    let index_config = crate::index::IndexConfig::with_overrides(
+        &repo_root,
+        options.repo.state_dir_override(),
+        options.repo.exclude_dir_overrides(),
+        options.repo.exclude_prefix_overrides(),
+        options.repo.symbols_enabled(),
+    )?;
+    crate::mcp_server::McpService::new(
+        repo_root,
+        index_config,
+        options.max_results,
+        options.rate_limit_per_min,
+        options.rate_limit_burst,
+        options.auth_token.clone(),
+    )
+}
+
+fn apply_mcp_env(options: &McpSpawnOptions) {
+    std::env::set_var(
+        "DOCDEX_ENABLE_MEMORY",
+        if options.memory_enabled { "1" } else { "0" },
+    );
+    if let Some(base_url) = options.embedding_base_url.as_ref() {
+        if !base_url.trim().is_empty() {
+            std::env::set_var("DOCDEX_EMBEDDING_BASE_URL", base_url);
+        }
+    }
+    if let Some(model) = options.embedding_model.as_ref() {
+        if !model.trim().is_empty() {
+            std::env::set_var("DOCDEX_EMBEDDING_MODEL", model);
+        }
+    }
+    if let Some(timeout_ms) = options.embedding_timeout_ms {
+        std::env::set_var("DOCDEX_EMBEDDING_TIMEOUT_MS", timeout_ms.to_string());
+    }
+    if let Some(base_url) = options.docdex_http_base_url.as_ref() {
+        if !base_url.trim().is_empty() {
+            std::env::set_var("DOCDEX_HTTP_BASE_URL", base_url);
+        }
+    }
+    if std::env::var("DOCDEX_WEB_ENABLED").is_err() {
+        std::env::set_var("DOCDEX_WEB_ENABLED", "1");
+    }
 }
 
 fn build_mcp_command(options: &McpSpawnOptions) -> Result<Command> {

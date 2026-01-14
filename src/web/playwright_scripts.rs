@@ -45,11 +45,8 @@ fn needs_write(path: &Path, contents: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use once_cell::sync::Lazy;
-    use std::sync::Mutex;
+    use crate::setup::test_support::ENV_LOCK;
     use tempfile::TempDir;
-
-    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     struct EnvGuard {
         home: Option<std::ffi::OsString>,

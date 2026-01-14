@@ -1,10 +1,8 @@
 use super::{normalize_base_url, resolve_base_url_with_lock, CliHttpClient};
-use once_cell::sync::Lazy;
+use crate::setup::test_support::ENV_LOCK;
 use reqwest::Method;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::MutexGuard;
 use tempfile::TempDir;
-
-static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 struct EnvGuard {
     prev: Vec<(&'static str, Option<String>)>,

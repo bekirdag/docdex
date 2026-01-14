@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use docdexd::daemon::lock;
 
 #[derive(Debug, Parser)]
 #[command(name = "docdex-mcp-server")]
@@ -40,6 +41,50 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Ok(Some(metadata)) = lock::read_running_metadata() {
+        if let Ok(path) = lock::default_lock_path() {
+            eprintln!(
+                "docdexd already running (pid={} port={}, lock={}); refusing to start docdex-mcp-server",
+                metadata.pid,
+                metadata.port,
+                path.display()
+            );
+        } else {
+            eprintln!(
+                "docdexd already running (pid={} port={}); refusing to start docdex-mcp-server",
+                metadata.pid,
+                metadata.port
+            );
+        }
+        if metadata.port != 0 {
+            eprintln!(
+                "Use the existing daemon at http://127.0.0.1:{} (/v1/mcp/sse).",
+                metadata.port
+            );
+        }
+        return Ok(());
+    }
+
+    let _mcp_lock = match lock::acquire_or_reuse_mcp_server() {
+        Ok(lock::DaemonLockOutcome::Acquired(lock)) => Some(lock),
+        Ok(lock::DaemonLockOutcome::AlreadyRunning(metadata)) => {
+            if let Ok(path) = lock::default_mcp_server_lock_path() {
+                eprintln!(
+                    "docdex-mcp-server already running (pid={}, lock={})",
+                    metadata.pid,
+                    path.display()
+                );
+            } else {
+                eprintln!("docdex-mcp-server already running (pid={})", metadata.pid);
+            }
+            return Ok(());
+        }
+        Err(err) => {
+            eprintln!("docdex-mcp-server lock unavailable: {err}");
+            return Err(err);
+        }
+    };
+
     let web_env = std::env::var("DOCDEX_WEB_ENABLED").ok();
     if web_env
         .as_deref()

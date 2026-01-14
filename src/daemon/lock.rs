@@ -8,6 +8,11 @@ use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+const DAEMON_LOCK_ENV: &str = "DOCDEX_DAEMON_LOCK_PATH";
+const MCP_SERVER_LOCK_ENV: &str = "DOCDEX_MCP_SERVER_LOCK_PATH";
+const DAEMON_LOCK_FILE: &str = "daemon.lock";
+const MCP_SERVER_LOCK_FILE: &str = "mcp-server.lock";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonLockMetadata {
     pub pid: u32,
@@ -43,7 +48,20 @@ pub fn acquire_or_reuse(port: u16) -> Result<DaemonLockOutcome> {
 }
 
 pub fn default_lock_path() -> Result<PathBuf> {
-    if let Ok(value) = env::var("DOCDEX_DAEMON_LOCK_PATH") {
+    resolve_lock_path(DAEMON_LOCK_ENV, DAEMON_LOCK_FILE)
+}
+
+pub fn default_mcp_server_lock_path() -> Result<PathBuf> {
+    resolve_lock_path(MCP_SERVER_LOCK_ENV, MCP_SERVER_LOCK_FILE)
+}
+
+pub fn acquire_or_reuse_mcp_server() -> Result<DaemonLockOutcome> {
+    let path = default_mcp_server_lock_path()?;
+    acquire_or_reuse_at_path(&path, 0)
+}
+
+fn resolve_lock_path(env_key: &str, filename: &str) -> Result<PathBuf> {
+    if let Ok(value) = env::var(env_key) {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
             return Ok(PathBuf::from(trimmed));
@@ -51,13 +69,13 @@ pub fn default_lock_path() -> Result<PathBuf> {
     }
     if let Ok(state_dir) = crate::state_paths::default_state_base_dir() {
         if let Some(root) = state_dir.parent() {
-            return Ok(root.join("locks").join("daemon.lock"));
+            return Ok(root.join("locks").join(filename));
         }
     }
     Ok(std::env::temp_dir()
         .join("docdex")
         .join("locks")
-        .join("daemon.lock"))
+        .join(filename))
 }
 
 pub fn acquire_lock_at_path(path: &Path, port: u16) -> Result<DaemonLock> {
@@ -237,14 +255,12 @@ fn probe_health(port: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use once_cell::sync::Lazy;
+    use crate::setup::test_support::ENV_LOCK;
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::sync::{Mutex, MutexGuard};
+    use std::sync::MutexGuard;
     use std::thread;
     use tempfile::TempDir;
-
-    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     struct EnvGuard {
         prev: Vec<(&'static str, Option<String>)>,

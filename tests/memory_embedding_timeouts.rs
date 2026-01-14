@@ -12,6 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tokio::sync::oneshot;
+use url::Url;
 
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
@@ -33,6 +34,33 @@ fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
     Ok(temp)
 }
 
+fn file_uri(path: &Path) -> String {
+    Url::from_directory_path(path)
+        .expect("file uri")
+        .to_string()
+}
+
+fn init_repo(
+    client: &Client,
+    host: &str,
+    port: u16,
+    repo_root: &Path,
+) -> Result<String, Box<dyn Error>> {
+    let resp = client
+        .post(format!("http://{host}:{port}/v1/initialize"))
+        .json(&json!({ "rootUri": file_uri(repo_root) }))
+        .send()?;
+    if !resp.status().is_success() {
+        return Err(format!("initialize failed: {}", resp.status()).into());
+    }
+    let payload: Value = resp.json()?;
+    let repo_id = payload
+        .get("repo_id")
+        .and_then(|value| value.as_str())
+        .ok_or("missing repo_id")?;
+    Ok(repo_id.to_string())
+}
+
 fn pick_free_port() -> Option<u16> {
     match TcpListener::bind("127.0.0.1:0") {
         Ok(listener) => Some(listener.local_addr().ok()?.port()),
@@ -44,29 +72,34 @@ fn pick_free_port() -> Option<u16> {
     }
 }
 
-fn spawn_server(
+fn spawn_daemon(
     state_root: &Path,
     repo_root: &Path,
     host: &str,
     port: u16,
+    lock_path: &Path,
     ollama_base_url: &str,
     embedding_model: &str,
     embedding_timeout_ms: u64,
+    enable_mcp: bool,
 ) -> Result<Child, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
-    Ok(Command::new(docdex_bin())
-        .env("DOCDEX_WEB_ENABLED", "0")
+    let port_str = port.to_string();
+    let timeout_str = embedding_timeout_ms.to_string();
+    let mut cmd = Command::new(docdex_bin());
+    cmd.env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_DAEMON_LOCK_PATH", lock_path)
         .args([
-            "serve",
+            "daemon",
             "--repo",
             repo_str.as_str(),
             "--host",
             host,
             "--port",
-            &port.to_string(),
+            port_str.as_str(),
             "--log",
             "warn",
             "--secure-mode=false",
@@ -76,11 +109,14 @@ fn spawn_server(
             "--embedding-model",
             embedding_model,
             "--embedding-timeout-ms",
-            &embedding_timeout_ms.to_string(),
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?)
+            timeout_str.as_str(),
+        ]);
+    if enable_mcp {
+        cmd.arg("--enable-mcp");
+    } else {
+        cmd.arg("--disable-mcp");
+    }
+    Ok(cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn()?)
 }
 
 fn wait_for_health_with_child(
@@ -104,31 +140,35 @@ fn wait_for_health_with_child(
     Err("docdexd healthz endpoint did not respond in time".into())
 }
 
-fn spawn_server_ready(
+fn spawn_daemon_ready(
     state_root: &Path,
     repo_root: &Path,
     host: &str,
     ollama_base_url: &str,
     embedding_model: &str,
     embedding_timeout_ms: u64,
-) -> Result<Option<(Child, u16)>, Box<dyn Error>> {
+    enable_mcp: bool,
+) -> Result<Option<(Child, u16, PathBuf)>, Box<dyn Error>> {
     const MAX_ATTEMPTS: usize = 4;
     let mut last_err: Option<Box<dyn Error>> = None;
+    let lock_path = state_root.join("daemon.lock");
     for _ in 0..MAX_ATTEMPTS {
         let Some(port) = pick_free_port() else {
             return Ok(None);
         };
-        let mut child = spawn_server(
+        let mut child = spawn_daemon(
             state_root,
             repo_root,
             host,
             port,
+            &lock_path,
             ollama_base_url,
             embedding_model,
             embedding_timeout_ms,
+            enable_mcp,
         )?;
         match wait_for_health_with_child(host, port, &mut child, Duration::from_secs(20)) {
-            Ok(()) => return Ok(Some((child, port))),
+            Ok(()) => return Ok(Some((child, port, lock_path.clone()))),
             Err(err) => {
                 last_err = Some(err);
                 child.kill().ok();
@@ -286,13 +326,14 @@ fn http_memory_store_timeout_returns_stable_code() -> Result<(), Box<dyn Error>>
 
     let host = "127.0.0.1";
     let state_root = TempDir::new()?;
-    let Some((mut server, port)) = spawn_server_ready(
+    let Some((mut server, port, _lock_path)) = spawn_daemon_ready(
         state_root.path(),
         repo.path(),
         host,
         &slow.base_url,
         "fake-embed",
         50,
+        false,
     )?
     else {
         return Ok(());
@@ -335,13 +376,31 @@ fn mcp_memory_store_timeout_returns_stable_code() -> Result<(), Box<dyn Error>> 
         return Ok(());
     };
 
+    let host = "127.0.0.1";
+    let Some((mut server, port, lock_path)) = spawn_daemon_ready(
+        state_root.path(),
+        repo.path(),
+        host,
+        &slow.base_url,
+        "fake-embed",
+        50,
+        true,
+    )?
+    else {
+        return Ok(());
+    };
+
     let state_root_str = state_root.path().to_string_lossy().to_string();
+    let lock_path_str = lock_path.to_string_lossy().to_string();
+    let base_url = format!("http://{host}:{port}");
     let envs = vec![
         ("DOCDEX_STATE_DIR", state_root_str.as_str()),
         ("DOCDEX_ENABLE_MEMORY", "1"),
         ("DOCDEX_OLLAMA_BASE_URL", slow.base_url.as_str()),
         ("DOCDEX_EMBEDDING_MODEL", "fake-embed"),
         ("DOCDEX_EMBEDDING_TIMEOUT_MS", "50"),
+        ("DOCDEX_DAEMON_LOCK_PATH", lock_path_str.as_str()),
+        ("DOCDEX_HTTP_BASE_URL", base_url.as_str()),
     ];
     let mut mcp = McpHarness::spawn(repo.path(), &envs)?;
     send_line(
@@ -360,6 +419,8 @@ fn mcp_memory_store_timeout_returns_stable_code() -> Result<(), Box<dyn Error>> 
         "embedding input leaked in MCP error payload: {resp}"
     );
     mcp.shutdown();
+    server.kill().ok();
+    server.wait().ok();
     Ok(())
 }
 
@@ -378,13 +439,14 @@ fn invalid_model_is_explicit_and_daemon_stays_healthy() -> Result<(), Box<dyn Er
     };
 
     let host = "127.0.0.1";
-    let Some((mut server, port)) = spawn_server_ready(
+    let Some((mut server, port, _lock_path)) = spawn_daemon_ready(
         state_root.path(),
         repo.path(),
         host,
         mock.base_url.as_str(),
         "definitely-not-installed",
         200,
+        false,
     )?
     else {
         return Ok(());
@@ -433,13 +495,14 @@ fn memory_metadata_includes_embedding_model() -> Result<(), Box<dyn Error>> {
     };
 
     let host = "127.0.0.1";
-    let Some((mut server, port)) = spawn_server_ready(
+    let Some((mut server, port, _lock_path)) = spawn_daemon_ready(
         state_root.path(),
         repo.path(),
         host,
         mock.base_url.as_str(),
         "test-embed-model",
         200,
+        false,
     )?
     else {
         return Ok(());
@@ -543,58 +606,41 @@ fn memory_isolation_between_repos() -> Result<(), Box<dyn Error>> {
     };
     let host = "127.0.0.1";
     let state_root = TempDir::new()?;
-    let Some((mut server_a, port_a)) = spawn_server_ready(
+    let Some((mut server, port, _lock_path)) = spawn_daemon_ready(
         state_root.path(),
         repo_a.path(),
         host,
         mock.base_url.as_str(),
         "test-embed-model",
         200,
+        false,
     )?
     else {
         return Ok(());
     };
-    let server_b = spawn_server_ready(
-        state_root.path(),
-        repo_b.path(),
-        host,
-        mock.base_url.as_str(),
-        "test-embed-model",
-        200,
-    );
-    let (mut server_b, port_b) = match server_b {
-        Ok(Some((server, port))) => (server, port),
-        Ok(None) => {
-            server_a.kill().ok();
-            server_a.wait().ok();
-            return Ok(());
-        }
-        Err(err) => {
-            server_a.kill().ok();
-            server_a.wait().ok();
-            return Err(err);
-        }
-    };
 
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
-    let store_a = format!("http://{host}:{port_a}/v1/memory/store");
-    let store_b = format!("http://{host}:{port_b}/v1/memory/store");
-    let recall_a = format!("http://{host}:{port_a}/v1/memory/recall");
-    let recall_b = format!("http://{host}:{port_b}/v1/memory/recall");
+    let repo_a_id = init_repo(&client, host, port, repo_a.path())?;
+    let repo_b_id = init_repo(&client, host, port, repo_b.path())?;
+    let store_url = format!("http://{host}:{port}/v1/memory/store");
+    let recall_url = format!("http://{host}:{port}/v1/memory/recall");
 
     let resp_a = client
-        .post(&store_a)
+        .post(&store_url)
+        .header("x-docdex-repo-id", repo_a_id.clone())
         .json(&json!({ "text": "alpha memory" }))
         .send()?;
     assert!(resp_a.status().is_success());
     let resp_b = client
-        .post(&store_b)
+        .post(&store_url)
+        .header("x-docdex-repo-id", repo_b_id.clone())
         .json(&json!({ "text": "beta memory" }))
         .send()?;
     assert!(resp_b.status().is_success());
 
     let recall_a: Value = client
-        .post(&recall_a)
+        .post(&recall_url)
+        .header("x-docdex-repo-id", repo_a_id.clone())
         .json(&json!({ "query": "alpha", "top_k": 5 }))
         .send()?
         .json()?;
@@ -617,7 +663,8 @@ fn memory_isolation_between_repos() -> Result<(), Box<dyn Error>> {
     );
 
     let recall_b: Value = client
-        .post(&recall_b)
+        .post(&recall_url)
+        .header("x-docdex-repo-id", repo_b_id)
         .json(&json!({ "query": "beta", "top_k": 5 }))
         .send()?
         .json()?;
@@ -639,9 +686,7 @@ fn memory_isolation_between_repos() -> Result<(), Box<dyn Error>> {
         "repo B recall leaked repo A content: {recall_b}"
     );
 
-    server_a.kill().ok();
-    server_a.wait().ok();
-    server_b.kill().ok();
-    server_b.wait().ok();
+    server.kill().ok();
+    server.wait().ok();
     Ok(())
 }

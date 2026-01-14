@@ -1,9 +1,7 @@
 use super::*;
-use once_cell::sync::Lazy;
-use std::sync::{Mutex, MutexGuard};
+use crate::setup::test_support::ENV_LOCK;
+use std::sync::MutexGuard;
 use tempfile::TempDir;
-
-static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 struct EnvGuard {
     key: &'static str,

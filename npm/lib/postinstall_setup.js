@@ -1474,6 +1474,12 @@ function buildDaemonEnvPairs({ mcpBinaryPath } = {}) {
   if (mcpBinaryPath) pairs.push(["DOCDEX_MCP_SERVER_BIN", mcpBinaryPath]);
   const fetcher = resolvePlaywrightFetcherPath();
   if (fetcher) pairs.push(["DOCDEX_PLAYWRIGHT_FETCHER", fetcher]);
+  if (!process.env.DOCDEX_PLAYWRIGHT_NODE_BIN && !process.env.DOCDEX_NODE_BIN) {
+    const nodeBin = process.execPath;
+    if (nodeBin && fs.existsSync(nodeBin)) {
+      pairs.push(["DOCDEX_PLAYWRIGHT_NODE_BIN", nodeBin]);
+    }
+  }
   return pairs;
 }
 

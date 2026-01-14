@@ -176,7 +176,22 @@ fn read_line(
     Ok(serde_json::from_str(&line)?)
 }
 
+fn read_response_for_id(
+    reader: &mut BufReader<std::process::ChildStdout>,
+    expected_id: &Value,
+) -> Result<Value, BoxError> {
+    loop {
+        let resp = read_line(reader)?;
+        if resp.get("id") == Some(expected_id) {
+            return Ok(resp);
+        }
+    }
+}
+
 fn parse_tool_result(resp: &Value) -> Result<Value, BoxError> {
+    if let Some(error) = resp.get("error") {
+        return Err(format!("tool call failed: {error}").into());
+    }
     let content = resp
         .get("result")
         .and_then(|v| v.get("content"))
@@ -210,7 +225,8 @@ fn run_search_and_open(
                 }
             }),
         )?;
-        let search_resp = read_line(&mut harness.reader)?;
+        let search_id = json!(1);
+        let search_resp = read_response_for_id(&mut harness.reader, &search_id)?;
         let search_body = parse_tool_result(&search_resp)?;
         let hits = search_body
             .get("hits")
@@ -242,7 +258,8 @@ fn run_search_and_open(
                 }
             }),
         )?;
-        let open_resp = read_line(&mut harness.reader)?;
+        let open_id = json!(2);
+        let open_resp = read_response_for_id(&mut harness.reader, &open_id)?;
         let open_body = parse_tool_result(&open_resp)?;
         let content = open_body
             .get("content")

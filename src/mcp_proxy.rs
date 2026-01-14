@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use crate::mcp_server::McpService;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -8,9 +9,7 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use reqwest::{Client, StatusCode};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout};
-use tokio::sync::{mpsc, oneshot, Mutex, Notify, RwLock};
-use tracing::{debug, warn};
+use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use url::Url;
 
 const MCP_PROXY_TIMEOUT_SECS: u64 = 30;
@@ -20,10 +19,7 @@ const MCP_HTTP_SSE_PATH: &str = "/v1/mcp/sse";
 const MCP_HTTP_MESSAGE_PATH: &str = "/v1/mcp/message";
 
 pub struct McpProxy {
-    child: Mutex<Child>,
-    stdin: Mutex<ChildStdin>,
-    pending: Mutex<HashMap<String, oneshot::Sender<Value>>>,
-    session_pending: Mutex<HashMap<String, SessionPendingEntry>>,
+    service: Mutex<Option<McpService>>,
     sessions: RwLock<HashMap<String, SessionEntry>>,
     next_id: AtomicU64,
 }
@@ -33,62 +29,15 @@ struct SessionEntry {
     last_active: Instant,
 }
 
-struct SessionPendingEntry {
-    session_id: String,
-    client_id: Value,
-}
-
 impl McpProxy {
-    pub fn new(child: Child, stdin: ChildStdin, stdout: ChildStdout) -> Arc<Self> {
+    pub fn new(service: McpService) -> Arc<Self> {
         let proxy = Arc::new(Self {
-            child: Mutex::new(child),
-            stdin: Mutex::new(stdin),
-            pending: Mutex::new(HashMap::new()),
-            session_pending: Mutex::new(HashMap::new()),
+            service: Mutex::new(Some(service)),
             sessions: RwLock::new(HashMap::new()),
             next_id: AtomicU64::new(1),
         });
-        Self::spawn_reader(proxy.clone(), stdout);
         Self::spawn_session_cleanup(proxy.clone());
         proxy
-    }
-
-    fn spawn_reader(proxy: Arc<Self>, stdout: ChildStdout) {
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                let mut payload = match serde_json::from_str::<Value>(trimmed) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        warn!(error = ?err, "mcp proxy: invalid JSON from child");
-                        continue;
-                    }
-                };
-                let id_value = payload.get("id");
-                let Some(id_key) = id_value.and_then(id_key) else {
-                    debug!("mcp proxy: response without id");
-                    continue;
-                };
-
-                let pending = proxy.pending.lock().await.remove(&id_key);
-                if let Some(sender) = pending {
-                    let _ = sender.send(payload);
-                    continue;
-                }
-
-                let session_id = proxy.session_pending.lock().await.remove(&id_key);
-                if let Some(entry) = session_id {
-                    if let Some(obj) = payload.as_object_mut() {
-                        obj.insert("id".to_string(), entry.client_id);
-                    }
-                    proxy.dispatch_to_session(&entry.session_id, payload).await;
-                }
-            }
-        });
     }
 
     fn spawn_session_cleanup(proxy: Arc<Self>) {
@@ -103,57 +52,40 @@ impl McpProxy {
     }
 
     pub async fn call(&self, mut request: Value) -> Result<Value> {
-        let id = ensure_id(&mut request, &self.next_id)?;
-        let key = id_key(&id).ok_or_else(|| anyhow!("invalid JSON-RPC id"))?;
-        let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(key, tx);
-        if let Err(err) = self.send_request(&request).await {
-            self.pending
-                .lock()
-                .await
-                .remove(&id_key(&id).unwrap_or_default());
-            return Err(err);
-        }
-        let resp = match tokio::time::timeout(Duration::from_secs(MCP_PROXY_TIMEOUT_SECS), rx).await
-        {
-            Ok(result) => result.context("mcp proxy response dropped")?,
-            Err(_) => {
-                self.pending
-                    .lock()
-                    .await
-                    .remove(&id_key(&id).unwrap_or_default());
-                return Err(anyhow!("mcp proxy timeout"));
-            }
-        };
+        let _id = ensure_id(&mut request, &self.next_id)?;
+        let resp = self
+            .handle_request_with_timeout(request)
+            .await?
+            .context("mcp proxy response dropped")?;
         Ok(resp)
     }
 
     pub async fn is_alive(&self) -> bool {
-        let mut child = self.child.lock().await;
-        match child.try_wait() {
-            Ok(Some(_)) => false,
-            Ok(None) => true,
-            Err(_) => false,
-        }
+        self.service.lock().await.is_some()
     }
 
-    pub async fn enqueue_for_session(&self, session_id: &str, mut request: Value) -> Result<Value> {
+    pub async fn enqueue_for_session(
+        self: &Arc<Self>,
+        session_id: &str,
+        mut request: Value,
+    ) -> Result<Value> {
         let (child_id, client_id) = assign_child_id(&mut request, &self.next_id)?;
-        let key = id_key(&child_id).ok_or_else(|| anyhow!("invalid JSON-RPC id"))?;
-        self.session_pending.lock().await.insert(
-            key,
-            SessionPendingEntry {
-                session_id: session_id.to_string(),
-                client_id,
-            },
-        );
-        if let Err(err) = self.send_request(&request).await {
-            self.session_pending
-                .lock()
-                .await
-                .remove(&id_key(&child_id).unwrap_or_default());
-            return Err(err);
-        }
+        let session_id = session_id.to_string();
+        let proxy = Arc::clone(self);
+        tokio::spawn(async move {
+            let response = proxy.handle_request(request).await;
+            match response {
+                Ok(Some(mut payload)) => {
+                    replace_response_id(&mut payload, client_id);
+                    proxy.dispatch_to_session(&session_id, payload).await;
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    let payload = mcp_proxy_error_response(client_id, &err);
+                    proxy.dispatch_to_session(&session_id, payload).await;
+                }
+            }
+        });
         Ok(json!({
             "accepted": true,
             "id": child_id,
@@ -161,8 +93,8 @@ impl McpProxy {
     }
 
     pub async fn shutdown(&self) {
-        let mut child = self.child.lock().await;
-        let _ = child.kill().await;
+        let mut service = self.service.lock().await;
+        *service = None;
     }
 
     pub async fn create_session(&self) -> (String, mpsc::Receiver<Value>) {
@@ -178,16 +110,24 @@ impl McpProxy {
         (session_id, rx)
     }
 
-    async fn send_request(&self, request: &Value) -> Result<()> {
-        let mut stdin = self.stdin.lock().await;
-        let payload = serde_json::to_string(request).context("serialize mcp request")?;
-        stdin
-            .write_all(payload.as_bytes())
-            .await
-            .context("write mcp request")?;
-        stdin.write_all(b"\n").await.context("flush mcp request")?;
-        stdin.flush().await.context("flush mcp request")?;
-        Ok(())
+    async fn handle_request(&self, request: Value) -> Result<Option<Value>> {
+        let mut guard = self.service.lock().await;
+        let service = guard.as_mut().ok_or_else(|| anyhow!("mcp proxy shutdown"))?;
+        service.handle_json(request).await
+    }
+
+    async fn handle_request_with_timeout(&self, request: Value) -> Result<Option<Value>> {
+        let mut guard = self.service.lock().await;
+        let service = guard.as_mut().ok_or_else(|| anyhow!("mcp proxy shutdown"))?;
+        match tokio::time::timeout(
+            Duration::from_secs(MCP_PROXY_TIMEOUT_SECS),
+            service.handle_json(request),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(anyhow!("mcp proxy timeout")),
+        }
     }
 
     async fn dispatch_to_session(&self, session_id: &str, payload: Value) {
@@ -208,6 +148,23 @@ impl McpProxy {
             now.duration_since(entry.last_active) < Duration::from_secs(SESSION_IDLE_TIMEOUT_SECS)
         });
     }
+}
+
+fn replace_response_id(payload: &mut Value, client_id: Value) {
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("id".to_string(), client_id);
+    }
+}
+
+fn mcp_proxy_error_response(client_id: Value, err: &anyhow::Error) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": client_id,
+        "error": {
+            "code": -32603,
+            "message": format!("mcp proxy failed: {err}"),
+        }
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

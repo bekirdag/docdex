@@ -1,5 +1,5 @@
-use anyhow::Result;
-use serde::Deserialize;
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -430,7 +430,7 @@ pub fn detect_browser_candidates(config_path: Option<&Path>) -> Vec<BrowserCandi
     candidates
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub(crate) struct PlaywrightManifest {
     #[serde(default)]
     pub installed_at: Option<String>,
@@ -438,10 +438,12 @@ pub(crate) struct PlaywrightManifest {
     pub browsers_path: Option<PathBuf>,
     #[serde(default)]
     pub playwright_version: Option<String>,
+    #[serde(default)]
+    pub node_bin: Option<PathBuf>,
     pub browsers: Vec<PlaywrightBrowser>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub(crate) struct PlaywrightBrowser {
     pub name: String,
     pub path: PathBuf,
@@ -467,6 +469,32 @@ pub(crate) fn read_playwright_manifest() -> Option<PlaywrightManifest> {
     let manifest_path = resolve_playwright_manifest_path()?;
     let raw = std::fs::read_to_string(&manifest_path).ok()?;
     serde_json::from_str(&raw).ok()
+}
+
+pub(crate) fn update_playwright_manifest_node_bin(node_bin: &Path) -> Result<bool> {
+    let manifest_path = match resolve_playwright_manifest_path() {
+        Some(path) => path,
+        None => return Ok(false),
+    };
+    let raw = match std::fs::read_to_string(&manifest_path) {
+        Ok(raw) => raw,
+        Err(_) => return Ok(false),
+    };
+    let mut manifest: PlaywrightManifest =
+        serde_json::from_str(&raw).context("parse playwright manifest")?;
+    let needs_update = match manifest.node_bin.as_ref() {
+        Some(existing) => !existing.is_file(),
+        None => true,
+    };
+    if !needs_update {
+        return Ok(false);
+    }
+    manifest.node_bin = Some(node_bin.to_path_buf());
+    let payload =
+        serde_json::to_string_pretty(&manifest).context("serialize playwright manifest")?;
+    std::fs::write(&manifest_path, format!("{payload}\n"))
+        .context("write playwright manifest")?;
+    Ok(true)
 }
 
 pub(crate) fn resolve_playwright_manifest_path() -> Option<PathBuf> {

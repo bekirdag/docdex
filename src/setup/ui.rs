@@ -1084,6 +1084,7 @@ fn configure_playwright_section<I: WizardInput, S: WizardServices>(
     state.set_current(StepKey::Playwright);
     let status = services.playwright_dependency_status();
     if status.installed {
+        browser_install::backfill_playwright_node_bin_from_env();
         state.update_step(
             StepKey::Playwright,
             StepStatus::Done,

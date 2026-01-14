@@ -340,12 +340,12 @@ pub async fn serve(
         }
     }
 
-    let _daemon_lock = if daemon_mode {
+    let _daemon_lock = {
         let lock_path = lock::default_lock_path().ok();
         let outcome = lock::acquire_or_reuse(port).map_err(|err| {
             let mut error = StartupError::new(
                 "startup_daemon_locked",
-                format!("docdex daemon lock unavailable: {err}"),
+                format!("docdexd lock unavailable: {err}"),
             );
             if let Some(ref path) = lock_path {
                 if let Ok(Some(metadata)) = lock::read_metadata(path) {
@@ -369,14 +369,14 @@ pub async fn serve(
             lock::DaemonLockOutcome::AlreadyRunning(metadata) => {
                 if let Some(path) = lock_path {
                     println!(
-                        "docdex daemon already running (pid={} port={}, lock={})",
+                        "docdexd already running (pid={} port={}, lock={})",
                         metadata.pid,
                         metadata.port,
                         path.display()
                     );
                 } else {
                     println!(
-                        "docdex daemon already running (pid={} port={})",
+                        "docdexd already running (pid={} port={})",
                         metadata.pid,
                         metadata.port
                     );
@@ -390,8 +390,6 @@ pub async fn serve(
                 return Ok(());
             }
         }
-    } else {
-        None
     };
 
     let tls_config = match tls {
@@ -591,9 +589,9 @@ pub async fn serve(
                     "startup_mcp_failed",
                     format!("mcp proxy failed to start: {err}"),
                 )
-                .with_hint("Install/build the docdex-mcp-server binary or disable MCP auto-start.")
+                .with_hint("Verify the repo/state dir is writable or disable MCP auto-start.")
                 .with_remediation(vec![
-                    "Build the MCP server: `cargo build -p docdex-mcp-server`.".to_string(),
+                    "Verify the repo can be indexed and the state dir is writable.".to_string(),
                     "Or disable MCP auto-start: `docdexd serve --disable-mcp` (or set DOCDEX_ENABLE_MCP=0).".to_string(),
                 ])
                 .into());

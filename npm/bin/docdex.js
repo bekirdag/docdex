@@ -209,6 +209,9 @@ async function run() {
   if (!env.DOCDEX_PLAYWRIGHT_FETCHER && fs.existsSync(fetcherPath)) {
     env.DOCDEX_PLAYWRIGHT_FETCHER = fetcherPath;
   }
+  if (!env.DOCDEX_PLAYWRIGHT_NODE_BIN && !env.DOCDEX_NODE_BIN && fs.existsSync(process.execPath)) {
+    env.DOCDEX_PLAYWRIGHT_NODE_BIN = process.execPath;
+  }
   const child = spawn(binaryPath, process.argv.slice(2), { stdio: "inherit", env });
   child.on("exit", (code) => process.exit(code ?? 1));
   child.on("error", (err) => {

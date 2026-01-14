@@ -6,6 +6,7 @@ use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 use which::which;
 
 use crate::web::playwright_scripts;
@@ -18,6 +19,7 @@ const NODE_PATH_ENV: &str = "NODE_PATH";
 const PLAYWRIGHT_NODE_PATH_ENV: &str = "DOCDEX_PLAYWRIGHT_NODE_PATH";
 const NODE_BIN_ENV: &str = "DOCDEX_NODE_BIN";
 const PLAYWRIGHT_NODE_BIN_ENV: &str = "DOCDEX_PLAYWRIGHT_NODE_BIN";
+const PLAYWRIGHT_HOST_PLATFORM_OVERRIDE_ENV: &str = "PLAYWRIGHT_HOST_PLATFORM_OVERRIDE";
 const NVM_DIR_ENV: &str = "NVM_DIR";
 const PLAYWRIGHT_NODE_DIR_NAME: &str = "playwright-node";
 
@@ -227,6 +229,7 @@ fn run_playwright_install(install_dir: &Path, browsers: &[String]) -> Result<()>
         .env("PLAYWRIGHT_BROWSERS_PATH", install_dir)
         .env("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "0")
         .env(NODE_PATH_ENV, merged_node_path)
+        .envs(playwright_host_platform_override_env())
         .status()
         .with_context(|| {
             format!(
@@ -432,23 +435,41 @@ pub(crate) fn merge_node_path(node_path: &Path) -> OsString {
 
 pub(crate) fn resolve_node_binary() -> Result<PathBuf> {
     if let Some(path) = node_bin_from_env(NODE_BIN_ENV)? {
+        let _ = crate::util::update_playwright_manifest_node_bin(&path);
         return Ok(path);
     }
     if let Some(path) = node_bin_from_env(PLAYWRIGHT_NODE_BIN_ENV)? {
+        let _ = crate::util::update_playwright_manifest_node_bin(&path);
+        return Ok(path);
+    }
+    if let Some(path) = node_bin_from_manifest() {
         return Ok(path);
     }
     if let Ok(path) = which("node") {
+        let _ = crate::util::update_playwright_manifest_node_bin(&path);
         return Ok(path);
     }
     if let Some(path) = resolve_node_from_nvm() {
+        let _ = crate::util::update_playwright_manifest_node_bin(&path);
         return Ok(path);
     }
     if let Some(path) = resolve_node_from_common_paths() {
+        let _ = crate::util::update_playwright_manifest_node_bin(&path);
         return Ok(path);
     }
     Err(anyhow!(
         "node binary not found; set DOCDEX_NODE_BIN or DOCDEX_PLAYWRIGHT_NODE_BIN, or add node to PATH"
     ))
+}
+
+pub(crate) fn backfill_playwright_node_bin_from_env() {
+    if let Ok(Some(path)) = node_bin_from_env(PLAYWRIGHT_NODE_BIN_ENV) {
+        let _ = crate::util::update_playwright_manifest_node_bin(&path);
+        return;
+    }
+    if let Ok(Some(path)) = node_bin_from_env(NODE_BIN_ENV) {
+        let _ = crate::util::update_playwright_manifest_node_bin(&path);
+    }
 }
 
 fn node_bin_from_env(key: &str) -> Result<Option<PathBuf>> {
@@ -468,6 +489,63 @@ fn node_bin_from_env(key: &str) -> Result<Option<PathBuf>> {
         ));
     }
     Ok(None)
+}
+
+fn node_bin_from_manifest() -> Option<PathBuf> {
+    let manifest = crate::util::read_playwright_manifest()?;
+    let node_bin = manifest.node_bin?;
+    if node_bin.is_file() {
+        Some(node_bin)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn playwright_host_platform_override_env() -> Option<(&'static str, String)> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    if std::env::var_os(PLAYWRIGHT_HOST_PLATFORM_OVERRIDE_ENV).is_some() {
+        return None;
+    }
+    if std::env::consts::ARCH != "aarch64" {
+        return None;
+    }
+    let darwin_major = resolve_darwin_major_version()?;
+    let mac_version = if darwin_major < 18 {
+        "mac10.13".to_string()
+    } else if darwin_major == 18 {
+        "mac10.14".to_string()
+    } else if darwin_major == 19 {
+        "mac10.15".to_string()
+    } else {
+        let computed = (darwin_major as i32) - 9;
+        let capped = computed.min(15).max(10);
+        format!("mac{capped}")
+    };
+    Some((
+        PLAYWRIGHT_HOST_PLATFORM_OVERRIDE_ENV,
+        format!("{mac_version}-arm64"),
+    ))
+}
+
+fn resolve_darwin_major_version() -> Option<u64> {
+    static CACHED: OnceLock<Option<u64>> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let output = Command::new("uname").arg("-r").output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let raw = String::from_utf8_lossy(&output.stdout);
+        let major = raw
+            .trim()
+            .split('.')
+            .next()?
+            .trim()
+            .parse::<u64>()
+            .ok()?;
+        Some(major)
+    })
 }
 
 fn resolve_node_from_nvm() -> Option<PathBuf> {
@@ -629,12 +707,9 @@ fn env_boolish(key: &str) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use once_cell::sync::Lazy;
+    use crate::setup::test_support::ENV_LOCK;
     use std::ffi::OsString;
-    use std::sync::Mutex;
     use tempfile::TempDir;
-
-    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     struct EnvGuard {
         saved: Vec<(&'static str, Option<OsString>)>,

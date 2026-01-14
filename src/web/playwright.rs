@@ -98,6 +98,9 @@ pub async fn fetch_dom(url: &Url, config: &PlaywrightFetchConfig) -> Result<Chro
     if let Some(node_path) = browser_install::playwright_dependency_status().node_path {
         command.env("NODE_PATH", browser_install::merge_node_path(&node_path));
     }
+    if let Some((key, value)) = browser_install::playwright_host_platform_override_env() {
+        command.env(key, value);
+    }
 
     let output = command.output().await.with_context(|| {
         format!(

@@ -1,5 +1,4 @@
 use reqwest::blocking::Client;
-use serde_json::Value;
 use std::error::Error;
 use std::fs;
 use std::net::TcpListener;
@@ -86,16 +85,6 @@ fn spawn_server(
         .spawn()?)
 }
 
-fn parse_single_error(stderr: &[u8]) -> Result<Value, Box<dyn Error>> {
-    let raw = String::from_utf8_lossy(stderr);
-    let trimmed = raw.trim();
-    assert!(
-        !trimmed.contains('\n'),
-        "expected single-line JSON error payload, got:\n{trimmed}"
-    );
-    Ok(serde_json::from_str(trimmed)?)
-}
-
 #[test]
 fn mcp_disabled_in_config_skips_missing_binary() -> Result<(), Box<dyn Error>> {
     let repo = TempDir::new()?;
@@ -123,7 +112,7 @@ fn mcp_disabled_in_config_skips_missing_binary() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn mcp_cli_enable_requires_binary() -> Result<(), Box<dyn Error>> {
+fn mcp_cli_enable_ignores_missing_binary() -> Result<(), Box<dyn Error>> {
     let repo = TempDir::new()?;
     write_repo(repo.path())?;
     let home = TempDir::new()?;
@@ -135,7 +124,7 @@ fn mcp_cli_enable_requires_binary() -> Result<(), Box<dyn Error>> {
     };
     let missing_bin = home.path().join("missing-mcp-server");
     let repo_str = repo.path().to_string_lossy().to_string();
-    let output = Command::new(docdex_bin())
+    let mut child = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("HOME", home.path())
@@ -155,16 +144,11 @@ fn mcp_cli_enable_requires_binary() -> Result<(), Box<dyn Error>> {
             "--secure-mode=false",
             "--enable-mcp",
         ])
-        .output()?;
-    assert!(
-        !output.status.success(),
-        "expected non-zero exit when MCP is enabled but binary is missing"
-    );
-    let payload = parse_single_error(&output.stderr)?;
-    let code = payload
-        .get("error")
-        .and_then(|err| err.get("code"))
-        .and_then(|code| code.as_str());
-    assert_eq!(code, Some("startup_mcp_failed"));
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    wait_for_health("127.0.0.1", port)?;
+    let _ = child.kill();
+    let _ = child.wait();
     Ok(())
 }

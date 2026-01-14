@@ -18,6 +18,7 @@ pub mod max_size;
 pub mod mcoda;
 pub mod mcp;
 pub mod mcp_proxy;
+pub mod mcp_server;
 pub mod memory;
 pub mod metrics;
 pub mod ollama;

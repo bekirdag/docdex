@@ -12,7 +12,25 @@ const {
   UnsupportedPlatformError
 } = require("../lib/platform");
 
+function envBool(value) {
+  if (!value) return false;
+  const normalized = String(value).trim().toLowerCase();
+  return ["1", "true", "t", "yes", "y", "on"].includes(normalized);
+}
+
+function standaloneAllowed(argv, env) {
+  if (envBool(env.DOCDEX_ENABLE_STANDALONE_MCP)) return true;
+  return argv.includes("--enable-standalone") || argv.includes("--allow-standalone");
+}
+
 function run() {
+  if (!standaloneAllowed(process.argv, process.env)) {
+    console.error(
+      "[docdex] docdex-mcp-server is disabled by default. Use the daemon MCP endpoint (/v1/mcp/sse) or `docdexd mcp`.\n[docdex] To run standalone, pass --enable-standalone or set DOCDEX_ENABLE_STANDALONE_MCP=1."
+    );
+    process.exit(1);
+    return;
+  }
   let platformKey;
   try {
     platformKey = detectPlatformKey();

@@ -239,6 +239,7 @@ fn run_playwright_install(install_dir: &Path, browsers: &[String]) -> Result<()>
             )
         })?;
     if status.success() {
+        let _ = crate::util::update_playwright_manifest_node_bin(&node_bin);
         Ok(())
     } else {
         Err(anyhow!("playwright installer failed with status {status}"))
@@ -434,11 +435,11 @@ pub(crate) fn merge_node_path(node_path: &Path) -> OsString {
 }
 
 pub(crate) fn resolve_node_binary() -> Result<PathBuf> {
-    if let Some(path) = node_bin_from_env(NODE_BIN_ENV)? {
+    if let Some(path) = node_bin_from_env(NODE_BIN_ENV, true)? {
         let _ = crate::util::update_playwright_manifest_node_bin(&path);
         return Ok(path);
     }
-    if let Some(path) = node_bin_from_env(PLAYWRIGHT_NODE_BIN_ENV)? {
+    if let Some(path) = node_bin_from_env(PLAYWRIGHT_NODE_BIN_ENV, false)? {
         let _ = crate::util::update_playwright_manifest_node_bin(&path);
         return Ok(path);
     }
@@ -462,31 +463,68 @@ pub(crate) fn resolve_node_binary() -> Result<PathBuf> {
     ))
 }
 
-pub(crate) fn backfill_playwright_node_bin_from_env() {
-    if let Ok(Some(path)) = node_bin_from_env(PLAYWRIGHT_NODE_BIN_ENV) {
+pub(crate) fn backfill_playwright_node_bin() {
+    if !manifest_needs_node_bin() {
+        return;
+    }
+    backfill_playwright_node_bin_from_env();
+    if !manifest_needs_node_bin() {
+        return;
+    }
+    if let Ok(path) = which("node") {
         let _ = crate::util::update_playwright_manifest_node_bin(&path);
         return;
     }
-    if let Ok(Some(path)) = node_bin_from_env(NODE_BIN_ENV) {
+    if let Some(path) = resolve_node_from_nvm() {
+        let _ = crate::util::update_playwright_manifest_node_bin(&path);
+        return;
+    }
+    if let Some(path) = resolve_node_from_common_paths() {
         let _ = crate::util::update_playwright_manifest_node_bin(&path);
     }
 }
 
-fn node_bin_from_env(key: &str) -> Result<Option<PathBuf>> {
+pub(crate) fn backfill_playwright_node_bin_from_env() {
+    if let Ok(Some(path)) = node_bin_from_env(PLAYWRIGHT_NODE_BIN_ENV, false) {
+        let _ = crate::util::update_playwright_manifest_node_bin(&path);
+        return;
+    }
+    if let Ok(Some(path)) = node_bin_from_env(NODE_BIN_ENV, false) {
+        let _ = crate::util::update_playwright_manifest_node_bin(&path);
+    }
+}
+
+fn manifest_needs_node_bin() -> bool {
+    let Some(manifest) = crate::util::read_playwright_manifest() else {
+        return false;
+    };
+    match manifest.node_bin.as_ref() {
+        Some(path) => !node_bin_is_usable(path),
+        None => true,
+    }
+}
+
+fn node_bin_from_env(key: &str, strict: bool) -> Result<Option<PathBuf>> {
     if let Ok(value) = std::env::var(key) {
         let trimmed = value.trim();
         if trimmed.is_empty() {
             return Ok(None);
         }
         let path = PathBuf::from(trimmed);
+        if crate::util::path_is_in_temp_dir(&path) {
+            return Ok(None);
+        }
         if path.is_file() {
             return Ok(Some(path));
         }
-        return Err(anyhow!(
-            "node binary not found at {}; set {} to a valid node path",
-            path.display(),
-            key
-        ));
+        if strict {
+            return Err(anyhow!(
+                "node binary not found at {}; set {} to a valid node path",
+                path.display(),
+                key
+            ));
+        }
+        return Ok(None);
     }
     Ok(None)
 }
@@ -494,11 +532,15 @@ fn node_bin_from_env(key: &str) -> Result<Option<PathBuf>> {
 fn node_bin_from_manifest() -> Option<PathBuf> {
     let manifest = crate::util::read_playwright_manifest()?;
     let node_bin = manifest.node_bin?;
-    if node_bin.is_file() {
+    if node_bin_is_usable(&node_bin) {
         Some(node_bin)
     } else {
         None
     }
+}
+
+fn node_bin_is_usable(path: &Path) -> bool {
+    path.is_file() && !crate::util::path_is_in_temp_dir(path)
 }
 
 pub(crate) fn playwright_host_platform_override_env() -> Option<(&'static str, String)> {
@@ -508,7 +550,8 @@ pub(crate) fn playwright_host_platform_override_env() -> Option<(&'static str, S
     if std::env::var_os(PLAYWRIGHT_HOST_PLATFORM_OVERRIDE_ENV).is_some() {
         return None;
     }
-    if std::env::consts::ARCH != "aarch64" {
+    let arch = std::env::consts::ARCH;
+    if arch != "aarch64" && arch != "arm64" {
         return None;
     }
     let darwin_major = resolve_darwin_major_version()?;
@@ -744,13 +787,20 @@ mod tests {
     #[test]
     fn resolve_node_binary_prefers_env_override() -> Result<()> {
         let _guard = ENV_LOCK.lock().unwrap();
-        let temp = TempDir::new()?;
+        let temp = TempDir::new_in(std::env::current_dir()?)?;
         let node_path = temp.path().join("node");
         std::fs::write(&node_path, "node")?;
         let mut env = EnvGuard::new();
+        let manifest_root = temp.path().join("playwright");
+        env.set_var(
+            "PLAYWRIGHT_BROWSERS_PATH",
+            Some(manifest_root.as_os_str().to_os_string()),
+        );
         env.set_var(NODE_BIN_ENV, Some(node_path.as_os_str().to_os_string()));
         env.set_var(PLAYWRIGHT_NODE_BIN_ENV, Option::<OsString>::None);
         env.set_var(NVM_DIR_ENV, Option::<OsString>::None);
+        env.set_var("HOME", Some(temp.path().as_os_str().to_os_string()));
+        env.set_var("USERPROFILE", Some(temp.path().as_os_str().to_os_string()));
         let resolved = resolve_node_binary()?;
         assert_eq!(resolved, node_path);
         Ok(())
@@ -759,7 +809,7 @@ mod tests {
     #[test]
     fn resolve_node_binary_uses_nvm_default_when_missing_on_path() -> Result<()> {
         let _guard = ENV_LOCK.lock().unwrap();
-        let temp = TempDir::new()?;
+        let temp = TempDir::new_in(std::env::current_dir()?)?;
         let nvm_dir = temp.path().join(".nvm");
         let versions_dir = nvm_dir.join("versions").join("node");
         let v18 = versions_dir.join("v18.19.0").join("bin");
@@ -774,6 +824,11 @@ mod tests {
         std::fs::create_dir_all(&empty_path)?;
 
         let mut env = EnvGuard::new();
+        let manifest_root = temp.path().join("playwright");
+        env.set_var(
+            "PLAYWRIGHT_BROWSERS_PATH",
+            Some(manifest_root.as_os_str().to_os_string()),
+        );
         env.set_var(NODE_BIN_ENV, Option::<OsString>::None);
         env.set_var(PLAYWRIGHT_NODE_BIN_ENV, Option::<OsString>::None);
         env.set_var(NVM_DIR_ENV, Some(nvm_dir.as_os_str().to_os_string()));

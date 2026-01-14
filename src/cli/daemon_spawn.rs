@@ -24,6 +24,9 @@ pub fn ensure_daemon_running(config: &AppConfig, repo_hint: Option<PathBuf>) -> 
     if std::env::var_os("DOCDEX_DISABLE_DAEMON_AUTO").is_some() {
         return Ok(());
     }
+    if let Ok(Some(_)) = lock::read_running_metadata() {
+        return Ok(());
+    }
     let addr = parse_bind_addr(&config.server.http_bind_addr)?;
     if daemon_healthy(addr) {
         return Ok(());

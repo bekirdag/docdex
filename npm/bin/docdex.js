@@ -2,8 +2,9 @@
 "use strict";
 
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 
 const pkg = require("../package.json");
 const {
@@ -27,6 +28,37 @@ function printLines(lines, { stderr } = {}) {
     if (stderr) console.error(line);
     else console.log(line);
   }
+}
+
+function envBool(value) {
+  if (!value) return false;
+  const normalized = String(value).trim().toLowerCase();
+  return ["1", "true", "t", "yes", "y", "on"].includes(normalized);
+}
+
+function isTempPath(value) {
+  if (!value) return false;
+  const tmp = os.tmpdir();
+  if (!tmp) return false;
+  const resolvedValue = path.resolve(value);
+  const resolvedTmp = path.resolve(tmp);
+  return resolvedValue === resolvedTmp || resolvedValue.startsWith(resolvedTmp + path.sep);
+}
+
+function resolveStableNodeBin() {
+  if (process.execPath && fs.existsSync(process.execPath) && !isTempPath(process.execPath)) {
+    return process.execPath;
+  }
+  const locator = process.platform === "win32" ? "where" : "which";
+  const resolved = spawnSync(locator, ["node"], { encoding: "utf8" });
+  if (resolved && !resolved.error && resolved.status === 0 && resolved.stdout) {
+    const line = String(resolved.stdout).split(/\r?\n/).find((entry) => entry.trim());
+    if (line && fs.existsSync(line.trim())) return line.trim();
+  }
+  if (process.execPath && fs.existsSync(process.execPath)) {
+    return process.execPath;
+  }
+  return null;
 }
 
 function readInstallMetadata({ fsModule, pathModule, basePath }) {
@@ -202,15 +234,22 @@ async function run() {
   });
 
   const env = { ...process.env };
-  if (!env.DOCDEX_MCP_SERVER_BIN && fs.existsSync(mcpBinaryPath)) {
+  if (
+    !env.DOCDEX_MCP_SERVER_BIN &&
+    envBool(env.DOCDEX_ENABLE_STANDALONE_MCP) &&
+    fs.existsSync(mcpBinaryPath)
+  ) {
     env.DOCDEX_MCP_SERVER_BIN = mcpBinaryPath;
   }
   const fetcherPath = path.join(__dirname, "..", "lib", "playwright_fetch.js");
   if (!env.DOCDEX_PLAYWRIGHT_FETCHER && fs.existsSync(fetcherPath)) {
     env.DOCDEX_PLAYWRIGHT_FETCHER = fetcherPath;
   }
-  if (!env.DOCDEX_PLAYWRIGHT_NODE_BIN && !env.DOCDEX_NODE_BIN && fs.existsSync(process.execPath)) {
-    env.DOCDEX_PLAYWRIGHT_NODE_BIN = process.execPath;
+  if (!env.DOCDEX_PLAYWRIGHT_NODE_BIN && !env.DOCDEX_NODE_BIN) {
+    const nodeBin = resolveStableNodeBin();
+    if (nodeBin) {
+      env.DOCDEX_PLAYWRIGHT_NODE_BIN = nodeBin;
+    }
   }
   const child = spawn(binaryPath, process.argv.slice(2), { stdio: "inherit", env });
   child.on("exit", (code) => process.exit(code ?? 1));

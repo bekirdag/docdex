@@ -185,7 +185,7 @@ test("docdex CLI wrapper: `doctor` prints platform diagnostics without checking 
   assert.equal(existsCalls, 0);
 });
 
-test("docdex CLI wrapper: sets DOCDEX_MCP_SERVER_BIN when bundled mcp binary exists", async () => {
+test("docdex CLI wrapper: does not set DOCDEX_MCP_SERVER_BIN without standalone opt-in", async () => {
   let spawnEnv = null;
 
   const platformModule = {
@@ -215,13 +215,47 @@ test("docdex CLI wrapper: sets DOCDEX_MCP_SERVER_BIN when bundled mcp binary exi
 
   assert.equal(result.exitCode, 0);
   assert.ok(spawnEnv);
+  assert.equal(spawnEnv.DOCDEX_MCP_SERVER_BIN, undefined);
+});
+
+test("docdex CLI wrapper: sets DOCDEX_MCP_SERVER_BIN when standalone opt-in is enabled", async () => {
+  let spawnEnv = null;
+
+  const platformModule = {
+    UnsupportedPlatformError: class UnsupportedPlatformError extends Error {},
+    detectPlatformKey: () => "darwin-arm64"
+  };
+
+  const scriptPath = path.join(__dirname, "..", "bin", "docdex.js");
+  const result = await runScriptWithMocks(scriptPath, {
+    mocks: {
+      "../lib/platform": platformModule,
+      "node:child_process": {
+        spawn: (_cmd, _args, opts) => {
+          spawnEnv = opts?.env || null;
+          return {
+            on: (event, handler) => {
+              if (event === "exit") handler(0);
+            }
+          };
+        }
+      },
+      "node:fs": { existsSync: () => true },
+      "node:path": require("node:path")
+    },
+    argv: ["node", scriptPath, "--version"],
+    env: { DOCDEX_ENABLE_STANDALONE_MCP: "1" }
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.ok(spawnEnv);
   assert.equal(
     spawnEnv.DOCDEX_MCP_SERVER_BIN,
     path.join(__dirname, "..", "dist", "darwin-arm64", "docdex-mcp-server")
   );
 });
 
-test("docdex MCP wrapper: launches bundled mcp server binary", async () => {
+test("docdex MCP wrapper: launches bundled mcp server binary when opted in", async () => {
   let spawnCmd = null;
   let spawnArgs = null;
 
@@ -250,7 +284,7 @@ test("docdex MCP wrapper: launches bundled mcp server binary", async () => {
       "node:fs": { existsSync: () => true },
       "node:path": require("node:path")
     },
-    argv: ["node", scriptPath, "--version"]
+    argv: ["node", scriptPath, "--enable-standalone", "--version"]
   });
 
   assert.equal(result.exitCode, 0);
@@ -258,7 +292,7 @@ test("docdex MCP wrapper: launches bundled mcp server binary", async () => {
     spawnCmd,
     path.join(__dirname, "..", "dist", "darwin-arm64", "docdex-mcp-server")
   );
-  assert.deepEqual(spawnArgs, ["--version"]);
+  assert.deepEqual(spawnArgs, ["--enable-standalone", "--version"]);
 });
 
 test("docdex CLI wrapper: `doctor` exits non-zero and reports unsupported platform", async () => {

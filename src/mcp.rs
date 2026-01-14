@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 const MCP_SERVER_BIN_ENV: &str = "DOCDEX_MCP_SERVER_BIN";
 const MCP_SERVER_BIN_NAME: &str = "docdex-mcp-server";
+const MCP_STANDALONE_ENABLE_ENV: &str = "DOCDEX_ENABLE_STANDALONE_MCP";
 const MCP_ROUTER_SESSION_IDLE_SECS: u64 = 3600;
 const MCP_ROUTER_CLEANUP_INTERVAL_SECS: u64 = 600;
 
@@ -599,6 +600,11 @@ fn build_mcp_command(options: &McpSpawnOptions) -> Result<Command> {
 }
 
 pub(crate) fn resolve_mcp_server_binary() -> Result<PathBuf> {
+    if !standalone_mcp_enabled() {
+        return Err(anyhow!(
+            "docdex-mcp-server is disabled by default; set DOCDEX_ENABLE_STANDALONE_MCP=1 to opt in or use `docdexd mcp` / the daemon HTTP endpoint"
+        ));
+    }
     if let Ok(path) = std::env::var(MCP_SERVER_BIN_ENV) {
         if !path.trim().is_empty() {
             let candidate = PathBuf::from(path);
@@ -613,7 +619,7 @@ pub(crate) fn resolve_mcp_server_binary() -> Result<PathBuf> {
                 }
             }
             return Err(anyhow!(
-                "{MCP_SERVER_BIN_ENV} points to missing MCP server binary; set it to the docdex-mcp-server path"
+                "{MCP_SERVER_BIN_ENV} points to a missing docdex-mcp-server binary; standalone MCP is opt-in (set DOCDEX_ENABLE_STANDALONE_MCP=1)"
             ));
         }
     }
@@ -631,8 +637,20 @@ pub(crate) fn resolve_mcp_server_binary() -> Result<PathBuf> {
     }
 
     Err(anyhow!(
-        "docdex-mcp-server not found; build it with `cargo build -p docdex-mcp-server` or set {MCP_SERVER_BIN_ENV} to the binary path"
+        "docdex-mcp-server not found; standalone MCP is opt-in (set DOCDEX_ENABLE_STANDALONE_MCP=1) or use `docdexd mcp` / the daemon HTTP endpoint"
     ))
+}
+
+fn standalone_mcp_enabled() -> bool {
+    std::env::var(MCP_STANDALONE_ENABLE_ENV)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "t" | "yes" | "y" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn sibling_binary(dir: &Path, name: &str) -> Option<PathBuf> {

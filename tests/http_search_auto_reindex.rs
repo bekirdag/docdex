@@ -87,11 +87,13 @@ fn http_search_auto_reindexes_stale_index() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
     let repo_arg = repo.path().to_string_lossy().to_string();
+    let lock_path = state_root.path().join("daemon.lock");
     let child = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
+        .env("DOCDEX_DAEMON_LOCK_PATH", &lock_path)
         .args([
             "serve",
             "--repo",

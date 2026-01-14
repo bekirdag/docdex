@@ -49,6 +49,7 @@ Postinstall behavior:
 - Build: `cargo build --release`
 - Install: `cargo install --path .`
 - MCP is served by the daemon over HTTP/SSE; no separate MCP server binary is required for normal usage.
+- Standalone `docdex-mcp-server` is disabled by default; opt in with `DOCDEX_ENABLE_STANDALONE_MCP=1` if you truly need it.
 
 ### Uninstall
 - `npm uninstall -g docdex` stops the daemon, removes its startup registration, and deletes Docdex MCP entries from supported client config files.
@@ -85,7 +86,7 @@ Notes:
 - `index`: builds the repo index and code intelligence artifacts.
 - `serve`: legacy per-repo HTTP API with watcher; a global singleton lock prevents multiple servers from starting.
 - `daemon`: singleton service that hosts shared MCP over HTTP/SSE (`/v1/mcp/sse`).
-- `mcp`: legacy stdio proxy to the shared daemon for local, per-repo bindings.
+- `mcp`: stdio bridge to the shared daemon for clients that require stdio.
 
 ## Repo scoping (multi-repo daemon)
 When a singleton daemon has more than one repo mounted, the daemon requires an explicit repo scope.
@@ -113,9 +114,12 @@ Supported auto-detected MCP clients (installation adds config when the file exis
 
 ### Shared MCP (daemon, HTTP/SSE)
 Start the daemon and point clients at `http://localhost:<port>/v1/mcp/sse`.
+Prefer HTTP/SSE; use `docdexd mcp` only for clients that require stdio.
 
 Notes:
 - `docdex-mcp-server` is legacy. If the daemon is already running, it refuses to start and points clients at the shared MCP endpoint.
+- Standalone `docdex-mcp-server` is disabled by default. Use `docdexd mcp` or the daemon HTTP/SSE endpoint unless you explicitly opt in.
+  - Opt-in example: `DOCDEX_ENABLE_STANDALONE_MCP=1 docdex-mcp-server --enable-standalone --repo /path/to/repo`
 
 JSON config example (Cursor, Continue, Cline, Claude Desktop devtools):
 ```json
@@ -139,6 +143,7 @@ Use the stdio proxy (per-repo binding) to attach to the shared daemon:
 ```bash
 docdexd mcp --repo /path/to/repo --log warn --max-results 8
 ```
+This uses the daemon MCP endpoint; a standalone MCP server is not required.
 To auto-start the daemon when it is not running:
 ```bash
 docdexd mcp --repo /path/to/repo --log warn --max-results 8 --start-daemon

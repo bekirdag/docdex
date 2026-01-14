@@ -81,11 +81,13 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
 
 fn spawn_server(state_root: &Path, repo_root: &Path, port: u16) -> Result<Child, Box<dyn Error>> {
     let repo_arg = repo_root.to_string_lossy().to_string();
+    let lock_path = state_root.join("daemon.lock");
     Ok(Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
         .env("DOCDEX_STATE_DIR", state_root)
+        .env("DOCDEX_DAEMON_LOCK_PATH", &lock_path)
         .args([
             "serve",
             "--repo",

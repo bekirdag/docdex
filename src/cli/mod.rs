@@ -17,7 +17,7 @@ use std::path::PathBuf;
     name = "docdexd",
     version,
     about = "Local documentation index/search daemon",
-    long_about = "Docdex indexes plain-text/markdown documentation under a workspace and serves top-k search/snippet results over HTTP or CLI. Defaults store data under ~/.docdex/state (scoped as repos/<repo_id>/index) and avoid common tool caches; override paths and exclusions with --state-dir/--exclude-* or matching env vars. The daemon exposes a shared MCP HTTP/SSE endpoint (e.g., /v1/mcp/sse). The `docdexd mcp` command is a legacy stdio proxy to the shared daemon for clients that require stdio."
+    long_about = "Docdex indexes plain-text/markdown documentation under a workspace and serves top-k search/snippet results over HTTP or CLI. Defaults store data under ~/.docdex/state (scoped as repos/<repo_id>/index) and avoid common tool caches; override paths and exclusions with --state-dir/--exclude-* or matching env vars. The daemon exposes a shared MCP HTTP/SSE endpoint (e.g., /v1/mcp/sse). The `docdexd mcp` command is a legacy stdio proxy to the shared daemon for clients that require stdio. Standalone `docdex-mcp-server` is disabled by default; set DOCDEX_ENABLE_STANDALONE_MCP=1 to opt in."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -195,7 +195,7 @@ pub(crate) struct ServeArgs {
         action = ArgAction::Set,
         num_args = 0..=1,
         default_missing_value = "true",
-        help = "Enable MCP server auto-start (default on unless disabled in config)"
+        help = "Enable MCP proxy auto-start (HTTP/SSE endpoint on the daemon)"
     )]
     pub enable_mcp: bool,
     #[arg(
@@ -206,7 +206,7 @@ pub(crate) struct ServeArgs {
         action = ArgAction::Set,
         num_args = 0..=1,
         default_missing_value = "true",
-        help = "Disable MCP server auto-start"
+        help = "Disable MCP proxy auto-start"
     )]
     pub disable_mcp: bool,
     #[arg(
@@ -674,7 +674,7 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: RepoCommand,
     },
-    /// Run an MCP (Model Context Protocol) server over stdio.
+    /// Run an MCP (Model Context Protocol) stdio bridge.
     #[command(
         long_about = "Run a legacy MCP stdio proxy that forwards to the shared daemon HTTP/SSE endpoint. Start `docdexd daemon` first (or pass --start-daemon)."
     )]
@@ -750,13 +750,13 @@ pub(crate) enum Command {
             default_value = "codex"
         )]
         agent: String,
-        /// Repo/workspace root for the MCP server; defaults to current directory.
+        /// Repo/workspace root for the MCP stdio proxy; defaults to current directory.
         #[arg(long)]
         repo: Option<PathBuf>,
         /// Max results clamp for docdex_search.
         #[arg(long, default_value_t = 8)]
         max_results: usize,
-        /// Log level for the MCP server.
+        /// Log level for the MCP stdio proxy.
         #[arg(long, default_value = "warn")]
         log: String,
         /// Remove the MCP entry instead of adding it (where supported).

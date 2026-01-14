@@ -7,11 +7,24 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use sysinfo::{Pid, System};
 
 const DAEMON_LOCK_ENV: &str = "DOCDEX_DAEMON_LOCK_PATH";
 const MCP_SERVER_LOCK_ENV: &str = "DOCDEX_MCP_SERVER_LOCK_PATH";
 const DAEMON_LOCK_FILE: &str = "daemon.lock";
 const MCP_SERVER_LOCK_FILE: &str = "mcp-server.lock";
+const DOCDEXD_DAEMON_ARGS: &[&str] = &["daemon", "serve"];
+const TEST_ALLOW_MULTI_DAEMON_ENV: &str = "DOCDEX_TEST_ALLOW_MULTI_DAEMON";
+
+#[cfg(windows)]
+const DOCDEXD_PROCESS_NAMES: &[&str] = &["docdexd.exe", "docdexd"];
+#[cfg(not(windows))]
+const DOCDEXD_PROCESS_NAMES: &[&str] = &["docdexd"];
+
+#[cfg(windows)]
+const MCP_SERVER_PROCESS_NAMES: &[&str] = &["docdex-mcp-server.exe", "docdex-mcp-server"];
+#[cfg(not(windows))]
+const MCP_SERVER_PROCESS_NAMES: &[&str] = &["docdex-mcp-server"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonLockMetadata {
@@ -44,7 +57,14 @@ impl DaemonLock {
 
 pub fn acquire_or_reuse(port: u16) -> Result<DaemonLockOutcome> {
     let path = default_lock_path()?;
-    acquire_or_reuse_at_path(&path, port)
+    acquire_or_reuse_at_path(
+        &path,
+        port,
+        DOCDEXD_PROCESS_NAMES,
+        DOCDEXD_DAEMON_ARGS,
+        DAEMON_LOCK_ENV,
+        DAEMON_LOCK_FILE,
+    )
 }
 
 pub fn default_lock_path() -> Result<PathBuf> {
@@ -57,7 +77,14 @@ pub fn default_mcp_server_lock_path() -> Result<PathBuf> {
 
 pub fn acquire_or_reuse_mcp_server() -> Result<DaemonLockOutcome> {
     let path = default_mcp_server_lock_path()?;
-    acquire_or_reuse_at_path(&path, 0)
+    acquire_or_reuse_at_path(
+        &path,
+        0,
+        MCP_SERVER_PROCESS_NAMES,
+        &[],
+        MCP_SERVER_LOCK_ENV,
+        MCP_SERVER_LOCK_FILE,
+    )
 }
 
 fn resolve_lock_path(env_key: &str, filename: &str) -> Result<PathBuf> {
@@ -124,16 +151,13 @@ pub fn read_running_metadata() -> Result<Option<DaemonLockMetadata>> {
 }
 
 pub fn read_running_metadata_at_path(path: &Path) -> Result<Option<DaemonLockMetadata>> {
-    let metadata = read_metadata(path)?;
-    if let Some(metadata) = metadata {
-        if probe_health(metadata.port) {
-            return Ok(Some(metadata));
-        }
-        if lock_held(path)? {
-            return Ok(Some(metadata));
-        }
-    }
-    Ok(None)
+    read_running_metadata_at_path_with_names(
+        path,
+        DOCDEXD_PROCESS_NAMES,
+        DOCDEXD_DAEMON_ARGS,
+        DAEMON_LOCK_ENV,
+        DAEMON_LOCK_FILE,
+    )
 }
 
 pub fn wait_for_running_metadata(timeout: Duration) -> Result<Option<DaemonLockMetadata>> {
@@ -187,7 +211,14 @@ fn write_metadata(file: &File, metadata: &DaemonLockMetadata) -> Result<()> {
     Ok(())
 }
 
-fn acquire_or_reuse_at_path(path: &Path, port: u16) -> Result<DaemonLockOutcome> {
+fn acquire_or_reuse_at_path(
+    path: &Path,
+    port: u16,
+    expected_names: &[&str],
+    expected_cmd_terms: &[&str],
+    lock_env: &str,
+    lock_file: &str,
+) -> Result<DaemonLockOutcome> {
     let metadata = match read_metadata_strict(path) {
         Ok(value) => value,
         Err(_) => {
@@ -207,6 +238,24 @@ fn acquire_or_reuse_at_path(path: &Path, port: u16) -> Result<DaemonLockOutcome>
         if lock_held(path)? {
             return Ok(DaemonLockOutcome::AlreadyRunning(metadata));
         }
+        if metadata.pid != std::process::id()
+            && pid_matches_expected_names(metadata.pid, expected_names, expected_cmd_terms)
+        {
+            return Ok(DaemonLockOutcome::AlreadyRunning(metadata));
+        }
+    }
+    if should_scan_processes(path, lock_env, lock_file) {
+        if let Some(pid) = find_running_pid(expected_names, expected_cmd_terms) {
+            let metadata = DaemonLockMetadata {
+                pid,
+                port: 0,
+                started_at_ms: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+            };
+            return Ok(DaemonLockOutcome::AlreadyRunning(metadata));
+        }
     }
     let lock = acquire_lock_at_path(path, port)?;
     Ok(DaemonLockOutcome::Acquired(lock))
@@ -223,6 +272,139 @@ fn lock_held(path: &Path) -> Result<bool> {
         return Ok(false);
     }
     Ok(true)
+}
+
+fn read_running_metadata_at_path_with_names(
+    path: &Path,
+    expected_names: &[&str],
+    expected_cmd_terms: &[&str],
+    lock_env: &str,
+    lock_file: &str,
+) -> Result<Option<DaemonLockMetadata>> {
+    let metadata = read_metadata(path)?;
+    if let Some(metadata) = metadata {
+        if probe_health(metadata.port) {
+            return Ok(Some(metadata));
+        }
+        if lock_held(path)? {
+            return Ok(Some(metadata));
+        }
+        if metadata.pid != std::process::id()
+            && pid_matches_expected_names(metadata.pid, expected_names, expected_cmd_terms)
+        {
+            return Ok(Some(metadata));
+        }
+    }
+    if should_scan_processes(path, lock_env, lock_file) {
+        if let Some(pid) = find_running_pid(expected_names, expected_cmd_terms) {
+            return Ok(Some(DaemonLockMetadata {
+                pid,
+                port: 0,
+                started_at_ms: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+            }));
+        }
+    }
+    Ok(None)
+}
+
+fn should_scan_processes(path: &Path, env_key: &str, filename: &str) -> bool {
+    let _ = (path, env_key, filename);
+    if env_boolish(TEST_ALLOW_MULTI_DAEMON_ENV) {
+        return false;
+    }
+    true
+}
+
+fn env_boolish(key: &str) -> bool {
+    let Ok(raw) = env::var(key) else {
+        return false;
+    };
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "t" | "yes" | "y" | "on"
+    )
+}
+
+fn pid_matches_expected_names(
+    pid: u32,
+    expected_names: &[&str],
+    expected_cmd_terms: &[&str],
+) -> bool {
+    let mut system = System::new();
+    system.refresh_processes();
+    let Some(process) = system.process(Pid::from_u32(pid)) else {
+        return false;
+    };
+    process_matches(process, expected_names, expected_cmd_terms)
+}
+
+fn find_running_pid(expected_names: &[&str], expected_cmd_terms: &[&str]) -> Option<u32> {
+    if expected_names.is_empty() {
+        return None;
+    }
+    let mut system = System::new();
+    system.refresh_processes();
+    let current_pid = std::process::id();
+    for (pid, process) in system.processes() {
+        let pid_u32 = pid.as_u32();
+        if pid_u32 == current_pid {
+            continue;
+        }
+        if process_matches(process, expected_names, expected_cmd_terms) {
+            return Some(pid_u32);
+        }
+    }
+    None
+}
+
+fn process_matches(
+    process: &sysinfo::Process,
+    expected_names: &[&str],
+    expected_cmd_terms: &[&str],
+) -> bool {
+    if !process_matches_expected_names(process, expected_names) {
+        return false;
+    }
+    if expected_cmd_terms.is_empty() {
+        return true;
+    }
+    let cmd = process.cmd();
+    if cmd.is_empty() {
+        return true;
+    }
+    for part in cmd {
+        for term in expected_cmd_terms {
+            if part.eq_ignore_ascii_case(term) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn process_matches_expected_names(process: &sysinfo::Process, expected_names: &[&str]) -> bool {
+    if expected_names.is_empty() {
+        return true;
+    }
+    let name = process.name();
+    if expected_names
+        .iter()
+        .any(|expected| name.eq_ignore_ascii_case(expected))
+    {
+        return true;
+    }
+    let Some(exe) = process.exe() else {
+        return false;
+    };
+    let Some(file_name) = exe.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    expected_names
+        .iter()
+        .any(|expected| file_name.eq_ignore_ascii_case(expected))
 }
 
 fn probe_health(port: u16) -> bool {
@@ -409,7 +591,14 @@ mod tests {
         };
         let lock = acquire_lock_at_path(&path, port)?;
         drop(lock);
-        let outcome = acquire_or_reuse_at_path(&path, 9999)?;
+        let outcome = acquire_or_reuse_at_path(
+            &path,
+            9999,
+            DOCDEXD_PROCESS_NAMES,
+            DOCDEXD_DAEMON_ARGS,
+            DAEMON_LOCK_ENV,
+            DAEMON_LOCK_FILE,
+        )?;
         match outcome {
             DaemonLockOutcome::AlreadyRunning(metadata) => {
                 assert_eq!(metadata.port, port);
@@ -426,20 +615,43 @@ mod tests {
     fn acquire_or_reuse_replaces_stale_lock() -> Result<()> {
         let dir = TempDir::new()?;
         let path = dir.path().join("daemon.lock");
+        if !env_boolish(TEST_ALLOW_MULTI_DAEMON_ENV)
+            && find_running_pid(DOCDEXD_PROCESS_NAMES, DOCDEXD_DAEMON_ARGS).is_some()
+        {
+            eprintln!("skipping stale lock test: docdexd already running");
+            return Ok(());
+        }
         let Some(stale_port) = unused_port() else {
             eprintln!("skipping stale lock test: TCP bind not permitted");
             return Ok(());
         };
+        if probe_health(stale_port) {
+            eprintln!("skipping stale lock test: port already in use");
+            return Ok(());
+        }
         let stale_lock = acquire_lock_at_path(&path, stale_port)?;
         drop(stale_lock);
         let Some(new_port) = unused_port() else {
             eprintln!("skipping stale lock test: TCP bind not permitted");
             return Ok(());
         };
-        let outcome = acquire_or_reuse_at_path(&path, new_port)?;
+        let outcome = acquire_or_reuse_at_path(
+            &path,
+            new_port,
+            DOCDEXD_PROCESS_NAMES,
+            DOCDEXD_DAEMON_ARGS,
+            DAEMON_LOCK_ENV,
+            DAEMON_LOCK_FILE,
+        )?;
         let lock = match outcome {
             DaemonLockOutcome::Acquired(lock) => lock,
             DaemonLockOutcome::AlreadyRunning(_) => {
+                if !env_boolish(TEST_ALLOW_MULTI_DAEMON_ENV)
+                    && find_running_pid(DOCDEXD_PROCESS_NAMES, DOCDEXD_DAEMON_ARGS).is_some()
+                {
+                    eprintln!("skipping stale lock test: docdexd started during test");
+                    return Ok(());
+                }
                 panic!("expected stale lock replacement");
             }
         };

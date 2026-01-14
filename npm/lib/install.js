@@ -591,7 +591,8 @@ function resolveLocalBinaryCandidate({
   platform = process.platform,
   pathModule = path,
   fsModule = fs,
-  repoRoot
+  repoRoot,
+  requireMcp
 } = {}) {
   const explicit = env[LOCAL_BINARY_ENV];
   if (explicit) {
@@ -605,20 +606,21 @@ function resolveLocalBinaryCandidate({
   const binaryName = platform === "win32" ? "docdexd.exe" : "docdexd";
   const releasePath = pathModule.join(root, "target", "release", binaryName);
   if (fsModule.existsSync(releasePath)) {
-    if (localMcpPresent({ fsModule, pathModule, binaryPath: releasePath, mcpName })) {
+    if (localMcpPresent({ fsModule, pathModule, binaryPath: releasePath, mcpName, requireMcp })) {
       return releasePath;
     }
   }
   const debugPath = pathModule.join(root, "target", "debug", binaryName);
   if (fsModule.existsSync(debugPath)) {
-    if (localMcpPresent({ fsModule, pathModule, binaryPath: debugPath, mcpName })) {
+    if (localMcpPresent({ fsModule, pathModule, binaryPath: debugPath, mcpName, requireMcp })) {
       return debugPath;
     }
   }
   return null;
 }
 
-function localMcpPresent({ fsModule, pathModule, binaryPath, mcpName }) {
+function localMcpPresent({ fsModule, pathModule, binaryPath, mcpName, requireMcp }) {
+  if (!requireMcp) return true;
   const dir = pathModule.dirname(binaryPath);
   const candidates = [
     pathModule.join(dir, mcpName),
@@ -638,6 +640,7 @@ async function installFromLocalBinary({
   platformKey,
   targetTriple,
   repoSlug,
+  requireMcp,
   sha256FileFn,
   writeJsonFileAtomicFn,
   logger
@@ -663,7 +666,7 @@ async function installFromLocalBinary({
     if (!isWin32) {
       await fsModule.promises.chmod(mcpDest, 0o755).catch(() => {});
     }
-  } else {
+  } else if (requireMcp) {
     logger?.warn?.(`[docdex] local MCP binary not found; expected near ${binaryPath}`);
   }
   const binarySha256 = await sha256FileFn(destPath);
@@ -706,6 +709,7 @@ async function maybeInstallLocalFallback({
   platformKey,
   targetTriple,
   repoSlug,
+  requireMcp,
   sha256FileFn,
   writeJsonFileAtomicFn,
   logger,
@@ -718,7 +722,14 @@ async function maybeInstallLocalFallback({
 
   const candidate =
     localBinaryPath ||
-    resolveLocalBinaryCandidate({ env, platform: process.platform, pathModule, fsModule, repoRoot: localRepoRoot });
+    resolveLocalBinaryCandidate({
+      env,
+      platform: process.platform,
+      pathModule,
+      fsModule,
+      repoRoot: localRepoRoot,
+      requireMcp
+    });
   if (!candidate) return null;
 
   return installFromLocalBinary({
@@ -731,6 +742,7 @@ async function maybeInstallLocalFallback({
     platformKey,
     targetTriple,
     repoSlug,
+    requireMcp,
     sha256FileFn,
     writeJsonFileAtomicFn,
     logger
@@ -1738,6 +1750,7 @@ async function runInstaller(options) {
   const sha256FileFn = opts.sha256FileFn || sha256File;
   const writeJsonFileAtomicFn = opts.writeJsonFileAtomicFn || writeJsonFileAtomic;
   const restartFn = opts.restartFn;
+  const requireMcp = parseEnvBool(env?.DOCDEX_ENABLE_STANDALONE_MCP) === true;
   const localRepoRoot =
     opts.localRepoRoot ||
     detectLocalRepoRootFromInitCwd({ env, fsModule, pathModule }) ||
@@ -1749,7 +1762,8 @@ async function runInstaller(options) {
       platform: process.platform,
       pathModule,
       fsModule,
-      repoRoot: localRepoRoot
+      repoRoot: localRepoRoot,
+      requireMcp
     });
 
   const detectedPlatform = opts.platform || process.platform;
@@ -1818,6 +1832,7 @@ async function runInstaller(options) {
       platformKey,
       targetTriple,
       repoSlug: null,
+      requireMcp,
       sha256FileFn,
       writeJsonFileAtomicFn,
       logger
@@ -1864,6 +1879,7 @@ async function runInstaller(options) {
       platformKey,
       targetTriple,
       repoSlug: null,
+      requireMcp,
       sha256FileFn,
       writeJsonFileAtomicFn,
       logger
@@ -1902,6 +1918,7 @@ async function runInstaller(options) {
       platformKey,
       targetTriple,
       repoSlug,
+      requireMcp,
       sha256FileFn,
       writeJsonFileAtomicFn,
       logger,

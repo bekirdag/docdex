@@ -1349,7 +1349,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             },
             AiHelpCli {
                 command: "docdexd mcp --repo <path>",
-                description: "Run the MCP server over stdio for MCP-aware agents.",
+                description: "Run the MCP stdio bridge (for clients that require stdio).",
                 example: "docdexd mcp --repo /workspace --log warn --max-results 8",
             },
             AiHelpCli {
@@ -1524,7 +1524,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             "When building prompts, keep rel_path + summary + trimmed snippet; drop score/token_estimate/doc_id and normalize whitespace.",
             "Trim noisy content up front with --exclude-dir/--exclude-prefix so snippets stay relevant and short.",
             "Cache doc_id/rel_path/summary client-side to avoid repeat snippet fetches; only call /snippet for new doc_ids.",
-            "For MCP-aware agents, register a server named docdex that runs `docdexd mcp --repo <repo> --log warn --max-results 8`, then use docdex_search or docdex_web_research and docdex_index when results look stale.",
+            "For MCP-aware agents, prefer the daemon HTTP MCP endpoint (e.g., http://localhost:3210/v1/mcp); use `docdexd mcp --repo <repo> --log warn --max-results 8` only for stdio-only clients, then use docdex_search/docdex_web_research/docdex_index as needed.",
         ],
         limits: AiHelpLimits {
             max_limit: state.security.max_limit,

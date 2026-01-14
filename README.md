@@ -55,7 +55,7 @@ npm i -g docdex
 
 ### 2. Auto-Configuration
 
-If you have any of the following clients installed, Docdex automatically configures them to use the local MCP server:
+If you have any of the following clients installed, Docdex automatically configures them to use the local MCP endpoint (daemon HTTP/SSE):
 
 > **Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Continue, VS Code, PearAI, Void, Zed, Codex.**
 
@@ -109,6 +109,8 @@ flowchart LR
 
 ```
 
+Prefer the daemon HTTP/SSE endpoint; use `docdexd mcp` only for clients that require stdio.
+
 ### Manual Configuration
 
 If you need to configure your client manually:
@@ -119,7 +121,7 @@ If you need to configure your client manually:
 {
   "mcpServers": {
     "docdex": {
-      "url": "http://localhost:3210/sse"
+      "url": "http://localhost:3210/v1/mcp/sse"
     }
   }
 }
@@ -133,6 +135,12 @@ If you need to configure your client manually:
 docdex = { url = "http://localhost:3210/v1/mcp" }
 
 ```
+
+For stdio-only clients, use the bridge:
+```bash
+docdexd mcp --repo /path/to/my-project --log warn --max-results 8
+```
+Standalone `docdex-mcp-server` is legacy and disabled by default; set `DOCDEX_ENABLE_STANDALONE_MCP=1` to opt in.
 
 ---
 
@@ -196,7 +204,7 @@ Docdex runs as a local daemon serving:
 
 * **CLI Commands:** `docdexd chat`
 * **HTTP API:** `/search`, `/v1/ast`, `/v1/graph/impact`
-* **MCP Endpoints:** `/v1/mcp` and `/sse`
+* **MCP Endpoints:** `/v1/mcp` and `/v1/mcp/sse`
 
 ### Multi-Repo Setup
 

@@ -826,6 +826,57 @@ function resolveBinaryPath({ binaryPath } = {}) {
   return null;
 }
 
+function isPathWithin(parent, candidate) {
+  const base = path.resolve(parent);
+  const target = path.resolve(candidate);
+  if (base === target) return true;
+  return target.startsWith(base + path.sep);
+}
+
+function isMacProtectedPath(candidate) {
+  if (process.platform !== "darwin") return false;
+  const home = os.homedir();
+  return ["Desktop", "Documents", "Downloads"].some((dir) => isPathWithin(path.join(home, dir), candidate));
+}
+
+function ensureStartupBinary(binaryPath, { logger } = {}) {
+  if (!binaryPath) return null;
+  if (!isMacProtectedPath(binaryPath) && !isTempPath(binaryPath)) return binaryPath;
+  const binDir = path.join(os.homedir(), ".docdex", "bin");
+  const target = path.join(binDir, path.basename(binaryPath));
+  if (fs.existsSync(target)) return target;
+  try {
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.copyFileSync(binaryPath, target);
+    fs.chmodSync(target, 0o755);
+    return target;
+  } catch (err) {
+    logger?.warn?.(`[docdex] failed to stage daemon binary for startup: ${err?.message || err}`);
+    return binaryPath;
+  }
+}
+
+function resolveStartupBinaryPaths({ binaryPath, mcpBinaryPath, logger } = {}) {
+  const resolvedBinary = ensureStartupBinary(binaryPath, { logger });
+  let resolvedMcpBinary = mcpBinaryPath;
+  if (mcpBinaryPath && resolvedBinary) {
+    const binDir = path.dirname(resolvedBinary);
+    const target = path.join(binDir, path.basename(mcpBinaryPath));
+    if (!fs.existsSync(target)) {
+      try {
+        fs.copyFileSync(mcpBinaryPath, target);
+        fs.chmodSync(target, 0o755);
+        resolvedMcpBinary = target;
+      } catch (err) {
+        logger?.warn?.(`[docdex] failed to stage mcp binary for startup: ${err?.message || err}`);
+      }
+    } else {
+      resolvedMcpBinary = target;
+    }
+  }
+  return { binaryPath: resolvedBinary, mcpBinaryPath: resolvedMcpBinary };
+}
+
 function applyAgentInstructions({ logger } = {}) {
   const instructions = buildDocdexInstructionBlock(loadAgentInstructions());
   if (!normalizeInstructionText(instructions)) return { ok: false, reason: "missing_instructions" };
@@ -1469,22 +1520,53 @@ function resolvePlaywrightFetcherPath() {
   return fs.existsSync(candidate) ? candidate : null;
 }
 
-function buildDaemonEnvPairs({ mcpBinaryPath } = {}) {
+function envBool(value) {
+  if (!value) return false;
+  const normalized = String(value).trim().toLowerCase();
+  return ["1", "true", "t", "yes", "y", "on"].includes(normalized);
+}
+
+function isTempPath(value, osModule = os) {
+  if (!value) return false;
+  const tmpdir = osModule.tmpdir();
+  if (!tmpdir) return false;
+  const resolvedValue = path.resolve(value);
+  const resolvedTmp = path.resolve(tmpdir);
+  return resolvedValue === resolvedTmp || resolvedValue.startsWith(resolvedTmp + path.sep);
+}
+
+function resolveStableNodeBin({ env = process.env, spawnSyncFn = spawnSync } = {}) {
+  const envNode = String(env.DOCDEX_PLAYWRIGHT_NODE_BIN || env.DOCDEX_NODE_BIN || "").trim();
+  if (envNode && fs.existsSync(envNode)) return envNode;
+  if (process.execPath && fs.existsSync(process.execPath) && !isTempPath(process.execPath)) {
+    return process.execPath;
+  }
+  const locator = process.platform === "win32" ? "where" : "which";
+  const resolved = spawnSyncFn(locator, ["node"], { encoding: "utf8" });
+  if (resolved && !resolved.error && resolved.status === 0 && resolved.stdout) {
+    const line = String(resolved.stdout).split(/\r?\n/).find((entry) => entry.trim());
+    if (line && fs.existsSync(line.trim())) return line.trim();
+  }
+  if (process.execPath && fs.existsSync(process.execPath)) return process.execPath;
+  return null;
+}
+
+function buildDaemonEnvPairs({ mcpBinaryPath, env = process.env } = {}) {
   const pairs = [["DOCDEX_BROWSER_AUTO_INSTALL", "0"]];
-  if (mcpBinaryPath) pairs.push(["DOCDEX_MCP_SERVER_BIN", mcpBinaryPath]);
+  if (mcpBinaryPath && envBool(env.DOCDEX_ENABLE_STANDALONE_MCP)) {
+    pairs.push(["DOCDEX_MCP_SERVER_BIN", mcpBinaryPath]);
+  }
   const fetcher = resolvePlaywrightFetcherPath();
   if (fetcher) pairs.push(["DOCDEX_PLAYWRIGHT_FETCHER", fetcher]);
-  if (!process.env.DOCDEX_PLAYWRIGHT_NODE_BIN && !process.env.DOCDEX_NODE_BIN) {
-    const nodeBin = process.execPath;
-    if (nodeBin && fs.existsSync(nodeBin)) {
-      pairs.push(["DOCDEX_PLAYWRIGHT_NODE_BIN", nodeBin]);
-    }
+  if (!env.DOCDEX_PLAYWRIGHT_NODE_BIN && !env.DOCDEX_NODE_BIN) {
+    const nodeBin = resolveStableNodeBin({ env });
+    if (nodeBin) pairs.push(["DOCDEX_PLAYWRIGHT_NODE_BIN", nodeBin]);
   }
   return pairs;
 }
 
-function buildDaemonEnv({ mcpBinaryPath } = {}) {
-  return Object.fromEntries(buildDaemonEnvPairs({ mcpBinaryPath }));
+function buildDaemonEnv({ mcpBinaryPath, env } = {}) {
+  return Object.fromEntries(buildDaemonEnvPairs({ mcpBinaryPath, env }));
 }
 
 function registerStartup({ binaryPath, mcpBinaryPath, port, repoRoot, logger }) {
@@ -1810,9 +1892,14 @@ async function runPostInstallSetup({ binaryPath, logger } = {}) {
   const daemonRoot = ensureDaemonRoot();
   const resolvedBinary = resolveBinaryPath({ binaryPath });
   const resolvedMcpBinary = resolveMcpBinaryPath(resolvedBinary);
-  const startup = registerStartup({
+  const startupBinaries = resolveStartupBinaryPaths({
     binaryPath: resolvedBinary,
     mcpBinaryPath: resolvedMcpBinary,
+    logger: log
+  });
+  const startup = registerStartup({
+    binaryPath: startupBinaries.binaryPath,
+    mcpBinaryPath: startupBinaries.mcpBinaryPath,
     port,
     repoRoot: daemonRoot,
     logger: log
@@ -1827,8 +1914,13 @@ async function runPostInstallSetup({ binaryPath, logger } = {}) {
     clearStartupFailure();
   }
 
-  startDaemonNow({ binaryPath: resolvedBinary, mcpBinaryPath: resolvedMcpBinary, port, repoRoot: daemonRoot });
-  const setupLaunch = launchSetupWizard({ binaryPath: resolvedBinary, logger: log });
+  startDaemonNow({
+    binaryPath: startupBinaries.binaryPath,
+    mcpBinaryPath: startupBinaries.mcpBinaryPath,
+    port,
+    repoRoot: daemonRoot
+  });
+  const setupLaunch = launchSetupWizard({ binaryPath: startupBinaries.binaryPath, logger: log });
   if (!setupLaunch.ok && setupLaunch.reason !== "skipped") {
     log.warn?.("[docdex] setup wizard did not launch. Run `docdex setup`.");
     recordSetupPending({ reason: setupLaunch.reason, port, repoRoot: daemonRoot });

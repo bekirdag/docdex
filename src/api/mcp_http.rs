@@ -255,21 +255,16 @@ async fn handle_mcp_single(
         normalize_initialize_payload(&mut payload);
     }
     let repo_root = if method.as_deref() == Some("initialize") {
-        let root_uri = match extract_init_root(&payload) {
-            Some(root_uri) => root_uri,
-            None => {
-                return Err(json_error(
-                    StatusCode::BAD_REQUEST,
-                    ERR_INVALID_ARGUMENT,
-                    "missing initialize rootUri (set params.rootUri or roots/workspaceFolders)",
-                ));
-            }
+        let resolved = match extract_init_root(&payload) {
+            Some(root_uri) => resolve_repo_for_mcp(state, Some(root_uri)),
+            None => resolve_repo_for_mcp(state, None),
         };
-        match resolve_repo_for_mcp(state, Some(root_uri)) {
-            Ok(root) => Some(root),
-            Err(err) => {
-                return Err(app_error_response(err));
+        match resolved {
+            Ok(root) => {
+                ensure_initialize_root(&mut payload, &root);
+                Some(root)
             }
+            Err(err) => return Err(app_error_response(err)),
         }
     } else if let Some(root_uri) = extract_project_root(&payload) {
         match resolve_repo_for_mcp(state, Some(root_uri)) {
@@ -279,11 +274,10 @@ async fn handle_mcp_single(
             }
         }
     } else {
-        return Err(json_error(
-            StatusCode::BAD_REQUEST,
-            ERR_INVALID_ARGUMENT,
-            "missing initialize (call initialize with rootUri) or include project_root/repo_path",
-        ));
+        match resolve_repo_for_mcp(state, None) {
+            Ok(root) => Some(root),
+            Err(err) => return Err(app_error_response(err)),
+        }
     };
     match router.call(repo_root.as_deref(), payload).await {
         Ok(response) => Ok(Some(response)),
@@ -331,6 +325,25 @@ fn normalize_initialize_payload(payload: &mut Value) {
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or(root_uri);
     params.insert("workspace_root".to_string(), Value::String(workspace_root));
+}
+
+fn ensure_initialize_root(payload: &mut Value, repo_root: &PathBuf) {
+    let repo_root = repo_root.to_string_lossy().to_string();
+    let Some(obj) = payload.as_object_mut() else {
+        return;
+    };
+    let params = obj
+        .entry("params".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let Some(params) = params.as_object_mut() else {
+        return;
+    };
+    params
+        .entry("workspace_root".to_string())
+        .or_insert(Value::String(repo_root.clone()));
+    params
+        .entry("rootUri".to_string())
+        .or_insert(Value::String(repo_root));
 }
 
 fn extract_root_from_params(params: &serde_json::Map<String, Value>) -> Option<String> {
@@ -602,6 +615,40 @@ mod tests {
             message.contains("initialize"),
             "expected initialize hint, got: {message}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mcp_http_initialize_defaults_to_repo_root() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (state, _temp) = build_test_state().await?;
+        let init_payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {}
+        });
+        let init_response = mcp_request_handler(State(state.clone()), Json(init_payload)).await;
+        assert!(init_response.status().is_success());
+        let init_body = init_response.into_body().collect().await?.to_bytes();
+        let init_value: serde_json::Value = serde_json::from_slice(&init_body)?;
+        assert!(init_value.get("result").is_some());
+
+        let tools_payload = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        });
+        let tools_response = mcp_request_handler(State(state), Json(tools_payload)).await;
+        assert!(tools_response.status().is_success());
+        let tools_body = tools_response.into_body().collect().await?.to_bytes();
+        let tools_value: serde_json::Value = serde_json::from_slice(&tools_body)?;
+        let tools = tools_value
+            .get("result")
+            .and_then(|value| value.get("tools"))
+            .and_then(|value| value.as_array());
+        assert!(tools.is_some());
         Ok(())
     }
 }

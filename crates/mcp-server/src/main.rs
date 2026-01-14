@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::Parser;
+use clap::{ArgAction, Parser};
 use docdexd::daemon::lock;
 
 #[derive(Debug, Parser)]
@@ -36,11 +36,29 @@ struct Cli {
         help = "Optional bearer token required by MCP initialize"
     )]
     auth_token: Option<String>,
+    #[arg(
+        long,
+        visible_alias = "allow-standalone",
+        env = "DOCDEX_ENABLE_STANDALONE_MCP",
+        default_value_t = false,
+        value_parser = clap::builder::BoolishValueParser::new(),
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        help = "Allow running the standalone docdex-mcp-server (legacy; prefer daemon HTTP/SSE or `docdexd mcp`)"
+    )]
+    enable_standalone: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if !cli.enable_standalone {
+        eprintln!(
+            "docdex-mcp-server is disabled by default. Use the daemon MCP endpoint (/v1/mcp/sse) or `docdexd mcp`.\nTo run standalone, pass --enable-standalone or set DOCDEX_ENABLE_STANDALONE_MCP=1."
+        );
+        return Ok(());
+    }
     if let Ok(Some(metadata)) = lock::read_running_metadata() {
         if let Ok(path) = lock::default_lock_path() {
             eprintln!(

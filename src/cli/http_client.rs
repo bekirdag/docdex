@@ -93,7 +93,16 @@ pub(crate) fn resolve_base_url_with_lock() -> Result<String> {
         return Ok(normalize_base_url(&raw));
     }
     if let Ok(path) = crate::daemon::lock::default_lock_path() {
-        if let Ok(Some(metadata)) = crate::daemon::lock::read_metadata(&path) {
+        let prefer_lock_metadata = std::env::var("DOCDEX_DAEMON_LOCK_PATH")
+            .ok()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
+        let metadata = if prefer_lock_metadata {
+            crate::daemon::lock::read_metadata(&path).unwrap_or(None)
+        } else {
+            crate::daemon::lock::read_running_metadata_at_path(&path).unwrap_or(None)
+        };
+        if let Some(metadata) = metadata {
             if metadata.port != 0 {
                 return Ok(format!("http://127.0.0.1:{}", metadata.port));
             }

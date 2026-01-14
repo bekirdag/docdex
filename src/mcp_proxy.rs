@@ -13,6 +13,7 @@ use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use url::Url;
 
 const MCP_PROXY_TIMEOUT_SECS: u64 = 30;
+const MCP_INIT_TIMEOUT_SECS: u64 = 5;
 const SESSION_CLEANUP_INTERVAL_SECS: u64 = 600;
 const SESSION_IDLE_TIMEOUT_SECS: u64 = 3600;
 const MCP_HTTP_SSE_PATH: &str = "/v1/mcp/sse";
@@ -194,8 +195,17 @@ impl InitTracker {
         self.initialized.load(Ordering::SeqCst)
     }
 
+    fn mark_initialized(&self) {
+        self.initialized.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
     async fn mark_internal(&self, id: String) {
         self.pending_internal.lock().await.insert(id);
+    }
+
+    async fn clear_internal(&self, id: &str) {
+        self.pending_internal.lock().await.remove(id);
     }
 
     async fn mark_client(&self, id: String) {
@@ -299,17 +309,16 @@ impl McpHttpProxy {
                     if let Some(id) = client_id.as_deref() {
                         init_tracker.mark_client(id.to_string()).await;
                     } else if !init_sent {
-                        let internal_id =
-                            send_internal_initialize(
-                                &client,
-                                &base_url,
-                                &session.session_id,
-                                &root_uri,
-                                auth_token.as_deref(),
-                                timeout_ms,
-                            )
-                                .await?;
-                        init_tracker.mark_internal(internal_id).await;
+                        send_internal_initialize(
+                            &init_tracker,
+                            &client,
+                            &base_url,
+                            &session.session_id,
+                            &root_uri,
+                            auth_token.as_deref(),
+                            timeout_ms,
+                        )
+                        .await?;
                         init_sent = true;
                     }
                     match send_mcp_message(
@@ -335,22 +344,24 @@ impl McpHttpProxy {
                     }
                     continue;
                 }
-                if !init_tracker.is_initialized() {
+                let has_root_hint = request_includes_root_hint(&request);
+                if !init_tracker.is_initialized() && !has_root_hint {
                     if !init_sent {
-                        let internal_id =
-                            send_internal_initialize(
-                                &client,
-                                &base_url,
-                                &session.session_id,
-                                &root_uri,
-                                auth_token.as_deref(),
-                                timeout_ms,
-                            )
-                                .await?;
-                        init_tracker.mark_internal(internal_id).await;
+                        send_internal_initialize(
+                            &init_tracker,
+                            &client,
+                            &base_url,
+                            &session.session_id,
+                            &root_uri,
+                            auth_token.as_deref(),
+                            timeout_ms,
+                        )
+                        .await?;
                         init_sent = true;
                     }
-                    init_tracker.wait_for_init().await;
+                    let init_timeout = Duration::from_secs(MCP_INIT_TIMEOUT_SECS);
+                    let _ =
+                        tokio::time::timeout(init_timeout, init_tracker.wait_for_init()).await;
                 }
                 match send_mcp_message(
                     &client,
@@ -362,7 +373,12 @@ impl McpHttpProxy {
                 )
                 .await?
                 {
-                    SendOutcome::Ack => {}
+                    SendOutcome::Ack => {
+                        if has_root_hint && !init_tracker.is_initialized() {
+                            init_tracker.mark_initialized();
+                            init_sent = true;
+                        }
+                    }
                     SendOutcome::Error(response) => {
                         write_proxy_response(&output, &response).await?;
                         continue;
@@ -572,13 +588,14 @@ fn http_error_to_mcp_response(
 }
 
 async fn send_internal_initialize(
+    init_tracker: &InitTracker,
     client: &Client,
     base_url: &str,
     session_id: &str,
     root_uri: &str,
     auth_token: Option<&str>,
     timeout_ms: u64,
-) -> Result<String> {
+) -> Result<()> {
     let id = format!("docdex-init-{}", uuid::Uuid::new_v4());
     let payload = json!({
         "jsonrpc": "2.0",
@@ -586,8 +603,12 @@ async fn send_internal_initialize(
         "method": "initialize",
         "params": { "rootUri": root_uri }
     });
-    let id_key = id_key(&Value::String(id)).ok_or_else(|| anyhow!("invalid init id"))?;
-    send_mcp_message_internal(
+    let id_key = payload
+        .get("id")
+        .and_then(id_key)
+        .ok_or_else(|| anyhow!("invalid init id"))?;
+    init_tracker.mark_internal(id_key.clone()).await;
+    if let Err(err) = send_mcp_message_internal(
         client,
         base_url,
         session_id,
@@ -595,8 +616,12 @@ async fn send_internal_initialize(
         &payload,
         timeout_ms,
     )
-    .await?;
-    Ok(id_key)
+    .await
+    {
+        init_tracker.clear_internal(&id_key).await;
+        return Err(err);
+    }
+    Ok(())
 }
 
 async fn write_proxy_response<W>(
@@ -672,6 +697,68 @@ fn extract_sse_data(event: &str) -> Vec<String> {
         }
     }
     data
+}
+
+fn request_includes_root_hint(request: &Value) -> bool {
+    let params = request.get("params").and_then(|value| value.as_object());
+    let Some(params) = params else {
+        return false;
+    };
+    if params_has_root_hint(params) {
+        return true;
+    }
+    if let Some(args) = params.get("arguments").and_then(|value| value.as_object()) {
+        return params_has_root_hint(args);
+    }
+    false
+}
+
+fn params_has_root_hint(params: &serde_json::Map<String, Value>) -> bool {
+    for key in [
+        "rootUri",
+        "workspace_root",
+        "workspaceRoot",
+        "project_root",
+        "projectRoot",
+        "repo_path",
+        "repoPath",
+        "rootPath",
+        "root_path",
+    ] {
+        if let Some(value) = params.get(key).and_then(|value| value.as_str()) {
+            if !value.trim().is_empty() {
+                return true;
+            }
+        }
+    }
+    if array_has_root_hint(params.get("roots")) {
+        return true;
+    }
+    array_has_root_hint(params.get("workspaceFolders"))
+}
+
+fn array_has_root_hint(value: Option<&Value>) -> bool {
+    let Some(entries) = value.and_then(|value| value.as_array()) else {
+        return false;
+    };
+    for entry in entries {
+        if let Some(value) = entry.as_str() {
+            if !value.trim().is_empty() {
+                return true;
+            }
+            continue;
+        }
+        if let Some(obj) = entry.as_object() {
+            for key in ["uri", "rootUri", "path", "rootPath", "root_path"] {
+                if let Some(value) = obj.get(key).and_then(|value| value.as_str()) {
+                    if !value.trim().is_empty() {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 fn ensure_id(request: &mut Value, counter: &AtomicU64) -> Result<Value> {

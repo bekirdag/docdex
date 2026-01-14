@@ -6,6 +6,52 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
+function resolveMacHostPlatformOverride() {
+  const raw = os.release();
+  const major = Number.parseInt(String(raw).split(".")[0], 10);
+  if (!Number.isFinite(major)) return null;
+  if (major < 18) return "mac10.13-arm64";
+  if (major === 18) return "mac10.14-arm64";
+  if (major === 19) return "mac10.15-arm64";
+  const computed = Math.min(Math.max(major - 9, 10), 15);
+  return `mac${computed}-arm64`;
+}
+
+function ensurePlaywrightHostPlatformOverride(env = process.env) {
+  if (env.PLAYWRIGHT_HOST_PLATFORM_OVERRIDE) return;
+  if (process.platform !== "darwin") return;
+  if (process.arch !== "arm64") return;
+  const override = resolveMacHostPlatformOverride();
+  if (override) env.PLAYWRIGHT_HOST_PLATFORM_OVERRIDE = override;
+}
+
+ensurePlaywrightHostPlatformOverride();
+
+function isTempPath(value, osModule = os) {
+  if (!value) return false;
+  const tmpdir = osModule.tmpdir();
+  if (!tmpdir) return false;
+  const resolvedValue = path.resolve(value);
+  const resolvedTmp = path.resolve(tmpdir);
+  return resolvedValue === resolvedTmp || resolvedValue.startsWith(resolvedTmp + path.sep);
+}
+
+function resolveStableNodeBin({ env = process.env, spawnSyncFn = spawnSync } = {}) {
+  const envNode = String(env.DOCDEX_PLAYWRIGHT_NODE_BIN || env.DOCDEX_NODE_BIN || "").trim();
+  if (envNode && fs.existsSync(envNode)) return envNode;
+  if (process.execPath && fs.existsSync(process.execPath) && !isTempPath(process.execPath)) {
+    return process.execPath;
+  }
+  const locator = process.platform === "win32" ? "where" : "which";
+  const resolved = spawnSyncFn(locator, ["node"], { encoding: "utf8" });
+  if (resolved && !resolved.error && resolved.status === 0 && resolved.stdout) {
+    const line = String(resolved.stdout).split(/\r?\n/).find((entry) => entry.trim());
+    if (line && fs.existsSync(line.trim())) return line.trim();
+  }
+  if (process.execPath && fs.existsSync(process.execPath)) return process.execPath;
+  return process.execPath;
+}
+
 const DEFAULT_BROWSERS = ["chromium"];
 const ALLOWED_BROWSERS = new Set(["chromium", "firefox", "webkit"]);
 const MANIFEST_FILE = "manifest.json";
@@ -165,8 +211,10 @@ function installPlaywrightBrowsers({
   resolveCliPath = resolvePlaywrightCliPath,
   now
 } = {}) {
+  const baseEnv = { ...env };
+  ensurePlaywrightHostPlatformOverride(baseEnv);
   const selected = normalizeBrowserList(browsers);
-  const resolvedPath = resolveBrowsersPath(env, browsersPath);
+  const resolvedPath = resolveBrowsersPath(baseEnv, browsersPath);
   fs.mkdirSync(resolvedPath, { recursive: true });
 
   const cliPath = resolveCliPath();
@@ -176,7 +224,7 @@ function installPlaywrightBrowsers({
       env: childEnv
     });
   const childEnv = {
-    ...env,
+    ...baseEnv,
     PLAYWRIGHT_BROWSERS_PATH: resolvedPath
   };
   const result = runInstall(selected);
@@ -192,12 +240,14 @@ function installPlaywrightBrowsers({
   const playwrightRuntime = playwright || loadPlaywright();
   const browsersMetadata = browsersJson || loadBrowsersJson();
   const version = playwrightVersion || loadPlaywrightVersion();
+  const nodeBin = resolveStableNodeBin({ env: baseEnv, spawnSyncFn });
   const manifest = buildManifest({
     browsers: selected,
     browsersPath: resolvedPath,
     playwright: playwrightRuntime,
     browsersJson: browsersMetadata,
     playwrightVersion: version,
+    nodeBin,
     now,
     allowMissing: true,
     logger
@@ -222,6 +272,7 @@ function installPlaywrightBrowsers({
         playwright: playwrightRuntime,
         browsersJson: browsersMetadata,
         playwrightVersion: version,
+        nodeBin,
         now,
         allowMissing: true,
         logger

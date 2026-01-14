@@ -9,6 +9,7 @@ API_BASE_URL=""
 API_SERVER_PID=""
 API_SERVER_STATE_DIR=""
 API_SERVER_LOCK_PATH=""
+export DOCDEX_TEST_ALLOW_MULTI_DAEMON="${DOCDEX_TEST_ALLOW_MULTI_DAEMON:-1}"
 
 if [[ -z "${DOCDEX_BIN:-}" && -x "${ROOT_DIR}/target/debug/docdexd" ]]; then
   DOCDEX_BIN="${ROOT_DIR}/target/debug/docdexd"

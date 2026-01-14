@@ -483,7 +483,7 @@ pub(crate) fn update_playwright_manifest_node_bin(node_bin: &Path) -> Result<boo
     let mut manifest: PlaywrightManifest =
         serde_json::from_str(&raw).context("parse playwright manifest")?;
     let needs_update = match manifest.node_bin.as_ref() {
-        Some(existing) => !existing.is_file(),
+        Some(existing) => !existing.is_file() || path_is_in_temp_dir(existing),
         None => true,
     };
     if !needs_update {
@@ -495,6 +495,38 @@ pub(crate) fn update_playwright_manifest_node_bin(node_bin: &Path) -> Result<boo
     std::fs::write(&manifest_path, format!("{payload}\n"))
         .context("write playwright manifest")?;
     Ok(true)
+}
+
+pub(crate) fn path_is_in_temp_dir(path: &Path) -> bool {
+    let temp_dir = std::env::temp_dir();
+    if temp_dir.as_os_str().is_empty() {
+        return false;
+    }
+    if path.starts_with(&temp_dir) {
+        return true;
+    }
+    if let Ok(canonical) = temp_dir.canonicalize() {
+        if path.starts_with(&canonical) {
+            return true;
+        }
+    }
+    if cfg!(target_os = "macos") {
+        if let Some(raw) = path.to_str() {
+            if raw.starts_with("/var/folders/") || raw.starts_with("/private/var/folders/") {
+                return true;
+            }
+            if raw.starts_with("/tmp/") || raw.starts_with("/private/tmp/") {
+                return true;
+            }
+        }
+    } else if cfg!(unix) {
+        if let Some(raw) = path.to_str() {
+            if raw.starts_with("/tmp/") || raw.starts_with("/var/tmp/") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 pub(crate) fn resolve_playwright_manifest_path() -> Option<PathBuf> {

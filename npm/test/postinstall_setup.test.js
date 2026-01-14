@@ -229,7 +229,10 @@ test("runPostInstallSetup does not call Ollama installers", () => {
 
 test("buildDaemonEnv includes playwright fetcher when bundled", () => {
   const expectedFetcher = path.join(__dirname, "..", "lib", "playwright_fetch.js");
-  const env = buildDaemonEnv({ mcpBinaryPath: "/tmp/docdex-mcp" });
+  const env = buildDaemonEnv({
+    mcpBinaryPath: "/tmp/docdex-mcp",
+    env: { DOCDEX_ENABLE_STANDALONE_MCP: "1" }
+  });
   assert.equal(env.DOCDEX_BROWSER_AUTO_INSTALL, "0");
   assert.equal(env.DOCDEX_MCP_SERVER_BIN, "/tmp/docdex-mcp");
   if (fs.existsSync(expectedFetcher)) {

@@ -147,8 +147,53 @@ test("installer finds local mcp binary in debug folder", async (t) => {
   assert.ok(fs.existsSync(distMcp));
 });
 
-test("installer skips local binary when MCP binary is missing", async (t) => {
+test("installer uses local binary when MCP binary is missing (standalone disabled)", async (t) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-local-mcp-missing-"));
+  t.after(() => fs.promises.rm(tmp, { recursive: true, force: true }));
+
+  const repoRoot = path.join(tmp, "repo");
+  const binaryName = process.platform === "win32" ? "docdexd.exe" : "docdexd";
+  const mcpName = process.platform === "win32" ? "docdex-mcp-server.exe" : "docdex-mcp-server";
+  const binaryPath = path.join(repoRoot, "target", "release", binaryName);
+  await fs.promises.mkdir(path.dirname(binaryPath), { recursive: true });
+  await fs.promises.writeFile(binaryPath, "local-binary\n");
+  await fs.promises.mkdir(path.join(repoRoot, "npm"), { recursive: true });
+  await fs.promises.writeFile(
+    path.join(repoRoot, "npm", "package.json"),
+    JSON.stringify({ name: "docdex", version: "0.0.0" }),
+    "utf8"
+  );
+  await fs.promises.writeFile(
+    path.join(repoRoot, "Cargo.toml"),
+    ['[package]', 'name = "docdexd"', 'version = "0.0.0"'].join("\n"),
+    "utf8"
+  );
+
+  const distBaseDir = path.join(tmp, "dist");
+  const platformKey = detectPlatformKey();
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const result = await runInstaller({
+    logger: noopLogger(),
+    platform: process.platform,
+    arch: process.arch,
+    distBaseDir,
+    detectPlatformKeyFn: () => platformKey,
+    targetTripleForPlatformKeyFn: () => targetTriple,
+    env: {
+      INIT_CWD: repoRoot,
+      npm_lifecycle_event: "postinstall",
+      npm_config_argv: JSON.stringify({ original: ["install", "-g", "./npm"] })
+    }
+  });
+
+  assert.equal(result.outcome, "local");
+  assert.ok(fs.existsSync(result.binaryPath));
+  const distMcp = path.join(distBaseDir, platformKey, mcpName);
+  assert.ok(!fs.existsSync(distMcp));
+});
+
+test("installer skips local binary when MCP binary is missing (standalone enabled)", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-local-mcp-required-"));
   t.after(() => fs.promises.rm(tmp, { recursive: true, force: true }));
 
   const repoRoot = path.join(tmp, "repo");
@@ -206,7 +251,8 @@ test("installer skips local binary when MCP binary is missing", async (t) => {
     env: {
       INIT_CWD: repoRoot,
       npm_lifecycle_event: "postinstall",
-      npm_config_argv: JSON.stringify({ original: ["install", "-g", "./npm"] })
+      npm_config_argv: JSON.stringify({ original: ["install", "-g", "./npm"] }),
+      DOCDEX_ENABLE_STANDALONE_MCP: "1"
     }
   });
 

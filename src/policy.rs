@@ -76,9 +76,9 @@ fn missing_repo_steps(surface: RepoSurface) -> Vec<String> {
         ],
         RepoSurface::Mcp => vec![
             "Repo may have moved or been renamed.".to_string(),
-            "Pass the current repo path (or omit `project_root` to use the MCP server default)."
+            "Pass the current repo path (or omit `project_root` to use the MCP session default)."
                 .to_string(),
-            "If the MCP server is pointed at the wrong path, restart it with `docdexd mcp --repo <repo>`."
+            "If the MCP stdio proxy is pointed at the wrong path, restart it with `docdexd mcp --repo <repo>`."
                 .to_string(),
         ],
     }
@@ -92,9 +92,9 @@ fn unknown_repo_steps(surface: RepoSurface) -> Vec<String> {
         ],
         RepoSurface::Mcp => vec![
             "Repo may have moved or been renamed.".to_string(),
-            "Restart the MCP server with `docdexd mcp --repo <repo>` matching the repo you want to use."
+            "Restart the MCP stdio proxy with `docdexd mcp --repo <repo>` matching the repo you want to use."
                 .to_string(),
-            "Alternatively, omit `project_root` in tool arguments to use the MCP server default."
+            "Alternatively, omit `project_root` in tool arguments to use the MCP session default."
                 .to_string(),
         ],
     }

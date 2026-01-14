@@ -33,6 +33,7 @@ struct PlaywrightFetchResponse {
 
 impl PlaywrightFetchConfig {
     pub fn from_web_config(config: &WebConfig) -> Option<Self> {
+        browser_install::backfill_playwright_node_bin();
         let browser = normalize_playwright_browser(
             config.scraper_browser_kind.as_deref().unwrap_or("chromium"),
         );
@@ -102,9 +103,9 @@ pub async fn fetch_dom(url: &Url, config: &PlaywrightFetchConfig) -> Result<Chro
         command.env(key, value);
     }
 
-    let output = command.output().await.with_context(|| {
-        format!(
-            "spawn playwright fetcher {} via {}",
+    let output = command.output().await.map_err(|err| {
+        anyhow!(
+            "spawn playwright fetcher {} via {}: {err}",
             script.display(),
             node_bin.display()
         )

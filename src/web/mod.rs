@@ -5,8 +5,6 @@ pub mod ddg;
 pub mod ddg_policy;
 pub mod fetch;
 pub mod normalize;
-pub mod playwright;
-pub mod playwright_scripts;
 pub mod policy;
 pub mod readability;
 pub mod research;

@@ -3,7 +3,7 @@ set -u -o pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="${ROOT_DIR}/target/test_logs"
-DOCDEX_HTTP_BASE_URL="${DOCDEX_HTTP_BASE_URL:-http://127.0.0.1:3210}"
+DOCDEX_HTTP_BASE_URL="${DOCDEX_HTTP_BASE_URL:-http://127.0.0.1:28491}"
 USE_EXISTING_SERVER="${DOCDEX_USE_EXISTING_SERVER:-0}"
 API_BASE_URL=""
 API_SERVER_PID=""
@@ -173,9 +173,6 @@ if [[ "${DOCDEX_RUN_EXTENDED_TESTS:-0}" == "1" ]]; then
   fi
   if command -v npm >/dev/null 2>&1 && [[ -f "${ROOT_DIR}/npm/package.json" ]]; then
     run_step "extended_node" bash -c "cd \"${ROOT_DIR}/npm\" && npm test"
-  fi
-  if [[ -f "${ROOT_DIR}/scripts/test_playwright_install.sh" ]]; then
-    run_step "extended_playwright_install" bash "${ROOT_DIR}/scripts/test_playwright_install.sh"
   fi
 fi
 

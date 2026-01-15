@@ -30,6 +30,7 @@ pub async fn run_status(repo: RepoArgs) -> Result<()> {
 async fn run_status_via_http(repo: RepoArgs) -> Result<()> {
     let repo_root = repo.repo_root();
     let client = CliHttpClient::new()?;
+    client.ensure_repo(&repo_root).await?;
     let mut req = client.request(Method::GET, "/v1/symbols/status");
     req = client.with_repo(req, &repo_root)?;
     let resp = req.send().await?;

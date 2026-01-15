@@ -166,8 +166,8 @@ impl SecurityConfig {
                 "Provide `--auth-token <token>` when binding to non-loopback addresses (or bind to 127.0.0.1).",
             )
             .with_remediation(vec![
-                "docdexd serve --repo . --host 0.0.0.0 --port 3210 --expose --auth-token <token> --require-tls=false".to_string(),
-                "docdexd serve --repo . --host 127.0.0.1 --port 3210".to_string(),
+                "docdexd serve --repo . --host 0.0.0.0 --port 28491 --expose --auth-token <token> --require-tls=false".to_string(),
+                "docdexd serve --repo . --host 127.0.0.1 --port 28491".to_string(),
             ])
             .into());
         }
@@ -249,6 +249,7 @@ pub struct AppState {
     pub llm_default_model: String,
     pub repos: Option<Arc<crate::daemon::multi_repo::RepoManager>>,
     pub multi_repo: bool,
+    pub require_repo_id: bool,
     pub mcp_router: Option<Arc<McpProxyRouter>>,
 }
 
@@ -470,6 +471,7 @@ pub(crate) fn status_for_app_error(code: &str) -> StatusCode {
         ERR_EMBEDDING_MODEL_NOT_FOUND => StatusCode::BAD_REQUEST,
         ERR_EMBEDDING_FAILED => StatusCode::BAD_GATEWAY,
         ERR_INVALID_ARGUMENT => StatusCode::BAD_REQUEST,
+        ERR_MISSING_REPO => StatusCode::BAD_REQUEST,
         ERR_MEMORY_DISABLED => StatusCode::CONFLICT,
         ERR_MISSING_DEPENDENCY => StatusCode::CONFLICT,
         ERR_MISSING_INDEX => StatusCode::CONFLICT,
@@ -538,7 +540,7 @@ pub(crate) fn resolve_repo_context(
         headers,
         query_repo_id,
         body_repo_id,
-        require || explicit_required,
+        require || explicit_required || state.require_repo_id,
     )?;
     let default_repo = RepoContext {
         repo_id: state.repo_id.clone(),
@@ -1253,9 +1255,9 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 example: "docdexd index --repo /workspace",
             },
             AiHelpCli {
-                command: "docdexd serve --repo <path> [--host 127.0.0.1] [--port 3210]",
+                command: "docdexd serve --repo <path> [--host 127.0.0.1] [--port 28491]",
                 description: "Serve HTTP API with watcher for incremental ingest.",
-                example: "docdexd serve --repo /workspace --host 127.0.0.1 --port 3210",
+                example: "docdexd serve --repo /workspace --host 127.0.0.1 --port 28491",
             },
             AiHelpCli {
                 command: "docdexd chat --repo <path> --query \"text\" [--limit 8]",
@@ -1524,7 +1526,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             "When building prompts, keep rel_path + summary + trimmed snippet; drop score/token_estimate/doc_id and normalize whitespace.",
             "Trim noisy content up front with --exclude-dir/--exclude-prefix so snippets stay relevant and short.",
             "Cache doc_id/rel_path/summary client-side to avoid repeat snippet fetches; only call /snippet for new doc_ids.",
-            "For MCP-aware agents, prefer the daemon HTTP MCP endpoint (e.g., http://localhost:3210/v1/mcp); use `docdexd mcp --repo <repo> --log warn --max-results 8` only for stdio-only clients, then use docdex_search/docdex_web_research/docdex_index as needed.",
+            "For MCP-aware agents, prefer the daemon HTTP MCP endpoint (e.g., http://localhost:28491/v1/mcp); use `docdexd mcp --repo <repo> --log warn --max-results 8` only for stdio-only clients, then use docdex_search/docdex_web_research/docdex_index as needed.",
         ],
         limits: AiHelpLimits {
             max_limit: state.security.max_limit,

@@ -27,12 +27,14 @@ impl ServerHarness {
         port: u16,
     ) -> Result<Self, Box<dyn Error>> {
         let repo_str = repo_root.to_string_lossy().to_string();
+        let lock_path = state_root.join("daemon.lock");
         let child = Command::new(docdex_bin())
             .env("DOCDEX_ENABLE_MEMORY", "0")
             .env("DOCDEX_WEB_ENABLED", "0")
             .env("DOCDEX_STATE_DIR", state_root)
             .env("DOCDEX_ENABLE_MCP", "0")
             .env("DOCDEX_ENABLE_MEMORY", "0")
+            .env("DOCDEX_DAEMON_LOCK_PATH", lock_path.to_string_lossy().as_ref())
             .args([
                 "serve",
                 "--repo",

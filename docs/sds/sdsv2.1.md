@@ -404,9 +404,9 @@ New commands are added to the docdex binary to manage profiles manually, providi
 **Browser setup helpers (web tier dependency):**
 
 * **docdexd browser list/setup/install**  
-  * **Description:** Lists discovered headless-capable browsers, runs auto-discovery, and installs a Playwright-managed Chromium build when no browser is present (macOS/Windows/Linux).  
+  * **Description:** Lists discovered headless-capable browsers, runs auto-discovery, and installs a Docdex-managed Chromium build when no browser is present (macOS/Windows/Linux).  
   * **Usage:** docdexd browser list \| docdexd browser setup \| docdexd browser install  
-  * **Behavior:** Persists `web.scraper.chrome_binary_path` and `web.scraper.browser_kind` in `~/.docdex/config.toml`; `web.scraper.auto_install` defaults to true (override with `DOCDEX_BROWSER_AUTO_INSTALL=0`). Use `PLAYWRIGHT_BROWSERS_PATH` to override the Playwright cache location.
+  * **Behavior:** Persists `web.scraper.chrome_binary_path` and `web.scraper.browser_kind` in `~/.docdex/config.toml`; `web.scraper.auto_install` defaults to true (override with `DOCDEX_BROWSER_AUTO_INSTALL=0`). Chromium installs land under `~/.docdex/state/bin/chromium/`.
 
 ### **6.2 HTTP API Extensions**
 
@@ -427,7 +427,7 @@ The Chat API is updated to accept an agent\_id context, enabling the **Waterfall
   * If new, unindexed, or stale, it starts an async index crawl and returns status "indexing" or "stale".  
   * If ready, returns status "ready" and the repo_id for subsequent requests.
   * The singleton daemon runs as `docdexd daemon` and uses a lockfile at `~/.docdex/daemon.lock`; CLI entrypoints auto-start it when missing.
-  * The npm installer auto-selects a port (prefers 3000, fallback 3210), updates `~/.docdex/config.toml`, injects MCP config into supported clients, and attempts OS startup registration (with a one-time warning if blocked).
+  * The npm installer uses fixed port `28491`, updates `~/.docdex/config.toml`, injects MCP config into supported clients, and attempts OS startup registration (with a one-time warning if blocked). If the port is already in use, installation fails and no configs are updated.
   * The npm installer **does not** install Ollama/models directly. It launches a setup wizard (`docdex setup`) that requests user consent before installing Ollama and models.
   * If Ollama is installed but not running, the setup wizard will attempt to start it before pulling models.
   * Setup overrides: `DOCDEX_SETUP_FORCE`, `DOCDEX_OLLAMA_INSTALL`, `DOCDEX_OLLAMA_MODEL_PROMPT`, `DOCDEX_OLLAMA_MODEL_ASSUME_Y`.

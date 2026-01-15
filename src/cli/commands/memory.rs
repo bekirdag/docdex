@@ -153,6 +153,7 @@ async fn run_store_via_http(repo: RepoArgs, text: String, metadata: Option<Strin
         "metadata": user_metadata,
     });
     let client = CliHttpClient::new()?;
+    client.ensure_repo(&repo_root).await?;
     let mut req = client
         .request(Method::POST, "/v1/memory/store")
         .json(&payload);
@@ -169,6 +170,7 @@ async fn run_recall_via_http(repo: RepoArgs, query: String, top_k: usize) -> Res
         "top_k": top_k,
     });
     let client = CliHttpClient::new()?;
+    client.ensure_repo(&repo_root).await?;
     let mut req = client
         .request(Method::POST, "/v1/memory/recall")
         .json(&payload);

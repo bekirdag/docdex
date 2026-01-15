@@ -92,6 +92,7 @@ async fn run_diagnostics_via_http(
 ) -> Result<()> {
     let repo_root = repo.repo_root();
     let client = CliHttpClient::new()?;
+    client.ensure_repo(&repo_root).await?;
     let mut req = client.request(Method::GET, "/v1/graph/impact/diagnostics");
     if let Some(file) = file {
         req = req.query(&[("file", file)]);

@@ -38,7 +38,7 @@ Installer notes:
 - Platform diagnostics (no download): `docdex doctor` (alias `docdex diagnostics`).
 
 Postinstall behavior:
-- Docdex registers a local daemon and writes MCP client config pointing to `http://localhost:<port>/v1/mcp/sse` (Codex uses `http://localhost:<port>/v1/mcp`).
+- Docdex registers a local daemon and writes MCP client config pointing to `http://localhost:28491/v1/mcp/sse` (Codex uses `http://localhost:28491/v1/mcp`). Install fails if port `28491` is already in use.
 - Auto-configured clients (when config files are present): Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Continue, VS Code, PearAI, Void, Zed, Codex. Restart clients after install.
 - If Ollama is missing, the installer can prompt to install it and the default embedding model.
 - Skip prompts with `DOCDEX_OLLAMA_INSTALL=0` or `DOCDEX_OLLAMA_MODEL_PROMPT=0`.
@@ -63,11 +63,11 @@ docdexd index --repo /path/to/repo
 
 # serve HTTP API with watcher (legacy; singleton lock enforced)
 
-docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 3210 --log warn --secure-mode=false
+docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 28491 --log warn --secure-mode=false
 
 # singleton daemon (shared MCP over /v1/mcp/sse; preferred)
 
-docdexd daemon --repo /path/to/repo --host 127.0.0.1 --port 3210 --log warn --secure-mode=false
+docdexd daemon --host 127.0.0.1 --port 28491 --log warn --secure-mode=false
 
 # ad-hoc query via CLI
 
@@ -89,7 +89,7 @@ Notes:
 - `mcp`: stdio bridge to the shared daemon for clients that require stdio.
 
 ## Repo scoping (multi-repo daemon)
-When a singleton daemon has more than one repo mounted, the daemon requires an explicit repo scope.
+When a singleton daemon starts without a default repo or has more than one repo mounted, the daemon requires an explicit repo scope.
 
 - Mount a repo and get its `repo_id`:
   - `POST /v1/initialize` with `{ "rootUri": "file:///path/to/repo" }`
@@ -113,7 +113,7 @@ Supported auto-detected MCP clients (installation adds config when the file exis
 - Codex
 
 ### Shared MCP (daemon, HTTP/SSE)
-Start the daemon and point clients at `http://localhost:<port>/v1/mcp/sse`.
+Start the daemon and point clients at `http://localhost:28491/v1/mcp/sse`.
 Prefer HTTP/SSE; use `docdexd mcp` only for clients that require stdio.
 
 Notes:
@@ -126,7 +126,7 @@ JSON config example (Cursor, Continue, Cline, Claude Desktop devtools):
 {
   "mcpServers": {
     "docdex": {
-      "url": "http://localhost:3210/v1/mcp/sse"
+      "url": "http://localhost:28491/v1/mcp/sse"
     }
   }
 }
@@ -135,7 +135,7 @@ JSON config example (Cursor, Continue, Cline, Claude Desktop devtools):
 Codex config example (TOML):
 ```toml
 [mcp_servers]
-docdex = { url = "http://localhost:3210/v1/mcp" }
+docdex = { url = "http://localhost:28491/v1/mcp" }
 ```
 
 ### Legacy stdio MCP
@@ -167,9 +167,9 @@ Supported AST/symbols languages: Rust, Python, JavaScript, TypeScript, Go, Java,
 
 Examples:
 ```bash
-curl "http://127.0.0.1:3210/v1/symbols?file=src/app.ts"
-curl "http://127.0.0.1:3210/v1/ast?name=handleRequest&pathPrefix=src"
-curl "http://127.0.0.1:3210/v1/graph/impact?file=src/app.ts&maxDepth=3"
+curl "http://127.0.0.1:28491/v1/symbols?file=src/app.ts"
+curl "http://127.0.0.1:28491/v1/ast?name=handleRequest&pathPrefix=src"
+curl "http://127.0.0.1:28491/v1/graph/impact?file=src/app.ts&maxDepth=3"
 ```
 
 ## Local LLM usage (Ollama)
@@ -192,9 +192,9 @@ Setup overrides:
 - `DOCDEX_OLLAMA_INSTALL=1|0`: auto-accept or skip the Ollama install prompt.
 - `DOCDEX_OLLAMA_MODEL_PROMPT=1|0`: force model prompts on/off.
 - `DOCDEX_OLLAMA_MODEL_ASSUME_Y=1`: auto-accept recommended model installs.
-- `DOCDEX_BROWSER_INSTALL=chromium,firefox,webkit`: preselect Playwright browsers to install (comma-separated; use `skip` to opt out).
+- `DOCDEX_BROWSER_INSTALL=chromium|skip`: auto-accept or skip the Chromium download prompt.
 
-The setup wizard also offers Playwright browser installation; Chromium is selected by default and you can opt into Firefox/WebKit.
+The setup wizard can download Chromium into `~/.docdex/state/bin/chromium/`.
 
 Manual setup:
 ```bash
@@ -217,7 +217,7 @@ Enable Ollama later (if skipped during install):
 
 Run Docdex with Ollama:
 ```bash
-DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdexd daemon --repo /path/to/repo --host 127.0.0.1 --port 3210
+DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdexd daemon --host 127.0.0.1 --port 28491
 ```
 
 ## Repo memory
@@ -231,18 +231,18 @@ docdexd memory-recall --repo /path/to/repo --query "payments retry policy" --top
 
 HTTP:
 ```bash
-curl -X POST "http://127.0.0.1:3210/v1/memory/store" \\
+curl -X POST "http://127.0.0.1:28491/v1/memory/store" \\
   -H "Content-Type: application/json" \\
   -d '{\"text\":\"Payments retry up to 3 times with backoff.\"}'
 
-curl -X POST "http://127.0.0.1:3210/v1/memory/recall" \\
+curl -X POST "http://127.0.0.1:28491/v1/memory/recall" \\
   -H "Content-Type: application/json" \\
   -d '{\"query\":\"payments retry policy\",\"top_k\":5}'
 ```
 
 Notes:
 - Memory uses embeddings (Ollama). If Ollama is unavailable, these calls fail with a structured error.
-- When more than one repo is mounted, `repo_id` is required (query/body or `x-docdex-repo-id`).
+- When the daemon has no default repo or more than one repo is mounted, `repo_id` is required (query/body or `x-docdex-repo-id`).
 
 ## Agent memory (profile preferences)
 Agent memory stores long-lived preferences across repos (style, tooling, constraints, workflow). It lives in the global state dir and does not require a repo path.
@@ -255,7 +255,7 @@ docdexd profile search --agent-id "default" --query "style" --top-k 5
 
 HTTP:
 ```bash
-curl -X POST "http://127.0.0.1:3210/v1/profile/add" \\
+curl -X POST "http://127.0.0.1:28491/v1/profile/add" \\
   -H "Content-Type: application/json" \\
   -d '{\"agent_id\":\"default\",\"content\":\"Use concise bullet points.\",\"category\":\"style\"}'
 ```
@@ -275,7 +275,7 @@ Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary to
 
 ## State, paths, and defaults
 - State/index directory: `~/.docdex/state/repos/<fingerprint>/index` by default (override with `--state-dir` / `DOCDEX_STATE_DIR`).
-- HTTP API: defaults to `127.0.0.1:3210` when serving.
+- HTTP API: defaults to `127.0.0.1:28491` when serving.
 - Docdex data stays local under `~/.docdex/state` unless overridden.
 - Daemon lock: `~/.docdex/locks/daemon.lock` by default (override with `DOCDEX_DAEMON_LOCK_PATH`; falls back to OS temp dir when home is unavailable).
 - Logs: set `DOCDEX_LOG_TO_STATE=1` to also write `~/.docdex/state/logs/docdexd-<pid>.log`.
@@ -325,13 +325,9 @@ Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary to
 - `DOCDEX_WEB_ENABLED=1` to enable (daemon sets this by default unless overridden).
 - `DOCDEX_OFFLINE=1` to force offline.
 - `DOCDEX_WEB_*` knobs for thresholds, timeouts, cache TTL, and backoff.
-- `DOCDEX_WEB_BROWSER` / `DOCDEX_CHROME_PATH` to set a browser binary.
-- `web.scraper.engine` in `config.toml` can be `chrome` (default) or `playwright`.
-- `DOCDEX_PLAYWRIGHT_BROWSER=chromium|firefox|webkit` to pick a Playwright browser (overrides `web.scraper.browser_kind`).
-- `DOCDEX_BROWSER_AUTO_INSTALL=0` to disable Playwright auto-install of Chromium.
-- `DOCDEX_PLAYWRIGHT_FETCHER=/path/to/npm/lib/playwright_fetch.js` to override the Playwright fetch helper.
-- `DOCDEX_NODE_BIN=/path/to/node` or `DOCDEX_PLAYWRIGHT_NODE_BIN=/path/to/node` to override the Node binary used for Playwright helpers (defaults to the Node path recorded in the Playwright manifest when available).
-- `PLAYWRIGHT_BROWSERS_PATH=/path` to override the Playwright browser cache location.
+- `DOCDEX_WEB_BROWSER` / `DOCDEX_CHROME_PATH` to set a Chromium binary.
+- `web.scraper.engine` in `config.toml` is `chromium` (only supported engine).
+- `DOCDEX_BROWSER_AUTO_INSTALL=0` to disable Chromium auto-install.
 
 ## Ops and safety
 - Health check: `GET /healthz`.

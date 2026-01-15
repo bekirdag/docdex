@@ -61,9 +61,9 @@ This task list translates `docs/single_daemon.md` into implementable work items.
 - Implement idempotent config injector for all listed clients.
   - Files: `npm/lib/install.js`, new `npm/lib/install_configs.js`.
   - Acceptance: running npm install twice does not duplicate entries.
-- Automatic port selection and injection.
+- Fixed port enforcement and config injection.
   - Files: `npm/lib/install_configs.js`, `npm/lib/install.js`, daemon config.
-  - Acceptance: installer detects port conflicts, chooses free port, injects correct URL.
+  - Acceptance: installer rejects port conflicts, uses port `28491`, injects correct URL.
 - Add startup integration:
   - macOS LaunchAgent, Linux systemd user, Windows Task Scheduler.
   - Files: `npm/lib/startup/*.js`, docs.
@@ -81,6 +81,6 @@ This task list translates `docs/single_daemon.md` into implementable work items.
 - Add integration tests for `/v1/initialize`.
 - Add MCP socket/stdio proxy tests.
 - Add installer config injection tests.
-- Add tests for automatic port selection + config injection.
+- Add tests for fixed port conflict detection + config injection.
 - Add tests for startup failure message gating.
 - Update `docs/test_artifacts.md` with new tests.

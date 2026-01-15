@@ -48,6 +48,7 @@ async fn run_via_http(
     let repo_root = repo.repo_root();
     let format = format.trim().to_ascii_lowercase();
     let client = CliHttpClient::new()?;
+    client.ensure_repo(&repo_root).await?;
     let mut req = client.request(Method::GET, "/v1/dag/export");
     let mut params: Vec<(&str, String)> =
         vec![("session_id", session_id), ("format", format.clone())];

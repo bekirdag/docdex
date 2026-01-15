@@ -77,6 +77,7 @@ async fn run_fetch_via_http(repo: RepoArgs, sources: Option<PathBuf>) -> Result<
         "sources_path": sources.as_ref().map(|path| path.to_string_lossy().to_string()),
     });
     let client = CliHttpClient::new()?;
+    client.ensure_repo(&repo_root).await?;
     let mut req = client
         .request(Method::POST, "/v1/libs/fetch")
         .json(&payload);
@@ -91,6 +92,7 @@ async fn run_ingest_via_http(repo: RepoArgs, sources: PathBuf) -> Result<()> {
         "sources_path": sources.to_string_lossy().to_string(),
     });
     let client = CliHttpClient::new()?;
+    client.ensure_repo(&repo_root).await?;
     let mut req = client
         .request(Method::POST, "/v1/libs/ingest")
         .json(&payload);
@@ -105,6 +107,7 @@ async fn run_discover_via_http(repo: RepoArgs, sources: Option<PathBuf>) -> Resu
         "sources_path": sources.as_ref().map(|path| path.to_string_lossy().to_string()),
     });
     let client = CliHttpClient::new()?;
+    client.ensure_repo(&repo_root).await?;
     let mut req = client
         .request(Method::POST, "/v1/libs/discover")
         .json(&payload);

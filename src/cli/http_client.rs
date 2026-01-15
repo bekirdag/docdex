@@ -2,6 +2,7 @@ use crate::config;
 use crate::repo_manager;
 use anyhow::{anyhow, Result};
 use reqwest::{Client, Method, RequestBuilder};
+use serde_json::json;
 use std::path::Path;
 use std::time::Duration;
 
@@ -61,6 +62,22 @@ impl CliHttpClient {
     ) -> Result<RequestBuilder> {
         let repo_id = repo_manager::repo_fingerprint_sha256(repo_root)?;
         Ok(req.header(REPO_ID_HEADER, repo_id))
+    }
+
+    pub(crate) async fn ensure_repo(&self, repo_root: &Path) -> Result<()> {
+        let root_uri = repo_root.to_string_lossy().to_string();
+        let payload = json!({ "rootUri": root_uri });
+        let resp = self
+            .request(Method::POST, "/v1/initialize")
+            .json(&payload)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("docdexd initialize failed ({status}): {body}");
+        }
+        Ok(())
     }
 }
 

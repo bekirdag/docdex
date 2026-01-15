@@ -37,19 +37,19 @@ impl Drop for EnvGuard {
 #[test]
 fn normalize_base_url_adds_scheme() {
     assert_eq!(
-        normalize_base_url("127.0.0.1:3210"),
-        "http://127.0.0.1:3210"
+        normalize_base_url("127.0.0.1:28491"),
+        "http://127.0.0.1:28491"
     );
     assert_eq!(
-        normalize_base_url("http://localhost:3210"),
-        "http://localhost:3210"
+        normalize_base_url("http://localhost:28491"),
+        "http://localhost:28491"
     );
 }
 
 #[test]
 fn request_adds_auth_header_when_present() -> Result<(), Box<dyn std::error::Error>> {
     let _env = EnvGuard::set(&[
-        ("DOCDEX_HTTP_BASE_URL", "http://127.0.0.1:3210"),
+        ("DOCDEX_HTTP_BASE_URL", "http://127.0.0.1:28491"),
         ("DOCDEX_AUTH_TOKEN", "secret-token"),
     ]);
     let client = CliHttpClient::new()?;
@@ -65,7 +65,7 @@ fn request_adds_auth_header_when_present() -> Result<(), Box<dyn std::error::Err
 
 #[test]
 fn with_repo_adds_repo_id_header() -> Result<(), Box<dyn std::error::Error>> {
-    let _env = EnvGuard::set(&[("DOCDEX_HTTP_BASE_URL", "http://127.0.0.1:3210")]);
+    let _env = EnvGuard::set(&[("DOCDEX_HTTP_BASE_URL", "http://127.0.0.1:28491")]);
     let temp = TempDir::new()?;
     let client = CliHttpClient::new()?;
     let req = client.request(Method::GET, "/healthz");

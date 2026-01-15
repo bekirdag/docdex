@@ -1,10 +1,10 @@
 # Docdex HTTP API
 
-Docdex exposes a local HTTP server (default `127.0.0.1:3210`). Use it directly or through MCP.
+Docdex exposes a local HTTP server (default `127.0.0.1:28491`). Use it directly or through MCP.
 
 ## Base URL and auth
 
-- Default base URL: `http://127.0.0.1:3210`
+- Default base URL: `http://127.0.0.1:28491`
 - Secure mode is on by default for non-loopback binds.
 - If `--auth-token` is set, include `Authorization: Bearer <token>`.
 
@@ -13,7 +13,7 @@ Docdex exposes a local HTTP server (default `127.0.0.1:3210`). Use it directly o
 Docdex can run in two modes:
 
 - Per-repo daemon: `repo_id` is optional but must match the daemon repo when provided.
-- Singleton daemon: mount repos with `POST /v1/initialize` and pass `repo_id` on later requests. Once more than one repo is mounted, `repo_id` becomes required for all repo-scoped endpoints.
+- Singleton daemon: mount repos with `POST /v1/initialize` and pass `repo_id` on later requests. If the daemon starts without a default repo or has more than one repo mounted, `repo_id` becomes required for all repo-scoped endpoints.
 
 Repo selection rules:
 
@@ -77,7 +77,7 @@ Query params:
 
 Example:
 ```bash
-curl "http://127.0.0.1:3210/search?q=payment%20retry&limit=5"
+curl "http://127.0.0.1:28491/search?q=payment%20retry&limit=5"
 ```
 
 ### Snippet

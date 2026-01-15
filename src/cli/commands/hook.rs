@@ -114,6 +114,7 @@ fn resolve_hook_socket_path() -> Result<Option<PathBuf>> {
 
 async fn send_hook_http(repo_root: &Path, files: &[String]) -> Result<HookValidateOutcome> {
     let client = CliHttpClient::new()?;
+    client.ensure_repo(repo_root).await?;
     let request = client.request(Method::POST, "/v1/hooks/validate");
     let request = client.with_repo(request, repo_root)?;
     send_hook_request(request.json(&HookValidateRequest {

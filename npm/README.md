@@ -79,7 +79,7 @@ docdexd index --repo /path/to/my-project
 Start the shared server. This handles HTTP requests and MCP connections.
 
 ```bash
-docdexd daemon --repo /path/to/my-project --host 127.0.0.1 --port 3210
+docdexd daemon --host 127.0.0.1 --port 28491
 
 ```
 
@@ -121,7 +121,7 @@ If you need to configure your client manually:
 {
   "mcpServers": {
     "docdex": {
-      "url": "http://localhost:3210/v1/mcp/sse"
+      "url": "http://localhost:28491/v1/mcp/sse"
     }
   }
 }
@@ -132,7 +132,7 @@ If you need to configure your client manually:
 
 ```toml
 [mcp_servers]
-docdex = { url = "http://localhost:3210/v1/mcp" }
+docdex = { url = "http://localhost:28491/v1/mcp" }
 
 ```
 
@@ -152,10 +152,10 @@ Don't just find the string "addressGenerator"; find the **definition** and what 
 
 ```bash
 # Find definition
-curl "http://127.0.0.1:3210/v1/ast?name=addressGenerator&pathPrefix=src"
+curl "http://127.0.0.1:28491/v1/ast?name=addressGenerator&pathPrefix=src"
 
 # Track downstream impact (what breaks if I change this?)
-curl "http://127.0.0.1:3210/v1/graph/impact?file=src/app.ts&maxDepth=3"
+curl "http://127.0.0.1:28491/v1/graph/impact?file=src/app.ts&maxDepth=3"
 
 ```
 
@@ -190,7 +190,7 @@ Docdex uses Ollama for embeddings and optional local chat.
 * **Manual:** Ensure `nomic-embed-text` is pulled in Ollama (`ollama pull nomic-embed-text`).
 * **Custom URL:**
 ```bash
-DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdexd daemon ...
+DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdexd daemon --host 127.0.0.1 --port 28491
 
 ```
 
@@ -211,16 +211,20 @@ Docdex runs as a local daemon serving:
 Run a single daemon and mount additional repos on demand.
 
 ```bash
-docdexd daemon --repo /path/to/repo-a --port 3210
+docdexd daemon --port 28491
 
-# Mount another repo and capture its repo_id
-curl -X POST "http://127.0.0.1:3210/v1/initialize" \
+# Mount repos and capture repo_id values
+curl -X POST "http://127.0.0.1:28491/v1/initialize" \
+  -H "Content-Type: application/json" \
+  -d '{"rootUri":"file:///path/to/repo-a"}'
+
+curl -X POST "http://127.0.0.1:28491/v1/initialize" \
   -H "Content-Type: application/json" \
   -d '{"rootUri":"file:///path/to/repo-b"}'
 ```
 
 Notes:
-- When more than one repo is mounted, include `x-docdex-repo-id: <sha256>` on HTTP requests.
+- When more than one repo is mounted (or the daemon starts without a default repo), include `x-docdex-repo-id: <sha256>` on HTTP requests.
 - MCP sessions bind to the repo provided in `initialize.rootUri` and reuse that repo automatically.
 
 ### Security

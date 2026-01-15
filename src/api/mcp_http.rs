@@ -484,6 +484,7 @@ mod tests {
             llm_default_model: "test".to_string(),
             repos: None,
             multi_repo: false,
+            require_repo_id: false,
             mcp_router,
         };
         Ok((state, temp))

@@ -4793,13 +4793,13 @@ mod tests {
             enabled: true,
             trigger_threshold: 0.45,
             min_local_match_ratio: 0.2,
-            browser_hint: Some("playwright".to_string()),
+            browser_hint: Some("chromium".to_string()),
             browser_available: false,
         };
         let status = evaluate_gate_status("req", &gate, Some(0.1), Some(0.1), None, false, false);
         assert_eq!(status.status, WebDiscoveryStatusCode::Unavailable);
         assert_eq!(status.reason.as_deref(), Some("missing_dependency"));
-        assert!(status.message.as_deref().unwrap().contains("playwright"));
+        assert!(status.message.as_deref().unwrap().contains("chromium"));
     }
 
     #[test]
@@ -4917,14 +4917,7 @@ pub(crate) fn resolve_browser_available(hint: Option<&str>) -> bool {
         return false;
     }
 
-    util::read_playwright_manifest()
-        .map(|manifest| {
-            manifest
-                .browsers
-                .iter()
-                .any(|browser| browser.path.is_file())
-        })
-        .unwrap_or(false)
+    util::detect_browser_binary(None).is_some()
 }
 
 fn resolve_web_limit(requested: Option<usize>, fallback: usize) -> usize {

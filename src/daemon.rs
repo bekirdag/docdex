@@ -305,6 +305,7 @@ pub async fn serve(
     default_agent_id: Option<String>,
     global_state_dir: Option<PathBuf>,
     daemon_mode: bool,
+    require_repo_id: bool,
 ) -> Result<()> {
     #[cfg(unix)]
     {
@@ -623,6 +624,7 @@ pub async fn serve(
         llm_default_model,
         repos: repo_manager,
         multi_repo: daemon_mode,
+        require_repo_id,
         mcp_router,
     };
     if !daemon_mode {

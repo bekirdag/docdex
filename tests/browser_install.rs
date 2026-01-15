@@ -18,12 +18,6 @@ impl EnvGuard {
         std::env::set_var(key, value);
         Self { key, prev }
     }
-
-    fn unset(key: &'static str) -> Self {
-        let prev = std::env::var_os(key);
-        std::env::remove_var(key);
-        Self { key, prev }
-    }
 }
 
 impl Drop for EnvGuard {
@@ -48,20 +42,19 @@ fn touch_file(path: &Path) {
     }
 }
 
-fn write_playwright_manifest(root: &Path, chromium_path: &Path) {
+fn write_chromium_manifest(root: &Path, chromium_path: &Path) {
     let manifest_dir = root
         .join(".docdex")
         .join("state")
         .join("bin")
-        .join("playwright");
+        .join("chromium");
     std::fs::create_dir_all(&manifest_dir).expect("create manifest dir");
     let payload = serde_json::json!({
         "installed_at": "2024-01-01T00:00:00Z",
-        "browsers_path": manifest_dir.to_string_lossy(),
-        "playwright_version": "1.2.3",
-        "browsers": [
-            { "name": "chromium", "version": "12345", "path": chromium_path }
-        ]
+        "version": "12345",
+        "platform": "linux64",
+        "download_url": "https://example.com/chromium.zip",
+        "path": chromium_path,
     });
     std::fs::write(manifest_dir.join("manifest.json"), payload.to_string())
         .expect("write manifest");
@@ -76,16 +69,15 @@ fn browser_install_respects_opt_out() {
 }
 
 #[test]
-fn browser_install_reads_playwright_manifest() {
+fn browser_install_reads_chromium_manifest() {
     let _lock = ENV_LOCK.lock().unwrap();
     let temp = TempDir::new().expect("tempdir");
-    let chromium_path = temp.path().join("pw-chromium");
+    let chromium_path = temp.path().join("docdex-chromium");
     touch_file(&chromium_path);
-    write_playwright_manifest(temp.path(), &chromium_path);
+    write_chromium_manifest(temp.path(), &chromium_path);
 
     let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
     let _auto_install = EnvGuard::set("DOCDEX_BROWSER_AUTO_INSTALL", "1");
-    let _pw_path = EnvGuard::unset("PLAYWRIGHT_BROWSERS_PATH");
 
     let result = browser_install::install_if_missing(true).expect("install ok");
     let Some(result) = result else {

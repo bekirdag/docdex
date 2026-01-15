@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_URL="${DOCDEX_HTTP_BASE_URL:-http://127.0.0.1:3210}"
+BASE_URL="${DOCDEX_HTTP_BASE_URL:-http://127.0.0.1:28491}"
 
 log() {
   printf "[api-http] %s\n" "$*" >&2

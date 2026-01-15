@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
@@ -143,6 +144,34 @@ pub fn default_state_base_dir() -> Result<PathBuf> {
     let home =
         home_dir().ok_or_else(|| anyhow!("unable to resolve home directory for state dir"))?;
     Ok(home.join(".docdex").join("state"))
+}
+
+pub fn daemon_root_dir_from_state_base(state_base: &Path) -> Result<PathBuf> {
+    let root = state_base.parent().ok_or_else(|| {
+        anyhow!(
+            "unable to resolve docdex state root from {}",
+            state_base.display()
+        )
+    })?;
+    Ok(root.join("daemon_root"))
+}
+
+pub fn ensure_daemon_root_dir(state_base: &Path) -> Result<PathBuf> {
+    let root = state_base.parent().ok_or_else(|| {
+        anyhow!(
+            "unable to resolve docdex state root from {}",
+            state_base.display()
+        )
+    })?;
+    crate::state_layout::ensure_state_dir_secure(root)?;
+    let daemon_root = root.join("daemon_root");
+    fs::create_dir_all(&daemon_root).map_err(|err| {
+        anyhow!(
+            "failed to create daemon root {}: {err}",
+            daemon_root.display()
+        )
+    })?;
+    Ok(daemon_root)
 }
 
 fn home_dir() -> Option<PathBuf> {

@@ -34,11 +34,13 @@ fn spawn_server(
 ) -> Result<Child, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
+    let lock_path = state_root.join("daemon.lock");
     Ok(Command::new(docdex_bin())
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
+        .env("DOCDEX_DAEMON_LOCK_PATH", lock_path.to_string_lossy().as_ref())
         .args([
             "serve",
             "--repo",

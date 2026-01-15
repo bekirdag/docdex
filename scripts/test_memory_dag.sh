@@ -4,7 +4,7 @@ set -euo pipefail
 DOCDEXD_BIN="${DOCDEXD_BIN:-$HOME/.cargo/bin/docdexd}"
 REPO_ROOT="${REPO_ROOT:-$(pwd)}"
 REPO_B="${REPO_B:-}"
-SERVER_URL="${SERVER_URL:-http://127.0.0.1:3210}"
+SERVER_URL="${SERVER_URL:-http://127.0.0.1:28491}"
 OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-}"
 EMBEDDING_MODEL="${EMBEDDING_MODEL:-}"
 START_SERVER="${START_SERVER:-0}"
@@ -43,13 +43,13 @@ from urllib.parse import urlparse
 url = sys.argv[1]
 parsed = urlparse(url)
 host = parsed.hostname or "127.0.0.1"
-port = parsed.port or 3210
+port = parsed.port or 28491
 print(host)
 print(port)
 PY
   )
   SERVER_HOST="${server_parts[0]:-127.0.0.1}"
-  SERVER_PORT="${server_parts[1]:-3210}"
+  SERVER_PORT="${server_parts[1]:-28491}"
   echo "starting docdexd server; logging to $LOG_FILE"
   "$DOCDEXD_BIN" serve \
     --repo "$REPO_ROOT" \

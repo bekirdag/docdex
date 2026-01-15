@@ -36,8 +36,8 @@ test("upsertServerConfig adds server section when missing", () => {
 });
 
 test("parseServerBind reads existing http_bind_addr", () => {
-  const contents = ["[server]", "http_bind_addr = \"127.0.0.1:3210\""].join("\n");
-  assert.equal(parseServerBind(contents), "127.0.0.1:3210");
+  const contents = ["[server]", "http_bind_addr = \"127.0.0.1:28491\""].join("\n");
+  assert.equal(parseServerBind(contents), "127.0.0.1:28491");
 });
 
 test("upsertMcpServerJson sets docdex url", () => {
@@ -105,7 +105,7 @@ test("upsertZedConfig sets experimental_mcp_servers", () => {
 test("upsertCodexConfig appends docdex server", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-codex-"));
   const file = path.join(dir, "config.toml");
-  const url = configStreamableUrlForPort(3210);
+  const url = configStreamableUrlForPort(28491);
   const changed = upsertCodexConfig(file, url);
   assert.equal(changed, true);
   const contents = fs.readFileSync(file, "utf8");
@@ -227,17 +227,13 @@ test("runPostInstallSetup does not call Ollama installers", () => {
   assert.equal(source.includes("maybePromptOllamaModel"), false);
 });
 
-test("buildDaemonEnv includes playwright fetcher when bundled", () => {
-  const expectedFetcher = path.join(__dirname, "..", "lib", "playwright_fetch.js");
+test("buildDaemonEnv includes base daemon env values", () => {
   const env = buildDaemonEnv({
     mcpBinaryPath: "/tmp/docdex-mcp",
     env: { DOCDEX_ENABLE_STANDALONE_MCP: "1" }
   });
   assert.equal(env.DOCDEX_BROWSER_AUTO_INSTALL, "0");
   assert.equal(env.DOCDEX_MCP_SERVER_BIN, "/tmp/docdex-mcp");
-  if (fs.existsSync(expectedFetcher)) {
-    assert.equal(env.DOCDEX_PLAYWRIGHT_FETCHER, expectedFetcher);
-  }
 });
 
 test("resolveOllamaInstallMode respects env overrides", () => {
@@ -419,7 +415,7 @@ test("readLlmDefaultModel detects default model in config", () => {
 });
 
 test("upsertLlmDefaultModel adds llm section when missing", () => {
-  const contents = ["[server]", "http_bind_addr = \"127.0.0.1:3210\""].join("\n");
+  const contents = ["[server]", "http_bind_addr = \"127.0.0.1:28491\""].join("\n");
   const updated = upsertLlmDefaultModel(contents, "phi3.5:3.8b");
   assert.ok(updated.includes("[llm]"));
   assert.ok(updated.includes("default_model = \"phi3.5:3.8b\""));

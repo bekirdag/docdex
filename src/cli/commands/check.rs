@@ -1080,43 +1080,43 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
 
         let auto_install_enabled =
             env_boolish("DOCDEX_BROWSER_AUTO_INSTALL").unwrap_or(config.web.scraper.auto_install);
-        let playwright_details = resolve_playwright_details();
-        let browser_available = playwright_details
+        let chromium_details = resolve_chromium_details();
+        let browser_available = chromium_details
             .as_ref()
-            .and_then(|details| details.get("browsers"))
-            .and_then(|value| value.as_array())
-            .map(|browsers| !browsers.is_empty())
+            .and_then(|details| details.get("path"))
+            .and_then(|value| value.as_str())
+            .map(|path| Path::new(path).is_file())
             .unwrap_or(false);
         if browser_available {
             let mut details = json!({
                 "auto_install_enabled": auto_install_enabled,
                 "configured_kind": config.web.scraper.browser_kind.as_deref(),
             });
-            if let Some(playwright) = playwright_details {
+            if let Some(chromium) = chromium_details {
                 if let Some(map) = details.as_object_mut() {
-                    map.insert("playwright".to_string(), playwright);
+                    map.insert("chromium".to_string(), chromium);
                 }
             }
             checks.push(CheckItem {
                 name: "browser",
                 status: "ok",
-                message: "playwright browsers available".to_string(),
+                message: "chromium available".to_string(),
                 details: Some(details),
             });
         } else {
             let mut details = json!({
                 "auto_install_enabled": auto_install_enabled,
-                "install_hint": "docdexd browser setup",
+                "install_hint": "docdexd browser install",
             });
-            if let Some(playwright) = playwright_details {
+            if let Some(chromium) = chromium_details {
                 if let Some(map) = details.as_object_mut() {
-                    map.insert("playwright".to_string(), playwright);
+                    map.insert("chromium".to_string(), chromium);
                 }
             }
             checks.push(CheckItem {
                 name: "browser",
                 status: "warn",
-                message: "playwright browsers not installed (web scraping disabled)".to_string(),
+                message: "chromium not installed (web scraping disabled)".to_string(),
                 details: Some(details),
             });
         }
@@ -1254,35 +1254,30 @@ fn env_boolish(key: &str) -> Option<bool> {
     }
 }
 
-fn resolve_playwright_details() -> Option<serde_json::Value> {
-    let manifest_path = util::resolve_playwright_manifest_path()?;
+fn resolve_chromium_details() -> Option<serde_json::Value> {
+    let manifest_path = util::resolve_chromium_manifest_path()?;
     let mut payload = json!({
         "manifest_path": manifest_path.to_string_lossy(),
     });
-    let Some(manifest) = util::read_playwright_manifest() else {
+    let Some(manifest) = util::read_chromium_manifest() else {
         return Some(payload);
     };
-    let browsers: Vec<_> = manifest
-        .browsers
-        .iter()
-        .map(|browser| {
-            json!({
-                "name": browser.name,
-                "version": browser.version,
-                "path": browser.path.to_string_lossy(),
-            })
-        })
-        .collect();
     if let Some(map) = payload.as_object_mut() {
-        map.insert("browsers".to_string(), json!(browsers));
+        map.insert(
+            "path".to_string(),
+            json!(manifest.path.to_string_lossy()),
+        );
         if let Some(installed_at) = manifest.installed_at.as_ref() {
             map.insert("installed_at".to_string(), json!(installed_at));
         }
-        if let Some(path) = manifest.browsers_path.as_ref() {
-            map.insert("browsers_path".to_string(), json!(path.to_string_lossy()));
+        if let Some(version) = manifest.version.as_ref() {
+            map.insert("version".to_string(), json!(version));
         }
-        if let Some(version) = manifest.playwright_version.as_ref() {
-            map.insert("playwright_version".to_string(), json!(version));
+        if let Some(platform) = manifest.platform.as_ref() {
+            map.insert("platform".to_string(), json!(platform));
+        }
+        if let Some(url) = manifest.download_url.as_ref() {
+            map.insert("download_url".to_string(), json!(url));
         }
     }
     Some(payload)

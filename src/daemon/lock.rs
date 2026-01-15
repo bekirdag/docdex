@@ -373,7 +373,7 @@ fn process_matches(
     }
     let cmd = process.cmd();
     if cmd.is_empty() {
-        return true;
+        return false;
     }
     for part in cmd {
         for term in expected_cmd_terms {
@@ -423,7 +423,7 @@ fn probe_health(port: u16) -> bool {
     if stream.write_all(request.as_bytes()).is_err() {
         return false;
     }
-    let mut buf = [0u8; 32];
+    let mut buf = [0u8; 128];
     let Ok(read) = stream.read(&mut buf) else {
         return false;
     };
@@ -431,7 +431,9 @@ fn probe_health(port: u16) -> bool {
         return false;
     }
     let head = std::str::from_utf8(&buf[..read]).unwrap_or("");
-    head.starts_with("HTTP/1.1 200") || head.starts_with("HTTP/1.0 200")
+    let (status, body) = head.split_once("\r\n\r\n").unwrap_or((head, ""));
+    let status_ok = status.starts_with("HTTP/1.1 200") || status.starts_with("HTTP/1.0 200");
+    status_ok && body.trim() == "ok"
 }
 
 #[cfg(test)]
@@ -500,7 +502,7 @@ mod tests {
                 let mut buf = [0u8; 64];
                 let _ = stream.read(&mut buf);
                 let _ = stream.write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Length:2\r\nConnection: close\r\n\r\nOK",
+                    b"HTTP/1.1 200 OK\r\nContent-Length:2\r\nConnection: close\r\n\r\nok",
                 );
             }
         });
@@ -572,12 +574,12 @@ mod tests {
     fn lock_metadata_roundtrip() -> Result<()> {
         let dir = TempDir::new()?;
         let path = dir.path().join("daemon.lock");
-        let lock = acquire_lock_at_path(&path, 3210)?;
+        let lock = acquire_lock_at_path(&path, 28491)?;
         let expected_pid = lock.metadata.pid;
         drop(lock);
         let snapshot = read_metadata(&path)?.expect("metadata present");
         assert_eq!(snapshot.pid, expected_pid);
-        assert_eq!(snapshot.port, 3210);
+        assert_eq!(snapshot.port, 28491);
         Ok(())
     }
 

@@ -2,25 +2,65 @@
 "use strict";
 
 const fs = require("node:fs");
+const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const DAEMON_TASK_NAME = "Docdex Daemon";
 const STARTUP_FAILURE_MARKER = "startup_registration_failed.json";
+const BIN_NAMES = ["docdex", "docdexd", "docdex-mcp-server"];
+const PACKAGE_NAME = "docdex";
+const DEFAULT_HOST = "127.0.0.1";
+const DEFAULT_DAEMON_PORT = 28491;
+const PORT_WAIT_TIMEOUT_MS = 3000;
+const PORT_WAIT_INTERVAL_MS = 200;
+
+function docdexRootPath() {
+  return path.join(os.homedir(), ".docdex");
+}
 
 function daemonRootPath() {
-  return path.join(os.homedir(), ".docdex", "daemon_root");
+  return path.join(docdexRootPath(), "daemon_root");
 }
 
 function stateDir() {
-  return path.join(os.homedir(), ".docdex", "state");
+  return path.join(docdexRootPath(), "state");
 }
 
-function daemonLockPath() {
+function daemonLockPaths() {
+  const paths = [];
   const override = process.env.DOCDEX_DAEMON_LOCK_PATH;
-  if (override && override.trim()) return override.trim();
-  return path.join(os.homedir(), ".docdex", "daemon.lock");
+  if (override && override.trim()) paths.push(override.trim());
+  const root = docdexRootPath();
+  paths.push(path.join(root, "locks", "daemon.lock"));
+  paths.push(path.join(root, "daemon.lock"));
+  return Array.from(new Set(paths));
+}
+
+function isPortAvailable(port, host) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.unref();
+    server.once("error", () => resolve(false));
+    server.once("listening", () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, host);
+  });
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForPortFree({ host = DEFAULT_HOST, port = DEFAULT_DAEMON_PORT } = {}) {
+  const deadline = Date.now() + PORT_WAIT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (await isPortAvailable(port, host)) return true;
+    await sleep(PORT_WAIT_INTERVAL_MS);
+  }
+  return false;
 }
 
 function clientConfigPaths() {
@@ -383,18 +423,20 @@ function killPid(pid) {
 }
 
 function stopDaemonFromLock() {
-  const lockPath = daemonLockPath();
-  if (!fs.existsSync(lockPath)) return false;
-  try {
-    const raw = fs.readFileSync(lockPath, "utf8");
-    const payload = JSON.parse(raw);
-    const pid = payload && typeof payload.pid === "number" ? payload.pid : null;
-    const stopped = killPid(pid);
-    fs.unlinkSync(lockPath);
-    return stopped;
-  } catch {
-    return false;
+  let stopped = false;
+  for (const lockPath of daemonLockPaths()) {
+    if (!fs.existsSync(lockPath)) continue;
+    try {
+      const raw = fs.readFileSync(lockPath, "utf8");
+      const payload = JSON.parse(raw);
+      const pid = payload && typeof payload.pid === "number" ? payload.pid : null;
+      stopped = killPid(pid) || stopped;
+      fs.unlinkSync(lockPath);
+    } catch {
+      continue;
+    }
   }
+  return stopped;
 }
 
 function stopDaemonByName() {
@@ -490,16 +532,116 @@ function removeClientConfigs() {
   }
 }
 
-async function main() {
-  const stopped = stopDaemonFromLock();
-  if (!stopped) {
-    stopDaemonByName();
+function removeDocdexRoot() {
+  const root = docdexRootPath();
+  if (!fs.existsSync(root)) return false;
+  const resolvedRoot = path.resolve(root);
+  const resolvedHome = path.resolve(os.homedir());
+  const expectedRoot = path.join(resolvedHome, ".docdex");
+  if (resolvedRoot !== expectedRoot) return false;
+  try {
+    fs.rmSync(resolvedRoot, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
   }
-  stopMcpByName();
+}
+
+function removePath(target) {
+  if (!target || !fs.existsSync(target)) return false;
+  try {
+    fs.rmSync(target, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeBinsInDir(dirPath) {
+  if (!dirPath || !fs.existsSync(dirPath)) return false;
+  let removed = false;
+  for (const name of BIN_NAMES) {
+    removed = removePath(path.join(dirPath, name)) || removed;
+  }
+  return removed;
+}
+
+function removeNodeModuleAt(dirPath) {
+  if (!dirPath) return false;
+  return removePath(path.join(dirPath, PACKAGE_NAME));
+}
+
+function removePrefixInstalls(prefix) {
+  if (!prefix) return;
+  removeBinsInDir(path.join(prefix, "bin"));
+  removeBinsInDir(prefix);
+  removeNodeModuleAt(path.join(prefix, "lib", "node_modules"));
+  removeNodeModuleAt(path.join(prefix, "node_modules"));
+}
+
+function removeHomebrewInstalls() {
+  const prefixes = new Set();
+  if (process.env.HOMEBREW_PREFIX) prefixes.add(process.env.HOMEBREW_PREFIX);
+  prefixes.add("/opt/homebrew");
+  prefixes.add("/usr/local");
+  for (const prefix of prefixes) {
+    removeBinsInDir(path.join(prefix, "bin"));
+  }
+}
+
+function removeNvmInstalls() {
+  const home = os.homedir();
+  const roots = new Set();
+  if (process.env.NVM_DIR) roots.add(process.env.NVM_DIR);
+  if (process.env.NVM_HOME) roots.add(process.env.NVM_HOME);
+  roots.add(path.join(home, ".nvm"));
+  if (process.env.NVM_BIN) {
+    removeBinsInDir(process.env.NVM_BIN);
+  }
+  for (const root of roots) {
+    if (!root || !fs.existsSync(root)) continue;
+    const versionsRoot = path.join(root, "versions", "node");
+    if (!fs.existsSync(versionsRoot)) continue;
+    const entries = fs.readdirSync(versionsRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const versionDir = path.join(versionsRoot, entry.name);
+      removeBinsInDir(path.join(versionDir, "bin"));
+      removeNodeModuleAt(path.join(versionDir, "lib", "node_modules"));
+      removeNodeModuleAt(path.join(versionDir, "node_modules"));
+    }
+  }
+}
+
+function removeCargoInstalls() {
+  const home = os.homedir();
+  removeBinsInDir(path.join(home, ".cargo", "bin"));
+}
+
+function purgeExternalInstalls() {
+  const prefix = process.env.npm_config_prefix || process.env.PREFIX;
+  if (prefix) removePrefixInstalls(prefix);
+  removeHomebrewInstalls();
+  removeNvmInstalls();
+  removeCargoInstalls();
+}
+
+async function main() {
   unregisterStartup();
+  stopDaemonFromLock();
+  stopDaemonByName();
+  stopMcpByName();
+  const freed = await waitForPortFree();
+  if (!freed) {
+    console.warn(
+      `[docdex] ${DEFAULT_HOST}:${DEFAULT_DAEMON_PORT} is still in use; stop the process manually before reinstalling.`
+    );
+  }
   removeClientConfigs();
   clearStartupFailure();
   removeDaemonRootNotice();
+  removeDocdexRoot();
+  purgeExternalInstalls();
 }
 
 if (require.main === module) {

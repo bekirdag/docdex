@@ -8,7 +8,7 @@ info:
     By default, the daemon binds to 127.0.0.1 and does not require authentication.
     When started with `--expose`, requests require `Authorization: Bearer <token>`.
 servers:
-  - url: http://127.0.0.1:3210
+  - url: http://127.0.0.1:28491
 tags:
   - name: Chat
     description: OpenAI-compatible chat completions scoped to a repo.

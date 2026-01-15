@@ -59,6 +59,10 @@ fn spawn_server(
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env(
+            "DOCDEX_DAEMON_LOCK_PATH",
+            state_root.join("daemon.lock").to_string_lossy().as_ref(),
+        )
         .args([
             "serve",
             "--repo",

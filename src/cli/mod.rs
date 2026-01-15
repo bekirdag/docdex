@@ -7,7 +7,10 @@ use crate::config::RepoArgs;
 use crate::error::StartupError;
 use anyhow::Result;
 use clap::error::ErrorKind;
-use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
+use clap::{
+    parser::ValueSource,
+    ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum,
+};
 use serde_json::json;
 use std::env;
 use std::path::PathBuf;
@@ -37,6 +40,8 @@ pub(crate) enum CliDiffMode {
 pub(crate) struct ServeArgs {
     #[command(flatten)]
     pub repo: RepoArgs,
+    #[arg(skip)]
+    pub repo_explicit: bool,
     #[arg(
         long,
         value_parser = config::non_empty_string,
@@ -964,7 +969,22 @@ pub(crate) enum DagCommand {
 }
 
 pub async fn run() -> Result<()> {
-    let cli = match Cli::try_parse() {
+    let matches = match Cli::command().try_get_matches() {
+        Ok(matches) => matches,
+        Err(err) => {
+            if matches!(
+                err.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) {
+                err.print().map_err(anyhow::Error::from)?;
+                return Ok(());
+            }
+            return Err(StartupError::new("startup_config_invalid", err.to_string())
+                .with_hint("Run `docdexd help-all` for full usage.")
+                .into());
+        }
+    };
+    let mut cli = match Cli::from_arg_matches(&matches) {
         Ok(cli) => cli,
         Err(err) => {
             if matches!(
@@ -979,6 +999,26 @@ pub async fn run() -> Result<()> {
                 .into());
         }
     };
+    if let Some(daemon_matches) = matches.subcommand_matches("daemon") {
+        let repo_explicit = repo_flag_provided()
+            || matches!(
+                daemon_matches.value_source("repo"),
+                Some(ValueSource::EnvVariable)
+            );
+        if let Command::Daemon { args } = &mut cli.command {
+            args.repo_explicit = repo_explicit;
+        }
+    }
+    if let Some(serve_matches) = matches.subcommand_matches("serve") {
+        let repo_explicit = repo_flag_provided()
+            || matches!(
+                serve_matches.value_source("repo"),
+                Some(ValueSource::EnvVariable)
+            );
+        if let Command::Serve { args } = &mut cli.command {
+            args.repo_explicit = repo_explicit;
+        }
+    }
     let config = if !matches!(cli.command, Command::HelpAll) {
         Some(config::AppConfig::load_default().map_err(|err| {
             StartupError::new(
@@ -1011,6 +1051,16 @@ fn should_ensure_daemon(command: &Command) -> bool {
             | Command::Setup { .. }
             | Command::Mcp { .. }
     )
+}
+
+fn repo_flag_provided() -> bool {
+    env::args_os().any(|arg| {
+        if arg == "--repo" {
+            return true;
+        }
+        let value = arg.to_string_lossy();
+        value.starts_with("--repo=")
+    })
 }
 
 fn repo_hint_for_command(command: &Command) -> Option<PathBuf> {

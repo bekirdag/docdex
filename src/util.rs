@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::{self, Write};
@@ -9,26 +9,14 @@ use which::which;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrowserKind {
-    Chrome,
     Chromium,
-    Firefox,
-    Webkit,
-    Edge,
-    Brave,
-    Vivaldi,
     Custom,
 }
 
 impl BrowserKind {
     pub fn as_str(&self) -> &'static str {
         match self {
-            BrowserKind::Chrome => "chrome",
             BrowserKind::Chromium => "chromium",
-            BrowserKind::Firefox => "firefox",
-            BrowserKind::Webkit => "webkit",
-            BrowserKind::Edge => "edge",
-            BrowserKind::Brave => "brave",
-            BrowserKind::Vivaldi => "vivaldi",
             BrowserKind::Custom => "custom",
         }
     }
@@ -38,7 +26,6 @@ impl BrowserKind {
 pub enum BrowserSource {
     Env,
     Config,
-    Playwright,
     Which,
     KnownPath,
     AutoInstall,
@@ -49,7 +36,6 @@ impl BrowserSource {
         match self {
             BrowserSource::Env => "env",
             BrowserSource::Config => "config",
-            BrowserSource::Playwright => "playwright",
             BrowserSource::Which => "which",
             BrowserSource::KnownPath => "known_path",
             BrowserSource::AutoInstall => "auto_install",
@@ -162,6 +148,7 @@ pub fn detect_browser_candidates(config_path: Option<&Path>) -> Vec<BrowserCandi
 
     let mut candidates: Vec<BrowserCandidate> = Vec::new();
     let mut priority = 0u32;
+    let auto_install_path = resolve_chromium_binary_path();
 
     if let Some(path) = env_path("DOCDEX_WEB_BROWSER") {
         push_resolved(
@@ -178,7 +165,7 @@ pub fn detect_browser_candidates(config_path: Option<&Path>) -> Vec<BrowserCandi
         push_resolved(
             &mut candidates,
             &mut priority,
-            BrowserKind::Chrome,
+            BrowserKind::Chromium,
             "CHROME_PATH",
             &path,
             BrowserSource::Env,
@@ -186,36 +173,56 @@ pub fn detect_browser_candidates(config_path: Option<&Path>) -> Vec<BrowserCandi
     }
 
     if let Some(path) = config_path {
-        let _ = push_candidate(
-            &mut candidates,
-            &mut priority,
-            BrowserKind::Custom,
-            "config",
-            path.to_path_buf(),
-            BrowserSource::Config,
-        );
+        if let Some(installed) = auto_install_path.as_ref() {
+            if installed == path {
+                let _ = push_candidate(
+                    &mut candidates,
+                    &mut priority,
+                    BrowserKind::Chromium,
+                    "Docdex Chromium",
+                    path.to_path_buf(),
+                    BrowserSource::AutoInstall,
+                );
+            } else {
+                let _ = push_candidate(
+                    &mut candidates,
+                    &mut priority,
+                    BrowserKind::Custom,
+                    "config",
+                    path.to_path_buf(),
+                    BrowserSource::Config,
+                );
+            }
+        } else {
+            let _ = push_candidate(
+                &mut candidates,
+                &mut priority,
+                BrowserKind::Custom,
+                "config",
+                path.to_path_buf(),
+                BrowserSource::Config,
+            );
+        }
     }
 
-    if let Some(path) = resolve_playwright_chromium_path() {
-        let _ = push_candidate(
-            &mut candidates,
-            &mut priority,
-            BrowserKind::Chromium,
-            "Playwright Chromium",
-            path,
-            BrowserSource::Playwright,
-        );
+    if let Some(path) = auto_install_path {
+        if config_path.map_or(false, |configured| configured == path) {
+            // Skip duplicate auto-install candidate already added from config path.
+        } else {
+            let _ = push_candidate(
+                &mut candidates,
+                &mut priority,
+                BrowserKind::Chromium,
+                "Docdex Chromium",
+                path,
+                BrowserSource::AutoInstall,
+            );
+        }
     }
 
     let commands = [
-        (BrowserKind::Chrome, "google-chrome"),
-        (BrowserKind::Chrome, "google-chrome-stable"),
         (BrowserKind::Chromium, "chromium"),
         (BrowserKind::Chromium, "chromium-browser"),
-        (BrowserKind::Chrome, "chrome"),
-        (BrowserKind::Edge, "msedge"),
-        (BrowserKind::Brave, "brave-browser"),
-        (BrowserKind::Vivaldi, "vivaldi"),
     ];
     for (kind, cmd) in commands {
         if let Ok(path) = which(cmd) {
@@ -233,64 +240,9 @@ pub fn detect_browser_candidates(config_path: Option<&Path>) -> Vec<BrowserCandi
     if cfg!(target_os = "macos") {
         let candidates_os = [
             (
-                BrowserKind::Chrome,
-                "Google Chrome",
-                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            ),
-            (
-                BrowserKind::Chrome,
-                "Google Chrome Beta",
-                "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta",
-            ),
-            (
-                BrowserKind::Chrome,
-                "Google Chrome Canary",
-                "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
-            ),
-            (
                 BrowserKind::Chromium,
                 "Chromium",
                 "/Applications/Chromium.app/Contents/MacOS/Chromium",
-            ),
-            (
-                BrowserKind::Edge,
-                "Microsoft Edge",
-                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-            ),
-            (
-                BrowserKind::Edge,
-                "Microsoft Edge Beta",
-                "/Applications/Microsoft Edge Beta.app/Contents/MacOS/Microsoft Edge Beta",
-            ),
-            (
-                BrowserKind::Edge,
-                "Microsoft Edge Dev",
-                "/Applications/Microsoft Edge Dev.app/Contents/MacOS/Microsoft Edge Dev",
-            ),
-            (
-                BrowserKind::Edge,
-                "Microsoft Edge Canary",
-                "/Applications/Microsoft Edge Canary.app/Contents/MacOS/Microsoft Edge Canary",
-            ),
-            (
-                BrowserKind::Brave,
-                "Brave Browser",
-                "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-            ),
-            (
-                BrowserKind::Brave,
-                "Brave Browser Beta",
-                "/Applications/Brave Browser Beta.app/Contents/MacOS/Brave Browser Beta",
-            ),
-            (
-                BrowserKind::Brave,
-                "Brave Browser Nightly",
-                "/Applications/Brave Browser Nightly.app/Contents/MacOS/Brave Browser Nightly",
-            ),
-            (
-                BrowserKind::Vivaldi,
-                "Vivaldi",
-                "/Applications/Vivaldi.app/Contents/MacOS/Vivaldi",
             ),
         ];
         for (kind, name, candidate) in candidates_os {
@@ -310,64 +262,9 @@ pub fn detect_browser_candidates(config_path: Option<&Path>) -> Vec<BrowserCandi
     if cfg!(target_os = "windows") {
         let suffixes = [
             (
-                BrowserKind::Chrome,
-                "Chrome",
-                "Google\\Chrome\\Application\\chrome.exe",
-            ),
-            (
-                BrowserKind::Chrome,
-                "Chrome Beta",
-                "Google\\Chrome Beta\\Application\\chrome.exe",
-            ),
-            (
-                BrowserKind::Chrome,
-                "Chrome Canary",
-                "Google\\Chrome Canary\\Application\\chrome.exe",
-            ),
-            (
                 BrowserKind::Chromium,
                 "Chromium",
                 "Chromium\\Application\\chrome.exe",
-            ),
-            (
-                BrowserKind::Edge,
-                "Edge",
-                "Microsoft\\Edge\\Application\\msedge.exe",
-            ),
-            (
-                BrowserKind::Edge,
-                "Edge Beta",
-                "Microsoft\\Edge Beta\\Application\\msedge.exe",
-            ),
-            (
-                BrowserKind::Edge,
-                "Edge Dev",
-                "Microsoft\\Edge Dev\\Application\\msedge.exe",
-            ),
-            (
-                BrowserKind::Edge,
-                "Edge Canary",
-                "Microsoft\\Edge SxS\\Application\\msedge.exe",
-            ),
-            (
-                BrowserKind::Brave,
-                "Brave",
-                "BraveSoftware\\Brave-Browser\\Application\\brave.exe",
-            ),
-            (
-                BrowserKind::Brave,
-                "Brave Beta",
-                "BraveSoftware\\Brave-Browser-Beta\\Application\\brave.exe",
-            ),
-            (
-                BrowserKind::Brave,
-                "Brave Nightly",
-                "BraveSoftware\\Brave-Browser-Nightly\\Application\\brave.exe",
-            ),
-            (
-                BrowserKind::Vivaldi,
-                "Vivaldi",
-                "Vivaldi\\Application\\vivaldi.exe",
             ),
         ];
         let mut bases = Vec::new();
@@ -393,26 +290,11 @@ pub fn detect_browser_candidates(config_path: Option<&Path>) -> Vec<BrowserCandi
     }
 
     let candidates_linux = [
-        (
-            BrowserKind::Chrome,
-            "Google Chrome",
-            "/usr/bin/google-chrome",
-        ),
-        (
-            BrowserKind::Chrome,
-            "Google Chrome Stable",
-            "/usr/bin/google-chrome-stable",
-        ),
         (BrowserKind::Chromium, "Chromium", "/usr/bin/chromium"),
         (
             BrowserKind::Chromium,
             "Chromium Browser",
             "/usr/bin/chromium-browser",
-        ),
-        (
-            BrowserKind::Chrome,
-            "Google Chrome",
-            "/opt/google/chrome/chrome",
         ),
         (BrowserKind::Chromium, "Chromium Snap", "/snap/bin/chromium"),
     ];
@@ -431,118 +313,36 @@ pub fn detect_browser_candidates(config_path: Option<&Path>) -> Vec<BrowserCandi
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub(crate) struct PlaywrightManifest {
+pub(crate) struct ChromiumManifest {
     #[serde(default)]
     pub installed_at: Option<String>,
     #[serde(default)]
-    pub browsers_path: Option<PathBuf>,
-    #[serde(default)]
-    pub playwright_version: Option<String>,
-    #[serde(default)]
-    pub node_bin: Option<PathBuf>,
-    pub browsers: Vec<PlaywrightBrowser>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub(crate) struct PlaywrightBrowser {
-    pub name: String,
-    pub path: PathBuf,
-    #[serde(default)]
     pub version: Option<String>,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub download_url: Option<String>,
+    pub path: PathBuf,
 }
 
-pub(crate) fn resolve_playwright_chromium() -> Option<PlaywrightBrowser> {
-    let manifest = read_playwright_manifest()?;
-    for browser in manifest.browsers {
-        if browser.name.eq_ignore_ascii_case("chromium") && browser.path.is_file() {
-            return Some(browser);
-        }
+pub(crate) fn resolve_chromium_binary_path() -> Option<PathBuf> {
+    let manifest = read_chromium_manifest()?;
+    if manifest.path.is_file() {
+        Some(manifest.path)
+    } else {
+        None
     }
-    None
 }
 
-fn resolve_playwright_chromium_path() -> Option<PathBuf> {
-    resolve_playwright_chromium().map(|browser| browser.path)
-}
-
-pub(crate) fn read_playwright_manifest() -> Option<PlaywrightManifest> {
-    let manifest_path = resolve_playwright_manifest_path()?;
+pub(crate) fn read_chromium_manifest() -> Option<ChromiumManifest> {
+    let manifest_path = resolve_chromium_manifest_path()?;
     let raw = std::fs::read_to_string(&manifest_path).ok()?;
     serde_json::from_str(&raw).ok()
 }
 
-pub(crate) fn update_playwright_manifest_node_bin(node_bin: &Path) -> Result<bool> {
-    let manifest_path = match resolve_playwright_manifest_path() {
-        Some(path) => path,
-        None => return Ok(false),
-    };
-    let raw = match std::fs::read_to_string(&manifest_path) {
-        Ok(raw) => raw,
-        Err(_) => return Ok(false),
-    };
-    let mut manifest: PlaywrightManifest =
-        serde_json::from_str(&raw).context("parse playwright manifest")?;
-    let needs_update = match manifest.node_bin.as_ref() {
-        Some(existing) => !existing.is_file() || path_is_in_temp_dir(existing),
-        None => true,
-    };
-    if !needs_update {
-        return Ok(false);
-    }
-    manifest.node_bin = Some(node_bin.to_path_buf());
-    let payload =
-        serde_json::to_string_pretty(&manifest).context("serialize playwright manifest")?;
-    std::fs::write(&manifest_path, format!("{payload}\n"))
-        .context("write playwright manifest")?;
-    Ok(true)
-}
-
-pub(crate) fn path_is_in_temp_dir(path: &Path) -> bool {
-    let temp_dir = std::env::temp_dir();
-    if temp_dir.as_os_str().is_empty() {
-        return false;
-    }
-    if path.starts_with(&temp_dir) {
-        return true;
-    }
-    if let Ok(canonical) = temp_dir.canonicalize() {
-        if path.starts_with(&canonical) {
-            return true;
-        }
-    }
-    if cfg!(target_os = "macos") {
-        if let Some(raw) = path.to_str() {
-            if raw.starts_with("/var/folders/") || raw.starts_with("/private/var/folders/") {
-                return true;
-            }
-            if raw.starts_with("/tmp/") || raw.starts_with("/private/tmp/") {
-                return true;
-            }
-        }
-    } else if cfg!(unix) {
-        if let Some(raw) = path.to_str() {
-            if raw.starts_with("/tmp/") || raw.starts_with("/var/tmp/") {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-pub(crate) fn resolve_playwright_manifest_path() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("PLAYWRIGHT_BROWSERS_PATH") {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            return Some(PathBuf::from(trimmed).join("manifest.json"));
-        }
-    }
+pub(crate) fn resolve_chromium_manifest_path() -> Option<PathBuf> {
     let base_dir = crate::state_paths::default_state_base_dir().ok()?;
-    Some(
-        base_dir
-            .join("bin")
-            .join("playwright")
-            .join("manifest.json"),
-    )
+    Some(base_dir.join("bin").join("chromium").join("manifest.json"))
 }
 
 fn resolve_state_log_path() -> Option<PathBuf> {

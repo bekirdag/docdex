@@ -3,6 +3,7 @@
 
 const fs = require("node:fs");
 const net = require("node:net");
+const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
@@ -12,8 +13,11 @@ const { spawn, spawnSync } = require("node:child_process");
 const { detectPlatformKey, UnsupportedPlatformError } = require("./platform");
 
 const DEFAULT_HOST = "127.0.0.1";
-const DEFAULT_PORT_PRIMARY = 3000;
-const DEFAULT_PORT_FALLBACK = 3210;
+const DEFAULT_DAEMON_PORT = 28491;
+const DAEMON_HEALTH_TIMEOUT_MS = 8000;
+const DAEMON_HEALTH_REQUEST_TIMEOUT_MS = 1000;
+const DAEMON_HEALTH_POLL_INTERVAL_MS = 200;
+const DAEMON_HEALTH_PATH = "/healthz";
 const STARTUP_FAILURE_MARKER = "startup_registration_failed.json";
 const DEFAULT_OLLAMA_MODEL = "nomic-embed-text";
 const DEFAULT_OLLAMA_CHAT_MODEL = "phi3.5:3.8b";
@@ -39,6 +43,17 @@ function setupPendingPath() {
   return path.join(stateDir(), SETUP_PENDING_MARKER);
 }
 
+function daemonLockPaths() {
+  const root = path.join(os.homedir(), ".docdex");
+  const paths = [];
+  if (process.env.DOCDEX_DAEMON_LOCK_PATH) {
+    paths.push(process.env.DOCDEX_DAEMON_LOCK_PATH);
+  }
+  paths.push(path.join(root, "locks", "daemon.lock"));
+  paths.push(path.join(root, "daemon.lock"));
+  return Array.from(new Set(paths.filter(Boolean)));
+}
+
 function configUrlForPort(port) {
   return `http://localhost:${port}/sse`;
 }
@@ -59,20 +74,49 @@ function isPortAvailable(port, host) {
   });
 }
 
-async function pickAvailablePort(host, preferred) {
-  for (const port of preferred) {
-    if (await isPortAvailable(port, host)) return port;
-  }
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.once("error", reject);
-    server.once("listening", () => {
-      const addr = server.address();
-      server.close(() => resolve(addr.port));
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function checkDaemonHealth({ host, port, timeoutMs = DAEMON_HEALTH_REQUEST_TIMEOUT_MS }) {
+  return new Promise((resolve) => {
+    const req = http.request(
+      {
+        host,
+        port,
+        path: DAEMON_HEALTH_PATH,
+        method: "GET",
+        timeout: timeoutMs
+      },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          body += chunk;
+        });
+        res.on("end", () => {
+          resolve(res.statusCode === 200 && body.trim() === "ok");
+        });
+      }
+    );
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(false);
     });
-    server.listen(0, host);
+    req.on("error", () => resolve(false));
+    req.end();
   });
+}
+
+async function waitForDaemonHealthy({ host, port, timeoutMs = DAEMON_HEALTH_TIMEOUT_MS }) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await checkDaemonHealth({ host, port })) {
+      return true;
+    }
+    await sleep(DAEMON_HEALTH_POLL_INTERVAL_MS);
+  }
+  return false;
 }
 
 function parseServerBind(contents) {
@@ -89,6 +133,125 @@ function parseServerBind(contents) {
     if (match) return match[1].trim();
   }
   return null;
+}
+
+function stopDaemonService({ logger } = {}) {
+  if (process.platform === "darwin") {
+    const uid = typeof process.getuid === "function" ? process.getuid() : null;
+    const domain = uid != null ? `gui/${uid}` : null;
+    const plistPath = path.join(os.homedir(), "Library", "LaunchAgents", "com.docdex.daemon.plist");
+    const bootoutByLabel = domain
+      ? spawnSync("launchctl", ["bootout", domain, "com.docdex.daemon"])
+      : spawnSync("launchctl", ["bootout", "com.docdex.daemon"]);
+    const bootoutByPath = domain
+      ? spawnSync("launchctl", ["bootout", domain, plistPath])
+      : spawnSync("launchctl", ["bootout", plistPath]);
+    const fallback = spawnSync("launchctl", ["unload", "-w", plistPath]);
+    spawnSync("launchctl", ["remove", "com.docdex.daemon"]);
+    if (bootoutByLabel.status === 0 || bootoutByPath.status === 0 || fallback.status === 0) {
+      return true;
+    }
+    logger?.warn?.(
+      `[docdex] launchctl stop failed: ${bootoutByLabel.stderr || bootoutByPath.stderr || fallback.stderr || "unknown error"}`
+    );
+    return false;
+  }
+  if (process.platform === "linux") {
+    const stop = spawnSync("systemctl", ["--user", "stop", "docdexd.service"]);
+    if (stop.status === 0) return true;
+    logger?.warn?.(`[docdex] systemd stop failed: ${stop.stderr || "unknown error"}`);
+    return false;
+  }
+  if (process.platform === "win32") {
+    const stop = spawnSync("schtasks", ["/End", "/TN", "Docdex Daemon"]);
+    if (stop.status === 0) return true;
+    logger?.warn?.(`[docdex] schtasks stop failed: ${stop.stderr || "unknown error"}`);
+    return false;
+  }
+  return false;
+}
+
+function startDaemonService({ logger } = {}) {
+  if (process.platform === "darwin") {
+    const uid = typeof process.getuid === "function" ? process.getuid() : null;
+    const domain = uid != null ? `gui/${uid}` : null;
+    const kickstart = domain
+      ? spawnSync("launchctl", ["kickstart", "-k", `${domain}/com.docdex.daemon`])
+      : spawnSync("launchctl", ["kickstart", "-k", "com.docdex.daemon"]);
+    if (kickstart.status === 0) return true;
+    const start = spawnSync("launchctl", ["start", "com.docdex.daemon"]);
+    if (start.status === 0) return true;
+    logger?.warn?.(`[docdex] launchctl start failed: ${kickstart.stderr || start.stderr || "unknown error"}`);
+    return false;
+  }
+  if (process.platform === "linux") {
+    const start = spawnSync("systemctl", ["--user", "restart", "docdexd.service"]);
+    if (start.status === 0) return true;
+    logger?.warn?.(`[docdex] systemd start failed: ${start.stderr || "unknown error"}`);
+    return false;
+  }
+  if (process.platform === "win32") {
+    const run = spawnSync("schtasks", ["/Run", "/TN", "Docdex Daemon"]);
+    if (run.status === 0) return true;
+    logger?.warn?.(`[docdex] schtasks run failed: ${run.stderr || "unknown error"}`);
+    return false;
+  }
+  return false;
+}
+
+function stopDaemonByName({ logger } = {}) {
+  if (process.platform === "win32") {
+    const result = spawnSync("taskkill", ["/IM", "docdexd.exe", "/T", "/F"]);
+    if (result?.error?.code === "ENOENT") return false;
+    return true;
+  }
+  const result = spawnSync("pkill", ["-TERM", "-x", "docdexd"]);
+  if (result?.error?.code === "ENOENT") {
+    spawnSync("killall", ["-TERM", "docdexd"]);
+    return false;
+  }
+  spawnSync("pkill", ["-TERM", "-f", "docdexd"]);
+  return true;
+}
+
+function clearDaemonLocks() {
+  let removed = false;
+  for (const lockPath of daemonLockPaths()) {
+    if (!lockPath || !fs.existsSync(lockPath)) continue;
+    try {
+      const resolved = path.resolve(lockPath);
+      const home = path.resolve(os.homedir());
+      if (!resolved.startsWith(home + path.sep)) continue;
+      fs.unlinkSync(lockPath);
+      removed = true;
+    } catch {
+      continue;
+    }
+  }
+  return removed;
+}
+
+function stopDaemonFromLock({ logger } = {}) {
+  let stopped = false;
+  for (const lockPath of daemonLockPaths()) {
+    if (!lockPath || !fs.existsSync(lockPath)) continue;
+    try {
+      const raw = fs.readFileSync(lockPath, "utf8");
+      if (!raw.trim()) continue;
+      const payload = JSON.parse(raw);
+      const pid = Number(payload?.pid);
+      if (!Number.isFinite(pid) || pid <= 0) continue;
+      try {
+        process.kill(pid, "SIGTERM");
+        stopped = true;
+      } catch (err) {
+        logger?.warn?.(`[docdex] failed to stop daemon pid ${pid}: ${err?.message || err}`);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return stopped;
 }
 
 function upsertServerConfig(contents, httpBindAddr) {
@@ -1515,11 +1678,6 @@ async function maybePromptOllamaModel({
   return { status: "skipped", reason: "invalid_selection" };
 }
 
-function resolvePlaywrightFetcherPath() {
-  const candidate = path.join(__dirname, "playwright_fetch.js");
-  return fs.existsSync(candidate) ? candidate : null;
-}
-
 function envBool(value) {
   if (!value) return false;
   const normalized = String(value).trim().toLowerCase();
@@ -1535,32 +1693,10 @@ function isTempPath(value, osModule = os) {
   return resolvedValue === resolvedTmp || resolvedValue.startsWith(resolvedTmp + path.sep);
 }
 
-function resolveStableNodeBin({ env = process.env, spawnSyncFn = spawnSync } = {}) {
-  const envNode = String(env.DOCDEX_PLAYWRIGHT_NODE_BIN || env.DOCDEX_NODE_BIN || "").trim();
-  if (envNode && fs.existsSync(envNode)) return envNode;
-  if (process.execPath && fs.existsSync(process.execPath) && !isTempPath(process.execPath)) {
-    return process.execPath;
-  }
-  const locator = process.platform === "win32" ? "where" : "which";
-  const resolved = spawnSyncFn(locator, ["node"], { encoding: "utf8" });
-  if (resolved && !resolved.error && resolved.status === 0 && resolved.stdout) {
-    const line = String(resolved.stdout).split(/\r?\n/).find((entry) => entry.trim());
-    if (line && fs.existsSync(line.trim())) return line.trim();
-  }
-  if (process.execPath && fs.existsSync(process.execPath)) return process.execPath;
-  return null;
-}
-
 function buildDaemonEnvPairs({ mcpBinaryPath, env = process.env } = {}) {
   const pairs = [["DOCDEX_BROWSER_AUTO_INSTALL", "0"]];
   if (mcpBinaryPath && envBool(env.DOCDEX_ENABLE_STANDALONE_MCP)) {
     pairs.push(["DOCDEX_MCP_SERVER_BIN", mcpBinaryPath]);
-  }
-  const fetcher = resolvePlaywrightFetcherPath();
-  if (fetcher) pairs.push(["DOCDEX_PLAYWRIGHT_FETCHER", fetcher]);
-  if (!env.DOCDEX_PLAYWRIGHT_NODE_BIN && !env.DOCDEX_NODE_BIN) {
-    const nodeBin = resolveStableNodeBin({ env });
-    if (nodeBin) pairs.push(["DOCDEX_PLAYWRIGHT_NODE_BIN", nodeBin]);
   }
   return pairs;
 }
@@ -1571,11 +1707,11 @@ function buildDaemonEnv({ mcpBinaryPath, env } = {}) {
 
 function registerStartup({ binaryPath, mcpBinaryPath, port, repoRoot, logger }) {
   if (!binaryPath) return { ok: false, reason: "missing_binary" };
+  stopDaemonService({ logger });
   const envPairs = buildDaemonEnvPairs({ mcpBinaryPath });
+  const workingDir = repoRoot ? path.resolve(repoRoot) : null;
   const args = [
     "daemon",
-    "--repo",
-    repoRoot,
     "--host",
     DEFAULT_HOST,
     "--port",
@@ -1608,6 +1744,9 @@ function registerStartup({ binaryPath, mcpBinaryPath, port, repoRoot, logger }) 
       `  <array>\n` +
       programArgs.map((arg) => `    <string>${arg}</string>\n`).join("") +
       `  </array>\n` +
+      (workingDir
+        ? `  <key>WorkingDirectory</key>\n` + `  <string>${workingDir}</string>\n`
+        : "") +
       `  <key>RunAtLoad</key>\n` +
       `  <true/>\n` +
       `  <key>KeepAlive</key>\n` +
@@ -1643,6 +1782,7 @@ function registerStartup({ binaryPath, mcpBinaryPath, port, repoRoot, logger }) 
       "",
       "[Service]",
       `ExecStart=${binaryPath} ${args.join(" ")}`,
+      workingDir ? `WorkingDirectory=${workingDir}` : "",
       ...envLines,
       "Restart=always",
       "RestartSec=2",
@@ -1663,8 +1803,9 @@ function registerStartup({ binaryPath, mcpBinaryPath, port, repoRoot, logger }) 
     const taskName = "Docdex Daemon";
     const joinedArgs = args.map((arg) => `"${arg}"`).join(" ");
     const envParts = envPairs.map(([key, value]) => `set "${key}=${value}"`);
+    const cdCommand = workingDir ? `cd /d "${workingDir}"` : null;
     const taskArgs =
-      `"cmd.exe" /c "${envParts.join(" && ")} && \"${binaryPath}\" ${joinedArgs}"`;
+      `"cmd.exe" /c "${envParts.join(" && ")}${cdCommand ? ` && ${cdCommand}` : ""} && \"${binaryPath}\" ${joinedArgs}"`;
     const create = spawnSync("schtasks", [
       "/Create",
       "/F",
@@ -1688,34 +1829,29 @@ function registerStartup({ binaryPath, mcpBinaryPath, port, repoRoot, logger }) 
   return { ok: false, reason: "unsupported_platform" };
 }
 
-function startDaemonNow({ binaryPath, mcpBinaryPath, port, repoRoot }) {
-  if (!binaryPath) return false;
-  const extraEnv = buildDaemonEnv({ mcpBinaryPath });
-  const child = spawn(
+async function startDaemonWithHealthCheck({ binaryPath, mcpBinaryPath, port, host, logger }) {
+  const startup = registerStartup({
     binaryPath,
-    [
-      "daemon",
-      "--repo",
-      repoRoot,
-      "--host",
-      DEFAULT_HOST,
-      "--port",
-      String(port),
-      "--log",
-      "warn",
-      "--secure-mode=false"
-    ],
-    {
-      stdio: "ignore",
-      detached: true,
-      env: {
-        ...process.env,
-        ...extraEnv
-      }
-    }
-  );
-  child.unref();
-  return true;
+    mcpBinaryPath,
+    port,
+    repoRoot: daemonRootPath(),
+    logger
+  });
+  if (!startup.ok) {
+    logger?.warn?.(`[docdex] daemon service registration failed (${startup.reason || "unknown"}).`);
+    return { ok: false, reason: "startup_failed" };
+  }
+  startDaemonService({ logger });
+  const healthy = await waitForDaemonHealthy({ host, port });
+  if (healthy) {
+    return { ok: true, reason: "healthy" };
+  }
+  logger?.warn?.(`[docdex] daemon failed health check on ${host}:${port}`);
+  stopDaemonService({ logger });
+  stopDaemonFromLock({ logger });
+  stopDaemonByName({ logger });
+  clearDaemonLocks();
+  return { ok: false, reason: "health_failed" };
 }
 
 function recordStartupFailure(details) {
@@ -1846,16 +1982,37 @@ async function runPostInstallSetup({ binaryPath, logger } = {}) {
   if (fs.existsSync(configPath)) {
     existingConfig = fs.readFileSync(configPath, "utf8");
   }
-  const configuredBind = existingConfig ? parseServerBind(existingConfig) : null;
-  let port;
-  if (process.env.DOCDEX_DAEMON_PORT) {
-    port = Number(process.env.DOCDEX_DAEMON_PORT);
-  } else if (configuredBind) {
-    const match = configuredBind.match(/:(\d+)$/);
-    port = match ? Number(match[1]) : null;
+  const port = DEFAULT_DAEMON_PORT;
+  const available = await isPortAvailable(port, DEFAULT_HOST);
+  if (!available) {
+    log.error?.(
+      `[docdex] ${DEFAULT_HOST}:${port} is already in use; docdex requires a fixed port. Stop the process using this port and re-run the install.`
+    );
+    throw new Error(`docdex requires ${DEFAULT_HOST}:${port}, but the port is already in use`);
   }
-  if (!port || Number.isNaN(port)) {
-    port = await pickAvailablePort(DEFAULT_HOST, [DEFAULT_PORT_PRIMARY, DEFAULT_PORT_FALLBACK]);
+
+  const daemonRoot = ensureDaemonRoot();
+  const resolvedBinary = resolveBinaryPath({ binaryPath });
+  const resolvedMcpBinary = resolveMcpBinaryPath(resolvedBinary);
+  const startupBinaries = resolveStartupBinaryPaths({
+    binaryPath: resolvedBinary,
+    mcpBinaryPath: resolvedMcpBinary,
+    logger: log
+  });
+  stopDaemonService({ logger: log });
+  stopDaemonFromLock({ logger: log });
+  stopDaemonByName({ logger: log });
+  clearDaemonLocks();
+  const result = await startDaemonWithHealthCheck({
+    binaryPath: startupBinaries.binaryPath,
+    mcpBinaryPath: startupBinaries.mcpBinaryPath,
+    port,
+    host: DEFAULT_HOST,
+    logger: log
+  });
+  if (!result.ok) {
+    log.warn?.(`[docdex] daemon failed to start on ${DEFAULT_HOST}:${port}.`);
+    throw new Error("docdex daemon failed to start");
   }
 
   const httpBindAddr = `${DEFAULT_HOST}:${port}`;
@@ -1888,38 +2045,7 @@ async function runPostInstallSetup({ binaryPath, logger } = {}) {
   }
   upsertCodexConfig(paths.codex, codexUrl);
   applyAgentInstructions({ logger: log });
-
-  const daemonRoot = ensureDaemonRoot();
-  const resolvedBinary = resolveBinaryPath({ binaryPath });
-  const resolvedMcpBinary = resolveMcpBinaryPath(resolvedBinary);
-  const startupBinaries = resolveStartupBinaryPaths({
-    binaryPath: resolvedBinary,
-    mcpBinaryPath: resolvedMcpBinary,
-    logger: log
-  });
-  const startup = registerStartup({
-    binaryPath: startupBinaries.binaryPath,
-    mcpBinaryPath: startupBinaries.mcpBinaryPath,
-    port,
-    repoRoot: daemonRoot,
-    logger: log
-  });
-  if (!startup.ok) {
-    if (!startupFailureReported()) {
-      log.warn?.("[docdex] startup registration failed; run the daemon manually:");
-      log.warn?.(`[docdex]   ${resolvedBinary || "docdexd"} daemon --repo ${daemonRoot} --host ${DEFAULT_HOST} --port ${port}`);
-      recordStartupFailure({ reason: startup.reason, port, repoRoot: daemonRoot });
-    }
-  } else {
-    clearStartupFailure();
-  }
-
-  startDaemonNow({
-    binaryPath: startupBinaries.binaryPath,
-    mcpBinaryPath: startupBinaries.mcpBinaryPath,
-    port,
-    repoRoot: daemonRoot
-  });
+  clearStartupFailure();
   const setupLaunch = launchSetupWizard({ binaryPath: startupBinaries.binaryPath, logger: log });
   if (!setupLaunch.ok && setupLaunch.reason !== "skipped") {
     log.warn?.("[docdex] setup wizard did not launch. Run `docdex setup`.");
@@ -1935,7 +2061,6 @@ module.exports = {
   upsertMcpServerJson,
   upsertZedConfig,
   upsertCodexConfig,
-  pickAvailablePort,
   configUrlForPort,
   configStreamableUrlForPort,
   parseEnvBool,

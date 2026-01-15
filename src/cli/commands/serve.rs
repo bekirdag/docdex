@@ -24,6 +24,7 @@ pub(crate) async fn run_daemon(args: ServeArgs) -> Result<()> {
 async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
     let ServeArgs {
         repo,
+        repo_explicit,
         host,
         port,
         expose,
@@ -81,11 +82,41 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
                 .with_hint("Verify the chroot path exists and is accessible (Unix only).")
         })?;
     }
-    let repo_root = repo.repo_root();
-    let mcp_repo_args = repo.clone();
+    let use_gateway_repo = daemon_mode && !repo_explicit;
+    let repo_root = if use_gateway_repo {
+        let state_base = config
+            .core
+            .global_state_dir
+            .clone()
+            .unwrap_or(crate::state_paths::default_state_base_dir().map_err(|err| {
+                StartupError::new(
+                    "startup_state_invalid",
+                    format!("failed to resolve global state dir: {err}"),
+                )
+            })?);
+        crate::state_paths::ensure_daemon_root_dir(&state_base).map_err(|err| {
+            StartupError::new(
+                "startup_state_invalid",
+                format!("failed to ensure daemon root: {err}"),
+            )
+            .with_hint("Ensure ~/.docdex is writable or set DOCDEX_STATE_DIR.")
+        })?
+    } else {
+        repo.repo_root()
+    };
+    let state_dir_override = if use_gateway_repo {
+        repo.state_dir_override().or_else(|| config.core.global_state_dir.clone())
+    } else {
+        repo.state_dir_override()
+    };
+    let mut mcp_repo_args = repo.clone();
+    mcp_repo_args.state_dir = state_dir_override.clone();
+    if use_gateway_repo {
+        mcp_repo_args.repo = repo_root.clone();
+    }
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
-        repo.state_dir_override(),
+        state_dir_override,
         repo.exclude_dir_overrides(),
         repo.exclude_prefix_overrides(),
         repo.symbols_enabled(),
@@ -137,9 +168,9 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         )
         .with_hint("Pass --expose to allow remote binds; keep --host 127.0.0.1 for local-only use.")
         .with_remediation(vec![
-            "docdexd serve --repo . --host 0.0.0.0 --port 3210 --expose --auth-token <token> --require-tls=false"
+            "docdexd serve --repo . --host 0.0.0.0 --port 28491 --expose --auth-token <token> --require-tls=false"
                 .to_string(),
-            "docdexd serve --repo . --host 127.0.0.1 --port 3210".to_string(),
+            "docdexd serve --repo . --host 127.0.0.1 --port 28491".to_string(),
         ])
         .into());
     }
@@ -261,6 +292,7 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         default_agent_id,
         config.core.global_state_dir.clone(),
         daemon_mode,
+        use_gateway_repo,
     )
     .await
 }
@@ -279,7 +311,7 @@ fn resolve_bind_addr(
             "startup_config_invalid",
             format!("invalid server.http_bind_addr `{bind_addr}`: {err}"),
         )
-        .with_hint("Use <ip>:<port> (e.g., 127.0.0.1:3210) or override with --host/--port.")
+        .with_hint("Use <ip>:<port> (e.g., 127.0.0.1:28491) or override with --host/--port.")
     })?;
     let default_host = addr.ip().to_string();
     let default_port = addr.port();

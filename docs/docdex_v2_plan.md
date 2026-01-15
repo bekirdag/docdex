@@ -102,7 +102,7 @@ Based on the provided SDS and the current file structure of `docdex` v0.1.10, he
 * **Daemon Lifecycle**
 * **Current State:** `src/daemon.rs`, `internal/daemon`.
 * **Required Changes:**
-* Bind to `127.0.0.1:3210` by default.
+* Bind to `127.0.0.1:28491` by default.
 * Implement `--expose` flag logic: strictly require a token for external binding.
 * Integrate the "Repo Manager" initialization and cleanup into the daemon startup/shutdown.
 

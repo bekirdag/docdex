@@ -8,7 +8,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { pipeline } = require("node:stream/promises");
 const crypto = require("node:crypto");
-const { spawn, spawnSync } = require("node:child_process");
+const { spawn } = require("node:child_process");
 
 const pkg = require("../package.json");
 const {
@@ -41,8 +41,6 @@ const DEFAULT_INTEGRITY_CONFIG = Object.freeze({
 const LOCAL_FALLBACK_ENV = "DOCDEX_LOCAL_FALLBACK";
 const LOCAL_BINARY_ENV = "DOCDEX_LOCAL_BINARY";
 const AGENTS_DOC_FILENAME = "agents.md";
-const PLAYWRIGHT_INSTALL_GUARD = "DOCDEX_INTERNAL_PLAYWRIGHT_INSTALL";
-const PLAYWRIGHT_SKIP_ENV = "DOCDEX_SKIP_PLAYWRIGHT_DEP_INSTALL";
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -229,60 +227,6 @@ function writeAgentInstructions() {
     return true;
   } catch {
     return false;
-  }
-}
-
-function resolvePlaywrightPackage() {
-  const baseDir = path.join(__dirname, "..");
-  try {
-    return require.resolve("playwright/package.json", { paths: [baseDir] });
-  } catch {}
-  try {
-    return require.resolve("playwright/package.json");
-  } catch {}
-  return null;
-}
-
-function resolveNpmCommand() {
-  const npmExec = process.env.npm_execpath;
-  if (npmExec) {
-    return { cmd: process.execPath, args: [npmExec] };
-  }
-  const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-  return { cmd: npmCmd, args: [] };
-}
-
-function ensurePlaywrightDependency({ logger = console } = {}) {
-  if (process.env[PLAYWRIGHT_SKIP_ENV]) return;
-  if (process.env[PLAYWRIGHT_INSTALL_GUARD]) return;
-  if (resolvePlaywrightPackage()) return;
-
-  const rootDir = path.join(__dirname, "..");
-  const { cmd, args } = resolveNpmCommand();
-  const installArgs = args.concat([
-    "install",
-    "--no-save",
-    "--ignore-scripts",
-    "--no-package-lock",
-    "--no-audit",
-    "--no-fund",
-    "playwright"
-  ]);
-  const result = spawnSync(cmd, installArgs, {
-    cwd: rootDir,
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      [PLAYWRIGHT_INSTALL_GUARD]: "1"
-    }
-  });
-  if (result.error || (typeof result.status === "number" && result.status !== 0)) {
-    const message = result.error?.message || `npm exit status ${result.status}`;
-    logger.warn?.(`[docdex] Playwright dependency install failed: ${message}`);
-    return;
-  }
-  if (!resolvePlaywrightPackage()) {
-    logger.warn?.("[docdex] Playwright dependency still missing after install attempt");
   }
 }
 
@@ -577,13 +521,16 @@ function isLocalInstallRequest({ env, pathModule }) {
   return argv.some((arg) => isLikelyLocalInstallArg(arg, pathModule));
 }
 
-function shouldPreferLocalInstall({ env, localBinaryPath, pathModule }) {
+function shouldPreferLocalInstall({ env, localBinaryPath, pathModule, localRepoRoot }) {
   if (!localBinaryPath) return false;
   if (parseEnvBool(env?.[LOCAL_FALLBACK_ENV]) === false) return false;
   if (env?.[LOCAL_BINARY_ENV]) return true;
-  if (!env?.INIT_CWD) return false;
   if (env?.npm_lifecycle_event !== "postinstall") return false;
-  return isLocalInstallRequest({ env, pathModule });
+  if (isLocalInstallRequest({ env, pathModule })) return true;
+  if (!env?.INIT_CWD || !localRepoRoot) return false;
+  const initCwd = pathModule.resolve(env.INIT_CWD);
+  const repoRoot = pathModule.resolve(localRepoRoot);
+  return initCwd === repoRoot || initCwd.startsWith(`${repoRoot}${pathModule.sep}`);
 }
 
 function resolveLocalBinaryCandidate({
@@ -1819,9 +1766,29 @@ async function runInstaller(options) {
   });
 
   const priorRunnable = existsSync ? existsSync(local.binaryPath) : false;
+  const preferLocal = shouldPreferLocalInstall({ env, localBinaryPath, pathModule, localRepoRoot });
 
   const forceLocalBinary = Boolean(env?.[LOCAL_BINARY_ENV]);
   if (forceLocalBinary && localBinaryPath) {
+    const localInstall = await installFromLocalBinary({
+      fsModule,
+      pathModule,
+      distDir,
+      binaryPath: localBinaryPath,
+      isWin32,
+      version,
+      platformKey,
+      targetTriple,
+      repoSlug: null,
+      requireMcp,
+      sha256FileFn,
+      writeJsonFileAtomicFn,
+      logger
+    });
+    return localInstall;
+  }
+
+  if (preferLocal) {
     const localInstall = await installFromLocalBinary({
       fsModule,
       pathModule,
@@ -1866,25 +1833,6 @@ async function runInstaller(options) {
       outcomeCode: "noop",
       integrityResult: local.integrityResult
     };
-  }
-
-  if (shouldPreferLocalInstall({ env, localBinaryPath, pathModule })) {
-    const localInstall = await installFromLocalBinary({
-      fsModule,
-      pathModule,
-      distDir,
-      binaryPath: localBinaryPath,
-      isWin32,
-      version,
-      platformKey,
-      targetTriple,
-      repoSlug: null,
-      requireMcp,
-      sha256FileFn,
-      writeJsonFileAtomicFn,
-      logger
-    });
-    return localInstall;
   }
 
   let repoSlug = null;
@@ -2206,17 +2154,13 @@ async function main() {
   try {
     await runPostInstallSetup({ binaryPath: result?.binaryPath });
   } catch (err) {
-    console.warn(`[docdex] postinstall setup skipped: ${err?.message || err}`);
+    console.warn(`[docdex] postinstall setup failed: ${err?.message || err}`);
+    throw err;
   }
   try {
     writeAgentInstructions();
   } catch (err) {
     console.warn(`[docdex] agent instructions skipped: ${err?.message || err}`);
-  }
-  try {
-    ensurePlaywrightDependency();
-  } catch (err) {
-    console.warn(`[docdex] playwright dependency check skipped: ${err?.message || err}`);
   }
   printPostInstallBanner();
 }
@@ -2247,7 +2191,7 @@ function printPostInstallBanner() {
     "\x1b[32mDocdex installed successfully!\x1b[0m",
     "\x1b[41m\x1b[97m IMPORTANT \x1b[0m \x1b[33mNext step:\x1b[0m run \x1b[32m`docdex setup`\x1b[0m to complete the installation.",
     "\x1b[33mSetup:\x1b[0m configures Ollama/models + browser.",
-    "\x1b[34mTip:\x1b[0m after setup, start the daemon with \x1b[36m`docdexd serve --repo <path>`\x1b[0m"
+    "\x1b[34mTip:\x1b[0m after setup, the daemon should auto-start; if not, run \x1b[36m`docdexd daemon`\x1b[0m"
   ];
   width = Math.max(72, content.reduce((max, line) => Math.max(max, stripAnsi(line).length), 0));
   const padLine = (text) => {

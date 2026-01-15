@@ -51,6 +51,24 @@ fn touch_file(path: &Path) {
     }
 }
 
+fn write_chromium_manifest(root: &Path, chromium_path: &Path) {
+    let manifest_dir = root
+        .join(".docdex")
+        .join("state")
+        .join("bin")
+        .join("chromium");
+    std::fs::create_dir_all(&manifest_dir).expect("create manifest dir");
+    let payload = json!({
+        "installed_at": "2024-01-01T00:00:00Z",
+        "version": "12345",
+        "platform": "linux64",
+        "download_url": "https://example.com/chromium.zip",
+        "path": chromium_path,
+    });
+    std::fs::write(manifest_dir.join("manifest.json"), payload.to_string())
+        .expect("write manifest");
+}
+
 #[test]
 #[cfg(not(target_os = "windows"))]
 fn config_persists_detected_browser_path() {
@@ -61,24 +79,9 @@ fn config_persists_detected_browser_path() {
     let chrome_path = bin_dir.join("google-chrome");
     touch_file(&chrome_path);
 
-    let pw_dir = temp
-        .path()
-        .join(".docdex")
-        .join("state")
-        .join("bin")
-        .join("playwright");
-    std::fs::create_dir_all(&pw_dir).expect("create pw dir");
-    let chromium_path = temp.path().join("pw-chromium");
+    let chromium_path = temp.path().join("docdex-chromium");
     touch_file(&chromium_path);
-    let payload = json!({
-        "installed_at": "2024-01-01T00:00:00Z",
-        "browsers_path": pw_dir.to_string_lossy(),
-        "playwright_version": "1.2.3",
-        "browsers": [
-            { "name": "chromium", "version": "12345", "path": chromium_path }
-        ]
-    });
-    std::fs::write(pw_dir.join("manifest.json"), payload.to_string()).expect("write manifest");
+    write_chromium_manifest(temp.path(), &chromium_path);
 
     let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
     let _path_guard = EnvGuard::set("PATH", bin_dir.to_string_lossy().as_ref());

@@ -36,6 +36,7 @@ where
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
         .env("DOCDEX_ENABLE_MEMORY", "0")
+        .env("DOCDEX_DAEMON_LOCK_PATH", state_root.join("daemon.lock"))
         .env("DOCDEX_STATE_DIR", state_root)
         .args(args)
         .output()?)
@@ -204,6 +205,10 @@ fn http_search_includes_repo_id_and_is_reasonably_fast() -> Result<(), Box<dyn E
     cmd.env("DOCDEX_WEB_ENABLED", "0");
     cmd.env("DOCDEX_ENABLE_MEMORY", "0");
     cmd.env("DOCDEX_ENABLE_MCP", "0");
+    cmd.env(
+        "DOCDEX_DAEMON_LOCK_PATH",
+        state_root.path().join("daemon.lock"),
+    );
     cmd.env("DOCDEX_STATE_DIR", state_root.path());
     cmd.args([
         "serve",

@@ -9,7 +9,7 @@ It aligns with `docs/quality_gates.md` and highlights the key latency/error/soak
 scrape_configs:
   - job_name: docdex
     static_configs:
-      - targets: ["127.0.0.1:3210"]
+      - targets: ["127.0.0.1:28491"]
 ```
 
 ## Example dashboard panels (PromQL)

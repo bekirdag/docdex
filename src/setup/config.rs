@@ -64,16 +64,19 @@ fn load_config_no_browser(path: &std::path::Path) -> Result<AppConfig> {
     if !path.exists() {
         let mut config = AppConfig::default();
         config.apply_defaults()?;
+        config::apply_browser_defaults(&mut config);
         return Ok(config);
     }
     let text = std::fs::read_to_string(path).context("read config")?;
     if text.trim().is_empty() {
         let mut config = AppConfig::default();
         config.apply_defaults()?;
+        config::apply_browser_defaults(&mut config);
         return Ok(config);
     }
     let mut config: AppConfig = toml::from_str(&text).context("parse config")?;
     config.apply_defaults()?;
+    config::apply_browser_defaults(&mut config);
     Ok(config)
 }
 

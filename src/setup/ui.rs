@@ -25,14 +25,12 @@ use super::SetupSummary;
 use crate::config as app_config;
 use crate::util;
 use crate::web::browser_install;
-use std::collections::{HashMap, HashSet};
 use std::env;
 
-const MENU_STEPS: [StepKey; 5] = [
+const MENU_STEPS: [StepKey; 4] = [
     StepKey::Ollama,
     StepKey::EmbedModel,
     StepKey::ChatModel,
-    StepKey::Playwright,
     StepKey::Browser,
 ];
 
@@ -40,11 +38,9 @@ pub(crate) struct MenuDetails {
     ollama: String,
     embed: String,
     chat: String,
-    playwright: String,
     browser: String,
     embed_options: Option<MenuOptions>,
     chat_options: Option<MenuOptions>,
-    browser_options: Option<MenuOptions>,
     browsers: Vec<BrowserStatus>,
 }
 
@@ -54,7 +50,6 @@ impl MenuDetails {
             StepKey::Ollama => &self.ollama,
             StepKey::EmbedModel => &self.embed,
             StepKey::ChatModel => &self.chat,
-            StepKey::Playwright => &self.playwright,
             StepKey::Browser => &self.browser,
             _ => "Select a section to configure.",
         }
@@ -64,7 +59,6 @@ impl MenuDetails {
         match step {
             StepKey::EmbedModel => self.embed_options.as_ref(),
             StepKey::ChatModel => self.chat_options.as_ref(),
-            StepKey::Browser => self.browser_options.as_ref(),
             _ => None,
         }
     }
@@ -92,12 +86,8 @@ pub trait WizardServices {
     fn pull_model(&self, bin: &Path, model: &str) -> Result<()>;
     fn set_default_model(&self, model: &str) -> Result<()>;
     fn set_embedding_model(&self, model: &str) -> Result<()>;
-    fn playwright_dependency_status(&self) -> browser_install::PlaywrightDependencyStatus;
-    fn install_playwright_dependency(&self) -> Result<browser_install::PlaywrightDependencyStatus>;
-    fn install_playwright_browsers(
-        &self,
-        browsers: &[String],
-    ) -> Result<Option<std::path::PathBuf>>;
+    fn chromium_install_status(&self) -> browser_install::ChromiumInstallStatus;
+    fn install_chromium(&self) -> Result<browser_install::BrowserInstallResult>;
     fn set_browser_path(&self, path: &Path, kind: &str) -> Result<()>;
 }
 
@@ -139,20 +129,12 @@ impl WizardServices for RealServices {
         config::set_embedding_model(model).map(|_| ())
     }
 
-    fn playwright_dependency_status(&self) -> browser_install::PlaywrightDependencyStatus {
-        browser_install::playwright_dependency_status()
+    fn chromium_install_status(&self) -> browser_install::ChromiumInstallStatus {
+        browser_install::chromium_install_status()
     }
 
-    fn install_playwright_dependency(&self) -> Result<browser_install::PlaywrightDependencyStatus> {
-        browser_install::install_playwright_dependency()
-    }
-
-    fn install_playwright_browsers(
-        &self,
-        browsers: &[String],
-    ) -> Result<Option<std::path::PathBuf>> {
-        let result = browser_install::install_playwright_browsers(browsers)?;
-        Ok(result.map(|entry| entry.path))
+    fn install_chromium(&self) -> Result<browser_install::BrowserInstallResult> {
+        browser_install::install_chromium()
     }
 
     fn set_browser_path(&self, path: &Path, kind: &str) -> Result<()> {
@@ -266,7 +248,6 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
                 &mut installed,
                 &mut default_model,
             ),
-            StepKey::Playwright => configure_playwright_section(&mut state, input, services),
             StepKey::Browser => configure_browser_section(&mut state, input, services),
             _ => Ok(None),
         }?;
@@ -390,47 +371,21 @@ fn build_menu_details<S: WizardServices>(
     };
     state.update_step(StepKey::ChatModel, chat_status, config_default.clone());
 
-    let playwright_status = services.playwright_dependency_status();
-    let playwright_step = if playwright_status.installed {
+    let chromium_status = services.chromium_install_status();
+    let browser_status = if chromium_status.installed {
         StepStatus::Done
     } else {
         StepStatus::Pending
     };
-    let playwright_detail = if playwright_status.installed {
-        Some(playwright_detail(&playwright_status))
-    } else {
-        Some("not installed".to_string())
-    };
-    state.update_step(StepKey::Playwright, playwright_step, playwright_detail);
-
-    let browsers = list_playwright_browsers();
-    let config_browser = resolve_config_browser_kind();
-    let any_installed = browsers.iter().any(|browser| browser.installed);
-    let browser_installed = config_browser
-        .as_deref()
-        .map(|name| {
-            browsers
-                .iter()
-                .any(|browser| browser.installed && browser.name.eq_ignore_ascii_case(name))
-        })
-        .unwrap_or(false);
-    let browser_status = if !playwright_status.installed {
-        StepStatus::Pending
-    } else if browser_installed {
-        StepStatus::Done
-    } else {
-        StepStatus::Pending
-    };
-    let browser_detail = if !playwright_status.installed {
-        Some("playwright missing".to_string())
-    } else if let Some(name) = config_browser.clone() {
-        Some(name)
-    } else if any_installed {
-        Some("not set".to_string())
+    let browser_detail = if chromium_status.installed {
+        Some(chromium_detail(&chromium_status))
     } else {
         Some("not installed".to_string())
     };
     state.update_step(StepKey::Browser, browser_status, browser_detail);
+
+    let browsers = list_chromium_browsers();
+    let config_browser = resolve_config_browser_kind();
 
     let mut ollama_body = String::new();
     if let Some(path) = resolved_path.as_ref() {
@@ -515,34 +470,17 @@ fn build_menu_details<S: WizardServices>(
         );
     }
 
-    let mut playwright_body = String::new();
-    if playwright_status.installed {
-        let version = playwright_status.version.as_deref().unwrap_or("unknown");
-        let _ = writeln!(
-            playwright_body,
-            "Playwright dependency: installed ({version})"
-        );
-        if let Some(node_path) = playwright_status.node_path.as_ref() {
-            let _ = writeln!(playwright_body, "Node module path: {}", node_path.display());
-        }
-    } else {
-        playwright_body
-            .push_str("Playwright dependency not detected.\nSelect this section to install it.");
-    }
-
     let mut browser_body = String::new();
     let installed_list = format_browser_list(&browsers);
-    let _ = writeln!(browser_body, "Playwright browser inventory:");
+    let _ = writeln!(browser_body, "Chromium status:");
     let _ = writeln!(browser_body, "{installed_list}");
     let _ = writeln!(
         browser_body,
-        "Configured default browser: {}",
-        config_browser.as_deref().unwrap_or("not set")
+        "Configured browser: {}",
+        config_browser.as_deref().unwrap_or("chromium")
     );
-    if !playwright_status.installed {
-        browser_body.push_str("\nInstall Playwright first to enable browser downloads.");
-    } else if !any_installed {
-        browser_body.push_str("\nSelect this section to install Playwright browsers.");
+    if !chromium_status.installed {
+        browser_body.push_str("\nSelect this section to download Chromium.");
     }
 
     let embed_options = if embed_models.is_empty() {
@@ -567,26 +505,13 @@ fn build_menu_details<S: WizardServices>(
         })
     };
 
-    let browser_options = if browsers.is_empty() {
-        None
-    } else {
-        let (choices, default_index) = build_browser_choices(&browsers, config_browser.as_deref());
-        let default_index = default_index.unwrap_or(0);
-        Some(MenuOptions {
-            choices,
-            default_index,
-        })
-    };
-
     MenuDetails {
         ollama: ollama_body.trim_end().to_string(),
         embed: embed_body.trim_end().to_string(),
         chat: chat_body.trim_end().to_string(),
-        playwright: playwright_body.trim_end().to_string(),
         browser: browser_body.trim_end().to_string(),
         embed_options,
         chat_options,
-        browser_options,
         browsers,
     }
 }
@@ -636,11 +561,11 @@ fn apply_quick_default<S: WizardServices>(
                 .path
                 .as_ref()
                 .ok_or_else(|| anyhow!("browser path missing: {value}"))?;
-            services.set_browser_path(path, &browser.name)?;
+            services.set_browser_path(path, "chromium")?;
             state.update_step(
                 StepKey::Browser,
                 StepStatus::Done,
-                Some(browser.name.clone()),
+                Some("chromium".to_string()),
             );
         }
         _ => {}
@@ -977,135 +902,32 @@ fn configure_browser_section<I: WizardInput, S: WizardServices>(
     services: &S,
 ) -> Result<Option<String>> {
     state.set_current(StepKey::Browser);
-    if !services.playwright_dependency_status().installed {
-        state.update_step(
-            StepKey::Browser,
-            StepStatus::Pending,
-            Some("playwright not installed".to_string()),
-        );
-        input.info(
-            state,
-            "Playwright dependency is not installed.\nSelect the Playwright section to install it before installing browsers.",
-        )?;
-        return Ok(None);
-    }
-    let mut browsers = list_playwright_browsers();
-    let installed_list = format_browser_list(&browsers);
-    input.info(
-        state,
-        &format!("Playwright browser inventory:\n{installed_list}"),
-    )?;
-    let installed_set = browsers
-        .iter()
-        .filter(|browser| browser.installed)
-        .map(|browser| browser.name.to_ascii_lowercase())
-        .collect::<HashSet<_>>();
-    let browser_selection = resolve_browser_install_selection(input, state, &installed_set)?;
-    if !browser_selection.is_empty() {
-        let detail = browser_selection.join(", ");
-        loop {
-            input.info(
-                state,
-                &format!("Installing Playwright browsers: {detail}..."),
-            )?;
-            let install = input.with_suspended_terminal(|| {
-                services.install_playwright_browsers(&browser_selection)
-            });
-            match install {
-                Ok(_) => {
-                    browsers = list_playwright_browsers();
-                    break;
-                }
-                Err(err) => {
-                    let err = err.to_string();
-                    state.update_step(StepKey::Browser, StepStatus::Failed, Some(err.clone()));
-                    if !prompt_retry(input, state, "Browser install failed. Retry?")? {
-                        return Ok(Some(err));
-                    }
-                }
-            }
-        }
-    }
-
-    if !browsers.iter().any(|browser| browser.installed) {
-        state.update_step(
-            StepKey::Browser,
-            StepStatus::Skipped,
-            Some("no browsers".to_string()),
-        );
-        return Ok(None);
-    }
-
-    let config_browser = resolve_config_browser_kind();
-    let (choices, default_index) = build_browser_choices(&browsers, config_browser.as_deref());
-    let Some(default_index) = default_index else {
-        state.update_step(
-            StepKey::Browser,
-            StepStatus::Skipped,
-            Some("no browsers".to_string()),
-        );
-        return Ok(None);
-    };
-    let selected = input.select_model(state, &choices, default_index)?;
-    let chosen = selected.or_else(|| {
-        config_browser.clone().filter(|name| {
-            browsers
-                .iter()
-                .any(|browser| browser.installed && browser.name.eq_ignore_ascii_case(name))
-        })
-    });
-    if let Some(name) = chosen.clone() {
-        if let Some(browser) = browsers
-            .iter()
-            .find(|browser| browser.installed && browser.name.eq_ignore_ascii_case(&name))
-        {
-            let path = browser
-                .path
-                .as_ref()
-                .ok_or_else(|| anyhow!("browser path missing: {}", browser.name))?;
-            services.set_browser_path(path, &browser.name)?;
+    let status = services.chromium_install_status();
+    if status.installed {
+        if let Some(path) = status.path.as_ref() {
+            services.set_browser_path(path, "chromium")?;
             state.update_step(
                 StepKey::Browser,
                 StepStatus::Done,
-                Some(browser.name.clone()),
+                Some(chromium_detail(&status)),
             );
             return Ok(None);
         }
     }
-    state.update_step(StepKey::Browser, StepStatus::Skipped, None);
-    Ok(None)
-}
 
-fn configure_playwright_section<I: WizardInput, S: WizardServices>(
-    state: &mut SetupState,
-    input: &mut I,
-    services: &S,
-) -> Result<Option<String>> {
-    state.set_current(StepKey::Playwright);
-    let status = services.playwright_dependency_status();
-    if status.installed {
-        browser_install::backfill_playwright_node_bin();
-        state.update_step(
-            StepKey::Playwright,
-            StepStatus::Done,
-            Some(playwright_detail(&status)),
-        );
-        return Ok(None);
-    }
-
-    let install_override = env_bool("DOCDEX_PLAYWRIGHT_INSTALL");
+    let install_override = resolve_browser_install_preference()?;
     let consent = match install_override {
         Some(true) => true,
         Some(false) => false,
         None => input.confirm(
             state,
-            "Playwright dependency not detected. Do you want to install it now?",
+            "Chromium not detected. Do you want to download it now?",
             true,
         )?,
     };
     if !consent {
         state.update_step(
-            StepKey::Playwright,
+            StepKey::Browser,
             StepStatus::Skipped,
             Some("not installed".to_string()),
         );
@@ -1114,21 +936,19 @@ fn configure_playwright_section<I: WizardInput, S: WizardServices>(
     }
 
     loop {
-        input.info(state, "Installing Playwright dependency...")?;
-        let install = input.with_suspended_terminal(|| services.install_playwright_dependency());
+        input.info(state, "Downloading Chromium...")?;
+        let install = input.with_suspended_terminal(|| services.install_chromium());
         match install {
-            Ok(status) => {
-                state.update_step(
-                    StepKey::Playwright,
-                    StepStatus::Done,
-                    Some(playwright_detail(&status)),
-                );
+            Ok(result) => {
+                services.set_browser_path(&result.path, "chromium")?;
+                let detail = format!("v{}", result.version);
+                state.update_step(StepKey::Browser, StepStatus::Done, Some(detail));
                 break;
             }
             Err(err) => {
                 let err = err.to_string();
-                state.update_step(StepKey::Playwright, StepStatus::Failed, Some(err.clone()));
-                if !prompt_retry(input, state, "Playwright install failed. Retry?")? {
+                state.update_step(StepKey::Browser, StepStatus::Failed, Some(err.clone()));
+                if !prompt_retry(input, state, "Chromium install failed. Retry?")? {
                     return Ok(Some(err));
                 }
             }
@@ -1309,70 +1129,23 @@ fn build_model_choices(
     (choices, default_index)
 }
 
-fn resolve_browser_install_selection<I: WizardInput>(
-    input: &mut I,
-    state: &SetupState,
-    installed: &HashSet<String>,
-) -> Result<Vec<String>> {
-    if let Some(selection) = parse_browser_install_env()? {
-        return Ok(selection);
-    }
-
-    let mut selection = Vec::new();
-    if !installed.contains("chromium")
-        && input.confirm(
-            state,
-            "Install Playwright Chromium browser?",
-            installed.is_empty(),
-        )?
-    {
-        selection.push("chromium".to_string());
-    }
-    if !installed.contains("firefox")
-        && input.confirm(state, "Install Playwright Firefox browser?", false)?
-    {
-        selection.push("firefox".to_string());
-    }
-    if !installed.contains("webkit")
-        && input.confirm(state, "Install Playwright WebKit browser?", false)?
-    {
-        selection.push("webkit".to_string());
-    }
-    Ok(selection)
-}
-
-fn parse_browser_install_env() -> Result<Option<Vec<String>>> {
+fn resolve_browser_install_preference() -> Result<Option<bool>> {
     let raw = match env::var("DOCDEX_BROWSER_INSTALL") {
         Ok(value) => value,
         Err(_) => return Ok(None),
     };
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Ok(Some(Vec::new()));
+        return Ok(Some(false));
     }
     let lowered = trimmed.to_ascii_lowercase();
-    if lowered == "none" || lowered == "skip" {
-        return Ok(Some(Vec::new()));
+    match lowered.as_str() {
+        "1" | "true" | "yes" | "y" | "on" | "chromium" => Ok(Some(true)),
+        "0" | "false" | "no" | "n" | "off" | "none" | "skip" => Ok(Some(false)),
+        _ => Err(anyhow!(
+            "unsupported value for DOCDEX_BROWSER_INSTALL: {lowered}"
+        )),
     }
-
-    let mut selection = Vec::new();
-    let mut seen = HashSet::new();
-    for part in trimmed.split(',') {
-        let name = part.trim().to_ascii_lowercase();
-        if name.is_empty() {
-            continue;
-        }
-        if !matches!(name.as_str(), "chromium" | "firefox" | "webkit") {
-            return Err(anyhow!(
-                "unsupported browser in DOCDEX_BROWSER_INSTALL: {name}"
-            ));
-        }
-        if seen.insert(name.clone()) {
-            selection.push(name);
-        }
-    }
-
-    Ok(Some(selection))
 }
 
 fn resolve_config_embedding_model() -> String {
@@ -1405,79 +1178,45 @@ fn resolve_config_browser_kind() -> Option<String> {
             let trimmed = kind.trim();
             if trimmed.is_empty() {
                 None
+            } else if trimmed.eq_ignore_ascii_case("chromium")
+                || trimmed.eq_ignore_ascii_case("chrome")
+            {
+                Some("chromium".to_string())
             } else {
-                Some(trimmed.to_string())
+                None
             }
         })
     })
 }
 
-fn list_playwright_browsers() -> Vec<BrowserStatus> {
-    let mut by_name = HashMap::new();
-    for name in ["chromium", "firefox", "webkit"] {
-        by_name.insert(
-            name.to_string(),
-            BrowserStatus {
-                name: name.to_string(),
-                installed: false,
-                version: None,
-                path: None,
-            },
-        );
-    }
+fn list_chromium_browsers() -> Vec<BrowserStatus> {
+    let mut browser = BrowserStatus {
+        name: "chromium".to_string(),
+        installed: false,
+        version: None,
+        path: None,
+    };
 
-    if let Some(manifest) = util::read_playwright_manifest() {
-        for browser in manifest.browsers {
-            let key = browser.name.trim().to_ascii_lowercase();
-            let entry = by_name.entry(key).or_insert(BrowserStatus {
-                name: browser.name.clone(),
-                installed: false,
-                version: None,
-                path: None,
-            });
-            if browser.path.is_file() {
-                entry.installed = true;
-                entry.version = browser.version.clone();
-                entry.path = Some(browser.path.clone());
-            }
-            if entry.name.trim().is_empty() {
-                entry.name = browser.name.clone();
-            }
+    if let Some(manifest) = util::read_chromium_manifest() {
+        if manifest.path.is_file() {
+            browser.installed = true;
+            browser.version = manifest.version;
+            browser.path = Some(manifest.path);
         }
     }
 
-    let mut browsers: Vec<BrowserStatus> = by_name.into_values().collect();
-    browsers.sort_by(|left, right| {
-        browser_order_index(&left.name)
-            .cmp(&browser_order_index(&right.name))
-            .then_with(|| {
-                left.name
-                    .to_ascii_lowercase()
-                    .cmp(&right.name.to_ascii_lowercase())
-            })
-    });
-    browsers
-}
-
-fn browser_order_index(name: &str) -> usize {
-    match name.trim().to_ascii_lowercase().as_str() {
-        "chromium" => 0,
-        "firefox" => 1,
-        "webkit" => 2,
-        _ => 3,
-    }
+    vec![browser]
 }
 
 fn browser_label(name: &str) -> String {
-    match name.trim().to_ascii_lowercase().as_str() {
-        "chromium" => "Chromium".to_string(),
-        "firefox" => "Firefox".to_string(),
-        "webkit" => "WebKit".to_string(),
-        _ => name.to_string(),
+    if name.trim().eq_ignore_ascii_case("chromium") {
+        "Chromium".to_string()
+    } else {
+        name.to_string()
     }
 }
 
-fn playwright_detail(status: &browser_install::PlaywrightDependencyStatus) -> String {
+fn chromium_detail(status: &browser_install::ChromiumInstallStatus) -> String {
     if let Some(version) = status.version.as_deref().map(|value| value.trim()) {
         if !version.is_empty() {
             return format!("v{version}");
@@ -1512,50 +1251,6 @@ fn format_browser_list(browsers: &[BrowserStatus]) -> String {
             .collect::<Vec<_>>()
             .join("\n")
     }
-}
-
-fn build_browser_choices(
-    browsers: &[BrowserStatus],
-    current_default: Option<&str>,
-) -> (Vec<ModelChoice>, Option<usize>) {
-    let mut choices = Vec::new();
-    let mut default_index = None;
-    for (idx, browser) in browsers.iter().enumerate() {
-        if browser.installed && default_index.is_none() {
-            if let Some(default_browser) = current_default {
-                if browser.name.eq_ignore_ascii_case(default_browser) {
-                    default_index = Some(idx);
-                }
-            }
-        }
-        let label = if browser.installed {
-            match browser.version.as_ref().map(|value| value.trim()) {
-                Some(value) if !value.is_empty() => {
-                    format!("{} ({value})", browser_label(&browser.name))
-                }
-                _ => format!("{} (installed)", browser_label(&browser.name)),
-            }
-        } else {
-            format!("{} (uninstalled)", browser_label(&browser.name))
-        };
-        choices.push(ModelChoice {
-            label,
-            value: browser.name.clone(),
-            selectable: browser.installed,
-            style: if browser.installed {
-                None
-            } else {
-                Some(Style::default().fg(Color::Red))
-            },
-        });
-    }
-    if default_index.is_none() {
-        default_index = browsers.iter().position(|browser| browser.installed);
-    }
-    if default_index.is_none() && !choices.is_empty() {
-        default_index = Some(0);
-    }
-    (choices, default_index)
 }
 
 fn format_completion_message(
@@ -1674,20 +1369,27 @@ fn load_summary_config() -> Option<app_config::AppConfig> {
 
 fn resolve_browser_summary_from_config(config: &app_config::AppConfig) -> Option<String> {
     let kind = config.web.scraper.browser_kind.as_deref()?;
-    let browsers = list_playwright_browsers();
+    if !kind.eq_ignore_ascii_case("chromium") && !kind.eq_ignore_ascii_case("chrome") {
+        return None;
+    }
+    let label = browser_label("chromium");
+    if let Some(path) = config.web.scraper.chrome_binary_path.as_ref() {
+        return Some(format!("{label} ({})", path.display()));
+    }
+    let browsers = list_chromium_browsers();
     browsers
         .iter()
-        .find(|browser| browser.installed && browser.name.eq_ignore_ascii_case(kind))
+        .find(|browser| browser.installed)
         .and_then(|browser| {
             browser
                 .path
                 .as_ref()
-                .map(|path| format!("{} ({})", browser_label(&browser.name), path.display()))
+                .map(|path| format!("{label} ({})", path.display()))
         })
 }
 
 fn resolve_browser_summary_from_detection() -> Option<String> {
-    let browsers = list_playwright_browsers();
+    let browsers = list_chromium_browsers();
     browsers
         .iter()
         .find(|browser| browser.installed)
@@ -1947,7 +1649,7 @@ impl WizardInput for TuiInput {
         let body = match state.current {
             StepKey::ChatModel => "Select default chat model",
             StepKey::EmbedModel => "Select default embedding model",
-            StepKey::Browser => "Select default Playwright browser",
+            StepKey::Browser => "Select Chromium browser",
             _ => "Select option",
         };
         self.selected_index = default_index.min(models.len().saturating_sub(1));
@@ -2235,7 +1937,8 @@ mod tests {
     struct FakeServices {
         models: Vec<String>,
         ollama_path: Option<PathBuf>,
-        playwright_installed: bool,
+        chromium_installed: bool,
+        chromium_path: Option<PathBuf>,
     }
 
     impl WizardServices for FakeServices {
@@ -2275,26 +1978,28 @@ mod tests {
             Ok(())
         }
 
-        fn playwright_dependency_status(&self) -> browser_install::PlaywrightDependencyStatus {
-            browser_install::PlaywrightDependencyStatus {
-                installed: self.playwright_installed,
-                version: None,
-                node_path: None,
+        fn chromium_install_status(&self) -> browser_install::ChromiumInstallStatus {
+            browser_install::ChromiumInstallStatus {
+                installed: self.chromium_installed,
+                version: self
+                    .chromium_installed
+                    .then(|| "test".to_string()),
+                path: self
+                    .chromium_installed
+                    .then(|| self.chromium_path.clone())
+                    .flatten(),
             }
         }
 
-        fn install_playwright_dependency(
-            &self,
-        ) -> Result<browser_install::PlaywrightDependencyStatus> {
-            Ok(browser_install::PlaywrightDependencyStatus {
-                installed: true,
-                version: Some("test".to_string()),
-                node_path: None,
+        fn install_chromium(&self) -> Result<browser_install::BrowserInstallResult> {
+            let path = self
+                .chromium_path
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("/tmp/chromium"));
+            Ok(browser_install::BrowserInstallResult {
+                path,
+                version: "test".to_string(),
             })
-        }
-
-        fn install_playwright_browsers(&self, _browsers: &[String]) -> Result<Option<PathBuf>> {
-            Ok(None)
         }
 
         fn set_browser_path(&self, _path: &Path, _kind: &str) -> Result<()> {
@@ -2333,7 +2038,8 @@ mod tests {
         let services = FakeServices {
             models: vec![],
             ollama_path: None,
-            playwright_installed: false,
+            chromium_installed: false,
+            chromium_path: None,
         };
         let context = SetupContext {
             hardware: super::super::hardware::SetupHardware {
@@ -2363,7 +2069,8 @@ mod tests {
         let services = FakeServices {
             models: vec![EMBED_MODEL.to_string(), CHAT_MODEL.to_string()],
             ollama_path: Some(PathBuf::from("/tmp/ollama")),
-            playwright_installed: false,
+            chromium_installed: false,
+            chromium_path: None,
         };
         let context = SetupContext {
             hardware: super::super::hardware::SetupHardware {
@@ -2409,7 +2116,8 @@ mod tests {
         let services = FakeServices {
             models: vec![EMBED_MODEL.to_string()],
             ollama_path: Some(PathBuf::from("/tmp/ollama")),
-            playwright_installed: false,
+            chromium_installed: false,
+            chromium_path: None,
         };
         let context = SetupContext {
             hardware: super::super::hardware::SetupHardware {
@@ -2453,54 +2161,17 @@ mod tests {
     }
 
     #[test]
-    fn list_playwright_browsers_includes_uninstalled_defaults() -> Result<()> {
+    fn list_chromium_browsers_includes_default() -> Result<()> {
         let _guard = ENV_LOCK.lock().unwrap();
         let temp = TempDir::new()?;
-        let _env = EnvGuard::set("PLAYWRIGHT_BROWSERS_PATH", &temp.path().to_string_lossy());
-        let browsers = list_playwright_browsers();
-        assert!(browsers
-            .iter()
-            .any(|browser| browser.name.eq_ignore_ascii_case("chromium")));
-        assert!(browsers
-            .iter()
-            .any(|browser| browser.name.eq_ignore_ascii_case("firefox")));
-        assert!(browsers
-            .iter()
-            .any(|browser| browser.name.eq_ignore_ascii_case("webkit")));
-        assert!(browsers.iter().all(|browser| !browser.installed));
+        let temp_home = temp.path().to_string_lossy();
+        let _home = EnvGuard::set("HOME", &temp_home);
+        let _user = EnvGuard::set("USERPROFILE", &temp_home);
+        let browsers = list_chromium_browsers();
+        assert_eq!(browsers.len(), 1);
+        assert!(browsers[0].name.eq_ignore_ascii_case("chromium"));
+        assert!(!browsers[0].installed);
         Ok(())
-    }
-
-    #[test]
-    fn build_browser_choices_marks_uninstalled() {
-        let browsers = vec![
-            BrowserStatus {
-                name: "chromium".to_string(),
-                installed: true,
-                version: Some("123".to_string()),
-                path: Some(PathBuf::from("/tmp/chromium")),
-            },
-            BrowserStatus {
-                name: "firefox".to_string(),
-                installed: false,
-                version: None,
-                path: None,
-            },
-            BrowserStatus {
-                name: "webkit".to_string(),
-                installed: false,
-                version: None,
-                path: None,
-            },
-        ];
-        let (choices, default_index) = build_browser_choices(&browsers, None);
-        assert_eq!(choices.len(), 3);
-        assert!(choices[0].selectable);
-        assert!(!choices[1].selectable);
-        assert!(!choices[2].selectable);
-        assert!(choices[1].label.contains("uninstalled"));
-        assert!(choices[1].style.is_some());
-        assert_eq!(default_index, Some(0));
     }
 
     #[test]
@@ -2515,7 +2186,6 @@ mod tests {
             StepKey::ChatModel,
             StepKey::DefaultModel,
             StepKey::EmbedDefault,
-            StepKey::Playwright,
             StepKey::Browser,
             StepKey::Summary,
         ] {

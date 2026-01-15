@@ -122,7 +122,7 @@
 - src/orchestrator/web_config.rs
 - src/llm/tests.rs
 - src/setup/state.rs
-- src/setup/ui.rs (Playwright browser inventory + selection tests)
+- src/setup/ui.rs (Chromium setup tests)
 - src/setup/ollama.rs
 - src/setup/mod.rs
 - src/setup/state_store.rs
@@ -139,7 +139,6 @@
 - src/web/browser_install.rs
 - src/web/chrome.rs
 - src/web/ddg.rs
-- src/web/playwright_scripts.rs
 
 ## Benchmarks
 - benches/indexing_bench.rs
@@ -187,7 +186,6 @@
 - npm/test/postinstall_setup_agent_blocks.test.js
 - npm/test/installer_local_fallback.test.js (local binary override)
 - npm/test/uninstall.test.js
-- npm/test/playwright_install.test.js
 
 ## Test Fixtures
 - npm/test/fixtures/archive/fake-archive.bin

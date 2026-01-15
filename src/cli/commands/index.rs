@@ -50,6 +50,7 @@ pub async fn run_ingest(repo: RepoArgs, file: PathBuf) -> Result<()> {
 async fn run_index_via_http(repo: RepoArgs, libs_sources: Option<PathBuf>) -> Result<()> {
     let repo_root = repo.repo_root();
     let client = CliHttpClient::new()?;
+    client.ensure_repo(&repo_root).await?;
     let payload = serde_json::json!({
         "libs_sources": libs_sources.as_ref().map(|path| path.to_string_lossy().to_string())
     });
@@ -65,6 +66,7 @@ async fn run_index_via_http(repo: RepoArgs, libs_sources: Option<PathBuf>) -> Re
 async fn run_ingest_via_http(repo: RepoArgs, file: PathBuf) -> Result<()> {
     let repo_root = repo.repo_root();
     let client = CliHttpClient::new()?;
+    client.ensure_repo(&repo_root).await?;
     let payload = serde_json::json!({
         "file": file.to_string_lossy().to_string(),
     });

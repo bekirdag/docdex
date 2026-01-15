@@ -121,7 +121,7 @@ pub async fn web_fetch_handler(
             return json_error_with_details(
                 StatusCode::CONFLICT,
                 ERR_MISSING_DEPENDENCY,
-                "playwright browser not configured",
+                "chromium browser not configured",
                 browser_missing_details(&config),
             );
         }
@@ -209,28 +209,23 @@ fn now_epoch_ms() -> u128 {
 }
 
 fn browser_missing_details(config: &web::WebConfig) -> serde_json::Value {
-    let manifest_path = util::resolve_playwright_manifest_path();
-    let browsers = util::read_playwright_manifest()
+    let manifest_path = util::resolve_chromium_manifest_path();
+    let manifest = util::read_chromium_manifest();
+    let browser = manifest
+        .as_ref()
+        .filter(|manifest| manifest.path.is_file())
         .map(|manifest| {
-            manifest
-                .browsers
-                .into_iter()
-                .filter(|browser| browser.path.is_file())
-                .map(|browser| {
-                    serde_json::json!({
-                        "name": browser.name,
-                        "version": browser.version,
-                        "path": browser.path.to_string_lossy(),
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+            serde_json::json!({
+                "version": manifest.version,
+                "path": manifest.path.to_string_lossy(),
+                "platform": manifest.platform,
+            })
+        });
     serde_json::json!({
-        "browser_available": !browsers.is_empty(),
-        "install_action": "docdexd browser setup",
+        "browser_available": browser.is_some(),
+        "install_action": "docdexd browser install",
         "configured_browser": config.scraper_browser_kind.as_deref(),
         "manifest_path": manifest_path.map(|path| path.to_string_lossy().to_string()),
-        "browsers": browsers,
+        "chromium": browser,
     })
 }

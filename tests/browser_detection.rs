@@ -48,20 +48,19 @@ fn touch_file(path: &Path) {
     }
 }
 
-fn write_playwright_manifest(root: &Path, chromium_path: &Path) {
+fn write_chromium_manifest(root: &Path, chromium_path: &Path) {
     let manifest_dir = root
         .join(".docdex")
         .join("state")
         .join("bin")
-        .join("playwright");
+        .join("chromium");
     std::fs::create_dir_all(&manifest_dir).expect("create manifest dir");
     let payload = serde_json::json!({
         "installed_at": "2024-01-01T00:00:00Z",
-        "browsers_path": manifest_dir.to_string_lossy(),
-        "playwright_version": "1.2.3",
-        "browsers": [
-            { "name": "chromium", "version": "12345", "path": chromium_path }
-        ]
+        "version": "12345",
+        "platform": "linux64",
+        "download_url": "https://example.com/chromium.zip",
+        "path": chromium_path,
     });
     std::fs::write(manifest_dir.join("manifest.json"), payload.to_string())
         .expect("write manifest");
@@ -94,16 +93,16 @@ fn env_precedence_over_config_path() {
 }
 
 #[test]
-fn detect_browser_binary_prefers_playwright_manifest_over_system() {
+fn detect_browser_binary_prefers_chromium_manifest_over_system() {
     let _lock = ENV_LOCK.lock().unwrap();
     let temp = TempDir::new().expect("tempdir");
-    let chromium_path = temp.path().join("pw-chromium");
+    let chromium_path = temp.path().join("docdex-chromium");
     touch_file(&chromium_path);
-    write_playwright_manifest(temp.path(), &chromium_path);
+    write_chromium_manifest(temp.path(), &chromium_path);
 
     let bin_dir = temp.path().join("bin");
     std::fs::create_dir_all(&bin_dir).expect("create bin dir");
-    let chrome_path = bin_dir.join(command_name("google-chrome"));
+    let chrome_path = bin_dir.join(command_name("chromium"));
     touch_file(&chrome_path);
 
     let _env_browser = EnvGuard::unset("DOCDEX_WEB_BROWSER");
@@ -114,7 +113,7 @@ fn detect_browser_binary_prefers_playwright_manifest_over_system() {
     std::env::set_var("PATH", &bin_dir);
 
     let candidate = detect_browser_binary(None).expect("expected browser candidate");
-    assert_eq!(candidate.source, BrowserSource::Playwright);
+    assert_eq!(candidate.source, BrowserSource::AutoInstall);
     assert_eq!(candidate.path, chromium_path);
 
     std::env::set_var("PATH", original_path);
@@ -127,7 +126,7 @@ fn detect_browser_binary_uses_which_when_no_env() {
     let temp = TempDir::new().expect("tempdir");
     let bin_dir = temp.path().join("bin");
     std::fs::create_dir_all(&bin_dir).expect("create bin dir");
-    let chrome_path = bin_dir.join("google-chrome");
+    let chrome_path = bin_dir.join("chromium");
     touch_file(&chrome_path);
 
     let _env_browser = EnvGuard::unset("DOCDEX_WEB_BROWSER");
@@ -167,10 +166,10 @@ fn detect_browser_candidates_preserve_command_order() {
     let temp = TempDir::new().expect("tempdir");
     let bin_dir = temp.path().join("bin");
     std::fs::create_dir_all(&bin_dir).expect("create bin dir");
-    let chrome_path = bin_dir.join(command_name("google-chrome"));
     let chromium_path = bin_dir.join(command_name("chromium"));
-    touch_file(&chrome_path);
+    let chromium_browser_path = bin_dir.join(command_name("chromium-browser"));
     touch_file(&chromium_path);
+    touch_file(&chromium_browser_path);
 
     let _env_browser = EnvGuard::unset("DOCDEX_WEB_BROWSER");
     let _chrome_path_env = EnvGuard::unset("DOCDEX_CHROME_PATH");
@@ -185,8 +184,8 @@ fn detect_browser_candidates_preserve_command_order() {
         .filter(|candidate| candidate.source == BrowserSource::Which)
         .collect();
     assert!(which_candidates.len() >= 2);
-    assert_eq!(which_candidates[0].path, chrome_path);
-    assert_eq!(which_candidates[1].path, chromium_path);
+    assert_eq!(which_candidates[0].path, chromium_path);
+    assert_eq!(which_candidates[1].path, chromium_browser_path);
 
     std::env::set_var("PATH", original_path);
 }

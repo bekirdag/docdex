@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
-const DEFAULT_MCP_BASE_URL: &str = "http://127.0.0.1:3210";
+const DEFAULT_MCP_BASE_URL: &str = "http://127.0.0.1:28491";
 
 fn home_dir() -> Result<PathBuf> {
     let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
@@ -73,8 +73,7 @@ fn mcp_add_banner_lines(
     ));
     if !info.running {
         lines.push(format!(
-            "[docdexd mcp-add] Daemon not running. Start it with: docdexd daemon --repo {}",
-            repo_root.display()
+            "[docdexd mcp-add] Daemon not running. Start it with: docdexd daemon"
         ));
         lines.push(format!(
             "[docdexd mcp-add] Default MCP base URL: {}",
@@ -203,16 +202,15 @@ mod tests {
     #[test]
     fn mcp_add_banner_includes_start_hint_when_not_running() {
         let info = McpEndpointInfo {
-            base_url: "http://127.0.0.1:3210".to_string(),
+            base_url: "http://127.0.0.1:28491".to_string(),
             running: false,
         };
         let repo_root = repo_path();
         let lines = mcp_add_banner_lines(&info, &repo_root, "info", 12);
-        let repo_display = repo_root.display().to_string();
         assert!(lines.iter().any(|line| line.contains("Default MCP base URL")));
         assert!(lines.iter().any(|line| {
             line.contains("Start it with")
-                && line.contains(&format!("docdexd daemon --repo {repo_display}"))
+                && line.contains("docdexd daemon")
         }));
     }
 }

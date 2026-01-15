@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BASE_URL="${DOCDEX_HTTP_BASE_URL:-http://127.0.0.1:3210}"
+BASE_URL="${DOCDEX_HTTP_BASE_URL:-http://127.0.0.1:28491}"
 REPO_ROOT="${1:-$(pwd)}"
 if [[ -z "${DOCDEX_BIN:-}" && -x "${ROOT_DIR}/target/debug/docdexd" ]]; then
   DOCDEX_BIN="${ROOT_DIR}/target/debug/docdexd"

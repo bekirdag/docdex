@@ -672,6 +672,12 @@ pub(crate) async fn search_via_http(
     diff_path: Vec<std::path::PathBuf>,
 ) -> Result<Value> {
     let client = CliHttpClient::new()?;
+    client.ensure_repo(repo_root).await.map_err(|err| {
+        anyhow!(
+            "docdexd search failed: {err}; ensure `docdexd daemon` (or `docdexd serve --repo {}`) is running",
+            repo_root.display()
+        )
+    })?;
     let payload = SearchRequest {
         q: query.to_string(),
         limit,
@@ -701,7 +707,7 @@ pub(crate) async fn search_via_http(
     let raw = tokio::time::timeout(timeout, async {
         let resp = req.send().await.map_err(|err| {
             anyhow!(
-                "docdexd search failed: {err}; ensure `docdexd serve --repo {}` is running",
+                "docdexd search failed: {err}; ensure `docdexd daemon` (or `docdexd serve --repo {}`) is running",
                 repo_root.display()
             )
         })?;
@@ -709,7 +715,7 @@ pub(crate) async fn search_via_http(
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!(
-                "docdexd search failed ({status}): {body}; ensure `docdexd serve --repo {}` is running",
+                "docdexd search failed ({status}): {body}; ensure `docdexd daemon` (or `docdexd serve --repo {}`) is running",
                 repo_root.display()
             );
         }
@@ -718,7 +724,7 @@ pub(crate) async fn search_via_http(
     .await
     .map_err(|_| {
         anyhow!(
-            "docdexd search failed: request timed out after {timeout_ms}ms; ensure `docdexd serve --repo {}` is running",
+            "docdexd search failed: request timed out after {timeout_ms}ms; ensure `docdexd daemon` (or `docdexd serve --repo {}`) is running",
             repo_root.display()
         )
     })??;
@@ -816,6 +822,7 @@ pub(crate) async fn stream_via_http(
     diff_path: Vec<std::path::PathBuf>,
 ) -> Result<()> {
     let client = CliHttpClient::new_streaming()?;
+    client.ensure_repo(repo_root).await?;
     let repo_id = repo_manager::repo_fingerprint_sha256(repo_root).ok();
     let diff_payload = if diff_mode.is_some()
         || diff_base.is_some()
@@ -867,7 +874,7 @@ pub(crate) async fn stream_via_http(
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         anyhow::bail!(
-            "docdexd chat stream failed ({status}): {body}; ensure `docdexd serve --repo {}` is running",
+            "docdexd chat stream failed ({status}): {body}; ensure `docdexd daemon` (or `docdexd serve --repo {}`) is running",
             repo_root.display()
         );
     }

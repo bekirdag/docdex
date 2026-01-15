@@ -11,7 +11,7 @@ use crate::impact::{
 };
 
 const DEFAULT_CONFIG_FILE: &str = "config.toml";
-const DEFAULT_HTTP_BIND_ADDR: &str = "127.0.0.1:3210";
+const DEFAULT_HTTP_BIND_ADDR: &str = "127.0.0.1:28491";
 const DEFAULT_LOG_LEVEL: &str = "info";
 const DEFAULT_LLM_PROVIDER: &str = "ollama";
 const DEFAULT_LLM_BASE_URL: &str = "http://127.0.0.1:11434";
@@ -21,7 +21,7 @@ const DEFAULT_PROFILE_EMBED_MODEL: &str = "nomic-embed-text-v1.5";
 const DEFAULT_PROFILE_EMBED_DIM: usize = 768;
 const DEFAULT_MEMORY_BACKEND: &str = "sqlite";
 const DEFAULT_DISCOVERY_PROVIDER: &str = "duckduckgo_html";
-const DEFAULT_WEB_ENGINE: &str = "playwright";
+const DEFAULT_WEB_ENGINE: &str = "chromium";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -597,26 +597,26 @@ fn default_web_engine() -> String {
     DEFAULT_WEB_ENGINE.to_string()
 }
 
-fn apply_browser_defaults(config: &mut AppConfig) -> bool {
+pub(crate) fn apply_browser_defaults(config: &mut AppConfig) -> bool {
     let mut updated = false;
     if !config
         .web
         .scraper
         .engine
         .trim()
-        .eq_ignore_ascii_case("playwright")
+        .eq_ignore_ascii_case("chromium")
     {
-        config.web.scraper.engine = "playwright".to_string();
+        config.web.scraper.engine = "chromium".to_string();
         updated = true;
     }
-    if config
+    let browser_kind = config
         .web
         .scraper
         .browser_kind
         .as_deref()
-        .map(|kind| kind.trim().is_empty())
-        .unwrap_or(true)
-    {
+        .map(|kind| kind.trim())
+        .unwrap_or("");
+    if browser_kind.is_empty() || !browser_kind.eq_ignore_ascii_case("chromium") {
         config.web.scraper.browser_kind = Some("chromium".to_string());
         updated = true;
     }

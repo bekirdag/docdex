@@ -62,7 +62,6 @@
     "access": "public"
   },
   "dependencies": {
-    "playwright": "^1.49.0",
     "tar": "^6.2.1"
   }
 }

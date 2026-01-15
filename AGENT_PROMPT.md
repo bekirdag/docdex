@@ -12,7 +12,7 @@ You are interacting with Docdex, a local-first indexer/search daemon for docs an
 ## How to use
 - Install via npm: `npm i -g docdex` (or `npx docdex --version`).
 - Build an index: `docdexd index --repo /path/to/repo`.
-- Serve API: `docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 3210 --log info` (use `--expose --auth-token <token>` for non-loopback binds).
+- Serve API: `docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 28491 --log info` (use `--expose --auth-token <token>` for non-loopback binds).
 - Query via CLI: `docdexd chat --repo /path/to/repo --query "term" --limit 5` (omit `--query` for REPL).
 - Web fallback: set `DOCDEX_WEB_ENABLED=1` (otherwise web is disabled).
 - Health: `GET /healthz` should return `ok`.

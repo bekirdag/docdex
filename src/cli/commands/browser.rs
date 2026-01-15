@@ -1,5 +1,5 @@
 use crate::config;
-use crate::util::{self, BrowserCandidate, BrowserKind, BrowserSource};
+use crate::util::{self, BrowserCandidate, BrowserKind};
 use crate::web::browser_install;
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -45,7 +45,7 @@ struct BrowserInstallResponse {
 
 async fn run_list() -> Result<()> {
     let config = config::AppConfig::load_default()?;
-    let mut candidates = playwright_candidates();
+    let mut candidates = chromium_candidates(&config);
     candidates.sort_by_key(|candidate| candidate.priority);
     let selected =
         resolve_selected_candidate(&candidates, config.web.scraper.browser_kind.as_deref());
@@ -60,7 +60,7 @@ async fn run_list() -> Result<()> {
 
 async fn run_setup() -> Result<()> {
     let config = config::AppConfig::load_default()?;
-    let candidates = playwright_candidates();
+    let candidates = chromium_candidates(&config);
     let selected =
         resolve_selected_candidate(&candidates, config.web.scraper.browser_kind.as_deref());
     let config_path = config::default_config_path()?.to_string_lossy().to_string();
@@ -85,9 +85,9 @@ async fn run_install() -> Result<()> {
             .scraper
             .engine
             .trim()
-            .eq_ignore_ascii_case("playwright")
+            .eq_ignore_ascii_case("chromium")
         {
-            config.web.scraper.engine = "playwright".to_string();
+            config.web.scraper.engine = "chromium".to_string();
         }
         config::write_config(
             &config::default_config_path().context("resolve config path")?,
@@ -116,36 +116,10 @@ fn candidate_output(candidate: BrowserCandidate) -> BrowserCandidateOutput {
     }
 }
 
-fn playwright_candidates() -> Vec<BrowserCandidate> {
-    let Some(manifest) = util::read_playwright_manifest() else {
-        return Vec::new();
-    };
-    let mut priority = 0u32;
-    let mut out = Vec::new();
-    for browser in manifest.browsers.into_iter() {
-        if !browser.path.is_file() {
-            continue;
-        }
-        let name = browser.name.clone();
-        out.push(BrowserCandidate {
-            kind: playwright_kind(&name),
-            name,
-            path: browser.path,
-            source: BrowserSource::Playwright,
-            priority,
-        });
-        priority = priority.saturating_add(1);
-    }
-    out
-}
-
-fn playwright_kind(name: &str) -> BrowserKind {
-    match name.trim().to_ascii_lowercase().as_str() {
-        "chromium" => BrowserKind::Chromium,
-        "firefox" => BrowserKind::Firefox,
-        "webkit" => BrowserKind::Webkit,
-        _ => BrowserKind::Custom,
-    }
+fn chromium_candidates(config: &config::AppConfig) -> Vec<BrowserCandidate> {
+    let mut candidates = util::detect_browser_candidates(config.web.scraper.chrome_binary_path.as_deref());
+    candidates.retain(|candidate| matches!(candidate.kind, BrowserKind::Chromium | BrowserKind::Custom));
+    candidates
 }
 
 fn resolve_selected_candidate(

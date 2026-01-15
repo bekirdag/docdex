@@ -1,4 +1,6 @@
-use crate::error::{AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_UNKNOWN_REPO};
+use crate::error::{
+    AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_REPO, ERR_UNKNOWN_REPO,
+};
 use crate::index::Indexer;
 use crate::search::{json_error, status_for_app_error, AppState};
 use axum::{extract::State, response::IntoResponse, Json};
@@ -35,6 +37,12 @@ pub(crate) fn resolve_initialize(
     state: &AppState,
     root_uri: Option<&str>,
 ) -> Result<InitializeResponse, AppError> {
+    if state.require_repo_id && root_uri.is_none() {
+        return Err(AppError::new(
+            ERR_MISSING_REPO,
+            "rootUri is required when the daemon has no default repo",
+        ));
+    }
     let mut resolved_repo = state.indexer.repo_root().to_path_buf();
     if let Some(root_uri) = root_uri {
         let client_root = parse_root_uri(root_uri)?;

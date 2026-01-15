@@ -6,7 +6,7 @@ fn waterfall_plan_stores_inputs() {
         enabled: true,
         trigger_threshold: 0.3,
         min_local_match_ratio: 0.2,
-        browser_hint: Some("playwright".to_string()),
+        browser_hint: Some("chromium".to_string()),
         browser_available: false,
     };
     let tier2 = Tier2Config::enabled();

@@ -14,8 +14,7 @@ use tracing::{debug, info, warn};
 use url::Url;
 
 use crate::orchestrator::web_config::WebConfig;
-use crate::web::chrome::ChromeFetchResult;
-use crate::web::playwright::{fetch_dom as fetch_dom_playwright, PlaywrightFetchConfig};
+use crate::web::chrome::{fetch_dom as fetch_dom_chrome, ChromeFetchConfig, ChromeFetchResult};
 
 use crate::metrics;
 
@@ -712,30 +711,31 @@ async fn terminate_windows(pid: u32, force: bool) -> Result<(), String> {
 
 #[derive(Clone, Debug)]
 pub enum ScraperEngine {
-    Playwright { config: PlaywrightFetchConfig },
+    Chrome { config: ChromeFetchConfig },
 }
 
 impl ScraperEngine {
     pub fn from_web_config(config: &WebConfig) -> Result<Self> {
         let engine = config.scraper_engine.trim().to_ascii_lowercase();
-        if !engine.is_empty() && engine != "playwright" {
+        if !engine.is_empty()
+            && engine != "chrome"
+            && engine != "chromium"
+            && engine != "chromium-browser"
+        {
             warn!(
-                "web scraper engine {} is not supported; using playwright",
+                "web scraper engine {} is not supported; using chromium",
                 config.scraper_engine
             );
         }
-        let playwright_config =
-            PlaywrightFetchConfig::from_web_config(config).ok_or_else(|| {
-                anyhow!("playwright fetch config unavailable; run `docdexd browser setup`")
-            })?;
-        Ok(ScraperEngine::Playwright {
-            config: playwright_config,
-        })
+        let chrome_config = ChromeFetchConfig::from_web_config(config).ok_or_else(|| {
+            anyhow!("chromium browser not configured; run `docdexd browser install`")
+        })?;
+        Ok(ScraperEngine::Chrome { config: chrome_config })
     }
 
     pub async fn fetch_dom(&self, url: &Url) -> Result<ChromeFetchResult> {
         match self {
-            ScraperEngine::Playwright { config } => fetch_dom_playwright(url, config).await,
+            ScraperEngine::Chrome { config } => fetch_dom_chrome(url, config).await,
         }
     }
 }

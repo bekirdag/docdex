@@ -48,8 +48,8 @@ grep -q "docdexd-manifest.json.sha256" "$ASSET_COPY/SHA256SUMS"
 
 shopt -s nullglob
 for archive in "$ASSET_COPY"/docdexd-*.tar.gz; do
-  if ! tar -tzf "$archive" | grep -q "docdex-mcp-server"; then
-    echo "[release-check] missing docdex-mcp-server in $archive" >&2
+  if ! tar -tzf "$archive" | grep -q "docdexd"; then
+    echo "[release-check] missing docdexd in $archive" >&2
     exit 1
   fi
 done

@@ -9,7 +9,7 @@ const { spawnSync } = require("node:child_process");
 
 const DAEMON_TASK_NAME = "Docdex Daemon";
 const STARTUP_FAILURE_MARKER = "startup_registration_failed.json";
-const BIN_NAMES = ["docdex", "docdexd", "docdex-mcp-server"];
+const BIN_NAMES = ["docdex", "docdexd"];
 const PACKAGE_NAME = "docdex";
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_DAEMON_PORT = 28491;
@@ -52,6 +52,79 @@ function isPortAvailable(port, host) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function sleepSync(ms) {
+  if (!ms || ms <= 0) return;
+  const buffer = new SharedArrayBuffer(4);
+  const view = new Int32Array(buffer);
+  Atomics.wait(view, 0, 0, ms);
+}
+
+function isPidRunning(pid) {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readLockMetadata(lockPath) {
+  if (!lockPath || !fs.existsSync(lockPath)) return null;
+  try {
+    const raw = fs.readFileSync(lockPath, "utf8");
+    const payload = JSON.parse(raw);
+    if (!payload || typeof payload !== "object") return null;
+    const pid = typeof payload.pid === "number" ? payload.pid : null;
+    const port = typeof payload.port === "number" ? payload.port : null;
+    return { pid, port, lockPath };
+  } catch {
+    return null;
+  }
+}
+
+function findRunningDaemonFromLocks() {
+  for (const lockPath of daemonLockPaths()) {
+    const meta = readLockMetadata(lockPath);
+    if (!meta) continue;
+    if (isPidRunning(meta.pid)) return meta;
+  }
+  return null;
+}
+
+function manualStopInstructions() {
+  if (process.platform === "darwin") {
+    const uid = typeof process.getuid === "function" ? process.getuid() : null;
+    const domain = uid != null ? `gui/${uid}` : "gui/$UID";
+    return [
+      "Manual cleanup required:",
+      `- launchctl bootout ${domain} ~/Library/LaunchAgents/com.docdex.daemon.plist`,
+      "- launchctl remove com.docdex.daemon",
+      "- pkill -f docdexd",
+      "- rm -f ~/.docdex/locks/daemon.lock",
+      "- lsof -iTCP:28491 -sTCP:LISTEN",
+    ];
+  }
+  if (process.platform === "win32") {
+    return [
+      "Manual cleanup required:",
+      `- schtasks /End /TN "${DAEMON_TASK_NAME}"`,
+      "- schtasks /Delete /TN \"Docdex Daemon\" /F",
+      "- taskkill /IM docdexd.exe /T /F",
+      "- del %USERPROFILE%\\.docdex\\locks\\daemon.lock",
+      "- netstat -ano | findstr 28491",
+    ];
+  }
+  return [
+    "Manual cleanup required:",
+    "- systemctl --user stop docdexd.service",
+    "- systemctl --user disable --now docdexd.service",
+    "- pkill -f docdexd",
+    "- rm -f ~/.docdex/locks/daemon.lock",
+    "- lsof -iTCP:28491 -sTCP:LISTEN",
+  ];
 }
 
 async function waitForPortFree({ host = DEFAULT_HOST, port = DEFAULT_DAEMON_PORT } = {}) {
@@ -416,6 +489,10 @@ function killPid(pid) {
       return true;
     }
     process.kill(pid, "SIGTERM");
+    sleepSync(150);
+    if (isPidRunning(pid)) {
+      process.kill(pid, "SIGKILL");
+    }
     return true;
   } catch {
     return false;
@@ -439,6 +516,7 @@ function stopDaemonFromLock() {
   return stopped;
 }
 
+
 function stopDaemonByName() {
   if (process.platform === "win32") {
     spawnSync("taskkill", ["/IM", "docdexd.exe", "/T", "/F"]);
@@ -446,40 +524,46 @@ function stopDaemonByName() {
   }
   spawnSync("pkill", ["-TERM", "-x", "docdexd"]);
   spawnSync("pkill", ["-TERM", "-f", "docdexd daemon"]);
+  spawnSync("pkill", ["-TERM", "-f", "docdexd serve"]);
+  spawnSync("pkill", ["-KILL", "-x", "docdexd"]);
+  spawnSync("pkill", ["-KILL", "-f", "docdexd daemon"]);
+  spawnSync("pkill", ["-KILL", "-f", "docdexd serve"]);
   return true;
 }
 
-function stopMcpByName() {
-  if (process.platform === "win32") {
-    spawnSync("taskkill", ["/IM", "docdex-mcp-server.exe", "/T", "/F"]);
-    return true;
-  }
-  spawnSync("pkill", ["-TERM", "-x", "docdex-mcp-server"]);
-  spawnSync("pkill", ["-TERM", "-f", "docdex-mcp-server"]);
-  return true;
-}
 
 function unregisterStartup() {
   if (process.platform === "darwin") {
     const plistPath = path.join(os.homedir(), "Library", "LaunchAgents", "com.docdex.daemon.plist");
+    const uid = typeof process.getuid === "function" ? process.getuid() : null;
+    const domain = uid != null ? `gui/${uid}` : null;
+    if (domain) {
+      spawnSync("launchctl", ["bootout", domain, "com.docdex.daemon"]);
+    } else {
+      spawnSync("launchctl", ["bootout", "com.docdex.daemon"]);
+    }
+    spawnSync("launchctl", ["stop", "com.docdex.daemon"]);
     if (fs.existsSync(plistPath)) {
-      const uid = typeof process.getuid === "function" ? process.getuid() : null;
-      if (uid != null) {
-        spawnSync("launchctl", ["bootout", `gui/${uid}`, plistPath]);
+      if (domain) {
+        spawnSync("launchctl", ["bootout", domain, plistPath]);
+      } else {
+        spawnSync("launchctl", ["bootout", plistPath]);
       }
       spawnSync("launchctl", ["unload", "-w", plistPath]);
-      spawnSync("launchctl", ["remove", "com.docdex.daemon"]);
       try {
         fs.unlinkSync(plistPath);
       } catch {}
     }
+    spawnSync("launchctl", ["remove", "com.docdex.daemon"]);
     return true;
   }
 
   if (process.platform === "linux") {
     const systemdDir = path.join(os.homedir(), ".config", "systemd", "user");
     const unitPath = path.join(systemdDir, "docdexd.service");
+    spawnSync("systemctl", ["--user", "stop", "docdexd.service"]);
     spawnSync("systemctl", ["--user", "disable", "--now", "docdexd.service"]);
+    spawnSync("systemctl", ["--user", "reset-failed", "docdexd.service"]);
     if (fs.existsSync(unitPath)) {
       try {
         fs.unlinkSync(unitPath);
@@ -630,12 +714,15 @@ async function main() {
   unregisterStartup();
   stopDaemonFromLock();
   stopDaemonByName();
-  stopMcpByName();
   const freed = await waitForPortFree();
-  if (!freed) {
+  const running = findRunningDaemonFromLocks();
+  if (!freed || running) {
     console.warn(
-      `[docdex] ${DEFAULT_HOST}:${DEFAULT_DAEMON_PORT} is still in use; stop the process manually before reinstalling.`
+      `[docdex] ${DEFAULT_HOST}:${DEFAULT_DAEMON_PORT} is still in use or a daemon PID is alive; stop the process manually before reinstalling.`
     );
+    for (const line of manualStopInstructions()) {
+      console.warn(`[docdex] ${line}`);
+    }
   }
   removeClientConfigs();
   clearStartupFailure();

@@ -1,5 +1,4 @@
 [![Website](https://img.shields.io/badge/website-docdex.org-blue)](https://docdex.org)
-[![smithery badge](https://smithery.ai/badge/bekirdag/docdex)](https://smithery.ai/server/bekirdag/docdex)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/bekirdag/docdex/release.yml?branch=main)
 ![GitHub License](https://img.shields.io/github/license/bekirdag/docdex)
 ![GitHub Release](https://img.shields.io/github/v/release/bekirdag/docdex)
@@ -109,7 +108,7 @@ flowchart LR
 
 ```
 
-Prefer the daemon HTTP/SSE endpoint; use `docdexd mcp` only for clients that require stdio.
+Use the daemon HTTP/SSE endpoint.
 
 ### Manual Configuration
 
@@ -135,12 +134,6 @@ If you need to configure your client manually:
 docdex = { url = "http://localhost:28491/v1/mcp" }
 
 ```
-
-For stdio-only clients, use the bridge:
-```bash
-docdexd mcp --repo /path/to/my-project --log warn --max-results 8
-```
-Standalone `docdex-mcp-server` is legacy and disabled by default; set `DOCDEX_ENABLE_STANDALONE_MCP=1` to opt in.
 
 ---
 
@@ -237,7 +230,6 @@ Notes:
 
 ## 📚 Learn More
 
-* **Smithery:** [View on Smithery.ai](https://smithery.ai/server/@bekirdag/docdex)
 * **Detailed Usage:** `docs/usage.md`
 * **API Reference:** `docs/http_api.md`
 * **MCP Specs:** `docs/mcp/errors.md`

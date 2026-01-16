@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- Remove legacy stdio MCP (`docdexd mcp` / `docdex-mcp-server`); MCP is served only over HTTP/SSE.
+
 ## 0.2.23
 - Add Smithery session config schema metadata (titles/descriptions, defaults, example config) for local MCP sessions.
 - Enrich MCP tools with titles, descriptions, parameter descriptions, and annotations to improve Smithery scoring.
@@ -36,7 +39,7 @@
 - Publish npm wrapper with the latest MCP-compliant binary.
 
 ## 0.1.5
-- Publish the MCP-enabled CLI wrapper (use `docdex mcp` for MCP clients) and align docs with the new stdio mode.
+- Publish the MCP-enabled CLI wrapper and align docs with MCP mode.
 - Keep npm version in sync with the MCP release for binary downloads.
 
 ## 0.1.4

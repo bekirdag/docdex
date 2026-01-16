@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Remove legacy stdio MCP (`docdexd mcp` / `docdex-mcp-server`); MCP is served only over HTTP/SSE.
 - Add global profile memory (HTTP profile endpoints, CLI profile commands, MCP profile tools).
 - Add default profile agent selection via `server.default_agent_id`, `docdexd serve --agent-id`, and MCP initialize `agent_id`.
 - Add semantic gatekeeper hooks (`/v1/hooks/validate`, `docdexd hook pre-commit`) with optional Unix socket transport.
@@ -37,11 +38,11 @@
 - Added smithery.yaml and Docker files for smithery.ai directory listing
 
 ## 0.1.6
-- Fix MCP stdio compliance: accept notifications, advertise underscore tool names, and return CallToolResult `content` payloads so Codex/other MCP clients stay connected.
+- Fix MCP compliance: accept notifications, advertise underscore tool names, and return CallToolResult `content` payloads so Codex/other MCP clients stay connected.
 - Keep docs/tests in sync with MCP spec responses ahead of npm publish.
 
 ## 0.1.5
-- Ship MCP stdio mode (docdex.search/index/files/open/stats) with resource templates and docs for MCP-aware clients.
+- Ship MCP mode (docdex.search/index/files/open/stats) with resource templates and docs for MCP-aware clients.
 - Expand CLI/help and tests around MCP usage to make agent/editor integration reliable.
 - Bump versions for the MCP release and upcoming npm publish.
 

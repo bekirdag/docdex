@@ -241,8 +241,6 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         let report = build_report(CheckOptions {
             bind_addr_override,
             mcp_enabled_override: Some(enable_mcp),
-            mcp_spawn_check_override: Some(enable_mcp),
-            mcp_spawn_timeout_ms: None,
         })
         .await?;
         if !report.success {

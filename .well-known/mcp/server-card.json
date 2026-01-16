@@ -11,7 +11,7 @@
   "documentationUrl": "https://github.com/bekirdag/docdex",
   "transport": {
     "type": "streamable-http",
-    "endpoint": "/mcp"
+    "endpoint": "/v1/mcp"
   },
   "capabilities": {
     "tools": { "listChanged": false },

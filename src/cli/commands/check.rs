@@ -68,8 +68,6 @@ pub async fn run() -> Result<()> {
 pub(crate) struct CheckOptions {
     pub(crate) bind_addr_override: Option<String>,
     pub(crate) mcp_enabled_override: Option<bool>,
-    pub(crate) mcp_spawn_check_override: Option<bool>,
-    pub(crate) mcp_spawn_timeout_ms: Option<u64>,
 }
 
 pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
@@ -246,15 +244,6 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
                 None => (config.server.enable_mcp, "config"),
             },
         };
-        let mcp_spawn_check = options
-            .mcp_spawn_check_override
-            .or_else(|| env_boolish("DOCDEX_CHECK_MCP_SPAWN"))
-            .unwrap_or(false);
-        let mcp_spawn_timeout_ms = options
-            .mcp_spawn_timeout_ms
-            .or_else(resolve_mcp_spawn_timeout_ms)
-            .unwrap_or(2000)
-            .max(1);
         if !mcp_enabled {
             checks.push(CheckItem {
                 name: "mcp_ready",
@@ -267,16 +256,6 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
                 })),
             });
         } else {
-            let env_bin = env_non_empty("DOCDEX_MCP_SERVER_BIN");
-            let spawn_details = if mcp_spawn_check {
-                Some(json!({
-                    "spawn_status": "skipped",
-                    "spawn_timeout_ms": mcp_spawn_timeout_ms,
-                    "spawn_error": "mcp served by daemon; no standalone spawn required",
-                }))
-            } else {
-                None
-            };
             checks.push(CheckItem {
                 name: "mcp_ready",
                 status: "ok",
@@ -285,10 +264,6 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
                     "enabled": true,
                     "source": mcp_source,
                     "env_value": mcp_env_value,
-                    "binary_override": env_bin,
-                    "spawn_check": mcp_spawn_check,
-                    "spawn_timeout_ms": mcp_spawn_timeout_ms,
-                    "spawn_details": spawn_details,
                 })),
             });
         }
@@ -1281,12 +1256,6 @@ fn resolve_chromium_details() -> Option<serde_json::Value> {
         }
     }
     Some(payload)
-}
-
-fn resolve_mcp_spawn_timeout_ms() -> Option<u64> {
-    std::env::var("DOCDEX_CHECK_MCP_SPAWN_TIMEOUT_MS")
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
 }
 
 struct BindProbeError {

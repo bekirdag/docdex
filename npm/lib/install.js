@@ -538,8 +538,7 @@ function resolveLocalBinaryCandidate({
   platform = process.platform,
   pathModule = path,
   fsModule = fs,
-  repoRoot,
-  requireMcp
+  repoRoot
 } = {}) {
   const explicit = env[LOCAL_BINARY_ENV];
   if (explicit) {
@@ -547,34 +546,14 @@ function resolveLocalBinaryCandidate({
     if (fsModule.existsSync(resolved)) return resolved;
   }
   const isWin32 = platform === "win32";
-  const mcpName = isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server";
   const root = repoRoot || detectLocalRepoRoot({ pathModule, fsModule });
   if (!root) return null;
   const binaryName = platform === "win32" ? "docdexd.exe" : "docdexd";
   const releasePath = pathModule.join(root, "target", "release", binaryName);
-  if (fsModule.existsSync(releasePath)) {
-    if (localMcpPresent({ fsModule, pathModule, binaryPath: releasePath, mcpName, requireMcp })) {
-      return releasePath;
-    }
-  }
+  if (fsModule.existsSync(releasePath)) return releasePath;
   const debugPath = pathModule.join(root, "target", "debug", binaryName);
-  if (fsModule.existsSync(debugPath)) {
-    if (localMcpPresent({ fsModule, pathModule, binaryPath: debugPath, mcpName, requireMcp })) {
-      return debugPath;
-    }
-  }
+  if (fsModule.existsSync(debugPath)) return debugPath;
   return null;
-}
-
-function localMcpPresent({ fsModule, pathModule, binaryPath, mcpName, requireMcp }) {
-  if (!requireMcp) return true;
-  const dir = pathModule.dirname(binaryPath);
-  const candidates = [
-    pathModule.join(dir, mcpName),
-    pathModule.join(pathModule.dirname(dir), "release", mcpName),
-    pathModule.join(pathModule.dirname(dir), "debug", mcpName)
-  ];
-  return candidates.some((candidate) => fsModule.existsSync(candidate));
 }
 
 async function installFromLocalBinary({
@@ -587,7 +566,6 @@ async function installFromLocalBinary({
   platformKey,
   targetTriple,
   repoSlug,
-  requireMcp,
   sha256FileFn,
   writeJsonFileAtomicFn,
   logger
@@ -599,22 +577,6 @@ async function installFromLocalBinary({
   await fsModule.promises.copyFile(binaryPath, destPath);
   if (!isWin32) {
     await fsModule.promises.chmod(destPath, 0o755).catch(() => {});
-  }
-  const mcpName = isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server";
-  const mcpCandidates = [
-    pathModule.join(pathModule.dirname(binaryPath), mcpName),
-    pathModule.join(pathModule.dirname(pathModule.dirname(binaryPath)), "release", mcpName),
-    pathModule.join(pathModule.dirname(pathModule.dirname(binaryPath)), "debug", mcpName)
-  ];
-  const mcpSource = mcpCandidates.find((candidate) => fsModule.existsSync(candidate));
-  if (mcpSource) {
-    const mcpDest = pathModule.join(distDir, mcpName);
-    await fsModule.promises.copyFile(mcpSource, mcpDest);
-    if (!isWin32) {
-      await fsModule.promises.chmod(mcpDest, 0o755).catch(() => {});
-    }
-  } else if (requireMcp) {
-    logger?.warn?.(`[docdex] local MCP binary not found; expected near ${binaryPath}`);
   }
   const binarySha256 = await sha256FileFn(destPath);
   const metadata = {
@@ -656,7 +618,6 @@ async function maybeInstallLocalFallback({
   platformKey,
   targetTriple,
   repoSlug,
-  requireMcp,
   sha256FileFn,
   writeJsonFileAtomicFn,
   logger,
@@ -674,8 +635,7 @@ async function maybeInstallLocalFallback({
       platform: process.platform,
       pathModule,
       fsModule,
-      repoRoot: localRepoRoot,
-      requireMcp
+      repoRoot: localRepoRoot
     });
   if (!candidate) return null;
 
@@ -689,7 +649,6 @@ async function maybeInstallLocalFallback({
     platformKey,
     targetTriple,
     repoSlug,
-    requireMcp,
     sha256FileFn,
     writeJsonFileAtomicFn,
     logger
@@ -1033,9 +992,6 @@ function decideInstallAction({
   integrityResult
 }) {
   if (!discoveredInstalledState?.binaryPresent) return { outcome: "update", reason: "binary_missing" };
-  if (discoveredInstalledState.mcpBinaryPresent === false) {
-    return { outcome: "update", reason: "mcp_binary_missing" };
-  }
 
   if (discoveredInstalledState.metadataStatus !== "valid") {
     return {
@@ -1070,10 +1026,6 @@ function decideInstallAction({
 
 async function discoverInstalledState({ fsModule, pathModule, distDir, platformKey, isWin32 }) {
   const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
-  const mcpBinaryPath = pathModule.join(
-    distDir,
-    isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server"
-  );
   const metadataPath = installMetadataPath(distDir, pathModule);
 
   const existsSync = typeof fsModule?.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
@@ -1082,7 +1034,6 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
       binaryPath,
       metadataPath,
       binaryPresent: false,
-      mcpBinaryPresent: false,
       installedVersion: null,
       metadata: null,
       metadataStatus: "unavailable",
@@ -1096,7 +1047,6 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
       binaryPath,
       metadataPath,
       binaryPresent: false,
-      mcpBinaryPresent: false,
       installedVersion: null,
       metadata: null,
       metadataStatus: "missing",
@@ -1105,13 +1055,11 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
     };
   }
 
-  const mcpBinaryPresent = existsSync(mcpBinaryPath);
   const metaResult = await readJsonFileIfPossible({ fsModule, filePath: metadataPath });
   const meta = metaResult.value;
   if (!isValidInstallMetadata(meta)) {
     return {
       binaryPath,
-      mcpBinaryPresent,
       metadataPath,
       binaryPresent: true,
       installedVersion: typeof meta?.version === "string" ? meta.version : null,
@@ -1134,7 +1082,6 @@ async function discoverInstalledState({ fsModule, pathModule, distDir, platformK
 
   return {
     binaryPath,
-    mcpBinaryPresent,
     metadataPath,
     binaryPresent: true,
     installedVersion: meta.version,
@@ -1208,7 +1155,6 @@ async function determineLocalInstallerOutcome({
 
   const shouldVerifyIntegrity =
     discoveredInstalledState.binaryPresent &&
-    discoveredInstalledState.mcpBinaryPresent !== false &&
     !discoveredInstalledState.platformMismatch &&
     discoveredInstalledState.installedVersion === expectedVersion &&
     (normalizeSha256Hex(expectedBinarySha256) || discoveredInstalledState.metadataStatus === "valid");
@@ -1697,7 +1643,6 @@ async function runInstaller(options) {
   const sha256FileFn = opts.sha256FileFn || sha256File;
   const writeJsonFileAtomicFn = opts.writeJsonFileAtomicFn || writeJsonFileAtomic;
   const restartFn = opts.restartFn;
-  const requireMcp = parseEnvBool(env?.DOCDEX_ENABLE_STANDALONE_MCP) === true;
   const localRepoRoot =
     opts.localRepoRoot ||
     detectLocalRepoRootFromInitCwd({ env, fsModule, pathModule }) ||
@@ -1709,8 +1654,7 @@ async function runInstaller(options) {
       platform: process.platform,
       pathModule,
       fsModule,
-      repoRoot: localRepoRoot,
-      requireMcp
+      repoRoot: localRepoRoot
     });
 
   const detectedPlatform = opts.platform || process.platform;
@@ -1780,7 +1724,6 @@ async function runInstaller(options) {
       platformKey,
       targetTriple,
       repoSlug: null,
-      requireMcp,
       sha256FileFn,
       writeJsonFileAtomicFn,
       logger
@@ -1799,7 +1742,6 @@ async function runInstaller(options) {
       platformKey,
       targetTriple,
       repoSlug: null,
-      requireMcp,
       sha256FileFn,
       writeJsonFileAtomicFn,
       logger
@@ -1866,7 +1808,6 @@ async function runInstaller(options) {
       platformKey,
       targetTriple,
       repoSlug,
-      requireMcp,
       sha256FileFn,
       writeJsonFileAtomicFn,
       logger,

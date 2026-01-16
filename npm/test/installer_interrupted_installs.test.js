@@ -32,8 +32,6 @@ async function writeInstalledBinary({ distDir, isWin32, bytes }) {
   await ensureDir(distDir);
   const binaryPath = path.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
   await fs.promises.writeFile(binaryPath, bytes);
-  const mcpName = isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server";
-  await fs.promises.writeFile(path.join(distDir, mcpName), bytes);
   return binaryPath;
 }
 
@@ -190,7 +188,6 @@ test("installer e2e: interrupted download cleans temp and preserves existing bin
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
       await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n");
-      await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "new-binary\n");
     }
   });
 
@@ -278,7 +275,6 @@ test("installer e2e: integrity failure leaves existing binary and cleans staging
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
       await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n");
-      await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "new-binary\n");
     }
   });
 
@@ -324,7 +320,6 @@ test("installer e2e: mid-install termination keeps previous binary and cleans st
         stagingDir = targetDir;
         await ensureDir(targetDir);
         await fs.promises.writeFile(path.join(targetDir, "docdexd"), "staged-binary\n");
-        await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "staged-binary\n");
         throw new Error("simulated crash mid-install");
       }
     });
@@ -365,7 +360,6 @@ test("installer e2e: mid-install termination keeps previous binary and cleans st
     extractTarballFn: async (_archivePath, targetDir) => {
       await ensureDir(targetDir);
       await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n");
-      await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "new-binary\n");
     }
   });
 

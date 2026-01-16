@@ -32,6 +32,7 @@ pub enum StepKey {
     DefaultModel,
     EmbedDefault,
     Browser,
+    WebProviders,
     Summary,
 }
 
@@ -45,6 +46,7 @@ impl StepKey {
             StepKey::DefaultModel => "Default Chat Model",
             StepKey::EmbedDefault => "Default Embedding Model",
             StepKey::Browser => "Chromium",
+            StepKey::WebProviders => "Web APIs",
             StepKey::Summary => "Summary",
         }
     }
@@ -144,6 +146,11 @@ impl SetupState {
             },
             StepSnapshot {
                 key: StepKey::Browser,
+                status: StepStatus::Pending,
+                detail: None,
+            },
+            StepSnapshot {
+                key: StepKey::WebProviders,
                 status: StepStatus::Pending,
                 detail: None,
             },

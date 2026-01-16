@@ -15,7 +15,11 @@ use ratatui::{
 };
 use std::fmt::Write;
 use std::io::{self, Stdout};
+use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use super::config;
 use super::model::{CHAT_MODEL, CHAT_MODEL_SIZE_GIB, EMBED_MODEL};
@@ -27,11 +31,12 @@ use crate::util;
 use crate::web::browser_install;
 use std::env;
 
-const MENU_STEPS: [StepKey; 4] = [
+const MENU_STEPS: [StepKey; 5] = [
     StepKey::Ollama,
     StepKey::EmbedModel,
     StepKey::ChatModel,
     StepKey::Browser,
+    StepKey::WebProviders,
 ];
 
 pub(crate) struct MenuDetails {
@@ -39,6 +44,7 @@ pub(crate) struct MenuDetails {
     embed: String,
     chat: String,
     browser: String,
+    web_providers: String,
     embed_options: Option<MenuOptions>,
     chat_options: Option<MenuOptions>,
     browsers: Vec<BrowserStatus>,
@@ -51,6 +57,7 @@ impl MenuDetails {
             StepKey::EmbedModel => &self.embed,
             StepKey::ChatModel => &self.chat,
             StepKey::Browser => &self.browser,
+            StepKey::WebProviders => &self.web_providers,
             _ => "Select a section to configure.",
         }
     }
@@ -89,6 +96,7 @@ pub trait WizardServices {
     fn chromium_install_status(&self) -> browser_install::ChromiumInstallStatus;
     fn install_chromium(&self) -> Result<browser_install::BrowserInstallResult>;
     fn set_browser_path(&self, path: &Path, kind: &str) -> Result<()>;
+    fn set_web_provider_keys(&self, update: config::WebProviderKeysUpdate) -> Result<bool>;
 }
 
 pub struct RealServices;
@@ -140,6 +148,10 @@ impl WizardServices for RealServices {
     fn set_browser_path(&self, path: &Path, kind: &str) -> Result<()> {
         config::set_browser_path(path, kind).map(|_| ())
     }
+
+    fn set_web_provider_keys(&self, update: config::WebProviderKeysUpdate) -> Result<bool> {
+        config::set_web_provider_keys(update)
+    }
 }
 
 pub trait WizardInput {
@@ -156,8 +168,24 @@ pub trait WizardInput {
         models: &[ModelChoice],
         default_index: usize,
     ) -> Result<Option<String>>;
+    fn prompt_text(
+        &mut self,
+        state: &SetupState,
+        prompt: &str,
+        current: Option<&str>,
+        secret: bool,
+    ) -> Result<Option<String>>;
     fn info(&mut self, state: &SetupState, message: &str) -> Result<()>;
     fn with_suspended_terminal<T, F: FnOnce() -> Result<T>>(&mut self, op: F) -> Result<T>;
+    fn with_progress<T, F: FnOnce() -> Result<T>>(
+        &mut self,
+        state: &SetupState,
+        message: &str,
+        op: F,
+    ) -> Result<T> {
+        self.info(state, message)?;
+        self.with_suspended_terminal(op)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,6 +277,7 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
                 &mut default_model,
             ),
             StepKey::Browser => configure_browser_section(&mut state, input, services),
+            StepKey::WebProviders => configure_web_providers_section(&mut state, input, services),
             _ => Ok(None),
         }?;
         if let Some(err) = result {
@@ -386,6 +415,16 @@ fn build_menu_details<S: WizardServices>(
 
     let browsers = list_chromium_browsers();
     let config_browser = resolve_config_browser_kind();
+    let config = load_summary_config();
+    let provider_status = resolve_web_provider_status(config.as_ref());
+    let provider_count = provider_status.configured_count();
+    let providers_detail = Some(format!("{provider_count}/3 configured"));
+    let providers_status = if provider_count > 0 {
+        StepStatus::Done
+    } else {
+        StepStatus::Pending
+    };
+    state.update_step(StepKey::WebProviders, providers_status, providers_detail);
 
     let mut ollama_body = String::new();
     if let Some(path) = resolved_path.as_ref() {
@@ -483,6 +522,26 @@ fn build_menu_details<S: WizardServices>(
         browser_body.push_str("\nSelect this section to download Chromium.");
     }
 
+    let mut web_body = String::new();
+    let _ = writeln!(web_body, "Web search API keys:");
+    let _ = writeln!(
+        web_body,
+        "- Brave Search: {}",
+        format_key_status(provider_status.brave)
+    );
+    let _ = writeln!(
+        web_body,
+        "- Google CSE: key {}, cx {}",
+        format_key_status(provider_status.google_cse_key),
+        format_key_status(provider_status.google_cse_cx)
+    );
+    let _ = writeln!(
+        web_body,
+        "- Bing Web Search: {}",
+        format_key_status(provider_status.bing)
+    );
+    web_body.push_str("\nSelect this section to add or update API keys.");
+
     let embed_options = if embed_models.is_empty() {
         None
     } else {
@@ -510,6 +569,7 @@ fn build_menu_details<S: WizardServices>(
         embed: embed_body.trim_end().to_string(),
         chat: chat_body.trim_end().to_string(),
         browser: browser_body.trim_end().to_string(),
+        web_providers: web_body.trim_end().to_string(),
         embed_options,
         chat_options,
         browsers,
@@ -697,8 +757,9 @@ fn configure_embedding_section<I: WizardInput, S: WizardServices>(
             )?)
     {
         loop {
-            input.info(state, "Pulling embedding model...")?;
-            let pull = input.with_suspended_terminal(|| services.pull_model(&path, EMBED_MODEL));
+            let pull = input.with_progress(state, "Pulling embedding model...", || {
+                services.pull_model(&path, EMBED_MODEL)
+            });
             match pull {
                 Ok(()) => {
                     installed.push(EMBED_MODEL.to_string());
@@ -813,8 +874,9 @@ fn configure_chat_section<I: WizardInput, S: WizardServices>(
                 )?)
         {
             loop {
-                input.info(state, "Pulling chat model...")?;
-                let pull = input.with_suspended_terminal(|| services.pull_model(&path, CHAT_MODEL));
+                let pull = input.with_progress(state, "Pulling chat model...", || {
+                    services.pull_model(&path, CHAT_MODEL)
+                });
                 match pull {
                     Ok(()) => {
                         installed.push(CHAT_MODEL.to_string());
@@ -936,8 +998,8 @@ fn configure_browser_section<I: WizardInput, S: WizardServices>(
     }
 
     loop {
-        input.info(state, "Downloading Chromium...")?;
-        let install = input.with_suspended_terminal(|| services.install_chromium());
+        let install =
+            input.with_progress(state, "Downloading Chromium...", || services.install_chromium());
         match install {
             Ok(result) => {
                 services.set_browser_path(&result.path, "chromium")?;
@@ -954,6 +1016,72 @@ fn configure_browser_section<I: WizardInput, S: WizardServices>(
             }
         }
     }
+    Ok(None)
+}
+
+fn configure_web_providers_section<I: WizardInput, S: WizardServices>(
+    state: &mut SetupState,
+    input: &mut I,
+    services: &S,
+) -> Result<Option<String>> {
+    state.set_current(StepKey::WebProviders);
+    let config = load_summary_config();
+    let current = resolve_web_provider_status(config.as_ref());
+    let current_detail = format!("{}/3 configured", current.configured_count());
+
+    let brave_key = input.prompt_text(
+        state,
+        "Brave Search API key (X-Subscription-Token)",
+        current_key_label(current.brave),
+        true,
+    )?;
+    let google_api_key = input.prompt_text(
+        state,
+        "Google CSE API key",
+        current_key_label(current.google_cse_key),
+        true,
+    )?;
+    let google_cse_cx = input.prompt_text(
+        state,
+        "Google CSE Search Engine ID (cx)",
+        current_key_label(current.google_cse_cx),
+        false,
+    )?;
+    let bing_key = input.prompt_text(
+        state,
+        "Bing Web Search API key",
+        current_key_label(current.bing),
+        true,
+    )?;
+
+    if brave_key.is_none()
+        && google_api_key.is_none()
+        && google_cse_cx.is_none()
+        && bing_key.is_none()
+    {
+        let status = if current.configured_count() > 0 {
+            StepStatus::Done
+        } else {
+            StepStatus::Pending
+        };
+        state.update_step(StepKey::WebProviders, status, Some(current_detail));
+        return Ok(None);
+    }
+
+    services.set_web_provider_keys(config::WebProviderKeysUpdate {
+        brave_api_key: brave_key.clone(),
+        google_cse_api_key: google_api_key.clone(),
+        google_cse_cx: google_cse_cx.clone(),
+        bing_api_key: bing_key.clone(),
+    })?;
+    let refreshed = resolve_web_provider_status(load_summary_config().as_ref());
+    let configured_detail = format!("{}/3 configured", refreshed.configured_count());
+    let status = if refreshed.configured_count() > 0 {
+        StepStatus::Done
+    } else {
+        StepStatus::Pending
+    };
+    state.update_step(StepKey::WebProviders, status, Some(configured_detail));
     Ok(None)
 }
 
@@ -1401,6 +1529,92 @@ fn resolve_browser_summary_from_detection() -> Option<String> {
         })
 }
 
+#[derive(Clone, Copy, Default)]
+struct ProviderKeyStatus {
+    configured: bool,
+    from_env: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+struct WebProviderStatus {
+    brave: ProviderKeyStatus,
+    google_cse_key: ProviderKeyStatus,
+    google_cse_cx: ProviderKeyStatus,
+    bing: ProviderKeyStatus,
+}
+
+impl WebProviderStatus {
+    fn configured_count(&self) -> usize {
+        let mut count = 0;
+        if self.brave.configured {
+            count += 1;
+        }
+        if self.google_cse_key.configured && self.google_cse_cx.configured {
+            count += 1;
+        }
+        if self.bing.configured {
+            count += 1;
+        }
+        count
+    }
+}
+
+fn resolve_web_provider_status(config: Option<&app_config::AppConfig>) -> WebProviderStatus {
+    WebProviderStatus {
+        brave: resolve_key_status(config, "DOCDEX_BRAVE_API_KEY", |cfg| {
+            cfg.web.providers.brave_api_key.as_ref()
+        }),
+        google_cse_key: resolve_key_status(config, "DOCDEX_GOOGLE_CSE_API_KEY", |cfg| {
+            cfg.web.providers.google_cse_api_key.as_ref()
+        }),
+        google_cse_cx: resolve_key_status(config, "DOCDEX_GOOGLE_CSE_CX", |cfg| {
+            cfg.web.providers.google_cse_cx.as_ref()
+        }),
+        bing: resolve_key_status(config, "DOCDEX_BING_API_KEY", |cfg| {
+            cfg.web.providers.bing_api_key.as_ref()
+        }),
+    }
+}
+
+fn resolve_key_status(
+    config: Option<&app_config::AppConfig>,
+    env_key: &str,
+    extract: impl FnOnce(&app_config::AppConfig) -> Option<&String>,
+) -> ProviderKeyStatus {
+    let env_set = env::var(env_key)
+        .ok()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    let config_set = config
+        .and_then(extract)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    ProviderKeyStatus {
+        configured: env_set || config_set,
+        from_env: env_set,
+    }
+}
+
+fn format_key_status(status: ProviderKeyStatus) -> &'static str {
+    if status.configured {
+        if status.from_env {
+            "set (env)"
+        } else {
+            "set"
+        }
+    } else {
+        "missing"
+    }
+}
+
+fn current_key_label(status: ProviderKeyStatus) -> Option<&'static str> {
+    if status.configured {
+        Some(format_key_status(status))
+    } else {
+        None
+    }
+}
+
 fn prompt_retry<I: WizardInput>(input: &mut I, state: &SetupState, message: &str) -> Result<bool> {
     input.confirm(state, message, false)
 }
@@ -1685,6 +1899,51 @@ impl WizardInput for TuiInput {
         }
     }
 
+    fn prompt_text(
+        &mut self,
+        state: &SetupState,
+        prompt: &str,
+        current: Option<&str>,
+        secret: bool,
+    ) -> Result<Option<String>> {
+        let mut buffer = String::new();
+        let hint = if secret {
+            "Type to set, Enter=save, Esc=skip, Backspace=delete (input hidden)"
+        } else {
+            "Type to set, Enter=save, Esc=skip, Backspace=delete"
+        };
+        loop {
+            let current_label = current.unwrap_or("not set");
+            let displayed = if buffer.is_empty() {
+                "<leave unchanged>".to_string()
+            } else if secret {
+                "*".repeat(buffer.chars().count())
+            } else {
+                buffer.clone()
+            };
+            let body = format!("{prompt}\nCurrent: {current_label}\nInput: {displayed}");
+            self.draw_prompt(state, &body, hint, None, state.current)?;
+            match self.read_key()? {
+                KeyCode::Char(c) => {
+                    if !c.is_control() {
+                        buffer.push(c);
+                    }
+                }
+                KeyCode::Backspace => {
+                    buffer.pop();
+                }
+                KeyCode::Enter => {
+                    if buffer.is_empty() {
+                        return Ok(None);
+                    }
+                    return Ok(Some(buffer.clone()));
+                }
+                KeyCode::Esc => return Ok(None),
+                _ => {}
+            }
+        }
+    }
+
     fn info(&mut self, state: &SetupState, message: &str) -> Result<()> {
         self.draw_prompt(state, message, "", None, state.current)
     }
@@ -1697,6 +1956,31 @@ impl WizardInput for TuiInput {
             cursor::Show
         )?;
         let result = op();
+        execute!(
+            self.terminal.backend_mut(),
+            EnterAlternateScreen,
+            cursor::Hide
+        )?;
+        enable_raw_mode()?;
+        self.terminal.clear()?;
+        result
+    }
+
+    fn with_progress<T, F: FnOnce() -> Result<T>>(
+        &mut self,
+        _state: &SetupState,
+        message: &str,
+        op: F,
+    ) -> Result<T> {
+        disable_raw_mode()?;
+        execute!(
+            self.terminal.backend_mut(),
+            LeaveAlternateScreen,
+            cursor::Show
+        )?;
+        let mut spinner = ProgressSpinner::start(message);
+        let result = op();
+        spinner.stop();
         execute!(
             self.terminal.backend_mut(),
             EnterAlternateScreen,
@@ -1815,6 +2099,72 @@ fn next_selectable_index(
     }
 }
 
+struct ProgressSpinner {
+    message: String,
+    running: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ProgressSpinner {
+    fn start(message: &str) -> Self {
+        let running = Arc::new(AtomicBool::new(true));
+        let running_thread = Arc::clone(&running);
+        let message_owned = message.to_string();
+        let thread_message = message_owned.clone();
+        let handle = std::thread::spawn(move || {
+            let mut tick = 0usize;
+            let mut stdout = io::stdout();
+            let mut first = true;
+            while running_thread.load(Ordering::Relaxed) {
+                if first {
+                    let _ = writeln!(stdout);
+                    let _ = stdout.flush();
+                    first = false;
+                }
+                let bar = progress_bar(tick, 20);
+                let _ = write!(stdout, "\r{} {}", thread_message, bar);
+                let _ = stdout.flush();
+                tick = tick.wrapping_add(1);
+                std::thread::sleep(Duration::from_millis(120));
+            }
+        });
+        Self {
+            message: message_owned,
+            running,
+            handle: Some(handle),
+        }
+    }
+
+    fn stop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        let mut stdout = io::stdout();
+        let clear_width = self.message.len().saturating_add(32);
+        let _ = write!(stdout, "\r{:width$}\r", "", width = clear_width);
+        let _ = stdout.flush();
+    }
+}
+
+fn progress_bar(tick: usize, width: usize) -> String {
+    let width = width.max(4);
+    let pos = tick % width;
+    let mut bar = String::with_capacity(width + 2);
+    bar.push('[');
+    for idx in 0..width {
+        if idx == pos {
+            bar.push('>');
+        } else if idx < pos {
+            bar.push('=');
+        } else {
+            bar.push(' ');
+        }
+    }
+    bar.push(']');
+    bar
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1861,6 +2211,7 @@ mod tests {
         Confirm(bool),
         Select(Option<usize>),
         Menu(Option<StepKey>),
+        Text(Option<String>),
     }
 
     impl ScriptedInput {
@@ -1922,6 +2273,19 @@ mod tests {
                     .get(default_index)
                     .filter(|choice| choice.selectable)
                     .map(|choice| choice.value.clone())),
+            }
+        }
+
+        fn prompt_text(
+            &mut self,
+            _state: &SetupState,
+            _prompt: &str,
+            _current: Option<&str>,
+            _secret: bool,
+        ) -> Result<Option<String>> {
+            match self.next() {
+                ScriptedAnswer::Text(value) => Ok(value),
+                _ => Ok(None),
             }
         }
 
@@ -2004,6 +2368,10 @@ mod tests {
 
         fn set_browser_path(&self, _path: &Path, _kind: &str) -> Result<()> {
             Ok(())
+        }
+
+        fn set_web_provider_keys(&self, _update: config::WebProviderKeysUpdate) -> Result<bool> {
+            Ok(false)
         }
     }
 
@@ -2187,6 +2555,7 @@ mod tests {
             StepKey::DefaultModel,
             StepKey::EmbedDefault,
             StepKey::Browser,
+            StepKey::WebProviders,
             StepKey::Summary,
         ] {
             state.current = step;

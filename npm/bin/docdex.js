@@ -184,10 +184,6 @@ async function run() {
     basePath,
     process.platform === "win32" ? "docdexd.exe" : "docdexd"
   );
-  const mcpBinaryPath = path.join(
-    basePath,
-    process.platform === "win32" ? "docdex-mcp-server.exe" : "docdex-mcp-server"
-  );
 
   if (!fs.existsSync(binaryPath)) {
     console.error(`[docdex] Missing binary for ${platformKey}. Try reinstalling or set DOCDEX_DOWNLOAD_REPO to a repo with release assets.`);
@@ -208,13 +204,6 @@ async function run() {
   });
 
   const env = { ...process.env };
-  if (
-    !env.DOCDEX_MCP_SERVER_BIN &&
-    envBool(env.DOCDEX_ENABLE_STANDALONE_MCP) &&
-    fs.existsSync(mcpBinaryPath)
-  ) {
-    env.DOCDEX_MCP_SERVER_BIN = mcpBinaryPath;
-  }
   const child = spawn(binaryPath, process.argv.slice(2), { stdio: "inherit", env });
   child.on("exit", (code) => process.exit(code ?? 1));
   child.on("error", (err) => {

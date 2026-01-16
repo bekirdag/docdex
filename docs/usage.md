@@ -48,8 +48,7 @@ Postinstall behavior:
 - Requires Rust (stable) and Cargo.
 - Build: `cargo build --release`
 - Install: `cargo install --path .`
-- MCP is served by the daemon over HTTP/SSE; no separate MCP server binary is required for normal usage.
-- Standalone `docdex-mcp-server` is disabled by default; opt in with `DOCDEX_ENABLE_STANDALONE_MCP=1` if you truly need it.
+- MCP is served by the daemon over HTTP/SSE; no separate MCP server binary is required.
 
 ### Uninstall
 - `npm uninstall -g docdex` stops the daemon, removes its startup registration, and deletes Docdex MCP entries from supported client config files.
@@ -86,7 +85,6 @@ Notes:
 - `index`: builds the repo index and code intelligence artifacts.
 - `serve`: legacy per-repo HTTP API with watcher; a global singleton lock prevents multiple servers from starting.
 - `daemon`: singleton service that hosts shared MCP over HTTP/SSE (`/v1/mcp/sse`).
-- `mcp`: stdio bridge to the shared daemon for clients that require stdio.
 
 ## Repo scoping (multi-repo daemon)
 When a singleton daemon starts without a default repo or has more than one repo mounted, the daemon requires an explicit repo scope.
@@ -114,12 +112,6 @@ Supported auto-detected MCP clients (installation adds config when the file exis
 
 ### Shared MCP (daemon, HTTP/SSE)
 Start the daemon and point clients at `http://localhost:28491/v1/mcp/sse`.
-Prefer HTTP/SSE; use `docdexd mcp` only for clients that require stdio.
-
-Notes:
-- `docdex-mcp-server` is legacy. If the daemon is already running, it refuses to start and points clients at the shared MCP endpoint.
-- Standalone `docdex-mcp-server` is disabled by default. Use `docdexd mcp` or the daemon HTTP/SSE endpoint unless you explicitly opt in.
-  - Opt-in example: `DOCDEX_ENABLE_STANDALONE_MCP=1 docdex-mcp-server --enable-standalone --repo /path/to/repo`
 
 JSON config example (Cursor, Continue, Cline, Claude Desktop devtools):
 ```json
@@ -137,18 +129,6 @@ Codex config example (TOML):
 [mcp_servers]
 docdex = { url = "http://localhost:28491/v1/mcp" }
 ```
-
-### Legacy stdio MCP
-Use the stdio proxy (per-repo binding) to attach to the shared daemon:
-```bash
-docdexd mcp --repo /path/to/repo --log warn --max-results 8
-```
-This uses the daemon MCP endpoint; a standalone MCP server is not required.
-To auto-start the daemon when it is not running:
-```bash
-docdexd mcp --repo /path/to/repo --log warn --max-results 8 --start-daemon
-```
-Or set `DOCDEX_MCP_AUTO_START=1` for the same effect.
 
 ## HTTP API
 
@@ -264,12 +244,6 @@ Notes:
 - Categories: `style`, `tooling`, `constraint`, `workflow`.
 - Set a default agent with `[server].default_agent_id` or `docdexd serve --agent-id` (`DOCDEX_AGENT_ID`).
 
-## Smithery local usage
-Smithery runs Docdex as a local MCP tool using stdio. The provided `smithery.yaml` uses `commandFunction` to map `repo_path` into:
-```
-docdexd mcp --repo <repo_path> --log warn --max-results 8
-```
-
 ## Hardware-aware LLM guidance
 Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary together with entries from `docs/llm_list.json`. The commands highlight a recommended entry that satisfies `minRamGb` and `requiresGpu`.
 
@@ -290,7 +264,6 @@ Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary to
 - `DOCDEX_HTTP_BASE_URL`: override daemon base URL for CLI.
 - `DOCDEX_HTTP_TIMEOUT_MS`: override CLI HTTP timeout (default 30000).
 - `DOCDEX_CLI_LOCAL=1`: run CLI in-process.
-- `DOCDEX_MCP_AUTO_START=1`: auto-start the daemon when running `docdexd mcp`.
 - `DOCDEX_ENABLE_SYMBOL_EXTRACTION`: deprecated (no-op).
 
 ### Security and serving
@@ -328,6 +301,11 @@ Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary to
 - `DOCDEX_WEB_BROWSER` / `DOCDEX_CHROME_PATH` to set a Chromium binary.
 - `web.scraper.engine` in `config.toml` is `chromium` (only supported engine).
 - `DOCDEX_BROWSER_AUTO_INSTALL=0` to disable Chromium auto-install.
+- Optional API providers (set in `config.toml` under `[web.providers]` or via env):
+  - Brave: `DOCDEX_BRAVE_API_KEY`
+  - Google CSE: `DOCDEX_GOOGLE_CSE_API_KEY` + `DOCDEX_GOOGLE_CSE_CX`
+  - Bing: `DOCDEX_BING_API_KEY`
+  - URL overrides: `DOCDEX_BRAVE_API_URL`, `DOCDEX_GOOGLE_CSE_API_URL`, `DOCDEX_BING_API_URL`
 
 ## Ops and safety
 - Health check: `GET /healthz`.

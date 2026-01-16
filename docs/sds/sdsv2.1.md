@@ -436,7 +436,7 @@ The Chat API is updated to accept an agent\_id context, enabling the **Waterfall
 
 New tools are exposed to Mcoda agents via the Model Context Protocol (MCP), allowing them to self-manage their memory.
 
-* **Transport:** Singleton daemons expose MCP over HTTP/SSE (`/sse`, `/v1/mcp`, `/v1/mcp/message`). Stdio MCP (`docdexd mcp`) remains for legacy/local-only clients.
+* **Transport:** Singleton daemons expose MCP over HTTP/SSE (`/sse`, `/v1/mcp`, `/v1/mcp/message`).
 * **Repo routing:** MCP `initialize` with `rootUri`/`workspace_root` calls `/v1/initialize` and binds the MCP session to that repo; per-request `project_root`/`repo_path` can override the bound repo for `/v1/mcp`.
 
 * **docdex\_save\_preference**  

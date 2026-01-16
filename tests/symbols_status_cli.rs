@@ -34,10 +34,15 @@ fn spawn_server(
 ) -> Result<Child, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
+    let lock_path = state_root.join("daemon.lock");
+    let config_path = state_root.join("config.toml");
     Ok(Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_DAEMON_LOCK_PATH", lock_path)
+        .env("DOCDEX_CONFIG_PATH", config_path)
+        .env("DOCDEX_TEST_ALLOW_MULTI_DAEMON", "1")
         .args([
             "serve",
             "--repo",
@@ -60,7 +65,11 @@ fn spawn_server(
 fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
     let client = Client::builder().timeout(Duration::from_secs(1)).build()?;
     let url = format!("http://{host}:{port}/healthz");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let timeout_secs = std::env::var("DOCDEX_TEST_HEALTH_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(60);
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     while Instant::now() < deadline {
         match client.get(&url).send() {
             Ok(resp) if resp.status().is_success() => return Ok(()),
@@ -73,9 +82,11 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
 fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<Value, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
+    let config_path = state_root.join("config.toml");
     let output = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
+        .env("DOCDEX_CONFIG_PATH", config_path)
         .args([
             "repo",
             "inspect",
@@ -175,9 +186,11 @@ fn symbols_status_cli_reports_fields() -> Result<(), Box<dyn Error>> {
     std::fs::create_dir_all(repo.path().join("src"))?;
     std::fs::write(repo.path().join("src").join("lib.rs"), "pub fn demo() {}\n")?;
     let state_root = TempDir::new()?;
+    let config_path = state_root.path().join("config.toml");
     let output = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
+        .env("DOCDEX_CONFIG_PATH", config_path)
         .args([
             "symbols-status",
             "--repo",

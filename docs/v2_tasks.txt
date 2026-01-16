@@ -1,10 +1,10 @@
 
-• Plan to add MCP readiness validation to docdexd check
+  • Plan to add MCP readiness validation to docdexd check
 
   - Inspect src/cli/commands/check.rs to find the current check report structure and where server config (bind/auth/etc.) is validated; identify the right spot to add MCP readiness.
-  - Define MCP readiness rules: when MCP is enabled (config/env/CLI), validate the binary path resolution and optionally do a lightweight spawn check (or a dry‑run resolver). Decide when to warn vs fail if MCP is disabled.
-  - Implement the MCP check with clear error codes and remediation hints (missing binary, bad path, spawn failure), and wire it into the existing check output.
-  - Add tests for enabled/disabled paths and missing binary cases; update SDS/README notes to reflect the new check behavior.
+  - Define MCP readiness rules: when MCP is enabled (config/env/CLI), validate the daemon base URL resolution and a lightweight MCP endpoint check. Decide when to warn vs fail if MCP is disabled.
+  - Implement the MCP check with clear error codes and remediation hints (daemon not running, endpoint timeout, auth required), and wire it into the existing check output.
+  - Add tests for enabled/disabled paths and missing daemon cases; update SDS/README notes to reflect the new check behavior.
   
 
   • Plan to make CLI a thin HTTP client (per SDS)
@@ -17,9 +17,8 @@
 
   • Plan to align MCP auth with SDS exposed‑mode expectations
 
-    - Clarify SDS intent: whether MCP auth applies only to networked MCP (not stdio) or if stdio should enforce a token gate when --expose is used; document the decision.
-    - If enforcing in stdio: add an optional token handshake for docdexd mcp (e.g., --auth-token/DOCDEX_AUTH_TOKEN), validate on initialize, and reject tool calls when missing/invalid.
-    - If limiting to networked MCP: update SDS/README to explicitly state stdio MCP is local‑only and not subject to token auth; add a warning in docdexd mcp when --expose is set on the daemon but MCP is stdio.
+    - Clarify SDS intent: MCP over HTTP/SSE should enforce the same token gate as HTTP when `--expose` is used; document the decision.
+    - Ensure initialize/tool calls require the bearer token when exposed; reject missing/invalid tokens consistently.
     - Add tests for the chosen behavior (missing token → error, valid token → ok) and ensure error codes match HTTP auth failures.
 
 
@@ -42,20 +41,20 @@
   - A2: Confirm config/env precedence for MCP enablement in check (config [server] enable_mcp vs DOCDEX_ENABLE_MCP).
   - A3: Define readiness rules:
       - A3.1: MCP disabled → record “skipped/disabled” in check output (non‑failing).
-      - A3.2: MCP enabled → validate binary resolution (same logic as src/mcp.rs: DOCDEX_MCP_SERVER_BIN → sibling → PATH).
-      - A3.3: Optional spawn smoke test behind a new check flag (avoid always spawning).
+      - A3.2: MCP enabled → validate daemon base URL and MCP endpoint reachability.
+      - A3.3: Optional MCP tools/list smoke test behind a new check flag (avoid always making tool calls).
   - A4: Implement MCP check:
-      - A4.1: Expose a reusable resolve_mcp_binary() helper from src/mcp.rs (or duplicate minimal logic in check).
-      - A4.2: Add check entry mcp_ready with status/message/details (binary path, source).
-      - A4.3: Add stable error codes + remediation hints for missing/invalid binary.
+      - A4.1: Reuse base URL resolution from src/cli/http_client.rs.
+      - A4.2: Add check entry mcp_ready with status/message/details (base URL, latency).
+      - A4.3: Add stable error codes + remediation hints for missing daemon, timeout, auth required.
   - A5: Tests:
       - A5.1: MCP disabled in config → check reports “skipped/disabled”.
-      - A5.2: MCP enabled + missing binary → check fails with mcp_ready failure and hint.
-      - A5.3: MCP enabled + binary present → check passes.
-      - A5.4: Spawn flag path → failure if process cannot start.
+      - A5.2: MCP enabled + daemon missing → check fails with mcp_ready failure and hint.
+      - A5.3: MCP enabled + daemon reachable → check passes.
+      - A5.4: Smoke test flag path → failure if endpoint cannot respond.
   - A6: Docs:
       - A6.1: Update docs/sds/sds.md to mention MCP readiness validation in docdexd check.
-      - A6.2: Update README.md check guidance to call out MCP binary readiness and overrides.
+      - A6.2: Update README.md check guidance to call out MCP endpoint readiness.
 
 
   B) Make CLI a thin HTTP client (per SDS)
@@ -89,20 +88,16 @@
   C) MCP auth alignment with exposed‑mode expectations
 
   - C1: Decide behavior:
-      - C1.1: Confirm whether stdio MCP should enforce token in exposed mode (policy decision).
-      - C1.2: Update SDS language to explicitly define behavior (stdio vs networked MCP).
-  - C2: If enforcing token in stdio:
-      - C2.1: Add --auth-token/DOCDEX_AUTH_TOKEN to docdexd mcp command.
-      - C2.2: Require token in initialize and store session auth state.
-      - C2.3: Reject tool calls without auth; map to same error codes as HTTP.
-      - C2.4: Add “missing token” hints in MCP errors.
-  - C3: If not enforcing token in stdio:
-      - C3.1: Add a warning in docdexd mcp when --expose is used on daemon.
-      - C3.2: Update SDS/README to state stdio MCP is local‑only and not token‑gated.
-  - C4: Tests:
-      - C4.1: Initialize + tool call without token (expected failure if enforcing).
-      - C4.2: Valid token path (expected success).
-      - C4.3: Ensure error code parity with HTTP auth failures.
+      - C1.1: Confirm MCP HTTP/SSE enforces token in exposed mode (policy decision).
+      - C1.2: Update SDS language to explicitly define behavior for HTTP/SSE MCP.
+  - C2: Enforce token on MCP HTTP/SSE:
+      - C2.1: Require token in initialize and store session auth state.
+      - C2.2: Reject tool calls without auth; map to same error codes as HTTP.
+      - C2.3: Add “missing token” hints in MCP errors.
+  - C3: Tests:
+      - C3.1: Initialize + tool call without token (expected failure if enforcing).
+      - C3.2: Valid token path (expected success).
+      - C3.3: Ensure error code parity with HTTP auth failures.
 
 
 
@@ -128,4 +123,3 @@
       - D5.2: Tests for trace ingestion + import_map override/merge.
       - D5.3: Diagnostics tests (counts/samples; endpoint output).
       - D5.4: Repo scan limit + tie‑break determinism tests.
-

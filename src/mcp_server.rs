@@ -34,7 +34,6 @@ use std::time::{Duration, Instant};
 use tantivy::directory::error::LockError;
 use tantivy::TantivyError;
 use thiserror::Error;
-use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -700,8 +699,11 @@ impl McpService {
                 Some(trimmed.to_string())
             }
         });
+        let repo_id = crate::repo_manager::repo_fingerprint_sha256(&repo_root)
+            .unwrap_or_else(|_| crate::repo_manager::fingerprint::legacy_repo_id_for_root(&repo_root));
         let authorized = auth_token.is_none();
         let server = McpServer {
+            repo_id,
             repo_root,
             indexer,
             libs_indexer,
@@ -759,28 +761,6 @@ impl McpService {
         }
     }
 
-    pub async fn run_stdio(&mut self) -> Result<()> {
-        self.server.run().await
-    }
-}
-
-pub async fn serve(
-    repo_root: PathBuf,
-    index_config: IndexConfig,
-    max_results: usize,
-    rate_limit_per_min: u32,
-    rate_limit_burst: u32,
-    auth_token: Option<String>,
-) -> Result<()> {
-    let mut service = McpService::new(
-        repo_root,
-        index_config,
-        max_results,
-        rate_limit_per_min,
-        rate_limit_burst,
-        auth_token,
-    )?;
-    service.run_stdio().await
 }
 
 #[derive(Clone)]
@@ -790,6 +770,7 @@ struct McpMemoryState {
 }
 
 struct McpServer {
+    repo_id: String,
     repo_root: PathBuf,
     indexer: Indexer,
     libs_indexer: Option<libs::LibsIndexer>,
@@ -811,80 +792,6 @@ fn annotations_with_priority(priority: f32) -> serde_json::Value {
 }
 
 impl McpServer {
-    async fn run(&mut self) -> Result<()> {
-        let stdin = io::stdin();
-        let stdout = io::stdout();
-        let mut reader = BufReader::new(stdin).lines();
-        let mut writer = BufWriter::new(stdout);
-        let mut _seen_input = false;
-
-        loop {
-            match reader.next_line().await {
-                Ok(Some(line)) => {
-                    _seen_input = true;
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    let req = match serde_json::from_str::<RpcRequest>(trimmed) {
-                        Ok(req) => req,
-                        Err(err) => {
-                            let resp = RpcResponse {
-                                jsonrpc: JSONRPC_VERSION,
-                                id: serde_json::Value::Null,
-                                result: None,
-                                error: Some(rpc_error(
-                                    ERR_PARSE,
-                                    format!("invalid JSON: {err}"),
-                                    "parse_error",
-                                    Some(err.to_string()),
-                                    None,
-                                    None,
-                                )),
-                            };
-                            write_response(&mut writer, &resp).await?;
-                            continue;
-                        }
-                    };
-                    if let Some(id) = req.id.as_ref() {
-                        debug!(method = %req.method, id = %id, "docdex mcp: recv");
-                    } else {
-                        debug!(method = %req.method, "docdex mcp: recv");
-                    }
-                    let resp_opt = match self.handle(req).await {
-                        Ok(resp) => resp,
-                        Err(err) => Some(RpcResponse {
-                            jsonrpc: JSONRPC_VERSION,
-                            id: serde_json::Value::Null,
-                            result: None,
-                            error: Some(rpc_error(
-                                ERR_INTERNAL,
-                                "internal error",
-                                "internal_error",
-                                Some(err.to_string()),
-                                None,
-                                None,
-                            )),
-                        }),
-                    };
-                    if let Some(resp) = resp_opt {
-                        write_response(&mut writer, &resp).await?;
-                    }
-                }
-                Ok(None) => {
-                    // Some clients momentarily close stdin; stay alive and keep polling.
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                    continue;
-                }
-                Err(err) => {
-                    warn!(error = %err, "docdex mcp: stdin read error");
-                    break;
-                }
-            }
-        }
-        Ok(())
-    }
-
     async fn handle(&mut self, req: RpcRequest) -> Result<Option<RpcResponse>> {
         // Notifications (no id) do not expect a response.
         if req.id.is_none() {
@@ -2441,8 +2348,12 @@ Produce a phased plan with risks and tests to run."
     }
 
     async fn handle_index(&mut self, args: IndexArgs) -> Result<serde_json::Value> {
-        let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
+        let project_root =
+            self.resolve_project_root_arg(args.project_root.clone(), args.repo_path.clone())?;
         self.ensure_project_root(project_root.as_deref())?;
+        if self.indexer.is_read_only() {
+            return self.handle_index_via_http(args).await;
+        }
         if args.paths.is_empty() {
             self.indexer.reindex_all().await?;
             return Ok(json!({
@@ -2478,14 +2389,91 @@ Produce a phased plan with risks and tests to run."
         Ok(json!({
             "status": "ok",
             "action": "ingest",
-            "paths": ingested.into_iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            "paths": ingested
+                .into_iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>(),
             "decisions": decisions,
+            "repo_root": self.repo_root.display().to_string(),
+            "state_dir": self.indexer.config().state_dir().display().to_string(),
             "project_root": self
                 .default_project_root
                 .as_ref()
                 .unwrap_or(&self.repo_root)
                 .display()
                 .to_string(),
+        }))
+    }
+
+    async fn handle_index_via_http(&self, args: IndexArgs) -> Result<serde_json::Value> {
+        let repo_id = self.repo_id.as_str();
+        if args.paths.is_empty() {
+            let report = self
+                .call_index_endpoint("/v1/index/rebuild", json!({ "repo_id": repo_id }))
+                .await?;
+            return Ok(json!({
+                "status": "ok",
+                "action": "reindex_all",
+                "repo_root": self.repo_root.display().to_string(),
+                "state_dir": self.indexer.config().state_dir().display().to_string(),
+                "project_root": self
+                    .default_project_root
+                    .as_ref()
+                    .unwrap_or(&self.repo_root)
+                    .display()
+                    .to_string(),
+                "via": "http",
+                "report": report,
+            }));
+        }
+        let mut ingested = Vec::new();
+        let mut decisions = Vec::new();
+        for path in args.paths {
+            let resolved = if path.is_absolute() {
+                path
+            } else {
+                self.repo_root.join(path)
+            };
+            let path_display = resolved.display().to_string();
+            let payload = self
+                .call_index_endpoint(
+                    "/v1/index/ingest",
+                    json!({
+                        "file": path_display.as_str(),
+                        "repo_id": repo_id,
+                    }),
+                )
+                .await?;
+            let (decision, reason) = payload
+                .as_object()
+                .map(|obj| {
+                    (
+                        obj.get("decision").cloned().unwrap_or(Value::Null),
+                        obj.get("reason").cloned().unwrap_or(Value::Null),
+                    )
+                })
+                .unwrap_or((payload.clone(), Value::Null));
+            ingested.push(path_display.clone());
+            decisions.push(json!({
+                "path": path_display,
+                "decision": decision,
+                "reason": reason,
+            }));
+        }
+        Ok(json!({
+            "status": "ok",
+            "action": "ingest",
+            "paths": ingested,
+            "decisions": decisions,
+            "repo_root": self.repo_root.display().to_string(),
+            "state_dir": self.indexer.config().state_dir().display().to_string(),
+            "project_root": self
+                .default_project_root
+                .as_ref()
+                .unwrap_or(&self.repo_root)
+                .display()
+                .to_string(),
+            "via": "http",
         }))
     }
 
@@ -2914,7 +2902,14 @@ Produce a phased plan with risks and tests to run."
             path.trim_start_matches('/')
         );
         let mut req = client.request(method, url);
-        if let Some(token) = env_non_empty("DOCDEX_AUTH_TOKEN") {
+        let token = self
+            .auth_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+            .or_else(|| env_non_empty("DOCDEX_AUTH_TOKEN"));
+        if let Some(token) = token {
             req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
         }
         if let Some(query) = query.as_ref() {
@@ -2934,6 +2929,39 @@ Produce a phased plan with risks and tests to run."
             .into());
         }
         let payload = serde_json::from_str(&text).context("parse profile response")?;
+        Ok(payload)
+    }
+
+    async fn call_index_endpoint(&self, path: &str, body: Value) -> Result<Value> {
+        let base_url = resolve_docdexd_base_url()?;
+        let client = docdexd_http_client()?;
+        let url = format!(
+            "{}/{}",
+            base_url.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        );
+        let mut req = client.request(Method::POST, url).json(&body);
+        let token = self
+            .auth_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+            .or_else(|| env_non_empty("DOCDEX_AUTH_TOKEN"));
+        if let Some(token) = token {
+            req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let resp = req.send().await.context("index HTTP request failed")?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(AppError::new(
+                ERR_INTERNAL_ERROR,
+                format!("index request failed ({status}): {text}"),
+            )
+            .into());
+        }
+        let payload = serde_json::from_str(&text).context("parse index response")?;
         Ok(payload)
     }
 
@@ -2970,7 +2998,7 @@ Produce a phased plan with risks and tests to run."
                 vec![
                     "Repo may have moved or been renamed.".to_string(),
                     "Pass the current repo path in `project_root` (or `repo_path`).".to_string(),
-                    "If the MCP server is pointed at the wrong path, restart it with `docdexd mcp --repo <repo>`."
+                    "Ensure your MCP client is pointing at the daemon serving the repo you want."
                         .to_string(),
                 ],
             );
@@ -2991,9 +3019,9 @@ Produce a phased plan with risks and tests to run."
                 Some(self.repo_root.to_string_lossy().replace('\\', "/")),
                 vec![
                     "Repo may have moved or been renamed.".to_string(),
-                    "Restart the MCP server with `docdexd mcp --repo <repo>` matching the repo you want to use."
+                    "Ensure your MCP client is connected to the daemon serving the repo you want to use."
                         .to_string(),
-                    "Pass `project_root` (or `repo_path`) matching the repo the MCP server was started with.".to_string(),
+                    "Pass `project_root` (or `repo_path`) matching the repo the MCP session is bound to.".to_string(),
                 ],
             );
             return Err(AppError::new(ERR_UNKNOWN_REPO, "unknown repo")
@@ -3046,7 +3074,7 @@ Produce a phased plan with risks and tests to run."
                         "recoverySteps": [
                             "Pass the repo path as `project_root` (or `repo_path`) in tool arguments.",
                             "Call initialize with `workspace_root` to set a default project_root.",
-                            "Restart the MCP server with `docdexd mcp --repo <repo>` if it is pointed at the wrong repo."
+                            "Ensure your MCP client is pointing at the daemon serving the repo you want."
                         ]
                     });
                     return Err(AppError::new(ERR_MISSING_REPO, "missing repo")
@@ -3114,14 +3142,6 @@ fn is_lock_busy(err: &anyhow::Error) -> bool {
         let msg = cause.to_string();
         msg.contains("LockBusy") || msg.contains("Failed to acquire Lockfile")
     })
-}
-
-async fn write_response(writer: &mut BufWriter<io::Stdout>, resp: &RpcResponse) -> Result<()> {
-    let payload = serde_json::to_vec(resp)?;
-    writer.write_all(&payload).await?;
-    writer.write_all(b"\n").await?;
-    writer.flush().await?;
-    Ok(())
 }
 
 fn normalize_rel_path(input: &str) -> Option<PathBuf> {

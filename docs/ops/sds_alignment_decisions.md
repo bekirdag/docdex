@@ -5,10 +5,10 @@ This document records decisions and acceptance criteria for aligning SDS expecta
 ## Decisions
 
 1) Daemon scope
-- Decision: keep **per-repo daemon** behavior. `docdexd serve`/`docdexd mcp`/`docdexd index` remain repo-scoped and require `--repo`.
+- Decision: keep **per-repo daemon** behavior for `docdexd serve`/`docdexd index` (require `--repo`), while `docdexd daemon` remains the singleton multi-repo service.
 
 2) MCP scope
-- Decision: keep **repo-scoped MCP**. `project_root`/`repo_path` must match the repo used to start the MCP server. `initialize` may set a default repo for subsequent calls, but it does not enable cross-repo access.
+- Decision: keep **repo-scoped MCP**. `initialize` sets a default repo for subsequent calls, but it does not enable cross-repo access; per-call `project_root`/`repo_path` must match a known repo.
 
 3) `docdexd chat` REPL
 - Decision: add **interactive REPL** when `--query` is omitted.
@@ -18,8 +18,8 @@ This document records decisions and acceptance criteria for aligning SDS expecta
 4) `run-tests` / `tui`
 - Decision: keep **local CLI exceptions** (not routed through daemon). Update SDS to document that `run-tests` and `tui` run locally and do not require daemon endpoints.
 
-5) MCP spawn checks
-- Decision: keep `docdexd check` **opt-in** for MCP spawn probes via `DOCDEX_CHECK_MCP_SPAWN=1`, with a configurable timeout. Preflight (`docdexd serve --preflight-check`) forces MCP spawn probes when MCP is enabled.
+5) MCP readiness checks
+- Decision: `docdexd check` validates MCP endpoint readiness via HTTP when MCP is enabled; no binary spawn probes are used.
 
 ## Acceptance criteria
 
@@ -28,7 +28,7 @@ This document records decisions and acceptance criteria for aligning SDS expecta
   - CLI/HTTP/MCP errors for unknown or mismatched repo remain explicit (`unknown_repo`/`repo_state_mismatch` as applicable).
 
 - MCP scope:
-  - Tools accept `project_root`/`repo_path` only if it matches the MCP server repo.
+  - Tools accept `project_root`/`repo_path` only if it matches a known repo.
   - `initialize` with `project_root` sets a default for subsequent tool calls without repo args.
   - Cross-repo tool calls return a consistent error code/message.
 
@@ -41,6 +41,6 @@ This document records decisions and acceptance criteria for aligning SDS expecta
   - CLI continues to run these locally by default (no HTTP endpoints required).
   - SDS explicitly documents these as local-only exceptions.
 
-- MCP spawn checks:
-  - `docdexd check` reports missing MCP binary without spawning; spawn probes are only attempted when `DOCDEX_CHECK_MCP_SPAWN=1`.
-  - Preflight mode forces MCP spawn probes when MCP is enabled and fails fast on spawn timeouts/non-zero exit.
+- MCP readiness checks:
+  - `docdexd check` reports MCP endpoint readiness using the configured daemon base URL.
+  - Failures surface actionable errors (daemon not running, auth required, timeout).

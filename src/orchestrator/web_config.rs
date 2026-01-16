@@ -28,6 +28,10 @@ pub struct WebConfig {
     pub scraper_browser_kind: Option<String>,
     pub scraper_user_data_dir: Option<PathBuf>,
     pub page_load_timeout: Duration,
+    pub brave_api_key: Option<String>,
+    pub google_cse_api_key: Option<String>,
+    pub google_cse_cx: Option<String>,
+    pub bing_api_key: Option<String>,
 }
 
 impl WebConfig {
@@ -42,9 +46,9 @@ impl WebConfig {
             .ok()
             .and_then(|value| normalize_nonempty(value))
             .or_else(config_ddg_base_url)
-            .unwrap_or_else(|| "https://html.duckduckgo.com/html/".to_string());
+            .unwrap_or_else(|| "https://lite.duckduckgo.com/lite/".to_string());
         let ddg_base_url = Url::parse(&base_url).unwrap_or_else(|_| {
-            Url::parse("https://html.duckduckgo.com/html/").expect("default url is valid")
+            Url::parse("https://lite.duckduckgo.com/lite/").expect("default url is valid")
         });
         let ddg_proxy_base_url = env::var("DOCDEX_DDG_PROXY_BASE_URL")
             .ok()
@@ -100,6 +104,12 @@ impl WebConfig {
             .or_else(|| default_scraper_user_data_dir(&scraper_engine));
         let page_load_timeout_secs = config_page_load_timeout_secs().unwrap_or(15);
         let page_load_timeout = Duration::from_secs(page_load_timeout_secs.max(1));
+        let brave_api_key = env_nonempty("DOCDEX_BRAVE_API_KEY").or_else(config_brave_api_key);
+        let google_cse_api_key =
+            env_nonempty("DOCDEX_GOOGLE_CSE_API_KEY").or_else(config_google_cse_api_key);
+        let google_cse_cx =
+            env_nonempty("DOCDEX_GOOGLE_CSE_CX").or_else(config_google_cse_cx);
+        let bing_api_key = env_nonempty("DOCDEX_BING_API_KEY").or_else(config_bing_api_key);
 
         Self {
             enabled,
@@ -128,6 +138,10 @@ impl WebConfig {
             scraper_browser_kind,
             scraper_user_data_dir,
             page_load_timeout,
+            brave_api_key,
+            google_cse_api_key,
+            google_cse_cx,
+            bing_api_key,
         }
     }
 }
@@ -166,6 +180,10 @@ fn normalize_nonempty(value: String) -> Option<String> {
     }
 }
 
+fn env_nonempty(key: &str) -> Option<String> {
+    env::var(key).ok().and_then(normalize_nonempty)
+}
+
 fn config_user_agent() -> Option<String> {
     let path = config::default_config_path().ok()?;
     if !path.exists() {
@@ -191,6 +209,42 @@ fn config_ddg_proxy_base_url() -> Option<String> {
     }
     let config = config::load_config_from_path(&path).ok()?;
     config.web.ddg_proxy_base_url.and_then(normalize_nonempty)
+}
+
+fn config_brave_api_key() -> Option<String> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    config.web.providers.brave_api_key.and_then(normalize_nonempty)
+}
+
+fn config_google_cse_api_key() -> Option<String> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    config.web.providers.google_cse_api_key.and_then(normalize_nonempty)
+}
+
+fn config_google_cse_cx() -> Option<String> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    config.web.providers.google_cse_cx.and_then(normalize_nonempty)
+}
+
+fn config_bing_api_key() -> Option<String> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    config.web.providers.bing_api_key.and_then(normalize_nonempty)
 }
 
 fn config_cache_ttl_secs() -> Option<u64> {

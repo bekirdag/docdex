@@ -84,11 +84,13 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
+    let config_path = state_root.join("config.toml");
     let output = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
         .env("DOCDEX_STATE_DIR", state_root)
+        .env("DOCDEX_CONFIG_PATH", config_path)
         .args(args)
         .output()?;
     if !output.status.success() {
@@ -105,9 +107,11 @@ where
 fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<Value, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
+    let config_path = state_root.join("config.toml");
     let output = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
+        .env("DOCDEX_CONFIG_PATH", config_path)
         .args([
             "repo",
             "inspect",
@@ -466,6 +470,8 @@ fn spawn_server_with_args(
 ) -> Result<Child, Box<dyn Error>> {
     let repo_arg = repo_root.to_string_lossy().to_string();
     let port_string = port.to_string();
+    let lock_path = state_root.join("daemon.lock");
+    let config_path = state_root.join("config.toml");
     let mut args = vec![
         "serve",
         "--repo",
@@ -483,6 +489,9 @@ fn spawn_server_with_args(
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_DAEMON_LOCK_PATH", lock_path)
+        .env("DOCDEX_CONFIG_PATH", config_path)
+        .env("DOCDEX_TEST_ALLOW_MULTI_DAEMON", "1")
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -816,10 +825,15 @@ fn non_loopback_plain_http_requires_tls_or_opt_out() -> Result<(), Box<dyn Error
         return Ok(());
     };
     let token = "secret-token";
+    let lock_path = state_root.path().join("daemon.lock");
+    let config_path = state_root.path().join("config.toml");
     let failure = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
+        .env("DOCDEX_DAEMON_LOCK_PATH", &lock_path)
+        .env("DOCDEX_CONFIG_PATH", &config_path)
+        .env("DOCDEX_TEST_ALLOW_MULTI_DAEMON", "1")
         .args([
             "serve",
             "--repo",
@@ -881,6 +895,9 @@ fn non_loopback_plain_http_requires_tls_or_opt_out() -> Result<(), Box<dyn Error
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
+        .env("DOCDEX_DAEMON_LOCK_PATH", &lock_path)
+        .env("DOCDEX_CONFIG_PATH", &config_path)
+        .env("DOCDEX_TEST_ALLOW_MULTI_DAEMON", "1")
         .args([
             "serve",
             "--repo",

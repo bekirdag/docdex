@@ -46,6 +46,20 @@ Standard retrieval. The daemon automatically handles the waterfall (Local -> Web
 | docdex_search | Search code, docs, and ingested libraries. Returns ranked snippets. |
 | docdex_web_research | Explicitly trigger Tier 2 web discovery (DDG + Headless Chrome). Use when you need external docs not present locally. |
 
+Tier 2 discovery providers (in fallback order when DDG HTML fails or is blocked):
+- DuckDuckGo Lite
+- SearXNG JSON (public instance or self-hosted)
+- Google Mobile
+- Brave Search API (requires DOCDEX_BRAVE_API_KEY)
+- Google Custom Search JSON API (requires DOCDEX_GOOGLE_CSE_API_KEY + DOCDEX_GOOGLE_CSE_CX)
+- Bing Web Search API (requires DOCDEX_BING_API_KEY)
+- Tavily API (requires DOCDEX_TAVILY_API_KEY)
+- Exa API (requires DOCDEX_EXA_API_KEY)
+
+Defaults and overrides:
+- Default endpoints: `https://html.duckduckgo.com/html/`, `https://lite.duckduckgo.com/lite/`, `https://searx.be/search` (built-in fallback list), `https://www.google.com/m`, `https://api.search.brave.com/res/v1/web/search`, `https://www.googleapis.com/customsearch/v1`, `https://api.bing.microsoft.com/v7.0/search`, `https://api.tavily.com/search`, `https://api.exa.ai/search`
+- Override envs: `DOCDEX_DDG_BASE_URL`, `DOCDEX_WEB_SEARXNG_URLS` (comma list, or `DOCDEX_SEARXNG_URLS`), `DOCDEX_WEB_GOOGLE_MOBILE_URL`, `DOCDEX_BRAVE_API_KEY` + `DOCDEX_BRAVE_API_URL`, `DOCDEX_GOOGLE_CSE_API_KEY` + `DOCDEX_GOOGLE_CSE_CX` + `DOCDEX_GOOGLE_CSE_API_URL`, `DOCDEX_BING_API_KEY` + `DOCDEX_BING_API_URL`, `DOCDEX_TAVILY_API_KEY` + `DOCDEX_TAVILY_API_URL`, `DOCDEX_EXA_API_KEY` + `DOCDEX_EXA_API_URL`
+
 ### B. Code Intelligence (AST & Graph)
 
 Precision tools for structural analysis. Do not rely on text search for definitions or dependencies.

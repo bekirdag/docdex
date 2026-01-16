@@ -92,7 +92,7 @@ embedding_dim = ${embed_dim}
 [server]
 default_agent_id = "${agent_id}"
 hook_socket_path = "${hook_socket}"
-enable_mcp = false
+enable_mcp = true
 
 [features]
 hooks = true
@@ -118,7 +118,7 @@ start_daemon() {
     --port "$port" \
     --log "$log_level" \
     --secure-mode=false \
-    --disable-mcp \
+    --enable-mcp \
     >"$log_file" 2>&1 &
   DAEMON_PID=$!
   if ! wait_for_health "$host" "$port"; then
@@ -257,33 +257,64 @@ run_mcp_smoke() {
     log "skipping MCP smoke (SKIP_MCP=1)"
     return 0
   fi
-  log "MCP stdio smoke"
+  log "MCP HTTP/SSE smoke"
   python3 - <<PY
-import json, subprocess, sys, time
-cmd = ["${DOCDEX_BIN}", "mcp", "--repo", "${repo_root}", "--log", "warn"]
-proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-def send(payload):
-    proc.stdin.write(json.dumps(payload) + "\n")
-    proc.stdin.flush()
-    line = proc.stdout.readline()
-    if not line:
-        raise SystemExit("mcp server closed stdout")
-    return json.loads(line)
-resp = send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"agent_id": "mcoda_frontend"}})
-assert resp.get("id") == 1 and "result" in resp
-resp = send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-tools = resp.get("result", {}).get("tools", [])
+import json
+import os
+import urllib.request
+
+base_url = os.environ.get("DOCDEX_HTTP_BASE_URL")
+if not base_url:
+    raise SystemExit("missing DOCDEX_HTTP_BASE_URL for MCP smoke")
+
+req = urllib.request.Request(f"{base_url}/v1/mcp/sse", method="GET")
+resp = urllib.request.urlopen(req, timeout=10)
+session_id = resp.headers.get("x-docdex-mcp-session")
+if not session_id:
+    resp.close()
+    raise SystemExit("missing mcp session header")
+
+def post_message(payload):
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(f"{base_url}/v1/mcp/message", data=data, method="POST")
+    req.add_header("content-type", "application/json")
+    req.add_header("x-docdex-mcp-session", session_id)
+    out = urllib.request.urlopen(req, timeout=10)
+    out.read()
+    out.close()
+
+def read_sse():
+    while True:
+        line = resp.readline()
+        if not line:
+            raise SystemExit("mcp sse stream closed")
+        text = line.decode("utf-8", errors="replace").strip()
+        if text.startswith("data:"):
+            payload = text[5:].strip()
+            try:
+                return json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+
+post_message({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"workspace_root": "${repo_root}"}})
+init_resp = read_sse()
+assert init_resp.get("id") == 1 and "result" in init_resp
+
+post_message({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+tools_resp = read_sse()
+tools = tools_resp.get("result", {}).get("tools", [])
 names = {t.get("name") for t in tools}
 assert "docdex_save_preference" in names and "docdex_get_profile" in names
-resp = send({
+
+post_message({
     "jsonrpc": "2.0",
     "id": 3,
     "method": "tools/call",
     "params": {"name": "docdex_get_profile", "arguments": {"agent_id": "mcoda_frontend"}}
 })
-assert resp.get("id") == 3
-proc.terminate()
-proc.wait(timeout=5)
+resp_payload = read_sse()
+assert resp_payload.get("id") == 3
+resp.close()
 PY
 }
 

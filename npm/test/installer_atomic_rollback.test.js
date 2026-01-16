@@ -25,8 +25,6 @@ async function writeInstalledBinary({ distDir, isWin32, bytes }) {
   await ensureDir(distDir);
   const binaryPath = path.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
   await fs.promises.writeFile(binaryPath, bytes);
-  const mcpName = isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server";
-  await fs.promises.writeFile(path.join(distDir, mcpName), bytes);
   return binaryPath;
 }
 
@@ -120,7 +118,6 @@ test("atomic rollback: failed extract preserves existing install and cleans stag
         extractTarballFn: async (_archivePath, targetDir) => {
           await ensureDir(targetDir);
           await fs.promises.writeFile(path.join(targetDir, "docdexd"), "partial\n");
-          await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "partial\n");
           throw new Error("extract failed");
         }
       }),
@@ -208,7 +205,6 @@ test("atomic rollback: swap failure restores existing install and cleans staging
         extractTarballFn: async (_archivePath, targetDir) => {
           await ensureDir(targetDir);
           await fs.promises.writeFile(path.join(targetDir, "docdexd"), "new-binary\n");
-          await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "new-binary\n");
         }
       }),
     /simulated swap failure/

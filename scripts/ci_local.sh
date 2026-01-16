@@ -97,7 +97,6 @@ run_nightly() {
   run_cmd "${ROOT_DIR}/scripts/security_audit.sh"
   run_cmd "${ROOT_DIR}/scripts/bench_indexing.sh"
   run_cmd cargo build --release --locked
-  run_cmd cargo build --release --locked -p docdex-mcp-server
 
   if [[ "${DOCDEX_SKIP_SOAK:-0}" == "1" ]]; then
     log "Skipping short soak (DOCDEX_SKIP_SOAK=1)"
@@ -109,7 +108,6 @@ run_nightly() {
   export DOCDEX_LOAD_CONCURRENCY="${DOCDEX_LOAD_CONCURRENCY:-2}"
   export DOCDEX_LOAD_MAX_ERROR_RATE="${DOCDEX_LOAD_MAX_ERROR_RATE:-0.005}"
   export DOCDEX_BIN="${DOCDEX_BIN:-${ROOT_DIR}/target/release/docdexd}"
-  export DOCDEX_MCP_SERVER_BIN="${DOCDEX_MCP_SERVER_BIN:-${ROOT_DIR}/target/release/docdex-mcp-server}"
   export DOCDEX_OFFLINE="${DOCDEX_OFFLINE:-1}"
   export DOCDEX_HTTP_BASE_URL="http://127.0.0.1:${port}"
 
@@ -118,7 +116,6 @@ run_nightly() {
     --repo "${DOCDEX_REPO_ROOT:-${ROOT_DIR}}" \
     --secure-mode=false \
     --enable-memory=false \
-    --disable-mcp \
     --access-log=false \
     --log warn \
     --host 127.0.0.1 \

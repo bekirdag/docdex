@@ -20,7 +20,7 @@ const DEFAULT_EMBED_MODEL: &str = "nomic-embed-text";
 const DEFAULT_PROFILE_EMBED_MODEL: &str = "nomic-embed-text-v1.5";
 const DEFAULT_PROFILE_EMBED_DIM: usize = 768;
 const DEFAULT_MEMORY_BACKEND: &str = "sqlite";
-const DEFAULT_DISCOVERY_PROVIDER: &str = "duckduckgo_html";
+const DEFAULT_DISCOVERY_PROVIDER: &str = "duckduckgo_lite";
 const DEFAULT_WEB_ENGINE: &str = "chromium";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,6 +255,8 @@ pub struct WebConfigSection {
     #[serde(default)]
     pub boilerplate_phrases_path: Option<PathBuf>,
     #[serde(default)]
+    pub providers: WebProviderConfig,
+    #[serde(default)]
     pub scraper: WebScraperConfig,
 }
 
@@ -270,7 +272,31 @@ impl Default for WebConfigSection {
             blocklist: Vec::new(),
             boilerplate_phrases: Vec::new(),
             boilerplate_phrases_path: None,
+            providers: WebProviderConfig::default(),
             scraper: WebScraperConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebProviderConfig {
+    #[serde(default)]
+    pub brave_api_key: Option<String>,
+    #[serde(default)]
+    pub google_cse_api_key: Option<String>,
+    #[serde(default)]
+    pub google_cse_cx: Option<String>,
+    #[serde(default)]
+    pub bing_api_key: Option<String>,
+}
+
+impl Default for WebProviderConfig {
+    fn default() -> Self {
+        Self {
+            brave_api_key: None,
+            google_cse_api_key: None,
+            google_cse_cx: None,
+            bing_api_key: None,
         }
     }
 }

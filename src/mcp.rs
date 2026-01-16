@@ -1,71 +1,18 @@
 use crate::mcp_proxy::McpProxy;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, RwLock};
-use which::which;
 use uuid::Uuid;
 
-const MCP_SERVER_BIN_ENV: &str = "DOCDEX_MCP_SERVER_BIN";
-const MCP_SERVER_BIN_NAME: &str = "docdex-mcp-server";
-const MCP_STANDALONE_ENABLE_ENV: &str = "DOCDEX_ENABLE_STANDALONE_MCP";
 const MCP_ROUTER_SESSION_IDLE_SECS: u64 = 3600;
 const MCP_ROUTER_CLEANUP_INTERVAL_SECS: u64 = 600;
 
-pub async fn serve(
-    repo: crate::config::RepoArgs,
-    log: String,
-    max_results: usize,
-    rate_limit_per_min: u32,
-    rate_limit_burst: u32,
-    auth_token: Option<String>,
-) -> Result<()> {
-    let _ = (log, max_results, rate_limit_per_min, rate_limit_burst);
-    let base_url = crate::cli::http_client::resolve_base_url_with_lock()
-        .context("resolve MCP daemon base URL")?;
-    let repo_root = repo.repo_root();
-    crate::mcp_proxy::McpHttpProxy::run(repo_root, base_url, auth_token).await
-}
-
-pub async fn spawn_for_serve(
-    repo: crate::config::RepoArgs,
-    log_level: String,
-    max_results: usize,
-    rate_limit_per_min: u32,
-    rate_limit_burst: u32,
-    memory_enabled: bool,
-    embedding_base_url: String,
-    embedding_model: String,
-    embedding_timeout_ms: u64,
-    docdex_http_base_url: Option<String>,
-    auth_token: Option<String>,
-) -> Result<Child> {
-    let options = McpSpawnOptions {
-        repo,
-        log_level,
-        max_results,
-        rate_limit_per_min,
-        rate_limit_burst,
-        memory_enabled,
-        embedding_base_url: Some(embedding_base_url),
-        embedding_model: Some(embedding_model),
-        embedding_timeout_ms: Some(embedding_timeout_ms),
-        docdex_http_base_url,
-        auth_token,
-        detach_stdio: true,
-        capture_stdio: false,
-    };
-    spawn_mcp(options).await
-}
-
 pub async fn spawn_proxy_for_serve(
     repo: crate::config::RepoArgs,
-    log_level: String,
     max_results: usize,
     rate_limit_per_min: u32,
     rate_limit_burst: u32,
@@ -78,7 +25,6 @@ pub async fn spawn_proxy_for_serve(
 ) -> Result<Arc<McpProxyRouter>> {
     let config = McpProxyConfig {
         repo,
-        log_level,
         max_results,
         rate_limit_per_min,
         rate_limit_burst,
@@ -101,7 +47,6 @@ pub struct McpProxyRouter {
 #[derive(Clone)]
 pub(crate) struct McpProxyConfig {
     repo: crate::config::RepoArgs,
-    log_level: String,
     max_results: usize,
     rate_limit_per_min: u32,
     rate_limit_burst: u32,
@@ -322,7 +267,6 @@ impl McpProxyRouter {
         repo.repo = repo_root.clone();
         let options = McpSpawnOptions {
             repo,
-            log_level: self.config.log_level.clone(),
             max_results: self.config.max_results,
             rate_limit_per_min: self.config.rate_limit_per_min,
             rate_limit_burst: self.config.rate_limit_burst,
@@ -332,8 +276,6 @@ impl McpProxyRouter {
             embedding_timeout_ms: Some(self.config.embedding_timeout_ms),
             docdex_http_base_url: self.config.docdex_http_base_url.clone(),
             auth_token: self.config.auth_token.clone(),
-            detach_stdio: false,
-            capture_stdio: true,
         };
         let child = spawn_mcp_proxy(options).await?;
         let mut children = self.children.write().await;
@@ -460,7 +402,6 @@ fn is_retryable_mcp_error(err: &anyhow::Error) -> bool {
 
 struct McpSpawnOptions {
     repo: crate::config::RepoArgs,
-    log_level: String,
     max_results: usize,
     rate_limit_per_min: u32,
     rate_limit_burst: u32,
@@ -470,28 +411,6 @@ struct McpSpawnOptions {
     embedding_timeout_ms: Option<u64>,
     docdex_http_base_url: Option<String>,
     auth_token: Option<String>,
-    detach_stdio: bool,
-    capture_stdio: bool,
-}
-
-async fn spawn_mcp(options: McpSpawnOptions) -> Result<Child> {
-    let mut cmd = build_mcp_command(&options)?;
-    if options.capture_stdio {
-        cmd.stdin(Stdio::piped());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::inherit());
-    } else if options.detach_stdio {
-        cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::null());
-        cmd.stderr(Stdio::null());
-    } else {
-        cmd.stdin(Stdio::inherit());
-        cmd.stdout(Stdio::inherit());
-        cmd.stderr(Stdio::inherit());
-    }
-    cmd.kill_on_drop(true);
-    cmd.spawn()
-        .with_context(|| format!("launch {MCP_SERVER_BIN_NAME}"))
 }
 
 async fn spawn_mcp_proxy(options: McpSpawnOptions) -> Result<Arc<McpProxy>> {
@@ -545,125 +464,4 @@ fn apply_mcp_env(options: &McpSpawnOptions) {
     if std::env::var("DOCDEX_WEB_ENABLED").is_err() {
         std::env::set_var("DOCDEX_WEB_ENABLED", "1");
     }
-}
-
-fn build_mcp_command(options: &McpSpawnOptions) -> Result<Command> {
-    let bin = resolve_mcp_server_binary()?;
-    let mut cmd = Command::new(&bin);
-    cmd.arg("--repo").arg(&options.repo.repo);
-    if let Some(state_dir) = options.repo.state_dir.clone() {
-        cmd.arg("--state-dir").arg(state_dir);
-    }
-    for dir in &options.repo.exclude_dir {
-        cmd.arg("--exclude-dir").arg(dir);
-    }
-    for prefix in &options.repo.exclude_prefix {
-        cmd.arg("--exclude-prefix").arg(prefix);
-    }
-    if options.repo.enable_symbol_extraction {
-        cmd.arg("--enable-symbol-extraction").arg("true");
-    }
-    cmd.arg("--log").arg(&options.log_level);
-    cmd.arg("--max-results")
-        .arg(options.max_results.to_string());
-    cmd.arg("--rate-limit-per-min")
-        .arg(options.rate_limit_per_min.to_string());
-    cmd.arg("--rate-limit-burst")
-        .arg(options.rate_limit_burst.to_string());
-    cmd.env(
-        "DOCDEX_ENABLE_MEMORY",
-        if options.memory_enabled { "1" } else { "0" },
-    );
-    if let Some(base_url) = options.embedding_base_url.as_ref() {
-        cmd.env("DOCDEX_EMBEDDING_BASE_URL", base_url);
-    }
-    if let Some(model) = options.embedding_model.as_ref() {
-        cmd.env("DOCDEX_EMBEDDING_MODEL", model);
-    }
-    if let Some(timeout_ms) = options.embedding_timeout_ms {
-        cmd.env("DOCDEX_EMBEDDING_TIMEOUT_MS", timeout_ms.to_string());
-    }
-    if let Some(base_url) = options.docdex_http_base_url.as_ref() {
-        if !base_url.trim().is_empty() {
-            cmd.env("DOCDEX_HTTP_BASE_URL", base_url);
-        }
-    }
-    if let Some(token) = options.auth_token.as_ref() {
-        if !token.trim().is_empty() {
-            cmd.arg("--auth-token").arg(token.trim());
-        }
-    }
-    if std::env::var("DOCDEX_WEB_ENABLED").is_err() {
-        cmd.env("DOCDEX_WEB_ENABLED", "1");
-    }
-    Ok(cmd)
-}
-
-pub(crate) fn resolve_mcp_server_binary() -> Result<PathBuf> {
-    if !standalone_mcp_enabled() {
-        return Err(anyhow!(
-            "docdex-mcp-server is disabled by default; set DOCDEX_ENABLE_STANDALONE_MCP=1 to opt in or use `docdexd mcp` / the daemon HTTP endpoint"
-        ));
-    }
-    if let Ok(path) = std::env::var(MCP_SERVER_BIN_ENV) {
-        if !path.trim().is_empty() {
-            let candidate = PathBuf::from(path);
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-            #[cfg(windows)]
-            {
-                let exe = candidate.with_extension("exe");
-                if exe.is_file() {
-                    return Ok(exe);
-                }
-            }
-            return Err(anyhow!(
-                "{MCP_SERVER_BIN_ENV} points to a missing docdex-mcp-server binary; standalone MCP is opt-in (set DOCDEX_ENABLE_STANDALONE_MCP=1)"
-            ));
-        }
-    }
-
-    if let Ok(current) = std::env::current_exe() {
-        if let Some(dir) = current.parent() {
-            if let Some(candidate) = sibling_binary(dir, MCP_SERVER_BIN_NAME) {
-                return Ok(candidate);
-            }
-        }
-    }
-
-    if let Ok(found) = which(MCP_SERVER_BIN_NAME) {
-        return Ok(found);
-    }
-
-    Err(anyhow!(
-        "docdex-mcp-server not found; standalone MCP is opt-in (set DOCDEX_ENABLE_STANDALONE_MCP=1) or use `docdexd mcp` / the daemon HTTP endpoint"
-    ))
-}
-
-fn standalone_mcp_enabled() -> bool {
-    std::env::var(MCP_STANDALONE_ENABLE_ENV)
-        .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "t" | "yes" | "y" | "on"
-            )
-        })
-        .unwrap_or(false)
-}
-
-fn sibling_binary(dir: &Path, name: &str) -> Option<PathBuf> {
-    let candidate = dir.join(name);
-    if candidate.is_file() {
-        return Some(candidate);
-    }
-    #[cfg(windows)]
-    {
-        let candidate = dir.join(format!("{name}.exe"));
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
 }

@@ -8,8 +8,10 @@ use std::path::PathBuf;
 use std::process::Output;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime};
 
+use fs4::FileExt;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -85,6 +87,8 @@ struct BrowserLockMetadata {
 
 const LOCK_STARTUP_GRACE: Duration = Duration::from_secs(30);
 const LOCK_STALE_AGE: Duration = Duration::from_secs(300);
+const LOCK_FORCE_KILL_AGE: Duration = Duration::from_secs(120);
+const LOCK_FORCE_KILL_GRACE: Duration = Duration::from_secs(2);
 
 impl LockFile {
     fn write_metadata(&mut self, pid: Option<u32>) -> Result<(), BrowserSessionError> {
@@ -240,6 +244,10 @@ impl BrowserSession {
 
     pub fn pid(&self) -> u32 {
         self.inner.pid
+    }
+
+    pub fn is_alive(&self) -> bool {
+        pid_is_alive(self.inner.pid)
     }
 
     #[cfg(unix)]
@@ -402,8 +410,14 @@ fn create_lock_file(path: &PathBuf) -> Result<LockFile, BrowserSessionError> {
             .map_err(|err| BrowserSessionError::LaunchFailed(err.to_string()))?;
     }
     for _ in 0..2 {
-        match OpenOptions::new().create_new(true).write(true).open(path) {
-            Ok(file) => {
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(path)
+            .map_err(|err| BrowserSessionError::LaunchFailed(err.to_string()))?;
+        match file.try_lock_exclusive() {
+            Ok(()) => {
                 let mut lock = LockFile {
                     path: path.clone(),
                     _file: file,
@@ -411,7 +425,8 @@ fn create_lock_file(path: &PathBuf) -> Result<LockFile, BrowserSessionError> {
                 lock.write_metadata(None)?;
                 return Ok(lock);
             }
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+            Err(err) if is_lock_contended(&err) => {
+                drop(file);
                 if try_remove_stale_lock(path)? {
                     continue;
                 }
@@ -423,12 +438,16 @@ fn create_lock_file(path: &PathBuf) -> Result<LockFile, BrowserSessionError> {
             Err(err) => {
                 return Err(BrowserSessionError::LaunchFailed(err.to_string()));
             }
-        }
+        };
     }
     Err(BrowserSessionError::LaunchFailed(format!(
         "lock already held: {}",
         path.display()
     )))
+}
+
+fn is_lock_contended(err: &io::Error) -> bool {
+    matches!(err.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::AlreadyExists)
 }
 
 fn try_remove_stale_lock(path: &PathBuf) -> Result<bool, BrowserSessionError> {
@@ -437,32 +456,86 @@ fn try_remove_stale_lock(path: &PathBuf) -> Result<bool, BrowserSessionError> {
         .as_ref()
         .and_then(|meta| age_from_epoch_ms(meta.created_at_epoch_ms))
         .or_else(|| lock_age(path));
-    let stale = match metadata {
+    match metadata {
         Some(meta) => match meta.pid {
-            Some(pid) => !pid_is_alive(pid),
-            None => age.map(|age| age > LOCK_STARTUP_GRACE).unwrap_or(false),
+            Some(pid) => {
+                if !pid_is_alive(pid) {
+                    return remove_lock_file(path, "pid_not_alive");
+                }
+                if age
+                    .map(|age| age > LOCK_FORCE_KILL_AGE)
+                    .unwrap_or(false)
+                {
+                    if try_kill_stale_pid(pid) {
+                        return remove_lock_file(path, "pid_force_killed");
+                    }
+                }
+                Ok(false)
+            }
+            None => {
+                if age.map(|age| age > LOCK_STARTUP_GRACE).unwrap_or(false) {
+                    return remove_lock_file(path, "no_pid_startup_timeout");
+                }
+                Ok(false)
+            }
         },
-        None => age.map(|age| age > LOCK_STALE_AGE).unwrap_or(false),
-    };
-
-    if !stale {
-        return Ok(false);
+        None => {
+            if age.map(|age| age > LOCK_STALE_AGE).unwrap_or(false) {
+                return remove_lock_file(path, "missing_metadata");
+            }
+            Ok(false)
+        }
     }
+}
 
-    fs::remove_file(path).map_err(|err| {
-        BrowserSessionError::LaunchFailed(format!(
-            "failed to remove stale lock {}: {}",
-            path.display(),
-            err
-        ))
-    })?;
+fn remove_lock_file(path: &PathBuf, reason: &str) -> Result<bool, BrowserSessionError> {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(BrowserSessionError::LaunchFailed(format!(
+                "failed to remove stale lock {}: {}",
+                path.display(),
+                err
+            )));
+        }
+    }
     tracing::warn!(
         target: "docdexd_browser_guard",
         event = "browser_session_lock_stale_removed",
         lock_file = %path.display(),
+        reason,
         "stale browser session lock removed"
     );
     Ok(true)
+}
+
+fn try_kill_stale_pid(pid: u32) -> bool {
+    if !pid_is_alive(pid) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        signal_process_group(pid as i32, nix::libc::SIGTERM);
+        signal_process(pid as i32, nix::libc::SIGTERM);
+        wait_for_pid_exit(pid, LOCK_FORCE_KILL_GRACE);
+        if pid_is_alive(pid) {
+            signal_process_group(pid as i32, nix::libc::SIGKILL);
+            signal_process(pid as i32, nix::libc::SIGKILL);
+            wait_for_pid_exit(pid, LOCK_FORCE_KILL_GRACE);
+        }
+    }
+    !pid_is_alive(pid)
+}
+
+fn wait_for_pid_exit(pid: u32, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !pid_is_alive(pid) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn read_lock_metadata(path: &PathBuf) -> Option<BrowserLockMetadata> {
@@ -703,6 +776,17 @@ fn signal_process_group(pgid: i32, signal: i32) {
         let err = io::Error::last_os_error();
         if err.raw_os_error() != Some(nix::libc::ESRCH) {
             tracing::debug!("killpg({pgid},{signal}) failed: {err}");
+        }
+    }
+}
+
+#[cfg(unix)]
+fn signal_process(pid: i32, signal: i32) {
+    let rc = unsafe { nix::libc::kill(pid, signal) };
+    if rc == -1 {
+        let err = io::Error::last_os_error();
+        if err.raw_os_error() != Some(nix::libc::ESRCH) {
+            tracing::debug!("kill({pid},{signal}) failed: {err}");
         }
     }
 }

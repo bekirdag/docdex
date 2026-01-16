@@ -25,8 +25,6 @@ async function writeInstalledBinary({ distDir, isWin32, contents }) {
   await ensureDir(distDir);
   const binaryPath = path.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
   await fs.promises.writeFile(binaryPath, contents, "utf8");
-  const mcpName = isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server";
-  await fs.promises.writeFile(path.join(distDir, mcpName), contents, "utf8");
   return binaryPath;
 }
 
@@ -104,7 +102,6 @@ test("installer: extraction failure leaves existing binary runnable and cleans s
       extractTarballFn: async (_archivePath, targetDir) => {
         await ensureDir(targetDir);
         await fs.promises.writeFile(path.join(targetDir, "docdexd"), "partial-binary\n", "utf8");
-        await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "partial-binary\n", "utf8");
         throw new Error("extract failed");
       }
     });

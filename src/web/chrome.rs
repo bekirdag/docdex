@@ -1,13 +1,16 @@
 use anyhow::{anyhow, Context, Result};
 use futures::{SinkExt, StreamExt};
+use once_cell::sync::OnceCell;
 use serde_json::{json, Value};
 use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 use tokio::process::Command;
+use tokio::sync::Mutex;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use url::Url;
@@ -16,6 +19,7 @@ use crate::browser_session::{BrowserSession, BrowserSessionOptions};
 use crate::orchestrator::web_config::WebConfig;
 use crate::state_layout::ensure_state_dir_secure;
 use crate::util;
+use crate::web::scraper::{global_tracker, init_global_from_env, ChromeSessionHandle, TrackedProcess};
 
 #[derive(Clone, Debug)]
 pub struct ChromeFetchConfig {
@@ -35,9 +39,163 @@ pub struct ChromeFetchResult {
     pub final_url: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ChromeSessionConfig {
+    chrome_binary: PathBuf,
+    headless: bool,
+    user_agent: String,
+    user_data_dir: Option<PathBuf>,
+}
+
+impl ChromeSessionConfig {
+    fn from_fetch_config(config: &ChromeFetchConfig) -> Self {
+        Self {
+            chrome_binary: config.chrome_binary.clone(),
+            headless: config.headless,
+            user_agent: config.user_agent.clone(),
+            user_data_dir: config.user_data_dir.clone(),
+        }
+    }
+}
+
+struct ChromeInstance {
+    session: BrowserSession,
+    debug_port: u16,
+    config: ChromeSessionConfig,
+    _user_data_dir: UserDataDir,
+    watchdog_handle: Option<ChromeSessionHandle>,
+}
+
+impl ChromeInstance {
+    async fn spawn(
+        fetch_config: &ChromeFetchConfig,
+        session_config: ChromeSessionConfig,
+    ) -> Result<Self> {
+        let mut command = Command::new(&fetch_config.chrome_binary);
+        let user_data_dir = UserDataDir::new(fetch_config)?;
+        user_data_dir.clear_devtools_port();
+        let mut args = chrome_common_args(fetch_config, user_data_dir.path());
+        let debug_port = pick_free_port().context("pick devtools port")?;
+        args.push("--remote-debugging-address=127.0.0.1".to_string());
+        args.push(format!("--remote-debugging-port={debug_port}"));
+        command.args(args);
+        command.arg("about:blank");
+        command.stdout(Stdio::null());
+        command.stderr(Stdio::null());
+
+        let session = BrowserSession::spawn(command, BrowserSessionOptions::default())
+            .await
+            .map_err(|err| anyhow!("chrome launch failed: {err}"))?;
+        let watchdog_handle = resolve_watchdog_handle(&session, "chrome_persistent");
+
+        Ok(Self {
+            session,
+            debug_port,
+            config: session_config,
+            _user_data_dir: user_data_dir,
+            watchdog_handle,
+        })
+    }
+
+    fn matches(&self, config: &ChromeSessionConfig) -> bool {
+        &self.config == config
+    }
+
+    async fn is_healthy(&self) -> bool {
+        if !self.session.is_alive() {
+            return false;
+        }
+        probe_cdp(self.debug_port).await
+    }
+
+    async fn fetch_dom(&self, url: &Url, timeout: Duration) -> Result<ChromeFetchResult> {
+        if let Some(handle) = &self.watchdog_handle {
+            handle.heartbeat();
+        }
+        let deadline = Instant::now() + timeout;
+        let target = create_cdp_target(self.debug_port, remaining(deadline)).await?;
+        let result = fetch_dom_via_cdp(&target.ws_url, url, remaining(deadline)).await;
+        if let Some(target_id) = target.target_id.as_deref() {
+            let _ = close_cdp_target(self.debug_port, target_id).await;
+        }
+        if let Some(handle) = &self.watchdog_handle {
+            handle.heartbeat();
+        }
+        result
+    }
+
+    async fn shutdown(&self) {
+        if let Some(handle) = &self.watchdog_handle {
+            handle.end();
+        }
+        let _ = self.session.abort().await;
+    }
+}
+
+struct ChromeManager {
+    state: Mutex<ChromeManagerState>,
+}
+
+struct ChromeManagerState {
+    instance: Option<Arc<ChromeInstance>>,
+}
+
+impl ChromeManager {
+    fn global() -> Arc<Self> {
+        CHROME_MANAGER
+            .get_or_init(|| {
+                Arc::new(Self {
+                    state: Mutex::new(ChromeManagerState { instance: None }),
+                })
+            })
+            .clone()
+    }
+
+    async fn get_or_launch(&self, config: &ChromeFetchConfig) -> Result<Arc<ChromeInstance>> {
+        let session_config = ChromeSessionConfig::from_fetch_config(config);
+        let mut state = self.state.lock().await;
+        if let Some(instance) = state.instance.as_ref() {
+            if instance.matches(&session_config) && instance.is_healthy().await {
+                return Ok(instance.clone());
+            }
+        }
+
+        let instance = Arc::new(ChromeInstance::spawn(config, session_config).await?);
+        let old = state.instance.replace(instance.clone());
+        drop(state);
+        if let Some(old_instance) = old {
+            old_instance.shutdown().await;
+        }
+        Ok(instance)
+    }
+
+    async fn reset(&self) {
+        let old = {
+            let mut state = self.state.lock().await;
+            state.instance.take()
+        };
+        if let Some(instance) = old {
+            instance.shutdown().await;
+        }
+    }
+
+    async fn fetch_dom(
+        &self,
+        url: &Url,
+        config: &ChromeFetchConfig,
+        timeout: Duration,
+    ) -> Result<ChromeFetchResult> {
+        let instance = self.get_or_launch(config).await?;
+        instance.fetch_dom(url, timeout).await
+    }
+}
+
+static CHROME_MANAGER: OnceCell<Arc<ChromeManager>> = OnceCell::new();
+
 const CHROME_THINK_DELAY_MIN_MS: u64 = 150;
 const CHROME_THINK_DELAY_MAX_MS: u64 = 650;
 const CHROME_WINDOW_SIZE: &str = "1920,1080";
+const CHROME_HEALTH_CHECK_TIMEOUT_MS: u64 = 800;
 const WEBDRIVER_OVERRIDE_SCRIPT: &str =
     "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });";
 
@@ -68,6 +226,34 @@ impl UserDataDir {
     fn clear_devtools_port(&self) {
         let port_file = self.path().join("DevToolsActivePort");
         let _ = fs::remove_file(port_file);
+    }
+}
+
+fn resolve_watchdog_handle(
+    session: &BrowserSession,
+    session_id: &str,
+) -> Option<ChromeSessionHandle> {
+    let tracker = global_tracker().or_else(init_global_from_env)?;
+    Some(tracker.register(
+        session_id.to_string(),
+        tracked_process(session),
+    ))
+}
+
+fn tracked_process(session: &BrowserSession) -> TrackedProcess {
+    #[cfg(unix)]
+    {
+        TrackedProcess {
+            pid: session.pid(),
+            process_group_id: Some(session.process_group_id()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        TrackedProcess {
+            pid: session.pid(),
+            process_group_id: None,
+        }
     }
 }
 
@@ -108,38 +294,21 @@ impl ChromeFetchConfig {
 }
 
 pub async fn fetch_dom(url: &Url, config: &ChromeFetchConfig) -> Result<ChromeFetchResult> {
-    let mut command = Command::new(&config.chrome_binary);
-    let user_data_dir = UserDataDir::new(config)?;
-    user_data_dir.clear_devtools_port();
-    let mut args = chrome_common_args(config, user_data_dir.path());
-    let debug_port = pick_free_port().context("pick devtools port")?;
-    args.push("--remote-debugging-address=127.0.0.1".to_string());
-    args.push(format!("--remote-debugging-port={debug_port}"));
-    command.args(args);
-    command.arg("about:blank");
-    command.stdout(Stdio::null());
-    command.stderr(Stdio::null());
-
     let timeout = if config.timeout.is_zero() {
         Duration::from_secs(15)
     } else {
         config.timeout
     };
-    let session = BrowserSession::spawn(command, BrowserSessionOptions::default())
-        .await
-        .map_err(|err| anyhow!("chrome launch failed: {err}"))?;
-    let target_url = url.clone();
-    let cdp_result = session
-        .run_scoped(timeout, std::future::pending::<()>(), async move {
-            let deadline = Instant::now() + timeout;
-            let ws_url = create_cdp_target(debug_port, remaining(deadline)).await?;
-            let result = fetch_dom_via_cdp(&ws_url, &target_url, remaining(deadline)).await?;
-            Ok(result)
-        })
-        .await;
-    match cdp_result {
+    let manager = ChromeManager::global();
+    let result = manager.fetch_dom(url, config, timeout).await;
+    match result {
         Ok(result) => Ok(result),
         Err(err) => {
+            manager.reset().await;
+            let retry = manager.fetch_dom(url, config, timeout).await;
+            if let Ok(result) = retry {
+                return Ok(result);
+            }
             let fallback = fetch_dom_dump_dom(url, config).await;
             if let Ok(result) = fallback {
                 return Ok(result);
@@ -165,13 +334,18 @@ async fn fetch_dom_dump_dom(url: &Url, config: &ChromeFetchConfig) -> Result<Chr
     } else {
         config.timeout
     };
-    let session = BrowserSession::spawn(command, BrowserSessionOptions::default())
+    let session = BrowserSession::spawn(command, BrowserSessionOptions::without_lock())
         .await
         .map_err(|err| anyhow!("chrome launch failed: {err}"))?;
-    let output = session
-        .wait_for_output(timeout)
-        .await
-        .map_err(|err| anyhow!("chrome dump-dom failed: {err}"))?;
+    let watchdog_handle = resolve_watchdog_handle(
+        &session,
+        &format!("chrome_dump_dom_{}", session.pid()),
+    );
+    let output = session.wait_for_output(timeout).await;
+    if let Some(handle) = watchdog_handle {
+        handle.end();
+    }
+    let output = output.map_err(|err| anyhow!("chrome dump-dom failed: {err}"))?;
     let html = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if html.is_empty() {
         return Err(anyhow!("chrome dump-dom returned empty HTML"));
@@ -197,7 +371,22 @@ fn pick_free_port() -> Result<u16> {
     Ok(port)
 }
 
-async fn create_cdp_target(port: u16, timeout: Duration) -> Result<String> {
+async fn probe_cdp(port: u16) -> bool {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_millis(CHROME_HEALTH_CHECK_TIMEOUT_MS))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+    let endpoint = format!("http://127.0.0.1:{port}/json/version");
+    match client.get(endpoint).send().await {
+        Ok(resp) => resp.status().is_success(),
+        Err(_) => false,
+    }
+}
+
+async fn create_cdp_target(port: u16, timeout: Duration) -> Result<CdpTarget> {
     let client = reqwest::Client::builder()
         .timeout(timeout)
         .build()
@@ -207,13 +396,13 @@ async fn create_cdp_target(port: u16, timeout: Duration) -> Result<String> {
     let start = Instant::now();
     let mut last_err: Option<anyhow::Error> = None;
     loop {
-        match fetch_devtools_ws_url(&client, &endpoint_new).await {
-            Ok(Some(url)) => return Ok(url),
+        match fetch_devtools_target(&client, &endpoint_new).await {
+            Ok(Some(target)) => return Ok(target),
             Ok(None) => {}
             Err(err) => last_err = Some(err),
         }
-        match fetch_devtools_ws_url(&client, &endpoint_list).await {
-            Ok(Some(url)) => return Ok(url),
+        match fetch_devtools_target(&client, &endpoint_list).await {
+            Ok(Some(target)) => return Ok(target),
             Ok(None) => {}
             Err(err) => last_err = Some(err),
         }
@@ -233,7 +422,10 @@ async fn create_cdp_target(port: u16, timeout: Duration) -> Result<String> {
     ))
 }
 
-async fn fetch_devtools_ws_url(client: &reqwest::Client, endpoint: &str) -> Result<Option<String>> {
+async fn fetch_devtools_target(
+    client: &reqwest::Client,
+    endpoint: &str,
+) -> Result<Option<CdpTarget>> {
     let resp = client
         .get(endpoint)
         .send()
@@ -253,17 +445,57 @@ async fn fetch_devtools_ws_url(client: &reqwest::Client, endpoint: &str) -> Resu
         Ok(value) => value,
         Err(_) => return Ok(None),
     };
-    Ok(extract_ws_url(&value))
+    Ok(extract_cdp_target(&value))
 }
 
-fn extract_ws_url(value: &Value) -> Option<String> {
-    if let Some(url) = value.get("webSocketDebuggerUrl").and_then(Value::as_str) {
-        return Some(url.to_string());
+async fn close_cdp_target(port: u16, target_id: &str) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(CHROME_HEALTH_CHECK_TIMEOUT_MS))
+        .build()
+        .context("build devtools client")?;
+    let endpoint = format!("http://127.0.0.1:{port}/json/close/{target_id}");
+    let resp = client
+        .get(&endpoint)
+        .send()
+        .await
+        .with_context(|| format!("close devtools target {target_id}"))?;
+    if !resp.status().is_success() {
+        return Err(anyhow!(
+            "devtools close target {target_id} failed with status {}",
+            resp.status()
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct CdpTarget {
+    ws_url: String,
+    target_id: Option<String>,
+}
+
+fn extract_cdp_target(value: &Value) -> Option<CdpTarget> {
+    if let Some(ws_url) = value.get("webSocketDebuggerUrl").and_then(Value::as_str) {
+        let target_id = value
+            .get("id")
+            .and_then(Value::as_str)
+            .map(|value| value.to_string());
+        return Some(CdpTarget {
+            ws_url: ws_url.to_string(),
+            target_id,
+        });
     }
     if let Some(items) = value.as_array() {
         for item in items {
-            if let Some(url) = item.get("webSocketDebuggerUrl").and_then(Value::as_str) {
-                return Some(url.to_string());
+            if let Some(ws_url) = item.get("webSocketDebuggerUrl").and_then(Value::as_str) {
+                let target_id = item
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(|value| value.to_string());
+                return Some(CdpTarget {
+                    ws_url: ws_url.to_string(),
+                    target_id,
+                });
             }
         }
     }

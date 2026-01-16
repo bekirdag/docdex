@@ -1019,25 +1019,9 @@ function ensureStartupBinary(binaryPath, { logger } = {}) {
   }
 }
 
-function resolveStartupBinaryPaths({ binaryPath, mcpBinaryPath, logger } = {}) {
+function resolveStartupBinaryPaths({ binaryPath, logger } = {}) {
   const resolvedBinary = ensureStartupBinary(binaryPath, { logger });
-  let resolvedMcpBinary = mcpBinaryPath;
-  if (mcpBinaryPath && resolvedBinary) {
-    const binDir = path.dirname(resolvedBinary);
-    const target = path.join(binDir, path.basename(mcpBinaryPath));
-    if (!fs.existsSync(target)) {
-      try {
-        fs.copyFileSync(mcpBinaryPath, target);
-        fs.chmodSync(target, 0o755);
-        resolvedMcpBinary = target;
-      } catch (err) {
-        logger?.warn?.(`[docdex] failed to stage mcp binary for startup: ${err?.message || err}`);
-      }
-    } else {
-      resolvedMcpBinary = target;
-    }
-  }
-  return { binaryPath: resolvedBinary, mcpBinaryPath: resolvedMcpBinary };
+  return { binaryPath: resolvedBinary };
 }
 
 function applyAgentInstructions({ logger } = {}) {
@@ -1098,14 +1082,6 @@ function applyAgentInstructions({ logger } = {}) {
   }
 
   return { ok: true, updated };
-}
-
-function resolveMcpBinaryPath(binaryPath) {
-  if (!binaryPath) return null;
-  const dir = path.dirname(binaryPath);
-  const name = process.platform === "win32" ? "docdex-mcp-server.exe" : "docdex-mcp-server";
-  const candidate = path.join(dir, name);
-  return fs.existsSync(candidate) ? candidate : null;
 }
 
 function ensureDaemonRoot() {
@@ -1693,22 +1669,18 @@ function isTempPath(value, osModule = os) {
   return resolvedValue === resolvedTmp || resolvedValue.startsWith(resolvedTmp + path.sep);
 }
 
-function buildDaemonEnvPairs({ mcpBinaryPath, env = process.env } = {}) {
-  const pairs = [["DOCDEX_BROWSER_AUTO_INSTALL", "0"]];
-  if (mcpBinaryPath && envBool(env.DOCDEX_ENABLE_STANDALONE_MCP)) {
-    pairs.push(["DOCDEX_MCP_SERVER_BIN", mcpBinaryPath]);
-  }
-  return pairs;
+function buildDaemonEnvPairs() {
+  return [["DOCDEX_BROWSER_AUTO_INSTALL", "0"]];
 }
 
-function buildDaemonEnv({ mcpBinaryPath, env } = {}) {
-  return Object.fromEntries(buildDaemonEnvPairs({ mcpBinaryPath, env }));
+function buildDaemonEnv() {
+  return Object.fromEntries(buildDaemonEnvPairs());
 }
 
-function registerStartup({ binaryPath, mcpBinaryPath, port, repoRoot, logger }) {
+function registerStartup({ binaryPath, port, repoRoot, logger }) {
   if (!binaryPath) return { ok: false, reason: "missing_binary" };
   stopDaemonService({ logger });
-  const envPairs = buildDaemonEnvPairs({ mcpBinaryPath });
+  const envPairs = buildDaemonEnvPairs();
   const workingDir = repoRoot ? path.resolve(repoRoot) : null;
   const args = [
     "daemon",
@@ -1829,10 +1801,9 @@ function registerStartup({ binaryPath, mcpBinaryPath, port, repoRoot, logger }) 
   return { ok: false, reason: "unsupported_platform" };
 }
 
-async function startDaemonWithHealthCheck({ binaryPath, mcpBinaryPath, port, host, logger }) {
+async function startDaemonWithHealthCheck({ binaryPath, port, host, logger }) {
   const startup = registerStartup({
     binaryPath,
-    mcpBinaryPath,
     port,
     repoRoot: daemonRootPath(),
     logger
@@ -1993,10 +1964,8 @@ async function runPostInstallSetup({ binaryPath, logger } = {}) {
 
   const daemonRoot = ensureDaemonRoot();
   const resolvedBinary = resolveBinaryPath({ binaryPath });
-  const resolvedMcpBinary = resolveMcpBinaryPath(resolvedBinary);
   const startupBinaries = resolveStartupBinaryPaths({
     binaryPath: resolvedBinary,
-    mcpBinaryPath: resolvedMcpBinary,
     logger: log
   });
   stopDaemonService({ logger: log });
@@ -2005,7 +1974,6 @@ async function runPostInstallSetup({ binaryPath, logger } = {}) {
   clearDaemonLocks();
   const result = await startDaemonWithHealthCheck({
     binaryPath: startupBinaries.binaryPath,
-    mcpBinaryPath: startupBinaries.mcpBinaryPath,
     port,
     host: DEFAULT_HOST,
     logger: log

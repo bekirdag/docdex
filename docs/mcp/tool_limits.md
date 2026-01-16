@@ -1,12 +1,12 @@
 # MCP tool output limits policy
 
 This document defines repo-invariant output bounds and enforcement semantics for
-MCP tools exposed by `docdexd mcp` (stdio) and the shared HTTP/SSE MCP endpoint. The goal is predictable payload sizes and
+MCP tools exposed by the shared HTTP/SSE MCP endpoint. The goal is predictable payload sizes and
 stable JSON schemas across all clients.
 
 ## Scope
 
-- Applies to MCP tools exposed by `docdexd mcp`.
+- Applies to MCP tools exposed by the shared HTTP/SSE endpoint.
 - Limits are server-wide and repo-invariant. Repo configuration cannot increase
   maxima.
 - Tools never aggregate across repos; responses are scoped to the server repo.

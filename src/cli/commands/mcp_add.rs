@@ -55,12 +55,7 @@ pub(crate) fn mcp_endpoint_urls(base_url: &str) -> McpEndpointUrls {
     }
 }
 
-fn mcp_add_banner_lines(
-    info: &McpEndpointInfo,
-    repo_root: &Path,
-    log: &str,
-    max_results: usize,
-) -> Vec<String> {
+fn mcp_add_banner_lines(info: &McpEndpointInfo) -> Vec<String> {
     let urls = mcp_endpoint_urls(&info.base_url);
     let mut lines = Vec::new();
     lines.push(format!(
@@ -80,34 +75,16 @@ fn mcp_add_banner_lines(
             info.base_url
         ));
     }
-    lines.push(format!(
-        "[docdexd mcp-add] Legacy stdio proxy (connects to the shared daemon): docdexd mcp --repo {} --log {} --max-results {}",
-        repo_root.display(),
-        log,
-        max_results
-    ));
     lines
 }
 
-fn print_mcp_add_banner(
-    info: &McpEndpointInfo,
-    repo_root: &Path,
-    log: &str,
-    max_results: usize,
-) {
-    for line in mcp_add_banner_lines(info, repo_root, log, max_results) {
+fn print_mcp_add_banner(info: &McpEndpointInfo) {
+    for line in mcp_add_banner_lines(info) {
         println!("{line}");
     }
 }
 
-pub fn run(
-    agent: String,
-    repo: Option<PathBuf>,
-    max_results: usize,
-    log: String,
-    remove: bool,
-    all: bool,
-) -> Result<()> {
+pub fn run(agent: String, repo: Option<PathBuf>, remove: bool, all: bool) -> Result<()> {
     let repo_root = repo
         .unwrap_or(std::env::current_dir().context("determine current directory")?)
         .canonicalize()
@@ -115,7 +92,7 @@ pub fn run(
     let endpoint_info = resolve_mcp_endpoint_info();
     let urls = mcp_endpoint_urls(&endpoint_info.base_url);
     if !remove {
-        print_mcp_add_banner(&endpoint_info, &repo_root, &log, max_results);
+        print_mcp_add_banner(&endpoint_info);
     }
     let targets: Vec<&str> = if all {
         vec![
@@ -154,8 +131,6 @@ pub fn run(
         handle_mcp_add(
             target,
             &repo_root,
-            &log,
-            max_results,
             &urls,
             remove,
             installed,
@@ -167,15 +142,6 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::{mcp_add_banner_lines, McpEndpointInfo};
-    use std::path::PathBuf;
-
-    fn repo_path() -> PathBuf {
-        if cfg!(windows) {
-            PathBuf::from(r"C:\repo")
-        } else {
-            PathBuf::from("/repo")
-        }
-    }
 
     #[test]
     fn mcp_add_banner_includes_http_endpoints() {
@@ -183,19 +149,13 @@ mod tests {
             base_url: "http://127.0.0.1:4000".to_string(),
             running: true,
         };
-        let repo_root = repo_path();
-        let lines = mcp_add_banner_lines(&info, &repo_root, "warn", 8);
-        let repo_display = repo_root.display().to_string();
+        let lines = mcp_add_banner_lines(&info);
         assert!(lines
             .iter()
             .any(|line| line.contains("http://127.0.0.1:4000/v1/mcp/sse")));
         assert!(lines
             .iter()
             .any(|line| line.contains("http://127.0.0.1:4000/v1/mcp")));
-        assert!(lines.iter().any(|line| {
-            line.contains("Legacy stdio proxy")
-                && line.contains(&format!("--repo {repo_display}"))
-        }));
         assert!(!lines.iter().any(|line| line.contains("Start it with")));
     }
 
@@ -205,8 +165,7 @@ mod tests {
             base_url: "http://127.0.0.1:28491".to_string(),
             running: false,
         };
-        let repo_root = repo_path();
-        let lines = mcp_add_banner_lines(&info, &repo_root, "info", 12);
+        let lines = mcp_add_banner_lines(&info);
         assert!(lines.iter().any(|line| line.contains("Default MCP base URL")));
         assert!(lines.iter().any(|line| {
             line.contains("Start it with")
@@ -639,8 +598,6 @@ fn agent_available(agent: &str, repo_root: &Path) -> bool {
 fn handle_mcp_add(
     agent: &str,
     repo_root: &Path,
-    log: &str,
-    max_results: usize,
     urls: &McpEndpointUrls,
     remove: bool,
     installed: bool,
@@ -810,10 +767,8 @@ fn handle_mcp_add(
                 println!("Claude Desktop: remove the docdex entry from Developer -> MCP Servers.");
             } else {
                 println!(
-                    "Claude Desktop: Developer -> MCP Servers -> Add, command: docdexd mcp --repo {} --log {} --max-results {}",
-                    repo_root.display(),
-                    log,
-                    max_results
+                    "Claude Desktop: Developer -> MCP Servers -> Add, URL: {}",
+                    urls.sse_url
                 );
             }
         }
@@ -823,22 +778,7 @@ fn handle_mcp_add(
                 if remove {
                     cmd.args(["mcp", "remove", "docdex"]);
                 } else {
-                    cmd.args([
-                        "mcp",
-                        "add",
-                        "--transport",
-                        "stdio",
-                        "docdex",
-                        "--",
-                        "docdexd",
-                        "mcp",
-                        "--repo",
-                        &repo_root.display().to_string(),
-                        "--log",
-                        log,
-                        "--max-results",
-                        &max_results.to_string(),
-                    ]);
+                    cmd.args(["mcp", "add", "docdex", &urls.sse_url]);
                 }
                 let status = cmd.status().context("run claude mcp command")?;
                 if status.success() {
@@ -849,20 +789,18 @@ fn handle_mcp_add(
                     );
                 } else {
                     println!(
-                        "Claude CLI MCP {} failed with status {}; run manually: claude mcp add --transport stdio docdex -- docdexd mcp --repo {} --log {} --max-results {}",
+                        "Claude CLI MCP {} failed with status {}; run manually: claude mcp {} docdex {}",
                         if remove { "remove" } else { "add" },
                         status,
-                        repo_root.display(),
-                        log,
-                        max_results
+                        if remove { "remove" } else { "add" },
+                        urls.sse_url
                     );
                 }
             } else {
                 println!(
-                    "Claude CLI not detected; run manually: claude mcp add --transport stdio docdex -- docdexd mcp --repo {} --log {} --max-results {}",
-                    repo_root.display(),
-                    log,
-                    max_results
+                    "Claude CLI not detected; run manually: claude mcp {} docdex {}",
+                    if remove { "remove" } else { "add" },
+                    urls.sse_url
                 );
             }
         }
@@ -955,13 +893,13 @@ fn handle_mcp_add(
         }
         "copilot" => {
             println!(
-                "GitHub Copilot CLI: add docdex with HTTP/SSE endpoint {} (legacy stdio proxy: docdexd mcp --repo <repo> --log warn --max-results 8)",
+                "GitHub Copilot CLI: add docdex with HTTP/SSE endpoint {}",
                 urls.sse_url
             );
         }
         "warp" => {
             println!(
-                "Warp: add docdex in settings pointing to {} (legacy stdio proxy: docdexd mcp --repo <repo> --log warn --max-results 8)",
+                "Warp: add docdex in settings pointing to {}",
                 urls.sse_url
             );
         }

@@ -1066,6 +1066,10 @@ impl Indexer {
         self.config.state_dir()
     }
 
+    pub fn is_read_only(&self) -> bool {
+        self.writer.is_none()
+    }
+
     fn writer(&self) -> Result<Arc<Mutex<IndexWriter>>> {
         self.writer.clone().ok_or_else(|| {
             AppError::new(

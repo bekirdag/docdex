@@ -1350,14 +1350,9 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 example: "docdexd tui --repo /workspace",
             },
             AiHelpCli {
-                command: "docdexd mcp --repo <path>",
-                description: "Run the MCP stdio bridge (for clients that require stdio).",
-                example: "docdexd mcp --repo /workspace --log warn --max-results 8",
-            },
-            AiHelpCli {
                 command: "docdexd mcp-add --repo <path>",
                 description: "Register Docdex MCP in supported agent CLIs.",
-                example: "docdexd mcp-add --repo /workspace --log warn --max-results 8",
+                example: "docdexd mcp-add --repo /workspace",
             },
             AiHelpCli {
                 command: "docdexd repo inspect --repo <path>",
@@ -1526,7 +1521,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             "When building prompts, keep rel_path + summary + trimmed snippet; drop score/token_estimate/doc_id and normalize whitespace.",
             "Trim noisy content up front with --exclude-dir/--exclude-prefix so snippets stay relevant and short.",
             "Cache doc_id/rel_path/summary client-side to avoid repeat snippet fetches; only call /snippet for new doc_ids.",
-            "For MCP-aware agents, prefer the daemon HTTP MCP endpoint (e.g., http://localhost:28491/v1/mcp); use `docdexd mcp --repo <repo> --log warn --max-results 8` only for stdio-only clients, then use docdex_search/docdex_web_research/docdex_index as needed.",
+            "For MCP-aware agents, use the daemon HTTP MCP endpoint (e.g., http://localhost:28491/v1/mcp) and call docdex_search/docdex_web_research/docdex_index as needed.",
         ],
         limits: AiHelpLimits {
             max_limit: state.security.max_limit,

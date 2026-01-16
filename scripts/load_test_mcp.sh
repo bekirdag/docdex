@@ -3,20 +3,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="${1:-$(pwd)}"
-MCP_BIN="${DOCDEX_MCP_SERVER_BIN:-}"
 BASE_URL="${DOCDEX_HTTP_BASE_URL:-}"
 DURATION_SECS="${DOCDEX_LOAD_DURATION_SECS:-60}"
 CONCURRENCY="${DOCDEX_LOAD_CONCURRENCY:-2}"
 MAX_ERROR_RATE="${DOCDEX_LOAD_MAX_ERROR_RATE:-0}"
-if [[ -z "${DOCDEX_BIN:-}" && -x "${ROOT_DIR}/target/debug/docdexd" ]]; then
-  DOCDEX_BIN="${ROOT_DIR}/target/debug/docdexd"
-else
-  DOCDEX_BIN="${DOCDEX_BIN:-docdexd}"
-fi
-
-if [[ -z "${MCP_BIN}" && -x "${ROOT_DIR}/target/debug/docdex-mcp-server" ]]; then
-  MCP_BIN="${ROOT_DIR}/target/debug/docdex-mcp-server"
-fi
 
 log() {
   printf "[load-mcp] %s\n" "$*" >&2
@@ -27,83 +17,137 @@ if [[ ! -d "${REPO_ROOT}" ]]; then
   exit 1
 fi
 
+if [[ -z "$BASE_URL" ]]; then
+  lock_path="${DOCDEX_DAEMON_LOCK_PATH:-$HOME/.docdex/daemon.lock}"
+  if [[ -f "$lock_path" ]]; then
+    port="$(python3 - <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    port = data.get("port")
+    if isinstance(port, int) and port > 0:
+        print(port)
+except Exception:
+    pass
+PY
+"$lock_path")"
+    if [[ -n "${port:-}" ]]; then
+      BASE_URL="http://127.0.0.1:${port}"
+    fi
+  fi
+fi
+
+if [[ -z "$BASE_URL" ]]; then
+  log "DOCDEX_HTTP_BASE_URL not set and daemon lock not found"
+  exit 1
+fi
+
 worker() {
   local out_file="$1"
-  REPO_ROOT="${REPO_ROOT}" MCP_BIN="${MCP_BIN}" BASE_URL="${BASE_URL}" DOCDEX_BIN="${DOCDEX_BIN}" DOCDEX_LOAD_DURATION_SECS="${DURATION_SECS}" \
+  REPO_ROOT="${REPO_ROOT}" BASE_URL="${BASE_URL}" DOCDEX_LOAD_DURATION_SECS="${DURATION_SECS}" \
     python3 - <<'PY' >"${out_file}"
 import json
 import os
-import subprocess
 import sys
 import time
 import select
+import urllib.error
+import urllib.request
 
 repo = os.environ["REPO_ROOT"]
 duration = float(os.environ.get("DOCDEX_LOAD_DURATION_SECS", "60"))
 timeout_secs = float(os.environ.get("DOCDEX_MCP_TIMEOUT_SECS", "10"))
-docdex_bin = os.environ.get("DOCDEX_BIN") or "docdexd"
-mcp_bin = os.environ.get("MCP_BIN")
 base_url = os.environ.get("BASE_URL")
 
-env = os.environ.copy()
-if mcp_bin:
-    env["DOCDEX_MCP_SERVER_BIN"] = mcp_bin
-if base_url:
-    env["DOCDEX_HTTP_BASE_URL"] = base_url
+if not base_url:
+    raise RuntimeError("missing BASE_URL for MCP load test")
 
-proc = subprocess.Popen(
-    [docdex_bin, "mcp", "--repo", repo, "--log", "warn"],
-    stdin=subprocess.PIPE,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE,
-    text=True,
-    env=env,
-)
+def open_sse_session(api_base):
+    req = urllib.request.Request(f"{api_base}/v1/mcp/sse", method="GET")
+    resp = urllib.request.urlopen(req, timeout=timeout_secs)
+    session_id = resp.headers.get("x-docdex-mcp-session")
+    if not session_id:
+        resp.close()
+        raise RuntimeError("missing mcp session header")
+    return resp, session_id
 
-def send(payload):
-    proc.stdin.write(json.dumps(payload) + "\n")
-    proc.stdin.flush()
-
-def recv():
-    ready, _, _ = select.select([proc.stdout], [], [], timeout_secs)
-    if not ready:
-        return None
-    line = proc.stdout.readline()
-    if not line:
-        raise RuntimeError(proc.stderr.read())
+def post_message(api_base, session_id, payload):
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(f"{api_base}/v1/mcp/message", data=data, method="POST")
+    req.add_header("content-type", "application/json")
+    req.add_header("x-docdex-mcp-session", session_id)
     try:
-        return json.loads(line)
-    except json.JSONDecodeError:
-        return None
+        resp = urllib.request.urlopen(req, timeout=timeout_secs)
+        resp.read()
+        resp.close()
+        return True
+    except urllib.error.HTTPError:
+        return False
+
+def read_sse(resp):
+    end = time.time() + timeout_secs
+    while time.time() < end:
+        remaining = max(0.0, end - time.time())
+        ready, _, _ = select.select([resp.fp], [], [], remaining)
+        if not ready:
+            return None
+        line = resp.readline()
+        if not line:
+            return None
+        text = line.decode("utf-8", errors="replace").strip()
+        if text.startswith("data:"):
+            payload = text[5:].strip()
+            try:
+                return json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+    return None
 
 ok = 0
 fail = 0
+resp = None
 try:
-    send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"workspace_root": repo}})
-    init_resp = recv()
+    resp, session_id = open_sse_session(base_url)
+    if not post_message(base_url, session_id, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"workspace_root": repo}}):
+        fail += 1
+        raise RuntimeError("initialize request failed")
+    init_resp = read_sse(resp)
     if not init_resp or "result" not in init_resp:
         fail += 1
-    else:
-        send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-        tools_resp = recv()
-        if not tools_resp or "result" not in tools_resp:
+        raise RuntimeError("initialize response missing")
+
+    if not post_message(base_url, session_id, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}):
+        fail += 1
+        raise RuntimeError("tools/list request failed")
+    tools_resp = read_sse(resp)
+    if not tools_resp or "result" not in tools_resp:
+        fail += 1
+        raise RuntimeError("tools/list response missing")
+
+    end = time.time() + duration
+    counter = 3
+    while time.time() < end:
+        if not post_message(base_url, session_id, {"jsonrpc": "2.0", "id": counter, "method": "tools/list", "params": {}}):
             fail += 1
+            counter += 1
+            continue
+        counter += 1
+        resp_value = read_sse(resp)
+        if resp_value and "result" in resp_value:
+            ok += 1
         else:
-            end = time.time() + duration
-            counter = 3
-            while time.time() < end:
-                send({"jsonrpc": "2.0", "id": counter, "method": "tools/list", "params": {}})
-                counter += 1
-                resp = recv()
-                if resp and "result" in resp:
-                    ok += 1
-                else:
-                    fail += 1
+            fail += 1
 except Exception:
     fail += 1
 finally:
-    proc.kill()
-    proc.wait()
+    try:
+        if resp is not None:
+            resp.close()
+    except Exception:
+        pass
 
 print(f"{ok} {fail}")
 PY

@@ -26,19 +26,6 @@ if [[ -z "$DOCDEXD_BIN" ]]; then
   fi
 fi
 
-if [[ -z "${DOCDEX_MCP_SERVER_BIN:-}" ]]; then
-  if [[ -x "${REPO_ROOT}/target/release/docdex-mcp-server" ]]; then
-    export DOCDEX_MCP_SERVER_BIN="${REPO_ROOT}/target/release/docdex-mcp-server"
-  elif [[ -x "${REPO_ROOT}/target/debug/docdex-mcp-server" ]]; then
-    export DOCDEX_MCP_SERVER_BIN="${REPO_ROOT}/target/debug/docdex-mcp-server"
-  else
-    candidate="$(ls -1 "${REPO_ROOT}"/npm/dist/*/docdex-mcp-server 2>/dev/null | head -n 1 || true)"
-    if [[ -n "$candidate" ]]; then
-      export DOCDEX_MCP_SERVER_BIN="$candidate"
-    fi
-  fi
-fi
-
 if [[ -z "$PORT" ]]; then
   PORT="$(
     node -e "const net=require('net');const s=net.createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close();});"

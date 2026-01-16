@@ -1,7 +1,6 @@
 use serde_json::Value;
 use std::error::Error;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -140,53 +139,6 @@ fn resolve_index_dir(state_root: &Path, repo_root: &Path) -> Result<PathBuf, Box
         .and_then(|value| value.as_str())
         .ok_or("missing resolvedIndexStateDir")?;
     Ok(PathBuf::from(resolved))
-}
-
-fn send_mcp_line(
-    stdin: &mut std::process::ChildStdin,
-    payload: Value,
-) -> Result<(), Box<dyn Error>> {
-    let text = serde_json::to_string(&payload)?;
-    stdin.write_all(text.as_bytes())?;
-    stdin.write_all(b"\n")?;
-    stdin.flush()?;
-    Ok(())
-}
-
-fn read_mcp_line(
-    reader: &mut BufReader<std::process::ChildStdout>,
-) -> Result<Value, Box<dyn Error>> {
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
-    if line.trim().is_empty() {
-        return Err("unexpected empty response line from MCP proxy".into());
-    }
-    Ok(serde_json::from_str(&line)?)
-}
-
-fn read_lock_pid(lock_path: &Path) -> Option<u32> {
-    let data = fs::read_to_string(lock_path).ok()?;
-    let payload: Value = serde_json::from_str(&data).ok()?;
-    payload
-        .get("pid")
-        .and_then(|value| value.as_u64())
-        .map(|pid| pid as u32)
-}
-
-fn kill_pid(pid: u32) {
-    #[cfg(unix)]
-    {
-        let _ = Command::new("kill")
-            .arg("-TERM")
-            .arg(pid.to_string())
-            .status();
-    }
-    #[cfg(windows)]
-    {
-        let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/F"])
-            .status();
-    }
 }
 
 #[test]
@@ -391,10 +343,6 @@ fn mcp_add_reports_live_endpoint_from_lock() -> Result<(), Box<dyn Error>> {
             "grok",
             "--repo",
             repo.path().to_string_lossy().as_ref(),
-            "--log",
-            "warn",
-            "--max-results",
-            "8",
         ])
         .output()?;
     assert!(
@@ -408,88 +356,7 @@ fn mcp_add_reports_live_endpoint_from_lock() -> Result<(), Box<dyn Error>> {
         stdout.contains(&expected),
         "expected mcp-add to include live endpoint {expected}, got: {stdout}"
     );
-    assert!(
-        stdout.contains("Legacy stdio proxy"),
-        "expected legacy stdio guidance, got: {stdout}"
-    );
-
     daemon.kill().ok();
     daemon.wait().ok();
-    Ok(())
-}
-
-#[test]
-fn mcp_auto_start_spawns_daemon_when_requested() -> Result<(), Box<dyn Error>> {
-    let repo = TempDir::new()?;
-    write_repo(repo.path())?;
-    let state_root = TempDir::new()?;
-    let lock_dir = TempDir::new()?;
-    let lock_path = lock_dir.path().join("daemon.lock");
-    let config_dir = TempDir::new()?;
-    let config_path = config_dir.path().join("config.toml");
-    let Some(port) = pick_free_port() else {
-        return Ok(());
-    };
-    fs::write(
-        &config_path,
-        format!(
-            "[server]\nhttp_bind_addr = \"127.0.0.1:{port}\"\nenable_mcp = true\n"
-        ),
-    )?;
-
-    let mut child = Command::new(docdex_bin())
-        .env("DOCDEX_WEB_ENABLED", "0")
-        .env("DOCDEX_ENABLE_MEMORY", "0")
-        .env("DOCDEX_DAEMON_LOCK_PATH", &lock_path)
-        .env("DOCDEX_CONFIG_PATH", &config_path)
-        .env("DOCDEX_STATE_DIR", state_root.path())
-        .env_remove("DOCDEX_DISABLE_DAEMON_AUTO")
-        .env_remove("DOCDEX_HTTP_BASE_URL")
-        .args([
-            "mcp",
-            "--repo",
-            repo.path().to_string_lossy().as_ref(),
-            "--log",
-            "warn",
-            "--max-results",
-            "4",
-            "--start-daemon",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or("failed to take MCP stdin")?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("failed to take MCP stdout")?;
-    let mut reader = BufReader::new(stdout);
-
-    send_mcp_line(
-        &mut stdin,
-        serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/list",
-            "params": {}
-        }),
-    )?;
-    let response = read_mcp_line(&mut reader)?;
-    assert!(
-        response.get("result").is_some(),
-        "expected tools/list result, got: {response}"
-    );
-
-    child.kill().ok();
-    child.wait().ok();
-
-    if let Some(pid) = read_lock_pid(&lock_path) {
-        kill_pid(pid);
-    }
     Ok(())
 }

@@ -66,47 +66,12 @@ test("decision engine: missing binary => update (binary_missing)", async () => {
   assert.equal(outcome.installedVersion, null);
 });
 
-test("decision engine: missing mcp binary => update (mcp_binary_missing)", async () => {
-  const platformKey = "linux-x64-gnu";
-  const distDir = path.posix.join("/dist", platformKey);
-  const binaryPath = path.posix.join(distDir, "docdexd");
-  const metadataPath = path.posix.join(distDir, "docdexd-install.json");
-
-  const fsModule = createMockFs({
-    existingPaths: [binaryPath],
-    filesByPath: {
-      [metadataPath]: JSON.stringify(
-        validInstallMetadata({ platformKey, version: "0.1.0", binarySha256: "a".repeat(64) }),
-        null,
-        2
-      )
-    }
-  });
-
-  const outcome = await determineLocalInstallerOutcome({
-    fsModule,
-    pathModule: path.posix,
-    distDir,
-    platformKey,
-    expectedVersion: "0.1.0",
-    isWin32: false,
-    sha256FileFn: async () => {
-      throw new Error("unexpected sha256");
-    }
-  });
-
-  assert.equal(outcome.outcome, "update");
-  assert.equal(outcome.reason, "mcp_binary_missing");
-  assert.equal(outcome.installedVersion, "0.1.0");
-});
-
 test("decision engine: metadata missing => reinstall_unknown (metadata_missing)", async () => {
   const platformKey = "linux-x64-gnu";
   const distDir = path.posix.join("/dist", platformKey);
   const binaryPath = path.posix.join(distDir, "docdexd");
-  const mcpBinaryPath = path.posix.join(distDir, "docdex-mcp-server");
 
-  const fsModule = createMockFs({ existingPaths: [binaryPath, mcpBinaryPath] });
+  const fsModule = createMockFs({ existingPaths: [binaryPath] });
   const sha256FileFn = async () => {
     throw new Error("unexpected sha256");
   };
@@ -130,11 +95,10 @@ test("decision engine: metadata invalid => reinstall_unknown (metadata_invalid)"
   const platformKey = "linux-x64-gnu";
   const distDir = path.posix.join("/dist", platformKey);
   const binaryPath = path.posix.join(distDir, "docdexd");
-  const mcpBinaryPath = path.posix.join(distDir, "docdex-mcp-server");
   const metadataPath = path.posix.join(distDir, "docdexd-install.json");
 
   const fsModule = createMockFs({
-    existingPaths: [binaryPath, mcpBinaryPath],
+    existingPaths: [binaryPath],
     filesByPath: {
       [metadataPath]: JSON.stringify({ schemaVersion: 1 }, null, 2)
     }
@@ -160,11 +124,10 @@ test("decision engine: platform mismatch => reinstall_unknown (platform_mismatch
   const platformKey = "linux-x64-gnu";
   const distDir = path.posix.join("/dist", platformKey);
   const binaryPath = path.posix.join(distDir, "docdexd");
-  const mcpBinaryPath = path.posix.join(distDir, "docdex-mcp-server");
   const metadataPath = path.posix.join(distDir, "docdexd-install.json");
 
   const fsModule = createMockFs({
-    existingPaths: [binaryPath, mcpBinaryPath],
+    existingPaths: [binaryPath],
     filesByPath: {
       [metadataPath]: JSON.stringify(
         validInstallMetadata({ platformKey: "darwin-x64", version: "0.1.0", binarySha256: "a".repeat(64) }),
@@ -195,11 +158,10 @@ test("decision engine: version mismatch => update (version_mismatch)", async () 
   const platformKey = "linux-x64-gnu";
   const distDir = path.posix.join("/dist", platformKey);
   const binaryPath = path.posix.join(distDir, "docdexd");
-  const mcpBinaryPath = path.posix.join(distDir, "docdex-mcp-server");
   const metadataPath = path.posix.join(distDir, "docdexd-install.json");
 
   const fsModule = createMockFs({
-    existingPaths: [binaryPath, mcpBinaryPath],
+    existingPaths: [binaryPath],
     filesByPath: {
       [metadataPath]: JSON.stringify(
         validInstallMetadata({ platformKey, version: "0.0.9", binarySha256: "a".repeat(64) }),
@@ -230,11 +192,10 @@ test("decision engine: binary hash mismatch => repair (binary_integrity_mismatch
   const platformKey = "linux-x64-gnu";
   const distDir = path.posix.join("/dist", platformKey);
   const binaryPath = path.posix.join(distDir, "docdexd");
-  const mcpBinaryPath = path.posix.join(distDir, "docdex-mcp-server");
   const metadataPath = path.posix.join(distDir, "docdexd-install.json");
 
   const fsModule = createMockFs({
-    existingPaths: [binaryPath, mcpBinaryPath],
+    existingPaths: [binaryPath],
     filesByPath: {
       [metadataPath]: JSON.stringify(
         validInstallMetadata({ platformKey, version: "0.1.0", binarySha256: "a".repeat(64) }),
@@ -270,11 +231,10 @@ test("decision engine: verified => no-op (verified)", async () => {
   const platformKey = "linux-x64-gnu";
   const distDir = path.posix.join("/dist", platformKey);
   const binaryPath = path.posix.join(distDir, "docdexd");
-  const mcpBinaryPath = path.posix.join(distDir, "docdex-mcp-server");
   const metadataPath = path.posix.join(distDir, "docdexd-install.json");
 
   const fsModule = createMockFs({
-    existingPaths: [binaryPath, mcpBinaryPath],
+    existingPaths: [binaryPath],
     filesByPath: {
       [metadataPath]: JSON.stringify(
         validInstallMetadata({ platformKey, version: "0.1.0", binarySha256: "a".repeat(64) }),
@@ -311,11 +271,10 @@ test("decision engine: integrity check throws => reinstall_unknown (integrity_un
   const platformKey = "linux-x64-gnu";
   const distDir = path.posix.join("/dist", platformKey);
   const binaryPath = path.posix.join(distDir, "docdexd");
-  const mcpBinaryPath = path.posix.join(distDir, "docdex-mcp-server");
   const metadataPath = path.posix.join(distDir, "docdexd-install.json");
 
   const fsModule = createMockFs({
-    existingPaths: [binaryPath, mcpBinaryPath],
+    existingPaths: [binaryPath],
     filesByPath: {
       [metadataPath]: JSON.stringify(
         validInstallMetadata({ platformKey, version: "0.1.0", binarySha256: "a".repeat(64) }),

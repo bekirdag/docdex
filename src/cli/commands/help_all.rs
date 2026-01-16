@@ -39,12 +39,7 @@ pub fn run() -> Result<()> {
             println!();
         }
     }
-    if let Some(sub) = Cli::command().find_subcommand_mut("mcp") {
-        println!("\nmcp:\n");
-        sub.print_long_help()?;
-        println!();
-    }
-    println!("MCP tools (shared HTTP/SSE + docdexd mcp):");
+    println!("MCP tools (shared HTTP/SSE endpoint):");
     println!("  - docdex_search: search repo docs; args: query (required), limit (<= max_results), project_root (optional)");
     println!("  - docdex_web_research: search repo + web; args: query (required), limit/web_limit, project_root (optional)");
     println!("  - docdex_index: reindex all or ingest provided paths; args: paths[], project_root (optional)");
@@ -58,7 +53,5 @@ pub fn run() -> Result<()> {
         println!("  Daemon not running; start with: docdexd daemon");
         println!("  Default MCP base URL: {}", endpoint_info.base_url);
     }
-    println!("  Legacy stdio proxy: docdexd mcp --repo <path> --log warn --max-results 8");
-    println!("  Notes: DOCDEX_MCP_MAX_RESULTS clamps docdex_search; run `docdexd mcp --help` for stdio flags.");
     Ok(())
 }

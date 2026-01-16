@@ -85,7 +85,6 @@ async function runInstallerForVersionTest(t, envVersion) {
       await fs.promises.mkdir(targetDir, { recursive: true });
       const binaryPath = path.join(targetDir, "docdexd");
       await fs.promises.writeFile(binaryPath, "docdexd");
-      await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "docdex-mcp");
     }
   });
 

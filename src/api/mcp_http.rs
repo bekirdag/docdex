@@ -453,7 +453,6 @@ mod tests {
         let mcp_router = Some(
             crate::mcp::spawn_proxy_for_serve(
                 repo_args,
-                "warn".to_string(),
                 4,
                 0,
                 0,
@@ -655,6 +654,11 @@ mod tests {
 }
 
 fn resolve_repo_for_mcp(state: &AppState, root_uri: Option<String>) -> Result<PathBuf, AppError> {
+    let mut root_uri = root_uri;
+    if root_uri.is_none() && state.require_repo_id {
+        // Allow MCP clients that omit rootUri (e.g. Codex) to initialize in daemon mode.
+        root_uri = Some(state.indexer.repo_root().to_string_lossy().to_string());
+    }
     if let Some(root_uri) = root_uri.as_deref() {
         let candidate = parse_root_uri(root_uri)?;
         if !candidate.exists() {

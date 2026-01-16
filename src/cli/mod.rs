@@ -20,7 +20,7 @@ use std::path::PathBuf;
     name = "docdexd",
     version,
     about = "Local documentation index/search daemon",
-    long_about = "Docdex indexes plain-text/markdown documentation under a workspace and serves top-k search/snippet results over HTTP or CLI. Defaults store data under ~/.docdex/state (scoped as repos/<repo_id>/index) and avoid common tool caches; override paths and exclusions with --state-dir/--exclude-* or matching env vars. The daemon exposes a shared MCP HTTP/SSE endpoint (e.g., /v1/mcp/sse). The `docdexd mcp` command is a legacy stdio proxy to the shared daemon for clients that require stdio. Standalone `docdex-mcp-server` is disabled by default; set DOCDEX_ENABLE_STANDALONE_MCP=1 to opt in."
+    long_about = "Docdex indexes plain-text/markdown documentation under a workspace and serves top-k search/snippet results over HTTP or CLI. Defaults store data under ~/.docdex/state (scoped as repos/<repo_id>/index) and avoid common tool caches; override paths and exclusions with --state-dir/--exclude-* or matching env vars. The daemon exposes a shared MCP HTTP/SSE endpoint (e.g., /v1/mcp/sse); agents should connect to the HTTP/SSE endpoint directly."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -679,51 +679,6 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: RepoCommand,
     },
-    /// Run an MCP (Model Context Protocol) stdio bridge.
-    #[command(
-        long_about = "Run a legacy MCP stdio proxy that forwards to the shared daemon HTTP/SSE endpoint. Start `docdexd daemon` first (or pass --start-daemon)."
-    )]
-    Mcp {
-        #[command(flatten)]
-        repo: RepoArgs,
-        #[arg(long, default_value = "warn")]
-        log: String,
-        #[arg(
-            long,
-            visible_alias = "mcp-max-results",
-            default_value_t = 8,
-            help = "Maximum results to return from docdex_search tool"
-        )]
-        max_results: usize,
-        #[arg(
-            long,
-            env = "DOCDEX_MCP_RATE_LIMIT_PER_MIN",
-            default_value_t = 0u32,
-            help = "Optional global tool-call rate limit per minute for MCP (0 disables)"
-        )]
-        rate_limit_per_min: u32,
-        #[arg(
-            long,
-            env = "DOCDEX_MCP_RATE_LIMIT_BURST",
-            default_value_t = 0u32,
-            help = "Optional burst size for MCP rate limiting (defaults to per-minute limit when 0)"
-        )]
-        rate_limit_burst: u32,
-        #[arg(
-            long,
-            env = "DOCDEX_MCP_AUTO_START",
-            default_value_t = false,
-            action = ArgAction::SetTrue,
-            help = "Auto-start the daemon when running the MCP stdio proxy"
-        )]
-        start_daemon: bool,
-        #[arg(
-            long,
-            env = "DOCDEX_AUTH_TOKEN",
-            help = "Optional bearer token required by MCP initialize"
-        )]
-        auth_token: Option<String>,
-    },
     /// Helper to register or remove Docdex MCP in supported agent CLIs.
     McpAdd {
         /// Agent to configure (currently automates Codex; others print commands to run).
@@ -755,15 +710,9 @@ pub(crate) enum Command {
             default_value = "codex"
         )]
         agent: String,
-        /// Repo/workspace root for the MCP stdio proxy; defaults to current directory.
+        /// Repo/workspace root for MCP configuration; defaults to current directory.
         #[arg(long)]
         repo: Option<PathBuf>,
-        /// Max results clamp for docdex_search.
-        #[arg(long, default_value_t = 8)]
-        max_results: usize,
-        /// Log level for the MCP stdio proxy.
-        #[arg(long, default_value = "warn")]
-        log: String,
         /// Remove the MCP entry instead of adding it (where supported).
         #[arg(long, default_value_t = false)]
         remove: bool,
@@ -1049,7 +998,6 @@ fn should_ensure_daemon(command: &Command) -> bool {
             | Command::Daemon { .. }
             | Command::HelpAll
             | Command::Setup { .. }
-            | Command::Mcp { .. }
     )
 }
 
@@ -1091,7 +1039,6 @@ fn repo_hint_for_command(command: &Command) -> Option<PathBuf> {
             RepoCommand::Inspect { repo, .. } => Some(repo.repo_root()),
             RepoCommand::Reassociate { repo, .. } => Some(repo.repo_root()),
         },
-        Command::Mcp { repo, .. } => Some(repo.repo_root()),
         _ => None,
     }
 }

@@ -25,8 +25,6 @@ async function writeInstalledBinary({ distDir, isWin32, bytes }) {
   await ensureDir(distDir);
   const binaryPath = path.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
   await fs.promises.writeFile(binaryPath, bytes);
-  const mcpName = isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server";
-  await fs.promises.writeFile(path.join(distDir, mcpName), bytes);
   return binaryPath;
 }
 
@@ -186,7 +184,6 @@ test("installer outcome: update installs when version differs and writes fresh m
       await ensureDir(targetDir);
       const newBinaryPath = path.join(targetDir, "docdexd");
       await fs.promises.writeFile(newBinaryPath, "new-binary\n");
-      await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "new-binary\n");
     }
   });
 
@@ -253,7 +250,6 @@ test("installer outcome: repair reinstalls when binary hash mismatches metadata"
       await ensureDir(targetDir);
       const repaired = path.join(targetDir, "docdexd");
       await fs.promises.writeFile(repaired, "repaired\n");
-      await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "repaired\n");
     }
   });
 
@@ -314,7 +310,6 @@ test("installer outcome: reinstall_unknown reinstalls when metadata is missing",
       await ensureDir(targetDir);
       const repaired = path.join(targetDir, "docdexd");
       await fs.promises.writeFile(repaired, "fresh\n");
-      await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "fresh\n");
     }
   });
 
@@ -380,7 +375,6 @@ test("installer outcome: reinstall_unknown reinstalls when integrity cannot be v
       extractCalls += 1;
       await ensureDir(targetDir);
       await fs.promises.writeFile(path.join(targetDir, "docdexd"), "fresh\n");
-      await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), "fresh\n");
     },
     sha256FileFn: async (filePath) => {
       shaCalls += 1;

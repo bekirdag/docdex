@@ -10,9 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{Pid, System};
 
 const DAEMON_LOCK_ENV: &str = "DOCDEX_DAEMON_LOCK_PATH";
-const MCP_SERVER_LOCK_ENV: &str = "DOCDEX_MCP_SERVER_LOCK_PATH";
 const DAEMON_LOCK_FILE: &str = "daemon.lock";
-const MCP_SERVER_LOCK_FILE: &str = "mcp-server.lock";
 const DOCDEXD_DAEMON_ARGS: &[&str] = &["daemon", "serve"];
 const TEST_ALLOW_MULTI_DAEMON_ENV: &str = "DOCDEX_TEST_ALLOW_MULTI_DAEMON";
 
@@ -20,11 +18,6 @@ const TEST_ALLOW_MULTI_DAEMON_ENV: &str = "DOCDEX_TEST_ALLOW_MULTI_DAEMON";
 const DOCDEXD_PROCESS_NAMES: &[&str] = &["docdexd.exe", "docdexd"];
 #[cfg(not(windows))]
 const DOCDEXD_PROCESS_NAMES: &[&str] = &["docdexd"];
-
-#[cfg(windows)]
-const MCP_SERVER_PROCESS_NAMES: &[&str] = &["docdex-mcp-server.exe", "docdex-mcp-server"];
-#[cfg(not(windows))]
-const MCP_SERVER_PROCESS_NAMES: &[&str] = &["docdex-mcp-server"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonLockMetadata {
@@ -69,22 +62,6 @@ pub fn acquire_or_reuse(port: u16) -> Result<DaemonLockOutcome> {
 
 pub fn default_lock_path() -> Result<PathBuf> {
     resolve_lock_path(DAEMON_LOCK_ENV, DAEMON_LOCK_FILE)
-}
-
-pub fn default_mcp_server_lock_path() -> Result<PathBuf> {
-    resolve_lock_path(MCP_SERVER_LOCK_ENV, MCP_SERVER_LOCK_FILE)
-}
-
-pub fn acquire_or_reuse_mcp_server() -> Result<DaemonLockOutcome> {
-    let path = default_mcp_server_lock_path()?;
-    acquire_or_reuse_at_path(
-        &path,
-        0,
-        MCP_SERVER_PROCESS_NAMES,
-        &[],
-        MCP_SERVER_LOCK_ENV,
-        MCP_SERVER_LOCK_FILE,
-    )
 }
 
 fn resolve_lock_path(env_key: &str, filename: &str) -> Result<PathBuf> {

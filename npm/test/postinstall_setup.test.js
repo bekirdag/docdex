@@ -229,11 +229,10 @@ test("runPostInstallSetup does not call Ollama installers", () => {
 
 test("buildDaemonEnv includes base daemon env values", () => {
   const env = buildDaemonEnv({
-    mcpBinaryPath: "/tmp/docdex-mcp",
     env: { DOCDEX_ENABLE_STANDALONE_MCP: "1" }
   });
   assert.equal(env.DOCDEX_BROWSER_AUTO_INSTALL, "0");
-  assert.equal(env.DOCDEX_MCP_SERVER_BIN, "/tmp/docdex-mcp");
+  assert.equal(env.DOCDEX_MCP_SERVER_BIN, undefined);
 });
 
 test("resolveOllamaInstallMode respects env overrides", () => {

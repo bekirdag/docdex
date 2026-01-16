@@ -6,7 +6,7 @@ You are interacting with Docdex, a local-first indexer/search daemon for docs an
 - Builds a Tantivy-based index under `~/.docdex/state/repos/<fingerprint>/index` (docs + common code extensions).
 - Serves HTTP endpoints: `/search`, `/snippet`, `/v1/chat/completions`, `/v1/symbols`, `/v1/ast`, `/v1/graph/impact`, `/healthz`.
 - CLI commands mirror the API: `docdexd index|serve|chat|ingest|self-check` (chat includes a REPL when `--query` is omitted).
-- Optional MCP mode (stdio) exposes `docdex_search`, `docdex_web_research`, `docdex_index`, `docdex_files`, `docdex_open`, `docdex_stats`, `docdex_repo_inspect`, `docdex_symbols`, `docdex_ast`, `docdex_impact_diagnostics`, `docdex_memory_store/recall`.
+- MCP endpoint (HTTP/SSE) exposes `docdex_search`, `docdex_web_research`, `docdex_index`, `docdex_files`, `docdex_open`, `docdex_stats`, `docdex_repo_inspect`, `docdex_symbols`, `docdex_ast`, `docdex_impact_diagnostics`, `docdex_memory_store/recall`.
 - Watches files while serving to keep the index fresh; memory is enabled by default and web fallback is gated (disabled unless `DOCDEX_WEB_ENABLED=1`).
 
 ## How to use
@@ -43,4 +43,4 @@ You are interacting with Docdex, a local-first indexer/search daemon for docs an
 - When returning snippets, include `rel_path` so humans can navigate the source.
 - If your client supports MCP, use `docdex_search` for repo context, `docdex_web_research` for web fallback, `docdex_index` when results look stale, and `docdex_open` to read files; use symbols/AST/impact tools for code intelligence when needed.
 - When integrating Docdex into a new repo, add `.docdex/` to `.gitignore` only if you opt into an in-repo `--state-dir`.
-- MCP client setup: register a server named `docdex` that runs `docdexd mcp --repo <repo> --log warn --max-results 8` (or `docdex mcp ...` from npm). Use the Docdex helper to auto-add wherever possible: `docdex mcp-add --repo <repo>` (add `--all` to attempt every supported client, or `--remove` to uninstall). Direct Codex CLI command: `codex mcp add docdex -- docdexd mcp --repo <repo> --log warn --max-results 8`. Then use the MCP tools instead of shelling out.
+- MCP client setup: register a server named `docdex` that points to `http://localhost:28491/v1/mcp/sse` (Codex uses `http://localhost:28491/v1/mcp`). Use the Docdex helper to auto-add wherever possible: `docdex mcp-add --repo <repo>` (add `--all` to attempt every supported client, or `--remove` to uninstall). Then use the MCP tools instead of shelling out.

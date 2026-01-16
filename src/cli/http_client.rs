@@ -105,6 +105,7 @@ pub(crate) fn resolve_base_url() -> Result<String> {
     Ok(normalize_base_url(bind_addr))
 }
 
+#[cfg(test)]
 pub(crate) fn resolve_base_url_with_lock() -> Result<String> {
     if let Some(raw) = env_non_empty("DOCDEX_HTTP_BASE_URL") {
         return Ok(normalize_base_url(&raw));

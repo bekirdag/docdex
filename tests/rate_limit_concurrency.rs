@@ -45,12 +45,23 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    Ok(Command::new(docdex_bin())
+    let config_path = state_root.join("config.toml");
+    let output = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
+        .env("DOCDEX_CONFIG_PATH", config_path)
         .args(args)
-        .output()?)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "docdexd exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(output)
 }
 
 fn pick_free_port() -> Option<u16> {
@@ -72,9 +83,17 @@ fn spawn_server_with_args(
     extra_args: &[&str],
 ) -> Result<Child, BoxError> {
     let repo_str = repo.to_string_lossy().to_string();
+    let lock_path = state_root.join("daemon.lock");
+    let config_path = state_root.join("config.toml");
     let mut cmd = Command::new(docdex_bin());
     cmd.env("DOCDEX_WEB_ENABLED", "0");
     cmd.env("DOCDEX_ENABLE_MEMORY", "0");
+    cmd.env("DOCDEX_DAEMON_LOCK_PATH", lock_path);
+    cmd.env("DOCDEX_CONFIG_PATH", config_path);
+    cmd.env("DOCDEX_PREFLIGHT_CHECK", "false");
+    cmd.env_remove("DOCDEX_AUTH_TOKEN");
+    cmd.env_remove("DOCDEX_ALLOW_IPS");
+    cmd.env("DOCDEX_TEST_ALLOW_MULTI_DAEMON", "1");
     cmd.args([
         "serve",
         "--repo",
@@ -99,7 +118,11 @@ fn spawn_server_with_args(
 fn wait_for_health(host: &str, port: u16) -> Result<(), BoxError> {
     let client = Client::builder().timeout(Duration::from_secs(1)).build()?;
     let url = format!("http://{host}:{port}/healthz");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let timeout_secs = std::env::var("DOCDEX_TEST_HEALTH_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(60);
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     while Instant::now() < deadline {
         match client.get(&url).send() {
             Ok(resp) if resp.status().is_success() => return Ok(()),

@@ -10,8 +10,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
-mod common;
-
 struct Daemon {
     child: Child,
 }
@@ -67,7 +65,6 @@ fn start_daemon(state_root: &Path, repo_root: &Path, port: u16) -> Result<Daemon
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_DAEMON_LOCK_PATH", &lock_path)
         .env("DOCDEX_ENABLE_MCP", "1")
-        .env("DOCDEX_MCP_SERVER_BIN", common::mcp_server_bin())
         .args([
             "daemon",
             "--repo",

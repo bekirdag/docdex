@@ -3,14 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="${1:-$(pwd)}"
-MCP_BIN="${DOCDEX_MCP_SERVER_BIN:-}"
 BASE_URL="${DOCDEX_HTTP_BASE_URL:-}"
-if [[ -z "${DOCDEX_BIN:-}" && -x "${ROOT_DIR}/target/debug/docdexd" ]]; then
-  DOCDEX_BIN="${ROOT_DIR}/target/debug/docdexd"
-else
-  DOCDEX_BIN="${DOCDEX_BIN:-docdexd}"
-fi
-export REPO_ROOT MCP_BIN BASE_URL DOCDEX_BIN
+export REPO_ROOT BASE_URL
 
 log() {
   printf "[mcp] %s\n" "$*" >&2
@@ -37,74 +31,55 @@ then
   exit 0
 fi
 
+if [[ -z "$BASE_URL" ]]; then
+  lock_path="${DOCDEX_DAEMON_LOCK_PATH:-$HOME/.docdex/daemon.lock}"
+  if [[ -f "$lock_path" ]]; then
+    port="$(python3 - <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    port = data.get("port")
+    if isinstance(port, int) and port > 0:
+        print(port)
+except Exception:
+    pass
+PY
+"$lock_path")"
+    if [[ -n "${port:-}" ]]; then
+      BASE_URL="http://127.0.0.1:${port}"
+      export BASE_URL
+    fi
+  fi
+fi
+
+if [[ -z "$BASE_URL" ]]; then
+  log "DOCDEX_HTTP_BASE_URL not set and daemon lock not found"
+  exit 1
+fi
+
 python3 - <<PY
 import json
 import os
-import subprocess
 import sys
 import urllib.error
 import urllib.request
 
 repo = os.environ.get("REPO_ROOT")
 base_url = os.environ.get("BASE_URL") or ""
-mcp_bin = os.environ.get("MCP_BIN")
-
-docdex_bin = os.environ.get("DOCDEX_BIN") or "docdexd"
-cmd = [docdex_bin, "mcp", "--repo", repo, "--log", "warn"]
 if not base_url:
-    cmd.append("--start-daemon")
-
-env = os.environ.copy()
-if mcp_bin:
-    env["DOCDEX_MCP_SERVER_BIN"] = mcp_bin
-if base_url:
-    env["DOCDEX_HTTP_BASE_URL"] = base_url
-
-proc = subprocess.Popen(
-    cmd,
-    stdin=subprocess.PIPE,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE,
-    text=True,
-    env=env,
-)
-
-def send(payload):
-    proc.stdin.write(json.dumps(payload) + "\n")
-    proc.stdin.flush()
-
-
-def recv():
-    line = proc.stdout.readline()
-    if not line:
-        err = proc.stderr.read()
-        raise SystemExit(f"mcp server closed: {err}")
-    return json.loads(line)
-
-
-def resolve_base_url():
-    if base_url:
-        return base_url
-    lock_path = os.environ.get("DOCDEX_DAEMON_LOCK_PATH")
-    if not lock_path:
-        lock_path = os.path.expanduser("~/.docdex/daemon.lock")
-    try:
-        with open(lock_path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        port = data.get("port")
-        if isinstance(port, int) and port > 0:
-            return f"http://127.0.0.1:{port}"
-    except Exception:
-        return ""
-    return ""
-
+    raise SystemExit("missing BASE_URL for MCP test")
 
 def open_sse_session(api_base):
     req = urllib.request.Request(f"{api_base}/v1/mcp/sse", method="GET")
     resp = urllib.request.urlopen(req, timeout=10)
     session_id = resp.headers.get("x-docdex-mcp-session")
-    resp.close()
-    return session_id
+    if not session_id:
+        resp.close()
+        raise SystemExit("missing mcp session header")
+    return resp, session_id
 
 
 def post_json(url, payload, headers=None):
@@ -129,38 +104,60 @@ def post_json(url, payload, headers=None):
         return err.code, payload
 
 
-base_url = resolve_base_url()
+def read_sse(resp):
+    while True:
+        line = resp.readline()
+        if not line:
+            raise SystemExit("mcp sse stream closed")
+        text = line.decode("utf-8", errors="replace").strip()
+        if text.startswith("data:"):
+            payload = text[5:].strip()
+            try:
+                return json.loads(payload)
+            except json.JSONDecodeError:
+                continue
 
+
+resp, session_id = open_sse_session(base_url)
 try:
-    send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"workspace_root": repo}})
-    init_resp = recv()
+    status, payload = post_json(
+        f"{base_url}/v1/mcp/message",
+        {"jsonrpc": "2.0", "id": 0, "method": "tools/list", "params": {}},
+        {"x-docdex-mcp-session": session_id},
+    )
+    if status == 200:
+        raise SystemExit(f"expected uninitialized session error, got: {payload}")
+    message = ""
+    if isinstance(payload, dict):
+        message = payload.get("error", {}).get("message", "")
+    if "initialize" not in message:
+        raise SystemExit(f"expected initialize error, got: {payload}")
+
+    status, payload = post_json(
+        f"{base_url}/v1/mcp/message",
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"workspace_root": repo}},
+        {"x-docdex-mcp-session": session_id},
+    )
+    if status != 200:
+        raise SystemExit(f"initialize request failed: {payload}")
+    init_resp = read_sse(resp)
     if "result" not in init_resp:
         raise SystemExit(f"initialize failed: {init_resp}")
 
-    send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-    tools_resp = recv()
+    status, payload = post_json(
+        f"{base_url}/v1/mcp/message",
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        {"x-docdex-mcp-session": session_id},
+    )
+    if status != 200:
+        raise SystemExit(f"tools/list request failed: {payload}")
+    tools_resp = read_sse(resp)
     if "result" not in tools_resp:
         raise SystemExit(f"tools/list failed: {tools_resp}")
 
-    if base_url:
-        session_id = open_sse_session(base_url)
-        if not session_id:
-            raise SystemExit("missing mcp session header")
-        status, payload = post_json(
-            f"{base_url}/v1/mcp/message",
-            {"jsonrpc": "2.0", "id": 99, "method": "tools/list", "params": {}},
-            {"x-docdex-mcp-session": session_id},
-        )
-        if status == 200:
-            raise SystemExit(f"expected uninitialized session error, got: {payload}")
-        message = ""
-        if isinstance(payload, dict):
-            message = payload.get("error", {}).get("message", "")
-        if "initialize" not in message:
-            raise SystemExit(f"expected initialize error, got: {payload}")
-
-        env["DOCDEX_HTTP_BASE_URL"] = base_url
-        send({
+    status, payload = post_json(
+        f"{base_url}/v1/mcp/message",
+        {
             "jsonrpc": "2.0",
             "id": 3,
             "method": "tools/call",
@@ -172,13 +169,16 @@ try:
                     "content": "Use tabs"
                 }
             }
-        })
-        save_resp = recv()
-        if "result" not in save_resp:
-            raise SystemExit(f"docdex_save_preference failed: {save_resp}")
+        },
+        {"x-docdex-mcp-session": session_id},
+    )
+    if status != 200:
+        raise SystemExit(f"docdex_save_preference request failed: {payload}")
+    save_resp = read_sse(resp)
+    if "result" not in save_resp:
+        raise SystemExit(f"docdex_save_preference failed: {save_resp}")
 finally:
-    proc.kill()
-    proc.wait()
+    resp.close()
 
 print("mcp checks passed")
 PY

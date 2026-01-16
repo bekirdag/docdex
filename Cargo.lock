@@ -726,24 +726,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "docdex-mcp-server"
-version = "0.2.22"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "docdexd",
- "reqwest",
- "serde",
- "serde_json",
- "tantivy",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "docdexd"
 version = "0.2.23"
 dependencies = [

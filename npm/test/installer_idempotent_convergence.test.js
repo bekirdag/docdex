@@ -69,7 +69,6 @@ test("installer: repeated runs converge idempotently (no-op is verified and does
       firstExtractCalls += 1;
       await ensureDir(targetDir);
       await fs.promises.writeFile(path.join(targetDir, "docdexd"), `docdexd-${version}\n`, "utf8");
-      await fs.promises.writeFile(path.join(targetDir, "docdex-mcp-server"), `docdexd-${version}\n`, "utf8");
     }
   });
 

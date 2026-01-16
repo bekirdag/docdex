@@ -140,6 +140,7 @@ fn install_chromium_inner() -> Result<BrowserInstallResult> {
 
     let final_binary = install_dir.join(binary_rel);
     ensure_binary_permissions(&final_binary)?;
+    ensure_chromium_helper_permissions(&install_dir, &download.platform, &download.version)?;
 
     let manifest = util::ChromiumManifest {
         installed_at: Some(Utc::now().to_rfc3339()),
@@ -256,6 +257,8 @@ fn extract_zip(archive_path: &Path, dest_dir: &Path) -> Result<()> {
         if entry.is_dir() {
             fs::create_dir_all(&out_path)
                 .with_context(|| format!("create chromium dir {}", out_path.display()))?;
+            #[cfg(unix)]
+            apply_zip_entry_permissions(&entry, &out_path)?;
             continue;
         }
         if let Some(parent) = out_path.parent() {
@@ -265,7 +268,25 @@ fn extract_zip(archive_path: &Path, dest_dir: &Path) -> Result<()> {
         let mut outfile = File::create(&out_path)
             .with_context(|| format!("write chromium file {}", out_path.display()))?;
         io::copy(&mut entry, &mut outfile).context("extract chromium archive")?;
+        #[cfg(unix)]
+        apply_zip_entry_permissions(&entry, &out_path)?;
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn apply_zip_entry_permissions(entry: &zip::read::ZipFile<'_>, out_path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(mode) = entry.unix_mode() else {
+        return Ok(());
+    };
+    let mode = mode & 0o777;
+    if mode == 0 {
+        return Ok(());
+    }
+    let mut perms = fs::metadata(out_path)?.permissions();
+    perms.set_mode(mode);
+    fs::set_permissions(out_path, perms)?;
     Ok(())
 }
 
@@ -297,6 +318,66 @@ fn chromium_binary_rel_path(platform: &str) -> Result<&'static str> {
         "win64" => Ok("chrome-win64/chrome.exe"),
         _ => Err(anyhow!("unsupported chromium platform: {platform}")),
     }
+}
+
+fn ensure_chromium_helper_permissions(
+    install_dir: &Path,
+    platform: &str,
+    version: &str,
+) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let Some(helpers_dir) = resolve_chromium_helpers_dir(install_dir, platform, version)
+        else {
+            return Ok(());
+        };
+        let helper_bins = [
+            "app_mode_loader",
+            "chrome_crashpad_handler",
+            "web_app_shortcut_copier",
+            "Google Chrome for Testing Helper.app/Contents/MacOS/Google Chrome for Testing Helper",
+            "Google Chrome for Testing Helper (Alerts).app/Contents/MacOS/Google Chrome for Testing Helper (Alerts)",
+            "Google Chrome for Testing Helper (GPU).app/Contents/MacOS/Google Chrome for Testing Helper (GPU)",
+            "Google Chrome for Testing Helper (Plugin).app/Contents/MacOS/Google Chrome for Testing Helper (Plugin)",
+            "Google Chrome for Testing Helper (Renderer).app/Contents/MacOS/Google Chrome for Testing Helper (Renderer)",
+        ];
+        for rel_path in helper_bins {
+            let path = helpers_dir.join(rel_path);
+            if path.is_file() {
+                ensure_binary_permissions(&path)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn resolve_chromium_helpers_dir(
+    install_dir: &Path,
+    platform: &str,
+    version: &str,
+) -> Option<PathBuf> {
+    let base = match platform {
+        "mac-arm64" => "chrome-mac-arm64/Google Chrome for Testing.app/Contents/Frameworks/Google Chrome for Testing Framework.framework/Versions",
+        "mac-x64" => "chrome-mac-x64/Google Chrome for Testing.app/Contents/Frameworks/Google Chrome for Testing Framework.framework/Versions",
+        _ => return None,
+    };
+    let versions_dir = install_dir.join(base);
+    let by_version = versions_dir.join(version).join("Helpers");
+    if by_version.is_dir() {
+        return Some(by_version);
+    }
+    let entries = fs::read_dir(&versions_dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let helpers_dir = path.join("Helpers");
+            if helpers_dir.is_dir() {
+                return Some(helpers_dir);
+            }
+        }
+    }
+    None
 }
 
 fn ensure_binary_permissions(path: &Path) -> Result<()> {

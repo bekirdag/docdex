@@ -87,9 +87,6 @@ test("installer failure reports rollback/cleanup and preserves prior docdexd", a
           const stagedBinaryPath = path.join(targetDir, "docdexd");
           await fs.promises.writeFile(stagedBinaryPath, "new-binary");
           await fs.promises.chmod(stagedBinaryPath, 0o755);
-          const stagedMcpPath = path.join(targetDir, "docdex-mcp-server");
-          await fs.promises.writeFile(stagedMcpPath, "new-binary");
-          await fs.promises.chmod(stagedMcpPath, 0o755);
         },
         fsModule: wrappedFs,
         distBaseDir,

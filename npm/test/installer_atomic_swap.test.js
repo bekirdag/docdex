@@ -25,8 +25,6 @@ async function writeInstalledBinary({ distDir, isWin32, bytes }) {
   await ensureDir(distDir);
   const binaryPath = path.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
   await fs.promises.writeFile(binaryPath, bytes);
-  const mcpName = isWin32 ? "docdex-mcp-server.exe" : "docdex-mcp-server";
-  await fs.promises.writeFile(path.join(distDir, mcpName), bytes);
   return binaryPath;
 }
 

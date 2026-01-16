@@ -558,7 +558,6 @@ pub async fn serve(
     if enable_mcp {
         let result = mcp::spawn_proxy_for_serve(
             mcp_repo_args,
-            log_level.clone(),
             mcp_max_results,
             mcp_rate_limit_per_min,
             mcp_rate_limit_burst,

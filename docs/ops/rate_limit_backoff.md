@@ -23,7 +23,7 @@ This document summarizes Docdex rate limiting configuration and the retry/backof
 
 - If `rate-limit-burst` is set while the effective per-minute limit is `0`, startup fails with `startup_config_invalid` and an actionable hint. This prevents silently disabling rate limiting and backoff signaling.
 
-## MCP server (`docdexd mcp`)
+## MCP endpoint (daemon HTTP/SSE)
 
 **Config keys**
 

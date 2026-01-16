@@ -80,7 +80,7 @@ pub fn init_logging(level: &str) -> Result<()> {
     };
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(format!("{level},html5ever=error")));
-    // Write logs to stderr to avoid interfering with stdout protocols (e.g., MCP stdio).
+    // Write logs to stderr to avoid interfering with stdout output.
     if let Some(path) = resolve_state_log_path() {
         match OpenOptions::new().create(true).append(true).open(&path) {
             Ok(file) => {

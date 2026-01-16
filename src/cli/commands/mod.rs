@@ -9,7 +9,6 @@ pub mod index;
 pub mod libs;
 pub mod llm;
 pub mod mcoda_eval;
-pub mod mcp;
 pub mod mcp_add;
 pub mod memory;
 pub mod profile;
@@ -148,33 +147,11 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             limit,
             offset,
         } => impact::run_diagnostics(repo, file, limit, offset).await,
-        super::Command::Mcp {
-            repo,
-            log,
-            max_results,
-            rate_limit_per_min,
-            rate_limit_burst,
-            start_daemon,
-            auth_token,
-        } => {
-            mcp::run(
-                repo,
-                log,
-                max_results,
-                rate_limit_per_min,
-                rate_limit_burst,
-                start_daemon,
-                auth_token,
-            )
-            .await
-        }
         super::Command::McpAdd {
             agent,
             repo,
-            max_results,
-            log,
             remove,
             all,
-        } => mcp_add::run(agent, repo, max_results, log, remove, all),
+        } => mcp_add::run(agent, repo, remove, all),
     }
 }

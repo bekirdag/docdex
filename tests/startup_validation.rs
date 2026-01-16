@@ -33,10 +33,12 @@ fn setup_repo() -> Result<TempDir, Box<dyn Error>> {
 fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<Value, Box<dyn Error>> {
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
+    let config_path = state_root.join("config.toml");
     let output = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_CONFIG_PATH", config_path)
         .args([
             "repo",
             "inspect",
@@ -98,11 +100,16 @@ fn spawn_server_default_host(
     port: u16,
 ) -> Result<Child, Box<dyn Error>> {
     let repo_arg = repo_root.to_string_lossy().to_string();
+    let lock_path = state_root.join("daemon.lock");
+    let config_path = state_root.join("config.toml");
     Ok(Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_DAEMON_LOCK_PATH", lock_path)
+        .env("DOCDEX_CONFIG_PATH", config_path)
+        .env("DOCDEX_TEST_ALLOW_MULTI_DAEMON", "1")
         .args([
             "serve",
             "--repo",
@@ -147,11 +154,16 @@ fn daemon_refuses_requests_until_state_validation_completes() -> Result<(), Box<
 
     let state_dir = resolve_index_dir(state_root.path(), repo.path())?;
     let repo_arg = repo.path().to_string_lossy().to_string();
+    let lock_path = state_root.path().join("daemon.lock");
+    let config_path = state_root.path().join("config.toml");
     let child = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_DAEMON_LOCK_PATH", &lock_path)
+        .env("DOCDEX_CONFIG_PATH", &config_path)
+        .env("DOCDEX_TEST_ALLOW_MULTI_DAEMON", "1")
         .args([
             "serve",
             "--repo",
@@ -237,11 +249,16 @@ fn startup_failure_emits_single_error_envelope_for_auth() -> Result<(), Box<dyn 
         return Ok(());
     };
     let port_str = port.to_string();
+    let lock_path = state_root.path().join("daemon.lock");
+    let config_path = state_root.path().join("config.toml");
     let output = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_DAEMON_LOCK_PATH", &lock_path)
+        .env("DOCDEX_CONFIG_PATH", &config_path)
+        .env("DOCDEX_TEST_ALLOW_MULTI_DAEMON", "1")
         .args([
             "serve",
             "--repo",
@@ -295,12 +312,17 @@ fn startup_failure_emits_single_error_envelope_for_bind() -> Result<(), Box<dyn 
         Err(err) => return Err(format!("bind ephemeral port: {err}").into()),
     };
     let port = listener.local_addr()?.port();
+    let lock_path = state_root.path().join("daemon.lock");
+    let config_path = state_root.path().join("config.toml");
 
     let output = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_DAEMON_LOCK_PATH", &lock_path)
+        .env("DOCDEX_CONFIG_PATH", &config_path)
+        .env("DOCDEX_TEST_ALLOW_MULTI_DAEMON", "1")
         .args([
             "serve",
             "--repo",
@@ -356,11 +378,16 @@ fn startup_failure_emits_single_error_envelope_for_rate_limit_config() -> Result
     let repo = setup_repo()?;
     let repo_arg = repo.path().to_string_lossy().to_string();
     let state_dir = TempDir::new()?;
+    let lock_path = state_dir.path().join("daemon.lock");
+    let config_path = state_dir.path().join("config.toml");
     let output = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
         .env("DOCDEX_STATE_DIR", state_dir.path())
+        .env("DOCDEX_DAEMON_LOCK_PATH", &lock_path)
+        .env("DOCDEX_CONFIG_PATH", &config_path)
+        .env("DOCDEX_TEST_ALLOW_MULTI_DAEMON", "1")
         .args([
             "serve",
             "--repo",

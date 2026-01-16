@@ -23,7 +23,7 @@ This task list translates `docs/single_daemon.md` into implementable work items.
   - Files: `src/api/v1/initialize.rs`, `src/search/mod.rs`, `docs/http_api.md`, `openapi/mcoda.yaml`.
   - Acceptance: returns `{repo_id, status}` for known/unknown repos.
 - Add MCP initialize handling for `rootUri`.
-  - Files: `crates/mcp-server/src/lib.rs`.
+  - Files: `src/mcp_server.rs`, `src/api/mcp_http.rs`.
   - Acceptance: MCP initialize mounts repo and returns repo metadata.
 - Implement RepoManager map: `repo_id -> RepoHandle`.
   - Files: `src/daemon/multi_repo.rs`, `src/index/mod.rs`.
@@ -44,17 +44,11 @@ This task list translates `docs/single_daemon.md` into implementable work items.
   - Files: `src/state_layout.rs`, `src/daemon/multi_repo.rs`.
   - Acceptance: daemon restart preserves idle/active state.
 
-## Phase 4: Shared MCP Transport + Stdio Proxy
+## Phase 4: Shared MCP Transport
 
-- Add MCP Unix socket listener.
-  - Files: `crates/mcp-server/src/server.rs`, config + CLI flags.
-  - Acceptance: multiple clients can connect to socket concurrently.
 - Add HTTP/SSE MCP endpoint (optional transport).
-  - Files: `crates/mcp-server/src/server.rs`, docs.
+  - Files: `src/api/mcp_http.rs`, `src/search/mod.rs`, docs.
   - Acceptance: MCP requests over HTTP/SSE accepted.
-- Add stdio proxy that forwards to socket.
-  - Files: `crates/mcp-server/src/proxy.rs`, CLI entrypoint.
-  - Acceptance: Codex can use proxy while only one MCP server runs.
 
 ## Phase 5: Auto-Config + Startup
 
@@ -79,7 +73,7 @@ This task list translates `docs/single_daemon.md` into implementable work items.
 
 - Add unit tests for lockfile behavior.
 - Add integration tests for `/v1/initialize`.
-- Add MCP socket/stdio proxy tests.
+- Add MCP HTTP/SSE tests.
 - Add installer config injection tests.
 - Add tests for fixed port conflict detection + config injection.
 - Add tests for startup failure message gating.

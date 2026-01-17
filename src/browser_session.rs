@@ -87,7 +87,7 @@ struct BrowserLockMetadata {
 
 const LOCK_STARTUP_GRACE: Duration = Duration::from_secs(30);
 const LOCK_STALE_AGE: Duration = Duration::from_secs(300);
-const LOCK_FORCE_KILL_AGE: Duration = Duration::from_secs(120);
+const LOCK_FORCE_KILL_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const LOCK_FORCE_KILL_GRACE: Duration = Duration::from_secs(2);
 
 impl LockFile {

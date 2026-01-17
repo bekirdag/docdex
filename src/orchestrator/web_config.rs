@@ -388,7 +388,7 @@ fn normalize_phrases(values: Vec<String>) -> Vec<String> {
     out
 }
 
-fn default_scraper_user_data_dir(engine: &str) -> Option<PathBuf> {
+pub(crate) fn default_scraper_user_data_dir(engine: &str) -> Option<PathBuf> {
     let config = config::AppConfig::load_default().ok()?;
     let base_dir = config.core.global_state_dir?;
     let layout = StateLayout::new(base_dir);

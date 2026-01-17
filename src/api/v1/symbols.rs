@@ -8,10 +8,10 @@ use std::path::{Component, Path, PathBuf};
 use tracing::warn;
 
 use crate::error::{
-    ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX,
-    ERR_STALE_INDEX,
+    AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY,
+    ERR_MISSING_INDEX, ERR_STALE_INDEX,
 };
-use crate::search::{json_error, resolve_repo_context, AppState};
+use crate::search::{json_error, resolve_repo_context, status_for_app_error, AppState};
 
 #[derive(Deserialize)]
 pub struct SymbolsQuery {
@@ -37,6 +37,18 @@ pub async fn symbols_handler(
         Ok(repo) => repo,
         Err(err) => return json_error(err.status, err.code, err.message),
     };
+    if let Err(err) = crate::index::ensure_indexed(repo.indexer.clone()).await {
+        state.metrics.inc_error();
+        if let Some(app) = err.downcast_ref::<AppError>() {
+            return json_error(status_for_app_error(app.code), app.code, app.message.clone());
+        }
+        warn!(target: "docdexd", error = ?err, "indexing failed");
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            "indexing failed",
+        );
+    }
 
     if !repo.indexer.config().symbols_enabled() {
         return json_error(

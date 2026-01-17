@@ -8,6 +8,7 @@ use std::net::{SocketAddr, TcpListener};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
+use tempfile::TempDir;
 use url::Url;
 
 #[derive(Clone, Copy)]
@@ -101,6 +102,29 @@ impl Drop for FaultServer {
     }
 }
 
+struct EnvGuard {
+    key: &'static str,
+    prev: Option<std::ffi::OsString>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: &std::path::Path) -> Self {
+        let prev = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, prev }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        if let Some(value) = self.prev.take() {
+            std::env::set_var(self.key, value);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
+}
+
 fn can_bind_localhost() -> Result<bool, std::io::Error> {
     match TcpListener::bind("127.0.0.1:0") {
         Ok(listener) => {
@@ -140,6 +164,10 @@ fn build_config(base_url: Url, request_timeout: Duration) -> WebConfig {
         scraper_browser_kind: None,
         scraper_user_data_dir: None,
         page_load_timeout: Duration::from_secs(1),
+        brave_api_key: None,
+        google_cse_api_key: None,
+        google_cse_cx: None,
+        bing_api_key: None,
     }
 }
 
@@ -159,6 +187,18 @@ fn network_faults_surface_stable_errors() -> Result<(), Box<dyn Error>> {
         eprintln!("skipping test: TCP bind not permitted in this environment");
         return Ok(());
     }
+    let temp = TempDir::new()?;
+    let config_path = temp.path().join("config.toml");
+    let state_dir = temp.path().join("state");
+    let mut state_dir_text = state_dir.display().to_string();
+    if cfg!(windows) {
+        state_dir_text = state_dir_text.replace('\\', "\\\\");
+    }
+    std::fs::write(
+        &config_path,
+        format!("[core]\nglobal_state_dir = \"{state_dir_text}\"\n"),
+    )?;
+    let _config_guard = EnvGuard::set("DOCDEX_CONFIG_PATH", &config_path);
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         run_case(

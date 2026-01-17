@@ -96,7 +96,7 @@ pub(crate) fn resolve_initialize(
 }
 
 fn maybe_start_background_index(indexer: Arc<Indexer>, repo_id: &str) -> bool {
-    if indexer.num_docs() > 0 {
+    if indexer.index_ready() {
         return false;
     }
     let repo_id = repo_id.to_string();
@@ -105,11 +105,11 @@ fn maybe_start_background_index(indexer: Arc<Indexer>, repo_id: &str) -> bool {
         return false;
     }
     tokio::spawn(async move {
-        if let Err(err) = indexer.reindex_all().await {
-            warn!(repo_id = %repo_id, error = ?err, "background reindex failed");
-        } else {
-            info!(repo_id = %repo_id, "background reindex complete");
-        }
+        match crate::index::ensure_indexed(indexer).await {
+            Ok(true) => info!(repo_id = %repo_id, "background reindex complete"),
+            Ok(false) => info!(repo_id = %repo_id, "index already ready"),
+            Err(err) => warn!(repo_id = %repo_id, error = ?err, "background reindex failed"),
+        };
     });
     true
 }

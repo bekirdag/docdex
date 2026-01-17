@@ -14,19 +14,23 @@ use crate::web::cache;
 use crate::web::ddg::{DdgDiscovery, WebDiscoveryResponse, WebDiscoveryResult};
 use crate::web::normalize::{dedupe_urls, unwrap_ddg_redirect};
 use crate::web::readability::extract_readable_text;
+use crate::web::chrome::ChromeFetchResult;
 use crate::web::scraper::ScraperEngine;
 use crate::web::status::fetch_status;
 use crate::web::WebConfig;
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use once_cell::sync::Lazy;
+use reqwest::header::{HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::Semaphore;
 use tracing::{info, warn};
+use url::Url;
 
 const DEFAULT_WEB_TRIGGER_THRESHOLD: f32 = 0.7;
 const DEFAULT_WEB_MIN_MATCH_RATIO: f32 = 0.2;
@@ -45,6 +49,10 @@ const LOCAL_RELEVANCE_MAX_TOKENS: u32 = 96;
 const MAX_LOCAL_RELEVANCE_INPUT_CHARS: usize = 800;
 const WEB_BATCH_SIZE: usize = 10;
 const WEB_MAX_BATCHES: usize = 2;
+const WEB_FETCH_BUDGET_DEFAULT_MS: u64 = 45_000;
+const WEB_FETCH_BUDGET_MIN_MS: u64 = 5_000;
+const WEB_FETCH_MIN_REMAINING_MS: u64 = 1_000;
+const WEB_DIRECT_FETCH_MAX_BYTES_DEFAULT: usize = 1_500_000;
 const MAX_CODE_BLOCKS: usize = 4;
 const MAX_CODE_BLOCK_CHARS: usize = 1800;
 const WEB_GOOD_RELEVANCE_SCORE: f32 = 0.7;
@@ -59,6 +67,9 @@ const WEB_QUALITY_BLOCK_THRESHOLD: u32 = 2;
 const WEB_QUALITY_CHALLENGE_THRESHOLD: u32 = 1;
 const WEB_QUALITY_COOLDOWN_SECS: u64 = 600;
 const WEB_QUALITY_TTL_SECS: u64 = 86_400;
+
+static WEB_LLM_SEMAPHORE: Lazy<Semaphore> =
+    Lazy::new(|| Semaphore::new(resolve_web_llm_concurrency()));
 
 const COMMON_STOPWORDS: &[&str] = &[
     "a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for", "from", "how", "i", "if",
@@ -543,6 +554,7 @@ impl WebSummaryClient {
             || matches!(category, QueryCategory::CodeExample))
             && !code_blocks.is_empty();
         let prompt = build_summary_prompt(query, category, trimmed, code_blocks);
+        let _permit = WEB_LLM_SEMAPHORE.acquire().await.ok();
         let result = self
             .client
             .generate(&prompt, self.max_tokens, self.timeout)
@@ -610,6 +622,7 @@ impl WebSummaryClient {
 impl LocalRelevanceClient {
     async fn evaluate(&self, query: &str, hit: &Hit) -> Option<LocalRelevanceResponse> {
         let prompt = build_local_relevance_prompt(query, hit);
+        let _permit = WEB_LLM_SEMAPHORE.acquire().await.ok();
         let result = self
             .client
             .generate(&prompt, self.max_tokens, self.timeout)
@@ -627,6 +640,7 @@ impl LocalRelevanceClient {
 impl QueryCategoryClient {
     async fn evaluate(&self, query: &str) -> Option<QueryCategory> {
         let prompt = build_query_category_prompt(query);
+        let _permit = WEB_LLM_SEMAPHORE.acquire().await.ok();
         let result = self
             .client
             .generate(&prompt, self.max_tokens, self.timeout)
@@ -2365,6 +2379,14 @@ async fn fetch_web_documents(
         return Vec::new();
     }
     let desired_count = target_count.max(1);
+    let max_urls = resolve_fetch_url_limit(desired_count, urls.len());
+    let urls = &urls[..max_urls];
+    let direct_max_bytes = resolve_direct_fetch_max_bytes();
+    let fetch_budget = resolve_web_fetch_budget(config, desired_count);
+    let deadline = fetch_budget.map(|budget| Instant::now() + budget);
+    let remaining_budget = |deadline: Option<Instant>| -> Option<Duration> {
+        deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()))
+    };
     let layout = cache::cache_layout_from_config();
     let summary_client = load_web_summary_client(llm_model, llm_agent);
     let debug_enabled = env_boolish("DOCDEX_WEB_DEBUG").unwrap_or(false);
@@ -2393,6 +2415,7 @@ async fn fetch_web_documents(
     let mut all_results = Vec::new();
     let mut good_count = 0usize;
     let mut last_good: Option<WebFetchResult> = None;
+    let mut budget_exhausted = false;
     'batch_loop: for batch in urls.chunks(WEB_BATCH_SIZE).take(WEB_MAX_BATCHES) {
         let mut batch_results = Vec::new();
         let mut early_stop_now = false;
@@ -2424,6 +2447,15 @@ async fn fetch_web_documents(
             }};
         }
         for raw in batch {
+            if let Some(remaining) = remaining_budget(deadline) {
+                if remaining <= Duration::from_millis(WEB_FETCH_MIN_REMAINING_MS) {
+                    if debug_enabled {
+                        info!("web fetch budget exhausted; returning partial results");
+                    }
+                    budget_exhausted = true;
+                    break;
+                }
+            }
             let url = match url::Url::parse(raw) {
                 Ok(url) => url,
                 Err(_) => continue,
@@ -2499,8 +2531,15 @@ async fn fetch_web_documents(
                 }
                 crate::web::fetch::enforce_domain_delay(&url, config.fetch_delay).await;
                 fetched_at_epoch_ms = Some(now_epoch_ms());
-                let status_probe =
-                    fetch_status(&url, &config.user_agent, config.request_timeout).await;
+                let status_timeout = match remaining_budget(deadline) {
+                    Some(remaining) => config.request_timeout.min(remaining),
+                    None => config.request_timeout,
+                };
+                if status_timeout <= Duration::from_millis(WEB_FETCH_MIN_REMAINING_MS) {
+                    budget_exhausted = true;
+                    break;
+                }
+                let status_probe = fetch_status(&url, &config.user_agent, status_timeout).await;
                 if should_skip_status(status_probe) {
                     if debug_enabled {
                         info!(
@@ -2525,7 +2564,41 @@ async fn fetch_web_documents(
                     });
                     continue;
                 }
-                match scraper.fetch_dom(&url).await {
+                let dom_timeout = match remaining_budget(deadline) {
+                    Some(remaining) => config.page_load_timeout.min(remaining),
+                    None => config.page_load_timeout,
+                };
+                if dom_timeout <= Duration::from_millis(WEB_FETCH_MIN_REMAINING_MS) {
+                    budget_exhausted = true;
+                    break;
+                }
+                let mut dom_result = if deadline.is_some() {
+                    match tokio::time::timeout(dom_timeout, scraper.fetch_dom(&url)).await {
+                        Ok(result) => result,
+                        Err(_) => Err(anyhow!("web fetch timed out")),
+                    }
+                } else {
+                    scraper.fetch_dom(&url).await
+                };
+                if dom_result.is_err() {
+                    let direct_timeout = match remaining_budget(deadline) {
+                        Some(remaining) => config.request_timeout.min(remaining),
+                        None => config.request_timeout,
+                    };
+                    if direct_timeout > Duration::from_millis(WEB_FETCH_MIN_REMAINING_MS) {
+                        if let Ok(direct_result) = fetch_dom_direct(
+                            &url,
+                            &config.user_agent,
+                            direct_timeout,
+                            direct_max_bytes,
+                        )
+                        .await
+                        {
+                            dom_result = Ok(direct_result);
+                        }
+                    }
+                }
+                match dom_result {
                     Ok(fetch_result) => {
                         status = fetch_result.status.or(status_probe);
                         let html = fetch_result.html;
@@ -2571,6 +2644,37 @@ async fn fetch_web_documents(
                             clean_web_text(&html)
                         };
                         readable = normalize_text_spacing(&readable);
+                        if is_cookie_wall(&html, &readable) {
+                            record_domain_failure(
+                                layout.as_ref(),
+                                &host,
+                                DomainFailureKind::Challenge,
+                                now_ms,
+                            );
+                            if debug_enabled {
+                                debug_notes.push("cookie wall detected".to_string());
+                                info!("web fetch blocked by cookie wall url={}", url.as_str());
+                            }
+                            push_result!(WebFetchResult {
+                                url: url.to_string(),
+                                status,
+                                fetched_at_epoch_ms,
+                                cached: false,
+                                content: None,
+                                ai_digested_content: None,
+                                ai_digested_kind: None,
+                                relevance_score: None,
+                                debug_html: debug_html.clone(),
+                                debug_dom_text: debug_dom_text.clone(),
+                                error: Some("web fetch blocked by cookie wall".to_string()),
+                                debug: if debug_enabled && !debug_notes.is_empty() {
+                                    Some(debug_notes.clone())
+                                } else {
+                                    None
+                                },
+                            });
+                            continue;
+                        }
                         if is_js_challenge(&html, &readable) {
                             record_domain_failure(
                                 layout.as_ref(),
@@ -2626,7 +2730,19 @@ async fn fetch_web_documents(
                                     .push("text extraction empty after fallback".to_string());
                             }
                             let boiler_ratio = boilerplate_ratio(&readable, boilerplate_phrases);
-                            let penalty = quality_penalty(boiler_ratio, ad_markers);
+                            let mut penalty = quality_penalty(boiler_ratio, ad_markers);
+                            if penalty == 0.0
+                                && matches!(intent, QueryIntent::Code)
+                                && !code_blocks.is_empty()
+                            {
+                                penalty = 0.35;
+                                if debug_enabled {
+                                    debug_notes.push(
+                                        "boilerplate penalty softened due to code blocks"
+                                            .to_string(),
+                                    );
+                                }
+                            }
                             if penalty == 0.0 {
                                 if debug_enabled {
                                     info!("web fetch skipped boilerplate url={}", url.as_str());
@@ -2772,6 +2888,18 @@ async fn fetch_web_documents(
                 }
             }
 
+            if !skip_summary {
+                if let Some(remaining) = remaining_budget(deadline) {
+                    if remaining <= Duration::from_millis(WEB_SUMMARY_TIMEOUT_MS / 2) {
+                        skip_summary = true;
+                        content_error = Some("summary_budget_exhausted".to_string());
+                        if debug_enabled {
+                            debug_notes.push("summary skipped (budget)".to_string());
+                        }
+                    }
+                }
+            }
+
             if skip_summary {
                 let error = content_error
                     .clone()
@@ -2814,9 +2942,21 @@ async fn fetch_web_documents(
             let evaluation = if let Some(summary) = cached_summary {
                 Some(summary)
             } else if let Some(summary_client) = summary_client.as_ref() {
-                summary_client
-                    .evaluate(query, query_category, content_text, &summary_blocks)
+                if let Some(remaining) = remaining_budget(deadline) {
+                    match tokio::time::timeout(
+                        remaining,
+                        summary_client.evaluate(query, query_category, content_text, &summary_blocks),
+                    )
                     .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => None,
+                    }
+                } else {
+                    summary_client
+                        .evaluate(query, query_category, content_text, &summary_blocks)
+                        .await
+                }
             } else {
                 None
             };
@@ -2993,6 +3133,9 @@ async fn fetch_web_documents(
                 break;
             }
         }
+        if budget_exhausted {
+            break;
+        }
     }
 
     if all_results.is_empty() {
@@ -3033,6 +3176,78 @@ async fn fetch_web_documents(
         all_results.truncate(desired_count);
     }
     all_results
+}
+
+async fn fetch_dom_direct(
+    url: &Url,
+    user_agent: &str,
+    timeout: Duration,
+    max_bytes: usize,
+) -> Result<ChromeFetchResult, anyhow::Error> {
+    if timeout.is_zero() {
+        return Err(anyhow!("direct fetch timeout is zero"));
+    }
+    let client = reqwest::Client::builder()
+        .user_agent(user_agent.to_string())
+        .timeout(timeout)
+        .build()
+        .context("build direct fetch client")?;
+    let resp = client
+        .get(url.clone())
+        .header(
+            ACCEPT,
+            HeaderValue::from_static(
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            ),
+        )
+        .header(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"))
+        .send()
+        .await
+        .context("direct fetch request failed")?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(anyhow!("direct fetch failed with status {status}"));
+    }
+    let content_type = resp
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    let content_type_lc = content_type.to_ascii_lowercase();
+    if !content_type_lc.is_empty()
+        && !content_type_lc.contains("html")
+        && !content_type_lc.starts_with("text/")
+    {
+        return Err(anyhow!(
+            "direct fetch unsupported content-type {content_type}"
+        ));
+    }
+    if let Some(len) = resp.content_length() {
+        if len as usize > max_bytes {
+            return Err(anyhow!(
+                "direct fetch content-length {len} exceeds max {max_bytes}"
+            ));
+        }
+    }
+    let final_url = resp.url().to_string();
+    let bytes = resp.bytes().await.context("read direct fetch body")?;
+    if bytes.len() > max_bytes {
+        return Err(anyhow!(
+            "direct fetch body size {} exceeds max {max_bytes}",
+            bytes.len()
+        ));
+    }
+    let html = String::from_utf8_lossy(&bytes).to_string();
+    if html.trim().is_empty() {
+        return Err(anyhow!("direct fetch returned empty body"));
+    }
+    Ok(ChromeFetchResult {
+        html,
+        inner_text: None,
+        text_content: None,
+        status: Some(status.as_u16()),
+        final_url: Some(final_url),
+    })
 }
 
 fn clean_web_text(html: &str) -> String {
@@ -4385,6 +4600,40 @@ fn is_js_challenge(html: &str, readable_text: &str) -> bool {
     text_len < 120 && html_len > 5000 && (script_count + noscript_count) >= 2
 }
 
+fn is_cookie_wall(html: &str, readable_text: &str) -> bool {
+    let text = readable_text.trim();
+    if text.is_empty() {
+        return false;
+    }
+    let word_count = text.split_whitespace().count();
+    if word_count > 180 {
+        return false;
+    }
+    let lower = text.to_ascii_lowercase();
+    let cookie_terms = [
+        "cookie",
+        "cookies",
+        "consent",
+        "gdpr",
+        "privacy",
+        "preferences",
+        "tracking",
+    ];
+    let hits = cookie_terms
+        .iter()
+        .filter(|term| lower.contains(*term))
+        .count();
+    if hits >= 2 && word_count < 140 {
+        return true;
+    }
+    let html_lower = html.to_ascii_lowercase();
+    let html_hits = ["cookie-consent", "cookiebanner", "cookie-banner", "gdpr", "consent"]
+        .iter()
+        .filter(|term| html_lower.contains(*term))
+        .count();
+    html_hits >= 2 && word_count < 160
+}
+
 fn count_ad_markers(html: &str) -> usize {
     let lower = html.to_ascii_lowercase();
     let iframe_count = lower.matches("<iframe").count();
@@ -4843,6 +5092,15 @@ fn env_usize(key: &str) -> Option<usize> {
     trimmed.parse::<usize>().ok()
 }
 
+fn env_u64(key: &str) -> Option<u64> {
+    let raw = env::var(key).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<u64>().ok()
+}
+
 fn env_string(key: &str) -> Option<String> {
     let raw = env::var(key).ok()?;
     let trimmed = raw.trim();
@@ -4851,6 +5109,18 @@ fn env_string(key: &str) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+fn resolve_direct_fetch_max_bytes() -> usize {
+    env_usize("DOCDEX_WEB_DIRECT_FETCH_MAX_BYTES")
+        .unwrap_or(WEB_DIRECT_FETCH_MAX_BYTES_DEFAULT)
+        .max(1024)
+}
+
+fn resolve_web_llm_concurrency() -> usize {
+    env_usize("DOCDEX_WEB_MAX_CONCURRENT_LLM")
+        .unwrap_or(1)
+        .max(1)
 }
 
 fn config_web_trigger_threshold() -> Option<f32> {
@@ -4928,4 +5198,35 @@ fn resolve_web_limit(requested: Option<usize>, fallback: usize) -> usize {
         }
     }
     limit.max(1)
+}
+
+fn resolve_fetch_url_limit(target_count: usize, total: usize) -> usize {
+    let multiplier = 3usize;
+    let max_batch = WEB_BATCH_SIZE.saturating_mul(WEB_MAX_BATCHES);
+    let limit = target_count
+        .saturating_mul(multiplier)
+        .max(target_count)
+        .min(max_batch)
+        .max(1);
+    limit.min(total)
+}
+
+fn resolve_web_fetch_budget(config: &WebConfig, target_count: usize) -> Option<Duration> {
+    let env_ms = env_u64("DOCDEX_WEB_FETCH_BUDGET_MS");
+    if let Some(ms) = env_ms {
+        if ms == 0 {
+            return None;
+        }
+        return Some(Duration::from_millis(ms.max(WEB_FETCH_BUDGET_MIN_MS)));
+    }
+    let per_item_ms = config
+        .request_timeout
+        .saturating_add(config.page_load_timeout)
+        .as_millis()
+        .saturating_add((WEB_SUMMARY_TIMEOUT_MS / 2) as u128) as u64;
+    let estimated = per_item_ms.saturating_mul(target_count.max(1) as u64);
+    let budget_ms = estimated
+        .min(WEB_FETCH_BUDGET_DEFAULT_MS)
+        .max(WEB_FETCH_BUDGET_MIN_MS);
+    Some(Duration::from_millis(budget_ms))
 }

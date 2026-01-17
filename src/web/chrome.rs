@@ -1,22 +1,24 @@
 use anyhow::{anyhow, Context, Result};
 use futures::{SinkExt, StreamExt};
-use once_cell::sync::OnceCell;
+use once_cell::sync::{Lazy, OnceCell};
 use serde_json::{json, Value};
 use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::{env, num::NonZeroUsize};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 use tokio::process::Command;
 use tokio::sync::Mutex;
+use tokio::sync::Semaphore;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
 use crate::browser_session::{BrowserSession, BrowserSessionOptions};
-use crate::orchestrator::web_config::WebConfig;
+use crate::orchestrator::web_config::{default_scraper_user_data_dir, WebConfig};
 use crate::state_layout::ensure_state_dir_secure;
 use crate::util;
 use crate::web::scraper::{global_tracker, init_global_from_env, ChromeSessionHandle, TrackedProcess};
@@ -86,6 +88,15 @@ impl ChromeInstance {
         let session = BrowserSession::spawn(command, BrowserSessionOptions::default())
             .await
             .map_err(|err| anyhow!("chrome launch failed: {err}"))?;
+        if let Err(err) = wait_for_cdp_ready(
+            debug_port,
+            Duration::from_millis(CHROME_STARTUP_TIMEOUT_MS),
+        )
+        .await
+        {
+            let _ = session.abort().await;
+            return Err(err.context("chrome devtools did not become ready"));
+        }
         let watchdog_handle = resolve_watchdog_handle(&session, "chrome_persistent");
 
         Ok(Self {
@@ -169,33 +180,75 @@ impl ChromeManager {
         Ok(instance)
     }
 
-    async fn reset(&self) {
+    async fn reset_if_current(&self, instance: &Arc<ChromeInstance>) -> bool {
         let old = {
             let mut state = self.state.lock().await;
-            state.instance.take()
+            match state.instance.as_ref() {
+                Some(current) if Arc::ptr_eq(current, instance) => state.instance.take(),
+                _ => None,
+            }
         };
         if let Some(instance) = old {
             instance.shutdown().await;
+            return true;
         }
+        false
     }
 
-    async fn fetch_dom(
-        &self,
-        url: &Url,
-        config: &ChromeFetchConfig,
-        timeout: Duration,
-    ) -> Result<ChromeFetchResult> {
-        let instance = self.get_or_launch(config).await?;
-        instance.fetch_dom(url, timeout).await
+    async fn reset_if_unhealthy(&self, instance: &Arc<ChromeInstance>) -> bool {
+        if instance.is_healthy().await {
+            return false;
+        }
+        self.reset_if_current(instance).await
     }
 }
 
 static CHROME_MANAGER: OnceCell<Arc<ChromeManager>> = OnceCell::new();
+static CHROME_FETCH_SEMAPHORE: Lazy<Semaphore> =
+    Lazy::new(|| Semaphore::new(resolve_chrome_fetch_concurrency()));
 
 const CHROME_THINK_DELAY_MIN_MS: u64 = 150;
 const CHROME_THINK_DELAY_MAX_MS: u64 = 650;
 const CHROME_WINDOW_SIZE: &str = "1920,1080";
 const CHROME_HEALTH_CHECK_TIMEOUT_MS: u64 = 800;
+const CHROME_STARTUP_TIMEOUT_MS: u64 = 10_000;
+const CHROME_NETWORK_IDLE_MAX_MS: u64 = 6_000;
+const CHROME_COOKIE_DISMISS_TIMEOUT_MS: u64 = 1_500;
+const COOKIE_DISMISS_SCRIPT: &str = r#"(function () {
+  const acceptWords = ["accept", "agree", "allow", "ok", "okay", "got it", "yes"];
+  const cookieWords = ["cookie", "cookies", "consent", "gdpr", "privacy", "tracking"];
+  const nodes = Array.from(
+    document.querySelectorAll("button, a, input[type='button'], input[type='submit']")
+  );
+  for (const node of nodes) {
+    const raw = (node.innerText || node.value || "").trim().toLowerCase();
+    if (!raw) continue;
+    const hasAccept = acceptWords.some((word) => raw.includes(word));
+    const hasCookie = cookieWords.some((word) => raw.includes(word));
+    if (hasAccept && (hasCookie || raw.length <= 16)) {
+      node.click();
+      return true;
+    }
+  }
+  const selectors = [
+    "[id*='cookie']",
+    "[class*='cookie']",
+    "[id*='consent']",
+    "[class*='consent']",
+    "[aria-label*='cookie']",
+    "[aria-label*='consent']",
+    "[data-testid*='cookie']",
+    "[data-testid*='consent']",
+  ];
+  let removed = false;
+  for (const selector of selectors) {
+    document.querySelectorAll(selector).forEach((el) => {
+      el.remove();
+      removed = true;
+    });
+  }
+  return removed;
+})()"#;
 const WEBDRIVER_OVERRIDE_SCRIPT: &str =
     "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });";
 
@@ -283,12 +336,16 @@ fn chrome_common_args(config: &ChromeFetchConfig, user_data_dir: &Path) -> Vec<S
 impl ChromeFetchConfig {
     pub fn from_web_config(config: &WebConfig) -> Option<Self> {
         let chrome_binary = util::detect_browser_binary(config.chrome_binary_path.as_deref())?.path;
+        let user_data_dir = config
+            .scraper_user_data_dir
+            .clone()
+            .or_else(|| default_scraper_user_data_dir(&config.scraper_engine));
         Some(Self {
             chrome_binary,
             headless: config.scraper_headless,
             user_agent: config.user_agent.clone(),
             timeout: config.page_load_timeout,
-            user_data_dir: config.scraper_user_data_dir.clone(),
+            user_data_dir,
         })
     }
 }
@@ -299,15 +356,21 @@ pub async fn fetch_dom(url: &Url, config: &ChromeFetchConfig) -> Result<ChromeFe
     } else {
         config.timeout
     };
+    let _permit = CHROME_FETCH_SEMAPHORE
+        .acquire()
+        .await
+        .map_err(|_| anyhow!("chrome fetch semaphore closed"))?;
     let manager = ChromeManager::global();
-    let result = manager.fetch_dom(url, config, timeout).await;
-    match result {
+    let instance = manager.get_or_launch(config).await?;
+    match instance.fetch_dom(url, timeout).await {
         Ok(result) => Ok(result),
         Err(err) => {
-            manager.reset().await;
-            let retry = manager.fetch_dom(url, config, timeout).await;
-            if let Ok(result) = retry {
-                return Ok(result);
+            if manager.reset_if_unhealthy(&instance).await {
+                if let Ok(next_instance) = manager.get_or_launch(config).await {
+                    if let Ok(result) = next_instance.fetch_dom(url, timeout).await {
+                        return Ok(result);
+                    }
+                }
             }
             let fallback = fetch_dom_dump_dom(url, config).await;
             if let Ok(result) = fallback {
@@ -384,6 +447,31 @@ async fn probe_cdp(port: u16) -> bool {
         Ok(resp) => resp.status().is_success(),
         Err(_) => false,
     }
+}
+
+async fn wait_for_cdp_ready(port: u16, timeout: Duration) -> Result<()> {
+    let start = Instant::now();
+    loop {
+        if probe_cdp(port).await {
+            return Ok(());
+        }
+        if start.elapsed() >= timeout {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(anyhow!(
+        "devtools endpoint not available within {timeout:?}"
+    ))
+}
+
+fn resolve_chrome_fetch_concurrency() -> usize {
+    let value = env::var("DOCDEX_WEB_MAX_CONCURRENT_BROWSER_FETCHES")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(1);
+    NonZeroUsize::new(value).map(|value| value.get()).unwrap_or(1)
 }
 
 async fn create_cdp_target(port: u16, timeout: Duration) -> Result<CdpTarget> {
@@ -568,19 +656,19 @@ impl CdpClient {
         &mut self,
         tracker: &mut NetworkIdleTracker,
         timeout: Duration,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let idle_delay = Duration::from_millis(800);
         let start = Instant::now();
         loop {
             let elapsed = start.elapsed();
             if elapsed >= timeout {
-                return Err(anyhow!("network idle wait timed out after {timeout:?}"));
+                return Ok(false);
             }
             let idle_ready = tracker.inflight == 0
                 && tracker.last_activity.elapsed() >= idle_delay
                 && (tracker.saw_load || elapsed >= idle_delay);
             if idle_ready {
-                return Ok(());
+                return Ok(true);
             }
             let remaining = timeout.saturating_sub(elapsed);
             let wait_for = if tracker.inflight == 0 {
@@ -679,6 +767,7 @@ async fn fetch_dom_via_cdp(
     url: &Url,
     timeout: Duration,
 ) -> Result<ChromeFetchResult> {
+    let deadline = Instant::now() + timeout;
     let mut client = CdpClient::connect(ws_url).await?;
     client.call("Network.enable", json!({}), None).await?;
     client.call("Page.enable", json!({}), None).await?;
@@ -700,13 +789,24 @@ async fn fetch_dom_via_cdp(
     if let Some(error_text) = nav_result.get("errorText").and_then(Value::as_str) {
         return Err(anyhow!("navigation failed: {error_text}"));
     }
-    client.wait_for_network_idle(&mut tracker, timeout).await?;
+    let idle_timeout =
+        remaining(deadline).min(Duration::from_millis(CHROME_NETWORK_IDLE_MAX_MS));
+    let _ = client
+        .wait_for_network_idle(&mut tracker, idle_timeout)
+        .await?;
+    let dismissed = dismiss_cookie_banners(&mut client).await.unwrap_or(false);
+    if dismissed {
+        let follow_up =
+            remaining(deadline).min(Duration::from_millis(CHROME_COOKIE_DISMISS_TIMEOUT_MS));
+        if !follow_up.is_zero() {
+            let _ = client.wait_for_network_idle(&mut tracker, follow_up).await?;
+        }
+    }
 
     let mut html = String::new();
     let mut final_url = tracker.document_url.clone();
     let min_text_len = 80usize;
     let poll_interval = Duration::from_millis(200);
-    let start = Instant::now();
     loop {
         let href = eval_string(&mut client, "document.location.href").await?;
         if final_url.is_none() && !href.trim().is_empty() {
@@ -727,16 +827,22 @@ async fn fetch_dom_via_cdp(
         if has_text || ready_complete {
             break;
         }
-        if start.elapsed() >= timeout {
+        if remaining(deadline).is_zero() {
             break;
         }
-        tokio::time::sleep(poll_interval).await;
+        let sleep_for = poll_interval.min(remaining(deadline));
+        if sleep_for.is_zero() {
+            break;
+        }
+        tokio::time::sleep(sleep_for).await;
     }
     if html.trim().is_empty() {
         return Err(anyhow!("devtools returned empty HTML"));
     }
-    let inner_text = capture_dom_text(&mut client, timeout, poll_interval, true).await?;
-    let text_content = capture_dom_text(&mut client, timeout, poll_interval, false).await?;
+    let inner_text =
+        capture_dom_text(&mut client, remaining(deadline), poll_interval, true).await?;
+    let text_content =
+        capture_dom_text(&mut client, remaining(deadline), poll_interval, false).await?;
     Ok(ChromeFetchResult {
         html,
         inner_text: if inner_text.is_empty() {
@@ -763,6 +869,24 @@ async fn inject_webdriver_override(client: &mut CdpClient) -> Result<()> {
         )
         .await?;
     Ok(())
+}
+
+async fn dismiss_cookie_banners(client: &mut CdpClient) -> Result<bool> {
+    let eval = client
+        .call(
+            "Runtime.evaluate",
+            json!({
+                "expression": COOKIE_DISMISS_SCRIPT,
+                "returnByValue": true,
+            }),
+            None,
+        )
+        .await?;
+    Ok(eval
+        .get("result")
+        .and_then(|value| value.get("value"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false))
 }
 
 async fn eval_string(client: &mut CdpClient, expression: &str) -> Result<String> {

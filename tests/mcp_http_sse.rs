@@ -118,6 +118,59 @@ fn read_next_sse(reader: &mut BufReader<reqwest::blocking::Response>) -> Option<
     }
 }
 
+fn is_backoff_required(resp: &serde_json::Value) -> bool {
+    let Some(error) = resp.get("error") else {
+        return false;
+    };
+    let data = error.get("data");
+    let code = data
+        .and_then(|value| value.get("code"))
+        .and_then(|value| value.as_str());
+    if code == Some("backoff_required") {
+        return true;
+    }
+    let nested_code = data
+        .and_then(|value| value.get("error"))
+        .and_then(|value| value.get("code"))
+        .and_then(|value| value.as_str());
+    if nested_code == Some("backoff_required") {
+        return true;
+    }
+    data.and_then(|value| value.get("message"))
+        .and_then(|value| value.as_str())
+        .map(|message| message.to_ascii_lowercase().contains("backoff required"))
+        .unwrap_or(false)
+}
+
+fn send_tools_call_with_backoff(
+    client: &Client,
+    reader: &mut BufReader<reqwest::blocking::Response>,
+    session_id: &str,
+    port: u16,
+    payload: &serde_json::Value,
+    timeout: Duration,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let ack = client
+            .post(format!("http://127.0.0.1:{port}/v1/mcp/message"))
+            .header("x-docdex-mcp-session", session_id)
+            .json(payload)
+            .send()?;
+        assert!(ack.status().is_success());
+
+        let resp = read_next_sse(reader).ok_or("missing tools response")?;
+        if resp.get("result").is_some() {
+            return Ok(resp);
+        }
+        if is_backoff_required(&resp) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(200));
+            continue;
+        }
+        return Err(format!("tools/call failed: {resp}").into());
+    }
+}
+
 fn normalize_windows_path(value: &str) -> String {
     if cfg!(windows) {
         let trimmed = value.trim();
@@ -236,14 +289,14 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         "method": "tools/call",
         "params": { "name": "docdex_stats", "arguments": {} }
     });
-    let stats_ack = client
-        .post(format!("http://127.0.0.1:{port}/v1/mcp/message"))
-        .header("x-docdex-mcp-session", session_id.clone())
-        .json(&stats_payload)
-        .send()?;
-    assert!(stats_ack.status().is_success());
-
-    let stats_resp = read_next_sse(&mut reader).ok_or("missing stats response")?;
+    let stats_resp = send_tools_call_with_backoff(
+        &client,
+        &mut reader,
+        &session_id,
+        port,
+        &stats_payload,
+        Duration::from_secs(10),
+    )?;
     let stats_text = stats_resp
         .get("result")
         .and_then(|value| value.get("content"))
@@ -271,15 +324,14 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         "method": "tools/call",
         "params": { "name": "docdex_stats", "arguments": { "project_root": repo.path() } }
     });
-    let stats_override_ack = client
-        .post(format!("http://127.0.0.1:{port}/v1/mcp/message"))
-        .header("x-docdex-mcp-session", session_id.clone())
-        .json(&stats_override_payload)
-        .send()?;
-    assert!(stats_override_ack.status().is_success());
-
-    let stats_override_resp =
-        read_next_sse(&mut reader).ok_or("missing stats override response")?;
+    let stats_override_resp = send_tools_call_with_backoff(
+        &client,
+        &mut reader,
+        &session_id,
+        port,
+        &stats_override_payload,
+        Duration::from_secs(10),
+    )?;
     let stats_override_text = stats_override_resp
         .get("result")
         .and_then(|value| value.get("content"))
@@ -307,15 +359,14 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         "method": "tools/call",
         "params": { "name": "docdex_stats", "arguments": {} }
     });
-    let stats_followup_ack = client
-        .post(format!("http://127.0.0.1:{port}/v1/mcp/message"))
-        .header("x-docdex-mcp-session", session_id.clone())
-        .json(&stats_followup_payload)
-        .send()?;
-    assert!(stats_followup_ack.status().is_success());
-
-    let stats_followup_resp =
-        read_next_sse(&mut reader).ok_or("missing stats followup response")?;
+    let stats_followup_resp = send_tools_call_with_backoff(
+        &client,
+        &mut reader,
+        &session_id,
+        port,
+        &stats_followup_payload,
+        Duration::from_secs(10),
+    )?;
     let stats_followup_text = stats_followup_resp
         .get("result")
         .and_then(|value| value.get("content"))

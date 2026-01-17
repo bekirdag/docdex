@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::dag::logging as dag_logging;
 use crate::diff;
+use crate::error::{AppError, ERR_INTERNAL_ERROR};
 use crate::memory::repo_state_root_from_state_dir;
 use crate::ollama::OllamaClient;
 use crate::orchestrator::web::web_context_from_status;
@@ -26,7 +27,7 @@ use crate::orchestrator::{
     WaterfallPlan, WaterfallRequest, WebGateConfig,
 };
 use crate::project_map;
-use crate::search::{resolve_repo_context, AppState};
+use crate::search::{resolve_repo_context, status_for_app_error, AppState};
 use crate::tier2::Tier2Config;
 use tracing::{info, warn};
 
@@ -217,6 +218,24 @@ pub(crate) async fn chat_completions_handler(
             return error_response(err.status, "invalid_request_error", err.code, &err.message);
         }
     };
+    if let Err(err) = crate::index::ensure_indexed(repo.indexer.clone()).await {
+        state.metrics.inc_error();
+        if let Some(app) = err.downcast_ref::<AppError>() {
+            return error_response(
+                status_for_app_error(app.code),
+                "server_error",
+                app.code,
+                &app.message,
+            );
+        }
+        warn!(target: "docdexd", error = ?err, "indexing failed");
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            ERR_INTERNAL_ERROR,
+            "indexing failed",
+        );
+    }
     let extracted = match extract_query_and_context(&payload.messages) {
         Some(value) => value,
         None => {

@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tantivy::directory::error::LockError;
 use tantivy::TantivyError;
@@ -636,6 +637,7 @@ impl McpService {
             }
             Err(err) => return Err(err),
         };
+        let indexer = Arc::new(indexer);
         let config = config::AppConfig::load_default().ok();
         let memory_enabled = if std::env::var_os("DOCDEX_ENABLE_MEMORY").is_some() {
             env_flag_enabled("DOCDEX_ENABLE_MEMORY")
@@ -772,7 +774,7 @@ struct McpMemoryState {
 struct McpServer {
     repo_id: String,
     repo_root: PathBuf,
-    indexer: Indexer,
+    indexer: Arc<Indexer>,
     libs_indexer: Option<libs::LibsIndexer>,
     max_results: usize,
     default_project_root: Option<PathBuf>,
@@ -2137,6 +2139,7 @@ Produce a phased plan with risks and tests to run."
         } = args;
         let project_root = self.resolve_project_root_arg(project_root, repo_path)?;
         self.ensure_project_root(project_root.as_deref())?;
+        self.ensure_index_ready().await?;
         let query_owned = query;
         let query = query_owned.trim();
         let limit = limit.unwrap_or(self.max_results).clamp(1, self.max_results);
@@ -2286,6 +2289,9 @@ Produce a phased plan with risks and tests to run."
         let skip_local_search = skip_local_search.unwrap_or(false);
         let disable_web_cache = no_cache.unwrap_or(false);
         let llm_filter_local_results = llm_filter_local_results.unwrap_or(false);
+        if !skip_local_search {
+            self.ensure_index_ready().await?;
+        }
         let libs_indexer = if repo_only.unwrap_or(false) {
             None
         } else {
@@ -2480,6 +2486,7 @@ Produce a phased plan with risks and tests to run."
     async fn handle_files(&self, args: FilesArgs) -> Result<serde_json::Value> {
         let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
         self.ensure_project_root(project_root.as_deref())?;
+        self.ensure_index_ready().await?;
         let limit = args
             .limit
             .unwrap_or(FILES_DEFAULT_LIMIT)
@@ -2504,6 +2511,7 @@ Produce a phased plan with risks and tests to run."
     async fn handle_stats(&self, args: StatsArgs) -> Result<serde_json::Value> {
         let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
         self.ensure_project_root(project_root.as_deref())?;
+        self.ensure_index_ready().await?;
         let stats = self.indexer.stats()?;
         Ok(json!({
             "num_docs": stats.num_docs,
@@ -2603,6 +2611,7 @@ Produce a phased plan with risks and tests to run."
     async fn handle_symbols(&self, args: SymbolsArgs) -> Result<serde_json::Value> {
         let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
         self.ensure_project_root(project_root.as_deref())?;
+        self.ensure_index_ready().await?;
         if !self.indexer.config().symbols_enabled() {
             return Err(MissingSymbolsDependencyError.into());
         }
@@ -2624,6 +2633,7 @@ Produce a phased plan with risks and tests to run."
     async fn handle_ast(&self, args: AstArgs) -> Result<serde_json::Value> {
         let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
         self.ensure_project_root(project_root.as_deref())?;
+        self.ensure_index_ready().await?;
         if !self.indexer.config().symbols_enabled() {
             return Err(MissingSymbolsDependencyError.into());
         }
@@ -2652,6 +2662,7 @@ Produce a phased plan with risks and tests to run."
     ) -> Result<serde_json::Value> {
         let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
         self.ensure_project_root(project_root.as_deref())?;
+        self.ensure_index_ready().await?;
         let repo_id = crate::symbols::repo_id_for_root(self.indexer.repo_root())?;
         let store = ImpactGraphStore::new(self.indexer.state_dir());
         let diagnostics_map = store.read_diagnostics_map()?;
@@ -3085,6 +3096,11 @@ Produce a phased plan with risks and tests to run."
             }
         };
         self.ensure_same_repo(path)
+    }
+
+    async fn ensure_index_ready(&self) -> Result<()> {
+        crate::index::ensure_indexed(self.indexer.clone()).await?;
+        Ok(())
     }
 }
 

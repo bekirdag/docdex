@@ -1,10 +1,11 @@
 use crate::config;
 use crate::diff;
 use crate::error::{
-    AppError, RateLimited, StartupError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
-    ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
-    ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_MISSING_REPO_PATH,
-    ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
+    AppError, RateLimited, StartupError, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
+    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
+    ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
+    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
+    ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
 };
 use crate::index::{
     DocSnapshot, Hit, Indexer, QueryRewrite, SearchError, SearchQueryMeta, SearchSnippetOrigin,
@@ -480,6 +481,7 @@ pub(crate) fn status_for_app_error(code: &str) -> StatusCode {
         ERR_MISSING_REPO_PATH => StatusCode::NOT_FOUND,
         ERR_UNKNOWN_REPO => StatusCode::NOT_FOUND,
         ERR_UNAUTHORIZED => StatusCode::UNAUTHORIZED,
+        ERR_BACKOFF_REQUIRED => StatusCode::TOO_MANY_REQUESTS,
         ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -2773,16 +2775,21 @@ async fn search_handler(
     }
 
     let skip_local_search = params.skip_local_search.unwrap_or(false);
-    if !skip_local_search && repo.indexer.num_docs() == 0 {
-        return json_error(
-            StatusCode::CONFLICT,
-            ERR_MISSING_INDEX,
-            format!(
-                "index not found; run `docdexd index --repo {}`",
-                repo.indexer.repo_root().display()
-            ),
-        )
-        .into_response();
+    if !skip_local_search {
+        if let Err(err) = crate::index::ensure_indexed(repo.indexer.clone()).await {
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                return json_error(status_for_app_error(app.code), app.code, app.message.clone())
+                    .into_response();
+            }
+            state.metrics.inc_error();
+            warn!(target: "docdexd", error = ?err, "indexing failed");
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "indexing failed",
+            )
+            .into_response();
+        }
     }
 
     if !skip_local_search {

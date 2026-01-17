@@ -35,7 +35,7 @@ impl Default for ChromeWatchdogConfig {
             orphan_reap_after: Duration::from_secs(30),
             graceful_shutdown_timeout: Duration::from_secs(2),
             kill_timeout: Duration::from_secs(2),
-            max_session_age: None,
+            max_session_age: Some(Duration::from_secs(7 * 24 * 60 * 60)),
             unresponsive_timeout: None,
         }
     }

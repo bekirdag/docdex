@@ -4,8 +4,9 @@ pub(crate) mod libs;
 mod symbols;
 
 use crate::error::{
-    repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INVALID_ARGUMENT,
-    ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
+    repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INTERNAL_ERROR,
+    ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
+    ERR_STALE_INDEX,
 };
 use crate::impact::{extract_import_edges, ImpactGraphEdge};
 use crate::symbols::{
@@ -22,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Once};
+use std::sync::{Arc, Condvar, Mutex as StdMutex, Once};
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
@@ -37,6 +38,7 @@ use walkdir::WalkDir;
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
 const MAX_BINARY_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8192;
+const INDEX_READY_FILENAME: &str = "index_ready.json";
 const DOC_EXTENSIONS: &[&str] = &[".md", ".markdown", ".mdx", ".txt", ".yaml", ".yml"];
 const CODE_EXTENSIONS: &[&str] = &[
     ".rs", ".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".java", ".cs", ".c", ".h", ".cc", ".cpp",
@@ -244,6 +246,31 @@ pub struct Indexer {
     kind_field: Option<tantivy::schema::Field>,
     writer: Option<Arc<Mutex<IndexWriter>>>,
     symbols_store: Option<SymbolsStore>,
+    indexing_gate: Arc<IndexingGate>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct IndexReadyRecord {
+    indexed_at_epoch_ms: u128,
+    docs_indexed: u64,
+}
+
+struct IndexingGate {
+    state: StdMutex<IndexingGateState>,
+    cvar: Condvar,
+}
+
+struct IndexingGateState {
+    in_progress: bool,
+}
+
+impl IndexingGate {
+    fn new() -> Self {
+        Self {
+            state: StdMutex::new(IndexingGateState { in_progress: false }),
+            cvar: Condvar::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -608,6 +635,7 @@ impl Indexer {
             kind_field,
             writer: writer.map(|writer| Arc::new(Mutex::new(writer))),
             symbols_store,
+            indexing_gate: Arc::new(IndexingGate::new()),
         })
     }
 
@@ -622,11 +650,51 @@ impl Indexer {
         Ok(())
     }
 
+    pub fn ensure_indexed_blocking(&self) -> Result<bool> {
+        if self.index_ready_marker_exists() {
+            return Ok(false);
+        }
+        if self.seed_index_ready_marker()? {
+            return Ok(false);
+        }
+        let mut state = self.indexing_gate.state.lock().map_err(|_| {
+            AppError::new(ERR_INTERNAL_ERROR, "indexing gate poisoned")
+        })?;
+        while state.in_progress {
+            state = self
+                .indexing_gate
+                .cvar
+                .wait(state)
+                .map_err(|_| AppError::new(ERR_INTERNAL_ERROR, "indexing gate poisoned"))?;
+        }
+        if self.index_ready_marker_exists() {
+            return Ok(false);
+        }
+        if self.seed_index_ready_marker()? {
+            return Ok(false);
+        }
+        state.in_progress = true;
+        drop(state);
+
+        let result = self.reindex_all_blocking();
+
+        let mut state = self.indexing_gate.state.lock().map_err(|_| {
+            AppError::new(ERR_INTERNAL_ERROR, "indexing gate poisoned")
+        })?;
+        state.in_progress = false;
+        self.indexing_gate.cvar.notify_all();
+        drop(state);
+
+        result?;
+        Ok(true)
+    }
+
     pub async fn reindex_all(&self) -> Result<()> {
         self.reindex_all_blocking()
     }
 
     fn reindex_all_blocking(&self) -> Result<()> {
+        self.clear_index_ready_marker();
         let writer_arc = self.writer()?;
         let mut writer = writer_arc.lock();
         writer.delete_all_documents()?;
@@ -660,6 +728,7 @@ impl Indexer {
         if self.symbols_store.is_some() {
             self.write_impact_graph(impact_edges.into_iter().collect(), impact_diagnostics)?;
         }
+        self.write_index_ready_marker(self.num_docs())?;
         Ok(())
     }
 
@@ -1066,8 +1135,52 @@ impl Indexer {
         self.config.state_dir()
     }
 
+    pub fn index_ready(&self) -> bool {
+        self.index_ready_marker_exists() || self.num_docs() > 0
+    }
+
     pub fn is_read_only(&self) -> bool {
         self.writer.is_none()
+    }
+
+    fn index_ready_path(&self) -> PathBuf {
+        self.config.state_dir().join(INDEX_READY_FILENAME)
+    }
+
+    fn index_ready_marker_exists(&self) -> bool {
+        self.index_ready_path().exists()
+    }
+
+    fn seed_index_ready_marker(&self) -> Result<bool> {
+        if self.index_ready_marker_exists() {
+            return Ok(false);
+        }
+        let docs_indexed = self.num_docs();
+        if docs_indexed == 0 {
+            return Ok(false);
+        }
+        self.write_index_ready_marker(docs_indexed)?;
+        Ok(true)
+    }
+
+    fn clear_index_ready_marker(&self) {
+        let path = self.index_ready_path();
+        if path.exists() {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    fn write_index_ready_marker(&self, docs_indexed: u64) -> Result<()> {
+        let indexed_at_epoch_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis();
+        let record = IndexReadyRecord {
+            indexed_at_epoch_ms,
+            docs_indexed,
+        };
+        let payload = serde_json::to_vec(&record)?;
+        fs::write(self.index_ready_path(), payload)?;
+        Ok(())
     }
 
     fn writer(&self) -> Result<Arc<Mutex<IndexWriter>>> {
@@ -1356,6 +1469,16 @@ impl Indexer {
         }
         Ok(None)
     }
+}
+
+pub async fn ensure_indexed(indexer: Arc<Indexer>) -> Result<bool> {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return indexer.ensure_indexed_blocking();
+    }
+    let indexer_clone = indexer.clone();
+    tokio::task::spawn_blocking(move || indexer_clone.ensure_indexed_blocking())
+        .await
+        .map_err(|err| anyhow!("indexing task aborted: {err}"))?
 }
 
 struct DocumentIngest {

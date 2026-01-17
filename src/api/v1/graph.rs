@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::warn;
 
-use crate::search::{json_error, AppState};
+use crate::error::{AppError, ERR_INTERNAL_ERROR};
+use crate::search::{json_error, status_for_app_error, AppState};
 
 #[derive(Serialize)]
 struct ImpactErrorResponse {
@@ -225,6 +226,18 @@ pub(crate) async fn impact_graph_handler(
         Ok(repo) => repo,
         Err(err) => return json_error(err.status, err.code, err.message),
     };
+    if let Err(err) = crate::index::ensure_indexed(repo.indexer.clone()).await {
+        state.metrics.inc_error();
+        if let Some(app) = err.downcast_ref::<AppError>() {
+            return json_error(status_for_app_error(app.code), app.code, app.message.clone());
+        }
+        warn!(target: "docdexd", error = ?err, "indexing failed");
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            "indexing failed",
+        );
+    }
 
     let repo_id = match crate::symbols::repo_id_for_root(repo.indexer.repo_root()) {
         Ok(value) => value,
@@ -293,6 +306,18 @@ pub(crate) async fn impact_diagnostics_handler(
         Ok(repo) => repo,
         Err(err) => return json_error(err.status, err.code, err.message),
     };
+    if let Err(err) = crate::index::ensure_indexed(repo.indexer.clone()).await {
+        state.metrics.inc_error();
+        if let Some(app) = err.downcast_ref::<AppError>() {
+            return json_error(status_for_app_error(app.code), app.code, app.message.clone());
+        }
+        warn!(target: "docdexd", error = ?err, "indexing failed");
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            "indexing failed",
+        );
+    }
 
     let repo_id = match crate::symbols::repo_id_for_root(repo.indexer.repo_root()) {
         Ok(value) => value,

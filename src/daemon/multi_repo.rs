@@ -263,7 +263,6 @@ impl RepoManager {
             }
             None => IndexConfig::for_repo(&repo_root)?,
         };
-        let has_index = config.state_dir().join("meta.json").exists();
         let (indexer, read_only) = match Indexer::with_config(repo_root.clone(), config.clone()) {
             Ok(indexer) => (Arc::new(indexer), false),
             Err(err) if is_lock_busy_error(&err) => {
@@ -315,19 +314,21 @@ impl RepoManager {
             }
         };
         self.insert_repo(repo.clone(), watcher);
-        let status = if has_index {
+        let index_ready = indexer.index_ready();
+        let status = if index_ready {
             RepoMountStatus::Ready
         } else {
             RepoMountStatus::Indexing
         };
         if status == RepoMountStatus::Indexing && !read_only {
             let repo_id_clone = repo.repo_id.clone();
+            let indexer = indexer.clone();
             tokio::spawn(async move {
-                if let Err(err) = indexer.reindex_all().await {
-                    warn!(repo_id = %repo_id_clone, error = ?err, "background reindex failed");
-                } else {
-                    info!(repo_id = %repo_id_clone, "background reindex complete");
-                }
+                match crate::index::ensure_indexed(indexer).await {
+                    Ok(true) => info!(repo_id = %repo_id_clone, "background reindex complete"),
+                    Ok(false) => info!(repo_id = %repo_id_clone, "index already ready"),
+                    Err(err) => warn!(repo_id = %repo_id_clone, error = ?err, "background reindex failed"),
+                };
             });
         }
         Ok(RepoMount { repo, status })

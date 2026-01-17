@@ -2377,7 +2377,7 @@ mod tests {
 
     #[test]
     fn wizard_decline_records_deferred() -> Result<()> {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock();
         let temp = TempDir::new()?;
         let temp_home = temp.path().to_string_lossy();
         let _home = EnvGuard::set("HOME", &temp_home);
@@ -2424,7 +2424,7 @@ mod tests {
 
     #[test]
     fn wizard_completes_with_default_model() -> Result<()> {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock();
         std::env::remove_var("DOCDEX_OLLAMA_INSTALL");
         std::env::remove_var("DOCDEX_OLLAMA_MODEL_PROMPT");
         std::env::remove_var("DOCDEX_OLLAMA_MODEL_ASSUME_Y");
@@ -2456,7 +2456,7 @@ mod tests {
 
     #[test]
     fn wizard_skips_default_selection_when_prompts_disabled() -> Result<()> {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock();
         let temp = TempDir::new()?;
         let temp_home = temp.path().to_string_lossy();
         let _home = EnvGuard::set("HOME", &temp_home);
@@ -2530,7 +2530,7 @@ mod tests {
 
     #[test]
     fn list_chromium_browsers_includes_default() -> Result<()> {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock();
         let temp = TempDir::new()?;
         let temp_home = temp.path().to_string_lossy();
         let _home = EnvGuard::set("HOME", &temp_home);

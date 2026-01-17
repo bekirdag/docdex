@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn set_default_model_updates_config() -> Result<()> {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock();
         let dir = TempDir::new()?;
         let path = dir.path().join("config.toml");
         std::env::set_var("DOCDEX_CONFIG_PATH", &path);
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn set_embedding_model_updates_config() -> Result<()> {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock();
         let dir = TempDir::new()?;
         let path = dir.path().join("config.toml");
         std::env::set_var("DOCDEX_CONFIG_PATH", &path);
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn set_browser_path_updates_config() -> Result<()> {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock();
         let dir = TempDir::new()?;
         let path = dir.path().join("config.toml");
         let browser_path = dir.path().join("chromium-bin");
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn set_web_provider_keys_updates_config() -> Result<()> {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock();
         let dir = TempDir::new()?;
         let path = dir.path().join("config.toml");
         std::env::set_var("DOCDEX_CONFIG_PATH", &path);

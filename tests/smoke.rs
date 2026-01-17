@@ -586,7 +586,7 @@ fn http_server_smoke() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn http_search_missing_index_returns_error_code() -> Result<(), Box<dyn Error>> {
+fn http_search_missing_index_triggers_indexing() -> Result<(), Box<dyn Error>> {
     let repo = setup_repo()?;
     let state_root = TempDir::new()?;
 
@@ -602,19 +602,16 @@ fn http_search_missing_index_returns_error_code() -> Result<(), Box<dyn Error>> 
         .query(&[("q", "roadmap"), ("limit", "1")])
         .send()?
         .json()?;
-    let code = payload
-        .get("error")
-        .and_then(|value| value.get("code"))
-        .and_then(|value| value.as_str());
-    assert_eq!(code, Some("missing_index"));
-    let message = payload
-        .get("error")
-        .and_then(|value| value.get("message"))
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
     assert!(
-        message.contains("docdexd index"),
-        "expected missing_index message to include index hint; got: {message}"
+        payload.get("error").is_none(),
+        "expected /search to auto-index on first request: {payload}"
+    );
+    assert!(
+        payload
+            .get("hits")
+            .and_then(|value| value.as_array())
+            .is_some(),
+        "expected /search to return hits payload"
     );
     child.kill().ok();
     child.wait().ok();

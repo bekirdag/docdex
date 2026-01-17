@@ -417,20 +417,20 @@ fn probe_health(port: u16) -> bool {
 mod tests {
     use super::*;
     use crate::setup::test_support::ENV_LOCK;
+    use parking_lot::ReentrantMutexGuard;
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::sync::MutexGuard;
     use std::thread;
     use tempfile::TempDir;
 
     struct EnvGuard {
         prev: Vec<(&'static str, Option<String>)>,
-        _lock: MutexGuard<'static, ()>,
+        _lock: ReentrantMutexGuard<'static, ()>,
     }
 
     impl EnvGuard {
         fn new(keys: &[&'static str]) -> Self {
-            let lock = ENV_LOCK.lock().expect("env lock");
+            let lock = ENV_LOCK.lock();
             let prev = keys
                 .iter()
                 .map(|key| (*key, std::env::var(*key).ok()))

@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn setup_status_roundtrip_for_summary() -> Result<()> {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock();
         let dir = TempDir::new()?;
         std::env::set_var("DOCDEX_STATE_DIR", dir.path());
         let summary = SetupSummary {

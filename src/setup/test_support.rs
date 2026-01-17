@@ -1,4 +1,4 @@
 use once_cell::sync::Lazy;
-use std::sync::Mutex;
+use parking_lot::ReentrantMutex;
 
-pub(crate) static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+pub(crate) static ENV_LOCK: Lazy<ReentrantMutex<()>> = Lazy::new(|| ReentrantMutex::new(()));

@@ -419,17 +419,17 @@ fn load_boilerplate_file(path: &PathBuf) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::setup::test_support::ENV_LOCK;
-    use std::sync::MutexGuard;
+    use parking_lot::ReentrantMutexGuard;
     use tempfile::TempDir;
 
     struct EnvSnapshot {
         entries: Vec<(&'static str, Option<String>)>,
-        _lock: MutexGuard<'static, ()>,
+        _lock: ReentrantMutexGuard<'static, ()>,
     }
 
     impl EnvSnapshot {
         fn new(keys: &[&'static str]) -> Self {
-            let lock = ENV_LOCK.lock().expect("env lock");
+            let lock = ENV_LOCK.lock();
             let entries = keys
                 .iter()
                 .map(|key| (*key, std::env::var(key).ok()))

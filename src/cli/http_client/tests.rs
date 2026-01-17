@@ -1,17 +1,17 @@
 use super::{normalize_base_url, resolve_base_url_with_lock, CliHttpClient};
 use crate::setup::test_support::ENV_LOCK;
+use parking_lot::ReentrantMutexGuard;
 use reqwest::Method;
-use std::sync::MutexGuard;
 use tempfile::TempDir;
 
 struct EnvGuard {
     prev: Vec<(&'static str, Option<String>)>,
-    _lock: MutexGuard<'static, ()>,
+    _lock: ReentrantMutexGuard<'static, ()>,
 }
 
 impl EnvGuard {
     fn set(vars: &[(&'static str, &str)]) -> Self {
-        let lock = ENV_LOCK.lock().expect("env lock");
+        let lock = ENV_LOCK.lock();
         let mut prev = Vec::new();
         for (key, value) in vars {
             let old = std::env::var(key).ok();

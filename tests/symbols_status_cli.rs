@@ -180,6 +180,19 @@ fn init_stale_symbols_db(path: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn write_index_ready_marker(index_dir: &Path) -> Result<(), Box<dyn Error>> {
+    std::fs::create_dir_all(index_dir)?;
+    let payload = serde_json::json!({
+        "indexed_at_epoch_ms": 0u128,
+        "docs_indexed": 1u64
+    });
+    std::fs::write(
+        index_dir.join("index_ready.json"),
+        serde_json::to_vec(&payload)?,
+    )?;
+    Ok(())
+}
+
 #[test]
 fn symbols_status_cli_reports_fields() -> Result<(), Box<dyn Error>> {
     let repo = TempDir::new()?;
@@ -236,6 +249,7 @@ fn symbols_endpoint_returns_stale_on_parser_drift() -> Result<(), Box<dyn Error>
     let state_root = TempDir::new()?;
     let repo_state_root = resolve_repo_state_root(state_root.path(), repo.path())?;
     init_stale_symbols_db(&repo_state_root.join("symbols.db"))?;
+    write_index_ready_marker(&repo_state_root.join("index"))?;
 
     let mut server = spawn_server(state_root.path(), repo.path(), "127.0.0.1", port)?;
     let result = (|| -> Result<(), Box<dyn Error>> {

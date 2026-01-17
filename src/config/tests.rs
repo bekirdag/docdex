@@ -1,17 +1,17 @@
 use super::*;
 use crate::setup::test_support::ENV_LOCK;
-use std::sync::MutexGuard;
+use parking_lot::ReentrantMutexGuard;
 use tempfile::TempDir;
 
 struct EnvGuard {
     key: &'static str,
     prev: Option<String>,
-    _lock: MutexGuard<'static, ()>,
+    _lock: ReentrantMutexGuard<'static, ()>,
 }
 
 impl EnvGuard {
     fn set(key: &'static str, value: &str) -> Self {
-        let lock = ENV_LOCK.lock().expect("env lock");
+        let lock = ENV_LOCK.lock();
         let prev = std::env::var(key).ok();
         std::env::set_var(key, value);
         Self {

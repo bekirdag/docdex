@@ -458,6 +458,18 @@ pub fn load_config_from_path(path: &Path) -> Result<AppConfig> {
 }
 
 pub fn default_config_path() -> Result<PathBuf> {
+    #[cfg(test)]
+    {
+        let _guard = crate::setup::test_support::ENV_LOCK.lock();
+        return default_config_path_inner();
+    }
+    #[cfg(not(test))]
+    {
+        default_config_path_inner()
+    }
+}
+
+fn default_config_path_inner() -> Result<PathBuf> {
     if let Ok(value) = std::env::var("DOCDEX_CONFIG_PATH") {
         let trimmed = value.trim();
         if !trimmed.is_empty() {

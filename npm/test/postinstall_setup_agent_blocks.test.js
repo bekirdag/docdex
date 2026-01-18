@@ -42,8 +42,8 @@ test("applyAgentInstructions removes legacy unmarked docdex block", () => {
   }
 });
 
-test("applyAgentInstructions updates yaml instructions in place", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-yaml-agents-"));
+test("applyAgentInstructions updates continue yaml rules in place", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-continue-yaml-agents-"));
   const prev = {
     HOME: process.env.HOME,
     USERPROFILE: process.env.USERPROFILE,
@@ -53,21 +53,31 @@ test("applyAgentInstructions updates yaml instructions in place", () => {
   process.env.USERPROFILE = dir;
   process.env.APPDATA = path.join(dir, "AppData", "Roaming");
   try {
-    const target = path.join(dir, ".aider.conf.yml");
+    const target = path.join(dir, ".continue", "config.yaml");
     const oldBlock = [
       "---- START OF DOCDEX INFO V0.2.17 ----",
       "OLD DOCDEX INSTRUCTIONS",
       "---- END OF DOCDEX INFO -----"
     ]
-      .map((line) => `  ${line}`)
+      .map((line) => `    ${line}`)
       .join("\n");
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, `system-prompt: |\n  Keep this line\n${oldBlock}\n  Keep this too\n`);
+    fs.writeFileSync(
+      target,
+      [
+        "name: test-config",
+        "rules:",
+        "  - Always keep this line",
+        "  - |",
+        oldBlock,
+        "  - Keep this too"
+      ].join("\n")
+    );
     const result = applyAgentInstructions({ logger: { warn: () => {} } });
     assert.equal(result.ok, true);
     const contents = fs.readFileSync(target, "utf8");
-    assert.ok(contents.includes("system-prompt: |"));
-    assert.ok(contents.includes("Keep this line"));
+    assert.ok(contents.includes("rules:"));
+    assert.ok(contents.includes("Always keep this line"));
     assert.ok(contents.includes("Keep this too"));
     assert.ok(contents.includes(`---- START OF DOCDEX INFO V${PACKAGE_VERSION} ----`));
     assert.ok(contents.includes("---- END OF DOCDEX INFO -----"));

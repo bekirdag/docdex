@@ -327,7 +327,9 @@ impl RepoManager {
                 match crate::index::ensure_indexed(indexer).await {
                     Ok(true) => info!(repo_id = %repo_id_clone, "background reindex complete"),
                     Ok(false) => info!(repo_id = %repo_id_clone, "index already ready"),
-                    Err(err) => warn!(repo_id = %repo_id_clone, error = ?err, "background reindex failed"),
+                    Err(err) => {
+                        warn!(repo_id = %repo_id_clone, error = ?err, "background reindex failed")
+                    }
                 };
             });
         }

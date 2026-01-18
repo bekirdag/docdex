@@ -7,8 +7,8 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::{env, num::NonZeroUsize};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{env, num::NonZeroUsize};
 use tempfile::TempDir;
 use tokio::process::Command;
 use tokio::sync::Mutex;
@@ -21,7 +21,9 @@ use crate::browser_session::{BrowserSession, BrowserSessionOptions};
 use crate::orchestrator::web_config::{default_scraper_user_data_dir, WebConfig};
 use crate::state_layout::ensure_state_dir_secure;
 use crate::util;
-use crate::web::scraper::{global_tracker, init_global_from_env, ChromeSessionHandle, TrackedProcess};
+use crate::web::scraper::{
+    global_tracker, init_global_from_env, ChromeSessionHandle, TrackedProcess,
+};
 
 #[derive(Clone, Debug)]
 pub struct ChromeFetchConfig {
@@ -88,11 +90,8 @@ impl ChromeInstance {
         let session = BrowserSession::spawn(command, BrowserSessionOptions::default())
             .await
             .map_err(|err| anyhow!("chrome launch failed: {err}"))?;
-        if let Err(err) = wait_for_cdp_ready(
-            debug_port,
-            Duration::from_millis(CHROME_STARTUP_TIMEOUT_MS),
-        )
-        .await
+        if let Err(err) =
+            wait_for_cdp_ready(debug_port, Duration::from_millis(CHROME_STARTUP_TIMEOUT_MS)).await
         {
             let _ = session.abort().await;
             return Err(err.context("chrome devtools did not become ready"));
@@ -287,10 +286,7 @@ fn resolve_watchdog_handle(
     session_id: &str,
 ) -> Option<ChromeSessionHandle> {
     let tracker = global_tracker().or_else(init_global_from_env)?;
-    Some(tracker.register(
-        session_id.to_string(),
-        tracked_process(session),
-    ))
+    Some(tracker.register(session_id.to_string(), tracked_process(session)))
 }
 
 fn tracked_process(session: &BrowserSession) -> TrackedProcess {
@@ -400,10 +396,8 @@ async fn fetch_dom_dump_dom(url: &Url, config: &ChromeFetchConfig) -> Result<Chr
     let session = BrowserSession::spawn(command, BrowserSessionOptions::without_lock())
         .await
         .map_err(|err| anyhow!("chrome launch failed: {err}"))?;
-    let watchdog_handle = resolve_watchdog_handle(
-        &session,
-        &format!("chrome_dump_dom_{}", session.pid()),
-    );
+    let watchdog_handle =
+        resolve_watchdog_handle(&session, &format!("chrome_dump_dom_{}", session.pid()));
     let output = session.wait_for_output(timeout).await;
     if let Some(handle) = watchdog_handle {
         handle.end();
@@ -471,7 +465,9 @@ fn resolve_chrome_fetch_concurrency() -> usize {
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(1);
-    NonZeroUsize::new(value).map(|value| value.get()).unwrap_or(1)
+    NonZeroUsize::new(value)
+        .map(|value| value.get())
+        .unwrap_or(1)
 }
 
 async fn create_cdp_target(port: u16, timeout: Duration) -> Result<CdpTarget> {
@@ -789,8 +785,7 @@ async fn fetch_dom_via_cdp(
     if let Some(error_text) = nav_result.get("errorText").and_then(Value::as_str) {
         return Err(anyhow!("navigation failed: {error_text}"));
     }
-    let idle_timeout =
-        remaining(deadline).min(Duration::from_millis(CHROME_NETWORK_IDLE_MAX_MS));
+    let idle_timeout = remaining(deadline).min(Duration::from_millis(CHROME_NETWORK_IDLE_MAX_MS));
     let _ = client
         .wait_for_network_idle(&mut tracker, idle_timeout)
         .await?;
@@ -799,7 +794,9 @@ async fn fetch_dom_via_cdp(
         let follow_up =
             remaining(deadline).min(Duration::from_millis(CHROME_COOKIE_DISMISS_TIMEOUT_MS));
         if !follow_up.is_zero() {
-            let _ = client.wait_for_network_idle(&mut tracker, follow_up).await?;
+            let _ = client
+                .wait_for_network_idle(&mut tracker, follow_up)
+                .await?;
         }
     }
 

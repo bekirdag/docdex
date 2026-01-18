@@ -8,8 +8,8 @@ use crate::error::StartupError;
 use anyhow::Result;
 use clap::error::ErrorKind;
 use clap::{
-    parser::ValueSource,
-    ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum,
+    parser::ValueSource, ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand,
+    ValueEnum,
 };
 use serde_json::json;
 use std::env;
@@ -994,10 +994,7 @@ pub async fn run() -> Result<()> {
 fn should_ensure_daemon(command: &Command) -> bool {
     !matches!(
         command,
-        Command::Serve { .. }
-            | Command::Daemon { .. }
-            | Command::HelpAll
-            | Command::Setup { .. }
+        Command::Serve { .. } | Command::Daemon { .. } | Command::HelpAll | Command::Setup { .. }
     )
 }
 

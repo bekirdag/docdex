@@ -16,14 +16,17 @@ pub(crate) struct CliHttpClient {
 
 impl CliHttpClient {
     pub(crate) fn new() -> Result<Self> {
+        Self::new_with_timeout(Some(resolve_http_timeout_ms()))
+    }
+
+    pub(crate) fn new_no_timeout() -> Result<Self> {
+        Self::new_with_timeout(None)
+    }
+
+    pub(crate) fn new_streaming() -> Result<Self> {
         let base_url = resolve_base_url()?;
         let auth_token = env_non_empty("DOCDEX_AUTH_TOKEN");
-        let timeout_ms = resolve_http_timeout_ms();
-        let connect_timeout_ms = resolve_http_connect_timeout_ms(timeout_ms);
-        let client = Client::builder()
-            .timeout(Duration::from_millis(timeout_ms.max(1)))
-            .connect_timeout(Duration::from_millis(connect_timeout_ms.max(1)))
-            .build()?;
+        let client = Client::builder().build()?;
         Ok(Self {
             client,
             base_url,
@@ -31,10 +34,17 @@ impl CliHttpClient {
         })
     }
 
-    pub(crate) fn new_streaming() -> Result<Self> {
+    fn new_with_timeout(timeout_ms: Option<u64>) -> Result<Self> {
         let base_url = resolve_base_url()?;
         let auth_token = env_non_empty("DOCDEX_AUTH_TOKEN");
-        let client = Client::builder().build()?;
+        let default_timeout_ms = resolve_http_timeout_ms();
+        let connect_timeout_ms = resolve_http_connect_timeout_ms(default_timeout_ms);
+        let mut builder = Client::builder()
+            .connect_timeout(Duration::from_millis(connect_timeout_ms.max(1)));
+        if let Some(timeout_ms) = timeout_ms {
+            builder = builder.timeout(Duration::from_millis(timeout_ms.max(1)));
+        }
+        let client = builder.build()?;
         Ok(Self {
             client,
             base_url,

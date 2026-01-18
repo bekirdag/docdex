@@ -11,10 +11,10 @@ use crate::state_layout::StateLayout;
 use crate::tier2::{Tier2Unavailable, Tier2UnavailableReason};
 use crate::util;
 use crate::web::cache;
+use crate::web::chrome::ChromeFetchResult;
 use crate::web::ddg::{DdgDiscovery, WebDiscoveryResponse, WebDiscoveryResult};
 use crate::web::normalize::{dedupe_urls, unwrap_ddg_redirect};
 use crate::web::readability::extract_readable_text;
-use crate::web::chrome::ChromeFetchResult;
 use crate::web::scraper::ScraperEngine;
 use crate::web::status::fetch_status;
 use crate::web::WebConfig;
@@ -2945,7 +2945,12 @@ async fn fetch_web_documents(
                 if let Some(remaining) = remaining_budget(deadline) {
                     match tokio::time::timeout(
                         remaining,
-                        summary_client.evaluate(query, query_category, content_text, &summary_blocks),
+                        summary_client.evaluate(
+                            query,
+                            query_category,
+                            content_text,
+                            &summary_blocks,
+                        ),
                     )
                     .await
                     {
@@ -4627,10 +4632,16 @@ fn is_cookie_wall(html: &str, readable_text: &str) -> bool {
         return true;
     }
     let html_lower = html.to_ascii_lowercase();
-    let html_hits = ["cookie-consent", "cookiebanner", "cookie-banner", "gdpr", "consent"]
-        .iter()
-        .filter(|term| html_lower.contains(*term))
-        .count();
+    let html_hits = [
+        "cookie-consent",
+        "cookiebanner",
+        "cookie-banner",
+        "gdpr",
+        "consent",
+    ]
+    .iter()
+    .filter(|term| html_lower.contains(*term))
+    .count();
     html_hits >= 2 && word_count < 160
 }
 

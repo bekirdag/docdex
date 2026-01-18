@@ -563,7 +563,7 @@ function upsertClaudeInstructions(pathname, instructions) {
   return true;
 }
 
-function upsertContinueInstructions(pathname, instructions) {
+function upsertContinueJsonInstructions(pathname, instructions) {
   const { value } = readJson(pathname);
   if (typeof value !== "object" || value == null || Array.isArray(value)) return false;
   const merged = mergeInstructionText(value.systemMessage, instructions);
@@ -571,6 +571,198 @@ function upsertContinueInstructions(pathname, instructions) {
   value.systemMessage = merged;
   writeJson(pathname, value);
   return true;
+}
+
+function countLeadingWhitespace(line) {
+  const match = line.match(/^\s*/);
+  return match ? match[0].length : 0;
+}
+
+function isYamlTopLevelKey(line, baseIndent) {
+  const indent = countLeadingWhitespace(line);
+  if (indent > baseIndent) return false;
+  const trimmed = line.trimStart();
+  if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("-")) return false;
+  return trimmed.includes(":");
+}
+
+function hasYamlContent(lines) {
+  return lines.some((line) => {
+    const trimmed = line.trim();
+    return trimmed && !trimmed.startsWith("#");
+  });
+}
+
+function splitInlineYamlList(value) {
+  const trimmed = String(value || "").trim();
+  if (trimmed === "[]") return [];
+  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return null;
+  const inner = trimmed.slice(1, -1);
+  const items = [];
+  let current = "";
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  for (const ch of inner) {
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\\\") {
+      escaped = true;
+      current += ch;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      current += ch;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      current += ch;
+      continue;
+    }
+    if (ch === "," && !inSingle && !inDouble) {
+      const next = current.trim();
+      if (next) items.push(next);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  const next = current.trim();
+  if (next) items.push(next);
+  return items;
+}
+
+function inlineRulesToItems(value, itemIndent) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return [];
+  const prefix = " ".repeat(itemIndent);
+  const split = splitInlineYamlList(trimmed);
+  if (split) {
+    return split.map((item) => [`${prefix}- ${item}`]).filter((item) => item[0].trim() !== `${prefix}-`);
+  }
+  return [[`${prefix}- ${trimmed}`]];
+}
+
+function buildYamlRuleBlock(itemIndent, instructions) {
+  const prefix = " ".repeat(itemIndent);
+  const contentPrefix = " ".repeat(itemIndent + 2);
+  const lines = [`${prefix}- |`];
+  for (const line of String(instructions).split(/\r?\n/)) {
+    lines.push(`${contentPrefix}${line}`);
+  }
+  return lines;
+}
+
+function rewriteContinueYamlRules(source, instructions, addDocdex) {
+  const lines = String(source || "").split(/\r?\n/);
+  const ruleLineRe = /^(\s*)rules\s*:(.*)$/;
+  let rulesIndex = -1;
+  let rulesIndent = 0;
+  let rulesInline = "";
+  for (let i = 0; i < lines.length; i += 1) {
+    const match = lines[i].match(ruleLineRe);
+    if (!match) continue;
+    rulesIndex = i;
+    rulesIndent = match[1]?.length || 0;
+    rulesInline = (match[2] || "").trim();
+    if (rulesInline.includes("#")) {
+      rulesInline = rulesInline.split("#")[0].trim();
+    }
+    if (rulesInline.startsWith("#")) rulesInline = "";
+    break;
+  }
+
+  if (rulesIndex === -1) {
+    if (!addDocdex) return null;
+    const trimmed = String(source || "").trimEnd();
+    const docdexBlock = buildYamlRuleBlock(2, instructions);
+    const prefix = trimmed ? `${trimmed}\n\n` : "";
+    return `${prefix}rules:\n${docdexBlock.join("\n")}`;
+  }
+
+  let endIndex = lines.length;
+  for (let i = rulesIndex + 1; i < lines.length; i += 1) {
+    if (isYamlTopLevelKey(lines[i], rulesIndent)) {
+      endIndex = i;
+      break;
+    }
+  }
+  const blockLines = lines.slice(rulesIndex + 1, endIndex);
+  const preLines = [];
+  const items = [];
+  let currentItem = [];
+  let itemIndent = null;
+  let startedItems = false;
+
+  for (const line of blockLines) {
+    const trimmed = line.trimStart();
+    const indent = countLeadingWhitespace(line);
+    const isItem = trimmed.startsWith("-") && indent > rulesIndent;
+    if (isItem) {
+      if (itemIndent == null) itemIndent = indent;
+      if (indent === itemIndent) {
+        if (startedItems && currentItem.length) {
+          items.push(currentItem);
+          currentItem = [];
+        }
+        startedItems = true;
+      }
+      currentItem.push(line);
+      continue;
+    }
+    if (startedItems) {
+      currentItem.push(line);
+    } else {
+      preLines.push(line);
+    }
+  }
+  if (currentItem.length) items.push(currentItem);
+
+  const inferredIndent = itemIndent == null ? rulesIndent + 2 : itemIndent;
+  if (!items.length && rulesInline) {
+    items.push(...inlineRulesToItems(rulesInline, inferredIndent));
+    rulesInline = "";
+  }
+
+  const keptItems = items.filter((item) => {
+    const text = item.join("\n");
+    return !(text.includes(DOCDEX_INFO_START_PREFIX) && text.includes(DOCDEX_INFO_END));
+  });
+
+  if (addDocdex) {
+    keptItems.push(buildYamlRuleBlock(inferredIndent, instructions));
+  }
+
+  const removeRulesBlock =
+    !addDocdex && !keptItems.length && !hasYamlContent(preLines) && !rulesInline;
+
+  const output = [];
+  output.push(...lines.slice(0, rulesIndex));
+  if (!removeRulesBlock) {
+    output.push(`${" ".repeat(rulesIndent)}rules:`);
+    output.push(...preLines);
+    for (const item of keptItems) {
+      output.push(...item);
+    }
+  }
+  output.push(...lines.slice(endIndex));
+  const next = output.join("\n");
+  return next === source ? null : next;
+}
+
+function upsertContinueYamlRules(pathname, instructions) {
+  if (!fs.existsSync(pathname)) return false;
+  const normalized = normalizeInstructionText(instructions);
+  if (!normalized) return false;
+  const current = fs.readFileSync(pathname, "utf8");
+  const updated = rewriteContinueYamlRules(current, normalized, true);
+  if (!updated) return false;
+  return writeTextFile(pathname, updated);
 }
 
 function upsertZedInstructions(pathname, instructions) {
@@ -586,12 +778,56 @@ function upsertZedInstructions(pathname, instructions) {
   return true;
 }
 
-function upsertVsCodeInstructions(pathname, instructionsPath) {
+function upsertVsCodeInstructionKey(value, key, instructions) {
+  const existing = typeof value[key] === "string" ? value[key] : "";
+  const merged = mergeInstructionText(existing, instructions);
+  if (!merged || merged === existing) return false;
+  value[key] = merged;
+  return true;
+}
+
+function upsertVsCodeInstructionLocations(value, instructionsDir) {
+  const key = "chat.instructionsFilesLocations";
+  const location = String(instructionsDir);
+  if (value[key] && typeof value[key] === "object" && !Array.isArray(value[key])) {
+    if (value[key][location] === true) return false;
+    value[key][location] = true;
+    return true;
+  }
+  if (Array.isArray(value[key])) {
+    if (value[key].some((entry) => entry === location)) return false;
+    value[key].push(location);
+    return true;
+  }
+  if (typeof value[key] === "string") {
+    if (value[key] === location) return false;
+    value[key] = [value[key], location];
+    return true;
+  }
+  value[key] = { [location]: true };
+  return true;
+}
+
+function upsertVsCodeInstructions(pathname, instructions, instructionsDir) {
   const { value } = readJson(pathname);
   if (typeof value !== "object" || value == null || Array.isArray(value)) return false;
-  const key = "copilot.chat.codeGeneration.instructions";
-  if (value[key] === instructionsPath) return false;
-  value[key] = instructionsPath;
+  const normalized = normalizeInstructionText(instructions);
+  if (!normalized) return false;
+  let updated = false;
+  if (upsertVsCodeInstructionKey(value, "github.copilot.chat.codeGeneration.instructions", instructions)) {
+    updated = true;
+  }
+  if (upsertVsCodeInstructionKey(value, "copilot.chat.codeGeneration.instructions", instructions)) {
+    updated = true;
+  }
+  if (value["github.copilot.chat.codeGeneration.useInstructionFiles"] !== true) {
+    value["github.copilot.chat.codeGeneration.useInstructionFiles"] = true;
+    updated = true;
+  }
+  if (upsertVsCodeInstructionLocations(value, instructionsDir)) {
+    updated = true;
+  }
+  if (!updated) return false;
   writeJson(pathname, value);
   return true;
 }
@@ -921,6 +1157,12 @@ function clientInstructionPaths() {
   const appData = process.env.APPDATA || path.join(home, "AppData", "Roaming");
   const userProfile = process.env.USERPROFILE || home;
   const vscodeGlobalInstructions = path.join(home, ".vscode", "global_instructions.md");
+  const vscodeInstructionsDir = path.join(home, ".vscode", "instructions");
+  const vscodeInstructionsFile = path.join(vscodeInstructionsDir, "docdex.md");
+  const continueRoot = path.join(userProfile, ".continue");
+  const continueJson = path.join(continueRoot, "config.json");
+  const continueYaml = path.join(continueRoot, "config.yaml");
+  const continueYml = path.join(continueRoot, "config.yml");
   const windsurfGlobalRules = path.join(userProfile, ".codeium", "windsurf", "memories", "global_rules.md");
   const rooRules = path.join(home, ".roo", "rules", "docdex.md");
   const pearaiAgent = path.join(home, ".config", "pearai", "agent.md");
@@ -932,10 +1174,14 @@ function clientInstructionPaths() {
     case "win32":
       return {
         claude: path.join(appData, "Claude", "claude_desktop_config.json"),
-        continue: path.join(userProfile, ".continue", "config.json"),
+        continue: continueJson,
+        continueYaml,
+        continueYml,
         zed: path.join(appData, "Zed", "settings.json"),
         vscodeSettings: path.join(appData, "Code", "User", "settings.json"),
         vscodeGlobalInstructions,
+        vscodeInstructionsDir,
+        vscodeInstructionsFile,
         windsurfGlobalRules,
         rooRules,
         pearaiAgent,
@@ -947,10 +1193,14 @@ function clientInstructionPaths() {
     case "darwin":
       return {
         claude: path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
-        continue: path.join(home, ".continue", "config.json"),
+        continue: continueJson,
+        continueYaml,
+        continueYml,
         zed: path.join(home, ".config", "zed", "settings.json"),
         vscodeSettings: path.join(home, "Library", "Application Support", "Code", "User", "settings.json"),
         vscodeGlobalInstructions,
+        vscodeInstructionsDir,
+        vscodeInstructionsFile,
         windsurfGlobalRules,
         rooRules,
         pearaiAgent,
@@ -962,10 +1212,14 @@ function clientInstructionPaths() {
     default:
       return {
         claude: path.join(home, ".config", "Claude", "claude_desktop_config.json"),
-        continue: path.join(home, ".continue", "config.json"),
+        continue: continueJson,
+        continueYaml,
+        continueYml,
         zed: path.join(home, ".config", "zed", "settings.json"),
         vscodeSettings: path.join(home, ".config", "Code", "User", "settings.json"),
         vscodeGlobalInstructions,
+        vscodeInstructionsDir,
+        vscodeInstructionsFile,
         windsurfGlobalRules,
         rooRules,
         pearaiAgent,
@@ -1045,8 +1299,15 @@ function applyAgentInstructions({ logger } = {}) {
       upsertPromptFile(paths.vscodeGlobalInstructions, instructions, { prepend: true })
     );
   }
-  if (paths.vscodeSettings && paths.vscodeGlobalInstructions) {
-    safeApply("vscode-settings", () => upsertVsCodeInstructions(paths.vscodeSettings, paths.vscodeGlobalInstructions));
+  if (paths.vscodeInstructionsFile) {
+    safeApply("vscode-instructions-file", () =>
+      upsertPromptFile(paths.vscodeInstructionsFile, instructions, { prepend: true })
+    );
+  }
+  if (paths.vscodeSettings && paths.vscodeInstructionsDir) {
+    safeApply("vscode-settings", () =>
+      upsertVsCodeInstructions(paths.vscodeSettings, instructions, paths.vscodeInstructionsDir)
+    );
   }
   if (paths.windsurfGlobalRules) {
     safeApply("windsurf", () => upsertPromptFile(paths.windsurfGlobalRules, instructions, { prepend: true }));
@@ -1060,17 +1321,24 @@ function applyAgentInstructions({ logger } = {}) {
   if (paths.claude) {
     safeApply("claude", () => upsertClaudeInstructions(paths.claude, instructions));
   }
-  if (paths.continue) {
-    safeApply("continue", () => upsertContinueInstructions(paths.continue, instructions));
+  const continueYamlExists =
+    (paths.continueYaml && fs.existsSync(paths.continueYaml)) ||
+    (paths.continueYml && fs.existsSync(paths.continueYml));
+  if (continueYamlExists) {
+    if (paths.continueYaml && fs.existsSync(paths.continueYaml)) {
+      safeApply("continue-yaml", () => upsertContinueYamlRules(paths.continueYaml, instructions));
+    }
+    if (paths.continueYml && fs.existsSync(paths.continueYml)) {
+      safeApply("continue-yml", () => upsertContinueYamlRules(paths.continueYml, instructions));
+    }
+    if (paths.continue && fs.existsSync(paths.continue)) {
+      safeApply("continue-json", () => upsertContinueJsonInstructions(paths.continue, instructions));
+    }
+  } else if (paths.continue) {
+    safeApply("continue-json", () => upsertContinueJsonInstructions(paths.continue, instructions));
   }
   if (paths.zed) {
     safeApply("zed", () => upsertZedInstructions(paths.zed, instructions));
-  }
-  if (paths.aiderConfig) {
-    safeApply("aider", () => upsertYamlInstruction(paths.aiderConfig, "system-prompt", instructions));
-  }
-  if (paths.gooseConfig) {
-    safeApply("goose", () => upsertYamlInstruction(paths.gooseConfig, "instructions", instructions));
   }
   if (paths.openInterpreterConfig) {
     safeApply("open-interpreter", () =>

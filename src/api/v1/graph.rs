@@ -229,7 +229,11 @@ pub(crate) async fn impact_graph_handler(
     if let Err(err) = crate::index::ensure_indexed(repo.indexer.clone()).await {
         state.metrics.inc_error();
         if let Some(app) = err.downcast_ref::<AppError>() {
-            return json_error(status_for_app_error(app.code), app.code, app.message.clone());
+            return json_error(
+                status_for_app_error(app.code),
+                app.code,
+                app.message.clone(),
+            );
         }
         warn!(target: "docdexd", error = ?err, "indexing failed");
         return json_error(
@@ -309,7 +313,11 @@ pub(crate) async fn impact_diagnostics_handler(
     if let Err(err) = crate::index::ensure_indexed(repo.indexer.clone()).await {
         state.metrics.inc_error();
         if let Some(app) = err.downcast_ref::<AppError>() {
-            return json_error(status_for_app_error(app.code), app.code, app.message.clone());
+            return json_error(
+                status_for_app_error(app.code),
+                app.code,
+                app.message.clone(),
+            );
         }
         warn!(target: "docdexd", error = ?err, "indexing failed");
         return json_error(

@@ -117,8 +117,10 @@ fn candidate_output(candidate: BrowserCandidate) -> BrowserCandidateOutput {
 }
 
 fn chromium_candidates(config: &config::AppConfig) -> Vec<BrowserCandidate> {
-    let mut candidates = util::detect_browser_candidates(config.web.scraper.chrome_binary_path.as_deref());
-    candidates.retain(|candidate| matches!(candidate.kind, BrowserKind::Chromium | BrowserKind::Custom));
+    let mut candidates =
+        util::detect_browser_candidates(config.web.scraper.chrome_binary_path.as_deref());
+    candidates
+        .retain(|candidate| matches!(candidate.kind, BrowserKind::Chromium | BrowserKind::Custom));
     candidates
 }
 

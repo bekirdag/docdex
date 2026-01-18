@@ -39,10 +39,7 @@ impl ServerHarness {
         let child = Command::new(docdex_bin())
             .env("DOCDEX_WEB_ENABLED", "0")
             .env("DOCDEX_ENABLE_MEMORY", "0")
-            .env(
-                "DOCDEX_DAEMON_LOCK_PATH",
-                state_root.join("daemon.lock"),
-            )
+            .env("DOCDEX_DAEMON_LOCK_PATH", state_root.join("daemon.lock"))
             .env("DOCDEX_STATE_DIR", state_root)
             .env("DOCDEX_ENABLE_MCP", "0")
             .args([
@@ -227,10 +224,7 @@ impl FeatureServerHarness {
         let child = Command::new(docdex_bin())
             .env("DOCDEX_WEB_ENABLED", "0")
             .env("DOCDEX_ENABLE_MEMORY", "0")
-            .env(
-                "DOCDEX_DAEMON_LOCK_PATH",
-                state_root.join("daemon.lock"),
-            )
+            .env("DOCDEX_DAEMON_LOCK_PATH", state_root.join("daemon.lock"))
             .env("DOCDEX_STATE_DIR", state_root)
             .env("DOCDEX_ENABLE_MCP", "0")
             .env("HOME", home_dir)

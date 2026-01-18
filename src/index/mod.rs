@@ -597,8 +597,7 @@ impl Indexer {
             if let Err(err) =
                 crate::repo_manager::validate_repo_state_dir(&repo_root, config.state_dir())
             {
-                if let Some(identity) =
-                    err.downcast_ref::<crate::repo_manager::RepoIdentityError>()
+                if let Some(identity) = err.downcast_ref::<crate::repo_manager::RepoIdentityError>()
                 {
                     return Err(repo_state_mismatch_error(
                         &repo_root,
@@ -657,9 +656,11 @@ impl Indexer {
         if self.seed_index_ready_marker()? {
             return Ok(false);
         }
-        let mut state = self.indexing_gate.state.lock().map_err(|_| {
-            AppError::new(ERR_INTERNAL_ERROR, "indexing gate poisoned")
-        })?;
+        let mut state = self
+            .indexing_gate
+            .state
+            .lock()
+            .map_err(|_| AppError::new(ERR_INTERNAL_ERROR, "indexing gate poisoned"))?;
         while state.in_progress {
             state = self
                 .indexing_gate
@@ -678,9 +679,11 @@ impl Indexer {
 
         let result = self.reindex_all_blocking();
 
-        let mut state = self.indexing_gate.state.lock().map_err(|_| {
-            AppError::new(ERR_INTERNAL_ERROR, "indexing gate poisoned")
-        })?;
+        let mut state = self
+            .indexing_gate
+            .state
+            .lock()
+            .map_err(|_| AppError::new(ERR_INTERNAL_ERROR, "indexing gate poisoned"))?;
         state.in_progress = false;
         self.indexing_gate.cvar.notify_all();
         drop(state);
@@ -852,7 +855,18 @@ impl Indexer {
         let top_docs = searcher.search(&tantivy_query, &TopDocs::with_limit(limit))?;
         let mut results = Vec::with_capacity(top_docs.len());
         for (score, addr) in top_docs {
-            let retrieved = searcher.doc(addr)?;
+            let retrieved = match searcher.doc(addr) {
+                Ok(doc) => doc,
+                Err(err) => {
+                    warn!(
+                        target: "docdexd",
+                        error = ?err,
+                        ?addr,
+                        "failed to load search hit; skipping"
+                    );
+                    continue;
+                }
+            };
             let body_text = retrieved
                 .get_first(self.body_field)
                 .and_then(|v| v.as_text())
@@ -1003,12 +1017,8 @@ impl Indexer {
         if snippet.is_empty() {
             return Ok(None);
         }
-        let start_line = start_line.unwrap_or_else(|| {
-            preview_lines
-                .first()
-                .map(|(line, _)| *line)
-                .unwrap_or(1)
-        });
+        let start_line =
+            start_line.unwrap_or_else(|| preview_lines.first().map(|(line, _)| *line).unwrap_or(1));
         let end_line = end_line.unwrap_or(start_line);
         Ok(Some((
             snippet,
@@ -1572,7 +1582,9 @@ fn document_type_for_path(rel_path: &str, kind: DocumentKind) -> Option<DocType>
     {
         return Some(DocType::Sds);
     }
-    if lowered.starts_with("openapi/") || lowered.contains("/openapi/") || lowered.contains("openapi")
+    if lowered.starts_with("openapi/")
+        || lowered.contains("/openapi/")
+        || lowered.contains("openapi")
     {
         return Some(DocType::Openapi);
     }
@@ -2744,8 +2756,7 @@ mod snippet_integrity_tests {
         let body = "alpha beta\ngamma delta\nepsilon zeta\n";
         let fragment = "mma del";
         let (snippet, truncated, start, end) =
-            line_safe_snippet_for_fragment(body, fragment, MAX_SNIPPET_CHARS)
-                .expect("snippet");
+            line_safe_snippet_for_fragment(body, fragment, MAX_SNIPPET_CHARS).expect("snippet");
         assert_eq!(snippet, "gamma delta");
         assert!(!truncated);
         assert_eq!(start, 2);

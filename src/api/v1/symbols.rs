@@ -8,8 +8,8 @@ use std::path::{Component, Path, PathBuf};
 use tracing::warn;
 
 use crate::error::{
-    AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY,
-    ERR_MISSING_INDEX, ERR_STALE_INDEX,
+    AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX,
+    ERR_STALE_INDEX,
 };
 use crate::search::{json_error, resolve_repo_context, status_for_app_error, AppState};
 
@@ -40,7 +40,11 @@ pub async fn symbols_handler(
     if let Err(err) = crate::index::ensure_indexed(repo.indexer.clone()).await {
         state.metrics.inc_error();
         if let Some(app) = err.downcast_ref::<AppError>() {
-            return json_error(status_for_app_error(app.code), app.code, app.message.clone());
+            return json_error(
+                status_for_app_error(app.code),
+                app.code,
+                app.message.clone(),
+            );
         }
         warn!(target: "docdexd", error = ?err, "indexing failed");
         return json_error(

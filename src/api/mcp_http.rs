@@ -400,9 +400,9 @@ fn extract_root_from_array(value: Option<&Value>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::SecurityConfig;
     use axum::extract::{Query, State};
     use axum::http::{HeaderMap, HeaderValue, StatusCode};
-    use crate::search::SecurityConfig;
     use http_body_util::BodyExt;
     use serde_json::json;
     use std::fs;
@@ -427,8 +427,7 @@ mod tests {
             index_config,
         )?);
         let repo_id = crate::repo_manager::repo_fingerprint_sha256(temp.path())?;
-        let legacy_repo_id =
-            crate::repo_manager::fingerprint::legacy_repo_id_for_root(temp.path());
+        let legacy_repo_id = crate::repo_manager::fingerprint::legacy_repo_id_for_root(temp.path());
         let security = SecurityConfig::from_options(
             None,
             &[],
@@ -578,14 +577,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_message_rejects_uninitialized_session() -> Result<(), Box<dyn std::error::Error>>
-    {
+    async fn mcp_message_rejects_uninitialized_session() -> Result<(), Box<dyn std::error::Error>> {
         let (state, _temp) = build_test_state().await?;
-        let router = state
-            .mcp_router
-            .as_ref()
-            .expect("mcp router")
-            .clone();
+        let router = state.mcp_router.as_ref().expect("mcp router").clone();
         let (session_id, _rx) = router.create_session().await;
 
         let mut headers = HeaderMap::new();
@@ -619,8 +613,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_http_initialize_defaults_to_repo_root() -> Result<(), Box<dyn std::error::Error>>
-    {
+    async fn mcp_http_initialize_defaults_to_repo_root() -> Result<(), Box<dyn std::error::Error>> {
         let (state, _temp) = build_test_state().await?;
         let init_payload = json!({
             "jsonrpc": "2.0",
@@ -665,7 +658,7 @@ fn resolve_repo_for_mcp(state: &AppState, root_uri: Option<String>) -> Result<Pa
             let normalized = candidate.to_string_lossy().replace('\\', "/");
             let details = repo_resolution_details(normalized, None, None, Vec::new());
             return Err(
-                AppError::new(ERR_MISSING_REPO_PATH, "repo path not found").with_details(details),
+                AppError::new(ERR_MISSING_REPO_PATH, "repo path not found").with_details(details)
             );
         }
     }

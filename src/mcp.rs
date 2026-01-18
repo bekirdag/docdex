@@ -340,7 +340,12 @@ impl McpProxyRouter {
         });
         let active_roots: HashSet<PathBuf> = sessions
             .values()
-            .filter_map(|entry| entry.binding.as_ref().map(|binding| binding.repo_root.clone()))
+            .filter_map(|entry| {
+                entry
+                    .binding
+                    .as_ref()
+                    .map(|binding| binding.repo_root.clone())
+            })
             .collect();
         drop(sessions);
         self.evict_inactive_children(&active_roots).await;

@@ -394,9 +394,7 @@ fn probe_health(port: u16) -> bool {
     };
     let _ = stream.set_read_timeout(Some(Duration::from_millis(300)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(300)));
-    let request = format!(
-        "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
-    );
+    let request = format!("GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     if stream.write_all(request.as_bytes()).is_err() {
         return false;
     }

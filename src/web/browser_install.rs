@@ -78,14 +78,13 @@ fn existing_install_result() -> Option<BrowserInstallResult> {
     }
     Some(BrowserInstallResult {
         path: manifest.path,
-        version: manifest
-            .version
-            .unwrap_or_else(|| "installed".to_string()),
+        version: manifest.version.unwrap_or_else(|| "installed".to_string()),
     })
 }
 
 fn install_chromium_inner() -> Result<BrowserInstallResult> {
-    let base_dir = crate::state_paths::default_state_base_dir().context("resolve docdex state dir")?;
+    let base_dir =
+        crate::state_paths::default_state_base_dir().context("resolve docdex state dir")?;
     let install_dir = resolve_chromium_install_dir(&base_dir);
     ensure_state_dir_secure(&install_dir)
         .with_context(|| format!("create chromium install dir {}", install_dir.display()))?;
@@ -149,8 +148,8 @@ fn install_chromium_inner() -> Result<BrowserInstallResult> {
         download_url: Some(download.url.clone()),
         path: final_binary.clone(),
     };
-    let manifest_path = util::resolve_chromium_manifest_path()
-        .unwrap_or_else(|| install_dir.join(MANIFEST_FILE));
+    let manifest_path =
+        util::resolve_chromium_manifest_path().unwrap_or_else(|| install_dir.join(MANIFEST_FILE));
     let payload = serde_json::to_string_pretty(&manifest).context("serialize chromium manifest")?;
     fs::write(&manifest_path, format!("{payload}\n"))
         .with_context(|| format!("write chromium manifest {}", manifest_path.display()))?;
@@ -320,34 +319,40 @@ fn chromium_binary_rel_path(platform: &str) -> Result<&'static str> {
     }
 }
 
+#[cfg(unix)]
 fn ensure_chromium_helper_permissions(
-    install_dir: &Path,
-    platform: &str,
-    version: &str,
+    _install_dir: &Path,
+    _platform: &str,
+    _version: &str,
 ) -> Result<()> {
-    #[cfg(unix)]
-    {
-        let Some(helpers_dir) = resolve_chromium_helpers_dir(install_dir, platform, version)
-        else {
-            return Ok(());
-        };
-        let helper_bins = [
-            "app_mode_loader",
-            "chrome_crashpad_handler",
-            "web_app_shortcut_copier",
-            "Google Chrome for Testing Helper.app/Contents/MacOS/Google Chrome for Testing Helper",
-            "Google Chrome for Testing Helper (Alerts).app/Contents/MacOS/Google Chrome for Testing Helper (Alerts)",
-            "Google Chrome for Testing Helper (GPU).app/Contents/MacOS/Google Chrome for Testing Helper (GPU)",
-            "Google Chrome for Testing Helper (Plugin).app/Contents/MacOS/Google Chrome for Testing Helper (Plugin)",
-            "Google Chrome for Testing Helper (Renderer).app/Contents/MacOS/Google Chrome for Testing Helper (Renderer)",
-        ];
-        for rel_path in helper_bins {
-            let path = helpers_dir.join(rel_path);
-            if path.is_file() {
-                ensure_binary_permissions(&path)?;
-            }
+    let Some(helpers_dir) = resolve_chromium_helpers_dir(_install_dir, _platform, _version) else {
+        return Ok(());
+    };
+    let helper_bins = [
+        "app_mode_loader",
+        "chrome_crashpad_handler",
+        "web_app_shortcut_copier",
+        "Google Chrome for Testing Helper.app/Contents/MacOS/Google Chrome for Testing Helper",
+        "Google Chrome for Testing Helper (Alerts).app/Contents/MacOS/Google Chrome for Testing Helper (Alerts)",
+        "Google Chrome for Testing Helper (GPU).app/Contents/MacOS/Google Chrome for Testing Helper (GPU)",
+        "Google Chrome for Testing Helper (Plugin).app/Contents/MacOS/Google Chrome for Testing Helper (Plugin)",
+        "Google Chrome for Testing Helper (Renderer).app/Contents/MacOS/Google Chrome for Testing Helper (Renderer)",
+    ];
+    for rel_path in helper_bins {
+        let path = helpers_dir.join(rel_path);
+        if path.is_file() {
+            ensure_binary_permissions(&path)?;
         }
     }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_chromium_helper_permissions(
+    _install_dir: &Path,
+    _platform: &str,
+    _version: &str,
+) -> Result<()> {
     Ok(())
 }
 
@@ -380,15 +385,18 @@ fn resolve_chromium_helpers_dir(
     None
 }
 
-fn ensure_binary_permissions(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let metadata = fs::metadata(path)?;
-        let mut perms = metadata.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(path, perms)?;
-    }
+#[cfg(unix)]
+fn ensure_binary_permissions(_path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = fs::metadata(_path)?;
+    let mut perms = metadata.permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(_path, perms)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_binary_permissions(_path: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -408,7 +416,9 @@ mod tests {
 
     #[test]
     fn chromium_binary_rel_path_known_platforms() {
-        assert!(chromium_binary_rel_path("linux64").unwrap().ends_with("/chrome"));
+        assert!(chromium_binary_rel_path("linux64")
+            .unwrap()
+            .ends_with("/chrome"));
         assert!(chromium_binary_rel_path("mac-arm64")
             .unwrap()
             .contains("Google Chrome for Testing.app"));

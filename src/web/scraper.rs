@@ -730,7 +730,9 @@ impl ScraperEngine {
         let chrome_config = ChromeFetchConfig::from_web_config(config).ok_or_else(|| {
             anyhow!("chromium browser not configured; run `docdexd browser install`")
         })?;
-        Ok(ScraperEngine::Chrome { config: chrome_config })
+        Ok(ScraperEngine::Chrome {
+            config: chrome_config,
+        })
     }
 
     pub async fn fetch_dom(&self, url: &Url) -> Result<ChromeFetchResult> {

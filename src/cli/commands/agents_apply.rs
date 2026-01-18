@@ -6,17 +6,25 @@ use std::path::{Path, PathBuf};
 
 const DOCDEX_INFO_START_PREFIX: &str = "---- START OF DOCDEX INFO V";
 const DOCDEX_INFO_END: &str = "---- END OF DOCDEX INFO -----";
-const VSCODE_INSTRUCTIONS_KEY: &str = "copilot.chat.codeGeneration.instructions";
+const VSCODE_INSTRUCTIONS_KEY: &str = "github.copilot.chat.codeGeneration.instructions";
+const VSCODE_INSTRUCTIONS_KEY_LEGACY: &str = "copilot.chat.codeGeneration.instructions";
+const VSCODE_INSTRUCTIONS_USE_FILES_KEY: &str =
+    "github.copilot.chat.codeGeneration.useInstructionFiles";
+const VSCODE_INSTRUCTIONS_LOCATIONS_KEY: &str = "chat.instructionsFilesLocations";
 const AGENTS_INSTRUCTIONS: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/npm/assets/agents.md"));
 
 #[derive(Debug)]
 struct InstructionPaths {
     claude: PathBuf,
-    continue_config: PathBuf,
+    continue_json: PathBuf,
+    continue_yaml: PathBuf,
+    continue_yml: PathBuf,
     zed: PathBuf,
     vscode_settings: PathBuf,
     vscode_global_instructions: PathBuf,
+    vscode_instructions_dir: PathBuf,
+    vscode_instructions_file: PathBuf,
     windsurf_global_rules: PathBuf,
     roo_rules: PathBuf,
     pearai_agent: PathBuf,
@@ -49,8 +57,20 @@ pub(crate) fn run(remove: bool) -> Result<()> {
         );
         attempted += 1;
         record_result(
+            "vscode-instructions-file",
+            remove_prompt_file(&paths.vscode_instructions_file),
+            &mut updated,
+            &mut failed,
+        );
+        attempted += 1;
+        record_result(
             "vscode-settings",
-            remove_vscode_instructions(&paths.vscode_settings, &paths.vscode_global_instructions),
+            remove_vscode_instructions(
+                &paths.vscode_settings,
+                &instructions,
+                &paths.vscode_instructions_dir,
+                &paths.vscode_global_instructions,
+            ),
             &mut updated,
             &mut failed,
         );
@@ -84,8 +104,22 @@ pub(crate) fn run(remove: bool) -> Result<()> {
         );
         attempted += 1;
         record_result(
-            "continue",
-            remove_continue_instructions(&paths.continue_config),
+            "continue-json",
+            remove_continue_json_instructions(&paths.continue_json),
+            &mut updated,
+            &mut failed,
+        );
+        attempted += 1;
+        record_result(
+            "continue-yaml",
+            remove_continue_rules_yaml(&paths.continue_yaml),
+            &mut updated,
+            &mut failed,
+        );
+        attempted += 1;
+        record_result(
+            "continue-yml",
+            remove_continue_rules_yaml(&paths.continue_yml),
             &mut updated,
             &mut failed,
         );
@@ -134,8 +168,19 @@ pub(crate) fn run(remove: bool) -> Result<()> {
         );
         attempted += 1;
         record_result(
+            "vscode-instructions-file",
+            upsert_prompt_file(&paths.vscode_instructions_file, &instructions, true),
+            &mut updated,
+            &mut failed,
+        );
+        attempted += 1;
+        record_result(
             "vscode-settings",
-            upsert_vscode_instructions(&paths.vscode_settings, &paths.vscode_global_instructions),
+            upsert_vscode_instructions(
+                &paths.vscode_settings,
+                &instructions,
+                &paths.vscode_instructions_dir,
+            ),
             &mut updated,
             &mut failed,
         );
@@ -167,31 +212,49 @@ pub(crate) fn run(remove: bool) -> Result<()> {
             &mut updated,
             &mut failed,
         );
-        attempted += 1;
-        record_result(
-            "continue",
-            upsert_continue_instructions(&paths.continue_config, &instructions),
-            &mut updated,
-            &mut failed,
-        );
+        let continue_yaml_exists =
+            paths.continue_yaml.exists() || paths.continue_yml.exists();
+        if continue_yaml_exists {
+            if paths.continue_yaml.exists() {
+                attempted += 1;
+                record_result(
+                    "continue-yaml",
+                    upsert_continue_rules_yaml(&paths.continue_yaml, &instructions),
+                    &mut updated,
+                    &mut failed,
+                );
+            }
+            if paths.continue_yml.exists() {
+                attempted += 1;
+                record_result(
+                    "continue-yml",
+                    upsert_continue_rules_yaml(&paths.continue_yml, &instructions),
+                    &mut updated,
+                    &mut failed,
+                );
+            }
+            if paths.continue_json.exists() {
+                attempted += 1;
+                record_result(
+                    "continue-json",
+                    upsert_continue_json_instructions(&paths.continue_json, &instructions),
+                    &mut updated,
+                    &mut failed,
+                );
+            }
+        } else {
+            attempted += 1;
+            record_result(
+                "continue-json",
+                upsert_continue_json_instructions(&paths.continue_json, &instructions),
+                &mut updated,
+                &mut failed,
+            );
+        }
         attempted += 1;
         record_result(
             "zed",
             upsert_zed_instructions(&paths.zed, &instructions),
-            &mut updated,
-            &mut failed,
-        );
-        attempted += 1;
-        record_result(
-            "aider",
-            upsert_yaml_instruction(&paths.aider_config, "system-prompt", &instructions),
-            &mut updated,
-            &mut failed,
-        );
-        attempted += 1;
-        record_result(
-            "goose",
-            upsert_yaml_instruction(&paths.goose_config, "instructions", &instructions),
             &mut updated,
             &mut failed,
         );
@@ -524,7 +587,7 @@ fn remove_claude_instructions(path: &Path) -> Result<bool> {
     Ok(true)
 }
 
-fn upsert_continue_instructions(path: &Path, instructions: &str) -> Result<bool> {
+fn upsert_continue_json_instructions(path: &Path, instructions: &str) -> Result<bool> {
     let mut value = read_json(path)?;
     let obj = match value.as_object_mut() {
         Some(obj) => obj,
@@ -543,7 +606,7 @@ fn upsert_continue_instructions(path: &Path, instructions: &str) -> Result<bool>
     Ok(true)
 }
 
-fn remove_continue_instructions(path: &Path) -> Result<bool> {
+fn remove_continue_json_instructions(path: &Path) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
     }
@@ -567,6 +630,261 @@ fn remove_continue_instructions(path: &Path) -> Result<bool> {
     }
     write_json(path, &value)?;
     Ok(true)
+}
+
+fn build_yaml_rule_block(item_indent: usize, instructions: &str) -> Vec<String> {
+    let prefix = " ".repeat(item_indent);
+    let content_prefix = " ".repeat(item_indent + 2);
+    let mut lines = Vec::new();
+    lines.push(format!("{prefix}- |"));
+    for line in instructions.lines() {
+        lines.push(format!("{content_prefix}{line}"));
+    }
+    lines
+}
+
+fn is_yaml_top_level_key(line: &str, base_indent: usize) -> bool {
+    let indent = count_leading_whitespace(line);
+    if indent > base_indent {
+        return false;
+    }
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('-') {
+        return false;
+    }
+    trimmed.contains(':')
+}
+
+fn has_yaml_content(lines: &[String]) -> bool {
+    lines.iter().any(|line| {
+        let trimmed = line.trim();
+        !trimmed.is_empty() && !trimmed.starts_with('#')
+    })
+}
+
+fn split_inline_yaml_list(value: &str) -> Option<Vec<String>> {
+    let trimmed = value.trim();
+    if trimmed == "[]" {
+        return Some(Vec::new());
+    }
+    if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+        return None;
+    }
+    let inner = &trimmed[1..trimmed.len() - 1];
+    let mut items = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    for ch in inner.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => {
+                escaped = true;
+                current.push(ch);
+            }
+            '\'' if !in_double => {
+                in_single = !in_single;
+                current.push(ch);
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                current.push(ch);
+            }
+            ',' if !in_single && !in_double => {
+                let next = current.trim().to_string();
+                if !next.is_empty() {
+                    items.push(next);
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    let next = current.trim().to_string();
+    if !next.is_empty() {
+        items.push(next);
+    }
+    Some(items)
+}
+
+fn inline_rules_to_items(value: &str, item_indent: usize) -> Vec<Vec<String>> {
+    let inline = value.trim();
+    if inline.is_empty() {
+        return Vec::new();
+    }
+    let prefix = " ".repeat(item_indent);
+    if let Some(items) = split_inline_yaml_list(inline) {
+        return items
+            .into_iter()
+            .filter(|item| !item.trim().is_empty())
+            .map(|item| vec![format!("{prefix}- {item}")])
+            .collect();
+    }
+    vec![vec![format!("{prefix}- {inline}")]]
+}
+
+fn rewrite_continue_rules_yaml(
+    source: &str,
+    instructions: &str,
+    add_docdex: bool,
+) -> Option<String> {
+    let mut lines: Vec<String> = source.lines().map(|line| line.to_string()).collect();
+    let re = Regex::new(r"(?m)^(\s*)rules\s*:(.*)$").ok()?;
+    let mut rules_idx = None;
+    let mut rules_indent = 0usize;
+    let mut rules_inline = String::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if let Some(caps) = re.captures(line) {
+            rules_idx = Some(idx);
+            rules_indent = caps.get(1).map(|m| m.as_str().len()).unwrap_or(0);
+            rules_inline = caps.get(2).map(|m| m.as_str()).unwrap_or("").trim().to_string();
+            if let Some((head, _)) = rules_inline.split_once('#') {
+                rules_inline = head.trim().to_string();
+            }
+            if rules_inline.starts_with('#') {
+                rules_inline.clear();
+            }
+            break;
+        }
+    }
+
+    if rules_idx.is_none() {
+        if !add_docdex {
+            return None;
+        }
+        let mut output = source.trim_end().to_string();
+        if !output.is_empty() {
+            output.push_str("\n\n");
+        }
+        let rules_line = format!("{}rules:", " ".repeat(0));
+        let rule_block = build_yaml_rule_block(2, instructions);
+        output.push_str(&rules_line);
+        output.push('\n');
+        output.push_str(&rule_block.join("\n"));
+        return Some(output);
+    }
+
+    let rules_idx = rules_idx?;
+    let rules_line = format!("{}rules:", " ".repeat(rules_indent));
+    let mut end_idx = lines.len();
+    for idx in rules_idx + 1..lines.len() {
+        if is_yaml_top_level_key(&lines[idx], rules_indent) {
+            end_idx = idx;
+            break;
+        }
+    }
+    let block_lines = &lines[rules_idx + 1..end_idx];
+    let mut pre_lines = Vec::new();
+    let mut items: Vec<Vec<String>> = Vec::new();
+    let mut current_item = Vec::new();
+    let mut item_indent: Option<usize> = None;
+    let mut started_items = false;
+
+    for line in block_lines {
+        let trimmed = line.trim_start();
+        let indent = count_leading_whitespace(line);
+        let is_item = trimmed.starts_with('-') && indent > rules_indent;
+        if is_item {
+            if item_indent.is_none() {
+                item_indent = Some(indent);
+            }
+            if indent == item_indent.unwrap() {
+                if started_items && !current_item.is_empty() {
+                    items.push(current_item);
+                    current_item = Vec::new();
+                }
+                started_items = true;
+            }
+            current_item.push(line.clone());
+            continue;
+        }
+        if started_items {
+            current_item.push(line.clone());
+        } else {
+            pre_lines.push(line.clone());
+        }
+    }
+    if !current_item.is_empty() {
+        items.push(current_item);
+    }
+
+    let inferred_indent = item_indent.unwrap_or(rules_indent + 2);
+    if items.is_empty() && !rules_inline.is_empty() {
+        items.extend(inline_rules_to_items(&rules_inline, inferred_indent));
+        rules_inline.clear();
+    }
+
+    let mut kept_items: Vec<Vec<String>> = Vec::new();
+    for item in items {
+        let item_text = item.join("\n");
+        if item_text.contains(DOCDEX_INFO_START_PREFIX) && item_text.contains(DOCDEX_INFO_END) {
+            continue;
+        }
+        kept_items.push(item);
+    }
+
+    if add_docdex {
+        kept_items.push(build_yaml_rule_block(inferred_indent, instructions));
+    }
+
+    let remove_rules_block = !add_docdex
+        && kept_items.is_empty()
+        && !has_yaml_content(&pre_lines)
+        && rules_inline.is_empty();
+
+    let mut output: Vec<String> = Vec::new();
+    output.extend_from_slice(&lines[..rules_idx]);
+    if !remove_rules_block {
+        output.push(rules_line);
+        output.extend(pre_lines);
+        for item in kept_items {
+            output.extend(item);
+        }
+    }
+    output.extend_from_slice(&lines[end_idx..]);
+    let next = output.join("\n");
+    if next == source {
+        None
+    } else {
+        Some(next)
+    }
+}
+
+fn upsert_continue_rules_yaml(path: &Path, instructions: &str) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let next = normalize_instruction_text(instructions);
+    if next.is_empty() {
+        return Ok(false);
+    }
+    let current = fs::read_to_string(path)?;
+    let updated = rewrite_continue_rules_yaml(&current, &next, true);
+    let Some(updated) = updated else {
+        return Ok(false);
+    };
+    write_text_file(path, &updated)
+}
+
+fn remove_continue_rules_yaml(path: &Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let current = fs::read_to_string(path)?;
+    let updated = rewrite_continue_rules_yaml(&current, "", false);
+    let Some(updated) = updated else {
+        return Ok(false);
+    };
+    if updated.trim().is_empty() {
+        fs::remove_file(path)?;
+        return Ok(true);
+    }
+    write_text_file(path, &updated)
 }
 
 fn upsert_zed_instructions(path: &Path, instructions: &str) -> Result<bool> {
@@ -638,29 +956,187 @@ fn remove_zed_instructions(path: &Path) -> Result<bool> {
     Ok(true)
 }
 
-fn upsert_vscode_instructions(path: &Path, instructions_path: &Path) -> Result<bool> {
+fn upsert_vscode_instruction_key(
+    obj: &mut serde_json::Map<String, Value>,
+    key: &str,
+    instructions: &str,
+) -> bool {
+    let current = obj
+        .get(key)
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let merged = merge_instruction_text(current, instructions, false);
+    if merged.is_empty() || merged == current {
+        return false;
+    }
+    obj.insert(key.to_string(), Value::String(merged));
+    true
+}
+
+fn upsert_vscode_instructions_location(
+    obj: &mut serde_json::Map<String, Value>,
+    instructions_dir: &Path,
+) -> bool {
+    let location = instructions_dir.to_string_lossy().to_string();
+    match obj.get_mut(VSCODE_INSTRUCTIONS_LOCATIONS_KEY) {
+        Some(Value::Object(map)) => {
+            if map.get(&location) == Some(&Value::Bool(true)) {
+                return false;
+            }
+            map.insert(location, Value::Bool(true));
+            true
+        }
+        Some(Value::Array(list)) => {
+            let exists = list
+                .iter()
+                .any(|value| value.as_str() == Some(location.as_str()));
+            if exists {
+                return false;
+            }
+            list.push(Value::String(location));
+            true
+        }
+        Some(Value::String(existing)) => {
+            if existing == &location {
+                return false;
+            }
+            let mut list = vec![Value::String(existing.clone()), Value::String(location)];
+            obj.insert(VSCODE_INSTRUCTIONS_LOCATIONS_KEY.to_string(), Value::Array(list));
+            true
+        }
+        Some(_) => {
+            let mut map = serde_json::Map::new();
+            map.insert(location, Value::Bool(true));
+            obj.insert(
+                VSCODE_INSTRUCTIONS_LOCATIONS_KEY.to_string(),
+                Value::Object(map),
+            );
+            true
+        }
+        None => {
+            let mut map = serde_json::Map::new();
+            map.insert(location, Value::Bool(true));
+            obj.insert(
+                VSCODE_INSTRUCTIONS_LOCATIONS_KEY.to_string(),
+                Value::Object(map),
+            );
+            true
+        }
+    }
+}
+
+fn upsert_vscode_instructions(
+    path: &Path,
+    instructions: &str,
+    instructions_dir: &Path,
+) -> Result<bool> {
+    let next = normalize_instruction_text(instructions);
+    if next.is_empty() {
+        return Ok(false);
+    }
     let mut value = read_json(path)?;
     let obj = match value.as_object_mut() {
         Some(obj) => obj,
         None => return Ok(false),
     };
-    let instructions_value = instructions_path.to_string_lossy().to_string();
+    let mut updated = false;
+    if upsert_vscode_instruction_key(obj, VSCODE_INSTRUCTIONS_KEY, instructions) {
+        updated = true;
+    }
+    if upsert_vscode_instruction_key(obj, VSCODE_INSTRUCTIONS_KEY_LEGACY, instructions) {
+        updated = true;
+    }
     if obj
-        .get(VSCODE_INSTRUCTIONS_KEY)
-        .and_then(|value| value.as_str())
-        == Some(instructions_value.as_str())
+        .get(VSCODE_INSTRUCTIONS_USE_FILES_KEY)
+        .and_then(|value| value.as_bool())
+        != Some(true)
     {
+        obj.insert(
+            VSCODE_INSTRUCTIONS_USE_FILES_KEY.to_string(),
+            Value::Bool(true),
+        );
+        updated = true;
+    }
+    if upsert_vscode_instructions_location(obj, instructions_dir) {
+        updated = true;
+    }
+    if !updated {
         return Ok(false);
     }
-    obj.insert(
-        VSCODE_INSTRUCTIONS_KEY.to_string(),
-        Value::String(instructions_value),
-    );
     write_json(path, &value)?;
     Ok(true)
 }
 
-fn remove_vscode_instructions(path: &Path, instructions_path: &Path) -> Result<bool> {
+fn remove_vscode_instruction_key(
+    obj: &mut serde_json::Map<String, Value>,
+    key: &str,
+    instructions: &str,
+    legacy_path: Option<&str>,
+) -> bool {
+    let current = match obj.get(key).and_then(|value| value.as_str()) {
+        Some(value) => value,
+        None => return false,
+    };
+    let stripped = strip_docdex_blocks(current);
+    if stripped != normalize_instruction_text(current) {
+        if stripped.is_empty() {
+            obj.remove(key);
+        } else {
+            obj.insert(key.to_string(), Value::String(stripped));
+        }
+        return true;
+    }
+    let normalized = normalize_instruction_text(instructions);
+    if current == normalized || legacy_path == Some(current) {
+        obj.remove(key);
+        return true;
+    }
+    false
+}
+
+fn remove_vscode_instructions_location(
+    obj: &mut serde_json::Map<String, Value>,
+    instructions_dir: &Path,
+) -> bool {
+    let location = instructions_dir.to_string_lossy().to_string();
+    match obj.get_mut(VSCODE_INSTRUCTIONS_LOCATIONS_KEY) {
+        Some(Value::Object(map)) => {
+            if map.remove(&location).is_none() {
+                return false;
+            }
+            if map.is_empty() {
+                obj.remove(VSCODE_INSTRUCTIONS_LOCATIONS_KEY);
+            }
+            true
+        }
+        Some(Value::Array(list)) => {
+            let before = list.len();
+            list.retain(|value| value.as_str() != Some(location.as_str()));
+            if list.len() == before {
+                return false;
+            }
+            if list.is_empty() {
+                obj.remove(VSCODE_INSTRUCTIONS_LOCATIONS_KEY);
+            }
+            true
+        }
+        Some(Value::String(existing)) => {
+            if existing != &location {
+                return false;
+            }
+            obj.remove(VSCODE_INSTRUCTIONS_LOCATIONS_KEY);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn remove_vscode_instructions(
+    path: &Path,
+    instructions: &str,
+    instructions_dir: &Path,
+    legacy_path: &Path,
+) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
     }
@@ -669,14 +1145,30 @@ fn remove_vscode_instructions(path: &Path, instructions_path: &Path) -> Result<b
         Some(obj) => obj,
         None => return Ok(false),
     };
-    let expected = instructions_path.to_string_lossy();
-    let current = obj
-        .get(VSCODE_INSTRUCTIONS_KEY)
-        .and_then(|value| value.as_str());
-    if current != Some(expected.as_ref()) {
+    let mut updated = false;
+    if remove_vscode_instruction_key(
+        obj,
+        VSCODE_INSTRUCTIONS_KEY,
+        instructions,
+        None,
+    ) {
+        updated = true;
+    }
+    let legacy = legacy_path.to_string_lossy();
+    if remove_vscode_instruction_key(
+        obj,
+        VSCODE_INSTRUCTIONS_KEY_LEGACY,
+        instructions,
+        Some(legacy.as_ref()),
+    ) {
+        updated = true;
+    }
+    if remove_vscode_instructions_location(obj, instructions_dir) {
+        updated = true;
+    }
+    if !updated {
         return Ok(false);
     }
-    obj.remove(VSCODE_INSTRUCTIONS_KEY);
     write_json(path, &value)?;
     Ok(true)
 }
@@ -798,6 +1290,12 @@ fn client_instruction_paths() -> Result<InstructionPaths> {
     };
 
     let vscode_global_instructions = home.join(".vscode").join("global_instructions.md");
+    let vscode_instructions_dir = home.join(".vscode").join("instructions");
+    let vscode_instructions_file = vscode_instructions_dir.join("docdex.md");
+    let continue_root = user_profile.join(".continue");
+    let continue_json = continue_root.join("config.json");
+    let continue_yaml = continue_root.join("config.yaml");
+    let continue_yml = continue_root.join("config.yml");
     let windsurf_global_rules = user_profile
         .join(".codeium")
         .join("windsurf")
@@ -816,10 +1314,14 @@ fn client_instruction_paths() -> Result<InstructionPaths> {
     if cfg!(windows) {
         return Ok(InstructionPaths {
             claude: app_data.join("Claude").join("claude_desktop_config.json"),
-            continue_config: user_profile.join(".continue").join("config.json"),
+            continue_json,
+            continue_yaml,
+            continue_yml,
             zed: app_data.join("Zed").join("settings.json"),
             vscode_settings: app_data.join("Code").join("User").join("settings.json"),
             vscode_global_instructions,
+            vscode_instructions_dir,
+            vscode_instructions_file,
             windsurf_global_rules,
             roo_rules,
             pearai_agent,
@@ -837,7 +1339,9 @@ fn client_instruction_paths() -> Result<InstructionPaths> {
                 .join("Application Support")
                 .join("Claude")
                 .join("claude_desktop_config.json"),
-            continue_config: home.join(".continue").join("config.json"),
+            continue_json,
+            continue_yaml,
+            continue_yml,
             zed: home.join(".config").join("zed").join("settings.json"),
             vscode_settings: home
                 .join("Library")
@@ -846,6 +1350,8 @@ fn client_instruction_paths() -> Result<InstructionPaths> {
                 .join("User")
                 .join("settings.json"),
             vscode_global_instructions,
+            vscode_instructions_dir,
+            vscode_instructions_file,
             windsurf_global_rules,
             roo_rules,
             pearai_agent,
@@ -861,7 +1367,9 @@ fn client_instruction_paths() -> Result<InstructionPaths> {
             .join(".config")
             .join("Claude")
             .join("claude_desktop_config.json"),
-        continue_config: home.join(".continue").join("config.json"),
+        continue_json,
+        continue_yaml,
+        continue_yml,
         zed: home.join(".config").join("zed").join("settings.json"),
         vscode_settings: home
             .join(".config")
@@ -869,6 +1377,8 @@ fn client_instruction_paths() -> Result<InstructionPaths> {
             .join("User")
             .join("settings.json"),
         vscode_global_instructions,
+        vscode_instructions_dir,
+        vscode_instructions_file,
         windsurf_global_rules,
         roo_rules,
         pearai_agent,

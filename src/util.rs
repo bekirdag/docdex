@@ -238,13 +238,11 @@ pub fn detect_browser_candidates(config_path: Option<&Path>) -> Vec<BrowserCandi
     }
 
     if cfg!(target_os = "macos") {
-        let candidates_os = [
-            (
-                BrowserKind::Chromium,
-                "Chromium",
-                "/Applications/Chromium.app/Contents/MacOS/Chromium",
-            ),
-        ];
+        let candidates_os = [(
+            BrowserKind::Chromium,
+            "Chromium",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        )];
         for (kind, name, candidate) in candidates_os {
             let path = Path::new(candidate);
             let _ = push_candidate(
@@ -260,13 +258,11 @@ pub fn detect_browser_candidates(config_path: Option<&Path>) -> Vec<BrowserCandi
     }
 
     if cfg!(target_os = "windows") {
-        let suffixes = [
-            (
-                BrowserKind::Chromium,
-                "Chromium",
-                "Chromium\\Application\\chrome.exe",
-            ),
-        ];
+        let suffixes = [(
+            BrowserKind::Chromium,
+            "Chromium",
+            "Chromium\\Application\\chrome.exe",
+        )];
         let mut bases = Vec::new();
         for key in ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"] {
             if let Some(base) = std::env::var_os(key) {

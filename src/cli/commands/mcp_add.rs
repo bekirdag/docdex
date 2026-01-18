@@ -2,11 +2,11 @@ use anyhow::anyhow;
 use anyhow::Context;
 use anyhow::Result;
 use serde_json::json;
-use toml::map::Map as TomlMap;
-use toml::Value as TomlValue;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use toml::map::Map as TomlMap;
+use toml::Value as TomlValue;
 
 const DEFAULT_MCP_BASE_URL: &str = "http://127.0.0.1:28491";
 
@@ -128,13 +128,7 @@ pub fn run(agent: String, repo: Option<PathBuf>, remove: bool, all: bool) -> Res
             if remove { "removing from" } else { "adding to" },
             target
         );
-        handle_mcp_add(
-            target,
-            &repo_root,
-            &urls,
-            remove,
-            installed,
-        )?;
+        handle_mcp_add(target, &repo_root, &urls, remove, installed)?;
     }
     Ok(())
 }
@@ -166,11 +160,12 @@ mod tests {
             running: false,
         };
         let lines = mcp_add_banner_lines(&info);
-        assert!(lines.iter().any(|line| line.contains("Default MCP base URL")));
-        assert!(lines.iter().any(|line| {
-            line.contains("Start it with")
-                && line.contains("docdexd daemon")
-        }));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("Default MCP base URL")));
+        assert!(lines
+            .iter()
+            .any(|line| { line.contains("Start it with") && line.contains("docdexd daemon") }));
     }
 }
 
@@ -291,7 +286,12 @@ fn config_paths_for_agent(agent: &str) -> Result<Vec<PathBuf>> {
                 );
             }
             "vscode" => {
-                paths.push(home.join(".config").join("Code").join("User").join("mcp.json"));
+                paths.push(
+                    home.join(".config")
+                        .join("Code")
+                        .join("User")
+                        .join("mcp.json"),
+                );
             }
             "roo" => {
                 paths.push(
@@ -557,7 +557,10 @@ fn remove_codex_config(path: &Path, warn_only: bool) -> Result<()> {
         if warn_only {
             return Ok(());
         }
-        return Err(anyhow!("mcp_servers.docdex not found in {}", path.display()));
+        return Err(anyhow!(
+            "mcp_servers.docdex not found in {}",
+            path.display()
+        ));
     }
     let payload = toml::to_string_pretty(&root)?;
     fs::write(path, payload)?;
@@ -614,10 +617,7 @@ fn handle_mcp_add(
             } else {
                 let path = codex_config_path()?;
                 upsert_codex_config(&path, &urls.http_url)?;
-                println!(
-                    "Added docdex to Codex config at {}",
-                    path.display()
-                );
+                println!("Added docdex to Codex config at {}", path.display());
             }
         }
         "continue" => {
@@ -810,10 +810,7 @@ fn handle_mcp_add(
                 cmd.args(["mcp", "add", "docdex", &urls.sse_url]);
                 let status = cmd.status().context("run droid mcp command")?;
                 if status.success() {
-                    println!(
-                        "Factory/Kiro MCP add complete for {}",
-                        urls.sse_url
-                    );
+                    println!("Factory/Kiro MCP add complete for {}", urls.sse_url);
                 } else {
                     println!(
                         "Factory/Kiro MCP add failed with status {}; run manually: droid mcp add docdex {}",
@@ -898,10 +895,7 @@ fn handle_mcp_add(
             );
         }
         "warp" => {
-            println!(
-                "Warp: add docdex in settings pointing to {}",
-                urls.sse_url
-            );
+            println!("Warp: add docdex in settings pointing to {}", urls.sse_url);
         }
         "grok" => {
             println!(

@@ -273,8 +273,7 @@ fn impact_enforces_max_edges_and_sets_truncated() -> Result<(), Box<dyn Error>> 
     write_impact_graph(&state_dir)?;
 
     let host = "127.0.0.1";
-    let Some((mut server, port)) =
-        start_server_with_health(state_root.path(), repo.path(), host)?
+    let Some((mut server, port)) = start_server_with_health(state_root.path(), repo.path(), host)?
     else {
         return Ok(());
     };
@@ -320,8 +319,7 @@ fn impact_max_edges_zero_returns_empty_and_truncated() -> Result<(), Box<dyn Err
     write_impact_graph(&state_dir)?;
 
     let host = "127.0.0.1";
-    let Some((mut server, port)) =
-        start_server_with_health(state_root.path(), repo.path(), host)?
+    let Some((mut server, port)) = start_server_with_health(state_root.path(), repo.path(), host)?
     else {
         return Ok(());
     };
@@ -361,8 +359,7 @@ fn impact_enforces_max_depth() -> Result<(), Box<dyn Error>> {
     write_impact_graph(&state_dir)?;
 
     let host = "127.0.0.1";
-    let Some((mut server, port)) =
-        start_server_with_health(state_root.path(), repo.path(), host)?
+    let Some((mut server, port)) = start_server_with_health(state_root.path(), repo.path(), host)?
     else {
         return Ok(());
     };
@@ -418,8 +415,7 @@ fn impact_max_depth_zero_returns_empty_and_truncated() -> Result<(), Box<dyn Err
     write_impact_graph(&state_dir)?;
 
     let host = "127.0.0.1";
-    let Some((mut server, port)) =
-        start_server_with_health(state_root.path(), repo.path(), host)?
+    let Some((mut server, port)) = start_server_with_health(state_root.path(), repo.path(), host)?
     else {
         return Ok(());
     };
@@ -459,8 +455,7 @@ fn impact_filters_edge_types() -> Result<(), Box<dyn Error>> {
     write_impact_graph(&state_dir)?;
 
     let host = "127.0.0.1";
-    let Some((mut server, port)) =
-        start_server_with_health(state_root.path(), repo.path(), host)?
+    let Some((mut server, port)) = start_server_with_health(state_root.path(), repo.path(), host)?
     else {
         return Ok(());
     };
@@ -514,8 +509,7 @@ fn impact_reports_applied_limits_and_not_truncated_by_default() -> Result<(), Bo
     write_impact_graph(&state_dir)?;
 
     let host = "127.0.0.1";
-    let Some((mut server, port)) =
-        start_server_with_health(state_root.path(), repo.path(), host)?
+    let Some((mut server, port)) = start_server_with_health(state_root.path(), repo.path(), host)?
     else {
         return Ok(());
     };
@@ -562,8 +556,7 @@ fn impact_edge_types_does_not_expand_through_excluded_edges() -> Result<(), Box<
     )?;
 
     let host = "127.0.0.1";
-    let Some((mut server, port)) =
-        start_server_with_health(state_root.path(), repo.path(), host)?
+    let Some((mut server, port)) = start_server_with_health(state_root.path(), repo.path(), host)?
     else {
         return Ok(());
     };
@@ -643,8 +636,7 @@ fn impact_diagnostics_lists_entries() -> Result<(), Box<dyn Error>> {
     )?;
 
     let host = "127.0.0.1";
-    let Some((mut server, port)) =
-        start_server_with_health(state_root.path(), repo.path(), host)?
+    let Some((mut server, port)) = start_server_with_health(state_root.path(), repo.path(), host)?
     else {
         return Ok(());
     };
@@ -706,8 +698,7 @@ fn impact_diagnostics_filters_by_file() -> Result<(), Box<dyn Error>> {
     )?;
 
     let host = "127.0.0.1";
-    let Some((mut server, port)) =
-        start_server_with_health(state_root.path(), repo.path(), host)?
+    let Some((mut server, port)) = start_server_with_health(state_root.path(), repo.path(), host)?
     else {
         return Ok(());
     };
@@ -741,8 +732,7 @@ fn impact_invalid_params_return_invalid_argument_with_field_details() -> Result<
     write_impact_graph(&state_dir)?;
 
     let host = "127.0.0.1";
-    let Some((mut server, port)) =
-        start_server_with_health(state_root.path(), repo.path(), host)?
+    let Some((mut server, port)) = start_server_with_health(state_root.path(), repo.path(), host)?
     else {
         return Ok(());
     };
@@ -787,8 +777,7 @@ fn impact_non_integer_params_return_invalid_argument_with_field_details(
     write_impact_graph(&state_dir)?;
 
     let host = "127.0.0.1";
-    let Some((mut server, port)) =
-        start_server_with_health(state_root.path(), repo.path(), host)?
+    let Some((mut server, port)) = start_server_with_health(state_root.path(), repo.path(), host)?
     else {
         return Ok(());
     };
@@ -828,8 +817,7 @@ fn impact_missing_file_returns_invalid_argument_with_field_details() -> Result<(
     write_impact_graph(&state_dir)?;
 
     let host = "127.0.0.1";
-    let Some((mut server, port)) =
-        start_server_with_health(state_root.path(), repo.path(), host)?
+    let Some((mut server, port)) = start_server_with_health(state_root.path(), repo.path(), host)?
     else {
         return Ok(());
     };
@@ -870,8 +858,7 @@ fn impact_edge_types_empty_returns_invalid_argument_with_field_details(
     write_impact_graph(&state_dir)?;
 
     let host = "127.0.0.1";
-    let Some((mut server, port)) =
-        start_server_with_health(state_root.path(), repo.path(), host)?
+    let Some((mut server, port)) = start_server_with_health(state_root.path(), repo.path(), host)?
     else {
         return Ok(());
     };

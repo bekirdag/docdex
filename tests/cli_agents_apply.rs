@@ -81,6 +81,8 @@ fn agents_apply_round_trip() -> Result<()> {
     agents_apply::run(false)?;
 
     let vscode_global = temp.path().join(".vscode").join("global_instructions.md");
+    let vscode_instructions_dir = temp.path().join(".vscode").join("instructions");
+    let vscode_instructions_file = vscode_instructions_dir.join("docdex.md");
     let codex_agents = temp.path().join(".codex").join("AGENTS.md");
     let settings_path = vscode_settings_path(temp.path(), &app_data);
 
@@ -92,17 +94,46 @@ fn agents_apply_round_trip() -> Result<()> {
     assert!(codex_text.contains("---- START OF DOCDEX INFO V"));
     assert!(codex_text.contains("---- END OF DOCDEX INFO -----"));
 
+    let instructions_text = fs::read_to_string(&vscode_instructions_file)?;
+    assert!(instructions_text.contains("---- START OF DOCDEX INFO V"));
+    assert!(instructions_text.contains("---- END OF DOCDEX INFO -----"));
+
     let settings_text = fs::read_to_string(&settings_path)?;
     let settings_json: Value = serde_json::from_str(&settings_text)?;
     let instructions = settings_json
-        .get("copilot.chat.codeGeneration.instructions")
+        .get("github.copilot.chat.codeGeneration.instructions")
         .and_then(|value| value.as_str())
         .expect("expected VS Code instructions setting");
-    assert_eq!(instructions, vscode_global.to_string_lossy());
+    assert!(instructions.contains("---- START OF DOCDEX INFO V"));
+    assert!(instructions.contains("---- END OF DOCDEX INFO -----"));
+    let legacy_instructions = settings_json
+        .get("copilot.chat.codeGeneration.instructions")
+        .and_then(|value| value.as_str())
+        .expect("expected legacy VS Code instructions setting");
+    assert!(legacy_instructions.contains("---- START OF DOCDEX INFO V"));
+    assert!(legacy_instructions.contains("---- END OF DOCDEX INFO -----"));
+    assert_eq!(
+        settings_json
+            .get("github.copilot.chat.codeGeneration.useInstructionFiles")
+            .and_then(|value| value.as_bool()),
+        Some(true)
+    );
+    let instructions_locations = settings_json
+        .get("chat.instructionsFilesLocations")
+        .expect("expected VS Code instructions file locations");
+    let expected_location = vscode_instructions_dir.to_string_lossy().to_string();
+    let has_location = match instructions_locations {
+        Value::Object(map) => map.get(&expected_location) == Some(&Value::Bool(true)),
+        Value::Array(list) => list.iter().any(|value| value.as_str() == Some(expected_location.as_str())),
+        Value::String(value) => value == &expected_location,
+        _ => false,
+    };
+    assert!(has_location);
 
     agents_apply::run(true)?;
 
     assert!(!vscode_global.exists());
+    assert!(!vscode_instructions_file.exists());
     assert!(!codex_agents.exists());
 
     let settings_text = fs::read_to_string(&settings_path)?;
@@ -110,6 +141,19 @@ fn agents_apply_round_trip() -> Result<()> {
     assert!(settings_json
         .get("copilot.chat.codeGeneration.instructions")
         .is_none());
+    assert!(settings_json
+        .get("github.copilot.chat.codeGeneration.instructions")
+        .is_none());
+    if let Some(locations) = settings_json.get("chat.instructionsFilesLocations") {
+        let expected_location = vscode_instructions_dir.to_string_lossy().to_string();
+        let still_present = match locations {
+            Value::Object(map) => map.get(&expected_location) == Some(&Value::Bool(true)),
+            Value::Array(list) => list.iter().any(|value| value.as_str() == Some(expected_location.as_str())),
+            Value::String(value) => value == &expected_location,
+            _ => false,
+        };
+        assert!(!still_present);
+    }
 
     Ok(())
 }

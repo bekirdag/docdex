@@ -124,7 +124,11 @@ fn http_snippet_resolves_yaml_path() -> Result<(), Box<dyn Error>> {
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://127.0.0.1:{port}/snippet/openapi/spec.yaml");
     let resp = client.get(&url).send()?;
-    assert!(resp.status().is_success(), "expected success, got {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "expected success, got {}",
+        resp.status()
+    );
     let payload: Value = resp.json()?;
     let doc = payload
         .get("doc")

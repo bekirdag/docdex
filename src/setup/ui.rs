@@ -14,8 +14,8 @@ use ratatui::{
     Terminal,
 };
 use std::fmt::Write;
-use std::io::{self, Stdout};
 use std::io::Write as IoWrite;
+use std::io::{self, Stdout};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -998,8 +998,9 @@ fn configure_browser_section<I: WizardInput, S: WizardServices>(
     }
 
     loop {
-        let install =
-            input.with_progress(state, "Downloading Chromium...", || services.install_chromium());
+        let install = input.with_progress(state, "Downloading Chromium...", || {
+            services.install_chromium()
+        });
         match install {
             Ok(result) => {
                 services.set_browser_path(&result.path, "chromium")?;
@@ -2345,9 +2346,7 @@ mod tests {
         fn chromium_install_status(&self) -> browser_install::ChromiumInstallStatus {
             browser_install::ChromiumInstallStatus {
                 installed: self.chromium_installed,
-                version: self
-                    .chromium_installed
-                    .then(|| "test".to_string()),
+                version: self.chromium_installed.then(|| "test".to_string()),
                 path: self
                     .chromium_installed
                     .then(|| self.chromium_path.clone())

@@ -39,8 +39,8 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::{Component, Path as FsPath};
 use std::net::{IpAddr, SocketAddr};
+use std::path::{Component, Path as FsPath};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{info, warn};
@@ -2572,7 +2572,11 @@ fn normalize_rel_path_input(raw: &str, repo_root: &FsPath) -> Option<String> {
             return None;
         }
         let rel_str = rel.to_string_lossy().replace('\\', "/");
-        return if rel_str.is_empty() { None } else { Some(rel_str) };
+        return if rel_str.is_empty() {
+            None
+        } else {
+            Some(rel_str)
+        };
     }
     let cleaned = trimmed.replace('\\', "/");
     let cleaned = cleaned.trim_start_matches("./").trim_start_matches('/');
@@ -2778,8 +2782,12 @@ async fn search_handler(
     if !skip_local_search {
         if let Err(err) = crate::index::ensure_indexed(repo.indexer.clone()).await {
             if let Some(app) = err.downcast_ref::<AppError>() {
-                return json_error(status_for_app_error(app.code), app.code, app.message.clone())
-                    .into_response();
+                return json_error(
+                    status_for_app_error(app.code),
+                    app.code,
+                    app.message.clone(),
+                )
+                .into_response();
             }
             state.metrics.inc_error();
             warn!(target: "docdexd", error = ?err, "indexing failed");
@@ -2864,7 +2872,8 @@ async fn search_handler(
                     pruned,
                     selected_sources,
                 };
-                let meta = build_search_meta(&repo.indexer, query_meta, Some(context_assembly)).ok();
+                let meta =
+                    build_search_meta(&repo.indexer, query_meta, Some(context_assembly)).ok();
                 let top_score_normalized = top_score.map(normalize_score);
                 let response = SearchResponse {
                     hits,
@@ -3142,7 +3151,8 @@ async fn snippet_handler(
         {
             Ok(Some(result)) => Ok(Some(result)),
             Ok(None) => {
-                if let Some(normalized) = normalize_rel_path_input(&doc_id, repo.indexer.repo_root())
+                if let Some(normalized) =
+                    normalize_rel_path_input(&doc_id, repo.indexer.repo_root())
                 {
                     repo.indexer
                         .snapshot_with_snippet(&normalized, params.q.as_deref(), window)

@@ -103,15 +103,27 @@ enum FallbackProvider {
     DdgLite(Url),
     SearxngJson(Url),
     GoogleMobile(Url),
-    Brave { api_key: String, base_url: Url },
+    Brave {
+        api_key: String,
+        base_url: Url,
+    },
     GoogleCse {
         api_key: String,
         cx: String,
         base_url: Url,
     },
-    Bing { api_key: String, base_url: Url },
-    Tavily { api_key: String, base_url: Url },
-    Exa { api_key: String, base_url: Url },
+    Bing {
+        api_key: String,
+        base_url: Url,
+    },
+    Tavily {
+        api_key: String,
+        base_url: Url,
+    },
+    Exa {
+        api_key: String,
+        base_url: Url,
+    },
 }
 
 struct FallbackChain {
@@ -140,11 +152,7 @@ impl FallbackChain {
             free_providers.push(FallbackProvider::GoogleMobile(google));
         }
 
-        if let Some(api_key) = config
-            .brave_api_key
-            .as_deref()
-            .and_then(nonempty_value)
-        {
+        if let Some(api_key) = config.brave_api_key.as_deref().and_then(nonempty_value) {
             let base_url = url_from_env("DOCDEX_BRAVE_API_URL")
                 .or_else(|| Url::parse(BRAVE_API_URL).ok())
                 .unwrap_or_else(|| Url::parse(BRAVE_API_URL).expect("default brave url"));
@@ -166,11 +174,7 @@ impl FallbackChain {
                 base_url,
             });
         }
-        if let Some(api_key) = config
-            .bing_api_key
-            .as_deref()
-            .and_then(nonempty_value)
-        {
+        if let Some(api_key) = config.bing_api_key.as_deref().and_then(nonempty_value) {
             let base_url = url_from_env("DOCDEX_BING_API_URL")
                 .or_else(|| Url::parse(BING_API_URL).ok())
                 .unwrap_or_else(|| Url::parse(BING_API_URL).expect("default bing url"));
@@ -382,7 +386,8 @@ impl DdgDiscovery {
                                 (err, failures, max_failures, stop_backoff)
                             };
                             self.mark_ddg_blocked("anomaly_page");
-                            self.fallback_chain_for(&mut fallback_chain, true).skip_ddg();
+                            self.fallback_chain_for(&mut fallback_chain, true)
+                                .skip_ddg();
                             if let Some(response) = self
                                 .maybe_fallback_discovery(
                                     self.fallback_chain_for(&mut fallback_chain, true),
@@ -407,8 +412,13 @@ impl DdgDiscovery {
                         }
                         let links = extract_links(&body);
                         let filtered = self.filter_links(links);
-                        let responses =
-                            build_discovery_responses(PROVIDER, query, filtered, limit, cache_limit);
+                        let responses = build_discovery_responses(
+                            PROVIDER,
+                            query,
+                            filtered,
+                            limit,
+                            cache_limit,
+                        );
                         self.pacer.lock().record_success();
                         self.cache_response(&cache_key, &responses.response_for_cache);
                         return Ok(responses.response);
@@ -424,7 +434,8 @@ impl DdgDiscovery {
                     };
                     if is_ddg_block_status(status) {
                         self.mark_ddg_blocked("http_status");
-                        self.fallback_chain_for(&mut fallback_chain, true).skip_ddg();
+                        self.fallback_chain_for(&mut fallback_chain, true)
+                            .skip_ddg();
                         if let Some(response) = self
                             .maybe_fallback_discovery(
                                 self.fallback_chain_for(&mut fallback_chain, true),
@@ -675,7 +686,13 @@ impl DdgDiscovery {
                 base_url,
             } => {
                 self.try_google_cse_discovery(
-                    &base_url, &api_key, &cx, query, limit, cache_limit, cache_key,
+                    &base_url,
+                    &api_key,
+                    &cx,
+                    query,
+                    limit,
+                    cache_limit,
+                    cache_key,
                 )
                 .await
             }
@@ -831,10 +848,7 @@ impl DdgDiscovery {
             return Ok(None);
         }
         let body: Value = resp.json().await.map_err(|err| {
-            AppError::new(
-                ERR_INTERNAL_ERROR,
-                format!("brave discovery failed: {err}"),
-            )
+            AppError::new(ERR_INTERNAL_ERROR, format!("brave discovery failed: {err}"))
         })?;
         let links = extract_brave_links(&body);
         let filtered = self.filter_links(links);
@@ -929,7 +943,12 @@ impl DdgDiscovery {
             "max_results": limit,
             "search_depth": "basic",
         });
-        let resp = self.client.post(base_url.clone()).json(&payload).send().await?;
+        let resp = self
+            .client
+            .post(base_url.clone())
+            .json(&payload)
+            .send()
+            .await?;
         if !resp.status().is_success() {
             return Ok(None);
         }
@@ -1241,7 +1260,10 @@ fn extract_links(html: &str) -> Vec<String> {
 
 fn extract_searxng_links(body: &str) -> Result<Vec<String>> {
     let value: Value = serde_json::from_str(body).map_err(|err| {
-        AppError::new(ERR_INTERNAL_ERROR, format!("searxng discovery failed: {err}"))
+        AppError::new(
+            ERR_INTERNAL_ERROR,
+            format!("searxng discovery failed: {err}"),
+        )
     })?;
     Ok(extract_json_links(&value))
 }
@@ -1597,7 +1619,9 @@ fn searxng_fallbacks() -> Vec<FallbackProvider> {
             }
         }
     }
-    urls.into_iter().map(FallbackProvider::SearxngJson).collect()
+    urls.into_iter()
+        .map(FallbackProvider::SearxngJson)
+        .collect()
 }
 
 fn env_url_list(key: &str) -> Vec<Url> {

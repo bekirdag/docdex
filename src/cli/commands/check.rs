@@ -1238,10 +1238,7 @@ fn resolve_chromium_details() -> Option<serde_json::Value> {
         return Some(payload);
     };
     if let Some(map) = payload.as_object_mut() {
-        map.insert(
-            "path".to_string(),
-            json!(manifest.path.to_string_lossy()),
-        );
+        map.insert("path".to_string(), json!(manifest.path.to_string_lossy()));
         if let Some(installed_at) = manifest.installed_at.as_ref() {
             map.insert("installed_at".to_string(), json!(installed_at));
         }

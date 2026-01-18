@@ -14,7 +14,10 @@ fn docdex_bin() -> PathBuf {
 }
 
 fn write_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
-    fs::write(repo_root.join("README.md"), "# Docdex\n\nOllama optional.\n")?;
+    fs::write(
+        repo_root.join("README.md"),
+        "# Docdex\n\nOllama optional.\n",
+    )?;
     Ok(())
 }
 

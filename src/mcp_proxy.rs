@@ -1,5 +1,5 @@
-use anyhow::{anyhow, Context, Result};
 use crate::mcp_server::McpService;
+use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::env;
@@ -107,17 +107,19 @@ impl McpProxy {
 
     async fn handle_request(&self, request: Value) -> Result<Option<Value>> {
         let mut guard = self.service.lock().await;
-        let service = guard.as_mut().ok_or_else(|| anyhow!("mcp proxy shutdown"))?;
+        let service = guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("mcp proxy shutdown"))?;
         service.handle_json(request).await
     }
 
     async fn handle_request_with_timeout(&self, request: Value) -> Result<Option<Value>> {
         let mut guard = self.service.lock().await;
-        let service = guard.as_mut().ok_or_else(|| anyhow!("mcp proxy shutdown"))?;
+        let service = guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("mcp proxy shutdown"))?;
         let timeout = mcp_proxy_timeout_for_request(&request);
-        match tokio::time::timeout(timeout, service.handle_json(request))
-        .await
-        {
+        match tokio::time::timeout(timeout, service.handle_json(request)).await {
             Ok(result) => result,
             Err(_) => Err(anyhow!("mcp proxy timeout")),
         }
@@ -219,5 +221,8 @@ fn is_web_research_request(request: &Value) -> bool {
         return false;
     };
     let name = params.get("name").and_then(Value::as_str);
-    matches!(name, Some("docdex_web_research") | Some("docdex.web_research"))
+    matches!(
+        name,
+        Some("docdex_web_research") | Some("docdex.web_research")
+    )
 }

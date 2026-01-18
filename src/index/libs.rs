@@ -304,7 +304,18 @@ impl LibsIndexer {
         let top_docs = searcher.search(&tantivy_query, &TopDocs::with_limit(limit))?;
         let mut results = Vec::with_capacity(top_docs.len());
         for (score, addr) in top_docs {
-            let retrieved = searcher.doc(addr)?;
+            let retrieved = match searcher.doc(addr) {
+                Ok(doc) => doc,
+                Err(err) => {
+                    warn!(
+                        target: "docdexd",
+                        error = ?err,
+                        ?addr,
+                        "failed to load libs search hit; skipping"
+                    );
+                    continue;
+                }
+            };
             let doc_id = retrieved
                 .get_first(self.doc_id_field)
                 .and_then(|v| v.as_text().map(|s| s.to_string()))
@@ -335,10 +346,8 @@ impl LibsIndexer {
                     if fragment.is_empty() {
                         None
                     } else {
-                        let inferred_truncated = fragment
-                            .chars()
-                            .count()
-                            >= super::MAX_SNIPPET_CHARS.saturating_sub(1);
+                        let inferred_truncated =
+                            fragment.chars().count() >= super::MAX_SNIPPET_CHARS.saturating_sub(1);
                         super::line_safe_snippet_for_fragment(
                             body,
                             fragment,

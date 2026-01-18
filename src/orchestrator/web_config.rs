@@ -94,8 +94,8 @@ impl WebConfig {
         let scraper_engine = config_scraper_engine().unwrap_or_else(|| "chromium".to_string());
         let scraper_headless = config_scraper_headless().unwrap_or(true);
         let chrome_binary_path = config_scraper_chrome_binary();
-        let scraper_browser_kind = config_scraper_browser_kind()
-            .or_else(|| Some("chromium".to_string()));
+        let scraper_browser_kind =
+            config_scraper_browser_kind().or_else(|| Some("chromium".to_string()));
         let scraper_user_data_dir = env::var("DOCDEX_BROWSER_USER_DATA_DIR")
             .ok()
             .and_then(|value| normalize_nonempty(value))
@@ -107,8 +107,7 @@ impl WebConfig {
         let brave_api_key = env_nonempty("DOCDEX_BRAVE_API_KEY").or_else(config_brave_api_key);
         let google_cse_api_key =
             env_nonempty("DOCDEX_GOOGLE_CSE_API_KEY").or_else(config_google_cse_api_key);
-        let google_cse_cx =
-            env_nonempty("DOCDEX_GOOGLE_CSE_CX").or_else(config_google_cse_cx);
+        let google_cse_cx = env_nonempty("DOCDEX_GOOGLE_CSE_CX").or_else(config_google_cse_cx);
         let bing_api_key = env_nonempty("DOCDEX_BING_API_KEY").or_else(config_bing_api_key);
 
         Self {
@@ -217,7 +216,11 @@ fn config_brave_api_key() -> Option<String> {
         return None;
     }
     let config = config::load_config_from_path(&path).ok()?;
-    config.web.providers.brave_api_key.and_then(normalize_nonempty)
+    config
+        .web
+        .providers
+        .brave_api_key
+        .and_then(normalize_nonempty)
 }
 
 fn config_google_cse_api_key() -> Option<String> {
@@ -226,7 +229,11 @@ fn config_google_cse_api_key() -> Option<String> {
         return None;
     }
     let config = config::load_config_from_path(&path).ok()?;
-    config.web.providers.google_cse_api_key.and_then(normalize_nonempty)
+    config
+        .web
+        .providers
+        .google_cse_api_key
+        .and_then(normalize_nonempty)
 }
 
 fn config_google_cse_cx() -> Option<String> {
@@ -235,7 +242,11 @@ fn config_google_cse_cx() -> Option<String> {
         return None;
     }
     let config = config::load_config_from_path(&path).ok()?;
-    config.web.providers.google_cse_cx.and_then(normalize_nonempty)
+    config
+        .web
+        .providers
+        .google_cse_cx
+        .and_then(normalize_nonempty)
 }
 
 fn config_bing_api_key() -> Option<String> {
@@ -244,7 +255,11 @@ fn config_bing_api_key() -> Option<String> {
         return None;
     }
     let config = config::load_config_from_path(&path).ok()?;
-    config.web.providers.bing_api_key.and_then(normalize_nonempty)
+    config
+        .web
+        .providers
+        .bing_api_key
+        .and_then(normalize_nonempty)
 }
 
 fn config_cache_ttl_secs() -> Option<u64> {

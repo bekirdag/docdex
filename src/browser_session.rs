@@ -447,7 +447,10 @@ fn create_lock_file(path: &PathBuf) -> Result<LockFile, BrowserSessionError> {
 }
 
 fn is_lock_contended(err: &io::Error) -> bool {
-    matches!(err.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::AlreadyExists)
+    matches!(
+        err.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::AlreadyExists
+    )
 }
 
 fn try_remove_stale_lock(path: &PathBuf) -> Result<bool, BrowserSessionError> {
@@ -462,10 +465,7 @@ fn try_remove_stale_lock(path: &PathBuf) -> Result<bool, BrowserSessionError> {
                 if !pid_is_alive(pid) {
                     return remove_lock_file(path, "pid_not_alive");
                 }
-                if age
-                    .map(|age| age > LOCK_FORCE_KILL_AGE)
-                    .unwrap_or(false)
-                {
+                if age.map(|age| age > LOCK_FORCE_KILL_AGE).unwrap_or(false) {
                     if try_kill_stale_pid(pid) {
                         return remove_lock_file(path, "pid_force_killed");
                     }

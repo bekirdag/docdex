@@ -84,16 +84,14 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
     }
     let use_gateway_repo = daemon_mode && !repo_explicit;
     let repo_root = if use_gateway_repo {
-        let state_base = config
-            .core
-            .global_state_dir
-            .clone()
-            .unwrap_or(crate::state_paths::default_state_base_dir().map_err(|err| {
+        let state_base = config.core.global_state_dir.clone().unwrap_or(
+            crate::state_paths::default_state_base_dir().map_err(|err| {
                 StartupError::new(
                     "startup_state_invalid",
                     format!("failed to resolve global state dir: {err}"),
                 )
-            })?);
+            })?,
+        );
         crate::state_paths::ensure_daemon_root_dir(&state_base).map_err(|err| {
             StartupError::new(
                 "startup_state_invalid",
@@ -105,7 +103,8 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         repo.repo_root()
     };
     let state_dir_override = if use_gateway_repo {
-        repo.state_dir_override().or_else(|| config.core.global_state_dir.clone())
+        repo.state_dir_override()
+            .or_else(|| config.core.global_state_dir.clone())
     } else {
         repo.state_dir_override()
     };

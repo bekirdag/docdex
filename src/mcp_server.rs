@@ -1,4 +1,3 @@
-use anyhow::{Context, Result};
 use crate::config;
 use crate::dag::logging as dag_logging;
 use crate::diff;
@@ -9,9 +8,7 @@ use crate::error::{
     ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
     ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
 };
-use crate::impact::{
-    build_impact_diagnostics_response, ImpactDiagnosticsEntry, ImpactGraphStore,
-};
+use crate::impact::{build_impact_diagnostics_response, ImpactDiagnosticsEntry, ImpactGraphStore};
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
 use crate::memory::{inject_embedding_metadata, repo_state_root_from_state_dir, MemoryStore};
@@ -25,6 +22,7 @@ use crate::ratelimit::RateLimiter;
 use crate::search;
 use crate::symbols::SymbolsStore;
 use crate::tier2::Tier2Config;
+use anyhow::{Context, Result};
 use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -701,8 +699,10 @@ impl McpService {
                 Some(trimmed.to_string())
             }
         });
-        let repo_id = crate::repo_manager::repo_fingerprint_sha256(&repo_root)
-            .unwrap_or_else(|_| crate::repo_manager::fingerprint::legacy_repo_id_for_root(&repo_root));
+        let repo_id =
+            crate::repo_manager::repo_fingerprint_sha256(&repo_root).unwrap_or_else(|_| {
+                crate::repo_manager::fingerprint::legacy_repo_id_for_root(&repo_root)
+            });
         let authorized = auth_token.is_none();
         let server = McpServer {
             repo_id,
@@ -762,7 +762,6 @@ impl McpService {
             None => Ok(None),
         }
     }
-
 }
 
 #[derive(Clone)]
@@ -2170,8 +2169,8 @@ Produce a phased plan with risks and tests to run."
             memory_budget_from_max_answer_tokens(self.max_answer_tokens),
             ProfileBudget::default(),
         );
-        let repo_id = crate::repo_manager::repo_fingerprint_sha256(&self.repo_root)
-            .unwrap_or_else(|_| {
+        let repo_id =
+            crate::repo_manager::repo_fingerprint_sha256(&self.repo_root).unwrap_or_else(|_| {
                 crate::repo_manager::fingerprint::legacy_repo_id_for_root(&self.repo_root)
             });
         let memory_state = self.memory.as_ref().map(|state| search::MemoryState {

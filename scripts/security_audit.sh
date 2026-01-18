@@ -49,8 +49,23 @@ fi
 
 if command -v npm >/dev/null 2>&1 && [[ -f "${ROOT_DIR}/npm/package.json" ]]; then
   log "running npm audit"
+  npm_audit_status=0
+  set +e
   (cd "${ROOT_DIR}/npm" && npm audit --json >"${LOG_DIR}/npm_audit.json")
-  log "npm audit written to ${LOG_DIR}/npm_audit.json"
+  npm_audit_status=$?
+  set -e
+
+  if [[ "${npm_audit_status}" -eq 0 ]]; then
+    log "npm audit written to ${LOG_DIR}/npm_audit.json"
+  elif [[ "${npm_audit_status}" -eq 1 ]]; then
+    log "npm audit reported vulnerabilities (exit 1); report at ${LOG_DIR}/npm_audit.json"
+  else
+    if [[ "${STRICT}" == "1" ]]; then
+      log "npm audit failed (exit ${npm_audit_status}); set DOCDEX_AUDIT_STRICT=0 to skip"
+      exit 1
+    fi
+    log "npm audit failed (exit ${npm_audit_status}); continuing"
+  fi
 
   if npm sbom --version >/dev/null 2>&1; then
     log "generating npm sbom"

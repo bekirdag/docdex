@@ -26,7 +26,10 @@ fn write_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
     std::fs::write(pdr_dir.join("overview.md"), "PDR_TOKEN\n")?;
     std::fs::write(sds_dir.join("sds.md"), "SDS_TOKEN\n")?;
     std::fs::write(openapi_dir.join("spec.yaml"), "OPENAPI_TOKEN\n")?;
-    std::fs::write(src_dir.join("main.rs"), "fn main() { let _ = \"CODE_TOKEN\"; }\n")?;
+    std::fs::write(
+        src_dir.join("main.rs"),
+        "fn main() { let _ = \"CODE_TOKEN\"; }\n",
+    )?;
     Ok(())
 }
 

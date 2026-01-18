@@ -92,7 +92,6 @@ pub fn ensure_daemon_running(config: &AppConfig, repo_hint: Option<PathBuf>) -> 
     ))
 }
 
-
 fn parse_bind_addr(value: &str) -> Result<SocketAddr> {
     value
         .parse::<SocketAddr>()
@@ -170,4 +169,3 @@ fn spawn_daemon(addr: SocketAddr, _repo_hint: Option<PathBuf>) -> Result<()> {
     let _child = cmd.spawn().context("spawn daemon")?;
     Ok(())
 }
-

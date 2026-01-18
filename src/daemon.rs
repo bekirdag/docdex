@@ -378,8 +378,7 @@ pub async fn serve(
                 } else {
                     println!(
                         "docdexd already running (pid={} port={})",
-                        metadata.pid,
-                        metadata.port
+                        metadata.pid, metadata.port
                     );
                 }
                 if metadata.port != 0 {
@@ -454,9 +453,7 @@ pub async fn serve(
         let model = embedding_model.trim();
         let base_url = ollama_base_url.trim();
         if model.is_empty() || base_url.is_empty() {
-            warn!(
-                "embedding base URL/model not configured; memory endpoints are disabled"
-            );
+            warn!("embedding base URL/model not configured; memory endpoints are disabled");
             None
         } else {
             let timeout = Duration::from_millis(embedding_timeout_ms);

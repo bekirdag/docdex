@@ -115,7 +115,11 @@ fn http_search_auto_reindexes_stale_index() -> Result<(), Box<dyn Error>> {
     let client = Client::builder().timeout(Duration::from_secs(3)).build()?;
     let url = format!("http://127.0.0.1:{port}/search?q=SCHEMA_TOKEN&limit=1");
     let resp = client.get(&url).send()?;
-    assert!(resp.status().is_success(), "expected success, got {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "expected success, got {}",
+        resp.status()
+    );
     let payload: Value = resp.json()?;
     let hits = payload
         .get("hits")

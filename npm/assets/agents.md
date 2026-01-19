@@ -1,4 +1,3 @@
----- START OF DOCDEX INFO V0.2.24 ----
 ## Priority Directives (Mandatory)
 
 - Always use both memory lobes early: docdex_get_profile + docdex_memory_recall; save new facts via docdex_memory_save and new preferences via docdex_save_preference.
@@ -152,4 +151,3 @@ Docdex adapts to the host.
 
 - Project Mapping: On constrained hardware, docdex uses a "Spotlight Heuristic" to show you only a skeletal file tree based on your role keywords, rather than the full file system.
 - LLM: It may be running a quantized model (e.g., phi3.5) or a heavy model (llama3.1:70b) depending on VRAM. Trust the daemon's token limits; it handles truncation.
----- END OF DOCDEX INFO ----

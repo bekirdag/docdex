@@ -212,11 +212,10 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
     let (enable_mcp, mcp_source) =
         resolve_mcp_enabled(enable_mcp, disable_mcp, config.server.enable_mcp);
     let web_env = std::env::var("DOCDEX_WEB_ENABLED").ok();
-    if enable_mcp
-        && web_env
-            .as_deref()
-            .map(|value| value.trim().is_empty())
-            .unwrap_or(true)
+    if web_env
+        .as_deref()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
     {
         std::env::set_var("DOCDEX_WEB_ENABLED", "1");
     }

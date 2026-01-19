@@ -131,15 +131,32 @@ fn resolve_selected_candidate(
     let desired = desired
         .map(|value| value.trim())
         .filter(|value| !value.is_empty());
-    if let Some(name) = desired {
-        if let Some(candidate) = candidates
+    if let Some(raw) = desired {
+        let lowered = raw.to_ascii_lowercase();
+        let desired_kind = match lowered.as_str() {
+            "chromium" | "chrome" => Some(BrowserKind::Chromium),
+            "custom" => Some(BrowserKind::Custom),
+            _ => None,
+        };
+        if let Some(kind) = desired_kind {
+            if let Some(candidate) = candidates
+                .iter()
+                .filter(|candidate| candidate.kind == kind)
+                .min_by_key(|candidate| candidate.priority)
+            {
+                return Some(candidate.clone());
+            }
+        } else if let Some(candidate) = candidates
             .iter()
-            .find(|candidate| candidate.name.eq_ignore_ascii_case(name))
+            .find(|candidate| candidate.name.eq_ignore_ascii_case(raw))
         {
             return Some(candidate.clone());
         }
     }
-    candidates.first().cloned()
+    candidates
+        .iter()
+        .min_by_key(|candidate| candidate.priority)
+        .cloned()
 }
 
 fn resolve_auto_install_enabled(config: &config::AppConfig) -> bool {

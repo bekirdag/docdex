@@ -727,7 +727,7 @@ dependencies = [
 
 [[package]]
 name = "docdexd"
-version = "0.2.23"
+version = "0.2.24"
 dependencies = [
  "aes-gcm",
  "ammonia",

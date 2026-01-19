@@ -8,7 +8,6 @@ This is the detailed, technical guide for Docdex. Use it for installation, setup
 - Operating modes
 - MCP integration
 - HTTP API
-- Smithery local usage
 - State, paths, and defaults
 - Configuration reference
 - Ops and safety

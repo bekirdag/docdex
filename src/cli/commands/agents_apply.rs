@@ -212,8 +212,7 @@ pub(crate) fn run(remove: bool) -> Result<()> {
             &mut updated,
             &mut failed,
         );
-        let continue_yaml_exists =
-            paths.continue_yaml.exists() || paths.continue_yml.exists();
+        let continue_yaml_exists = paths.continue_yaml.exists() || paths.continue_yml.exists();
         if continue_yaml_exists {
             if paths.continue_yaml.exists() {
                 attempted += 1;
@@ -742,7 +741,12 @@ fn rewrite_continue_rules_yaml(
         if let Some(caps) = re.captures(line) {
             rules_idx = Some(idx);
             rules_indent = caps.get(1).map(|m| m.as_str().len()).unwrap_or(0);
-            rules_inline = caps.get(2).map(|m| m.as_str()).unwrap_or("").trim().to_string();
+            rules_inline = caps
+                .get(2)
+                .map(|m| m.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
             if let Some((head, _)) = rules_inline.split_once('#') {
                 rules_inline = head.trim().to_string();
             }
@@ -1001,7 +1005,10 @@ fn upsert_vscode_instructions_location(
                 return false;
             }
             let mut list = vec![Value::String(existing.clone()), Value::String(location)];
-            obj.insert(VSCODE_INSTRUCTIONS_LOCATIONS_KEY.to_string(), Value::Array(list));
+            obj.insert(
+                VSCODE_INSTRUCTIONS_LOCATIONS_KEY.to_string(),
+                Value::Array(list),
+            );
             true
         }
         Some(_) => {
@@ -1146,12 +1153,7 @@ fn remove_vscode_instructions(
         None => return Ok(false),
     };
     let mut updated = false;
-    if remove_vscode_instruction_key(
-        obj,
-        VSCODE_INSTRUCTIONS_KEY,
-        instructions,
-        None,
-    ) {
+    if remove_vscode_instruction_key(obj, VSCODE_INSTRUCTIONS_KEY, instructions, None) {
         updated = true;
     }
     let legacy = legacy_path.to_string_lossy();

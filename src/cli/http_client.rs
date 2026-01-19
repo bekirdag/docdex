@@ -39,8 +39,8 @@ impl CliHttpClient {
         let auth_token = env_non_empty("DOCDEX_AUTH_TOKEN");
         let default_timeout_ms = resolve_http_timeout_ms();
         let connect_timeout_ms = resolve_http_connect_timeout_ms(default_timeout_ms);
-        let mut builder = Client::builder()
-            .connect_timeout(Duration::from_millis(connect_timeout_ms.max(1)));
+        let mut builder =
+            Client::builder().connect_timeout(Duration::from_millis(connect_timeout_ms.max(1)));
         if let Some(timeout_ms) = timeout_ms {
             builder = builder.timeout(Duration::from_millis(timeout_ms.max(1)));
         }

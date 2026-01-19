@@ -124,7 +124,9 @@ fn agents_apply_round_trip() -> Result<()> {
     let expected_location = vscode_instructions_dir.to_string_lossy().to_string();
     let has_location = match instructions_locations {
         Value::Object(map) => map.get(&expected_location) == Some(&Value::Bool(true)),
-        Value::Array(list) => list.iter().any(|value| value.as_str() == Some(expected_location.as_str())),
+        Value::Array(list) => list
+            .iter()
+            .any(|value| value.as_str() == Some(expected_location.as_str())),
         Value::String(value) => value == &expected_location,
         _ => false,
     };
@@ -148,7 +150,9 @@ fn agents_apply_round_trip() -> Result<()> {
         let expected_location = vscode_instructions_dir.to_string_lossy().to_string();
         let still_present = match locations {
             Value::Object(map) => map.get(&expected_location) == Some(&Value::Bool(true)),
-            Value::Array(list) => list.iter().any(|value| value.as_str() == Some(expected_location.as_str())),
+            Value::Array(list) => list
+                .iter()
+                .any(|value| value.as_str() == Some(expected_location.as_str())),
             Value::String(value) => value == &expected_location,
             _ => false,
         };

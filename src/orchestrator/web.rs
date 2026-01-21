@@ -1774,7 +1774,8 @@ async fn run_web_discovery(
                         urls = normalized.1;
                         debug.push("fallback-only discovery used (api-first)".to_string());
                         if urls.is_empty() {
-                            debug.push("fallback-only discovery returned empty results".to_string());
+                            debug
+                                .push("fallback-only discovery returned empty results".to_string());
                         }
                     }
                     Err(err) => {

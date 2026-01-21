@@ -795,12 +795,9 @@ mod repo_context_tests {
             false,
         )?;
 
-        let default_indexer =
-            default_indexer.expect("build_state requires at least one repo");
-        let default_repo_id =
-            default_repo_id.expect("build_state requires at least one repo");
-        let default_legacy_id =
-            default_legacy_id.expect("build_state requires at least one repo");
+        let default_indexer = default_indexer.expect("build_state requires at least one repo");
+        let default_repo_id = default_repo_id.expect("build_state requires at least one repo");
+        let default_legacy_id = default_legacy_id.expect("build_state requires at least one repo");
 
         if let Some(manager) = manager.as_ref() {
             manager.pin_repo(default_repo_id.clone());
@@ -868,10 +865,7 @@ mod repo_context_tests {
     fn mismatched_repo_id_rejected() -> Result<()> {
         let (state, _repo_ids, _temp) = build_state(1, false)?;
         let mut headers = HeaderMap::new();
-        headers.insert(
-            REPO_ID_HEADER,
-            HeaderValue::from_static("alpha"),
-        );
+        headers.insert(REPO_ID_HEADER, HeaderValue::from_static("alpha"));
         let err = match resolve_repo_context(&state, &headers, Some("bravo"), None, false) {
             Ok(_) => return Err(anyhow!("expected mismatch error")),
             Err(err) => err,

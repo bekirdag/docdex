@@ -2406,9 +2406,8 @@ Produce a phased plan with risks and tests to run."
             self.ensure_project_root(project_root.as_deref())?;
         }
 
-        let task_type = TaskType::parse(&args.task_type).ok_or_else(|| {
-            AppError::new(ERR_INVALID_ARGUMENT, "task_type is invalid")
-        })?;
+        let task_type = TaskType::parse(&args.task_type)
+            .ok_or_else(|| AppError::new(ERR_INVALID_ARGUMENT, "task_type is invalid"))?;
         let web_gate = WebGateConfig::from_env();
         let library_result = if web_gate.enabled {
             let indexer = self.indexer.clone();
@@ -2447,12 +2446,8 @@ Produce a phased plan with risks and tests to run."
             )
             .await
         } else {
-            refresh_local_library_if_stale(
-                self.global_state_dir.as_deref(),
-                &self.llm_config,
-                true,
-            )
-            .await
+            refresh_local_library_if_stale(self.global_state_dir.as_deref(), &self.llm_config, true)
+                .await
         };
         let library = match library_result {
             Ok(library) => Some(library),
@@ -2466,14 +2461,14 @@ Produce a phased plan with risks and tests to run."
             }
         };
         if !delegation_is_enabled(&self.llm_config.delegation, library.as_ref()) {
-            return Err(
-                AppError::new(ERR_INVALID_ARGUMENT, "delegation is disabled").into(),
-            );
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "delegation is disabled").into());
         }
         if !allowlist_allows(task_type, &self.llm_config.delegation.task_allowlist) {
-            return Err(
-                AppError::new(ERR_INVALID_ARGUMENT, "task_type not allowed by delegation allowlist").into(),
-            );
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                "task_type not allowed by delegation allowlist",
+            )
+            .into());
         }
         let mode = match args.mode.as_deref() {
             Some(value) => DelegationMode::parse(value)

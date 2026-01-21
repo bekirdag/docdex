@@ -201,7 +201,10 @@ fn mcp_local_completion_tool_returns_output() -> Result<(), Box<dyn Error>> {
         .ok_or("missing mcp tool response")?;
     let parsed: Value = serde_json::from_str(text)?;
     assert_eq!(parsed.get("output").and_then(|v| v.as_str()), Some("ok"));
-    assert_eq!(parsed.get("adapter").and_then(|v| v.as_str()), Some("ollama"));
+    assert_eq!(
+        parsed.get("adapter").and_then(|v| v.as_str()),
+        Some("ollama")
+    );
 
     Ok(())
 }

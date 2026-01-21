@@ -159,18 +159,36 @@ fn recommended_model_prefers_tier_match() {
 
 #[test]
 fn task_type_parse_accepts_variants() {
-    assert_eq!(TaskType::parse("generate_tests"), Some(TaskType::GenerateTests));
-    assert_eq!(TaskType::parse("GENERATE-TESTS"), Some(TaskType::GenerateTests));
-    assert_eq!(TaskType::parse("write_docstring"), Some(TaskType::WriteDocstring));
-    assert_eq!(TaskType::parse("scaffold-boilerplate"), Some(TaskType::ScaffoldBoilerplate));
-    assert_eq!(TaskType::parse("refactorsimple"), Some(TaskType::RefactorSimple));
+    assert_eq!(
+        TaskType::parse("generate_tests"),
+        Some(TaskType::GenerateTests)
+    );
+    assert_eq!(
+        TaskType::parse("GENERATE-TESTS"),
+        Some(TaskType::GenerateTests)
+    );
+    assert_eq!(
+        TaskType::parse("write_docstring"),
+        Some(TaskType::WriteDocstring)
+    );
+    assert_eq!(
+        TaskType::parse("scaffold-boilerplate"),
+        Some(TaskType::ScaffoldBoilerplate)
+    );
+    assert_eq!(
+        TaskType::parse("refactorsimple"),
+        Some(TaskType::RefactorSimple)
+    );
     assert_eq!(TaskType::parse("format_code"), Some(TaskType::FormatCode));
     assert_eq!(TaskType::parse("unknown"), None);
 }
 
 #[test]
 fn delegation_mode_parse_accepts_variants() {
-    assert_eq!(DelegationMode::parse("draft_only"), Some(DelegationMode::DraftOnly));
+    assert_eq!(
+        DelegationMode::parse("draft_only"),
+        Some(DelegationMode::DraftOnly)
+    );
     assert_eq!(
         DelegationMode::parse("draft-then-refine"),
         Some(DelegationMode::DraftThenRefine)
@@ -180,12 +198,7 @@ fn delegation_mode_parse_accepts_variants() {
 
 #[test]
 fn render_prompt_replaces_placeholders_and_truncates() {
-    let rendered = render_prompt(
-        TaskType::GenerateTests,
-        "Add tests",
-        "abcdef",
-        3,
-    );
+    let rendered = render_prompt(TaskType::GenerateTests, "Add tests", "abcdef", 3);
     assert!(rendered.prompt.contains("Add tests"));
     assert!(rendered.truncated);
     assert!(!rendered.prompt.contains("abcdef"));
@@ -210,7 +223,8 @@ fn resolve_delegation_client_errors_for_non_ollama_fallback() {
 }
 
 #[test]
-fn resolve_delegation_client_errors_for_missing_mcoda_agent() -> Result<(), Box<dyn std::error::Error>> {
+fn resolve_delegation_client_errors_for_missing_mcoda_agent(
+) -> Result<(), Box<dyn std::error::Error>> {
     let temp = TempDir::new()?;
     let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
     let _profile = EnvGuard::set("USERPROFILE", temp.path().to_string_lossy().as_ref());
@@ -289,7 +303,10 @@ fn allowlist_blocks_when_missing() {
 #[test]
 fn mode_from_config_falls_back_on_invalid() {
     assert_eq!(mode_from_config("draft_only"), DelegationMode::DraftOnly);
-    assert_eq!(mode_from_config("draft_then_refine"), DelegationMode::DraftThenRefine);
+    assert_eq!(
+        mode_from_config("draft_then_refine"),
+        DelegationMode::DraftThenRefine
+    );
     assert_eq!(mode_from_config("invalid"), DelegationMode::DraftOnly);
 }
 

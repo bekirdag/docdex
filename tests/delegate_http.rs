@@ -153,11 +153,9 @@ fn handle_mock_ollama_request(mut stream: TcpStream) -> std::io::Result<()> {
     let method = parts.next().unwrap_or("");
     let path = parts.next().unwrap_or("");
     match (method, path) {
-        ("GET", "/api/tags") => write_http_response(
-            &mut stream,
-            200,
-            r#"{"models":[{"name":"test-model"}]}"#,
-        ),
+        ("GET", "/api/tags") => {
+            write_http_response(&mut stream, 200, r#"{"models":[{"name":"test-model"}]}"#)
+        }
         ("POST", "/api/generate") => write_http_response(&mut stream, 200, r#"{"response":"ok"}"#),
         _ => write_http_response(&mut stream, 404, r#"{"error":"not found"}"#),
     }

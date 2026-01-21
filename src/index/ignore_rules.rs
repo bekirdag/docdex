@@ -69,11 +69,7 @@ pub fn build_ignore_matcher(root: &Path, excluded_dirs: &[String]) -> Option<Ign
                 "failed to load ignore file"
             );
         }
-        let scope_root = entry
-            .path()
-            .parent()
-            .unwrap_or(root)
-            .to_path_buf();
+        let scope_root = entry.path().parent().unwrap_or(root).to_path_buf();
         let depth = scope_root
             .strip_prefix(root)
             .map(|path| path.components().count())
@@ -98,7 +94,5 @@ pub fn build_ignore_matcher(root: &Path, excluded_dirs: &[String]) -> Option<Ign
             .then(a.priority.cmp(&b.priority))
             .then_with(|| a.root.cmp(&b.root))
     });
-    Some(IgnoreMatcher {
-        matchers,
-    })
+    Some(IgnoreMatcher { matchers })
 }

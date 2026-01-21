@@ -1001,11 +1001,7 @@ fn upsert_vscode_instruction_key(
     true
 }
 
-fn upsert_vscode_instructions(
-    path: &Path,
-    instructions: &str,
-    legacy_path: &Path,
-) -> Result<bool> {
+fn upsert_vscode_instructions(path: &Path, instructions: &str, legacy_path: &Path) -> Result<bool> {
     let next = normalize_instruction_text(instructions);
     if next.is_empty() {
         return Ok(false);

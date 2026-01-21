@@ -11,7 +11,9 @@ use crate::error::{
     AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX,
     ERR_STALE_INDEX,
 };
-use crate::search::{json_error, repo_error_response, resolve_repo_context, status_for_app_error, AppState};
+use crate::search::{
+    json_error, repo_error_response, resolve_repo_context, status_for_app_error, AppState,
+};
 
 #[derive(Deserialize)]
 pub struct SymbolsQuery {

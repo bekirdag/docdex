@@ -1,12 +1,12 @@
-use anyhow::{Context, Result};
 use crate::config::{DelegationConfig, LlmConfig};
+use crate::mcoda::registry::{McodaAgent, McodaRegistry};
 use crate::ollama;
 use crate::setup::ollama as setup_ollama;
-use crate::mcoda::registry::{McodaAgent, McodaRegistry};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::future::{Future, Ready};
 use std::fs;
+use std::future::{Future, Ready};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
@@ -111,10 +111,7 @@ pub(crate) fn resolve_local_ollama_base_url(llm_config: &LlmConfig) -> Option<St
 
 pub(crate) fn is_local_ollama_base_url(base_url: &str) -> bool {
     let trimmed = base_url.trim();
-    if trimmed
-        .to_ascii_lowercase()
-        .starts_with("http://[::1]")
-    {
+    if trimmed.to_ascii_lowercase().starts_with("http://[::1]") {
         return true;
     }
     if let Ok(url) = Url::parse(base_url) {
@@ -361,9 +358,8 @@ where
             discover_ollama_models(&base_url, Duration::from_secs(2), allow_start_ollama).await;
         for name in discovered {
             let existing = library.models.iter().find(|entry| entry.name == name);
-            let mut classification = classify_model_known(&name).unwrap_or_else(|| {
-                classify_model_heuristic(&name)
-            });
+            let mut classification =
+                classify_model_known(&name).unwrap_or_else(|| classify_model_heuristic(&name));
             let should_web = classification.method == "heuristic"
                 && web_budget > 0
                 && is_web_candidate(&classification.capabilities)
@@ -601,9 +597,9 @@ fn is_candidate_capabilities(capabilities: &[String]) -> bool {
     if capabilities.is_empty() {
         return true;
     }
-    capabilities.iter().any(|cap| {
-        cap == CAP_CODE_WRITER || cap == CAP_CODE_REVIEWER || cap == CAP_GENERAL_CHAT
-    })
+    capabilities
+        .iter()
+        .any(|cap| cap == CAP_CODE_WRITER || cap == CAP_CODE_REVIEWER || cap == CAP_GENERAL_CHAT)
 }
 
 fn mcoda_agent_entry(agent: &McodaAgent, now_ms: u128) -> LocalAgentEntry {
@@ -741,7 +737,9 @@ mod tests {
         assert!(phi.capabilities.contains(&CAP_CODE_WRITER.to_string()));
         assert!(phi.capabilities.contains(&CAP_GENERAL_CHAT.to_string()));
         let deepseek = classify_model_known("deepseek-coder:6.7b").expect("deepseek mapping");
-        assert!(deepseek.capabilities.contains(&CAP_CODE_REVIEWER.to_string()));
+        assert!(deepseek
+            .capabilities
+            .contains(&CAP_CODE_REVIEWER.to_string()));
     }
 
     #[test]
@@ -808,8 +806,7 @@ mod tests {
             last_classified_at_ms: None,
         });
         save_local_library(None, &library)?;
-        let refreshed =
-            refresh_local_library_if_stale(None, &LlmConfig::default(), false).await?;
+        let refreshed = refresh_local_library_if_stale(None, &LlmConfig::default(), false).await?;
         std::env::remove_var("DOCDEX_LOCAL_LIBRARY_TTL_SECS");
         std::env::remove_var("DOCDEX_STATE_DIR");
         assert_eq!(refreshed.updated_at_ms, library.updated_at_ms);

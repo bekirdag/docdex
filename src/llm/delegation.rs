@@ -27,15 +27,11 @@ impl TaskType {
         let normalized = input.trim().to_ascii_lowercase();
         match normalized.as_str() {
             "generate_tests" | "generate-tests" | "generatetests" => Some(Self::GenerateTests),
-            "write_docstring" | "write-docstring" | "writedocstring" => {
-                Some(Self::WriteDocstring)
-            }
+            "write_docstring" | "write-docstring" | "writedocstring" => Some(Self::WriteDocstring),
             "scaffold_boilerplate" | "scaffold-boilerplate" | "scaffoldboilerplate" => {
                 Some(Self::ScaffoldBoilerplate)
             }
-            "refactor_simple" | "refactor-simple" | "refactorsimple" => {
-                Some(Self::RefactorSimple)
-            }
+            "refactor_simple" | "refactor-simple" | "refactorsimple" => Some(Self::RefactorSimple),
             "format_code" | "format-code" | "formatcode" => Some(Self::FormatCode),
             _ => None,
         }
@@ -666,8 +662,12 @@ pub(crate) async fn run_flow_with_clients(
 
     if matches!(mode, DelegationMode::DraftThenRefine) {
         if let Some(primary) = primary_client {
-            let refine_rendered =
-                render_refine_prompt(instruction, context, &local_completion.output, max_context_chars);
+            let refine_rendered = render_refine_prompt(
+                instruction,
+                context,
+                &local_completion.output,
+                max_context_chars,
+            );
             if refine_rendered.truncated && !truncated {
                 warnings.push("context or draft truncated to fit delegation limits".to_string());
             }

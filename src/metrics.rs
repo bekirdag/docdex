@@ -286,8 +286,7 @@ impl Metrics {
     pub fn record_delegate_latency(&self, latency_ms: u128) {
         self.delegate_latency_ms_total
             .fetch_add(latency_ms as u64, Ordering::Relaxed);
-        self.delegate_latency_count
-            .fetch_add(1, Ordering::Relaxed);
+        self.delegate_latency_count.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_delegate_token_estimate(&self, tokens: u64) {

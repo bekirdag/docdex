@@ -15,8 +15,8 @@ use crate::llm::local_library::{
 };
 use crate::orchestrator::web::{run_web_research, WebResearchResponse};
 use crate::orchestrator::WebGateConfig;
-use crate::search::{json_error, status_for_app_error, AppState};
 use crate::search::resolve_repo_context;
+use crate::search::{json_error, status_for_app_error, AppState};
 use tracing::warn;
 
 #[derive(Debug, Deserialize)]
@@ -55,7 +55,6 @@ pub async fn delegate_handler(
     headers: HeaderMap,
     Json(payload): Json<DelegateRequest>,
 ) -> Result<Json<DelegateResponse>, axum::response::Response> {
-
     if payload.task_type.trim().is_empty() {
         return Err(json_error(
             StatusCode::BAD_REQUEST,
@@ -78,13 +77,9 @@ pub async fn delegate_handler(
         ));
     }
 
-    if let Err(err) = resolve_repo_context(
-        &state,
-        &headers,
-        None,
-        payload.repo_id.as_deref(),
-        false,
-    ) {
+    if let Err(err) =
+        resolve_repo_context(&state, &headers, None, payload.repo_id.as_deref(), false)
+    {
         return Err(crate::search::repo_error_response(err));
     }
 
@@ -201,11 +196,16 @@ pub async fn delegate_handler(
     .map_err(|err| {
         warn!(target: "docdexd", error = ?err, "delegation completion failed");
         let app_error = AppError::new(ERR_INTERNAL_ERROR, "delegation failed");
-        json_error(status_for_app_error(app_error.code), app_error.code, app_error.message)
+        json_error(
+            status_for_app_error(app_error.code),
+            app_error.code,
+            app_error.message,
+        )
     })?;
 
     state.metrics.inc_delegate_request();
-    state.metrics
+    state
+        .metrics
         .record_delegate_latency(started_at.elapsed().as_millis());
     state
         .metrics

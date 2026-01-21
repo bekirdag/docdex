@@ -11,7 +11,7 @@ use crate::error::{
     AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX,
     ERR_STALE_INDEX,
 };
-use crate::search::{json_error, resolve_repo_context, status_for_app_error, AppState};
+use crate::search::{json_error, repo_error_response, resolve_repo_context, status_for_app_error, AppState};
 
 #[derive(Deserialize)]
 pub struct SymbolsQuery {
@@ -35,7 +35,7 @@ pub async fn symbols_handler(
     let repo = match resolve_repo_context(&state, &headers, params.repo_id.as_deref(), None, false)
     {
         Ok(repo) => repo,
-        Err(err) => return json_error(err.status, err.code, err.message),
+        Err(err) => return repo_error_response(err),
     };
     if let Err(err) = crate::index::ensure_indexed(repo.indexer.clone()).await {
         state.metrics.inc_error();
@@ -123,7 +123,7 @@ pub async fn symbols_status_handler(
     let repo = match resolve_repo_context(&state, &headers, params.repo_id.as_deref(), None, false)
     {
         Ok(repo) => repo,
-        Err(err) => return json_error(err.status, err.code, err.message),
+        Err(err) => return repo_error_response(err),
     };
 
     if !repo.indexer.config().symbols_enabled() {

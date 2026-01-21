@@ -400,4 +400,30 @@ mod tests {
         manager.sweep_idle(now);
         assert!(manager.repos.read().is_empty());
     }
+
+    #[tokio::test]
+    async fn repo_manager_updates_last_access_on_get() {
+        let repo = TempDir::new().expect("repo dir");
+        std::fs::write(repo.path().join("README.md"), "# test\n").expect("write file");
+        let state_dir = TempDir::new().expect("state dir");
+        let manager = RepoManager::new_with_timeouts(
+            None,
+            Some(state_dir.path().to_path_buf()),
+            Duration::from_secs(60),
+            Duration::from_secs(120),
+            Duration::from_secs(60),
+        );
+        let mount = manager.mount_repo(repo.path()).expect("mount repo");
+        let entry = manager
+            .repos
+            .read()
+            .get(&mount.repo.repo_id)
+            .expect("entry")
+            .clone();
+        let stale = Instant::now() - Duration::from_secs(120);
+        entry.lock().last_access = stale;
+        let _ = manager.get_by_id(&mount.repo.repo_id);
+        let updated = entry.lock().last_access;
+        assert!(updated > stale);
+    }
 }

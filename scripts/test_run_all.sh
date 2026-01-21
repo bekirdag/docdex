@@ -137,7 +137,8 @@ run_step "unit_doc_type" cargo test --lib doc_type_classifies_paths
 run_step "unit_snippet_integrity" cargo test --lib line_safe_snippet_
 run_step "unit_ignore_rules" cargo test --lib file_decision_tests
 run_step "unit_repo_manager_lru" cargo test --lib repo_manager_
-run_step "integration" cargo test -j1 --tests -- --test-threads=1
+# integration suite includes delegate_http and mcp_local_completion
+run_step "integration_all" cargo test -j1 --tests -- --test-threads=1
 run_step "integration_daemon_ollama_optional" cargo test --test daemon_ollama_optional
 run_step "integration_http_auto_reindex" cargo test --test http_search_auto_reindex
 run_step "integration_snippet_open_by_path" cargo test --test http_snippet_open_by_path

@@ -11,7 +11,7 @@ use tracing::warn;
 use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT};
 use crate::libs;
 use crate::libs_source_resolver;
-use crate::search::{json_error, resolve_repo_context, AppState};
+use crate::search::{json_error, repo_error_response, resolve_repo_context, AppState};
 
 #[derive(Deserialize)]
 pub struct LibsRequest {
@@ -29,7 +29,7 @@ pub async fn libs_discover_handler(
     let repo = match resolve_repo_context(&state, &headers, payload.repo_id.as_deref(), None, false)
     {
         Ok(repo) => repo,
-        Err(err) => return json_error(err.status, err.code, err.message),
+        Err(err) => return repo_error_response(err),
     };
 
     let explicit = match payload.sources_path.as_deref().map(str::trim) {
@@ -77,7 +77,7 @@ pub async fn libs_fetch_handler(
     let repo = match resolve_repo_context(&state, &headers, payload.repo_id.as_deref(), None, false)
     {
         Ok(repo) => repo,
-        Err(err) => return json_error(err.status, err.code, err.message),
+        Err(err) => return repo_error_response(err),
     };
 
     let explicit = match payload.sources_path.as_deref().map(str::trim) {
@@ -167,7 +167,7 @@ pub async fn libs_ingest_handler(
     let repo = match resolve_repo_context(&state, &headers, payload.repo_id.as_deref(), None, false)
     {
         Ok(repo) => repo,
-        Err(err) => return json_error(err.status, err.code, err.message),
+        Err(err) => return repo_error_response(err),
     };
 
     let sources_path = match payload.sources_path.as_deref().map(str::trim) {

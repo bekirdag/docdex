@@ -227,6 +227,7 @@ pub async fn run_rag(
     );
     let request = WaterfallRequest {
         request_id: &request_id,
+        dag_session_id: None,
         query: &query,
         limit,
         diff: None,

@@ -28,6 +28,14 @@ scrape_configs:
   `docdex_profile_evolution_latency_ms_total / docdex_profile_evolution_latency_count_total`
 - Project map cache hit ratio:
   `rate(docdex_project_map_cache_hits_total[5m]) / (rate(docdex_project_map_cache_hits_total[5m]) + rate(docdex_project_map_cache_misses_total[5m]))`
+- Delegation request rate:
+  `rate(docdex_delegate_total[5m])`
+- Delegation fallback rate:
+  `rate(docdex_delegate_fallback_total[5m])`
+- Delegation latency avg (ms):
+  `docdex_delegate_latency_ms_total / docdex_delegate_latency_count_total`
+- Delegation token estimate rate:
+  `rate(docdex_delegate_token_estimate_total[5m])`
 
 ## Alert thresholds (quality gates)
 

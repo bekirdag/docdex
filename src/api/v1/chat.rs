@@ -36,6 +36,7 @@ const STREAM_CHUNK_CHARS: usize = 320;
 const CHAT_GENERATION_TIMEOUT_SECS: u64 = 30;
 const CHAT_SYSTEM_PROMPT: &str = "You are Docdex, a local-first assistant. Use the provided context when relevant. If the answer is not in the context, say so.";
 const PROJECT_MAP_TOKEN_CAP: usize = 500;
+const DAG_SESSION_HEADER: &str = "x-docdex-dag-session";
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct ChatCompletionRequest {
@@ -62,6 +63,8 @@ struct DocdexOptions {
     llm_filter_local_results: Option<bool>,
     compress_results: Option<bool>,
     agent_id: Option<String>,
+    #[serde(alias = "session_id", alias = "dagSessionId")]
+    dag_session_id: Option<String>,
     diff: Option<diff::DiffOptions>,
 }
 
@@ -200,6 +203,15 @@ pub fn resolve_profile_agent_id(
     header.or(body).map(str::to_string)
 }
 
+fn header_dag_session_id(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(DAG_SESSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
 pub(crate) async fn chat_completions_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -269,7 +281,9 @@ pub(crate) async fn chat_completions_handler(
     let header_agent_id = headers
         .get("x-docdex-agent-id")
         .and_then(|value| value.to_str().ok());
+    let header_dag_session_id = header_dag_session_id(&headers);
     let body_agent_id = docdex.and_then(|opts| opts.agent_id.as_deref());
+    let body_dag_session_id = docdex.and_then(|opts| opts.dag_session_id.as_deref());
     let profile_agent_id = resolve_profile_agent_id(header_agent_id, body_agent_id)
         .or_else(|| state.default_agent_id.clone());
     let limit = docdex
@@ -315,9 +329,14 @@ pub(crate) async fn chat_completions_handler(
     );
     let request_id = Uuid::new_v4().to_string();
     let repo_state_root = repo_state_root_from_state_dir(repo.indexer.state_dir());
+    let dag_session_id = header_dag_session_id
+        .as_deref()
+        .or(body_dag_session_id)
+        .unwrap_or(request_id.as_str())
+        .to_string();
     queue_dag_log(
         repo_state_root.clone(),
-        request_id.clone(),
+        dag_session_id.clone(),
         "UserRequest",
         json!({
             "query": query.clone(),
@@ -337,6 +356,7 @@ pub(crate) async fn chat_completions_handler(
     };
     let response = match run_waterfall(WaterfallRequest {
         request_id: &request_id,
+        dag_session_id: Some(dag_session_id.as_str()),
         query: &query_with_context,
         limit,
         diff: diff_request,
@@ -415,7 +435,7 @@ pub(crate) async fn chat_completions_handler(
             if let Some(trace) = reasoning_trace.as_ref() {
                 queue_dag_log(
                     repo_state_root.clone(),
-                    request_id.clone(),
+                    dag_session_id.clone(),
                     "ReasoningTrace",
                     json!({
                         "behavioral_truth": {
@@ -453,7 +473,7 @@ pub(crate) async fn chat_completions_handler(
                 };
                 queue_dag_log(
                     repo_state_root.clone(),
-                    request_id.clone(),
+                    dag_session_id.clone(),
                     "Decision",
                     json!({
                         "model": model.clone(),
@@ -595,7 +615,7 @@ pub(crate) async fn chat_completions_handler(
                 };
                 queue_dag_log(
                     repo_state_root.clone(),
-                    request_id.clone(),
+                    dag_session_id.clone(),
                     "Decision",
                     json!({
                         "model": model.clone(),

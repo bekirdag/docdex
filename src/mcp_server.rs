@@ -11,9 +11,16 @@ use crate::error::{
 use crate::impact::{build_impact_diagnostics_response, ImpactDiagnosticsEntry, ImpactGraphStore};
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
+use crate::llm::delegation::{
+    allowlist_allows, mode_from_config, run_delegation_flow, select_local_target, DelegationMode,
+    TaskType,
+};
+use crate::llm::local_library::{
+    delegation_is_enabled, refresh_local_library_if_stale, refresh_local_library_if_stale_with_web,
+};
 use crate::memory::{inject_embedding_metadata, repo_state_root_from_state_dir, MemoryStore};
 use crate::ollama::OllamaEmbedder;
-use crate::orchestrator::web::run_web_research;
+use crate::orchestrator::web::{run_web_research, WebResearchResponse};
 use crate::orchestrator::{
     memory_budget_from_max_answer_tokens, run_waterfall, ProfileBudget, WaterfallPlan,
     WaterfallRequest, WebGateConfig,
@@ -175,6 +182,21 @@ fn truncate_bytes(input: String, max_bytes: usize) -> String {
     let mut out = input[..end].to_string();
     out.push_str("…");
     out
+}
+
+fn format_web_text(response: &WebResearchResponse) -> String {
+    let mut text = response.completion.trim().to_string();
+    for hit in &response.hits {
+        if !hit.summary.trim().is_empty() {
+            text.push('\n');
+            text.push_str(hit.summary.trim());
+        }
+        if !hit.snippet.trim().is_empty() {
+            text.push('\n');
+            text.push_str(hit.snippet.trim());
+        }
+    }
+    text
 }
 
 fn rpc_error(
@@ -396,6 +418,8 @@ struct SearchArgs {
     force_web: Option<bool>,
     #[serde(default)]
     diff: Option<diff::DiffOptions>,
+    #[serde(default, alias = "dagSessionId", alias = "session_id")]
+    dag_session_id: Option<String>,
     #[serde(default)]
     project_root: Option<PathBuf>,
     #[serde(default, alias = "repoPath")]
@@ -423,6 +447,8 @@ struct WebResearchArgs {
     llm_model: Option<String>,
     #[serde(default, alias = "llmAgent")]
     llm_agent: Option<String>,
+    #[serde(default, alias = "dagSessionId", alias = "session_id")]
+    dag_session_id: Option<String>,
     #[serde(default)]
     project_root: Option<PathBuf>,
     #[serde(default, alias = "repoPath")]
@@ -449,6 +475,27 @@ struct StatsArgs {
 
 #[derive(Deserialize)]
 struct RepoInspectArgs {
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
+struct DelegateArgs {
+    task_type: String,
+    instruction: String,
+    context: String,
+    #[serde(default)]
+    agent: Option<String>,
+    #[serde(default, alias = "maxTokens")]
+    max_tokens: Option<u32>,
+    #[serde(default, alias = "timeoutMs")]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    max_context_chars: Option<usize>,
     #[serde(default)]
     project_root: Option<PathBuf>,
     #[serde(default, alias = "repoPath")]
@@ -676,6 +723,13 @@ impl McpService {
             .as_ref()
             .map(|cfg| cfg.llm.max_answer_tokens)
             .unwrap_or(1024);
+        let llm_config = config
+            .as_ref()
+            .map(|cfg| cfg.llm.clone())
+            .unwrap_or_default();
+        let global_state_dir = config
+            .as_ref()
+            .and_then(|cfg| cfg.core.global_state_dir.clone());
         let effective_burst = if rate_limit_per_min > 0 && rate_limit_burst == 0 {
             rate_limit_per_min
         } else {
@@ -714,6 +768,8 @@ impl McpService {
             default_agent_id: None,
             memory,
             max_answer_tokens,
+            llm_config,
+            global_state_dir,
             tool_rate_limit,
             auth_token,
             authorized,
@@ -780,6 +836,8 @@ struct McpServer {
     default_agent_id: Option<String>,
     memory: Option<McpMemoryState>,
     max_answer_tokens: u32,
+    llm_config: config::LlmConfig,
+    global_state_dir: Option<PathBuf>,
     tool_rate_limit: Option<RateLimiter<()>>,
     auth_token: Option<String>,
     authorized: bool,
@@ -922,7 +980,7 @@ impl McpServer {
                 let protocol_version = init_params
                     .protocol_version
                     .unwrap_or_else(|| "2025-11-25".to_string());
-                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast and docdex_impact_diagnostics for unresolved imports.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nProfile tools (docdex_save_preference/docdex_get_profile) use global profile memory and do not require project_root.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
+                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast and docdex_impact_diagnostics for unresolved imports.\nUse docdex_local_completion to offload small code tasks to a local model.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nProfile tools (docdex_save_preference/docdex_get_profile) use global profile memory and do not require project_root.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
                 let mut caps = json!({
                     "tools": { "listChanged": false },
                     "resources": { "listChanged": false },
@@ -1517,6 +1575,45 @@ impl McpServer {
                             }
                         }
                     }
+                    "docdex_local_completion" | "docdex.local_completion" => {
+                        let args_res: Result<DelegateArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_local_completion"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_local_completion"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_delegate(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_local_completion"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
                     "docdex_save_preference" => {
                         let args_res: Result<ProfileSaveArgs, _> =
                             serde_json::from_value(params.arguments.clone());
@@ -1616,6 +1713,7 @@ impl McpServer {
                                         "docdex_memory_save",
                                         "docdex_memory_store",
                                         "docdex_memory_recall",
+                                        "docdex_local_completion",
                                         "docdex_save_preference",
                                         "docdex_get_profile"
                                     ]
@@ -1678,6 +1776,7 @@ impl McpServer {
                                 "paths": { "type": "array", "items": { "type": "string" }, "description": "Limit diff to specific paths" }
                             }
                         },
+                        "dag_session_id": { "type": "string", "description": "Optional DAG session id for reasoning traces (falls back to request id if omitted)" },
                         "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
                         "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
                     },
@@ -1703,6 +1802,7 @@ impl McpServer {
                         "repo_only": { "type": "boolean", "description": "Only search the repo index (ignore repo-scoped libs index, if present)" },
                         "llm_model": { "type": "string", "description": "Override the LLM model for local result filtering" },
                         "llm_agent": { "type": "string", "description": "Override the LLM agent slug for local result filtering" },
+                        "dag_session_id": { "type": "string", "description": "Optional DAG session id for reasoning traces (falls back to request id if omitted)" },
                         "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
                         "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
                     },
@@ -1883,6 +1983,37 @@ impl McpServer {
                         "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
                     },
                     "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_local_completion",
+                title: "Local Completion",
+                description: "Offload a small code task to a local model and return the draft output.",
+                annotations: Some(annotations_with_priority(0.4)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "task_type": {
+                            "type": "string",
+                            "enum": [
+                                "generate_tests",
+                                "write_docstring",
+                                "scaffold_boilerplate",
+                                "refactor_simple",
+                                "format_code"
+                            ]
+                        },
+                        "instruction": { "type": "string", "minLength": 1 },
+                        "context": { "type": "string", "minLength": 1 },
+                        "agent": { "type": "string", "description": "Optional mcoda agent id or slug override" },
+                        "max_tokens": { "type": "integer", "minimum": 1, "description": "Optional max tokens override" },
+                        "timeout_ms": { "type": "integer", "minimum": 1, "description": "Optional timeout in milliseconds" },
+                        "mode": { "type": "string", "enum": ["draft_only", "draft_then_refine"] },
+                        "max_context_chars": { "type": "integer", "minimum": 1 },
+                        "project_root": { "type": "string", "description": "Optional repo root (ignored if not provided)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (optional)" }
+                    },
+                    "required": ["task_type", "instruction", "context"]
                 }),
             },
             ToolDefinition {
@@ -2133,6 +2264,7 @@ Produce a phased plan with risks and tests to run."
             limit,
             force_web: force_web_arg,
             diff,
+            dag_session_id,
             project_root,
             repo_path,
         } = args;
@@ -2151,9 +2283,15 @@ Produce a phased plan with risks and tests to run."
         let repo_state_root = repo_state_root_from_state_dir(self.indexer.state_dir());
         let force_web = force_web_arg.unwrap_or(false);
         let diff_request = diff::resolve_diff_request_from_options(diff.as_ref())?;
+        let request_id_ref = request_id.as_str();
+        let dag_session_id = dag_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(request_id_ref);
         queue_dag_log(
             &repo_state_root,
-            &request_id,
+            dag_session_id,
             "UserRequest",
             json!({
                 "query": query,
@@ -2178,9 +2316,9 @@ Produce a phased plan with risks and tests to run."
             embedder: state.embedder.clone(),
             repo_id: repo_id.clone(),
         });
-        let request_id_ref = request_id.as_str();
         let waterfall = run_waterfall(WaterfallRequest {
             request_id: request_id_ref,
+            dag_session_id: Some(dag_session_id),
             query,
             limit,
             diff: diff_request,
@@ -2203,7 +2341,7 @@ Produce a phased plan with risks and tests to run."
         .await?;
         queue_dag_log(
             &repo_state_root,
-            &request_id,
+            dag_session_id,
             "Decision",
             json!({
                 "hits": waterfall.search_response.hits.len(),
@@ -2252,6 +2390,129 @@ Produce a phased plan with risks and tests to run."
         Ok(payload)
     }
 
+    async fn handle_delegate(&self, args: DelegateArgs) -> Result<serde_json::Value> {
+        if args.task_type.trim().is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "task_type is required").into());
+        }
+        if args.instruction.trim().is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "instruction is required").into());
+        }
+        if args.context.trim().is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "context is required").into());
+        }
+
+        let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
+        if project_root.is_some() {
+            self.ensure_project_root(project_root.as_deref())?;
+        }
+
+        let task_type = TaskType::parse(&args.task_type).ok_or_else(|| {
+            AppError::new(ERR_INVALID_ARGUMENT, "task_type is invalid")
+        })?;
+        let web_gate = WebGateConfig::from_env();
+        let library_result = if web_gate.enabled {
+            let indexer = self.indexer.clone();
+            let libs_indexer = self.libs_indexer.as_ref();
+            let request_id = Uuid::new_v4().to_string();
+            let mut fetcher = move |query: String| {
+                let indexer = indexer.clone();
+                let request_id = request_id.clone();
+                let web_gate = web_gate.clone();
+                let libs_indexer = libs_indexer;
+                async move {
+                    let response = run_web_research(
+                        &request_id,
+                        indexer.as_ref(),
+                        libs_indexer,
+                        &query,
+                        5,
+                        Some(3),
+                        true,
+                        &web_gate,
+                        false,
+                        true,
+                        false,
+                        None,
+                        None,
+                    )
+                    .await?;
+                    Ok(format_web_text(&response))
+                }
+            };
+            refresh_local_library_if_stale_with_web(
+                self.global_state_dir.as_deref(),
+                &self.llm_config,
+                true,
+                Some(&mut fetcher),
+            )
+            .await
+        } else {
+            refresh_local_library_if_stale(
+                self.global_state_dir.as_deref(),
+                &self.llm_config,
+                true,
+            )
+            .await
+        };
+        let library = match library_result {
+            Ok(library) => Some(library),
+            Err(err) => {
+                warn!(
+                    target: "docdexd",
+                    error = ?err,
+                    "local model library refresh failed"
+                );
+                None
+            }
+        };
+        if !delegation_is_enabled(&self.llm_config.delegation, library.as_ref()) {
+            return Err(
+                AppError::new(ERR_INVALID_ARGUMENT, "delegation is disabled").into(),
+            );
+        }
+        if !allowlist_allows(task_type, &self.llm_config.delegation.task_allowlist) {
+            return Err(
+                AppError::new(ERR_INVALID_ARGUMENT, "task_type not allowed by delegation allowlist").into(),
+            );
+        }
+        let mode = match args.mode.as_deref() {
+            Some(value) => DelegationMode::parse(value)
+                .ok_or_else(|| AppError::new(ERR_INVALID_ARGUMENT, "mode is invalid"))?,
+            None => mode_from_config(&self.llm_config.delegation.mode),
+        };
+        let max_context_chars = args
+            .max_context_chars
+            .filter(|value| *value > 0)
+            .unwrap_or(self.llm_config.delegation.max_context_chars);
+        let local_target = library
+            .as_ref()
+            .and_then(|library| select_local_target(task_type, library));
+        let result = run_delegation_flow(
+            &self.llm_config,
+            args.agent.as_deref(),
+            local_target.as_ref(),
+            task_type,
+            &args.instruction,
+            &args.context,
+            max_context_chars,
+            args.max_tokens,
+            args.timeout_ms,
+            mode,
+        )
+        .await?;
+
+        Ok(json!({
+            "id": Uuid::new_v4().to_string(),
+            "task_type": task_type.as_str(),
+            "adapter": result.completion.adapter,
+            "model": result.completion.model,
+            "output": result.completion.output,
+            "draft": result.draft,
+            "truncated": result.truncated,
+            "warnings": result.warnings
+        }))
+    }
+
     async fn handle_web_research(
         &self,
         request_id: String,
@@ -2268,6 +2529,7 @@ Produce a phased plan with risks and tests to run."
             repo_only,
             llm_model,
             llm_agent,
+            dag_session_id,
             project_root,
             repo_path,
         } = args;
@@ -2284,6 +2546,12 @@ Produce a phased plan with risks and tests to run."
             .display()
             .to_string();
         let repo_state_root = repo_state_root_from_state_dir(self.indexer.state_dir());
+        let request_id_ref = request_id.as_str();
+        let dag_session_id = dag_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(request_id_ref);
         let force_web = force_web.unwrap_or(false);
         let skip_local_search = skip_local_search.unwrap_or(false);
         let disable_web_cache = no_cache.unwrap_or(false);
@@ -2298,7 +2566,7 @@ Produce a phased plan with risks and tests to run."
         };
         queue_dag_log(
             &repo_state_root,
-            &request_id,
+            dag_session_id,
             "UserRequest",
             json!({
                 "query": query,
@@ -2311,7 +2579,7 @@ Produce a phased plan with risks and tests to run."
             }),
         );
         let response = run_web_research(
-            &request_id,
+            request_id_ref,
             &self.indexer,
             libs_indexer,
             query,
@@ -2328,7 +2596,7 @@ Produce a phased plan with risks and tests to run."
         .await?;
         queue_dag_log(
             &repo_state_root,
-            &request_id,
+            dag_session_id,
             "Decision",
             json!({
                 "hits": response.hits.len(),

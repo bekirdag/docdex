@@ -73,12 +73,16 @@ Query params:
 - `max_web_results`
 - `llm_filter_local_results`
 - `diff_mode`, `diff_base`, `diff_head`, `diff_path`
+- `dag_session_id`
 - `repo_id`
 
 Example:
 ```bash
 curl "http://127.0.0.1:28491/search?q=payment%20retry&limit=5"
 ```
+
+Header:
+- `x-docdex-dag-session` (optional)
 
 ### Snippet
 
@@ -111,6 +115,7 @@ Request body:
     "max_web_results": 8,
     "llm_filter_local_results": false,
     "no_cache": false,
+    "dag_session_id": "session-123",
     "diff": { "mode": "head" }
   }
 }
@@ -118,7 +123,47 @@ Request body:
 
 Notes:
 - `x-docdex-agent-id` overrides `docdex.agent_id`.
+- `x-docdex-dag-session` overrides `docdex.dag_session_id`.
 - Non-streaming responses can include `reasoning_trace` with `behavioral_truth` and `technical_truth`.
+
+## Delegation (local completion)
+
+`POST /v1/delegate`
+
+Request body:
+```json
+{
+  "task_type": "format_code",
+  "instruction": "Format this code",
+  "context": "let  a=1;",
+  "agent": "ollama-local",
+  "max_tokens": 512,
+  "timeout_ms": 30000,
+  "mode": "draft_only",
+  "max_context_chars": 12000,
+  "repo_id": "<optional>"
+}
+```
+
+Response:
+```json
+{
+  "id": "uuid",
+  "adapter": "ollama",
+  "model": "llama3",
+  "output": "let a = 1;",
+  "draft": true,
+  "truncated": false,
+  "warnings": []
+}
+```
+
+Notes:
+- Requires `[llm.delegation].enabled = true` or `auto_enable = true` with a local model/agent available.
+- `task_type` must be one of: `generate_tests`, `write_docstring`, `scaffold_boilerplate`, `refactor_simple`, `format_code`.
+- `mode` defaults to `[llm.delegation].mode` when omitted.
+- `draft_then_refine` returns a primary-agent refinement when configured; otherwise returns the local draft with a warning.
+- `agent` overrides the local agent id for this request only; otherwise Docdex selects from the local model library.
 
 ## Code intelligence
 
@@ -237,6 +282,13 @@ Web discovery requires `DOCDEX_WEB_ENABLED=1` (daemon enables it by default).
 - `POST /v1/web/search`
 - `POST /v1/web/fetch`
 - `POST /v1/web/cache/flush`
+
+`POST /v1/web/search` body:
+```json
+{ "query": "...", "limit": 8, "dag_session_id": "session-123" }
+```
+Header:
+- `x-docdex-dag-session` (optional)
 
 ## MCP transport
 

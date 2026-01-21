@@ -39,6 +39,7 @@ use std::env;
 #[derive(Clone)]
 pub struct WaterfallRequest<'a> {
     pub request_id: &'a str,
+    pub dag_session_id: Option<&'a str>,
     pub query: &'a str,
     pub limit: usize,
     pub diff: Option<crate::diff::DiffRequest>,
@@ -154,6 +155,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
         .await?
     };
     let repo_state_root = repo_state_root_from_state_dir(request.indexer.state_dir());
+    let dag_session_id = request.dag_session_id.unwrap_or(request.request_id);
     let impact_context = collect_impact_context(
         request.indexer.repo_root(),
         request.indexer.state_dir(),
@@ -212,7 +214,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
     );
     queue_dag_log(
         &repo_state_root,
-        request.request_id,
+        dag_session_id,
         "Thought",
         json!({
             "intent": format!("{intent:?}"),
@@ -260,7 +262,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
     {
         queue_dag_log(
             &repo_state_root,
-            request.request_id,
+            dag_session_id,
             "ToolCall",
             json!({
                 "tool": "profile_recall",
@@ -328,7 +330,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
             }
             queue_dag_log(
                 &repo_state_root,
-                request.request_id,
+                dag_session_id,
                 "Observation",
                 json!({
                     "tool": "profile_recall",
@@ -351,7 +353,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
     let memory_context = if let Some(memory) = request.memory {
         queue_dag_log(
             &repo_state_root,
-            request.request_id,
+            dag_session_id,
             "ToolCall",
             json!({
                 "tool": "memory_recall",
@@ -401,7 +403,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
             }
             queue_dag_log(
                 &repo_state_root,
-                request.request_id,
+                dag_session_id,
                 "Observation",
                 json!({
                     "tool": "memory_recall",
@@ -535,9 +537,10 @@ async fn run_tier2(
     force_web: bool,
 ) -> Result<Tier2Outcome> {
     let repo_state_root = repo_state_root_from_state_dir(request.indexer.state_dir());
+    let dag_session_id = request.dag_session_id.unwrap_or(request.request_id);
     queue_dag_log(
         &repo_state_root,
-        request.request_id,
+        dag_session_id,
         "ToolCall",
         json!({
             "tool": "web_research",
@@ -602,7 +605,7 @@ async fn run_tier2(
 
     queue_dag_log(
         &repo_state_root,
-        request.request_id,
+        dag_session_id,
         "Observation",
         json!({
             "tool": "web_research",

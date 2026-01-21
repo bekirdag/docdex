@@ -26,6 +26,7 @@ const SETUP_PENDING_MARKER = "setup_pending.json";
 const AGENTS_DOC_FILENAME = "agents.md";
 const DOCDEX_INFO_START_PREFIX = "---- START OF DOCDEX INFO V";
 const DOCDEX_INFO_END = "---- END OF DOCDEX INFO -----";
+const DOCDEX_INFO_END_LEGACY = "---- END OF DOCDEX INFO ----";
 
 function defaultConfigPath() {
   return path.join(os.homedir(), ".docdex", "config.toml");
@@ -353,9 +354,14 @@ function docdexBlockStart(version) {
   return `${DOCDEX_INFO_START_PREFIX}${version} ----`;
 }
 
+function docdexInfoEndPattern() {
+  return `(?:${escapeRegExp(DOCDEX_INFO_END)}|${escapeRegExp(DOCDEX_INFO_END_LEGACY)})`;
+}
+
 function buildDocdexInstructionBlock(instructions) {
   const next = normalizeInstructionText(instructions);
   if (!next) return "";
+  if (hasDocdexBlock(next)) return next;
   const version = resolvePackageVersion();
   return `${docdexBlockStart(version)}\n${next}\n${DOCDEX_INFO_END}`;
 }
@@ -363,9 +369,7 @@ function buildDocdexInstructionBlock(instructions) {
 function extractDocdexBlockBody(text) {
   const match = String(text || "").match(
     new RegExp(
-      `${escapeRegExp(DOCDEX_INFO_START_PREFIX)}[^\\r\\n]* ----\\r?\\n([\\s\\S]*?)\\r?\\n${escapeRegExp(
-        DOCDEX_INFO_END
-      )}`
+      `${escapeRegExp(DOCDEX_INFO_START_PREFIX)}[^\\r\\n]* ----\\r?\\n([\\s\\S]*?)\\r?\\n${docdexInfoEndPattern()}`
     )
   );
   return match ? normalizeInstructionText(match[1]) : "";
@@ -383,11 +387,17 @@ function hasDocdexBlockVersion(text, version) {
   return String(text || "").includes(docdexBlockStart(version));
 }
 
+function hasDocdexBlock(text) {
+  const source = String(text || "");
+  return (
+    source.includes(DOCDEX_INFO_START_PREFIX) &&
+    (source.includes(DOCDEX_INFO_END) || source.includes(DOCDEX_INFO_END_LEGACY))
+  );
+}
+
 function stripDocdexBlocks(text) {
   const re = new RegExp(
-    `${escapeRegExp(DOCDEX_INFO_START_PREFIX)}[^\\r\\n]* ----\\r?\\n[\\s\\S]*?\\r?\\n${escapeRegExp(
-      DOCDEX_INFO_END
-    )}\\r?\\n?`,
+    `${escapeRegExp(DOCDEX_INFO_START_PREFIX)}[^\\r\\n]* ----\\r?\\n[\\s\\S]*?\\r?\\n${docdexInfoEndPattern()}\\r?\\n?`,
     "g"
   );
   return String(text || "").replace(re, "").trim();
@@ -397,9 +407,7 @@ function stripDocdexBlocksExcept(text, version) {
   if (!version) return stripDocdexBlocks(text);
   const source = String(text || "");
   const re = new RegExp(
-    `${escapeRegExp(DOCDEX_INFO_START_PREFIX)}[^\\r\\n]* ----\\r?\\n[\\s\\S]*?\\r?\\n${escapeRegExp(
-      DOCDEX_INFO_END
-    )}\\r?\\n?`,
+    `${escapeRegExp(DOCDEX_INFO_START_PREFIX)}[^\\r\\n]* ----\\r?\\n[\\s\\S]*?\\r?\\n${docdexInfoEndPattern()}\\r?\\n?`,
     "g"
   );
   let result = "";
@@ -432,7 +440,7 @@ function stripLegacyDocdexBody(text, body) {
   if (!body) return String(text || "");
   const source = String(text || "").replace(/\r\n/g, "\n");
   const re = new RegExp(
-    `${escapeRegExp(DOCDEX_INFO_START_PREFIX)}[^\\n]* ----\\n[\\s\\S]*?\\n${escapeRegExp(DOCDEX_INFO_END)}\\n?`,
+    `${escapeRegExp(DOCDEX_INFO_START_PREFIX)}[^\\n]* ----\\n[\\s\\S]*?\\n${docdexInfoEndPattern()}\\n?`,
     "g"
   );
   let result = "";
@@ -491,6 +499,18 @@ function upsertPromptFile(pathname, instructions, { prepend = false } = {}) {
   if (!merged) return false;
   if (merged === current) return false;
   return writeTextFile(pathname, merged);
+}
+
+function removePromptFile(pathname) {
+  if (!fs.existsSync(pathname)) return false;
+  const current = fs.readFileSync(pathname, "utf8");
+  const stripped = stripDocdexBlocks(current);
+  if (normalizeInstructionText(stripped) === normalizeInstructionText(current)) return false;
+  if (!stripped) {
+    fs.unlinkSync(pathname);
+    return true;
+  }
+  return writeTextFile(pathname, stripped);
 }
 
 function escapeRegExp(value) {
@@ -554,13 +574,7 @@ function upsertYamlInstruction(pathname, key, instructions) {
 }
 
 function upsertClaudeInstructions(pathname, instructions) {
-  const { value } = readJson(pathname);
-  if (typeof value !== "object" || value == null || Array.isArray(value)) return false;
-  const merged = mergeInstructionText(value.instructions, instructions);
-  if (!merged || merged === value.instructions) return false;
-  value.instructions = merged;
-  writeJson(pathname, value);
-  return true;
+  return upsertPromptFile(pathname, instructions);
 }
 
 function upsertContinueJsonInstructions(pathname, instructions) {
@@ -731,7 +745,7 @@ function rewriteContinueYamlRules(source, instructions, addDocdex) {
 
   const keptItems = items.filter((item) => {
     const text = item.join("\n");
-    return !(text.includes(DOCDEX_INFO_START_PREFIX) && text.includes(DOCDEX_INFO_END));
+    return !hasDocdexBlock(text);
   });
 
   if (addDocdex) {
@@ -786,45 +800,43 @@ function upsertVsCodeInstructionKey(value, key, instructions) {
   return true;
 }
 
-function upsertVsCodeInstructionLocations(value, instructionsDir) {
-  const key = "chat.instructionsFilesLocations";
-  const location = String(instructionsDir);
-  if (value[key] && typeof value[key] === "object" && !Array.isArray(value[key])) {
-    if (value[key][location] === true) return false;
-    value[key][location] = true;
+function removeVsCodeInstructionKey(value, key, instructions, { legacyPath } = {}) {
+  if (typeof value[key] !== "string") return false;
+  const current = value[key];
+  const stripped = stripDocdexBlocks(current);
+  if (normalizeInstructionText(stripped) !== normalizeInstructionText(current)) {
+    if (!stripped) {
+      delete value[key];
+    } else {
+      value[key] = stripped;
+    }
     return true;
   }
-  if (Array.isArray(value[key])) {
-    if (value[key].some((entry) => entry === location)) return false;
-    value[key].push(location);
+  const normalized = normalizeInstructionText(instructions);
+  if (current === normalized || (legacyPath && current === legacyPath)) {
+    delete value[key];
     return true;
   }
-  if (typeof value[key] === "string") {
-    if (value[key] === location) return false;
-    value[key] = [value[key], location];
-    return true;
-  }
-  value[key] = { [location]: true };
-  return true;
+  return false;
 }
 
-function upsertVsCodeInstructions(pathname, instructions, instructionsDir) {
+function upsertVsCodeInstructions(pathname, instructions, legacyPath) {
   const { value } = readJson(pathname);
   if (typeof value !== "object" || value == null || Array.isArray(value)) return false;
   const normalized = normalizeInstructionText(instructions);
   if (!normalized) return false;
   let updated = false;
-  if (upsertVsCodeInstructionKey(value, "github.copilot.chat.codeGeneration.instructions", instructions)) {
+  if (upsertVsCodeInstructionKey(value, "chat.instructions", instructions)) {
     updated = true;
   }
-  if (upsertVsCodeInstructionKey(value, "copilot.chat.codeGeneration.instructions", instructions)) {
+  if (removeVsCodeInstructionKey(value, "github.copilot.chat.codeGeneration.instructions", instructions)) {
     updated = true;
   }
-  if (value["github.copilot.chat.codeGeneration.useInstructionFiles"] !== true) {
-    value["github.copilot.chat.codeGeneration.useInstructionFiles"] = true;
-    updated = true;
-  }
-  if (upsertVsCodeInstructionLocations(value, instructionsDir)) {
+  if (
+    removeVsCodeInstructionKey(value, "copilot.chat.codeGeneration.instructions", instructions, {
+      legacyPath
+    })
+  ) {
     updated = true;
   }
   if (!updated) return false;
@@ -1169,11 +1181,18 @@ function clientInstructionPaths() {
   const aiderConfig = path.join(home, ".aider.conf.yml");
   const gooseConfig = path.join(home, ".config", "goose", "config.yaml");
   const openInterpreterConfig = path.join(home, ".openinterpreter", "profiles", "default.yaml");
+  const geminiInstructions = path.join(userProfile, ".gemini", "GEMINI.md");
+  const claudeInstructions = path.join(userProfile, ".claude", "CLAUDE.md");
+  const cursorAgents = path.join(userProfile, ".cursor", "agents.md");
+  const cursorAgentsUpper = path.join(userProfile, ".cursor", "AGENTS.md");
   const codexAgents = path.join(userProfile, ".codex", "AGENTS.md");
   switch (process.platform) {
     case "win32":
       return {
-        claude: path.join(appData, "Claude", "claude_desktop_config.json"),
+        gemini: geminiInstructions,
+        claude: claudeInstructions,
+        cursorAgents,
+        cursorAgentsUpper,
         continue: continueJson,
         continueYaml,
         continueYml,
@@ -1192,7 +1211,10 @@ function clientInstructionPaths() {
       };
     case "darwin":
       return {
-        claude: path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
+        gemini: geminiInstructions,
+        claude: claudeInstructions,
+        cursorAgents,
+        cursorAgentsUpper,
         continue: continueJson,
         continueYaml,
         continueYml,
@@ -1211,7 +1233,10 @@ function clientInstructionPaths() {
       };
     default:
       return {
-        claude: path.join(home, ".config", "Claude", "claude_desktop_config.json"),
+        gemini: geminiInstructions,
+        claude: claudeInstructions,
+        cursorAgents,
+        cursorAgentsUpper,
         continue: continueJson,
         continueYaml,
         continueYml,
@@ -1295,18 +1320,22 @@ function applyAgentInstructions({ logger } = {}) {
   };
 
   if (paths.vscodeGlobalInstructions) {
-    safeApply("vscode-global", () =>
-      upsertPromptFile(paths.vscodeGlobalInstructions, instructions, { prepend: true })
-    );
+    safeApply("vscode-global-cleanup", () => removePromptFile(paths.vscodeGlobalInstructions));
   }
   if (paths.vscodeInstructionsFile) {
-    safeApply("vscode-instructions-file", () =>
-      upsertPromptFile(paths.vscodeInstructionsFile, instructions, { prepend: true })
+    safeApply("vscode-instructions-file-cleanup", () =>
+      removePromptFile(paths.vscodeInstructionsFile)
     );
   }
-  if (paths.vscodeSettings && paths.vscodeInstructionsDir) {
+  if (paths.cursorAgents) {
+    safeApply("cursor-legacy-cleanup", () => removePromptFile(paths.cursorAgents));
+  }
+  if (paths.cursorAgentsUpper) {
+    safeApply("cursor-legacy-upper-cleanup", () => removePromptFile(paths.cursorAgentsUpper));
+  }
+  if (paths.vscodeSettings) {
     safeApply("vscode-settings", () =>
-      upsertVsCodeInstructions(paths.vscodeSettings, instructions, paths.vscodeInstructionsDir)
+      upsertVsCodeInstructions(paths.vscodeSettings, instructions, paths.vscodeGlobalInstructions)
     );
   }
   if (paths.windsurfGlobalRules) {
@@ -1320,6 +1349,9 @@ function applyAgentInstructions({ logger } = {}) {
   }
   if (paths.claude) {
     safeApply("claude", () => upsertClaudeInstructions(paths.claude, instructions));
+  }
+  if (paths.gemini) {
+    safeApply("gemini", () => upsertPromptFile(paths.gemini, instructions));
   }
   const continueYamlExists =
     (paths.continueYaml && fs.existsSync(paths.continueYaml)) ||

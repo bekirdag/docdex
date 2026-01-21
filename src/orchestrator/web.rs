@@ -1759,6 +1759,30 @@ async fn run_web_discovery(
                     "discovery query used: {}",
                     discovery_response.query
                 ));
+                match discovery
+                    .discover_fallback_only(&discovery_response.query, discovery_limit)
+                    .await
+                {
+                    Ok(fallback_response) => {
+                        let normalized = normalize_discovery_response(
+                            fallback_response,
+                            &config,
+                            web_limit,
+                            query_category,
+                        );
+                        discovery_response = normalized.0;
+                        urls = normalized.1;
+                        debug.push("fallback-only discovery used (api-first)".to_string());
+                        if urls.is_empty() {
+                            debug.push("fallback-only discovery returned empty results".to_string());
+                        }
+                    }
+                    Err(err) => {
+                        debug.push(format!("fallback-only discovery failed: {err}"));
+                    }
+                }
+            }
+            if urls.is_empty() {
                 return WebDiscoveryStatus {
                     status: WebDiscoveryStatusCode::Unavailable,
                     reason: Some("discovery_empty".to_string()),

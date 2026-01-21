@@ -299,6 +299,7 @@ pub async fn serve(
     max_answer_tokens: u32,
     llm_base_url: String,
     llm_default_model: String,
+    llm_config: crate::config::LlmConfig,
     embedding_timeout_ms: u64,
     hook_socket_path: Option<PathBuf>,
     feature_flags: crate::config::FeatureFlagsConfig,
@@ -616,8 +617,10 @@ pub async fn serve(
         features: feature_flags.clone(),
         default_agent_id,
         max_answer_tokens,
+        llm_config,
         llm_base_url,
         llm_default_model,
+        global_state_dir,
         repos: repo_manager,
         multi_repo: daemon_mode,
         require_repo_id,
@@ -644,6 +647,26 @@ pub async fn serve(
     // Logging is intentionally initialised only after startup validation + bind succeed so
     // startup failures emit a single structured error without interleaved log lines.
     util::init_logging(&log_level)?;
+
+    {
+        let refresh_state_dir = state.global_state_dir.clone();
+        let refresh_llm_config = state.llm_config.clone();
+        tokio::spawn(async move {
+            if let Err(err) = crate::llm::local_library::refresh_local_library_if_stale(
+                refresh_state_dir.as_deref(),
+                &refresh_llm_config,
+                false,
+            )
+            .await
+            {
+                warn!(
+                    target: "docdexd",
+                    error = ?err,
+                    "local model library refresh failed on startup"
+                );
+            }
+        });
+    }
 
     if !is_loopback {
         warn!(

@@ -48,6 +48,12 @@ pub struct Metrics {
     hook_latency_ms_total: AtomicU64,
     hook_latency_count: AtomicU64,
 
+    delegate_requests: AtomicU64,
+    delegate_fallbacks: AtomicU64,
+    delegate_latency_ms_total: AtomicU64,
+    delegate_latency_count: AtomicU64,
+    delegate_token_estimate_total: AtomicU64,
+
     project_map_cache_hits: AtomicU64,
     project_map_cache_misses: AtomicU64,
 
@@ -99,6 +105,11 @@ impl Default for Metrics {
             hook_failures: AtomicU64::new(0),
             hook_latency_ms_total: AtomicU64::new(0),
             hook_latency_count: AtomicU64::new(0),
+            delegate_requests: AtomicU64::new(0),
+            delegate_fallbacks: AtomicU64::new(0),
+            delegate_latency_ms_total: AtomicU64::new(0),
+            delegate_latency_count: AtomicU64::new(0),
+            delegate_token_estimate_total: AtomicU64::new(0),
             project_map_cache_hits: AtomicU64::new(0),
             project_map_cache_misses: AtomicU64::new(0),
             chrome_watchdog_reap_attempts: AtomicU64::new(0),
@@ -262,6 +273,26 @@ impl Metrics {
         self.hook_latency_ms_total
             .fetch_add(latency_ms as u64, Ordering::Relaxed);
         self.hook_latency_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_delegate_request(&self) {
+        self.delegate_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_delegate_fallback(&self) {
+        self.delegate_fallbacks.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_delegate_latency(&self, latency_ms: u128) {
+        self.delegate_latency_ms_total
+            .fetch_add(latency_ms as u64, Ordering::Relaxed);
+        self.delegate_latency_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_delegate_token_estimate(&self, tokens: u64) {
+        self.delegate_token_estimate_total
+            .fetch_add(tokens, Ordering::Relaxed);
     }
 
     pub fn inc_project_map_cache_hit(&self) {
@@ -453,6 +484,21 @@ impl Metrics {
                 "# HELP docdex_hook_latency_count_total Hook validation latency samples\n",
                 "# TYPE docdex_hook_latency_count_total counter\n",
                 "docdex_hook_latency_count_total {}\n",
+                "# HELP docdex_delegate_total Delegation requests\n",
+                "# TYPE docdex_delegate_total counter\n",
+                "docdex_delegate_total {}\n",
+                "# HELP docdex_delegate_fallback_total Delegation fallbacks\n",
+                "# TYPE docdex_delegate_fallback_total counter\n",
+                "docdex_delegate_fallback_total {}\n",
+                "# HELP docdex_delegate_latency_ms_total Delegation latency sum in ms\n",
+                "# TYPE docdex_delegate_latency_ms_total counter\n",
+                "docdex_delegate_latency_ms_total {}\n",
+                "# HELP docdex_delegate_latency_count_total Delegation latency samples\n",
+                "# TYPE docdex_delegate_latency_count_total counter\n",
+                "docdex_delegate_latency_count_total {}\n",
+                "# HELP docdex_delegate_token_estimate_total Delegation token estimate\n",
+                "# TYPE docdex_delegate_token_estimate_total counter\n",
+                "docdex_delegate_token_estimate_total {}\n",
                 "# HELP docdex_project_map_cache_hits_total Project map cache hits\n",
                 "# TYPE docdex_project_map_cache_hits_total counter\n",
                 "docdex_project_map_cache_hits_total {}\n",
@@ -514,6 +560,12 @@ impl Metrics {
             self.hook_failures.load(Ordering::Relaxed),
             self.hook_latency_ms_total.load(Ordering::Relaxed),
             self.hook_latency_count.load(Ordering::Relaxed),
+            self.delegate_requests.load(Ordering::Relaxed),
+            self.delegate_fallbacks.load(Ordering::Relaxed),
+            self.delegate_latency_ms_total.load(Ordering::Relaxed),
+            self.delegate_latency_count.load(Ordering::Relaxed),
+            self.delegate_token_estimate_total
+                .load(Ordering::Relaxed),
             self.project_map_cache_hits.load(Ordering::Relaxed),
             self.project_map_cache_misses.load(Ordering::Relaxed),
             self.chrome_watchdog_reap_attempts.load(Ordering::Relaxed),

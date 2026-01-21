@@ -199,6 +199,32 @@ Run Docdex with Ollama:
 DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdexd daemon --host 127.0.0.1 --port 28491
 ```
 
+## Local delegation (cheap agents)
+Docdex can offload small code tasks to a local model (Ollama or a mcoda agent) to reduce paid-token usage. This powers `/v1/delegate` and the MCP tool `docdex_local_completion`.
+
+Config (`~/.docdex/config.toml`):
+```toml
+[llm.delegation]
+enabled = true
+auto_enable = true
+local_agent_id = "ollama-local" # mcoda agent id/slug (optional)
+primary_agent_id = "claude-code" # optional, used for refinement/fallback
+mode = "draft_only" # or "draft_then_refine"
+timeout_ms = 30000
+max_tokens = 512
+max_context_chars = 12000
+task_allowlist = ["generate_tests", "write_docstring", "scaffold_boilerplate", "refactor_simple", "format_code"]
+```
+
+Notes:
+- `auto_enable` defaults to true; delegation auto-enables when local models or mcoda agents are present (opt out with `auto_enable = false`).
+- If `local_agent_id` is empty, Docdex selects a local model/agent from the library by task type; fallback is the configured Ollama model.
+- `task_allowlist` is optional; an empty list allows all task types.
+- `draft_then_refine` returns a primary-agent refinement when available; otherwise returns the local draft with a warning.
+- Local model library: `~/.docdex/state/llm/local_model_library.json` (or under `DOCDEX_STATE_DIR`).
+- Env overrides: `DOCDEX_DELEGATION_ENABLED`, `DOCDEX_DELEGATION_AUTO_ENABLE`, `DOCDEX_DELEGATION_LOCAL_AGENT`, `DOCDEX_DELEGATION_PRIMARY_AGENT`, `DOCDEX_DELEGATION_MODE`, `DOCDEX_DELEGATION_TIMEOUT_MS`, `DOCDEX_DELEGATION_MAX_TOKENS`.
+- Expensive model library: `docs/expensive_models.json`. Agents should match `agent_id`, `agent_slug`, `model`, or adapter type (case-insensitive) to decide whether to delegate.
+
 ## Repo memory
 Repo memory stores project facts (notes, decisions, edge cases) and is used during chat/context assembly. Memory is enabled by default; disable with `DOCDEX_ENABLE_MEMORY=0` or `[memory].enabled = false`.
 

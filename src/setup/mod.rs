@@ -107,6 +107,11 @@ fn run_with_options(options: &SetupOptions) -> Result<SetupSummary> {
         let _ = state_store::write_failed(&summary.message);
     }
     state_store::write_status(&summary)?;
+    if summary.status == "complete" && !summary.models_installed.is_empty() {
+        if let Err(err) = refresh_local_library_after_setup() {
+            eprintln!("[docdex] failed to refresh local model library: {err}");
+        }
+    }
     if let Err(err) = write_agent_instructions() {
         eprintln!("[docdex] failed to write agents instructions: {err}");
     }
@@ -156,6 +161,22 @@ fn write_agent_instructions() -> Result<()> {
         return Ok(());
     }
     std::fs::write(&target, AGENTS_INSTRUCTIONS).context("write agents instructions")?;
+    Ok(())
+}
+
+fn refresh_local_library_after_setup() -> Result<()> {
+    let config = crate::config::AppConfig::load_default().unwrap_or_default();
+    let global_state_dir = config.core.global_state_dir.as_deref();
+    let llm_config = config.llm;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build tokio runtime")?;
+    runtime.block_on(crate::llm::local_library::refresh_local_library_if_stale(
+        global_state_dir,
+        &llm_config,
+        true,
+    ))?;
     Ok(())
 }
 

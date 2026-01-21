@@ -478,8 +478,14 @@ mod tests {
             features: crate::config::FeatureFlagsConfig::default(),
             default_agent_id: None,
             max_answer_tokens: 256,
+            llm_config: crate::config::LlmConfig {
+                base_url: "http://127.0.0.1".to_string(),
+                default_model: "test".to_string(),
+                ..crate::config::LlmConfig::default()
+            },
             llm_base_url: "http://127.0.0.1".to_string(),
             llm_default_model: "test".to_string(),
+            global_state_dir: None,
             repos: None,
             multi_repo: false,
             require_repo_id: false,

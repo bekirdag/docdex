@@ -40,7 +40,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
-use std::path::{Component, Path as FsPath};
+use std::path::{Component, Path as FsPath, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{info, warn};
@@ -51,6 +51,7 @@ const MIN_SNIPPET_WINDOW: usize = 10;
 const MAX_SNIPPET_WINDOW: usize = 400;
 const MAX_RATE_LIMIT_MESSAGE_BYTES: usize = 256;
 const REPO_ID_HEADER: &str = "x-docdex-repo-id";
+const DAG_SESSION_HEADER: &str = "x-docdex-dag-session";
 const TOP_SCORE_NORMALIZATION_K: f32 = 8.0;
 const SYMBOL_MATCH_MAX_FILES: usize = 6;
 const SYMBOL_MATCH_MAX_PER_FILE: usize = 8;
@@ -246,8 +247,10 @@ pub struct AppState {
     pub features: crate::config::FeatureFlagsConfig,
     pub default_agent_id: Option<String>,
     pub max_answer_tokens: u32,
+    pub llm_config: config::LlmConfig,
     pub llm_base_url: String,
     pub llm_default_model: String,
+    pub global_state_dir: Option<PathBuf>,
     pub repos: Option<Arc<crate::daemon::multi_repo::RepoManager>>,
     pub multi_repo: bool,
     pub require_repo_id: bool,
@@ -317,6 +320,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/profile/import",
             post(crate::api::v1::profile::profile_import_handler),
+        )
+        .route(
+            "/v1/delegate",
+            post(crate::api::v1::delegate::delegate_handler),
         )
         .route(
             "/v1/initialize",
@@ -520,6 +527,20 @@ pub(crate) struct RepoIdError {
     pub status: StatusCode,
     pub code: &'static str,
     pub message: String,
+    pub details: Option<serde_json::Value>,
+}
+
+pub(crate) fn repo_error_response(err: RepoIdError) -> Response {
+    match err.details {
+        Some(details) => json_error_with_details(err.status, err.code, err.message, details),
+        None => json_error(err.status, err.code, err.message),
+    }
+}
+
+fn touch_default_repo(state: &AppState) {
+    if let Some(manager) = state.repos.as_ref() {
+        let _ = manager.get_by_id(&state.repo_id);
+    }
 }
 
 pub(crate) fn resolve_repo_context(
@@ -529,20 +550,21 @@ pub(crate) fn resolve_repo_context(
     body_repo_id: Option<&str>,
     require: bool,
 ) -> Result<RepoContext, RepoIdError> {
-    let explicit_required = if state.multi_repo {
+    let repo_count = if state.multi_repo {
         state
             .repos
             .as_ref()
-            .map(|manager| manager.repo_count() > 1)
-            .unwrap_or(false)
+            .map(|manager| manager.repo_count())
+            .unwrap_or(0)
     } else {
-        false
+        0
     };
+    let explicit_required = state.multi_repo && repo_count > 1;
     let selected = parse_repo_id(
         headers,
         query_repo_id,
         body_repo_id,
-        require || explicit_required || state.require_repo_id,
+        require || state.require_repo_id,
     )?;
     let default_repo = RepoContext {
         repo_id: state.repo_id.clone(),
@@ -552,18 +574,27 @@ pub(crate) fn resolve_repo_context(
         memory: state.memory.clone(),
     };
     let Some(candidate) = selected else {
+        if explicit_required {
+            return Err(RepoIdError {
+                status: StatusCode::BAD_REQUEST,
+                code: ERR_MISSING_REPO,
+                message: "repo_id is required when multiple repos are mounted".to_string(),
+                details: Some(serde_json::json!({
+                    "repoCount": repo_count,
+                    "header": REPO_ID_HEADER,
+                    "queryParam": "repo_id",
+                    "hint": "Send x-docdex-repo-id or repo_id, or call /v1/initialize for the target repo."
+                })),
+            });
+        }
         if state.multi_repo {
-            if let Some(manager) = state.repos.as_ref() {
-                let _ = manager.get_by_id(&state.repo_id);
-            }
+            touch_default_repo(state);
         }
         return Ok(default_repo);
     };
     if default_repo.matches_id(&candidate) {
         if state.multi_repo {
-            if let Some(manager) = state.repos.as_ref() {
-                let _ = manager.get_by_id(&state.repo_id);
-            }
+            touch_default_repo(state);
         }
         return Ok(default_repo);
     }
@@ -572,6 +603,7 @@ pub(crate) fn resolve_repo_context(
             status: StatusCode::NOT_FOUND,
             code: ERR_UNKNOWN_REPO,
             message: "unknown repo".to_string(),
+            details: None,
         });
     }
     let Some(manager) = state.repos.as_ref() else {
@@ -579,6 +611,7 @@ pub(crate) fn resolve_repo_context(
             status: StatusCode::NOT_FOUND,
             code: ERR_UNKNOWN_REPO,
             message: "unknown repo".to_string(),
+            details: None,
         });
     };
     if let Some(repo) = manager.get_by_id(&candidate) {
@@ -594,6 +627,7 @@ pub(crate) fn resolve_repo_context(
         status: StatusCode::NOT_FOUND,
         code: ERR_UNKNOWN_REPO,
         message: "unknown repo".to_string(),
+        details: None,
     })
 }
 
@@ -609,6 +643,7 @@ fn parse_repo_id(
             status: StatusCode::BAD_REQUEST,
             code: ERR_INVALID_ARGUMENT,
             message: format!("{REPO_ID_HEADER} must be valid UTF-8"),
+            details: None,
         })?;
         let trimmed = header_value.trim();
         if trimmed.is_empty() {
@@ -616,6 +651,7 @@ fn parse_repo_id(
                 status: StatusCode::BAD_REQUEST,
                 code: ERR_INVALID_ARGUMENT,
                 message: format!("{REPO_ID_HEADER} must not be empty"),
+                details: None,
             });
         }
         selected = Some(trimmed.to_string());
@@ -631,6 +667,7 @@ fn parse_repo_id(
                 status: StatusCode::BAD_REQUEST,
                 code: ERR_INVALID_ARGUMENT,
                 message: "repo_id must not be empty".to_string(),
+                details: None,
             });
         }
         match selected.as_deref() {
@@ -640,6 +677,7 @@ fn parse_repo_id(
                     status: StatusCode::BAD_REQUEST,
                     code: ERR_INVALID_ARGUMENT,
                     message: "repo_id values must match across header, query, and body".to_string(),
+                    details: None,
                 });
             }
             _ => {}
@@ -652,12 +690,195 @@ fn parse_repo_id(
                 status: StatusCode::BAD_REQUEST,
                 code: ERR_MISSING_REPO,
                 message: "repo_id is required".to_string(),
+                details: None,
             })
         } else {
             Ok(None)
         };
     };
     Ok(Some(candidate))
+}
+
+fn header_dag_session_id(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(DAG_SESSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
+#[cfg(test)]
+mod repo_context_tests {
+    use super::*;
+    use crate::daemon::multi_repo::{RepoManager, RepoRuntime};
+    use crate::index::{IndexConfig, Indexer};
+    use anyhow::{anyhow, Result};
+    use axum::http::{HeaderMap, HeaderValue};
+    use std::fs;
+    use std::path::Path;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    fn write_repo(repo_root: &Path, marker: &str) -> Result<()> {
+        fs::create_dir_all(repo_root.join(".git"))?;
+        fs::write(repo_root.join("README.md"), marker)?;
+        Ok(())
+    }
+
+    fn build_state(
+        repo_count: usize,
+        multi_repo: bool,
+    ) -> Result<(AppState, Vec<String>, TempDir)> {
+        let temp = TempDir::new()?;
+        let state_root = temp.path().join("state");
+        fs::create_dir_all(&state_root)?;
+
+        let manager = if multi_repo {
+            Some(Arc::new(RepoManager::new(None, None)))
+        } else {
+            None
+        };
+
+        let mut repo_ids = Vec::new();
+        let mut default_indexer: Option<Arc<Indexer>> = None;
+        let mut default_repo_id: Option<String> = None;
+        let mut default_legacy_id: Option<String> = None;
+
+        for idx in 0..repo_count {
+            let repo_root = temp.path().join(format!("repo_{idx}"));
+            write_repo(&repo_root, &format!("repo {idx}"))?;
+            let state_dir = state_root.join(format!("repo_{idx}"));
+            let config = IndexConfig::with_overrides(
+                &repo_root,
+                Some(state_dir),
+                Vec::new(),
+                Vec::new(),
+                true,
+            )?;
+            let indexer = Arc::new(Indexer::with_config(repo_root.clone(), config)?);
+            let repo_id = repo_manager::repo_fingerprint_sha256(&repo_root)?;
+            let legacy_repo_id = repo_manager::fingerprint::legacy_repo_id_for_root(&repo_root);
+
+            if idx == 0 {
+                default_indexer = Some(indexer.clone());
+                default_repo_id = Some(repo_id.clone());
+                default_legacy_id = Some(legacy_repo_id.clone());
+            }
+
+            if let Some(manager) = manager.as_ref() {
+                let runtime = Arc::new(RepoRuntime {
+                    repo_id: repo_id.clone(),
+                    legacy_repo_id,
+                    repo_root: repo_root.clone(),
+                    indexer,
+                    libs_indexer: None,
+                    memory: None,
+                });
+                manager.insert_repo(runtime, None);
+            }
+            repo_ids.push(repo_id);
+        }
+
+        let security = SecurityConfig::from_options(
+            None,
+            &[],
+            10,
+            1024,
+            1024,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
+        )?;
+
+        let default_indexer =
+            default_indexer.expect("build_state requires at least one repo");
+        let default_repo_id =
+            default_repo_id.expect("build_state requires at least one repo");
+        let default_legacy_id =
+            default_legacy_id.expect("build_state requires at least one repo");
+
+        if let Some(manager) = manager.as_ref() {
+            manager.pin_repo(default_repo_id.clone());
+        }
+
+        let state = AppState {
+            repo_id: default_repo_id,
+            legacy_repo_id: default_legacy_id,
+            indexer: default_indexer,
+            libs_indexer: None,
+            security,
+            access_log: false,
+            audit: None,
+            metrics: Arc::new(crate::metrics::Metrics::default()),
+            memory: None,
+            profile_state: None,
+            features: crate::config::FeatureFlagsConfig::default(),
+            default_agent_id: None,
+            max_answer_tokens: 256,
+            llm_config: config::LlmConfig {
+                base_url: "http://127.0.0.1".to_string(),
+                default_model: "test".to_string(),
+                ..config::LlmConfig::default()
+            },
+            llm_base_url: "http://127.0.0.1".to_string(),
+            llm_default_model: "test".to_string(),
+            global_state_dir: None,
+            repos: manager,
+            multi_repo,
+            require_repo_id: false,
+            mcp_router: None,
+        };
+
+        Ok((state, repo_ids, temp))
+    }
+
+    #[test]
+    fn missing_repo_id_errors_in_multi_repo_mode() -> Result<()> {
+        let (state, _repo_ids, _temp) = build_state(2, true)?;
+        let headers = HeaderMap::new();
+        let err = match resolve_repo_context(&state, &headers, None, None, false) {
+            Ok(_) => return Err(anyhow!("expected missing repo error")),
+            Err(err) => err,
+        };
+        assert_eq!(err.code, ERR_MISSING_REPO);
+        assert!(err.message.contains("multiple repos"));
+        let details = err.details.expect("expected error details");
+        assert_eq!(details.get("repoCount").and_then(|v| v.as_u64()), Some(2));
+        Ok(())
+    }
+
+    #[test]
+    fn missing_repo_id_defaults_in_single_repo_mode() -> Result<()> {
+        let (state, repo_ids, _temp) = build_state(1, false)?;
+        let headers = HeaderMap::new();
+        let repo = match resolve_repo_context(&state, &headers, None, None, false) {
+            Ok(repo) => repo,
+            Err(err) => return Err(anyhow!("unexpected error: {}", err.message)),
+        };
+        assert_eq!(repo.repo_id, repo_ids[0]);
+        Ok(())
+    }
+
+    #[test]
+    fn mismatched_repo_id_rejected() -> Result<()> {
+        let (state, _repo_ids, _temp) = build_state(1, false)?;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            REPO_ID_HEADER,
+            HeaderValue::from_static("alpha"),
+        );
+        let err = match resolve_repo_context(&state, &headers, Some("bravo"), None, false) {
+            Ok(_) => return Err(anyhow!("expected mismatch error")),
+            Err(err) => err,
+        };
+        assert_eq!(err.code, ERR_INVALID_ARGUMENT);
+        Ok(())
+    }
 }
 
 async fn memory_store_handler(
@@ -675,7 +896,7 @@ async fn memory_store_handler(
         false,
     ) {
         Ok(repo) => repo,
-        Err(err) => return json_error(err.status, err.code, err.message),
+        Err(err) => return repo_error_response(err),
     };
     let Some(memory) = repo.memory.clone() else {
         return json_error(
@@ -801,7 +1022,7 @@ async fn memory_recall_handler(
         false,
     ) {
         Ok(repo) => repo,
-        Err(err) => return json_error(err.status, err.code, err.message),
+        Err(err) => return repo_error_response(err),
     };
     let Some(memory) = repo.memory.clone() else {
         return json_error(
@@ -994,7 +1215,9 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                     "diff_base=<rev optional>",
                     "diff_head=<rev optional>",
                     "diff_path=<path optional, repeatable>",
+                    "dag_session_id=<optional>",
                     "repo_id=<optional>",
+                    "x-docdex-dag-session=<header optional>",
                 ],
             },
             AiHelpEndpoint {
@@ -1024,9 +1247,11 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                     "docdex.llm_filter_local_results=<bool optional>",
                     "docdex.compress_results=<bool optional>",
                     "docdex.agent_id=<string optional>",
+                    "docdex.dag_session_id=<string optional>",
                     "docdex.diff=<{mode,base,head,paths}>",
                     "repo_id=<optional (query or body)>",
                     "x-docdex-agent-id=<header optional>",
+                    "x-docdex-dag-session=<header optional>",
                 ],
             },
             AiHelpEndpoint {
@@ -1188,7 +1413,12 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 method: "POST",
                 path: "/v1/web/search",
                 description: "Run a web discovery query (requires DOCDEX_WEB_ENABLED=1; daemon enables by default).",
-                params: &["query=<string>", "limit=<int optional>"],
+                params: &[
+                    "query=<string>",
+                    "limit=<int optional>",
+                    "dag_session_id=<optional>",
+                    "x-docdex-dag-session=<header optional>",
+                ],
             },
             AiHelpEndpoint {
                 method: "POST",
@@ -1576,6 +1806,8 @@ struct SearchParams {
     diff_head: Option<String>,
     #[serde(default)]
     diff_path: Vec<String>,
+    #[serde(default, alias = "session_id", alias = "dagSessionId")]
+    dag_session_id: Option<String>,
     #[serde(default)]
     repo_id: Option<String>,
 }
@@ -2751,7 +2983,7 @@ async fn search_handler(
     {
         Ok(repo) => repo,
         Err(err) => {
-            return json_error(err.status, err.code, err.message).into_response();
+            return repo_error_response(err);
         }
     };
     let limit = params.limit.unwrap_or(8).min(state.security.max_limit);
@@ -2937,8 +3169,18 @@ async fn search_handler(
         }
     };
 
+    let header_dag_session_id = header_dag_session_id(&headers);
     let request_id_value = request_id.0;
     let request_id_str = request_id_value.as_str();
+    let param_dag_session_id = params
+        .dag_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let dag_session_id = header_dag_session_id
+        .as_deref()
+        .or(param_dag_session_id)
+        .unwrap_or(request_id_str);
     let plan = WaterfallPlan::new(
         WebGateConfig::from_env(),
         Tier2Config::enabled(),
@@ -2951,6 +3193,7 @@ async fn search_handler(
 
     match run_waterfall(WaterfallRequest {
         request_id: request_id_str,
+        dag_session_id: Some(dag_session_id),
         query,
         limit,
         diff: diff_request,
@@ -3129,7 +3372,7 @@ async fn snippet_handler(
     {
         Ok(repo) => repo,
         Err(err) => {
-            return json_error(err.status, err.code, err.message).into_response();
+            return repo_error_response(err);
         }
     };
     let window = params

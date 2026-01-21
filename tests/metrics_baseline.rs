@@ -25,6 +25,7 @@ fn metrics_baseline_includes_required_counters() -> Result<(), Box<dyn Error>> {
     metrics.record_hook_latency(7);
     metrics.inc_project_map_cache_hit();
     metrics.inc_project_map_cache_miss();
+    metrics.record_delegate_token_estimate(100);
 
     let body = metrics.render_prometheus();
     let recall = metric_value(&body, "docdex_profile_recall_requests_total")?;
@@ -32,6 +33,7 @@ fn metrics_baseline_includes_required_counters() -> Result<(), Box<dyn Error>> {
     let hook_checks = metric_value(&body, "docdex_hook_checks_total")?;
     let map_hits = metric_value(&body, "docdex_project_map_cache_hits_total")?;
     let budget_drops = metric_value(&body, "docdex_profile_budget_drops_total")?;
+    let delegate_tokens = metric_value(&body, "docdex_delegate_token_estimate_total")?;
 
     assert!(recall > 0.0, "expected profile recall counter to increment");
     assert!(
@@ -49,6 +51,10 @@ fn metrics_baseline_includes_required_counters() -> Result<(), Box<dyn Error>> {
     assert!(
         budget_drops > 0.0,
         "expected profile budget drop counter to increment"
+    );
+    assert!(
+        delegate_tokens > 0.0,
+        "expected delegate token estimate counter to increment"
     );
     Ok(())
 }

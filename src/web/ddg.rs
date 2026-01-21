@@ -22,7 +22,6 @@ use crate::web::WebConfig;
 const PROVIDER: &str = "duckduckgo_lite";
 const DDG_LITE_PROVIDER: &str = "duckduckgo_lite";
 const SEARXNG_PROVIDER: &str = "searxng_json";
-const GOOGLE_MOBILE_PROVIDER: &str = "google_mobile";
 const BRAVE_PROVIDER: &str = "brave";
 const GOOGLE_CSE_PROVIDER: &str = "google_cse";
 const BING_PROVIDER: &str = "bing";
@@ -43,7 +42,6 @@ const DEFAULT_SEARXNG_URLS: &[&str] = &[
     "https://searx.tiekoetter.com/search",
     "https://searx.si/search",
 ];
-const GOOGLE_MOBILE_URL: &str = "https://www.google.com/m";
 const BRAVE_API_URL: &str = "https://api.search.brave.com/res/v1/web/search";
 const GOOGLE_CSE_API_URL: &str = "https://www.googleapis.com/customsearch/v1";
 const BING_API_URL: &str = "https://api.bing.microsoft.com/v7.0/search";
@@ -102,7 +100,6 @@ struct DiscoveryResponses {
 enum FallbackProvider {
     DdgLite(Url),
     SearxngJson(Url),
-    GoogleMobile(Url),
     Brave {
         api_key: String,
         base_url: Url,
@@ -146,11 +143,6 @@ impl FallbackChain {
         let mut free_providers = Vec::new();
 
         free_providers.extend(searxng_fallbacks());
-        if let Some(google) = url_from_env("DOCDEX_WEB_GOOGLE_MOBILE_URL")
-            .or_else(|| Url::parse(GOOGLE_MOBILE_URL).ok())
-        {
-            free_providers.push(FallbackProvider::GoogleMobile(google));
-        }
 
         if let Some(api_key) = config.brave_api_key.as_deref().and_then(nonempty_value) {
             let base_url = url_from_env("DOCDEX_BRAVE_API_URL")
@@ -412,6 +404,28 @@ impl DdgDiscovery {
                         }
                         let links = extract_links(&body);
                         let filtered = self.filter_links(links);
+                        if filtered.is_empty() {
+                            let chain = self.fallback_chain_for(&mut fallback_chain, true);
+                            chain.skip_ddg();
+                            if let Some(response) = self
+                                .maybe_fallback_discovery(
+                                    chain,
+                                    query,
+                                    limit,
+                                    cache_limit,
+                                    &cache_key,
+                                    &mut last_error,
+                                )
+                                .await
+                            {
+                                return Ok(response);
+                            }
+                            return Err(AppError::new(
+                                ERR_INTERNAL_ERROR,
+                                "duckduckgo discovery returned empty results",
+                            )
+                            .into());
+                        }
                         let responses = build_discovery_responses(
                             PROVIDER,
                             query,
@@ -558,6 +572,51 @@ impl DdgDiscovery {
         Err(AppError::new(ERR_INTERNAL_ERROR, message).into())
     }
 
+    pub async fn discover_fallback_only(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<WebDiscoveryResponse> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "query must not be empty").into());
+        }
+        if !self.config.enabled {
+            return Err(
+                AppError::new(ERR_MISSING_DEPENDENCY, "web discovery is disabled")
+                    .with_details(json!({ "dependency": "web_discovery" }))
+                    .into(),
+            );
+        }
+
+        let limit = limit.clamp(1, MAX_DDG_RESULTS);
+        let cache_limit = self.config.max_results.max(limit).min(MAX_DDG_RESULTS);
+        let cache_key = ddg_cache_key(&self.config.ddg_base_url, query);
+        let mut last_error: Option<anyhow::Error> = None;
+        let mut fallback_chain = None;
+        let chain = self.fallback_chain_for(&mut fallback_chain, true);
+        chain.skip_ddg();
+        if let Some(response) = self
+            .maybe_fallback_discovery(
+                chain,
+                query,
+                limit,
+                cache_limit,
+                &cache_key,
+                &mut last_error,
+            )
+            .await
+        {
+            return Ok(response);
+        }
+        let message = if let Some(err) = last_error {
+            format!("fallback discovery failed: {err}")
+        } else {
+            "fallback discovery failed".to_string()
+        };
+        Err(AppError::new(ERR_INTERNAL_ERROR, message).into())
+    }
+
     fn filter_links(&self, links: Vec<String>) -> Vec<String> {
         let deduped = dedupe_urls(links);
         filter_blocked_urls(deduped, &self.blocklist)
@@ -672,10 +731,6 @@ impl DdgDiscovery {
                 self.try_searxng_discovery(&base_url, query, limit, cache_limit, cache_key)
                     .await
             }
-            FallbackProvider::GoogleMobile(base_url) => {
-                self.try_google_mobile_discovery(&base_url, query, limit, cache_limit, cache_key)
-                    .await
-            }
             FallbackProvider::Brave { api_key, base_url } => {
                 self.try_brave_discovery(&base_url, &api_key, query, limit, cache_limit, cache_key)
                     .await
@@ -781,37 +836,6 @@ impl DdgDiscovery {
         }
         let responses =
             build_discovery_responses(SEARXNG_PROVIDER, query, filtered, limit, cache_limit);
-        self.cache_response(cache_key, &responses.response_for_cache);
-        Ok(Some(responses.response))
-    }
-
-    async fn try_google_mobile_discovery(
-        &self,
-        base_url: &Url,
-        query: &str,
-        limit: usize,
-        cache_limit: usize,
-        cache_key: &str,
-    ) -> Result<Option<WebDiscoveryResponse>> {
-        let url = build_google_mobile_url(base_url, query)?;
-        let referer = ddg_referer(base_url);
-        let resp = self.client.get(url).header(REFERER, referer).send().await?;
-        if !resp.status().is_success() {
-            return Ok(None);
-        }
-        let body = resp.text().await.map_err(|err| {
-            AppError::new(
-                ERR_INTERNAL_ERROR,
-                format!("google mobile discovery failed: {err}"),
-            )
-        })?;
-        let links = extract_google_links(&body);
-        let filtered = self.filter_links(links);
-        if filtered.is_empty() {
-            return Ok(None);
-        }
-        let responses =
-            build_discovery_responses(GOOGLE_MOBILE_PROVIDER, query, filtered, limit, cache_limit);
         self.cache_response(cache_key, &responses.response_for_cache);
         Ok(Some(responses.response))
     }
@@ -1085,12 +1109,6 @@ fn build_searxng_url(base: &Url, query: &str) -> Result<Url> {
     Ok(url)
 }
 
-fn build_google_mobile_url(base: &Url, query: &str) -> Result<Url> {
-    let mut url = base.clone();
-    url.query_pairs_mut().append_pair("q", query);
-    Ok(url)
-}
-
 fn build_brave_url(base: &Url, query: &str, count: usize) -> Result<Url> {
     let mut url = base.clone();
     url.query_pairs_mut()
@@ -1268,22 +1286,6 @@ fn extract_searxng_links(body: &str) -> Result<Vec<String>> {
     Ok(extract_json_links(&value))
 }
 
-fn extract_google_links(html: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for caps in HTML_HREF_RE.captures_iter(html) {
-        let href = caps
-            .get(1)
-            .or_else(|| caps.get(2))
-            .map(|m| m.as_str())
-            .unwrap_or_default();
-        let href = html_unescape_attr(href);
-        if let Some(url) = normalize_google_href(&href) {
-            out.push(url);
-        }
-    }
-    out
-}
-
 fn extract_brave_links(value: &Value) -> Vec<String> {
     value
         .get("web")
@@ -1329,30 +1331,6 @@ fn extract_bing_links(value: &Value) -> Vec<String> {
                 .map(|url| url.to_string())
         })
         .collect()
-}
-
-fn normalize_google_href(href: &str) -> Option<String> {
-    if href.starts_with("/url?") {
-        let base = Url::parse("https://www.google.com").ok()?;
-        let url = base.join(href).ok()?;
-        return extract_google_target(&url);
-    }
-    if href.starts_with("http://") || href.starts_with("https://") {
-        let url = Url::parse(href).ok()?;
-        if url.path().starts_with("/url") {
-            return extract_google_target(&url);
-        }
-    }
-    None
-}
-
-fn extract_google_target(url: &Url) -> Option<String> {
-    for (key, value) in url.query_pairs() {
-        if key == "q" {
-            return Some(value.into_owned());
-        }
-    }
-    None
 }
 
 fn extract_ddg_lite_links(html: &str) -> Vec<String> {

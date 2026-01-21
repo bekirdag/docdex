@@ -282,6 +282,7 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         config.llm.max_answer_tokens,
         config.llm.base_url.clone(),
         config.llm.default_model.clone(),
+        config.llm.clone(),
         embedding_timeout_ms,
         hook_socket_path,
         config.features.clone(),

@@ -17,6 +17,10 @@ const DEFAULT_LLM_PROVIDER: &str = "ollama";
 const DEFAULT_LLM_BASE_URL: &str = "http://127.0.0.1:11434";
 const DEFAULT_LLM_MODEL: &str = "phi3.5:3.8b";
 const DEFAULT_EMBED_MODEL: &str = "nomic-embed-text";
+const DEFAULT_DELEGATION_MODE: &str = "draft_only";
+const DEFAULT_DELEGATION_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_DELEGATION_MAX_TOKENS: u32 = 512;
+const DEFAULT_DELEGATION_MAX_CONTEXT_CHARS: usize = 12_000;
 const DEFAULT_PROFILE_EMBED_MODEL: &str = "nomic-embed-text-v1.5";
 const DEFAULT_PROFILE_EMBED_DIM: usize = 768;
 const DEFAULT_MEMORY_BACKEND: &str = "sqlite";
@@ -83,6 +87,7 @@ impl AppConfig {
         if self.llm.embedding_model.trim().is_empty() {
             self.llm.embedding_model = DEFAULT_EMBED_MODEL.to_string();
         }
+        self.llm.delegation.apply_defaults();
         if self.web.discovery_provider.trim().is_empty() {
             self.web.discovery_provider = DEFAULT_DISCOVERY_PROVIDER.to_string();
         }
@@ -165,6 +170,8 @@ pub struct LlmConfig {
     pub embedding_model: String,
     #[serde(default = "default_max_answer_tokens")]
     pub max_answer_tokens: u32,
+    #[serde(default)]
+    pub delegation: DelegationConfig,
 }
 
 impl Default for LlmConfig {
@@ -175,6 +182,62 @@ impl Default for LlmConfig {
             default_model: default_llm_model(),
             embedding_model: default_embed_model(),
             max_answer_tokens: default_max_answer_tokens(),
+            delegation: DelegationConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegationConfig {
+    #[serde(default = "default_delegation_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_delegation_auto_enable")]
+    pub auto_enable: bool,
+    #[serde(default)]
+    pub local_agent_id: String,
+    #[serde(default)]
+    pub primary_agent_id: String,
+    #[serde(default = "default_delegation_mode")]
+    pub mode: String,
+    #[serde(default = "default_delegation_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_delegation_max_tokens")]
+    pub max_tokens: u32,
+    #[serde(default = "default_delegation_max_context_chars")]
+    pub max_context_chars: usize,
+    #[serde(default)]
+    pub task_allowlist: Vec<String>,
+}
+
+impl Default for DelegationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_delegation_enabled(),
+            auto_enable: default_delegation_auto_enable(),
+            local_agent_id: String::new(),
+            primary_agent_id: String::new(),
+            mode: default_delegation_mode(),
+            timeout_ms: default_delegation_timeout_ms(),
+            max_tokens: default_delegation_max_tokens(),
+            max_context_chars: default_delegation_max_context_chars(),
+            task_allowlist: Vec::new(),
+        }
+    }
+}
+
+impl DelegationConfig {
+    fn apply_defaults(&mut self) {
+        if self.mode.trim().is_empty() {
+            self.mode = default_delegation_mode();
+        }
+        if self.timeout_ms == 0 {
+            self.timeout_ms = default_delegation_timeout_ms();
+        }
+        if self.max_tokens == 0 {
+            self.max_tokens = default_delegation_max_tokens();
+        }
+        if self.max_context_chars == 0 {
+            self.max_context_chars = default_delegation_max_context_chars();
         }
     }
 }
@@ -421,8 +484,9 @@ impl Default for ServerConfig {
 
 pub fn load_config_from_path(path: &Path) -> Result<AppConfig> {
     if !path.exists() {
-        let config = default_config_with_paths()?;
+        let mut config = default_config_with_paths()?;
         write_config(path, &config)?;
+        apply_env_overrides(&mut config);
         apply_impact_settings(ImpactSettings {
             dynamic_import_scan_limit: config.code_intelligence.dynamic_import_scan_limit,
             import_traces_enabled: config.code_intelligence.import_traces_enabled,
@@ -432,8 +496,9 @@ pub fn load_config_from_path(path: &Path) -> Result<AppConfig> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("read config {}", path.display()))?;
     if text.trim().is_empty() {
-        let config = default_config_with_paths()?;
+        let mut config = default_config_with_paths()?;
         write_config(path, &config)?;
+        apply_env_overrides(&mut config);
         apply_impact_settings(ImpactSettings {
             dynamic_import_scan_limit: config.code_intelligence.dynamic_import_scan_limit,
             import_traces_enabled: config.code_intelligence.import_traces_enabled,
@@ -443,6 +508,7 @@ pub fn load_config_from_path(path: &Path) -> Result<AppConfig> {
     let mut config: AppConfig =
         toml::from_str(&text).with_context(|| format!("parse config {}", path.display()))?;
     config.apply_defaults()?;
+    apply_env_overrides(&mut config);
     let mut updated = false;
     if apply_browser_defaults(&mut config) {
         updated = true;
@@ -493,6 +559,39 @@ fn default_config_with_paths() -> Result<AppConfig> {
     Ok(config)
 }
 
+fn apply_env_overrides(config: &mut AppConfig) {
+    if let Some(value) = env_bool("DOCDEX_DELEGATION_ENABLED") {
+        config.llm.delegation.enabled = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_DELEGATION_AUTO_ENABLE") {
+        config.llm.delegation.auto_enable = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_DELEGATION_LOCAL_AGENT") {
+        config.llm.delegation.local_agent_id = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_DELEGATION_PRIMARY_AGENT") {
+        config.llm.delegation.primary_agent_id = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_DELEGATION_MODE") {
+        let normalized = value.to_lowercase();
+        if normalized == "draft_only" || normalized == "draft_then_refine" {
+            config.llm.delegation.mode = normalized;
+        } else {
+            warn!(
+                target: "docdexd",
+                value = %value,
+                "invalid DOCDEX_DELEGATION_MODE; expected draft_only or draft_then_refine"
+            );
+        }
+    }
+    if let Some(value) = env_u64("DOCDEX_DELEGATION_TIMEOUT_MS") {
+        config.llm.delegation.timeout_ms = value;
+    }
+    if let Some(value) = env_u32("DOCDEX_DELEGATION_MAX_TOKENS") {
+        config.llm.delegation.max_tokens = value;
+    }
+}
+
 pub fn write_config(path: &Path, config: &AppConfig) -> Result<()> {
     let Some(parent) = path.parent() else {
         return Err(anyhow!("config path has no parent directory"));
@@ -506,6 +605,35 @@ pub fn write_config(path: &Path, config: &AppConfig) -> Result<()> {
 
 fn default_state_dir() -> Result<PathBuf> {
     crate::state_paths::default_state_base_dir()
+}
+
+fn env_trimmed(key: &str) -> Option<String> {
+    let raw = std::env::var(key).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn env_bool(key: &str) -> Option<bool> {
+    let raw = env_trimmed(key)?;
+    match raw.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn env_u64(key: &str) -> Option<u64> {
+    let raw = env_trimmed(key)?;
+    raw.parse::<u64>().ok()
+}
+
+fn env_u32(key: &str) -> Option<u32> {
+    let raw = env_trimmed(key)?;
+    raw.parse::<u32>().ok()
 }
 
 fn default_log_level() -> String {
@@ -530,6 +658,30 @@ fn default_llm_model() -> String {
 
 fn default_embed_model() -> String {
     DEFAULT_EMBED_MODEL.to_string()
+}
+
+fn default_delegation_enabled() -> bool {
+    false
+}
+
+fn default_delegation_auto_enable() -> bool {
+    true
+}
+
+fn default_delegation_mode() -> String {
+    DEFAULT_DELEGATION_MODE.to_string()
+}
+
+fn default_delegation_timeout_ms() -> u64 {
+    DEFAULT_DELEGATION_TIMEOUT_MS
+}
+
+fn default_delegation_max_tokens() -> u32 {
+    DEFAULT_DELEGATION_MAX_TOKENS
+}
+
+fn default_delegation_max_context_chars() -> usize {
+    DEFAULT_DELEGATION_MAX_CONTEXT_CHARS
 }
 
 fn default_profile_embed_model() -> String {

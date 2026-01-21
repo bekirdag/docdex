@@ -1,0 +1,56 @@
+{
+  "model_ids": [
+    "gpt-5.2-codex",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
+    "gpt-5.2",
+    "gpt-5",
+    "gpt-4.1",
+    "gpt-4",
+    "gpt-4-turbo",
+    "gpt-4o",
+    "o1",
+    "o1-preview",
+    "o1-mini",
+    "o3",
+    "o3-mini",
+    "claude-3-opus",
+    "claude-3.5-sonnet",
+    "claude-3.7-sonnet",
+    "claude-3-sonnet",
+    "claude-3-haiku",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash",
+    "gemini-2.0-pro",
+    "gemini-2.0-flash",
+    "gemini-2.5-pro",
+    "grok-2",
+    "grok-2-vision",
+    "grok-3",
+    "mistral-large",
+    "mistral-large-2",
+    "command-r-plus",
+    "jamba-1.5-large"
+  ],
+  "model_prefixes": [
+    "gpt-",
+    "claude-",
+    "gemini-",
+    "anthropic-",
+    "ai21-",
+    "grok-",
+    "mistral-"
+  ],
+  "agent_ids": [
+    "claude-code"
+  ],
+  "agent_slugs": [],
+  "adapter_types": [
+    "openai-api",
+    "openai-cli",
+    "codex-cli",
+    "gemini-api",
+    "gemini-cli",
+    "zhipu-api"
+  ]
+}

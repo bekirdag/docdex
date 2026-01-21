@@ -10,7 +10,7 @@ use tracing::warn;
 use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT};
 use crate::indexer;
 use crate::libs;
-use crate::search::{json_error, resolve_repo_context, AppState};
+use crate::search::{json_error, repo_error_response, resolve_repo_context, AppState};
 
 #[derive(Deserialize)]
 pub struct IndexRebuildRequest {
@@ -35,7 +35,7 @@ pub async fn index_rebuild_handler(
     let repo = match resolve_repo_context(&state, &headers, payload.repo_id.as_deref(), None, false)
     {
         Ok(repo) => repo,
-        Err(err) => return json_error(err.status, err.code, err.message),
+        Err(err) => return repo_error_response(err),
     };
 
     let options = match payload.libs_sources.as_deref().map(str::trim) {
@@ -121,7 +121,7 @@ pub async fn index_ingest_handler(
     let repo = match resolve_repo_context(&state, &headers, payload.repo_id.as_deref(), None, false)
     {
         Ok(repo) => repo,
-        Err(err) => return json_error(err.status, err.code, err.message),
+        Err(err) => return repo_error_response(err),
     };
 
     let file = payload.file.trim();

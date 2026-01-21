@@ -1,25 +1,32 @@
 use axum::{
-    extract::State,
-    http::StatusCode,
+    extract::{Extension, State},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json, Response},
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tracing::warn;
 use url::Url;
 
+use crate::dag::logging as dag_logging;
 use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY};
-use crate::search::{json_error, json_error_with_details, AppState};
+use crate::memory::repo_state_root_from_state_dir;
+use crate::search::{json_error, json_error_with_details, AppState, RequestId};
 use crate::util;
 use crate::web;
 use crate::web::readability::extract_readable_text;
 use crate::web::scraper::ScraperEngine;
 use crate::web::status::fetch_status;
 
+const DAG_SESSION_HEADER: &str = "x-docdex-dag-session";
+
 #[derive(Deserialize)]
 pub struct WebSearchRequest {
     pub query: String,
     #[serde(default)]
     pub limit: Option<usize>,
+    #[serde(default, alias = "session_id", alias = "dagSessionId")]
+    pub dag_session_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -37,8 +44,50 @@ struct WebFetchCacheEntry {
     code_blocks: Vec<String>,
 }
 
+fn header_dag_session_id(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(DAG_SESSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
+fn queue_dag_log(
+    repo_state_root: std::path::PathBuf,
+    session_id: &str,
+    node_type: &'static str,
+    payload: serde_json::Value,
+) {
+    let session_id = session_id.to_string();
+    tokio::spawn(async move {
+        let session_id_log = session_id.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            dag_logging::log_node(&repo_state_root, &session_id, node_type, &payload)
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => warn!(
+                target: "docdexd",
+                session_id = %session_id_log,
+                error = ?err,
+                "dag log failed"
+            ),
+            Err(err) => warn!(
+                target: "docdexd",
+                session_id = %session_id_log,
+                error = ?err,
+                "dag log task failed"
+            ),
+        }
+    });
+}
+
 pub async fn web_search_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
+    Extension(request_id): Extension<RequestId>,
     axum::Json(payload): axum::Json<WebSearchRequest>,
 ) -> Response {
     let query = payload.query.trim();
@@ -50,6 +99,28 @@ pub async fn web_search_handler(
         );
     }
     let limit = payload.limit.unwrap_or(8).max(1);
+    let header_dag_session_id = header_dag_session_id(&headers);
+    let body_dag_session_id = payload
+        .dag_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let request_id_value = request_id.0;
+    let request_id_ref = request_id_value.as_str();
+    let dag_session_id = header_dag_session_id
+        .as_deref()
+        .or(body_dag_session_id)
+        .unwrap_or(request_id_ref);
+    let repo_state_root = repo_state_root_from_state_dir(state.indexer.state_dir());
+    queue_dag_log(
+        repo_state_root.clone(),
+        dag_session_id,
+        "UserRequest",
+        json!({
+            "query": query,
+            "limit": limit,
+        }),
+    );
     let config = web::WebConfig::from_env();
     let discovery = match web::ddg::DdgDiscovery::new(config) {
         Ok(discovery) => discovery,
@@ -64,10 +135,31 @@ pub async fn web_search_handler(
         }
     };
     match discovery.discover(query, limit).await {
-        Ok(response) => Json(response).into_response(),
+        Ok(response) => {
+            let provider = response.provider.clone();
+            let results = response.results.len();
+            queue_dag_log(
+                repo_state_root,
+                dag_session_id,
+                "Decision",
+                json!({
+                    "provider": provider,
+                    "results": results,
+                }),
+            );
+            Json(response).into_response()
+        }
         Err(err) => {
             state.metrics.inc_error();
             warn!(target: "docdexd", error = ?err, "web discovery failed");
+            queue_dag_log(
+                repo_state_root,
+                dag_session_id,
+                "Observation",
+                json!({
+                    "error": err.to_string(),
+                }),
+            );
             json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ERR_INTERNAL_ERROR,

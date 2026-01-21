@@ -1623,9 +1623,11 @@ fn prompt_retry<I: WizardInput>(input: &mut I, state: &SetupState, message: &str
 fn summary_from_state(
     state: &SetupState,
     message: String,
-    models_installed: Vec<String>,
+    mut models_installed: Vec<String>,
     default_model: Option<String>,
 ) -> SetupSummary {
+    models_installed.sort();
+    models_installed.dedup();
     SetupSummary {
         status: state.outcome.as_str().to_string(),
         message,

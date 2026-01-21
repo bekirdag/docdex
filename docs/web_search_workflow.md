@@ -43,14 +43,12 @@ flowchart TD
         AB -->|blocked| AC[Mark DDG blocked + fallback]
         AB -->|ok| AD[Discovery response]
         AA --> AE[Try SearxNG JSON]
-        AA --> AF[Try Google Mobile]
         AA --> AG[Try Brave API]
         AA --> AH[Try Google CSE]
         AA --> AI[Try Bing API]
         AA --> AJ[Try Tavily API]
         AA --> AK[Try Exa API]
         AE --> AL{response?}
-        AF --> AL
         AG --> AL
         AH --> AL
         AI --> AL

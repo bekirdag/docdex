@@ -210,6 +210,7 @@ async fn run_single(
     );
     let request = WaterfallRequest {
         request_id: &request_id,
+        dag_session_id: None,
         query: &query,
         limit,
         diff: diff_request,

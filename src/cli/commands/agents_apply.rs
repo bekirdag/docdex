@@ -6,17 +6,20 @@ use std::path::{Path, PathBuf};
 
 const DOCDEX_INFO_START_PREFIX: &str = "---- START OF DOCDEX INFO V";
 const DOCDEX_INFO_END: &str = "---- END OF DOCDEX INFO -----";
+const DOCDEX_INFO_END_LEGACY: &str = "---- END OF DOCDEX INFO ----";
+const VSCODE_CHAT_INSTRUCTIONS_KEY: &str = "chat.instructions";
 const VSCODE_INSTRUCTIONS_KEY: &str = "github.copilot.chat.codeGeneration.instructions";
 const VSCODE_INSTRUCTIONS_KEY_LEGACY: &str = "copilot.chat.codeGeneration.instructions";
-const VSCODE_INSTRUCTIONS_USE_FILES_KEY: &str =
-    "github.copilot.chat.codeGeneration.useInstructionFiles";
 const VSCODE_INSTRUCTIONS_LOCATIONS_KEY: &str = "chat.instructionsFilesLocations";
 const AGENTS_INSTRUCTIONS: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/npm/assets/agents.md"));
 
 #[derive(Debug)]
 struct InstructionPaths {
+    gemini: PathBuf,
     claude: PathBuf,
+    cursor_agents: PathBuf,
+    cursor_agents_upper: PathBuf,
     continue_json: PathBuf,
     continue_yaml: PathBuf,
     continue_yml: PathBuf,
@@ -64,6 +67,20 @@ pub(crate) fn run(remove: bool) -> Result<()> {
         );
         attempted += 1;
         record_result(
+            "cursor-legacy",
+            remove_prompt_file(&paths.cursor_agents),
+            &mut updated,
+            &mut failed,
+        );
+        attempted += 1;
+        record_result(
+            "cursor-legacy-upper",
+            remove_prompt_file(&paths.cursor_agents_upper),
+            &mut updated,
+            &mut failed,
+        );
+        attempted += 1;
+        record_result(
             "vscode-settings",
             remove_vscode_instructions(
                 &paths.vscode_settings,
@@ -99,6 +116,13 @@ pub(crate) fn run(remove: bool) -> Result<()> {
         record_result(
             "claude",
             remove_claude_instructions(&paths.claude),
+            &mut updated,
+            &mut failed,
+        );
+        attempted += 1;
+        record_result(
+            "gemini",
+            remove_prompt_file(&paths.gemini),
             &mut updated,
             &mut failed,
         );
@@ -161,15 +185,29 @@ pub(crate) fn run(remove: bool) -> Result<()> {
     } else {
         attempted += 1;
         record_result(
-            "vscode-global",
-            upsert_prompt_file(&paths.vscode_global_instructions, &instructions, true),
+            "vscode-global-cleanup",
+            remove_prompt_file(&paths.vscode_global_instructions),
             &mut updated,
             &mut failed,
         );
         attempted += 1;
         record_result(
-            "vscode-instructions-file",
-            upsert_prompt_file(&paths.vscode_instructions_file, &instructions, true),
+            "vscode-instructions-file-cleanup",
+            remove_prompt_file(&paths.vscode_instructions_file),
+            &mut updated,
+            &mut failed,
+        );
+        attempted += 1;
+        record_result(
+            "cursor-legacy-cleanup",
+            remove_prompt_file(&paths.cursor_agents),
+            &mut updated,
+            &mut failed,
+        );
+        attempted += 1;
+        record_result(
+            "cursor-legacy-upper-cleanup",
+            remove_prompt_file(&paths.cursor_agents_upper),
             &mut updated,
             &mut failed,
         );
@@ -179,7 +217,7 @@ pub(crate) fn run(remove: bool) -> Result<()> {
             upsert_vscode_instructions(
                 &paths.vscode_settings,
                 &instructions,
-                &paths.vscode_instructions_dir,
+                &paths.vscode_global_instructions,
             ),
             &mut updated,
             &mut failed,
@@ -209,6 +247,13 @@ pub(crate) fn run(remove: bool) -> Result<()> {
         record_result(
             "claude",
             upsert_claude_instructions(&paths.claude, &instructions),
+            &mut updated,
+            &mut failed,
+        );
+        attempted += 1;
+        record_result(
+            "gemini",
+            upsert_prompt_file(&paths.gemini, &instructions, false),
             &mut updated,
             &mut failed,
         );
@@ -301,6 +346,9 @@ fn build_docdex_instruction_block() -> String {
     if next.is_empty() {
         return String::new();
     }
+    if has_docdex_block(&next) {
+        return next;
+    }
     let version = env!("CARGO_PKG_VERSION");
     format!(
         "{}{} ----\n{}\n{}",
@@ -314,6 +362,14 @@ fn normalize_instruction_text(value: &str) -> String {
 
 fn docdex_block_start(version: &str) -> String {
     format!("{DOCDEX_INFO_START_PREFIX}{version} ----")
+}
+
+fn docdex_info_end_pattern() -> String {
+    format!(
+        "(?:{}|{})",
+        regex::escape(DOCDEX_INFO_END),
+        regex::escape(DOCDEX_INFO_END_LEGACY)
+    )
 }
 
 fn extract_docdex_block_version(text: &str) -> Option<String> {
@@ -330,11 +386,16 @@ fn has_docdex_block_version(text: &str, version: &str) -> bool {
     text.contains(&docdex_block_start(version))
 }
 
+fn has_docdex_block(text: &str) -> bool {
+    text.contains(DOCDEX_INFO_START_PREFIX)
+        && (text.contains(DOCDEX_INFO_END) || text.contains(DOCDEX_INFO_END_LEGACY))
+}
+
 fn extract_docdex_block_body(text: &str) -> Option<String> {
     let pattern = format!(
         "(?s){}[^\\r\\n]* ----\\r?\\n(.*?)\\r?\\n{}",
         regex::escape(DOCDEX_INFO_START_PREFIX),
-        regex::escape(DOCDEX_INFO_END)
+        docdex_info_end_pattern()
     );
     let re = Regex::new(&pattern).ok()?;
     re.captures(text)
@@ -355,7 +416,7 @@ fn strip_docdex_blocks(text: &str) -> String {
     let pattern = format!(
         "(?s){}[^\\r\\n]* ----\\r?\\n.*?\\r?\\n{}\\r?\\n?",
         regex::escape(DOCDEX_INFO_START_PREFIX),
-        regex::escape(DOCDEX_INFO_END)
+        docdex_info_end_pattern()
     );
     let re = Regex::new(&pattern).expect("valid docdex instruction regex");
     let stripped = re.replace_all(text, "");
@@ -369,7 +430,7 @@ fn strip_docdex_blocks_except(text: &str, version: &str) -> String {
     let pattern = format!(
         "(?s){}[^\\r\\n]* ----\\r?\\n.*?\\r?\\n{}\\r?\\n?",
         regex::escape(DOCDEX_INFO_START_PREFIX),
-        regex::escape(DOCDEX_INFO_END)
+        docdex_info_end_pattern()
     );
     let re = Regex::new(&pattern).expect("valid docdex instruction regex");
     let mut result = String::new();
@@ -413,7 +474,7 @@ fn strip_legacy_docdex_body(text: &str, body: &str) -> String {
     let pattern = format!(
         "(?s){}[^\\n]* ----\\n.*?\\n{}\\n?",
         regex::escape(DOCDEX_INFO_START_PREFIX),
-        regex::escape(DOCDEX_INFO_END)
+        docdex_info_end_pattern()
     );
     let re = Regex::new(&pattern).expect("valid docdex instruction regex");
     let mut result = String::new();
@@ -542,48 +603,11 @@ fn write_json(path: &Path, value: &Value) -> Result<()> {
 }
 
 fn upsert_claude_instructions(path: &Path, instructions: &str) -> Result<bool> {
-    let mut value = read_json(path)?;
-    let obj = match value.as_object_mut() {
-        Some(obj) => obj,
-        None => return Ok(false),
-    };
-    let current = obj
-        .get("instructions")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
-    let merged = merge_instruction_text(current, instructions, false);
-    if merged.is_empty() || merged == current {
-        return Ok(false);
-    }
-    obj.insert("instructions".to_string(), Value::String(merged));
-    write_json(path, &value)?;
-    Ok(true)
+    upsert_prompt_file(path, instructions, false)
 }
 
 fn remove_claude_instructions(path: &Path) -> Result<bool> {
-    if !path.exists() {
-        return Ok(false);
-    }
-    let mut value = read_json(path)?;
-    let obj = match value.as_object_mut() {
-        Some(obj) => obj,
-        None => return Ok(false),
-    };
-    let current = obj
-        .get("instructions")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
-    let stripped = strip_docdex_blocks(current);
-    if stripped == normalize_instruction_text(current) {
-        return Ok(false);
-    }
-    if stripped.is_empty() {
-        obj.remove("instructions");
-    } else {
-        obj.insert("instructions".to_string(), Value::String(stripped));
-    }
-    write_json(path, &value)?;
-    Ok(true)
+    remove_prompt_file(path)
 }
 
 fn upsert_continue_json_instructions(path: &Path, instructions: &str) -> Result<bool> {
@@ -826,7 +850,7 @@ fn rewrite_continue_rules_yaml(
     let mut kept_items: Vec<Vec<String>> = Vec::new();
     for item in items {
         let item_text = item.join("\n");
-        if item_text.contains(DOCDEX_INFO_START_PREFIX) && item_text.contains(DOCDEX_INFO_END) {
+        if has_docdex_block(&item_text) {
             continue;
         }
         kept_items.push(item);
@@ -977,65 +1001,10 @@ fn upsert_vscode_instruction_key(
     true
 }
 
-fn upsert_vscode_instructions_location(
-    obj: &mut serde_json::Map<String, Value>,
-    instructions_dir: &Path,
-) -> bool {
-    let location = instructions_dir.to_string_lossy().to_string();
-    match obj.get_mut(VSCODE_INSTRUCTIONS_LOCATIONS_KEY) {
-        Some(Value::Object(map)) => {
-            if map.get(&location) == Some(&Value::Bool(true)) {
-                return false;
-            }
-            map.insert(location, Value::Bool(true));
-            true
-        }
-        Some(Value::Array(list)) => {
-            let exists = list
-                .iter()
-                .any(|value| value.as_str() == Some(location.as_str()));
-            if exists {
-                return false;
-            }
-            list.push(Value::String(location));
-            true
-        }
-        Some(Value::String(existing)) => {
-            if existing == &location {
-                return false;
-            }
-            let mut list = vec![Value::String(existing.clone()), Value::String(location)];
-            obj.insert(
-                VSCODE_INSTRUCTIONS_LOCATIONS_KEY.to_string(),
-                Value::Array(list),
-            );
-            true
-        }
-        Some(_) => {
-            let mut map = serde_json::Map::new();
-            map.insert(location, Value::Bool(true));
-            obj.insert(
-                VSCODE_INSTRUCTIONS_LOCATIONS_KEY.to_string(),
-                Value::Object(map),
-            );
-            true
-        }
-        None => {
-            let mut map = serde_json::Map::new();
-            map.insert(location, Value::Bool(true));
-            obj.insert(
-                VSCODE_INSTRUCTIONS_LOCATIONS_KEY.to_string(),
-                Value::Object(map),
-            );
-            true
-        }
-    }
-}
-
 fn upsert_vscode_instructions(
     path: &Path,
     instructions: &str,
-    instructions_dir: &Path,
+    legacy_path: &Path,
 ) -> Result<bool> {
     let next = normalize_instruction_text(instructions);
     if next.is_empty() {
@@ -1047,24 +1016,19 @@ fn upsert_vscode_instructions(
         None => return Ok(false),
     };
     let mut updated = false;
-    if upsert_vscode_instruction_key(obj, VSCODE_INSTRUCTIONS_KEY, instructions) {
+    if upsert_vscode_instruction_key(obj, VSCODE_CHAT_INSTRUCTIONS_KEY, instructions) {
         updated = true;
     }
-    if upsert_vscode_instruction_key(obj, VSCODE_INSTRUCTIONS_KEY_LEGACY, instructions) {
+    if remove_vscode_instruction_key(obj, VSCODE_INSTRUCTIONS_KEY, instructions, None) {
         updated = true;
     }
-    if obj
-        .get(VSCODE_INSTRUCTIONS_USE_FILES_KEY)
-        .and_then(|value| value.as_bool())
-        != Some(true)
-    {
-        obj.insert(
-            VSCODE_INSTRUCTIONS_USE_FILES_KEY.to_string(),
-            Value::Bool(true),
-        );
-        updated = true;
-    }
-    if upsert_vscode_instructions_location(obj, instructions_dir) {
+    let legacy = legacy_path.to_string_lossy();
+    if remove_vscode_instruction_key(
+        obj,
+        VSCODE_INSTRUCTIONS_KEY_LEGACY,
+        instructions,
+        Some(legacy.as_ref()),
+    ) {
         updated = true;
     }
     if !updated {
@@ -1153,6 +1117,9 @@ fn remove_vscode_instructions(
         None => return Ok(false),
     };
     let mut updated = false;
+    if remove_vscode_instruction_key(obj, VSCODE_CHAT_INSTRUCTIONS_KEY, instructions, None) {
+        updated = true;
+    }
     if remove_vscode_instruction_key(obj, VSCODE_INSTRUCTIONS_KEY, instructions, None) {
         updated = true;
     }
@@ -1234,8 +1201,7 @@ fn remove_yaml_instruction(path: &Path, key: &str) -> Result<bool> {
                 index += 1;
             }
             let block_text = block_lines.join("\n");
-            if block_text.contains(DOCDEX_INFO_START_PREFIX) && block_text.contains(DOCDEX_INFO_END)
-            {
+            if has_docdex_block(&block_text) {
                 removed = true;
                 continue;
             }
@@ -1311,11 +1277,18 @@ fn client_instruction_paths() -> Result<InstructionPaths> {
         .join(".openinterpreter")
         .join("profiles")
         .join("default.yaml");
+    let gemini_instructions = user_profile.join(".gemini").join("GEMINI.md");
+    let claude_instructions = user_profile.join(".claude").join("CLAUDE.md");
+    let cursor_agents = user_profile.join(".cursor").join("agents.md");
+    let cursor_agents_upper = user_profile.join(".cursor").join("AGENTS.md");
     let codex_agents = user_profile.join(".codex").join("AGENTS.md");
 
     if cfg!(windows) {
         return Ok(InstructionPaths {
-            claude: app_data.join("Claude").join("claude_desktop_config.json"),
+            gemini: gemini_instructions,
+            claude: claude_instructions,
+            cursor_agents,
+            cursor_agents_upper,
             continue_json,
             continue_yaml,
             continue_yml,
@@ -1336,11 +1309,10 @@ fn client_instruction_paths() -> Result<InstructionPaths> {
 
     if cfg!(target_os = "macos") {
         return Ok(InstructionPaths {
-            claude: home
-                .join("Library")
-                .join("Application Support")
-                .join("Claude")
-                .join("claude_desktop_config.json"),
+            gemini: gemini_instructions,
+            claude: claude_instructions,
+            cursor_agents,
+            cursor_agents_upper,
             continue_json,
             continue_yaml,
             continue_yml,
@@ -1365,10 +1337,10 @@ fn client_instruction_paths() -> Result<InstructionPaths> {
     }
 
     Ok(InstructionPaths {
-        claude: home
-            .join(".config")
-            .join("Claude")
-            .join("claude_desktop_config.json"),
+        gemini: gemini_instructions,
+        claude: claude_instructions,
+        cursor_agents,
+        cursor_agents_upper,
         continue_json,
         continue_yaml,
         continue_yml,
@@ -1405,9 +1377,19 @@ mod tests {
     }
 
     #[test]
+    fn strip_docdex_blocks_removes_legacy_end_marker() {
+        let block = format!(
+            "{DOCDEX_INFO_START_PREFIX}0.0.2 ----\nLEGACY DOCDEX INSTRUCTIONS\n{DOCDEX_INFO_END_LEGACY}"
+        );
+        let text = format!("Keep this.\n\n{block}\n\nAnd this.");
+        let stripped = strip_docdex_blocks(&text);
+        assert_eq!(stripped, "Keep this.\n\nAnd this.");
+    }
+
+    #[test]
     fn merge_instruction_text_replaces_versioned_block() {
         let old_block = format!(
-            "{DOCDEX_INFO_START_PREFIX}0.0.1 ----\nOLD DOCDEX INSTRUCTIONS\n{DOCDEX_INFO_END}"
+            "{DOCDEX_INFO_START_PREFIX}0.0.1 ----\nOLD DOCDEX INSTRUCTIONS\n{DOCDEX_INFO_END_LEGACY}"
         );
         let existing = format!("Keep\n\n{old_block}\n\nExtra");
         let new_block = build_docdex_instruction_block();

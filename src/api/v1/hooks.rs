@@ -13,7 +13,7 @@ use crate::profiles::{
     check_any_type_usage, check_circular_dependencies, match_constraint_rules, ConstraintRule,
     PreferenceCategory,
 };
-use crate::search::{json_error, resolve_repo_context, AppState};
+use crate::search::{json_error, repo_error_response, resolve_repo_context, AppState};
 
 #[derive(Deserialize)]
 pub struct HookValidateRequest {
@@ -63,7 +63,7 @@ pub async fn hook_validate_handler(
     }
     let repo = match resolve_repo_context(&state, &headers, None, None, true) {
         Ok(repo) => repo,
-        Err(err) => return finalize(json_error(err.status, err.code, err.message), true),
+        Err(err) => return finalize(repo_error_response(err), true),
     };
 
     let Some(profile_state) = state.profile_state.as_ref() else {

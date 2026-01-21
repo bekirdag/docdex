@@ -8,7 +8,7 @@ use serde_json::json;
 use tracing::warn;
 
 use crate::error::{AppError, ERR_INTERNAL_ERROR};
-use crate::search::{json_error, status_for_app_error, AppState};
+use crate::search::{json_error, repo_error_response, status_for_app_error, AppState};
 
 #[derive(Serialize)]
 struct ImpactErrorResponse {
@@ -224,7 +224,7 @@ pub(crate) async fn impact_graph_handler(
         false,
     ) {
         Ok(repo) => repo,
-        Err(err) => return json_error(err.status, err.code, err.message),
+        Err(err) => return repo_error_response(err),
     };
     if let Err(err) = crate::index::ensure_indexed(repo.indexer.clone()).await {
         state.metrics.inc_error();
@@ -308,7 +308,7 @@ pub(crate) async fn impact_diagnostics_handler(
         false,
     ) {
         Ok(repo) => repo,
-        Err(err) => return json_error(err.status, err.code, err.message),
+        Err(err) => return repo_error_response(err),
     };
     if let Err(err) = crate::index::ensure_indexed(repo.indexer.clone()).await {
         state.metrics.inc_error();

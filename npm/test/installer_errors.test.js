@@ -39,7 +39,7 @@ test("describeFatalError: missing artifact distinguishes from unsupported and in
     targetTriple: "aarch64-unknown-linux-gnu",
     version: "0.2.23",
     repoSlug: "owner/repo",
-    downloadUrl: "https://example.test/releases/download/v0.2.24/docdexd-linux-arm64-gnu.tar.gz",
+    downloadUrl: "https://example.test/releases/download/v0.2.25/docdexd-linux-arm64-gnu.tar.gz",
     assetName: "docdexd-linux-arm64-gnu.tar.gz",
     expectedAsset: "docdexd-linux-arm64-gnu.tar.gz",
     expectedAssetPattern: "docdexd-<platformKey>.tar.gz"

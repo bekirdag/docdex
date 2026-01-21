@@ -9,6 +9,9 @@ fn render_prometheus_includes_counters() {
     metrics.inc_hook_failure();
     metrics.record_hook_latency(5);
     metrics.record_http_request(12, 500);
+    metrics.inc_delegate_request();
+    metrics.record_delegate_latency(8);
+    metrics.record_delegate_token_estimate(42);
 
     let payload = metrics.render_prometheus();
     assert!(payload.contains("docdex_rate_limit_denies_total 1"));
@@ -16,6 +19,9 @@ fn render_prometheus_includes_counters() {
     assert!(payload.contains("docdex_hook_checks_total 1"));
     assert!(payload.contains("docdex_hook_failures_total 1"));
     assert!(payload.contains("docdex_hook_latency_count_total 1"));
+    assert!(payload.contains("docdex_delegate_total 1"));
+    assert!(payload.contains("docdex_delegate_latency_count_total 1"));
+    assert!(payload.contains("docdex_delegate_token_estimate_total 42"));
     assert!(payload.contains("docdex_http_requests_total 1"));
     assert!(payload.contains("docdex_http_error_responses_total 1"));
 }

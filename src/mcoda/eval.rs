@@ -167,6 +167,7 @@ pub async fn run_eval(options: EvalOptions) -> Result<()> {
             let start = Instant::now();
             let request = WaterfallRequest {
                 request_id: &request_id,
+                dag_session_id: None,
                 query: query.text,
                 limit: options.limit,
                 diff: None,

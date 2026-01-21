@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod chat;
 pub mod dag;
+pub mod delegate;
 pub mod gates;
 pub mod graph;
 pub mod hooks;

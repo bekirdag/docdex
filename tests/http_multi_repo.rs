@@ -209,6 +209,16 @@ fn daemon_routes_requests_by_repo_id() -> Result<(), Box<dyn Error>> {
         .query(&[("q", "alpha")])
         .send()?;
     assert_eq!(missing_repo.status(), reqwest::StatusCode::BAD_REQUEST);
+    let missing_payload: Value = missing_repo.json()?;
+    let error = missing_payload
+        .get("error")
+        .and_then(|value| value.as_object())
+        .ok_or("missing error payload")?;
+    assert_eq!(
+        error.get("code").and_then(|value| value.as_str()),
+        Some("missing_repo")
+    );
+    assert!(error.get("details").is_some(), "expected error details");
 
     Ok(())
 }

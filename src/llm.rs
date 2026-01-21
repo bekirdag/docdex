@@ -6,6 +6,8 @@ use std::fs;
 use std::path::PathBuf;
 
 pub mod adapter;
+pub mod delegation;
+pub mod local_library;
 
 const LLMLIST_JSON: &str = "docs/llm_list.json";
 

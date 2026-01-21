@@ -2005,6 +2005,36 @@ mod file_decision_tests {
     }
 
     #[test]
+    fn decide_file_scopes_nested_gitignore() {
+        let repo = TempDir::new().expect("temp repo");
+        let repo_root = repo.path().canonicalize().expect("canonical repo root");
+        let root_file = repo_root.join("README.md");
+        fs::write(&root_file, "hello\n").expect("write root file");
+
+        let nested_dir = repo_root.join("nested");
+        fs::create_dir_all(&nested_dir).expect("mkdir");
+        fs::write(nested_dir.join(".gitignore"), "*\n").expect("write nested gitignore");
+        let nested_file = nested_dir.join("notes.md");
+        fs::write(&nested_file, "ignore me\n").expect("write nested file");
+
+        let config = IndexConfig::with_overrides(
+            &repo_root,
+            Some(repo_root.join(".docdex-state")),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )
+        .expect("config");
+
+        let root_decision = decide_file(&root_file, &repo_root, &config);
+        assert_eq!(root_decision.decision, FileDecisionOutcome::Include);
+
+        let nested_decision = decide_file(&nested_file, &repo_root, &config);
+        assert_eq!(nested_decision.decision, FileDecisionOutcome::Exclude);
+        assert_eq!(nested_decision.reason, FileDecisionReason::IgnoredByPattern);
+    }
+
+    #[test]
     fn decide_file_respects_docdexignore() {
         let repo = TempDir::new().expect("temp repo");
         let repo_root = repo.path().canonicalize().expect("canonical repo root");

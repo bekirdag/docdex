@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.2.25
+- Enforce `repo_id` when multiple repos are mounted, returning detailed errors for missing repo context.
+- Add multi-repo daemon plan/tasks docs and expand repo scoping tests.
+
+## 0.2.24
 - Remove legacy stdio MCP (`docdexd mcp` / `docdex-mcp-server`); MCP is served only over HTTP/SSE.
 - Add global profile memory (HTTP profile endpoints, CLI profile commands, MCP profile tools).
 - Add default profile agent selection via `server.default_agent_id`, `docdexd serve --agent-id`, and MCP initialize `agent_id`.

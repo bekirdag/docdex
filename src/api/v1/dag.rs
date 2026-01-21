@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::dag::view as dag_view;
 use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT};
-use crate::search::{json_error, resolve_repo_context, AppState};
+use crate::search::{json_error, repo_error_response, resolve_repo_context, AppState};
 
 #[derive(Deserialize)]
 pub struct DagExportQuery {
@@ -25,7 +25,7 @@ pub async fn dag_export_handler(
     let repo = match resolve_repo_context(&state, &headers, params.repo_id.as_deref(), None, false)
     {
         Ok(repo) => repo,
-        Err(err) => return json_error(err.status, err.code, err.message),
+        Err(err) => return repo_error_response(err),
     };
 
     let session_id = match params.session_id.as_deref().map(str::trim) {

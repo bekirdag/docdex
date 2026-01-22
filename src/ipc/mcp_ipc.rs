@@ -1,8 +1,12 @@
 use crate::config;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use std::env;
-use std::fs;
 use std::path::PathBuf;
+
+#[cfg(unix)]
+use anyhow::anyhow;
+#[cfg(unix)]
+use std::fs;
 
 #[cfg(unix)]
 mod unix_listener {
@@ -261,6 +265,9 @@ pub fn resolve_mcp_ipc_config(
         });
     }
 
+    #[cfg(not(unix))]
+    let _ = create_dirs;
+
     #[cfg(unix)]
     {
         let _ = cli_pipe_name;
@@ -361,6 +368,7 @@ fn normalize_pipe_name(raw: &str) -> String {
     }
 }
 
+#[cfg(unix)]
 fn home_dir() -> Option<PathBuf> {
     if let Some(home) = env::var_os("HOME") {
         return Some(PathBuf::from(home));

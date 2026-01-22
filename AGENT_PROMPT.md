@@ -1,6 +1,7 @@
----- START OF DOCDEX INFO V0.2.25 ----
+---- START OF DOCDEX INFO V0.2.26 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
+Health check endpoint: `GET /healthz` (not `/v1/health`).
 
 ## Priority Directives (Mandatory)
 
@@ -120,7 +121,124 @@ Use these to verify index coverage, repo binding, and to read precise file slice
 - docdex_symbols: Use symbols to confirm exact signatures/locations before edits.
 - HTTP /v1/graph/impact: Mandatory before code changes to review inbound/outbound deps.
 - HTTP /v1/dag/export: Export dependency graph to plan change order.
-- HTTP /v1/initialize: Bind a default repo root for MCP when clients omit project_root.
+- HTTP /v1/initialize: Mount/bind a repo for HTTP daemon mode. Request JSON uses rootUri/root_uri (NOT repo_root).
+
+## Docdex Usage Cookbook (Mandatory, Exact Schemas)
+
+This section is the authoritative source for how to call Docdex. Do not guess field names or payloads.
+
+### 0) Base URL + daemon modes
+
+- Default HTTP base URL: http://127.0.0.1:28491 (override with DOCDEX_HTTP_BASE_URL).
+- Single-repo HTTP daemon: `docdexd serve --repo /abs/path`. /v1/initialize is NOT used. repo_id is optional, but must match the serving repo if provided.
+- Multi-repo HTTP daemon: `docdexd daemon`. You MUST call /v1/initialize before repo-scoped HTTP endpoints. When multiple repos are mounted, repo_id is required on every repo-scoped request.
+
+### 1) Initialize (HTTP) - exact request payload
+
+POST /v1/initialize
+
+Request JSON (exact field names):
+
+```json
+{ "rootUri": "file:///abs/path/to/repo" }
+```
+
+Alias accepted:
+
+```json
+{ "root_uri": "/abs/path/to/repo" }
+```
+
+Rules:
+- Do NOT send `repo_root` in the request. `repo_root` is a response field.
+- Use file:// URIs when possible; plain absolute paths are also accepted.
+- Response returns `repo_id`, `status`, and `repo_root`. Use that repo_id for subsequent HTTP calls.
+
+### 2) Repo scoping (HTTP)
+
+- Send repo_id via header `x-docdex-repo-id: <repo_id>` or query param `repo_id=<repo_id>`.
+- If the daemon is single-repo, do not send a repo_id for a different repo (you will get `unknown_repo`).
+- If the daemon is multi-repo and more than one repo is mounted, repo_id is required.
+
+### 3) Search (HTTP)
+
+`GET /search`
+
+Required:
+- `q` (query string).
+
+Common params:
+- `limit`, `snippets`, `max_tokens`, `include_libs`, `force_web`, `skip_local_search`, `no_cache`,
+  `max_web_results`, `llm_filter_local_results`, `diff_mode`, `diff_base`, `diff_head`, `diff_path`,
+  `dag_session_id`, `repo_id`.
+
+Notes:
+- `skip_local_search=true` effectively forces web discovery (Tier 2).
+- If DOCDEX_WEB_ENABLED=1, web discovery can be slow; plan timeouts accordingly.
+
+### 4) Snippet (HTTP)
+
+`GET /snippet/:doc_id`
+
+Common params:
+- `window`, `q`, `text_only`, `max_tokens`, `repo_id`.
+
+### 5) Impact graph (HTTP)
+
+`GET /v1/graph/impact?file=<repo-relative-path>`
+
+Rules:
+- `file` must be a path relative to the repo root (not an absolute path).
+- Include repo_id header/query when required by daemon mode.
+
+### 6) DAG export (HTTP)
+
+`GET /v1/dag/export?session_id=<id>`
+
+Query params:
+- `session_id` (required)
+- `format` (optional: json/text/dot; default json)
+- `max_nodes` (optional)
+- `repo_id` (required when multiple repos are mounted)
+
+### 7) MCP over HTTP/SSE
+
+- SSE: `/v1/mcp/sse` + `/v1/mcp/message`. When multiple repos are mounted, initialize with `rootUri` first.
+- HTTP: `/v1/mcp` accepts repo context in the payload or via prior initialize.
+- If HTTP/SSE is unreachable (sandboxed clients), fall back to local IPC: configure `transport = "ipc"` with `socket_path` (Unix) or `pipe_name` (Windows) and send MCP JSON-RPC to `/v1/mcp` over IPC.
+- For stdio-only clients (e.g., Smithery), use the `docdex-mcp-stdio` entrypoint to bridge stdio JSON-RPC to Docdex MCP.
+- For impact/DAG in sandboxed shells, prefer MCP/IPC tools over `curl` to `/v1/graph/impact` or `/v1/dag/export`.
+- MCP tools: `docdex_impact_graph` (impact traversal) and `docdex_dag_export` (DAG export).
+
+### 8) MCP tools (local) - required fields
+
+Do not guess fields; use these canonical shapes.
+
+- `docdex_search`: `{ project_root, query, limit?, diff?, repo_only?, force_web? }`
+- `docdex_open`: `{ project_root, path, start_line?, end_line?, head?, clamp? }` (range must be valid unless clamp/head used)
+- `docdex_files`: `{ project_root, limit?, offset? }`
+- `docdex_stats`: `{ project_root }`
+- `docdex_repo_inspect`: `{ project_root }`
+- `docdex_index`: `{ project_root, paths? }` (paths empty => full reindex)
+- `docdex_symbols`: `{ project_root, path }`
+- `docdex_ast`: `{ project_root, path, max_nodes? }`
+- `docdex_impact_diagnostics`: `{ project_root, file? }`
+- `docdex_impact_graph`: `{ project_root, file, max_edges?, max_depth?, edge_types? }`
+- `docdex_dag_export`: `{ project_root, session_id, format?, max_nodes? }`
+- `docdex_memory_save`: `{ project_root, text }`
+- `docdex_memory_recall`: `{ project_root, query, top_k? }`
+- `docdex_get_profile`: `{ agent_id }`
+- `docdex_save_preference`: `{ agent_id, category, content }`
+- `docdex_local_completion`: `{ task_type, instruction, context, max_tokens?, timeout_ms?, mode?, max_context_chars?, agent? }`
+- `docdex_web_research`: `{ project_root, query, force_web, skip_local_search?, web_limit?, no_cache? }`
+
+### 9) Common error fixes (do not guess)
+
+- `unknown_repo`: You are talking to a daemon that does not know that repo. Fix by:
+  - Starting a single-repo server for that repo (`docdexd serve --repo /abs/path`), OR
+  - Calling `/v1/initialize` on the multi-repo daemon with `rootUri`, then using the returned repo_id.
+- `missing_repo`: Supply repo_id (HTTP) or project_root (MCP), or call /v1/initialize.
+- `invalid_range` (docdex_open): Adjust start/end line to fit total_lines.
 
 ## Interaction Patterns
 

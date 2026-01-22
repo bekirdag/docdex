@@ -1,14 +1,16 @@
----- START OF DOCDEX INFO V0.2.25 ----
+---- START OF DOCDEX INFO V0.2.26 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
+Health check endpoint: `GET /healthz` (not `/v1/health`).
 
 ## Priority Directives (Mandatory)
 
 - Always use both memory lobes early: docdex_get_profile + docdex_memory_recall; save new facts via docdex_memory_save and new preferences via docdex_save_preference.
 - Maintain agent-specific profile memory: use your agent_id with docdex_get_profile/docdex_save_preference; store generic self-knowledge (role, tooling, preferences).
-- Use impact analysis for every code change: call HTTP /v1/graph/impact?file=... and account for inbound/outbound deps; if unavailable, state it and proceed cautiously.
+- Use impact analysis for every code change: prefer MCP tools `docdex_impact_graph` / `docdex_dag_export` (IPC/HTTP). If shell networking is blocked, do not use curl; use MCP/IPC instead. If unavailable, state it and proceed cautiously.
 - Apply DAG reasoning for planning: prefer dependency graph facts (impact results and /v1/dag/export) to choose the right change order and scope.
 - Use Docdex tools intentionally: docdex_search/symbols/ast for repo truth; docdex_stats/files/repo_inspect/index for index health.
+- For folder structure, use docdex_tree instead of raw `rg --files`/`find` to avoid noisy folders.
 - When you do not know something, run docdex_web_research (force_web=true). Web research is encouraged by default for non-repo facts and external APIs.
 
 # Docdex Agent Usage Instructions
@@ -69,8 +71,8 @@ Precision tools for structural analysis. Do not rely on text search for definiti
 | docdex_symbols | Get exact definitions/signatures for a file. |
 | docdex_ast | Specific AST nodes (e.g., "Find all class definitions"). |
 | docdex_impact_diagnostics | Check for broken/dynamic imports. |
-| HTTP /v1/graph/impact | Impact Analysis: "What breaks if I change this?" Returns inbound/outbound dependencies. |
-| HTTP /v1/dag/export | Export the dependency DAG for change ordering and scope. |
+| docdex_impact_graph | Impact Analysis: "What breaks if I change this?" Returns inbound/outbound dependencies. |
+| docdex_dag_export | Export the dependency DAG for change ordering and scope. |
 
 ### C. Memory Operations
 
@@ -104,6 +106,7 @@ Use these to verify index coverage, repo binding, and to read precise file slice
 | docdex_files | Indexed file coverage; confirm a file is in the index. |
 | docdex_index | Reindex full repo or ingest specific files when stale/missing. |
 | docdex_open | Read exact file slices after you identify targets. |
+| docdex_tree | Render a repo folder tree with standard excludes (avoid noisy folders). |
 
 ## Quick Tool Map (Often Missed)
 
@@ -114,13 +117,144 @@ Use these to verify index coverage, repo binding, and to read precise file slice
 - docdex_search diff: Limit search to working tree, staged, or ref ranges; filter by paths.
 - docdex_web_research knobs: force_web, skip_local_search, repo_only, no_cache, web_limit, llm_filter_local_results, llm_model.
 - docdex_open: Read narrow file slices after targets are identified.
+- docdex_tree: Render a filtered folder tree (prefer this over `rg --files` / `find`).
 - docdex_impact_diagnostics: Scan dynamic imports when imports are unclear or failing.
 - docdex_local_completion: Delegate low-complexity codegen tasks (tests, docstrings, boilerplate, simple refactors).
 - docdex_ast: Use AST queries for precise structure (class/function definitions, call sites, imports).
 - docdex_symbols: Use symbols to confirm exact signatures/locations before edits.
-- HTTP /v1/graph/impact: Mandatory before code changes to review inbound/outbound deps.
-- HTTP /v1/dag/export: Export dependency graph to plan change order.
-- HTTP /v1/initialize: Bind a default repo root for MCP when clients omit project_root.
+- docdex_impact_graph: Mandatory before code changes to review inbound/outbound deps (use MCP/IPC if shell networking is blocked).
+- docdex_dag_export: Export dependency graph to plan change order.
+- HTTP /v1/initialize: Mount/bind a repo for HTTP daemon mode. Request JSON uses rootUri/root_uri (NOT repo_root).
+
+## CLI Fallbacks (when MCP/IPC is unavailable)
+Use these only when MCP tools cannot be called (e.g., blocked sandbox networking). Prefer MCP/IPC otherwise.
+
+- `docdexd repo init --repo <path>`: initialize repo in daemon and return repo_id JSON.
+- `docdexd repo id --repo <path>`: compute repo fingerprint locally.
+- `docdexd repo status --repo <path>` / `docdexd repo dirty --exit-code`: git working tree status.
+- `docdexd impact-graph --repo <path> --file <rel>`: impact graph (HTTP/local).
+- `docdexd dag export --repo <path> <session_id>`: DAG export alias.
+- `docdexd search --repo <path> --query "<q>"`: /search equivalent (HTTP/local).
+- `docdexd open --repo <path> --file <rel>`: safe file slice read (head/start/end/clamp).
+- `docdexd file ensure-newline|write --repo <path> --file <rel>`: minimal file edits.
+- `docdexd test run-node --repo <path> --file <rel> --args "..."`: run Node scripts.
+
+## Docdex Usage Cookbook (Mandatory, Exact Schemas)
+
+This section is the authoritative source for how to call Docdex. Do not guess field names or payloads.
+
+### 0) Base URL + daemon modes
+
+- Default HTTP base URL: http://127.0.0.1:28491 (override with DOCDEX_HTTP_BASE_URL).
+- Single-repo HTTP daemon: `docdexd serve --repo /abs/path`. /v1/initialize is NOT used. repo_id is optional, but must match the serving repo if provided.
+- Multi-repo HTTP daemon: `docdexd daemon`. You MUST call /v1/initialize before repo-scoped HTTP endpoints. When multiple repos are mounted, repo_id is required on every repo-scoped request.
+
+### 1) Initialize (HTTP) - exact request payload
+
+POST /v1/initialize
+
+Request JSON (exact field names):
+
+```json
+{ "rootUri": "file:///abs/path/to/repo" }
+```
+
+Alias accepted:
+
+```json
+{ "root_uri": "/abs/path/to/repo" }
+```
+
+Rules:
+- Do NOT send `repo_root` in the request. `repo_root` is a response field.
+- Use file:// URIs when possible; plain absolute paths are also accepted.
+- Response returns `repo_id`, `status`, and `repo_root`. Use that repo_id for subsequent HTTP calls.
+
+### 2) Repo scoping (HTTP)
+
+- Send repo_id via header `x-docdex-repo-id: <repo_id>` or query param `repo_id=<repo_id>`.
+- If the daemon is single-repo, do not send a repo_id for a different repo (you will get `unknown_repo`).
+- If the daemon is multi-repo and more than one repo is mounted, repo_id is required.
+
+### 3) Search (HTTP)
+
+`GET /search`
+
+Required:
+- `q` (query string).
+
+Common params:
+- `limit`, `snippets`, `max_tokens`, `include_libs`, `force_web`, `skip_local_search`, `no_cache`,
+  `max_web_results`, `llm_filter_local_results`, `diff_mode`, `diff_base`, `diff_head`, `diff_path`,
+  `dag_session_id`, `repo_id`.
+
+Notes:
+- `skip_local_search=true` effectively forces web discovery (Tier 2).
+- If DOCDEX_WEB_ENABLED=1, web discovery can be slow; plan timeouts accordingly.
+
+### 4) Snippet (HTTP)
+
+`GET /snippet/:doc_id`
+
+Common params:
+- `window`, `q`, `text_only`, `max_tokens`, `repo_id`.
+
+### 5) Impact graph (HTTP)
+
+`GET /v1/graph/impact?file=<repo-relative-path>`
+
+Rules:
+- `file` must be a path relative to the repo root (not an absolute path).
+- Include repo_id header/query when required by daemon mode.
+
+### 6) DAG export (HTTP)
+
+`GET /v1/dag/export?session_id=<id>`
+
+Query params:
+- `session_id` (required)
+- `format` (optional: json/text/dot; default json)
+- `max_nodes` (optional)
+- `repo_id` (required when multiple repos are mounted)
+
+### 7) MCP over HTTP/SSE
+
+- SSE: `/v1/mcp/sse` + `/v1/mcp/message`. When multiple repos are mounted, initialize with `rootUri` first.
+- HTTP: `/v1/mcp` accepts repo context in the payload or via prior initialize.
+- If HTTP/SSE is unreachable (sandboxed clients), fall back to local IPC: configure `transport = "ipc"` with `socket_path` (Unix) or `pipe_name` (Windows) and send MCP JSON-RPC to `/v1/mcp` over IPC.
+- For stdio-only clients (e.g., Smithery), use the `docdex-mcp-stdio` entrypoint to bridge stdio JSON-RPC to Docdex MCP.
+- For impact/DAG in sandboxed shells, prefer MCP/IPC tools over `curl` to `/v1/graph/impact` or `/v1/dag/export`.
+- MCP tools: `docdex_impact_graph` (impact traversal) and `docdex_dag_export` (DAG export).
+
+### 8) MCP tools (local) - required fields
+
+Do not guess fields; use these canonical shapes.
+
+- `docdex_search`: `{ project_root, query, limit?, diff?, repo_only?, force_web? }`
+- `docdex_open`: `{ project_root, path, start_line?, end_line?, head?, clamp? }` (range must be valid unless clamp/head used)
+- `docdex_files`: `{ project_root, limit?, offset? }`
+- `docdex_stats`: `{ project_root }`
+- `docdex_repo_inspect`: `{ project_root }`
+- `docdex_index`: `{ project_root, paths? }` (paths empty => full reindex)
+- `docdex_symbols`: `{ project_root, path }`
+- `docdex_ast`: `{ project_root, path, max_nodes? }`
+- `docdex_impact_diagnostics`: `{ project_root, file? }`
+- `docdex_impact_graph`: `{ project_root, file, max_edges?, max_depth?, edge_types? }`
+- `docdex_dag_export`: `{ project_root, session_id, format?, max_nodes? }`
+- `docdex_memory_save`: `{ project_root, text }`
+- `docdex_memory_recall`: `{ project_root, query, top_k? }`
+- `docdex_get_profile`: `{ agent_id }`
+- `docdex_save_preference`: `{ agent_id, category, content }`
+- `docdex_local_completion`: `{ task_type, instruction, context, max_tokens?, timeout_ms?, mode?, max_context_chars?, agent? }`
+- `docdex_web_research`: `{ project_root, query, force_web, skip_local_search?, web_limit?, no_cache? }`
+
+### 9) Common error fixes (do not guess)
+
+- `unknown_repo`: You are talking to a daemon that does not know that repo. Fix by:
+  - Starting a single-repo server for that repo (`docdexd serve --repo /abs/path`), OR
+  - Calling `/v1/initialize` on the multi-repo daemon with `rootUri`, then using the returned repo_id.
+- `missing_repo`: Supply repo_id (HTTP) or project_root (MCP), or call /v1/initialize.
+- `invalid_range` (docdex_open): Adjust start/end line to fit total_lines.
 
 ## Interaction Patterns
 

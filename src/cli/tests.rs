@@ -1,5 +1,6 @@
-use super::{repo_hint_for_command, should_ensure_daemon, Command, ServeArgs};
+use super::{repo_hint_for_command, should_ensure_daemon, Cli, CliMcpIpcMode, Command, ServeArgs};
 use crate::config::RepoArgs;
+use clap::Parser;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -41,6 +42,9 @@ fn serve_args(repo: RepoArgs) -> ServeArgs {
         agent_id: None,
         enable_mcp: false,
         disable_mcp: false,
+        mcp_ipc: None,
+        mcp_socket_path: None,
+        mcp_pipe_name: None,
         embedding_base_url: None,
         ollama_base_url: "http://127.0.0.1:11434".to_string(),
         embedding_model: "nomic-embed-text".to_string(),
@@ -100,4 +104,31 @@ fn ensure_daemon_skips_serve() {
     };
     assert!(!should_ensure_daemon(&cmd));
     assert!(repo_hint_for_command(&cmd).is_none());
+}
+
+#[test]
+fn parse_mcp_ipc_flag() {
+    let cli = Cli::try_parse_from(["docdexd", "serve", "--repo", ".", "--mcp-ipc", "off"])
+        .expect("parse");
+    match cli.command {
+        Command::Serve { args } => {
+            assert_eq!(args.mcp_ipc, Some(CliMcpIpcMode::Off));
+        }
+        _ => panic!("expected serve command"),
+    }
+}
+
+#[test]
+fn parse_dag_export_alias() {
+    let cli = Cli::try_parse_from(["docdexd", "dag", "export", "--repo", ".", "session-123"])
+        .expect("parse");
+    match cli.command {
+        Command::Dag { command } => match command {
+            super::DagCommand::Export { session_id, .. } => {
+                assert_eq!(session_id, "session-123");
+            }
+            _ => panic!("expected dag export"),
+        },
+        _ => panic!("expected dag command"),
+    }
 }

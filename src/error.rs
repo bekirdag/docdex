@@ -17,6 +17,7 @@ pub const ERR_MISSING_REPO_PATH: &str = "missing_repo_path";
 pub const ERR_UNKNOWN_REPO: &str = "unknown_repo";
 pub const ERR_MISSING_INDEX: &str = "missing_index";
 pub const ERR_STALE_INDEX: &str = "stale_index";
+pub const ERR_INDEXING_IN_PROGRESS: &str = "indexing_in_progress";
 pub const ERR_MISSING_DEPENDENCY: &str = "missing_dependency";
 pub const ERR_RATE_LIMITED: &str = "rate_limited";
 pub const ERR_BACKOFF_REQUIRED: &str = "backoff_required";

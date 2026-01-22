@@ -131,6 +131,22 @@ impl AppConfig {
         if self.server.http_bind_addr.trim().is_empty() {
             self.server.http_bind_addr = DEFAULT_HTTP_BIND_ADDR.to_string();
         }
+        let mcp_ipc_mode = self.server.mcp_ipc_mode.trim();
+        if mcp_ipc_mode.is_empty() {
+            self.server.mcp_ipc_mode = default_mcp_ipc_mode();
+        } else {
+            let normalized = mcp_ipc_mode.to_lowercase();
+            if normalized == "auto" || normalized == "off" {
+                self.server.mcp_ipc_mode = normalized;
+            } else {
+                warn!(
+                    target: "docdexd",
+                    value = %mcp_ipc_mode,
+                    "invalid server.mcp_ipc_mode; expected auto or off"
+                );
+                self.server.mcp_ipc_mode = default_mcp_ipc_mode();
+            }
+        }
         if self.server.hook_socket_path.trim().is_empty() {
             self.server.hook_socket_path = default_hook_socket_path();
         }
@@ -465,6 +481,12 @@ pub struct ServerConfig {
     pub http_bind_addr: String,
     #[serde(default = "default_enable_mcp")]
     pub enable_mcp: bool,
+    #[serde(default = "default_mcp_ipc_mode")]
+    pub mcp_ipc_mode: String,
+    #[serde(default = "default_mcp_socket_path")]
+    pub mcp_socket_path: String,
+    #[serde(default = "default_mcp_pipe_name")]
+    pub mcp_pipe_name: String,
     #[serde(default = "default_hook_socket_path")]
     pub hook_socket_path: String,
     #[serde(default = "default_server_default_agent_id")]
@@ -476,6 +498,9 @@ impl Default for ServerConfig {
         Self {
             http_bind_addr: default_http_bind_addr(),
             enable_mcp: default_enable_mcp(),
+            mcp_ipc_mode: default_mcp_ipc_mode(),
+            mcp_socket_path: default_mcp_socket_path(),
+            mcp_pipe_name: default_mcp_pipe_name(),
             hook_socket_path: default_hook_socket_path(),
             default_agent_id: default_server_default_agent_id(),
         }
@@ -590,6 +615,15 @@ fn apply_env_overrides(config: &mut AppConfig) {
     if let Some(value) = env_u32("DOCDEX_DELEGATION_MAX_TOKENS") {
         config.llm.delegation.max_tokens = value;
     }
+    if let Some(value) = env_mcp_ipc_mode("DOCDEX_MCP_IPC") {
+        config.server.mcp_ipc_mode = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_MCP_SOCKET_PATH") {
+        config.server.mcp_socket_path = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_MCP_PIPE_NAME") {
+        config.server.mcp_pipe_name = value;
+    }
 }
 
 pub fn write_config(path: &Path, config: &AppConfig) -> Result<()> {
@@ -634,6 +668,16 @@ fn env_u64(key: &str) -> Option<u64> {
 fn env_u32(key: &str) -> Option<u32> {
     let raw = env_trimmed(key)?;
     raw.parse::<u32>().ok()
+}
+
+fn env_mcp_ipc_mode(key: &str) -> Option<String> {
+    let raw = env_trimmed(key)?;
+    let normalized = raw.to_lowercase();
+    match normalized.as_str() {
+        "1" | "true" | "yes" | "on" | "auto" => Some("auto".to_string()),
+        "0" | "false" | "no" | "off" => Some("off".to_string()),
+        _ => None,
+    }
 }
 
 fn default_log_level() -> String {
@@ -693,6 +737,18 @@ fn default_profile_embed_dim() -> usize {
 }
 
 fn default_server_default_agent_id() -> String {
+    String::new()
+}
+
+fn default_mcp_ipc_mode() -> String {
+    "auto".to_string()
+}
+
+fn default_mcp_socket_path() -> String {
+    String::new()
+}
+
+fn default_mcp_pipe_name() -> String {
     String::new()
 }
 

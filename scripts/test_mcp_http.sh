@@ -182,3 +182,12 @@ finally:
 
 print("mcp checks passed")
 PY
+
+if [[ "$(uname -s)" == "Darwin" || "$(uname -s)" == "Linux" ]]; then
+  if command -v cargo >/dev/null 2>&1; then
+    log "running unix ipc mcp test"
+    (cd "$ROOT_DIR" && cargo test -p docdexd --test mcp_ipc_unix)
+  else
+    log "cargo not available; skipping unix ipc mcp test"
+  fi
+fi

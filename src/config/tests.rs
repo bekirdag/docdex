@@ -164,3 +164,33 @@ fn default_web_user_agent_looks_like_browser() {
     assert!(ua.contains("Mozilla/5.0"));
     assert!(!ua.to_ascii_lowercase().contains("docdexd/"));
 }
+
+#[test]
+fn apply_defaults_normalizes_mcp_ipc_mode() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let _env = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+
+    let mut config = AppConfig::default();
+    config.server.mcp_ipc_mode = "invalid".to_string();
+    config.apply_defaults()?;
+
+    assert_eq!(config.server.mcp_ipc_mode, "auto");
+    Ok(())
+}
+
+#[test]
+fn load_config_applies_mcp_ipc_env_overrides() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let config_path = temp.path().join("config.toml");
+    let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let _ipc = EnvGuard::set("DOCDEX_MCP_IPC", "0");
+    let _socket = EnvGuard::set("DOCDEX_MCP_SOCKET_PATH", "/tmp/docdex-mcp.sock");
+    let _pipe = EnvGuard::set("DOCDEX_MCP_PIPE_NAME", "docdex-mcp-test");
+
+    let config = load_config_from_path(&config_path)?;
+
+    assert_eq!(config.server.mcp_ipc_mode, "off");
+    assert_eq!(config.server.mcp_socket_path, "/tmp/docdex-mcp.sock");
+    assert_eq!(config.server.mcp_pipe_name, "docdex-mcp-test");
+    Ok(())
+}

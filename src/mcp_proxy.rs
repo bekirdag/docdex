@@ -10,6 +10,8 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 
 const MCP_PROXY_TIMEOUT_SECS_DEFAULT: u64 = 30;
 const MCP_PROXY_WEB_RESEARCH_TIMEOUT_SECS_DEFAULT: u64 = 120;
+const MCP_PROXY_SEARCH_TIMEOUT_SECS_DEFAULT: u64 = 600;
+const MCP_PROXY_DELEGATE_TIMEOUT_SECS_DEFAULT: u64 = 600;
 const SESSION_CLEANUP_INTERVAL_SECS: u64 = 600;
 const SESSION_IDLE_TIMEOUT_SECS: u64 = 3600;
 
@@ -196,6 +198,24 @@ fn mcp_proxy_timeout() -> Duration {
 fn mcp_proxy_timeout_for_request(request: &Value) -> Duration {
     let base = mcp_proxy_timeout();
     if !is_web_research_request(request) {
+        if is_search_request(request) && web_enabled() {
+            let override_secs = mcp_proxy_search_timeout_secs();
+            let override_duration = Duration::from_secs(override_secs);
+            return if override_duration > base {
+                override_duration
+            } else {
+                base
+            };
+        }
+        if is_delegate_request(request) {
+            let override_secs = mcp_proxy_delegate_timeout_secs();
+            let override_duration = Duration::from_secs(override_secs);
+            return if override_duration > base {
+                override_duration
+            } else {
+                base
+            };
+        }
         return base;
     }
     let override_secs = env::var("DOCDEX_MCP_PROXY_WEB_RESEARCH_TIMEOUT_SECS")
@@ -212,17 +232,124 @@ fn mcp_proxy_timeout_for_request(request: &Value) -> Duration {
 }
 
 fn is_web_research_request(request: &Value) -> bool {
-    let method = request.get("method").and_then(Value::as_str);
-    if method != Some("tools/call") {
-        return false;
-    }
-    let params = request.get("params").and_then(Value::as_object);
-    let Some(params) = params else {
-        return false;
-    };
-    let name = params.get("name").and_then(Value::as_str);
     matches!(
-        name,
+        tool_name_for_request(request),
         Some("docdex_web_research") | Some("docdex.web_research")
     )
+}
+
+fn is_search_request(request: &Value) -> bool {
+    matches!(
+        tool_name_for_request(request),
+        Some("docdex_search") | Some("docdex.search")
+    )
+}
+
+fn is_delegate_request(request: &Value) -> bool {
+    matches!(
+        tool_name_for_request(request),
+        Some("docdex_local_completion") | Some("docdex.local_completion")
+    )
+}
+
+fn tool_name_for_request(request: &Value) -> Option<&str> {
+    let method = request.get("method").and_then(Value::as_str);
+    if method != Some("tools/call") {
+        return None;
+    }
+    let params = request.get("params").and_then(Value::as_object)?;
+    params.get("name").and_then(Value::as_str)
+}
+
+fn web_enabled() -> bool {
+    match env::var("DOCDEX_WEB_ENABLED") {
+        Ok(value) => {
+            let value = value.trim().to_ascii_lowercase();
+            !matches!(
+                value.as_str(),
+                "0" | "false" | "off" | "no" | "n" | "disable" | "disabled"
+            )
+        }
+        Err(_) => true,
+    }
+}
+
+fn mcp_proxy_search_timeout_secs() -> u64 {
+    MCP_PROXY_SEARCH_TIMEOUT_SECS_DEFAULT
+}
+
+fn mcp_proxy_delegate_timeout_secs() -> u64 {
+    MCP_PROXY_DELEGATE_TIMEOUT_SECS_DEFAULT
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::setup::test_support::ENV_LOCK;
+    use parking_lot::ReentrantMutexGuard;
+    use serde_json::json;
+
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+        _lock: ReentrantMutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let lock = ENV_LOCK.lock();
+            let prev = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self {
+                key,
+                prev,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(ref value) = self.prev {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn tools_call(name: &str) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": name,
+                "arguments": {}
+            }
+        })
+    }
+
+    #[test]
+    fn search_timeout_extends_when_web_enabled() {
+        let _base = EnvGuard::set("DOCDEX_MCP_PROXY_TIMEOUT_SECS", "1");
+        let _web = EnvGuard::set("DOCDEX_WEB_ENABLED", "1");
+        let duration = mcp_proxy_timeout_for_request(&tools_call("docdex_search"));
+        assert_eq!(duration.as_secs(), MCP_PROXY_SEARCH_TIMEOUT_SECS_DEFAULT);
+    }
+
+    #[test]
+    fn search_timeout_skips_when_web_disabled() {
+        let _base = EnvGuard::set("DOCDEX_MCP_PROXY_TIMEOUT_SECS", "1");
+        let _web = EnvGuard::set("DOCDEX_WEB_ENABLED", "0");
+        let duration = mcp_proxy_timeout_for_request(&tools_call("docdex_search"));
+        assert_eq!(duration.as_secs(), 1);
+    }
+
+    #[test]
+    fn delegate_timeout_extends() {
+        let _base = EnvGuard::set("DOCDEX_MCP_PROXY_TIMEOUT_SECS", "1");
+        let duration = mcp_proxy_timeout_for_request(&tools_call("docdex_local_completion"));
+        assert_eq!(duration.as_secs(), MCP_PROXY_DELEGATE_TIMEOUT_SECS_DEFAULT);
+    }
 }

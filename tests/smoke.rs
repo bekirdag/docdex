@@ -597,21 +597,35 @@ fn http_search_missing_index_triggers_indexing() -> Result<(), Box<dyn Error>> {
     let mut child = spawn_server(state_root.path(), repo.path(), host, port)?;
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let url = format!("http://{host}:{port}/search");
-    let payload: Value = client
+    let response = client
         .get(&url)
         .query(&[("q", "roadmap"), ("limit", "1")])
-        .send()?
-        .json()?;
+        .send()?;
+    let payload: Value = response.json()?;
+    let error = payload
+        .get("error")
+        .ok_or("expected indexing error payload")?;
+    assert_eq!(
+        error.get("code").and_then(|value| value.as_str()),
+        Some("indexing_in_progress"),
+        "expected /search to return indexing_in_progress: {payload}"
+    );
+    let details = error.get("details").ok_or("expected error details")?;
+    let status = details
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
     assert!(
-        payload.get("error").is_none(),
-        "expected /search to auto-index on first request: {payload}"
+        matches!(status, "missing" | "indexing"),
+        "expected status missing/indexing, got {status}"
     );
     assert!(
-        payload
-            .get("hits")
-            .and_then(|value| value.as_array())
-            .is_some(),
-        "expected /search to return hits payload"
+        details
+            .get("status_url")
+            .and_then(|value| value.as_str())
+            .map(|value| value.contains("/v1/index/status?repo_id="))
+            .unwrap_or(false),
+        "expected status_url to include /v1/index/status: {payload}"
     );
     child.kill().ok();
     child.wait().ok();

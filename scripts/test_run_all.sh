@@ -130,6 +130,9 @@ fi
 if command -v node >/dev/null 2>&1 && [[ -f "${ROOT_DIR}/npm/test/uninstall.test.js" ]]; then
 run_step "unit_node_uninstall" node --test "${ROOT_DIR}/npm/test/uninstall.test.js"
 fi
+if command -v node >/dev/null 2>&1 && [[ -f "${ROOT_DIR}/npm/test/mcp_stdio_bridge.test.js" ]]; then
+  run_step "unit_node_mcp_stdio_bridge" node --test "${ROOT_DIR}/npm/test/mcp_stdio_bridge.test.js"
+fi
 run_step "unit_daemon_lock_path" cargo test --lib default_lock_path_
 run_step "unit_auto_reindex" cargo test --lib with_config_auto_reindexes_stale_index
 run_step "unit_open_by_path" cargo test --lib open_by_path_resolves_yaml
@@ -144,6 +147,16 @@ run_step "integration_http_auto_reindex" cargo test --test http_search_auto_rein
 run_step "integration_snippet_open_by_path" cargo test --test http_snippet_open_by_path
 run_step "integration_http_doc_type" cargo test --test http_search_doc_type
 run_step "integration_http_ignore_default_patterns" cargo test --test http_ignore_default_patterns
+run_step "integration_mcp_stdio_bridge" cargo test --test mcp_stdio_bridge
+OS_NAME="$(uname -s)"
+case "${OS_NAME}" in
+  Darwin|Linux)
+    run_step "integration_mcp_ipc_unix" cargo test --test mcp_ipc_unix
+    ;;
+  MINGW*|MSYS*|CYGWIN*)
+    run_step "integration_mcp_ipc_windows" cargo test --test mcp_ipc_windows
+    ;;
+esac
 
 if start_api_server; then
   run_step "api_http" env DOCDEX_HTTP_BASE_URL="${API_BASE_URL}" "${ROOT_DIR}/scripts/test_api_http.sh"

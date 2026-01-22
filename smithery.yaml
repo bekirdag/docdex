@@ -1,0 +1,62 @@
+target: "local"
+dockerfile: "./Dockerfile"
+startCommand:
+  type: "stdio"
+  commandFunction: |-
+    (config) => {
+      const args = [
+        "./smithery/entry.js",
+        "--repo",
+        config.repo_path
+      ];
+      if (config.http_base_url) {
+        args.push("--http-base-url", config.http_base_url);
+      }
+      if (config.mcp_transport) {
+        args.push("--mcp-transport", config.mcp_transport);
+      }
+      if (config.mcp_socket_path) {
+        args.push("--mcp-socket-path", config.mcp_socket_path);
+      }
+      if (config.mcp_pipe_name) {
+        args.push("--mcp-pipe-name", config.mcp_pipe_name);
+      }
+      if (config.docdexd_bin) {
+        args.push("--docdexd-bin", config.docdexd_bin);
+      }
+      if (config.log_level) {
+        args.push("--log-level", config.log_level);
+      }
+      return { command: "node", args };
+    }
+  configSchema:
+    type: "object"
+    properties:
+      repo_path:
+        type: "string"
+        description: "Repo root to index for the local Docdex daemon"
+      http_base_url:
+        type: "string"
+        description: "HTTP base URL for the Docdex daemon (default: http://127.0.0.1:28491)"
+      mcp_transport:
+        type: "string"
+        enum:
+          - "http"
+          - "ipc"
+        description: "Transport the stdio bridge uses to reach Docdex MCP"
+      mcp_socket_path:
+        type: "string"
+        description: "Unix socket path for MCP IPC (optional)"
+      mcp_pipe_name:
+        type: "string"
+        description: "Windows named pipe for MCP IPC (optional)"
+      docdexd_bin:
+        type: "string"
+        description: "Path to docdexd binary (optional)"
+      log_level:
+        type: "string"
+        description: "Docdexd log level (trace, debug, info, warn, error)"
+    required:
+      - "repo_path"
+  exampleConfig:
+    repo_path: "."

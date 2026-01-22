@@ -3,7 +3,6 @@
 ![GitHub License](https://img.shields.io/github/license/bekirdag/docdex)
 ![GitHub Release](https://img.shields.io/github/v/release/bekirdag/docdex)
 ![Made with Rust](https://img.shields.io/badge/Made%20with-Rust-orange?logo=rust)
-[![MCP Badge](https://lobehub.com/badge/mcp/bekirdag-docdex)](https://lobehub.com/mcp/bekirdag-docdex)
 
 <a href="https://glama.ai/mcp/servers/@bekirdag/docdex">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/@bekirdag/docdex/badge" />
@@ -108,7 +107,8 @@ flowchart LR
 
 ```
 
-Use the daemon HTTP/SSE endpoint.
+Use the daemon HTTP/SSE endpoint. For sandboxed clients, Docdex can also serve MCP over local IPC
+(Unix socket or Windows named pipe), while HTTP/SSE remains the default for most MCP clients.
 
 ### Manual Configuration
 

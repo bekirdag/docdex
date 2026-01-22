@@ -50,6 +50,7 @@ CLI exits non-zero and prints the HTTP-style envelope to stderr when errors are 
 - `unknown_repo` - repo path does not match configured repo root.
 - `repo_state_mismatch` - repo state fingerprint mismatch (fails closed).
 - `missing_index` - index not present (run `docdexd index`).
+- `indexing_in_progress` - index build is running; retry after it completes.
 - `stale_index` - index exists but requires reindex after parser drift.
 - `backoff_required` - retry later (index writer busy).
 
@@ -84,6 +85,7 @@ CLI exits non-zero and prints the HTTP-style envelope to stderr when errors are 
 ## Typical recovery steps
 
 - `missing_index`: run `docdexd index --repo <path>`.
+- `indexing_in_progress`: poll `/v1/index/status` (or retry after `retry_after_ms`).
 - `repo_state_mismatch`: reindex with a fresh state dir or run `docdexd repo reassociate`.
 - `missing_dependency`: enable feature or set required config.
 - `startup_tls_required`: provide `--tls-cert/--tls-key` or use `--insecure` behind a trusted proxy.

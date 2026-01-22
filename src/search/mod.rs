@@ -2,10 +2,10 @@ use crate::config;
 use crate::diff;
 use crate::error::{
     AppError, RateLimited, StartupError, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
-    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
-    ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
-    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
-    ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
+    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INDEXING_IN_PROGRESS,
+    ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY,
+    ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED,
+    ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
 };
 use crate::index::{
     DocSnapshot, Hit, Indexer, QueryRewrite, SearchError, SearchQueryMeta, SearchSnippetOrigin,
@@ -38,6 +38,7 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Component, Path as FsPath, PathBuf};
@@ -368,6 +369,10 @@ pub fn router(state: AppState) -> Router {
             post(crate::api::v1::index::index_ingest_handler),
         )
         .route(
+            "/v1/index/status",
+            get(crate::api::v1::index::index_status_handler),
+        )
+        .route(
             "/v1/libs/discover",
             post(crate::api::v1::libs::libs_discover_handler),
         )
@@ -484,6 +489,7 @@ pub(crate) fn status_for_app_error(code: &str) -> StatusCode {
         ERR_MISSING_DEPENDENCY => StatusCode::CONFLICT,
         ERR_MISSING_INDEX => StatusCode::CONFLICT,
         ERR_STALE_INDEX => StatusCode::CONFLICT,
+        ERR_INDEXING_IN_PROGRESS => StatusCode::ACCEPTED,
         ERR_REPO_STATE_MISMATCH => StatusCode::CONFLICT,
         ERR_MISSING_REPO_PATH => StatusCode::NOT_FOUND,
         ERR_UNKNOWN_REPO => StatusCode::NOT_FOUND,
@@ -1780,6 +1786,8 @@ struct SearchParams {
     include_libs: Option<bool>,
     #[serde(default)]
     force_web: Option<bool>,
+    #[serde(default, alias = "asyncWeb")]
+    async_web: Option<bool>,
     #[serde(default)]
     max_web_results: Option<usize>,
     #[serde(default)]
@@ -2949,7 +2957,7 @@ fn now_epoch_ms() -> Result<u128> {
         .as_millis())
 }
 
-fn build_search_meta(
+pub(crate) fn build_search_meta(
     indexer: &Indexer,
     query: Option<SearchQueryMeta>,
     context_assembly: Option<ContextAssemblyMeta>,
@@ -3006,6 +3014,54 @@ async fn search_handler(
 
     let skip_local_search = params.skip_local_search.unwrap_or(false);
     if !skip_local_search {
+        if !repo.indexer.index_ready() {
+            let indexing_in_progress = match repo.indexer.indexing_in_progress() {
+                Ok(value) => value,
+                Err(err) => {
+                    state.metrics.inc_error();
+                    if let Some(app) = err.downcast_ref::<AppError>() {
+                        return json_error(
+                            status_for_app_error(app.code),
+                            app.code,
+                            app.message.clone(),
+                        )
+                        .into_response();
+                    }
+                    warn!(target: "docdexd", error = ?err, "indexing gate lookup failed");
+                    return json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        ERR_INTERNAL_ERROR,
+                        "indexing gate lookup failed",
+                    )
+                    .into_response();
+                }
+            };
+            if !indexing_in_progress && !repo.indexer.is_read_only() {
+                let indexer = repo.indexer.clone();
+                tokio::spawn(async move {
+                    let _ = crate::index::ensure_indexed(indexer).await;
+                });
+            }
+            let status_url = format!("/v1/index/status?repo_id={}", repo.repo_id);
+            let details = json!({
+                "status": if indexing_in_progress { "indexing" } else { "missing" },
+                "indexing_in_progress": indexing_in_progress,
+                "status_url": status_url,
+                "retry_after_ms": 2000,
+                "recovery_steps": [
+                    "Wait for indexing to complete, then retry the search.",
+                    "Call /v1/index/status to check readiness.",
+                    "If indexing is stuck, run POST /v1/index/rebuild."
+                ]
+            });
+            return json_error_with_details(
+                StatusCode::ACCEPTED,
+                ERR_INDEXING_IN_PROGRESS,
+                "indexing in progress",
+                details,
+            )
+            .into_response();
+        }
         if let Err(err) = crate::index::ensure_indexed(repo.indexer.clone()).await {
             if let Some(app) = err.downcast_ref::<AppError>() {
                 return json_error(
@@ -3137,7 +3193,7 @@ async fn search_handler(
 
     let include_libs = params.include_libs.unwrap_or(true);
     let libs_indexer = if include_libs {
-        repo.libs_indexer.as_deref()
+        repo.libs_indexer.clone()
     } else {
         None
     };
@@ -3184,6 +3240,7 @@ async fn search_handler(
     let force_web = params.force_web.unwrap_or(false);
     let disable_web_cache = params.no_cache.unwrap_or(false);
     let llm_filter_local_results = params.llm_filter_local_results.unwrap_or(false);
+    let async_web = params.async_web.unwrap_or(true);
 
     match run_waterfall(WaterfallRequest {
         request_id: request_id_str,
@@ -3198,7 +3255,7 @@ async fn search_handler(
         llm_filter_local_results,
         llm_model: params.llm_model.as_deref(),
         llm_agent: params.llm_agent.as_deref(),
-        indexer: repo.indexer.as_ref(),
+        indexer: repo.indexer.clone(),
         libs_indexer,
         plan,
         tier2_limiter: None,
@@ -3206,6 +3263,7 @@ async fn search_handler(
         profile_state: state.profile_state.as_ref(),
         profile_agent_id: None,
         ranking_surface: RankingSurface::Search,
+        async_web,
     })
     .await
     {
@@ -3484,12 +3542,12 @@ async fn security_middleware(
             .extensions_mut()
             .insert::<RequestId>(request_id.clone());
     }
-    let addr = connect_info
-        .map(|info| info.0)
-        .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)));
+    let (addr, is_ipc) = connect_info
+        .map(|info| (info.0, false))
+        .unwrap_or_else(|| (SocketAddr::from(([127, 0, 0, 1], 0)), true));
     let path = request.uri().path().to_string();
     let size_hint = request.body().size_hint();
-    if !state.security.ip_allowed(addr.ip()) {
+    if !is_ipc && !state.security.ip_allowed(addr.ip()) {
         if let Some(audit) = state.audit.as_ref() {
             audit.log(
                 "ip_allow",
@@ -3715,6 +3773,46 @@ mod path_lookup_tests {
 
         let hit = path_hit_for_query(&indexer, "openapi/spec.yaml", DEFAULT_SNIPPET_WINDOW)?;
         assert!(hit.is_some(), "expected open-by-path hit for yaml");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::SecurityConfig;
+    use anyhow::Result;
+    use std::net::IpAddr;
+
+    fn security_with_allowlist(allowlist: Vec<String>) -> Result<SecurityConfig> {
+        SecurityConfig::from_options(
+            None,
+            &allowlist,
+            50,
+            16 * 1024,
+            512 * 1024,
+            0,
+            0,
+            false,
+            true,
+            false,
+            false,
+            false,
+        )
+    }
+
+    #[test]
+    fn ip_allowed_allows_matching_net() -> Result<()> {
+        let security = security_with_allowlist(vec!["10.0.0.0/8".to_string()])?;
+        let ip: IpAddr = "10.1.2.3".parse()?;
+        assert!(security.ip_allowed(ip));
+        Ok(())
+    }
+
+    #[test]
+    fn ip_allowed_blocks_non_matching_net() -> Result<()> {
+        let security = security_with_allowlist(vec!["10.0.0.0/8".to_string()])?;
+        let ip: IpAddr = "127.0.0.1".parse()?;
+        assert!(!security.ip_allowed(ip));
         Ok(())
     }
 }

@@ -36,6 +36,20 @@ pub(crate) enum CliDiffMode {
     Range,
 }
 
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+#[value(rename_all = "kebab-case")]
+pub(crate) enum CliMcpIpcMode {
+    Auto,
+    Off,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+#[value(rename_all = "kebab-case")]
+pub(crate) enum McpAddTransport {
+    Http,
+    Ipc,
+}
+
 #[derive(Args, Debug, Clone)]
 pub(crate) struct ServeArgs {
     #[command(flatten)]
@@ -216,6 +230,26 @@ pub(crate) struct ServeArgs {
     pub disable_mcp: bool,
     #[arg(
         long,
+        value_enum,
+        help = "MCP IPC transport mode (auto or off). Defaults to server.mcp_ipc_mode"
+    )]
+    pub mcp_ipc: Option<CliMcpIpcMode>,
+    #[arg(
+        long,
+        env = "DOCDEX_MCP_SOCKET_PATH",
+        value_name = "PATH",
+        help = "Unix socket path for MCP IPC (overrides server.mcp_socket_path)"
+    )]
+    pub mcp_socket_path: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "DOCDEX_MCP_PIPE_NAME",
+        value_name = "NAME",
+        help = "Windows named pipe for MCP IPC (overrides server.mcp_pipe_name)"
+    )]
+    pub mcp_pipe_name: Option<String>,
+    #[arg(
+        long,
         env = "DOCDEX_EMBEDDING_BASE_URL",
         help = "Embedding base URL (preferred over --ollama-base-url)"
     )]
@@ -383,6 +417,52 @@ pub(crate) enum Command {
         #[arg(long)]
         file: PathBuf,
     },
+    /// Search repo docs/code (HTTP /search equivalent).
+    Search {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(long, value_parser = config::non_empty_string, help = "Search query")]
+        query: String,
+        #[arg(long, default_value_t = crate::max_size::DEFAULT_SEARCH_LIMIT)]
+        limit: usize,
+        #[arg(
+            long,
+            default_value_t = true,
+            action = ArgAction::Set,
+            help = "Include libs index in search results"
+        )]
+        include_libs: bool,
+        #[arg(
+            long,
+            default_value_t = true,
+            action = ArgAction::Set,
+            help = "Include snippets in results"
+        )]
+        snippets: bool,
+        #[arg(long, help = "Drop hits whose token_estimate exceeds this value")]
+        max_tokens: Option<u64>,
+        #[arg(long, default_value_t = false, help = "Force web discovery")]
+        force_web: bool,
+        #[arg(long, default_value_t = false, help = "Skip local search")]
+        skip_local_search: bool,
+        #[arg(long, default_value_t = false, help = "Disable web cache")]
+        no_cache: bool,
+        #[arg(long, help = "Max web results to fetch (Tier 2)")]
+        max_web_results: Option<usize>,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Use the LLM to filter local results before scoring"
+        )]
+        llm_filter_local_results: bool,
+        #[arg(
+            long,
+            default_value_t = true,
+            action = ArgAction::Set,
+            help = "Run web discovery asynchronously when enabled"
+        )]
+        async_web: bool,
+    },
     /// Run an ad-hoc chat query via CLI (JSON output).
     #[command(visible_alias = "query")]
     Chat {
@@ -547,6 +627,39 @@ pub(crate) enum Command {
         )]
         stream: bool,
     },
+    /// Render a repo folder tree with standard excludes.
+    Tree {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(
+            value_name = "PATH",
+            help = "Repo-relative path to render (defaults to repo root)"
+        )]
+        path: Option<PathBuf>,
+        #[arg(
+            short = 'd',
+            long,
+            value_name = "N",
+            help = "Max depth (default: unlimited)"
+        )]
+        max_depth: Option<usize>,
+        #[arg(short = 'D', long, default_value_t = false, help = "Directories only")]
+        dirs_only: bool,
+        #[arg(
+            short = 'a',
+            long,
+            default_value_t = false,
+            help = "Include hidden entries"
+        )]
+        include_hidden: bool,
+        #[arg(
+            short = 'e',
+            long,
+            value_delimiter = ',',
+            help = "Extra excludes (comma-separated)"
+        )]
+        extra_excludes: Vec<String>,
+    },
     /// View DAG traces.
     Dag {
         #[command(subcommand)]
@@ -674,6 +787,52 @@ pub(crate) enum Command {
         #[arg(long, help = "Offset into diagnostics list")]
         offset: Option<usize>,
     },
+    /// Read impact graph edges for a repo-relative file.
+    ImpactGraph {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(
+            long,
+            value_parser = config::non_empty_string,
+            help = "Repo-relative file path to analyze"
+        )]
+        file: String,
+        #[arg(long, help = "Max edges to return (default 1000, max 20000)")]
+        max_edges: Option<i64>,
+        #[arg(long, help = "Max traversal depth (default 10, max 50)")]
+        max_depth: Option<i64>,
+        #[arg(
+            long,
+            value_parser = config::non_empty_string,
+            help = "Comma-separated edge type filter (e.g. import,require)"
+        )]
+        edge_types: Option<String>,
+    },
+    /// Read a file slice from the repo (similar to docdex_open).
+    Open {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(long, value_parser = config::non_empty_string, help = "Repo-relative file path")]
+        file: String,
+        #[arg(long, help = "1-based start line")]
+        start: Option<usize>,
+        #[arg(long, help = "1-based end line")]
+        end: Option<usize>,
+        #[arg(long, help = "Return the first N lines (implies --clamp)")]
+        head: Option<usize>,
+        #[arg(long, default_value_t = false, help = "Clamp range to file bounds")]
+        clamp: bool,
+    },
+    /// File helpers for agent workflows.
+    File {
+        #[command(subcommand)]
+        command: FileCommand,
+    },
+    /// Test helpers for agent workflows.
+    Test {
+        #[command(subcommand)]
+        command: TestCommand,
+    },
     /// Manage explicit repo identity mappings for shared state dirs.
     Repo {
         #[command(subcommand)]
@@ -710,6 +869,9 @@ pub(crate) enum Command {
             default_value = "codex"
         )]
         agent: String,
+        /// Transport to configure for Codex (http or ipc).
+        #[arg(long, value_enum, default_value = "http")]
+        transport: McpAddTransport,
         /// Repo/workspace root for MCP configuration; defaults to current directory.
         #[arg(long)]
         repo: Option<PathBuf>,
@@ -743,6 +905,29 @@ pub(crate) struct SetupArgs {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum RepoCommand {
+    /// Initialize a repo in the running daemon and print the repo_id payload.
+    Init {
+        #[command(flatten)]
+        repo: RepoArgs,
+    },
+    /// Print the repo fingerprint for the current path.
+    Id {
+        #[command(flatten)]
+        repo: RepoArgs,
+    },
+    /// Report git status for the repo.
+    Status {
+        #[command(flatten)]
+        repo: RepoArgs,
+    },
+    /// Print `clean` or `dirty` based on git status.
+    Dirty {
+        #[command(flatten)]
+        repo: RepoArgs,
+        /// Exit with code 1 if dirty.
+        #[arg(long, default_value_t = false)]
+        exit_code: bool,
+    },
     /// Explicitly re-associate a moved/renamed repo path to existing state under a shared `--state-dir`.
     Reassociate {
         #[command(flatten)]
@@ -766,6 +951,47 @@ pub(crate) enum RepoCommand {
     Inspect {
         #[command(flatten)]
         repo: RepoArgs,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum FileCommand {
+    /// Ensure the file ends with a newline.
+    EnsureNewline {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(long, value_parser = config::non_empty_string)]
+        file: String,
+    },
+    /// Write file content (overwrites existing file).
+    Write {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(long, value_parser = config::non_empty_string)]
+        file: String,
+        /// Content to write (mutually exclusive with --stdin).
+        #[arg(long)]
+        content: Option<String>,
+        /// Read content from stdin.
+        #[arg(long, default_value_t = false)]
+        stdin: bool,
+        /// Allow creating a new file if it doesn't exist.
+        #[arg(long, default_value_t = false)]
+        create: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum TestCommand {
+    /// Run `node <file>` in the repo root.
+    RunNode {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(long, value_parser = config::non_empty_string)]
+        file: String,
+        /// Additional args to pass to node (repeatable or space-separated).
+        #[arg(long, value_parser = config::non_empty_string)]
+        args: Vec<String>,
     },
 }
 
@@ -915,6 +1141,17 @@ pub(crate) enum DagCommand {
         #[arg(long, value_name = "N")]
         max_nodes: Option<usize>,
     },
+    /// Alias for `dag view`.
+    Export {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(value_name = "SESSION_ID", value_parser = config::non_empty_string)]
+        session_id: String,
+        #[arg(long, default_value = "text", value_parser = ["text", "dot", "json"])]
+        format: String,
+        #[arg(long, value_name = "N")]
+        max_nodes: Option<usize>,
+    },
 }
 
 pub async fn run() -> Result<()> {
@@ -994,7 +1231,14 @@ pub async fn run() -> Result<()> {
 fn should_ensure_daemon(command: &Command) -> bool {
     !matches!(
         command,
-        Command::Serve { .. } | Command::Daemon { .. } | Command::HelpAll | Command::Setup { .. }
+        Command::Serve { .. }
+            | Command::Daemon { .. }
+            | Command::HelpAll
+            | Command::Setup { .. }
+            | Command::Tree { .. }
+            | Command::Open { .. }
+            | Command::File { .. }
+            | Command::Test { .. }
     )
 }
 
@@ -1013,6 +1257,7 @@ fn repo_hint_for_command(command: &Command) -> Option<PathBuf> {
         Command::SelfCheck { repo, .. } => Some(repo.repo_root()),
         Command::Index { repo, .. } => Some(repo.repo_root()),
         Command::Ingest { repo, .. } => Some(repo.repo_root()),
+        Command::Search { repo, .. } => Some(repo.repo_root()),
         Command::Chat { repo, .. } => Some(repo.repo_root()),
         Command::LibsIngest { repo, .. } => Some(repo.repo_root()),
         Command::LibsDiscover { repo, .. } => Some(repo.repo_root()),
@@ -1022,9 +1267,19 @@ fn repo_hint_for_command(command: &Command) -> Option<PathBuf> {
         },
         Command::Dag { command } => match command {
             DagCommand::View { repo, .. } => Some(repo.repo_root()),
+            DagCommand::Export { repo, .. } => Some(repo.repo_root()),
         },
         Command::SymbolsStatus { repo } => Some(repo.repo_root()),
         Command::ImpactDiagnostics { repo, .. } => Some(repo.repo_root()),
+        Command::ImpactGraph { repo, .. } => Some(repo.repo_root()),
+        Command::Open { repo, .. } => Some(repo.repo_root()),
+        Command::File { command } => match command {
+            FileCommand::EnsureNewline { repo, .. } => Some(repo.repo_root()),
+            FileCommand::Write { repo, .. } => Some(repo.repo_root()),
+        },
+        Command::Test { command } => match command {
+            TestCommand::RunNode { repo, .. } => Some(repo.repo_root()),
+        },
         Command::RunTests { repo, .. } => Some(repo.repo_root()),
         Command::Tui { repo } => repo
             .as_ref()
@@ -1033,6 +1288,10 @@ fn repo_hint_for_command(command: &Command) -> Option<PathBuf> {
         Command::MemoryRecall { repo, .. } => Some(repo.repo_root()),
         Command::WebRag { repo, .. } => Some(repo.repo_root()),
         Command::Repo { command } => match command {
+            RepoCommand::Init { repo, .. } => Some(repo.repo_root()),
+            RepoCommand::Id { repo, .. } => Some(repo.repo_root()),
+            RepoCommand::Status { repo, .. } => Some(repo.repo_root()),
+            RepoCommand::Dirty { repo, .. } => Some(repo.repo_root()),
             RepoCommand::Inspect { repo, .. } => Some(repo.repo_root()),
             RepoCommand::Reassociate { repo, .. } => Some(repo.repo_root()),
         },

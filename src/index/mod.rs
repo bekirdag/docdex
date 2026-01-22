@@ -1149,6 +1149,15 @@ impl Indexer {
         self.index_ready_marker_exists() || self.num_docs() > 0
     }
 
+    pub fn indexing_in_progress(&self) -> Result<bool> {
+        let state = self
+            .indexing_gate
+            .state
+            .lock()
+            .map_err(|_| AppError::new(ERR_INTERNAL_ERROR, "indexing gate poisoned"))?;
+        Ok(state.in_progress)
+    }
+
     pub fn is_read_only(&self) -> bool {
         self.writer.is_none()
     }

@@ -2,6 +2,7 @@ pub mod agent;
 pub mod browser;
 pub mod check;
 pub mod dag;
+pub mod file;
 pub mod help_all;
 pub mod hook;
 pub mod impact;
@@ -11,13 +12,17 @@ pub mod llm;
 pub mod mcoda_eval;
 pub mod mcp_add;
 pub mod memory;
+pub mod open;
 pub mod profile;
 pub mod query;
 pub mod repo;
 pub mod run_tests;
+pub mod search;
 pub mod self_check;
 pub mod serve;
 pub mod symbols;
+pub mod test;
+pub mod tree;
 pub mod tui;
 pub mod web;
 
@@ -40,6 +45,36 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
         super::Command::Setup { args } => crate::setup::run(args),
         super::Command::Index { repo, libs_sources } => index::run_index(repo, libs_sources).await,
         super::Command::Ingest { repo, file } => index::run_ingest(repo, file).await,
+        super::Command::Search {
+            repo,
+            query,
+            limit,
+            include_libs,
+            snippets,
+            max_tokens,
+            force_web,
+            skip_local_search,
+            no_cache,
+            max_web_results,
+            llm_filter_local_results,
+            async_web,
+        } => {
+            search::run(
+                repo,
+                query,
+                limit,
+                include_libs,
+                snippets,
+                max_tokens,
+                force_web,
+                skip_local_search,
+                no_cache,
+                max_web_results,
+                llm_filter_local_results,
+                async_web,
+            )
+            .await
+        }
         super::Command::Chat {
             repo,
             query,
@@ -81,7 +116,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             .await
         }
         super::Command::Agent { command } => agent::run(command).await,
-        super::Command::Repo { command } => repo::run(command),
+        super::Command::Repo { command } => repo::run(command).await,
         super::Command::LibsIngest { repo, sources } => libs::run_ingest(repo, sources).await,
         super::Command::LibsDiscover { repo, sources } => libs::run_discover(repo, sources).await,
         super::Command::Libs { command } => libs::run_command(command).await,
@@ -147,11 +182,47 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             limit,
             offset,
         } => impact::run_diagnostics(repo, file, limit, offset).await,
+        super::Command::ImpactGraph {
+            repo,
+            file,
+            max_edges,
+            max_depth,
+            edge_types,
+        } => impact::run_graph(repo, file, max_edges, max_depth, edge_types).await,
+        super::Command::Tree {
+            repo,
+            path,
+            max_depth,
+            dirs_only,
+            include_hidden,
+            extra_excludes,
+        } => {
+            tree::run(
+                repo,
+                path,
+                max_depth,
+                dirs_only,
+                include_hidden,
+                extra_excludes,
+            )
+            .await
+        }
+        super::Command::Open {
+            repo,
+            file,
+            start,
+            end,
+            head,
+            clamp,
+        } => open::run(repo, file, start, end, head, clamp),
+        super::Command::File { command } => file::run(command),
+        super::Command::Test { command } => test::run(command),
         super::Command::McpAdd {
             agent,
+            transport,
             repo,
             remove,
             all,
-        } => mcp_add::run(agent, repo, remove, all),
+        } => mcp_add::run(agent, transport, repo, remove, all),
     }
 }

@@ -1,11 +1,12 @@
 use crate::audit;
 use crate::cli::commands::check::{build_report, CheckOptions};
-use crate::cli::ServeArgs;
+use crate::cli::{CliMcpIpcMode, ServeArgs};
 use crate::config;
 use crate::daemon;
 use crate::error::StartupError;
 use crate::hardware;
 use crate::index;
+use crate::ipc::mcp_ipc;
 use crate::search;
 use crate::web;
 use anyhow::Result;
@@ -49,6 +50,9 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         agent_id,
         enable_mcp,
         disable_mcp,
+        mcp_ipc,
+        mcp_socket_path,
+        mcp_pipe_name,
         embedding_base_url,
         ollama_base_url,
         embedding_model,
@@ -209,6 +213,22 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
             Some(trimmed.to_string())
         }
     };
+    let mcp_ipc_mode = mcp_ipc.map(|mode| match mode {
+        CliMcpIpcMode::Auto => mcp_ipc::McpIpcMode::Auto,
+        CliMcpIpcMode::Off => mcp_ipc::McpIpcMode::Off,
+    });
+    let mcp_ipc_config = mcp_ipc::resolve_mcp_ipc_config(
+        &config.server,
+        mcp_ipc_mode,
+        mcp_socket_path,
+        mcp_pipe_name,
+        true,
+    )
+    .map_err(|err| {
+        StartupError::new("startup_mcp_ipc_invalid", err.to_string()).with_hint(
+            "Check DOCDEX_MCP_IPC, DOCDEX_MCP_SOCKET_PATH, and DOCDEX_MCP_PIPE_NAME overrides.",
+        )
+    })?;
     let (enable_mcp, mcp_source) =
         resolve_mcp_enabled(enable_mcp, disable_mcp, config.server.enable_mcp);
     let web_env = std::env::var("DOCDEX_WEB_ENABLED").ok();
@@ -285,6 +305,7 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         config.llm.clone(),
         embedding_timeout_ms,
         hook_socket_path,
+        mcp_ipc_config,
         config.features.clone(),
         default_agent_id,
         config.core.global_state_dir.clone(),

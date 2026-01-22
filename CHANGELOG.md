@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.26
+- Add `/v1/index/status` and `indexing_in_progress` responses for search while indexing.
+- Add async web deferral for `/search` and `docdex_search` (return local hits immediately).
+- Accept `repo_id` via query params for `POST /v1/ast/query` and expand AST guidance docs.
+- Add `docdex_tree` (MCP) and `docdexd tree` (CLI) for filtered repo folder structure rendering.
+
 ## 0.2.25
 - Enforce `repo_id` when multiple repos are mounted, returning detailed errors for missing repo context.
 - Add multi-repo daemon plan/tasks docs and expand repo scoping tests.

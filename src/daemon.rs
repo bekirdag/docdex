@@ -5,6 +5,7 @@ use crate::audit::AuditLogger;
 use crate::config::RepoArgs;
 use crate::error::StartupError;
 use crate::index::{IndexConfig, Indexer};
+use crate::ipc::mcp_ipc;
 use crate::libs;
 use crate::mcp;
 use crate::memory::MemoryStore;
@@ -302,6 +303,7 @@ pub async fn serve(
     llm_config: crate::config::LlmConfig,
     embedding_timeout_ms: u64,
     hook_socket_path: Option<PathBuf>,
+    mcp_ipc_config: crate::ipc::mcp_ipc::McpIpcConfig,
     feature_flags: crate::config::FeatureFlagsConfig,
     default_agent_id: Option<String>,
     global_state_dir: Option<PathBuf>,
@@ -688,6 +690,7 @@ pub async fn serve(
         }
     }
     let router = search::router(state);
+    let mcp_ipc_router = router.clone();
     #[cfg(unix)]
     let unix_make_service = router.clone().into_make_service();
     let make_service = router.into_make_service_with_connect_info::<SocketAddr>();
@@ -698,6 +701,23 @@ pub async fn serve(
         port,
         "listening on {addr}"
     );
+    if enable_mcp {
+        if let Err(err) = mcp_ipc::spawn_mcp_ipc_listener(mcp_ipc_router, &mcp_ipc_config).await {
+            if mcp_ipc_config.requires_bind_success() {
+                return Err(StartupError::new(
+                    "startup_mcp_ipc_failed",
+                    format!("failed to start mcp ipc listener: {err}"),
+                )
+                .with_hint("Disable with --mcp-ipc off or DOCDEX_MCP_IPC=0.")
+                .into());
+            }
+            warn!(
+                target: "docdexd",
+                error = ?err,
+                "mcp ipc listener failed; continuing without ipc"
+            );
+        }
+    }
     #[cfg(unix)]
     if let Some(socket_path) = hook_socket_path.clone() {
         if let Some(parent) = socket_path.parent() {

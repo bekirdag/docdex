@@ -3,6 +3,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::config;
@@ -138,12 +139,18 @@ pub async fn run_eval(options: EvalOptions) -> Result<()> {
         options.repo.symbols_enabled(),
     )?;
     util::init_logging("warn")?;
-    let indexer = index::Indexer::with_config_read_only(repo_root, index_config)?;
+    let indexer = Arc::new(index::Indexer::with_config_read_only(
+        repo_root,
+        index_config,
+    )?);
     let libs_indexer = if options.repo_only {
         None
     } else {
         let libs_dir = libs::libs_state_dir_from_index_state_dir(indexer.state_dir());
-        libs::LibsIndexer::open_read_only(libs_dir).ok().flatten()
+        libs::LibsIndexer::open_read_only(libs_dir)
+            .ok()
+            .flatten()
+            .map(Arc::new)
     };
 
     let queries = eval_queries(options.max_queries);
@@ -178,14 +185,15 @@ pub async fn run_eval(options: EvalOptions) -> Result<()> {
                 llm_filter_local_results: options.llm_filter_local_results,
                 llm_model: None,
                 llm_agent: Some(agent_key),
-                indexer: &indexer,
-                libs_indexer: libs_indexer.as_ref(),
+                indexer: indexer.clone(),
+                libs_indexer: libs_indexer.clone(),
                 plan,
                 tier2_limiter: None,
                 memory: None,
                 profile_state: None,
                 profile_agent_id: None,
                 ranking_surface: crate::search::RankingSurface::Chat,
+                async_web: false,
             };
             let mut run = EvalRunResult {
                 query_id: query.id.to_string(),

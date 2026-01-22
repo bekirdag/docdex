@@ -1,6 +1,7 @@
 use crate::config;
 use crate::dag::logging as dag_logging;
 use crate::hardware;
+use crate::ipc::mcp_ipc;
 use crate::memory::MemoryStore;
 use crate::ollama;
 use crate::profiles::ProfileManager;
@@ -14,6 +15,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::net::{SocketAddr, TcpListener};
+#[cfg(unix)]
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use uuid::Uuid;
@@ -255,6 +258,16 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
                     "env_value": mcp_env_value,
                 })),
             });
+            checks.push(CheckItem {
+                name: "mcp_ipc_ready",
+                status: "skipped",
+                message: "mcp disabled".to_string(),
+                details: Some(json!({
+                    "enabled": false,
+                    "source": mcp_source,
+                    "env_value": mcp_env_value,
+                })),
+            });
         } else {
             checks.push(CheckItem {
                 name: "mcp_ready",
@@ -266,6 +279,162 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
                     "env_value": mcp_env_value,
                 })),
             });
+
+            match mcp_ipc::resolve_mcp_ipc_config(&config.server, None, None, None, false) {
+                Ok(mcp_ipc_config) => {
+                    if !mcp_ipc_config.is_enabled() {
+                        checks.push(CheckItem {
+                            name: "mcp_ipc_ready",
+                            status: "skipped",
+                            message: "mcp ipc disabled".to_string(),
+                            details: Some(json!({
+                                "enabled": false,
+                                "source": mcp_ipc_config.source.as_str(),
+                            })),
+                        });
+                    } else {
+                        match mcp_ipc_config.endpoint.clone() {
+                            #[cfg(unix)]
+                            Some(mcp_ipc::McpIpcEndpoint::UnixSocket(path)) => {
+                                let details = json!({
+                                    "enabled": true,
+                                    "source": mcp_ipc_config.source.as_str(),
+                                    "socket": path.to_string_lossy(),
+                                });
+                                if !path.exists() {
+                                    checks.push(CheckItem {
+                                        name: "mcp_ipc_ready",
+                                        status: "skipped",
+                                        message: "mcp ipc socket not found (daemon not running)"
+                                            .to_string(),
+                                        details: Some(details),
+                                    });
+                                } else {
+                                    let metadata = fs::metadata(&path).with_context(|| {
+                                        format!("stat mcp ipc socket {}", path.display())
+                                    })?;
+                                    if metadata.file_type().is_socket() {
+                                        checks.push(CheckItem {
+                                            name: "mcp_ipc_ready",
+                                            status: "ok",
+                                            message: "mcp ipc socket ready".to_string(),
+                                            details: Some(details),
+                                        });
+                                    } else {
+                                        checks.push(CheckItem {
+                                            name: "mcp_ipc_ready",
+                                            status: "fail",
+                                            message: "mcp ipc path exists but is not a socket"
+                                                .to_string(),
+                                            details: Some(details),
+                                        });
+                                        success = false;
+                                    }
+                                }
+                            }
+                            #[cfg(windows)]
+                            Some(mcp_ipc::McpIpcEndpoint::WindowsPipe(pipe)) => {
+                                let details = json!({
+                                    "enabled": true,
+                                    "source": mcp_ipc_config.source.as_str(),
+                                    "pipe": pipe,
+                                });
+                                let timeout = tokio::time::timeout(
+                                    Duration::from_secs(1),
+                                    tokio::net::windows::named_pipe::ClientOptions::new()
+                                        .open(&pipe),
+                                )
+                                .await;
+                                match timeout {
+                                    Ok(Ok(_)) => checks.push(CheckItem {
+                                        name: "mcp_ipc_ready",
+                                        status: "ok",
+                                        message: "mcp ipc named pipe ready".to_string(),
+                                        details: Some(details),
+                                    }),
+                                    Ok(Err(err)) => {
+                                        checks.push(CheckItem {
+                                            name: "mcp_ipc_ready",
+                                            status: "fail",
+                                            message: format!(
+                                                "mcp ipc named pipe connect failed: {err}"
+                                            ),
+                                            details: Some(details),
+                                        });
+                                        success = false;
+                                    }
+                                    Err(_) => {
+                                        checks.push(CheckItem {
+                                            name: "mcp_ipc_ready",
+                                            status: "skipped",
+                                            message: "mcp ipc named pipe check timed out"
+                                                .to_string(),
+                                            details: Some(details),
+                                        });
+                                    }
+                                }
+                            }
+                            #[cfg(not(any(unix, windows)))]
+                            _ => {
+                                checks.push(CheckItem {
+                                    name: "mcp_ipc_ready",
+                                    status: "skipped",
+                                    message: "ipc transport not supported on this platform"
+                                        .to_string(),
+                                    details: Some(json!({
+                                        "enabled": true,
+                                        "source": mcp_ipc_config.source.as_str(),
+                                    })),
+                                });
+                            }
+                            #[cfg(not(windows))]
+                            Some(mcp_ipc::McpIpcEndpoint::WindowsPipe(_)) => {
+                                checks.push(CheckItem {
+                                    name: "mcp_ipc_ready",
+                                    status: "skipped",
+                                    message: "ipc named pipe check is windows-only".to_string(),
+                                    details: Some(json!({
+                                        "enabled": true,
+                                        "source": mcp_ipc_config.source.as_str(),
+                                    })),
+                                });
+                            }
+                            #[cfg(not(unix))]
+                            Some(mcp_ipc::McpIpcEndpoint::UnixSocket(_)) => {
+                                checks.push(CheckItem {
+                                    name: "mcp_ipc_ready",
+                                    status: "skipped",
+                                    message: "ipc unix socket check is unix-only".to_string(),
+                                    details: Some(json!({
+                                        "enabled": true,
+                                        "source": mcp_ipc_config.source.as_str(),
+                                    })),
+                                });
+                            }
+                            None => {
+                                checks.push(CheckItem {
+                                    name: "mcp_ipc_ready",
+                                    status: "skipped",
+                                    message: "mcp ipc endpoint not configured".to_string(),
+                                    details: Some(json!({
+                                        "enabled": true,
+                                        "source": mcp_ipc_config.source.as_str(),
+                                    })),
+                                });
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    checks.push(CheckItem {
+                        name: "mcp_ipc_ready",
+                        status: "fail",
+                        message: format!("mcp ipc config invalid: {err}"),
+                        details: None,
+                    });
+                    success = false;
+                }
+            }
         }
 
         let provider = config.llm.provider.trim();
@@ -1101,6 +1270,7 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
             "bind",
             "bind_available",
             "mcp_ready",
+            "mcp_ipc_ready",
             "llm_budget",
             "llm_provider",
             "ollama",

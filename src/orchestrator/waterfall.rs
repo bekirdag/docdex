@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use serde_json::json;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::task;
 use tracing::{info, warn};
@@ -50,14 +51,15 @@ pub struct WaterfallRequest<'a> {
     pub llm_filter_local_results: bool,
     pub llm_model: Option<&'a str>,
     pub llm_agent: Option<&'a str>,
-    pub indexer: &'a Indexer,
-    pub libs_indexer: Option<&'a LibsIndexer>,
+    pub indexer: Arc<Indexer>,
+    pub libs_indexer: Option<Arc<LibsIndexer>>,
     pub plan: WaterfallPlan,
     pub tier2_limiter: Option<&'a Tier2Limiter>,
     pub memory: Option<&'a MemoryState>,
     pub profile_state: Option<&'a ProfileState>,
     pub profile_agent_id: Option<&'a str>,
     pub ranking_surface: RankingSurface,
+    pub async_web: bool,
 }
 
 /// Result of running the waterfall through all tiers.
@@ -146,8 +148,8 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
         }
     } else {
         crate::search::run_query(
-            request.indexer,
-            request.libs_indexer,
+            request.indexer.as_ref(),
+            request.libs_indexer.as_deref(),
             request.query,
             request.limit,
             request.ranking_surface,
@@ -178,7 +180,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
         .await;
         if request.ranking_surface == RankingSurface::Chat {
             crate::search::apply_ranking_deltas(
-                request.indexer,
+                request.indexer.as_ref(),
                 &mut search_response.hits,
                 request.query,
                 request.limit,
@@ -203,7 +205,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
 
     if !request.skip_local_search {
         search_response.symbols_context =
-            collect_symbol_context(request.indexer, &search_response.hits);
+            collect_symbol_context(request.indexer.as_ref(), &search_response.hits);
     }
     let effective_force_web = request.force_web || request.skip_local_search;
     let should_run_tier2 = request.plan.web_gate.should_attempt(
@@ -232,7 +234,92 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
         metrics.inc_waterfall_tier2_skipped();
     }
 
-    let tier2 = if should_run_tier2 {
+    let tier2 = if request.async_web
+        && should_run_tier2
+        && !effective_force_web
+        && !request.skip_local_search
+        && request.plan.web_gate.enabled
+    {
+        let request_id = request.request_id.to_string();
+        let dag_session_id = request
+            .dag_session_id
+            .unwrap_or(request.request_id)
+            .to_string();
+        let query = request.query.to_string();
+        let plan = request.plan.clone();
+        let indexer = request.indexer.clone();
+        let libs_indexer = request.libs_indexer.clone();
+        let llm_model = request.llm_model.map(|value| value.to_string());
+        let llm_agent = request.llm_agent.map(|value| value.to_string());
+        let limit = request.limit;
+        let web_limit = request.web_limit;
+        let llm_filter_local_results = request.llm_filter_local_results;
+        let disable_web_cache = request.disable_web_cache;
+        let ranking_surface = request.ranking_surface;
+        let force_web = effective_force_web;
+        let top_score_copy = top_score;
+        let top_score_normalized_copy = top_score_normalized;
+        let local_match_ratio_copy = local_match_ratio;
+
+        tokio::spawn(async move {
+            let request_id_ref = request_id.as_str();
+            let dag_session_id_ref = dag_session_id.as_str();
+            let llm_model_ref = llm_model.as_deref();
+            let llm_agent_ref = llm_agent.as_deref();
+            let async_request = WaterfallRequest {
+                request_id: request_id_ref,
+                dag_session_id: Some(dag_session_id_ref),
+                query: &query,
+                limit,
+                diff: None,
+                web_limit,
+                force_web,
+                skip_local_search: false,
+                disable_web_cache,
+                llm_filter_local_results,
+                llm_model: llm_model_ref,
+                llm_agent: llm_agent_ref,
+                indexer,
+                libs_indexer,
+                plan,
+                tier2_limiter: None,
+                memory: None,
+                profile_state: None,
+                profile_agent_id: None,
+                ranking_surface,
+                async_web: false,
+            };
+            let _ = run_tier2(
+                &async_request,
+                top_score_copy,
+                top_score_normalized_copy,
+                local_match_ratio_copy,
+                force_web,
+            )
+            .await;
+        });
+
+        Tier2Outcome {
+            response: None,
+            status: WebDiscoveryStatus {
+                status: WebDiscoveryStatusCode::Skipped,
+                reason: Some("async_deferred".to_string()),
+                message: Some("web discovery deferred; running in background".to_string()),
+                unavailable: None,
+                discovery: None,
+                fetches: None,
+                debug: None,
+                gate: build_gate_meta(
+                    &request.plan.web_gate,
+                    top_score,
+                    top_score_normalized,
+                    local_match_ratio,
+                    effective_force_web,
+                ),
+            },
+            tier2_unavailable: None,
+        }
+    } else if should_run_tier2 {
         run_tier2(
             &request,
             top_score,
@@ -558,8 +645,8 @@ async fn run_tier2(
         || async {
             let response = run_web_research(
                 request.request_id,
-                request.indexer,
-                request.libs_indexer,
+                request.indexer.as_ref(),
+                request.libs_indexer.as_deref(),
                 request.query,
                 request.limit,
                 request.web_limit,

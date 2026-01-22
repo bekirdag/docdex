@@ -1,3 +1,6 @@
+use crate::cli::McpAddTransport;
+use crate::config;
+use crate::ipc::mcp_ipc;
 use anyhow::anyhow;
 use anyhow::Context;
 use anyhow::Result;
@@ -84,13 +87,33 @@ fn print_mcp_add_banner(info: &McpEndpointInfo) {
     }
 }
 
-pub fn run(agent: String, repo: Option<PathBuf>, remove: bool, all: bool) -> Result<()> {
+pub(crate) fn run(
+    agent: String,
+    transport: McpAddTransport,
+    repo: Option<PathBuf>,
+    remove: bool,
+    all: bool,
+) -> Result<()> {
     let repo_root = repo
         .unwrap_or(std::env::current_dir().context("determine current directory")?)
         .canonicalize()
         .context("resolve repo root")?;
     let endpoint_info = resolve_mcp_endpoint_info();
     let urls = mcp_endpoint_urls(&endpoint_info.base_url);
+    let mut ipc_config = None;
+    if transport == McpAddTransport::Ipc {
+        let config = config::AppConfig::load_default().unwrap_or_default();
+        ipc_config = Some(
+            mcp_ipc::resolve_mcp_ipc_config(
+                &config.server,
+                Some(mcp_ipc::McpIpcMode::Auto),
+                None,
+                None,
+                false,
+            )
+            .context("resolve mcp ipc config")?,
+        );
+    }
     if !remove {
         print_mcp_add_banner(&endpoint_info);
     }
@@ -128,14 +151,28 @@ pub fn run(agent: String, repo: Option<PathBuf>, remove: bool, all: bool) -> Res
             if remove { "removing from" } else { "adding to" },
             target
         );
-        handle_mcp_add(target, &repo_root, &urls, remove, installed)?;
+        handle_mcp_add(
+            target,
+            &repo_root,
+            &urls,
+            transport,
+            ipc_config.as_ref(),
+            remove,
+            installed,
+        )?;
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{mcp_add_banner_lines, McpEndpointInfo};
+    use super::{
+        codex_entry_http, codex_entry_ipc, mcp_add_banner_lines, upsert_codex_config,
+        McpEndpointInfo,
+    };
+    use std::fs;
+    use tempfile::TempDir;
+    use toml::Value as TomlValue;
 
     #[test]
     fn mcp_add_banner_includes_http_endpoints() {
@@ -166,6 +203,88 @@ mod tests {
         assert!(lines
             .iter()
             .any(|line| { line.contains("Start it with") && line.contains("docdexd daemon") }));
+    }
+
+    #[test]
+    fn codex_config_writes_http_entry() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let path = dir.path().join("config.toml");
+        upsert_codex_config(&path, codex_entry_http("http://127.0.0.1:28491/v1/mcp"))?;
+        let data = fs::read_to_string(&path)?;
+        let root: TomlValue = toml::from_str(&data)?;
+        let mcp_servers = root
+            .get("mcp_servers")
+            .and_then(|v| v.as_table())
+            .ok_or("missing mcp_servers")?;
+        let docdex = mcp_servers
+            .get("docdex")
+            .and_then(|v| v.as_table())
+            .ok_or("missing docdex entry")?;
+        assert_eq!(
+            docdex.get("url").and_then(|v| v.as_str()),
+            Some("http://127.0.0.1:28491/v1/mcp")
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_config_writes_ipc_socket_entry() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let path = dir.path().join("config.toml");
+        let entry = codex_entry_ipc(&crate::ipc::mcp_ipc::McpIpcEndpoint::UnixSocket(
+            "/tmp/docdex-mcp.sock".into(),
+        ));
+        upsert_codex_config(&path, entry)?;
+        let data = fs::read_to_string(&path)?;
+        let root: TomlValue = toml::from_str(&data)?;
+        let mcp_servers = root
+            .get("mcp_servers")
+            .and_then(|v| v.as_table())
+            .ok_or("missing mcp_servers")?;
+        let docdex = mcp_servers
+            .get("docdex")
+            .and_then(|v| v.as_table())
+            .ok_or("missing docdex entry")?;
+        assert_eq!(
+            docdex.get("transport").and_then(|v| v.as_str()),
+            Some("ipc")
+        );
+        assert_eq!(
+            docdex.get("socket_path").and_then(|v| v.as_str()),
+            Some("/tmp/docdex-mcp.sock")
+        );
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn codex_config_writes_ipc_pipe_entry() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let path = dir.path().join("config.toml");
+        let entry = codex_entry_ipc(&crate::ipc::mcp_ipc::McpIpcEndpoint::WindowsPipe(
+            "\\\\.\\pipe\\docdex-mcp".to_string(),
+        ));
+        upsert_codex_config(&path, entry)?;
+        let data = fs::read_to_string(&path)?;
+        let root: TomlValue = toml::from_str(&data)?;
+        let mcp_servers = root
+            .get("mcp_servers")
+            .and_then(|v| v.as_table())
+            .ok_or("missing mcp_servers")?;
+        let docdex = mcp_servers
+            .get("docdex")
+            .and_then(|v| v.as_table())
+            .ok_or("missing docdex entry")?;
+        assert_eq!(
+            docdex.get("transport").and_then(|v| v.as_str()),
+            Some("ipc")
+        );
+        assert_eq!(
+            docdex.get("pipe_name").and_then(|v| v.as_str()),
+            Some("\\\\.\\pipe\\docdex-mcp")
+        );
+        Ok(())
     }
 }
 
@@ -470,7 +589,33 @@ fn remove_zed_entry(path: &Path, warn_only: bool) -> Result<()> {
     }
 }
 
-fn upsert_codex_config(path: &Path, url: &str) -> Result<()> {
+fn codex_entry_http(url: &str) -> TomlMap<String, TomlValue> {
+    let mut entry = TomlMap::new();
+    entry.insert("url".to_string(), TomlValue::String(url.to_string()));
+    entry
+}
+
+fn codex_entry_ipc(endpoint: &mcp_ipc::McpIpcEndpoint) -> TomlMap<String, TomlValue> {
+    let mut entry = TomlMap::new();
+    entry.insert(
+        "transport".to_string(),
+        TomlValue::String("ipc".to_string()),
+    );
+    match endpoint {
+        mcp_ipc::McpIpcEndpoint::UnixSocket(path) => {
+            entry.insert(
+                "socket_path".to_string(),
+                TomlValue::String(path.to_string_lossy().to_string()),
+            );
+        }
+        mcp_ipc::McpIpcEndpoint::WindowsPipe(pipe) => {
+            entry.insert("pipe_name".to_string(), TomlValue::String(pipe.to_string()));
+        }
+    }
+    entry
+}
+
+fn upsert_codex_config(path: &Path, docdex_entry: TomlMap<String, TomlValue>) -> Result<()> {
     let mut root: TomlValue = if path.exists() {
         let data = fs::read_to_string(path)?;
         toml::from_str(&data).unwrap_or_else(|_| TomlValue::Table(TomlMap::new()))
@@ -502,8 +647,6 @@ fn upsert_codex_config(path: &Path, url: &str) -> Result<()> {
             _ => {}
         }
     }
-    let mut docdex_entry = TomlMap::new();
-    docdex_entry.insert("url".to_string(), TomlValue::String(url.to_string()));
     mcp_table.insert("docdex".to_string(), TomlValue::Table(docdex_entry));
     table.insert("mcp_servers".to_string(), TomlValue::Table(mcp_table));
     if let Some(parent) = path.parent() {
@@ -602,6 +745,8 @@ fn handle_mcp_add(
     agent: &str,
     repo_root: &Path,
     urls: &McpEndpointUrls,
+    transport: McpAddTransport,
+    ipc_config: Option<&mcp_ipc::McpIpcConfig>,
     remove: bool,
     installed: bool,
 ) -> Result<()> {
@@ -616,7 +761,26 @@ fn handle_mcp_add(
                 );
             } else {
                 let path = codex_config_path()?;
-                upsert_codex_config(&path, &urls.http_url)?;
+                let docdex_entry = if transport == McpAddTransport::Ipc {
+                    if let Some(config) = ipc_config {
+                        if let Some(endpoint) = config.endpoint.as_ref() {
+                            codex_entry_ipc(endpoint)
+                        } else {
+                            println!(
+                                "[docdexd mcp-add] IPC transport not supported on this platform; falling back to HTTP for Codex."
+                            );
+                            codex_entry_http(&urls.http_url)
+                        }
+                    } else {
+                        println!(
+                            "[docdexd mcp-add] IPC transport unavailable; falling back to HTTP for Codex."
+                        );
+                        codex_entry_http(&urls.http_url)
+                    }
+                } else {
+                    codex_entry_http(&urls.http_url)
+                };
+                upsert_codex_config(&path, docdex_entry)?;
                 println!("Added docdex to Codex config at {}", path.display());
             }
         }

@@ -59,6 +59,7 @@ jobs:
           DOCDEX_LOAD_MAX_ERROR_RATE: "0.005"
           DOCDEX_BIN: "./target/release/docdexd"
           DOCDEX_OFFLINE: "1"
+          DOCDEX_WEB_ENABLED: "0"
         run: |
           ./target/release/docdexd serve --repo . --secure-mode=false --enable-memory=false --disable-mcp --access-log=false --log warn --preflight-check=false &
           pid=$!

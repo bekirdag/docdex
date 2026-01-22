@@ -20,6 +20,7 @@ use anyhow::Result;
 use reqwest::Method;
 use serde_json::json;
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
 use uuid::Uuid;
@@ -191,12 +192,18 @@ pub async fn run_rag(
         repo.symbols_enabled(),
     )?;
     util::init_logging("warn")?;
-    let server = index::Indexer::with_config_read_only(repo_root, index_config)?;
+    let server = Arc::new(index::Indexer::with_config_read_only(
+        repo_root,
+        index_config,
+    )?);
     let libs_indexer = if repo_only {
         None
     } else {
         let libs_dir = libs::libs_state_dir_from_index_state_dir(server.state_dir());
-        libs::LibsIndexer::open_read_only(libs_dir).ok().flatten()
+        libs::LibsIndexer::open_read_only(libs_dir)
+            .ok()
+            .flatten()
+            .map(Arc::new)
     };
     let web_gate = WebGateConfig::from_env();
     let config = crate::config::AppConfig::load_default().ok();
@@ -238,14 +245,15 @@ pub async fn run_rag(
         llm_filter_local_results: false,
         llm_model: None,
         llm_agent: None,
-        indexer: &server,
-        libs_indexer: libs_indexer.as_ref(),
+        indexer: server.clone(),
+        libs_indexer: libs_indexer.clone(),
         plan,
         tier2_limiter: None,
         memory: memory_state.as_ref(),
         profile_state: None,
         profile_agent_id: None,
         ranking_surface: crate::search::RankingSurface::Search,
+        async_web: false,
     };
     let waterfall = run_waterfall(request).await?;
     let _ = dag_logging::log_node(

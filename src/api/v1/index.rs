@@ -1,16 +1,18 @@
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json, Response},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::warn;
 
-use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT};
+use crate::error::{AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT};
 use crate::indexer;
 use crate::libs;
-use crate::search::{json_error, repo_error_response, resolve_repo_context, AppState};
+use crate::search::{
+    json_error, repo_error_response, resolve_repo_context, status_for_app_error, AppState,
+};
 
 #[derive(Deserialize)]
 pub struct IndexRebuildRequest {
@@ -25,6 +27,30 @@ pub struct IndexIngestRequest {
     pub file: String,
     #[serde(default)]
     pub repo_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct IndexStatusQuery {
+    #[serde(default)]
+    pub repo_id: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct IndexStatusResponse {
+    pub repo_id: String,
+    pub repo_root: String,
+    pub status: String,
+    pub ready: bool,
+    pub indexing_in_progress: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docs_indexed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_updated_epoch_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_size_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub segments: Option<usize>,
 }
 
 pub async fn index_rebuild_handler(
@@ -146,4 +172,59 @@ pub async fn index_ingest_handler(
             )
         }
     }
+}
+
+pub async fn index_status_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<IndexStatusQuery>,
+) -> Response {
+    let repo = match resolve_repo_context(&state, &headers, params.repo_id.as_deref(), None, false)
+    {
+        Ok(repo) => repo,
+        Err(err) => return repo_error_response(err),
+    };
+
+    let indexing_in_progress = match repo.indexer.indexing_in_progress() {
+        Ok(value) => value,
+        Err(err) => {
+            state.metrics.inc_error();
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                return json_error(
+                    status_for_app_error(app.code),
+                    app.code,
+                    app.message.clone(),
+                );
+            }
+            warn!(target: "docdexd", error = ?err, "index status lookup failed");
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "index status lookup failed",
+            );
+        }
+    };
+    let ready = repo.indexer.index_ready();
+    let status = if ready {
+        "ready"
+    } else if indexing_in_progress {
+        "indexing"
+    } else {
+        "missing"
+    };
+    let stats = repo.indexer.stats().ok();
+
+    let response = IndexStatusResponse {
+        repo_id: repo.repo_id.clone(),
+        repo_root: repo.indexer.repo_root().display().to_string(),
+        status: status.to_string(),
+        ready,
+        indexing_in_progress,
+        docs_indexed: stats.as_ref().map(|value| value.num_docs),
+        last_updated_epoch_ms: stats.as_ref().and_then(|value| value.last_updated_epoch_ms),
+        index_size_bytes: stats.as_ref().map(|value| value.index_size_bytes),
+        segments: stats.as_ref().map(|value| value.segments),
+    };
+
+    Json(response).into_response()
 }

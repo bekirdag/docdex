@@ -8,6 +8,12 @@ Docdex exposes a local HTTP server (default `127.0.0.1:28491`). Use it directly 
 - Secure mode is on by default for non-loopback binds.
 - If `--auth-token` is set, include `Authorization: Bearer <token>`.
 
+## IPC transport (local)
+
+Docdex can serve the same HTTP endpoints over local IPC (Unix domain socket or Windows named pipe).
+Use the `/v1/mcp` JSON-RPC endpoint over IPC with the same request/response payloads as HTTP.
+HTTP/SSE (`/v1/mcp/sse`) remains available over TCP.
+
 ## Repo scoping
 
 Docdex can run in two modes:
@@ -68,6 +74,7 @@ Query params:
 - `max_tokens`
 - `include_libs`
 - `force_web`
+- `async_web`
 - `skip_local_search`
 - `no_cache`
 - `max_web_results`
@@ -80,6 +87,10 @@ Example:
 ```bash
 curl "http://127.0.0.1:28491/search?q=payment%20retry&limit=5"
 ```
+
+Notes:
+- `async_web=true` (default) returns local hits immediately and defers web discovery in the background; `web_discovery.status` returns `skipped` with reason `async_deferred`.
+- If the index is missing or still building, `/search` returns HTTP 202 with `indexing_in_progress` and a `status_url` to poll.
 
 Header:
 - `x-docdex-dag-session` (optional)
@@ -210,12 +221,16 @@ Query params:
 Request body:
 ```json
 {
-  "kinds": ["function_definition"],
+  "kinds": ["function_item"],
   "name": "addressGenerator",
   "pathPrefix": "src",
   "limit": 20
 }
 ```
+
+Notes:
+- `repo_id` may be provided in the query string or request body.
+- AST kinds are tree-sitter node kinds and are language-specific (e.g. Rust: `function_item`, `struct_item`; JS/TS: `function_declaration`, `class_declaration`; Python: `function_definition`, `class_definition`).
 
 ### Impact graph
 
@@ -227,6 +242,16 @@ Query params:
 - `maxEdges`
 - `maxDepth`
 - `edgeTypes`
+
+### DAG export
+
+`GET /v1/dag/export`
+
+Query params:
+- `session_id` (required)
+- `format` (optional: json/text/dot; default json)
+- `max_nodes` (optional)
+- `repo_id` (required when multiple repos are mounted)
 
 `GET /v1/graph/impact/diagnostics`
 
@@ -241,6 +266,12 @@ Query params:
   - Body: `{ "libs_sources": "<path optional>" }`
 - `POST /v1/index/ingest` - ingest a single file.
   - Body: `{ "file": "<path>" }`
+- `GET /v1/index/status` - report index readiness, docs count, and last updated timestamp.
+  - Query: `repo_id`
+
+## Folder tree
+
+Folder tree rendering is exposed via the CLI (`docdexd tree`) and the MCP tool `docdex_tree` (no HTTP endpoint).
 
 ## Library docs
 

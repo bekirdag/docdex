@@ -137,6 +137,7 @@ Core endpoints:
 - `GET /snippet/:doc_id`
 - `POST /v1/chat/completions`
 - `GET /v1/symbols`, `GET /v1/ast`, `GET /v1/graph/impact`
+- `GET /v1/index/status`
 
 Reference: `docs/http_api.md`.
 
@@ -147,9 +148,72 @@ Supported AST/symbols languages: Rust, Python, JavaScript, TypeScript, Go, Java,
 Examples:
 ```bash
 curl "http://127.0.0.1:28491/v1/symbols?file=src/app.ts"
-curl "http://127.0.0.1:28491/v1/ast?name=handleRequest&pathPrefix=src"
+curl "http://127.0.0.1:28491/v1/ast?path=src/app.ts"
+curl -X POST "http://127.0.0.1:28491/v1/ast/query" -H "Content-Type: application/json" \
+  -d '{"kinds":["function_item"],"name":"handleRequest","pathPrefix":"src","limit":20}'
 curl "http://127.0.0.1:28491/v1/graph/impact?file=src/app.ts&maxDepth=3"
 ```
+
+Notes:
+- AST kinds are tree-sitter node kinds and are language-specific. Examples: Rust `function_item`/`struct_item`, JS/TS `function_declaration`/`class_declaration`, Python `function_definition`/`class_definition`.
+
+## Folder tree (filtered)
+Use the built-in tree renderer instead of running ad-hoc `rg --files`/`find`, which includes noisy folders.
+
+CLI:
+```bash
+docdexd tree --repo /path/to/repo --max-depth 4 --dirs-only
+docdexd tree --repo /path/to/repo src --include-hidden --extra-excludes ".direnv,.cache"
+```
+
+MCP tool:
+```json
+{ "tool": "docdex_tree", "args": { "path": "src", "max_depth": 4, "dirs_only": true } }
+```
+
+Notes:
+- Default excludes cover common noisy folders: `.git`, `node_modules`, `dist`, `build`, `target`, etc.
+- `max_depth=0` returns only the root label.
+
+## Agent helper CLI commands
+These commands are designed for agent workflows and scripted troubleshooting. They mirror HTTP/MCP behavior where possible.
+
+Repo helpers:
+```bash
+docdexd repo init --repo /path/to/repo
+docdexd repo id --repo /path/to/repo
+docdexd repo status --repo /path/to/repo
+docdexd repo dirty --repo /path/to/repo --exit-code
+```
+
+Impact + DAG helpers:
+```bash
+docdexd impact-graph --repo /path/to/repo --file src/app.ts --max-depth 3
+docdexd dag export --repo /path/to/repo <session_id> --format json
+```
+
+Search helpers:
+```bash
+docdexd search --repo /path/to/repo --query "auth flow" --limit 8 --snippets false
+docdexd search --repo /path/to/repo --query "config" --force-web --async-web=false
+```
+
+File helpers:
+```bash
+docdexd open --repo /path/to/repo --file src/app.ts --head 20
+docdexd open --repo /path/to/repo --file src/app.ts --start 10 --end 40 --clamp
+docdexd file ensure-newline --repo /path/to/repo --file README.md
+docdexd file write --repo /path/to/repo --file notes.txt --content "hello" --create
+```
+
+Test helper:
+```bash
+docdexd test run-node --repo /path/to/repo --file scripts/check.js --args "foo bar"
+```
+
+Notes:
+- `docdexd search` defaults to HTTP; set `DOCDEX_CLI_LOCAL=1` to run in-process.
+- `docdexd open`/`file`/`test` run locally and do not require the daemon.
 
 ## Local LLM usage (Ollama)
 Docdex uses Ollama for embeddings and optional local chat. Use `docdexd llm-list` to see recommended models for your hardware.
@@ -295,7 +359,7 @@ Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary to
 - `--expose` / `DOCDEX_EXPOSE`: allow non-loopback binds (requires auth).
 - `--auth-token <token>` / `DOCDEX_AUTH_TOKEN`: required for non-loopback binds.
 - `--secure-mode <true|false>` / `DOCDEX_SECURE_MODE`: default true.
-- `--allow-ip a,b,c` / `DOCDEX_ALLOW_IPS`: allowlist for HTTP API.
+- `--allow-ip a,b,c` / `DOCDEX_ALLOW_IPS`: allowlist for HTTP API (IPC requests bypass the allowlist and are treated as loopback).
 - `--tls-cert`, `--tls-key`, `--certbot-domain`, `--certbot-live-dir`.
 - `--require-tls <true|false>` / `DOCDEX_REQUIRE_TLS`.
 - `--insecure` / `DOCDEX_INSECURE_HTTP=true`.
@@ -311,6 +375,23 @@ Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary to
 - `--strip-snippet-html` / `DOCDEX_STRIP_SNIPPET_HTML`.
 - `--disable-snippet-text` / `DOCDEX_DISABLE_SNIPPET_TEXT`.
 - `--access-log <true|false>` / `DOCDEX_ACCESS_LOG`.
+
+### MCP IPC transport
+- Defaults:
+  - macOS/Linux: `$XDG_RUNTIME_DIR/docdex/mcp.sock` (fallback: `~/.docdex/run/mcp.sock`)
+  - Windows: `\\\\.\\pipe\\docdex-mcp`
+- Enable/disable: `--mcp-ipc auto|off` or `DOCDEX_MCP_IPC=1|0`.
+- Override endpoints: `DOCDEX_MCP_SOCKET_PATH` (unix) or `DOCDEX_MCP_PIPE_NAME` (windows).
+- Codex config (IPC):
+
+```toml
+[mcp_servers.docdex]
+transport = "ipc"
+socket_path = "/absolute/path/to/mcp.sock"
+# Windows: pipe_name = "\\\\.\\pipe\\docdex-mcp"
+```
+
+- HTTP/SSE remains the default for other MCP clients (`/v1/mcp/sse` or `/v1/mcp`).
 
 ### Memory and LLM
 - `--enable-memory <true|false>` / `DOCDEX_ENABLE_MEMORY`.
@@ -342,6 +423,7 @@ Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary to
 - Browser path issues: `docdexd browser setup` or set `DOCDEX_WEB_BROWSER`/`DOCDEX_CHROME_PATH`.
 - Ollama timeouts: ensure `ollama` is running and tune `DOCDEX_EMBEDDING_TIMEOUT_MS`.
 - 429s in load tests: run with `--secure-mode=false` or raise rate limits.
+- `indexing_in_progress` (HTTP 202) on `/search`: call `/v1/index/status` and retry after `retry_after_ms`, or rebuild with `/v1/index/rebuild` if indexing is stuck.
 
 ## References
 - HTTP API: `docs/http_api.md`

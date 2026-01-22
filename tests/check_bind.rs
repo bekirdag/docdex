@@ -86,6 +86,7 @@ fn check_fails_when_bind_in_use() -> Result<(), Box<dyn Error>> {
     );
     let report = parse_report(&output.stdout)?;
     let check = find_check(&report, "bind_available").ok_or("missing bind_available check")?;
+    find_check(&report, "mcp_ipc_ready").ok_or("missing mcp_ipc_ready check")?;
     assert_eq!(check.get("status").and_then(|v| v.as_str()), Some("fail"));
     let error_kind = check
         .get("details")
@@ -122,6 +123,7 @@ fn check_reports_permission_denied_on_privileged_port() -> Result<(), Box<dyn Er
     );
     let report = parse_report(&output.stdout)?;
     let check = find_check(&report, "bind_available").ok_or("missing bind_available check")?;
+    find_check(&report, "mcp_ipc_ready").ok_or("missing mcp_ipc_ready check")?;
     assert_eq!(check.get("status").and_then(|v| v.as_str()), Some("fail"));
     let error_kind = check
         .get("details")

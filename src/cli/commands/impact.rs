@@ -1,6 +1,9 @@
 use crate::cli::http_client::CliHttpClient;
 use crate::config::RepoArgs;
-use crate::impact::{build_impact_diagnostics_response, ImpactDiagnosticsEntry, ImpactGraphStore};
+use crate::impact::{
+    build_impact_diagnostics_response, ImpactDiagnosticsEntry, ImpactGraphStore,
+    ImpactQueryControlsRaw,
+};
 use crate::index;
 use crate::symbols;
 use crate::util;
@@ -84,6 +87,59 @@ pub async fn run_diagnostics(
     Ok(())
 }
 
+pub async fn run_graph(
+    repo: RepoArgs,
+    file: String,
+    max_edges: Option<i64>,
+    max_depth: Option<i64>,
+    edge_types: Option<String>,
+) -> Result<()> {
+    let trimmed = file.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("file must not be empty");
+    }
+    let file = match normalize_rel_path(trimmed) {
+        Some(path) => path,
+        None => anyhow::bail!("file must be repo-relative"),
+    };
+    if !crate::cli::cli_local_mode() {
+        return run_graph_via_http(repo, file, max_edges, max_depth, edge_types).await;
+    }
+
+    let repo_root = repo.repo_root();
+    let index_config = index::IndexConfig::with_overrides(
+        &repo_root,
+        repo.state_dir_override(),
+        repo.exclude_dir_overrides(),
+        repo.exclude_prefix_overrides(),
+        repo.symbols_enabled(),
+    )?;
+    util::init_logging("warn")?;
+    index::ensure_state_dir_secure(index_config.state_dir())?;
+
+    let repo_id = symbols::repo_id_for_root(&repo_root)?;
+    let store = ImpactGraphStore::new(index_config.state_dir());
+    let all_edges = store.read_edges()?;
+    let controls = ImpactQueryControlsRaw {
+        max_edges,
+        max_depth,
+        edge_types: parse_edge_types(edge_types),
+    }
+    .validate()?;
+    let traversal = crate::impact::traverse_impact(&file, &all_edges, &controls);
+    let diagnostics = match store.read_diagnostics(&file) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("impact diagnostics unavailable: {err}");
+            None
+        }
+    };
+    let response =
+        crate::impact::build_impact_response(&repo_id, &file, traversal, &controls, diagnostics);
+    println!("{}", serde_json::to_string_pretty(&response)?);
+    Ok(())
+}
+
 async fn run_diagnostics_via_http(
     repo: RepoArgs,
     file: Option<String>,
@@ -115,6 +171,40 @@ async fn run_diagnostics_via_http(
     Ok(())
 }
 
+async fn run_graph_via_http(
+    repo: RepoArgs,
+    file: String,
+    max_edges: Option<i64>,
+    max_depth: Option<i64>,
+    edge_types: Option<String>,
+) -> Result<()> {
+    let repo_root = repo.repo_root();
+    let client = CliHttpClient::new()?;
+    client.ensure_repo(&repo_root).await?;
+    let mut req = client.request(Method::GET, "/v1/graph/impact");
+    let mut params: Vec<(&str, String)> = vec![("file", file)];
+    if let Some(max_edges) = max_edges {
+        params.push(("maxEdges", max_edges.to_string()));
+    }
+    if let Some(max_depth) = max_depth {
+        params.push(("maxDepth", max_depth.to_string()));
+    }
+    if let Some(edge_types) = edge_types {
+        params.push(("edgeTypes", edge_types));
+    }
+    req = req.query(&params);
+    req = client.with_repo(req, &repo_root)?;
+    let resp = req.send().await?;
+    let status = resp.status();
+    let text = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("docdexd impact graph failed ({}): {}", status, text);
+    }
+    let value: serde_json::Value = serde_json::from_str(&text)?;
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
 fn normalize_rel_path(input: &str) -> Option<String> {
     let path = std::path::Path::new(input);
     if path.is_absolute() {
@@ -133,5 +223,33 @@ fn normalize_rel_path(input: &str) -> Option<String> {
         None
     } else {
         Some(clean_str)
+    }
+}
+
+fn parse_edge_types(input: Option<String>) -> Option<Vec<String>> {
+    input.map(|raw| raw.split(',').map(|item| item.to_string()).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_rel_path;
+
+    #[test]
+    fn normalize_rel_path_rejects_absolute() {
+        assert_eq!(normalize_rel_path("/abs/path"), None);
+    }
+
+    #[test]
+    fn normalize_rel_path_rejects_parent_segments() {
+        assert_eq!(normalize_rel_path("../escape.txt"), None);
+        assert_eq!(normalize_rel_path("foo/../bar.txt"), None);
+    }
+
+    #[test]
+    fn normalize_rel_path_cleans_current_dir() {
+        assert_eq!(
+            normalize_rel_path("foo/./bar.txt"),
+            Some("foo/bar.txt".to_string())
+        );
     }
 }

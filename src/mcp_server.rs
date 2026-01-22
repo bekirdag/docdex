@@ -3,10 +3,10 @@ use crate::dag::logging as dag_logging;
 use crate::diff;
 use crate::error::{
     repo_resolution_details, AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
-    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
-    ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
-    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
-    ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
+    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INDEXING_IN_PROGRESS,
+    ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY,
+    ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED,
+    ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
 };
 use crate::impact::{build_impact_diagnostics_response, ImpactDiagnosticsEntry, ImpactGraphStore};
 use crate::index::{IndexConfig, Indexer};
@@ -29,6 +29,7 @@ use crate::ratelimit::RateLimiter;
 use crate::search;
 use crate::symbols::SymbolsStore;
 use crate::tier2::Tier2Config;
+use crate::tree::{render_tree, TreeOptions};
 use anyhow::{Context, Result};
 use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
@@ -255,6 +256,7 @@ fn default_message_for_code(code: &str) -> &'static str {
         ERR_MISSING_REPO_PATH => "repo path not found",
         ERR_UNKNOWN_REPO => "unknown repo",
         ERR_MISSING_INDEX => "missing index",
+        ERR_INDEXING_IN_PROGRESS => "indexing in progress",
         ERR_STALE_INDEX => "stale index",
         ERR_MISSING_DEPENDENCY => "missing dependency",
         ERR_RATE_LIMITED => "rate limited",
@@ -416,6 +418,8 @@ struct SearchArgs {
     limit: Option<usize>,
     #[serde(default)]
     force_web: Option<bool>,
+    #[serde(default, alias = "asyncWeb")]
+    async_web: Option<bool>,
     #[serde(default)]
     diff: Option<diff::DiffOptions>,
     #[serde(default, alias = "dagSessionId", alias = "session_id")]
@@ -525,6 +529,28 @@ struct OpenArgs {
     start_line: Option<usize>,
     #[serde(default)]
     end_line: Option<usize>,
+    #[serde(default)]
+    clamp: Option<bool>,
+    #[serde(default)]
+    head: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct TreeArgs {
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default, alias = "maxDepth")]
+    max_depth: Option<usize>,
+    #[serde(default, alias = "dirsOnly")]
+    dirs_only: Option<bool>,
+    #[serde(default, alias = "includeHidden")]
+    include_hidden: Option<bool>,
+    #[serde(default, alias = "extraExcludes")]
+    extra_excludes: Option<Vec<String>>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -559,6 +585,34 @@ struct ImpactDiagnosticsArgs {
     limit: Option<usize>,
     #[serde(default)]
     offset: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct ImpactGraphArgs {
+    file: String,
+    #[serde(default)]
+    max_edges: Option<usize>,
+    #[serde(default)]
+    max_depth: Option<usize>,
+    #[serde(default)]
+    edge_types: Option<Vec<String>>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
+struct DagExportArgs {
+    session_id: String,
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(default)]
+    max_nodes: Option<usize>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -744,7 +798,8 @@ impl McpService {
             libs::libs_state_dir_from_index_state_dir(indexer.state_dir()),
         )
         .ok()
-        .flatten();
+        .flatten()
+        .map(Arc::new);
         let auth_token = auth_token.and_then(|value| {
             let trimmed = value.trim();
             if trimmed.is_empty() {
@@ -830,7 +885,7 @@ struct McpServer {
     repo_id: String,
     repo_root: PathBuf,
     indexer: Arc<Indexer>,
-    libs_indexer: Option<libs::LibsIndexer>,
+    libs_indexer: Option<Arc<libs::LibsIndexer>>,
     max_results: usize,
     default_project_root: Option<PathBuf>,
     default_agent_id: Option<String>,
@@ -980,7 +1035,7 @@ impl McpServer {
                 let protocol_version = init_params
                     .protocol_version
                     .unwrap_or_else(|| "2025-11-25".to_string());
-                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast and docdex_impact_diagnostics for unresolved imports.\nUse docdex_local_completion to offload small code tasks to a local model.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nProfile tools (docdex_save_preference/docdex_get_profile) use global profile memory and do not require project_root.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
+                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, docdex_tree for folder structure, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast, docdex_impact_diagnostics for unresolved imports, and docdex_impact_graph for dependency traversal.\nUse docdex_dag_export to export DAG sessions by session_id.\nUse docdex_local_completion to offload small code tasks to a local model.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nProfile tools (docdex_save_preference/docdex_get_profile) use global profile memory and do not require project_root.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
                 let mut caps = json!({
                     "tools": { "listChanged": false },
                     "resources": { "listChanged": false },
@@ -1324,6 +1379,41 @@ impl McpServer {
                             }
                         }
                     }
+                    "docdex_tree" | "docdex.tree" => {
+                        let args_res: Result<TreeArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_tree"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_tree" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_tree(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_tree"))),
+                                }))
+                            }
+                        }
+                    }
                     "docdex_stats" | "docdex.stats" => {
                         let args_res: Result<StatsArgs, _> =
                             serde_json::from_value(params.arguments.clone());
@@ -1499,6 +1589,78 @@ impl McpServer {
                                         &err,
                                         Some("docdex_impact_diagnostics"),
                                     )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_impact_graph" | "docdex.impact_graph" => {
+                        let args_res: Result<ImpactGraphArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_impact_graph"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_impact_graph"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_impact_graph(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_impact_graph"))),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_dag_export" | "docdex.dag_export" => {
+                        let args_res: Result<DagExportArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_dag_export"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_dag_export"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_dag_export(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_dag_export"))),
                                 }))
                             }
                         }
@@ -1703,13 +1865,16 @@ impl McpServer {
                                         "docdex_search",
                                         "docdex_web_research",
                                         "docdex_index",
-                                        "docdex_files",
-                                        "docdex_open",
-                                        "docdex_stats",
+                                    "docdex_files",
+                                    "docdex_open",
+                                    "docdex_tree",
+                                    "docdex_stats",
                                         "docdex_repo_inspect",
                                         "docdex_symbols",
                                         "docdex_ast",
                                         "docdex_impact_diagnostics",
+                                        "docdex_impact_graph",
+                                        "docdex_dag_export",
                                         "docdex_memory_save",
                                         "docdex_memory_store",
                                         "docdex_memory_recall",
@@ -1766,6 +1931,7 @@ impl McpServer {
                         "query": { "type": "string", "minLength": 1, "description": "Concise search query (will be rejected if empty)" },
                         "limit": { "type": "integer", "minimum": 1, "maximum": self.max_results as i64, "default": self.max_results, "description": "Max results to return (clamped to server max)" },
                         "force_web": { "type": "boolean", "description": "When true, bypasses the Tier 2 gate and runs web research" },
+                        "async_web": { "type": "boolean", "description": "When true, return local results immediately and defer web research to a background task" },
                         "diff": {
                             "type": "object",
                             "description": "Optional diff-aware context inputs",
@@ -1857,9 +2023,30 @@ impl McpServer {
                         "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
                         "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
                         "start_line": { "type": "integer", "minimum": 1, "description": "Optional start line (1-based, inclusive)" },
-                        "end_line": { "type": "integer", "minimum": 1, "description": "Optional end line (1-based, inclusive)" }
+                        "end_line": { "type": "integer", "minimum": 1, "description": "Optional end line (1-based, inclusive)" },
+                        "head": { "type": "integer", "minimum": 1, "description": "Optional convenience: read the first N lines (clamped to file length)" },
+                        "clamp": { "type": "boolean", "description": "Clamp start/end to file bounds instead of raising invalid_range" }
                     },
                     "required": ["path"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_tree",
+                title: "Render Repo Tree",
+                description:
+                    "Render a folder tree with standard excludes (git, node_modules, build artifacts).",
+                annotations: Some(annotations_with_priority(0.6)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Repo-relative path to render (defaults to repo root)" },
+                        "max_depth": { "type": "integer", "minimum": 0, "description": "Max depth (0 returns only the root label)" },
+                        "dirs_only": { "type": "boolean", "description": "When true, only include directories" },
+                        "include_hidden": { "type": "boolean", "description": "When true, include dotfiles and dot directories" },
+                        "extra_excludes": { "type": "array", "items": { "type": "string" }, "description": "Extra names to exclude (exact basename match)" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
+                    }
                 }),
             },
             ToolDefinition {
@@ -1935,6 +2122,41 @@ impl McpServer {
                         "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
                         "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
                     }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_impact_graph",
+                title: "Impact Graph",
+                description: "Fetch impact graph traversal for a repo-relative file.",
+                annotations: Some(annotations_with_priority(0.7)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "file": { "type": "string", "minLength": 1, "description": "Repo-relative file path to analyze" },
+                        "max_edges": { "type": "integer", "minimum": 0, "description": "Optional max edges to return (default 1000)" },
+                        "max_depth": { "type": "integer", "minimum": 0, "description": "Optional max traversal depth (default 10)" },
+                        "edge_types": { "type": "array", "items": { "type": "string" }, "description": "Optional list of edge types to include" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
+                    },
+                    "required": ["file"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_dag_export",
+                title: "DAG Export",
+                description: "Export a DAG session for a given session_id (json/text/dot).",
+                annotations: Some(annotations_with_priority(0.6)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string", "minLength": 1, "description": "DAG session id to export" },
+                        "format": { "type": "string", "description": "Output format: json, text, or dot (default json)" },
+                        "max_nodes": { "type": "integer", "minimum": 1, "description": "Optional max nodes to include" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
+                    },
+                    "required": ["session_id"]
                 }),
             },
             ToolDefinition {
@@ -2133,7 +2355,7 @@ Steps:\n\
 1) Run docdex_search for the entry points.\n\
 2) Use docdex_open to read key files.\n\
 3) Use docdex_symbols/docdex_ast for structure.\n\
-4) Use docdex_impact_diagnostics for dependency risks.\n\
+4) Use docdex_impact_graph for dependency traversal and docdex_impact_diagnostics for unresolved imports.\n\
 Return a short summary and a next-questions list."
                 );
                 Some(json!({
@@ -2156,7 +2378,7 @@ Return a short summary and a next-questions list."
                 let mut text = format!(
                     "Triage the incident: {symptom}.\n\
 Use docdex_search to find the code paths, then docdex_open for details. \
-Use docdex_impact_diagnostics to spot risky dependencies."
+Use docdex_impact_graph plus docdex_impact_diagnostics to spot risky dependencies."
                 );
                 if let Some(snippet) = log_snippet {
                     text.push_str("\nLog snippet:\n");
@@ -2181,7 +2403,7 @@ Use docdex_impact_diagnostics to spot risky dependencies."
                     .and_then(|value| value.as_str());
                 let mut text = format!(
                     "Plan a refactor for {target}.\n\
-Use docdex_symbols/docdex_ast to map structure, then docdex_impact_diagnostics to list affected modules.\n\
+Use docdex_symbols/docdex_ast to map structure, then docdex_impact_graph and docdex_impact_diagnostics to list affected modules.\n\
 Produce a phased plan with risks and tests to run."
                 );
                 if let Some(extra) = constraints {
@@ -2263,6 +2485,7 @@ Produce a phased plan with risks and tests to run."
             query,
             limit,
             force_web: force_web_arg,
+            async_web: async_web_arg,
             diff,
             dag_session_id,
             project_root,
@@ -2270,6 +2493,31 @@ Produce a phased plan with risks and tests to run."
         } = args;
         let project_root = self.resolve_project_root_arg(project_root, repo_path)?;
         self.ensure_project_root(project_root.as_deref())?;
+        if !self.indexer.index_ready() {
+            let indexing_in_progress = self.indexer.indexing_in_progress()?;
+            if !indexing_in_progress && !self.indexer.is_read_only() {
+                let indexer = self.indexer.clone();
+                tokio::spawn(async move {
+                    let _ = crate::index::ensure_indexed(indexer).await;
+                });
+            }
+            let details = json!({
+                "status": if indexing_in_progress { "indexing" } else { "missing" },
+                "indexing_in_progress": indexing_in_progress,
+                "status_url": format!("/v1/index/status?repo_id={}", self.repo_id),
+                "retry_after_ms": 2000,
+                "recovery_steps": [
+                    "Wait for indexing to complete, then retry the search.",
+                    "Call /v1/index/status to check readiness.",
+                    "If indexing is stuck, run POST /v1/index/rebuild."
+                ]
+            });
+            return Err(
+                AppError::new(ERR_INDEXING_IN_PROGRESS, "indexing in progress")
+                    .with_details(details)
+                    .into(),
+            );
+        }
         self.ensure_index_ready().await?;
         let query_owned = query;
         let query = query_owned.trim();
@@ -2282,6 +2530,7 @@ Produce a phased plan with risks and tests to run."
             .to_string();
         let repo_state_root = repo_state_root_from_state_dir(self.indexer.state_dir());
         let force_web = force_web_arg.unwrap_or(false);
+        let async_web = async_web_arg.unwrap_or(true);
         let diff_request = diff::resolve_diff_request_from_options(diff.as_ref())?;
         let request_id_ref = request_id.as_str();
         let dag_session_id = dag_session_id
@@ -2329,14 +2578,15 @@ Produce a phased plan with risks and tests to run."
             llm_filter_local_results: false,
             llm_model: None,
             llm_agent: None,
-            indexer: &self.indexer,
-            libs_indexer: self.libs_indexer.as_ref(),
+            indexer: self.indexer.clone(),
+            libs_indexer: self.libs_indexer.clone(),
             plan,
             tier2_limiter: None,
             memory: memory_state.as_ref(),
             profile_state: None,
             profile_agent_id: None,
             ranking_surface: search::RankingSurface::Search,
+            async_web,
         })
         .await?;
         queue_dag_log(
@@ -2411,7 +2661,7 @@ Produce a phased plan with risks and tests to run."
         let web_gate = WebGateConfig::from_env();
         let library_result = if web_gate.enabled {
             let indexer = self.indexer.clone();
-            let libs_indexer = self.libs_indexer.as_ref();
+            let libs_indexer = self.libs_indexer.as_deref();
             let request_id = Uuid::new_v4().to_string();
             let mut fetcher = move |query: String| {
                 let indexer = indexer.clone();
@@ -2557,7 +2807,7 @@ Produce a phased plan with risks and tests to run."
         let libs_indexer = if repo_only.unwrap_or(false) {
             None
         } else {
-            self.libs_indexer.as_ref()
+            self.libs_indexer.as_deref()
         };
         queue_dag_log(
             &repo_state_root,
@@ -2575,7 +2825,7 @@ Produce a phased plan with risks and tests to run."
         );
         let response = run_web_research(
             request_id_ref,
-            &self.indexer,
+            self.indexer.as_ref(),
             libs_indexer,
             query,
             limit,
@@ -2841,16 +3091,13 @@ Produce a phased plan with risks and tests to run."
                     .to_string(),
             }));
         }
-        let start = args.start_line.unwrap_or(1).max(1);
-        let end_raw = args.end_line.unwrap_or(total_lines);
-        if end_raw < start || start > total_lines || end_raw > total_lines {
-            return Err(InvalidRangeError {
-                start_line: start,
-                end_line: end_raw,
-                total_lines,
-            }
-            .into());
-        }
+        let (start, end_raw) = resolve_open_range(
+            total_lines,
+            args.start_line,
+            args.end_line,
+            args.head,
+            args.clamp.unwrap_or(false),
+        )?;
         let start_idx = start.saturating_sub(1);
         let end_idx = end_raw.saturating_sub(1);
         let slice = lines[start_idx..=end_idx].join("\n");
@@ -2867,6 +3114,34 @@ Produce a phased plan with risks and tests to run."
                 .unwrap_or(&self.repo_root)
                 .display()
                 .to_string(),
+        }))
+    }
+
+    async fn handle_tree(&self, args: TreeArgs) -> Result<serde_json::Value> {
+        let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
+        self.ensure_project_root(project_root.as_deref())?;
+        let root = resolve_tree_root(&self.repo_root, args.path.as_deref())?;
+        let options = TreeOptions {
+            max_depth: args.max_depth,
+            dirs_only: args.dirs_only.unwrap_or(false),
+            include_hidden: args.include_hidden.unwrap_or(false),
+            extra_excludes: args.extra_excludes.unwrap_or_default(),
+        };
+        let output = render_tree(&root, &options)?;
+        Ok(json!({
+            "root": output.root.display().to_string(),
+            "tree": output.tree,
+            "repo_root": self.repo_root.display().to_string(),
+            "project_root": self
+                .default_project_root
+                .as_ref()
+                .unwrap_or(&self.repo_root)
+                .display()
+                .to_string(),
+            "max_depth": options.max_depth,
+            "dirs_only": options.dirs_only,
+            "include_hidden": options.include_hidden,
+            "excludes": output.excludes,
         }))
     }
 
@@ -2975,6 +3250,106 @@ Produce a phased plan with risks and tests to run."
 
         let payload = build_impact_diagnostics_response(&repo_id, entries, total, limit, offset);
         Ok(serde_json::to_value(payload).context("serialize impact diagnostics")?)
+    }
+
+    async fn handle_impact_graph(&self, args: ImpactGraphArgs) -> Result<serde_json::Value> {
+        let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
+        self.ensure_project_root(project_root.as_deref())?;
+        self.ensure_index_ready().await?;
+
+        let file = args.file.trim();
+        if file.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "file must not be empty").into());
+        }
+        let rel = normalize_rel_path(file)
+            .ok_or_else(|| AppError::new(ERR_INVALID_ARGUMENT, "file must be repo-relative"))?;
+        let file = rel.to_string_lossy().replace('\\', "/");
+
+        let edge_types = args.edge_types.map(|values| {
+            values
+                .into_iter()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+        });
+        let controls_raw = crate::impact::ImpactQueryControlsRaw {
+            max_edges: args.max_edges.map(|value| value as i64),
+            max_depth: args.max_depth.map(|value| value as i64),
+            edge_types: edge_types.filter(|values| !values.is_empty()),
+        };
+        let controls = match controls_raw.validate() {
+            Ok(value) => value,
+            Err(err) => {
+                let details = serde_json::to_value(err.details).unwrap_or_else(|_| json!({}));
+                return Err(AppError::new(ERR_INVALID_ARGUMENT, "invalid argument")
+                    .with_details(details)
+                    .into());
+            }
+        };
+
+        let repo_id = crate::symbols::repo_id_for_root(self.indexer.repo_root())?;
+        let store = ImpactGraphStore::new(self.indexer.state_dir());
+        let all_edges = store.read_edges()?;
+        let traversal = crate::impact::traverse_impact(&file, &all_edges, &controls);
+        let diagnostics = store.read_diagnostics(&file).ok().flatten();
+        let response = crate::impact::build_impact_response(
+            &repo_id,
+            &file,
+            traversal,
+            &controls,
+            diagnostics,
+        );
+        Ok(serde_json::to_value(response).context("serialize impact graph")?)
+    }
+
+    async fn handle_dag_export(&self, args: DagExportArgs) -> Result<serde_json::Value> {
+        let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
+        self.ensure_project_root(project_root.as_deref())?;
+
+        let session_id = args.session_id.trim();
+        if session_id.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "session_id is required").into());
+        }
+        let format = args
+            .format
+            .as_deref()
+            .unwrap_or("json")
+            .trim()
+            .to_ascii_lowercase();
+        let max_nodes = args.max_nodes;
+
+        match format.as_str() {
+            "json" => {
+                let payload = crate::dag::view::export_session(
+                    self.indexer.repo_root(),
+                    session_id,
+                    Some(self.indexer.state_dir().to_path_buf()),
+                    max_nodes,
+                )?;
+                Ok(serde_json::to_value(payload).context("serialize dag export")?)
+            }
+            "text" => {
+                let output = crate::dag::view::render_session_as_text(
+                    self.indexer.repo_root(),
+                    session_id,
+                    Some(self.indexer.state_dir().to_path_buf()),
+                    max_nodes,
+                )?;
+                Ok(json!({ "format": "text", "content": output }))
+            }
+            "dot" => {
+                let output = crate::dag::view::render_session_as_dot(
+                    self.indexer.repo_root(),
+                    session_id,
+                    Some(self.indexer.state_dir().to_path_buf()),
+                    max_nodes,
+                )?;
+                Ok(json!({ "format": "dot", "content": output }))
+            }
+            _ => {
+                Err(AppError::new(ERR_INVALID_ARGUMENT, "format must be json, text, or dot").into())
+            }
+        }
     }
 
     async fn handle_memory_store(&self, args: MemoryStoreArgs) -> Result<serde_json::Value> {
@@ -3257,6 +3632,8 @@ Produce a phased plan with risks and tests to run."
             repo_path: None,
             start_line: None,
             end_line: None,
+            clamp: None,
+            head: None,
         };
         self.handle_open(open_args).await
     }
@@ -3366,6 +3743,49 @@ Produce a phased plan with risks and tests to run."
     }
 }
 
+fn resolve_open_range(
+    total_lines: usize,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+    head: Option<usize>,
+    clamp: bool,
+) -> Result<(usize, usize), InvalidRangeError> {
+    let mut start = start_line.unwrap_or(1).max(1);
+    let mut end = end_line.unwrap_or(total_lines);
+    let mut clamp = clamp;
+
+    if let Some(head) = head {
+        start = 1;
+        end = head.max(1);
+        clamp = true;
+    }
+
+    if clamp {
+        if total_lines == 0 {
+            return Ok((0, 0));
+        }
+        if start > total_lines {
+            start = total_lines;
+        }
+        if end > total_lines {
+            end = total_lines;
+        }
+        if end < start {
+            end = start;
+        }
+        return Ok((start, end));
+    }
+
+    if end < start || start > total_lines || end > total_lines {
+        return Err(InvalidRangeError {
+            start_line: start,
+            end_line: end,
+            total_lines,
+        });
+    }
+    Ok((start, end))
+}
+
 fn docdexd_http_client() -> Result<Client> {
     let timeout_ms = env_u64("DOCDEX_HTTP_TIMEOUT_MS").unwrap_or(30_000);
     let client = Client::builder()
@@ -3440,6 +3860,26 @@ fn normalize_rel_path(input: &str) -> Option<PathBuf> {
     } else {
         Some(clean)
     }
+}
+
+fn resolve_tree_root(repo_root: &Path, path: Option<&str>) -> Result<PathBuf> {
+    let root = repo_root
+        .canonicalize()
+        .with_context(|| format!("resolve repo root {}", repo_root.display()))?;
+    let candidate = match path.map(str::trim) {
+        None | Some("") | Some(".") => root.clone(),
+        Some(value) => {
+            let rel = normalize_rel_path(value).ok_or(InvalidPathError)?;
+            root.join(rel)
+        }
+    };
+    let canonical = candidate
+        .canonicalize()
+        .with_context(|| format!("resolve tree path {}", candidate.display()))?;
+    if !canonical.starts_with(&root) {
+        return Err(PathOutsideRepoError.into());
+    }
+    Ok(canonical)
 }
 
 fn queue_dag_log(
@@ -3609,5 +4049,29 @@ mod tests {
             1,
             "rate-limit data schema should not vary under concurrency"
         );
+    }
+
+    #[test]
+    fn open_range_clamps_end_when_enabled() {
+        let (start, end) =
+            resolve_open_range(10, Some(1), Some(25), None, true).expect("clamped range");
+        assert_eq!(start, 1);
+        assert_eq!(end, 10);
+    }
+
+    #[test]
+    fn open_range_head_clamps_to_file() {
+        let (start, end) = resolve_open_range(5, None, None, Some(20), false).expect("head range");
+        assert_eq!(start, 1);
+        assert_eq!(end, 5);
+    }
+
+    #[test]
+    fn open_range_errors_without_clamp() {
+        let err = resolve_open_range(5, Some(1), Some(10), None, false)
+            .expect_err("expected invalid range");
+        assert_eq!(err.start_line, 1);
+        assert_eq!(err.end_line, 10);
+        assert_eq!(err.total_lines, 5);
     }
 }

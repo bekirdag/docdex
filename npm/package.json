@@ -1,11 +1,12 @@
 {
   "name": "docdex",
-  "version": "0.2.25",
+  "version": "0.2.26",
   "mcpName": "io.github.bekirdag/docdex",
   "description": "Local-first documentation and code indexer with HTTP/MCP search, AST, and agent memory.",
   "bin": {
     "docdex": "bin/docdex.js",
-    "docdexd": "bin/docdex.js"
+    "docdexd": "bin/docdex.js",
+    "docdex-mcp-stdio": "bin/docdex-mcp-stdio.js"
   },
   "files": [
     "bin",

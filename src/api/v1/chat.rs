@@ -316,7 +316,7 @@ pub(crate) async fn chat_completions_handler(
             }
         };
     let libs_indexer = if include_libs {
-        repo.libs_indexer.as_deref()
+        repo.libs_indexer.clone()
     } else {
         None
     };
@@ -367,7 +367,7 @@ pub(crate) async fn chat_completions_handler(
         llm_filter_local_results,
         llm_model: payload.model.as_deref(),
         llm_agent: payload.agent.as_deref(),
-        indexer: repo.indexer.as_ref(),
+        indexer: repo.indexer.clone(),
         libs_indexer,
         plan,
         tier2_limiter: None,
@@ -375,6 +375,7 @@ pub(crate) async fn chat_completions_handler(
         profile_state: state.profile_state.as_ref(),
         profile_agent_id: profile_agent_id.as_deref(),
         ranking_surface: crate::search::RankingSurface::Chat,
+        async_web: false,
     })
     .await
     {

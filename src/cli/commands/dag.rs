@@ -10,6 +10,12 @@ pub(crate) async fn run(command: super::super::DagCommand) -> Result<()> {
             session_id,
             format,
             max_nodes,
+        }
+        | super::super::DagCommand::Export {
+            repo,
+            session_id,
+            format,
+            max_nodes,
         } => {
             if !crate::cli::cli_local_mode() {
                 return run_via_http(repo, session_id, format, max_nodes).await;

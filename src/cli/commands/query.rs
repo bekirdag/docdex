@@ -25,6 +25,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -173,12 +174,18 @@ async fn run_single(
         repo.symbols_enabled(),
     )?;
     util::init_logging("warn")?;
-    let server = index::Indexer::with_config_read_only(repo_root, index_config)?;
+    let server = Arc::new(index::Indexer::with_config_read_only(
+        repo_root,
+        index_config,
+    )?);
     let libs_indexer = if repo_only {
         None
     } else {
         let libs_dir = libs::libs_state_dir_from_index_state_dir(server.state_dir());
-        libs::LibsIndexer::open_read_only(libs_dir).ok().flatten()
+        libs::LibsIndexer::open_read_only(libs_dir)
+            .ok()
+            .flatten()
+            .map(Arc::new)
     };
     let web_gate = WebGateConfig::from_env();
     let config = config::AppConfig::load_default().ok();
@@ -221,14 +228,15 @@ async fn run_single(
         llm_filter_local_results,
         llm_model: model.as_deref(),
         llm_agent: agent.as_deref(),
-        indexer: &server,
-        libs_indexer: libs_indexer.as_ref(),
+        indexer: server.clone(),
+        libs_indexer: libs_indexer.clone(),
         plan,
         tier2_limiter: None,
         memory: memory_state.as_ref(),
         profile_state: None,
         profile_agent_id: agent_id.as_deref(),
         ranking_surface: crate::search::RankingSurface::Search,
+        async_web: false,
     };
     let waterfall = run_waterfall(request).await?;
     let _ = dag_logging::log_node(

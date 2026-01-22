@@ -66,6 +66,12 @@ pub struct AstSearchQuery {
 }
 
 #[derive(Deserialize)]
+pub struct AstQueryParams {
+    #[serde(default)]
+    pub repo_id: Option<String>,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AstQueryRequest {
     #[serde(default, alias = "kind")]
@@ -360,10 +366,16 @@ pub async fn ast_search_handler(
 pub async fn ast_query_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<AstQueryParams>,
     Json(params): Json<AstQueryRequest>,
 ) -> Response {
-    let repo = match resolve_repo_context(&state, &headers, params.repo_id.as_deref(), None, false)
-    {
+    let repo = match resolve_repo_context(
+        &state,
+        &headers,
+        query.repo_id.as_deref(),
+        params.repo_id.as_deref(),
+        false,
+    ) {
         Ok(repo) => repo,
         Err(err) => return repo_error_response(err),
     };

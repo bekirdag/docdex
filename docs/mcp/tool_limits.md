@@ -35,7 +35,8 @@ stable JSON schemas across all clients.
 | `docdex_search` | `limit` clamped to `[1, max_results]` (default `8`, set by `--max-results` or `DOCDEX_MCP_MAX_RESULTS`) | Summary max `360` chars, snippet max `420` chars per hit | Clamp `limit`; empty/invalid query returns `invalid_query`. |
 | `docdex_web_research` | `limit` clamped to `[1, max_results]`; `web_limit` clamped to `[1, DOCDEX_WEB_MAX_HITS]` when set | Summary max `360` chars, snippet max `420` chars per hit | Clamp `limit`/`web_limit`; returns `webDiscovery` status for disabled/unavailable web. |
 | `docdex_files` | `limit` clamped to `[1, 1000]`, `offset` clamped to `[0, 50000]` | Summary max `360` chars per result | Clamp `limit`/`offset`. |
-| `docdex_open` | Single file slice | Content max `512 KiB` | Oversize content returns `max_content_exceeded`; invalid line window returns `invalid_range`. |
+| `docdex_open` | Single file slice | Content max `512 KiB` | Oversize content returns `max_content_exceeded`; invalid line window returns `invalid_range` unless `clamp=true` or `head=<N>` (auto-clamped). |
+| `docdex_tree` | Single tree string | Output size depends on repo | Use `max_depth` and `dirs_only` to keep responses short; default excludes skip common noisy folders. |
 | `docdex_index` | Output arrays are bounded by input `paths` length | N/A | No server-side expansion beyond input list. |
 | `docdex_stats` | N/A | N/A | Fixed shape only. |
 | `docdex_repo_inspect` | N/A | N/A | Fixed shape only. |

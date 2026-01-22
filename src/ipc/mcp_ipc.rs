@@ -235,7 +235,7 @@ pub fn resolve_mcp_ipc_config(
     cli_mode: Option<McpIpcMode>,
     cli_socket_path: Option<PathBuf>,
     cli_pipe_name: Option<String>,
-    create_dirs: bool,
+    _create_dirs: bool,
 ) -> Result<McpIpcConfig> {
     let env_mode = env_mcp_ipc_mode();
     let explicit = cli_mode.is_some()

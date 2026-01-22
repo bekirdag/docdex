@@ -339,25 +339,38 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
                                     "source": mcp_ipc_config.source.as_str(),
                                     "pipe": pipe,
                                 });
-                                let timeout = tokio::time::timeout(
-                                    Duration::from_secs(1),
+                                let pipe_name = pipe.clone();
+                                let open_task = tokio::task::spawn_blocking(move || {
                                     tokio::net::windows::named_pipe::ClientOptions::new()
-                                        .open(&pipe),
-                                )
-                                .await;
+                                        .open(&pipe_name)
+                                        .map(|_| ())
+                                });
+                                let timeout =
+                                    tokio::time::timeout(Duration::from_secs(1), open_task).await;
                                 match timeout {
-                                    Ok(Ok(_)) => checks.push(CheckItem {
+                                    Ok(Ok(Ok(()))) => checks.push(CheckItem {
                                         name: "mcp_ipc_ready",
                                         status: "ok",
                                         message: "mcp ipc named pipe ready".to_string(),
                                         details: Some(details),
                                     }),
-                                    Ok(Err(err)) => {
+                                    Ok(Ok(Err(err))) => {
                                         checks.push(CheckItem {
                                             name: "mcp_ipc_ready",
                                             status: "fail",
                                             message: format!(
                                                 "mcp ipc named pipe connect failed: {err}"
+                                            ),
+                                            details: Some(details),
+                                        });
+                                        success = false;
+                                    }
+                                    Ok(Err(err)) => {
+                                        checks.push(CheckItem {
+                                            name: "mcp_ipc_ready",
+                                            status: "fail",
+                                            message: format!(
+                                                "mcp ipc named pipe check failed: {err}"
                                             ),
                                             details: Some(details),
                                         });

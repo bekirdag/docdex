@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.27
+- Fix nightly HTTP soak to hit local search by default and pre-index before load tests.
+- Clean up Windows IPC build warnings in `mcp_ipc`.
+- Bump release metadata to 0.2.27.
+
 ## 0.2.26
 - Add `/v1/index/status` and `indexing_in_progress` responses for search while indexing.
 - Add async web deferral for `/search` and `docdex_search` (return local hits immediately).

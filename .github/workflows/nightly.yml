@@ -60,12 +60,15 @@ jobs:
           DOCDEX_BIN: "./target/release/docdexd"
           DOCDEX_OFFLINE: "1"
           DOCDEX_WEB_ENABLED: "0"
+          DOCDEX_HTTP_BASE_URL: "http://127.0.0.1:28491"
+          DOCDEX_LOAD_PATH: "/search?q=docdex&limit=5"
         run: |
+          ./target/release/docdexd index --repo .
           ./target/release/docdexd serve --repo . --secure-mode=false --enable-memory=false --disable-mcp --access-log=false --log warn --preflight-check=false &
           pid=$!
           trap "kill $pid" EXIT
           for i in {1..20}; do
-            curl -fsS http://127.0.0.1:3210/healthz >/dev/null 2>&1 && break
+            curl -fsS "${DOCDEX_HTTP_BASE_URL}/healthz" >/dev/null 2>&1 && break
             sleep 0.5
           done
           scripts/load_test_http.sh

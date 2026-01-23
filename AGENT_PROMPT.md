@@ -1,4 +1,4 @@
----- START OF DOCDEX INFO V0.2.26 ----
+---- START OF DOCDEX INFO V0.2.27 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
 Health check endpoint: `GET /healthz` (not `/v1/health`).
@@ -7,9 +7,10 @@ Health check endpoint: `GET /healthz` (not `/v1/health`).
 
 - Always use both memory lobes early: docdex_get_profile + docdex_memory_recall; save new facts via docdex_memory_save and new preferences via docdex_save_preference.
 - Maintain agent-specific profile memory: use your agent_id with docdex_get_profile/docdex_save_preference; store generic self-knowledge (role, tooling, preferences).
-- Use impact analysis for every code change: call HTTP /v1/graph/impact?file=... and account for inbound/outbound deps; if unavailable, state it and proceed cautiously.
+- Use impact analysis for every code change: prefer MCP tools `docdex_impact_graph` / `docdex_dag_export` (IPC/HTTP). If shell networking is blocked, do not use curl; use MCP/IPC instead. If unavailable, state it and proceed cautiously.
 - Apply DAG reasoning for planning: prefer dependency graph facts (impact results and /v1/dag/export) to choose the right change order and scope.
 - Use Docdex tools intentionally: docdex_search/symbols/ast for repo truth; docdex_stats/files/repo_inspect/index for index health.
+- For folder structure, use docdex_tree instead of raw `rg --files`/`find` to avoid noisy folders.
 - When you do not know something, run docdex_web_research (force_web=true). Web research is encouraged by default for non-repo facts and external APIs.
 
 # Docdex Agent Usage Instructions
@@ -70,8 +71,8 @@ Precision tools for structural analysis. Do not rely on text search for definiti
 | docdex_symbols | Get exact definitions/signatures for a file. |
 | docdex_ast | Specific AST nodes (e.g., "Find all class definitions"). |
 | docdex_impact_diagnostics | Check for broken/dynamic imports. |
-| HTTP /v1/graph/impact | Impact Analysis: "What breaks if I change this?" Returns inbound/outbound dependencies. |
-| HTTP /v1/dag/export | Export the dependency DAG for change ordering and scope. |
+| docdex_impact_graph | Impact Analysis: "What breaks if I change this?" Returns inbound/outbound dependencies. |
+| docdex_dag_export | Export the dependency DAG for change ordering and scope. |
 
 ### C. Memory Operations
 
@@ -105,6 +106,7 @@ Use these to verify index coverage, repo binding, and to read precise file slice
 | docdex_files | Indexed file coverage; confirm a file is in the index. |
 | docdex_index | Reindex full repo or ingest specific files when stale/missing. |
 | docdex_open | Read exact file slices after you identify targets. |
+| docdex_tree | Render a repo folder tree with standard excludes (avoid noisy folders). |
 
 ## Quick Tool Map (Often Missed)
 
@@ -115,13 +117,27 @@ Use these to verify index coverage, repo binding, and to read precise file slice
 - docdex_search diff: Limit search to working tree, staged, or ref ranges; filter by paths.
 - docdex_web_research knobs: force_web, skip_local_search, repo_only, no_cache, web_limit, llm_filter_local_results, llm_model.
 - docdex_open: Read narrow file slices after targets are identified.
+- docdex_tree: Render a filtered folder tree (prefer this over `rg --files` / `find`).
 - docdex_impact_diagnostics: Scan dynamic imports when imports are unclear or failing.
 - docdex_local_completion: Delegate low-complexity codegen tasks (tests, docstrings, boilerplate, simple refactors).
 - docdex_ast: Use AST queries for precise structure (class/function definitions, call sites, imports).
 - docdex_symbols: Use symbols to confirm exact signatures/locations before edits.
-- HTTP /v1/graph/impact: Mandatory before code changes to review inbound/outbound deps.
-- HTTP /v1/dag/export: Export dependency graph to plan change order.
+- docdex_impact_graph: Mandatory before code changes to review inbound/outbound deps (use MCP/IPC if shell networking is blocked).
+- docdex_dag_export: Export dependency graph to plan change order.
 - HTTP /v1/initialize: Mount/bind a repo for HTTP daemon mode. Request JSON uses rootUri/root_uri (NOT repo_root).
+
+## CLI Fallbacks (when MCP/IPC is unavailable)
+Use these only when MCP tools cannot be called (e.g., blocked sandbox networking). Prefer MCP/IPC otherwise.
+
+- `docdexd repo init --repo <path>`: initialize repo in daemon and return repo_id JSON.
+- `docdexd repo id --repo <path>`: compute repo fingerprint locally.
+- `docdexd repo status --repo <path>` / `docdexd repo dirty --exit-code`: git working tree status.
+- `docdexd impact-graph --repo <path> --file <rel>`: impact graph (HTTP/local).
+- `docdexd dag export --repo <path> <session_id>`: DAG export alias.
+- `docdexd search --repo <path> --query "<q>"`: /search equivalent (HTTP/local).
+- `docdexd open --repo <path> --file <rel>`: safe file slice read (head/start/end/clamp).
+- `docdexd file ensure-newline|write --repo <path> --file <rel>`: minimal file edits.
+- `docdexd test run-node --repo <path> --file <rel> --args "..."`: run Node scripts.
 
 ## Docdex Usage Cookbook (Mandatory, Exact Schemas)
 

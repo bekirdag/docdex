@@ -1,6 +1,8 @@
 use crate::cli::http_client::CliHttpClient;
 use crate::config;
-use crate::llm::local_library::{load_local_library, refresh_local_library_if_stale, LocalModelLibrary};
+use crate::llm::local_library::{
+    load_local_library, refresh_local_library_if_stale, LocalModelLibrary,
+};
 use anyhow::Result;
 use reqwest::Method;
 
@@ -20,11 +22,7 @@ async fn run_savings(json: bool) -> Result<()> {
     let status = resp.status();
     let text = resp.text().await?;
     if !status.is_success() {
-        anyhow::bail!(
-            "docdexd delegation savings failed ({}): {}",
-            status,
-            text
-        );
+        anyhow::bail!("docdexd delegation savings failed ({}): {}", status, text);
     }
     if json {
         let value: serde_json::Value = serde_json::from_str(&text)?;
@@ -73,7 +71,11 @@ fn render_delegation_table(library: &LocalModelLibrary) -> String {
     let mut rows: Vec<[String; 13]> = Vec::new();
 
     let mut agents = library.agents.clone();
-    agents.sort_by(|a, b| a.agent_slug.cmp(&b.agent_slug).then_with(|| a.agent_id.cmp(&b.agent_id)));
+    agents.sort_by(|a, b| {
+        a.agent_slug
+            .cmp(&b.agent_slug)
+            .then_with(|| a.agent_id.cmp(&b.agent_id))
+    });
     for agent in agents {
         rows.push([
             "agent".to_string(),
@@ -178,7 +180,9 @@ fn format_opt_string(value: Option<&str>) -> String {
 }
 
 fn format_opt_i64(value: Option<i64>) -> String {
-    value.map(|number| number.to_string()).unwrap_or_else(|| "-".to_string())
+    value
+        .map(|number| number.to_string())
+        .unwrap_or_else(|| "-".to_string())
 }
 
 fn format_opt_f64(value: Option<f64>) -> String {

@@ -153,8 +153,8 @@ fn parse_dag_export_alias() {
 
 #[test]
 fn parse_delegation_savings_command() {
-    let cli = Cli::try_parse_from(["docdexd", "delegation", "savings", "--json", "true"])
-        .expect("parse");
+    let cli =
+        Cli::try_parse_from(["docdexd", "delegation", "savings", "--json", "true"]).expect("parse");
     match cli.command {
         Command::Delegation { command } => match command {
             super::DelegationCommand::Savings { json } => assert!(json),

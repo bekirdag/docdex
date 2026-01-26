@@ -2,12 +2,12 @@ use crate::config;
 use crate::dag::logging as dag_logging;
 use crate::diff;
 use crate::error::{
-    repo_resolution_details, AppError, RateLimited, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
-    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INDEXING_IN_PROGRESS,
-    ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY,
-    ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED,
-    ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
-    ERR_DELEGATION_LOCAL_REQUIRED,
+    repo_resolution_details, AppError, RateLimited, ERR_BACKOFF_REQUIRED,
+    ERR_DELEGATION_LOCAL_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
+    ERR_EMBEDDING_TIMEOUT, ERR_INDEXING_IN_PROGRESS, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
+    ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
+    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
+    ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
 };
 use crate::impact::{build_impact_diagnostics_response, ImpactDiagnosticsEntry, ImpactGraphStore};
 use crate::index::{IndexConfig, Indexer};
@@ -2787,11 +2787,7 @@ Produce a phased plan with risks and tests to run."
             if err.downcast_ref::<DelegationEnforcementError>().is_some() {
                 let metrics = metrics::global();
                 metrics.inc_delegate_local_enforced_failure();
-                return AppError::new(
-                    ERR_DELEGATION_LOCAL_REQUIRED,
-                    err.to_string(),
-                )
-                .into();
+                return AppError::new(ERR_DELEGATION_LOCAL_REQUIRED, err.to_string()).into();
             }
             err
         })?;
@@ -2812,7 +2808,8 @@ Produce a phased plan with risks and tests to run."
             library.as_ref(),
         );
         let local_cost_micros = compute_cost_micros(result.local_tokens, local_cost_per_million);
-        let primary_cost_micros = compute_cost_micros(result.primary_tokens, primary_cost_per_million);
+        let primary_cost_micros =
+            compute_cost_micros(result.primary_tokens, primary_cost_per_million);
         if result.local_tokens > 0 {
             metrics.inc_delegate_offloaded();
         }

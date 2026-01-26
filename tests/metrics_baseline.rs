@@ -47,11 +47,9 @@ fn metrics_baseline_includes_required_counters() -> Result<(), Box<dyn Error>> {
     let delegate_primary_tokens = metric_value(&body, "docdex_delegate_primary_tokens_total")?;
     let delegate_savings = metric_value(&body, "docdex_delegate_token_savings_total")?;
     let delegate_local_cost = metric_value(&body, "docdex_delegate_local_cost_micros_total")?;
-    let delegate_primary_cost =
-        metric_value(&body, "docdex_delegate_primary_cost_micros_total")?;
+    let delegate_primary_cost = metric_value(&body, "docdex_delegate_primary_cost_micros_total")?;
     let delegate_cost = metric_value(&body, "docdex_delegate_cost_savings_micros_total")?;
-    let delegate_enforced =
-        metric_value(&body, "docdex_delegate_local_enforced_failures_total")?;
+    let delegate_enforced = metric_value(&body, "docdex_delegate_local_enforced_failures_total")?;
 
     assert!(recall > 0.0, "expected profile recall counter to increment");
     assert!(

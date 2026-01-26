@@ -168,12 +168,8 @@ fn load_config_applies_delegation_env_overrides() -> Result<(), Box<dyn std::err
     assert_eq!(config.llm.delegation.mode, "draft_then_refine");
     assert_eq!(config.llm.delegation.timeout_ms, 42000);
     assert_eq!(config.llm.delegation.max_tokens, 777);
-    assert!(
-        (config.llm.delegation.primary_usd_per_1k_tokens - 1.25).abs() < 1e-6
-    );
-    assert!(
-        (config.llm.delegation.local_usd_per_1k_tokens - 0.05).abs() < 1e-6
-    );
+    assert!((config.llm.delegation.primary_usd_per_1k_tokens - 1.25).abs() < 1e-6);
+    assert!((config.llm.delegation.local_usd_per_1k_tokens - 0.05).abs() < 1e-6);
     Ok(())
 }
 

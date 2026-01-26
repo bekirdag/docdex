@@ -75,7 +75,9 @@ fn telemetry_delegation_endpoint_returns_payload() -> Result<(), Box<dyn Error>>
     let base_url = format!("http://{host}:{port}");
     let mut server = ServerHarness::spawn(state_root.path(), repo.path(), host, port)?;
 
-    let client = Client::builder().timeout(std::time::Duration::from_secs(3)).build()?;
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()?;
     let payload = client
         .get(format!("{base_url}/v1/telemetry/delegation"))
         .send()?

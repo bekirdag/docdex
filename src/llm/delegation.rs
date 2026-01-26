@@ -6,8 +6,8 @@ use crate::llm::delegation_rating::{
 };
 use crate::llm::local_library::{resolve_local_ollama_base_url, LocalModelLibrary};
 use crate::max_size::truncate_utf8_chars;
-use crate::mcoda::registry::McodaRegistry;
 use crate::mcoda::ratings::{apply_agent_rating_default, AgentRunRating};
+use crate::mcoda::registry::McodaRegistry;
 use crate::ollama::OllamaClient;
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
@@ -537,11 +537,19 @@ fn usage_tokens_from_metadata(metadata: &Value) -> Option<u64> {
     let prompt = metadata
         .pointer("/usage/prompt_tokens")
         .and_then(u64_from_value)
-        .or_else(|| metadata.pointer("/usage/input_tokens").and_then(u64_from_value));
+        .or_else(|| {
+            metadata
+                .pointer("/usage/input_tokens")
+                .and_then(u64_from_value)
+        });
     let completion = metadata
         .pointer("/usage/completion_tokens")
         .and_then(u64_from_value)
-        .or_else(|| metadata.pointer("/usage/output_tokens").and_then(u64_from_value));
+        .or_else(|| {
+            metadata
+                .pointer("/usage/output_tokens")
+                .and_then(u64_from_value)
+        });
     if prompt.is_some() || completion.is_some() {
         return Some(prompt.unwrap_or(0).saturating_add(completion.unwrap_or(0)));
     }
@@ -561,8 +569,7 @@ fn completion_token_usage(completion: &LlmCompletion, prompt: &str) -> u64 {
             }
         }
     }
-    estimate_tokens_from_text(prompt)
-        .saturating_add(estimate_tokens_from_text(&completion.output))
+    estimate_tokens_from_text(prompt).saturating_add(estimate_tokens_from_text(&completion.output))
 }
 
 pub fn allowlist_allows(task_type: TaskType, allowlist: &[String]) -> bool {
@@ -661,22 +668,14 @@ pub fn select_primary_target(
         if score <= 0 {
             continue;
         }
-        candidates.push((
-            LocalTarget::McodaAgent(agent.agent_id.clone()),
-            score,
-            true,
-        ));
+        candidates.push((LocalTarget::McodaAgent(agent.agent_id.clone()), score, true));
     }
     for model in &library.models {
         let score = score_for_task(task_type, &model.capabilities);
         if score <= 0 {
             continue;
         }
-        candidates.push((
-            LocalTarget::OllamaModel(model.name.clone()),
-            score,
-            false,
-        ));
+        candidates.push((LocalTarget::OllamaModel(model.name.clone()), score, false));
     }
     if candidates.is_empty() {
         return None;
@@ -1129,9 +1128,12 @@ async fn run_re_evaluation(
         raw_review_json,
         created_at: now.clone(),
     };
-    if let Err(err) =
-        apply_agent_rating_default(&reevaluation.agent_id, &run, reevaluation.rating_window, &now)
-    {
+    if let Err(err) = apply_agent_rating_default(
+        &reevaluation.agent_id,
+        &run,
+        reevaluation.rating_window,
+        &now,
+    ) {
         warn!(
             target: "docdexd",
             error = ?err,
@@ -1153,7 +1155,11 @@ pub(crate) async fn run_flow_with_clients(
     primary_blocked: bool,
     reevaluation: Option<DelegationReevaluation>,
 ) -> Result<DelegationFlowResult> {
-    let primary_client = if primary_blocked { None } else { primary_client };
+    let primary_client = if primary_blocked {
+        None
+    } else {
+        primary_client
+    };
     let rendered = render_prompt(task_type, instruction, context, max_context_chars);
     let token_estimate = estimate_token_budget(&rendered.prompt, max_tokens);
     let mut warnings = Vec::new();

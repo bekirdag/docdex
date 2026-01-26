@@ -1,12 +1,12 @@
 use super::delegation::{
-    allowlist_allows, compute_delegation_savings, mode_from_config, render_prompt,
-    parse_local_target_override, resolve_delegation_client, run_flow_with_clients,
-    select_local_target, select_primary_target, validate_output, DelegationEnforcementError,
-    DelegationMode, DelegationReevaluation, LocalTarget, TaskType,
+    allowlist_allows, compute_delegation_savings, mode_from_config, parse_local_target_override,
+    render_prompt, resolve_delegation_client, run_flow_with_clients, select_local_target,
+    select_primary_target, validate_output, DelegationEnforcementError, DelegationMode,
+    DelegationReevaluation, LocalTarget, TaskType,
 };
 use super::delegation_rating::{
-    compute_alpha, compute_run_score, estimate_complexity, fallback_quality_score, review_from_output,
-    update_ema_rating, RunScoreInput,
+    compute_alpha, compute_run_score, estimate_complexity, fallback_quality_score,
+    review_from_output, update_ema_rating, RunScoreInput,
 };
 use super::{load_catalog, recommended_model, supports, LlmModel};
 use crate::config::{DelegationConfig, LlmConfig};
@@ -350,11 +350,9 @@ fn mcoda_rating_updates_agent_and_inserts_run() -> Result<(), Box<dyn std::error
     assert_eq!(rating_samples, 1);
     assert_eq!(max_complexity, 6);
     assert!((rating_last_score - 8.0).abs() < 1e-6);
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM agent_run_ratings",
-        [],
-        |row| row.get(0),
-    )?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM agent_run_ratings", [], |row| {
+        row.get(0)
+    })?;
     assert_eq!(count, 1);
     Ok(())
 }
@@ -446,8 +444,7 @@ fn parse_local_target_override_matches_agent_slug() {
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
     });
-    let target =
-        parse_local_target_override("devstral-local", Some(&library)).expect("target");
+    let target = parse_local_target_override("devstral-local", Some(&library)).expect("target");
     match target {
         LocalTarget::McodaAgent(id) => assert_eq!(id, "agent-1"),
         _ => panic!("expected mcoda agent target"),
@@ -565,12 +562,8 @@ fn delegation_selects_primary_avoids_local_target_when_possible() {
         last_classified_at_ms: None,
     });
     let local_target = LocalTarget::OllamaModel("local-model".to_string());
-    let selected = select_primary_target(
-        TaskType::GenerateTests,
-        &library,
-        Some(&local_target),
-    )
-    .expect("selection");
+    let selected = select_primary_target(TaskType::GenerateTests, &library, Some(&local_target))
+        .expect("selection");
     match selected {
         LocalTarget::McodaAgent(id) => assert_eq!(id, "agent-1"),
         _ => panic!("unexpected primary selection"),
@@ -722,10 +715,7 @@ async fn delegation_flow_code_sample_returns_expected_output() {
 #[tokio::test]
 async fn delegation_flow_re_evaluates_mcoda_agent() -> Result<(), Box<dyn std::error::Error>> {
     let temp = TempDir::new()?;
-    let home = temp
-        .path()
-        .to_str()
-        .ok_or("temp path is not valid utf-8")?;
+    let home = temp.path().to_str().ok_or("temp path is not valid utf-8")?;
     let _guard = EnvGuard::set("HOME", home);
     let mcoda_dir = temp.path().join(".mcoda");
     fs::create_dir_all(&mcoda_dir)?;

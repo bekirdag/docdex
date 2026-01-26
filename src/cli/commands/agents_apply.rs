@@ -756,7 +756,7 @@ fn rewrite_continue_rules_yaml(
     instructions: &str,
     add_docdex: bool,
 ) -> Option<String> {
-    let mut lines: Vec<String> = source.lines().map(|line| line.to_string()).collect();
+    let lines: Vec<String> = source.lines().map(|line| line.to_string()).collect();
     let re = Regex::new(r"(?m)^(\s*)rules\s*:(.*)$").ok()?;
     let mut rules_idx = None;
     let mut rules_indent = 0usize;

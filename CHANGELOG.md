@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.28
+- Add delegation enforcement controls (`enforce_local`, `allow_fallback_to_primary`) with new enforcement metric.
+- Add delegation savings telemetry endpoint + CLI output.
+- Improve setup wizard API key prompts with masked, input-like fields.
+- Bump release metadata to 0.2.28.
+
 ## 0.2.27
 - Fix nightly HTTP soak to hit local search by default and pre-index before load tests.
 - Clean up Windows IPC build warnings in `mcp_ipc`.

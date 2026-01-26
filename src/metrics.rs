@@ -49,10 +49,18 @@ pub struct Metrics {
     hook_latency_count: AtomicU64,
 
     delegate_requests: AtomicU64,
+    delegate_offloaded_total: AtomicU64,
     delegate_fallbacks: AtomicU64,
     delegate_latency_ms_total: AtomicU64,
     delegate_latency_count: AtomicU64,
     delegate_token_estimate_total: AtomicU64,
+    delegate_local_tokens_total: AtomicU64,
+    delegate_primary_tokens_total: AtomicU64,
+    delegate_token_savings_total: AtomicU64,
+    delegate_local_cost_micros_total: AtomicU64,
+    delegate_primary_cost_micros_total: AtomicU64,
+    delegate_cost_savings_micros_total: AtomicU64,
+    delegate_local_enforced_failures_total: AtomicU64,
 
     project_map_cache_hits: AtomicU64,
     project_map_cache_misses: AtomicU64,
@@ -106,10 +114,18 @@ impl Default for Metrics {
             hook_latency_ms_total: AtomicU64::new(0),
             hook_latency_count: AtomicU64::new(0),
             delegate_requests: AtomicU64::new(0),
+            delegate_offloaded_total: AtomicU64::new(0),
             delegate_fallbacks: AtomicU64::new(0),
             delegate_latency_ms_total: AtomicU64::new(0),
             delegate_latency_count: AtomicU64::new(0),
             delegate_token_estimate_total: AtomicU64::new(0),
+            delegate_local_tokens_total: AtomicU64::new(0),
+            delegate_primary_tokens_total: AtomicU64::new(0),
+            delegate_token_savings_total: AtomicU64::new(0),
+            delegate_local_cost_micros_total: AtomicU64::new(0),
+            delegate_primary_cost_micros_total: AtomicU64::new(0),
+            delegate_cost_savings_micros_total: AtomicU64::new(0),
+            delegate_local_enforced_failures_total: AtomicU64::new(0),
             project_map_cache_hits: AtomicU64::new(0),
             project_map_cache_misses: AtomicU64::new(0),
             chrome_watchdog_reap_attempts: AtomicU64::new(0),
@@ -279,6 +295,11 @@ impl Metrics {
         self.delegate_requests.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn inc_delegate_offloaded(&self) {
+        self.delegate_offloaded_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn inc_delegate_fallback(&self) {
         self.delegate_fallbacks.fetch_add(1, Ordering::Relaxed);
     }
@@ -292,6 +313,89 @@ impl Metrics {
     pub fn record_delegate_token_estimate(&self, tokens: u64) {
         self.delegate_token_estimate_total
             .fetch_add(tokens, Ordering::Relaxed);
+    }
+
+    pub fn record_delegate_local_tokens(&self, tokens: u64) {
+        self.delegate_local_tokens_total
+            .fetch_add(tokens, Ordering::Relaxed);
+    }
+
+    pub fn record_delegate_primary_tokens(&self, tokens: u64) {
+        self.delegate_primary_tokens_total
+            .fetch_add(tokens, Ordering::Relaxed);
+    }
+
+    pub fn record_delegate_token_savings(&self, tokens: u64) {
+        self.delegate_token_savings_total
+            .fetch_add(tokens, Ordering::Relaxed);
+    }
+
+    pub fn record_delegate_local_cost_micros(&self, micros: u64) {
+        self.delegate_local_cost_micros_total
+            .fetch_add(micros, Ordering::Relaxed);
+    }
+
+    pub fn record_delegate_primary_cost_micros(&self, micros: u64) {
+        self.delegate_primary_cost_micros_total
+            .fetch_add(micros, Ordering::Relaxed);
+    }
+
+    pub fn record_delegate_cost_savings_micros(&self, micros: u64) {
+        self.delegate_cost_savings_micros_total
+            .fetch_add(micros, Ordering::Relaxed);
+    }
+
+    pub fn inc_delegate_local_enforced_failure(&self) {
+        self.delegate_local_enforced_failures_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn delegate_requests_total(&self) -> u64 {
+        self.delegate_requests.load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_offloaded_total(&self) -> u64 {
+        self.delegate_offloaded_total.load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_fallbacks_total(&self) -> u64 {
+        self.delegate_fallbacks.load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_token_estimate_total(&self) -> u64 {
+        self.delegate_token_estimate_total.load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_local_tokens_total(&self) -> u64 {
+        self.delegate_local_tokens_total.load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_primary_tokens_total(&self) -> u64 {
+        self.delegate_primary_tokens_total.load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_token_savings_total(&self) -> u64 {
+        self.delegate_token_savings_total.load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_local_cost_micros_total(&self) -> u64 {
+        self.delegate_local_cost_micros_total
+            .load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_primary_cost_micros_total(&self) -> u64 {
+        self.delegate_primary_cost_micros_total
+            .load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_cost_savings_micros_total(&self) -> u64 {
+        self.delegate_cost_savings_micros_total
+            .load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_local_enforced_failures_total(&self) -> u64 {
+        self.delegate_local_enforced_failures_total
+            .load(Ordering::Relaxed)
     }
 
     pub fn inc_project_map_cache_hit(&self) {
@@ -486,6 +590,9 @@ impl Metrics {
                 "# HELP docdex_delegate_total Delegation requests\n",
                 "# TYPE docdex_delegate_total counter\n",
                 "docdex_delegate_total {}\n",
+                "# HELP docdex_delegate_offloaded_total Delegation tasks offloaded to local\n",
+                "# TYPE docdex_delegate_offloaded_total counter\n",
+                "docdex_delegate_offloaded_total {}\n",
                 "# HELP docdex_delegate_fallback_total Delegation fallbacks\n",
                 "# TYPE docdex_delegate_fallback_total counter\n",
                 "docdex_delegate_fallback_total {}\n",
@@ -498,6 +605,27 @@ impl Metrics {
                 "# HELP docdex_delegate_token_estimate_total Delegation token estimate\n",
                 "# TYPE docdex_delegate_token_estimate_total counter\n",
                 "docdex_delegate_token_estimate_total {}\n",
+                "# HELP docdex_delegate_local_tokens_total Delegation local token usage\n",
+                "# TYPE docdex_delegate_local_tokens_total counter\n",
+                "docdex_delegate_local_tokens_total {}\n",
+                "# HELP docdex_delegate_primary_tokens_total Delegation primary token usage\n",
+                "# TYPE docdex_delegate_primary_tokens_total counter\n",
+                "docdex_delegate_primary_tokens_total {}\n",
+                "# HELP docdex_delegate_token_savings_total Delegation token savings\n",
+                "# TYPE docdex_delegate_token_savings_total counter\n",
+                "docdex_delegate_token_savings_total {}\n",
+                "# HELP docdex_delegate_local_cost_micros_total Delegation local cost (micros)\n",
+                "# TYPE docdex_delegate_local_cost_micros_total counter\n",
+                "docdex_delegate_local_cost_micros_total {}\n",
+                "# HELP docdex_delegate_primary_cost_micros_total Delegation primary cost (micros)\n",
+                "# TYPE docdex_delegate_primary_cost_micros_total counter\n",
+                "docdex_delegate_primary_cost_micros_total {}\n",
+                "# HELP docdex_delegate_cost_savings_micros_total Delegation cost savings (micros)\n",
+                "# TYPE docdex_delegate_cost_savings_micros_total counter\n",
+                "docdex_delegate_cost_savings_micros_total {}\n",
+                "# HELP docdex_delegate_local_enforced_failures_total Delegation enforcement failures\n",
+                "# TYPE docdex_delegate_local_enforced_failures_total counter\n",
+                "docdex_delegate_local_enforced_failures_total {}\n",
                 "# HELP docdex_project_map_cache_hits_total Project map cache hits\n",
                 "# TYPE docdex_project_map_cache_hits_total counter\n",
                 "docdex_project_map_cache_hits_total {}\n",
@@ -560,10 +688,25 @@ impl Metrics {
             self.hook_latency_ms_total.load(Ordering::Relaxed),
             self.hook_latency_count.load(Ordering::Relaxed),
             self.delegate_requests.load(Ordering::Relaxed),
+            self.delegate_offloaded_total.load(Ordering::Relaxed),
             self.delegate_fallbacks.load(Ordering::Relaxed),
             self.delegate_latency_ms_total.load(Ordering::Relaxed),
             self.delegate_latency_count.load(Ordering::Relaxed),
             self.delegate_token_estimate_total
+                .load(Ordering::Relaxed),
+            self.delegate_local_tokens_total
+                .load(Ordering::Relaxed),
+            self.delegate_primary_tokens_total
+                .load(Ordering::Relaxed),
+            self.delegate_token_savings_total
+                .load(Ordering::Relaxed),
+            self.delegate_local_cost_micros_total
+                .load(Ordering::Relaxed),
+            self.delegate_primary_cost_micros_total
+                .load(Ordering::Relaxed),
+            self.delegate_cost_savings_micros_total
+                .load(Ordering::Relaxed),
+            self.delegate_local_enforced_failures_total
                 .load(Ordering::Relaxed),
             self.project_map_cache_hits.load(Ordering::Relaxed),
             self.project_map_cache_misses.load(Ordering::Relaxed),

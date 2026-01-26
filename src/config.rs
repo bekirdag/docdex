@@ -209,6 +209,12 @@ pub struct DelegationConfig {
     pub enabled: bool,
     #[serde(default = "default_delegation_auto_enable")]
     pub auto_enable: bool,
+    #[serde(default = "default_delegation_enforce_local")]
+    pub enforce_local: bool,
+    #[serde(default = "default_delegation_allow_fallback_to_primary")]
+    pub allow_fallback_to_primary: bool,
+    #[serde(default = "default_delegation_re_evaluate")]
+    pub re_evaluate: bool,
     #[serde(default)]
     pub local_agent_id: String,
     #[serde(default)]
@@ -221,6 +227,10 @@ pub struct DelegationConfig {
     pub max_tokens: u32,
     #[serde(default = "default_delegation_max_context_chars")]
     pub max_context_chars: usize,
+    #[serde(default = "default_delegation_primary_usd_per_1k_tokens")]
+    pub primary_usd_per_1k_tokens: f64,
+    #[serde(default = "default_delegation_local_usd_per_1k_tokens")]
+    pub local_usd_per_1k_tokens: f64,
     #[serde(default)]
     pub task_allowlist: Vec<String>,
 }
@@ -230,12 +240,17 @@ impl Default for DelegationConfig {
         Self {
             enabled: default_delegation_enabled(),
             auto_enable: default_delegation_auto_enable(),
+            enforce_local: default_delegation_enforce_local(),
+            allow_fallback_to_primary: default_delegation_allow_fallback_to_primary(),
+            re_evaluate: default_delegation_re_evaluate(),
             local_agent_id: String::new(),
             primary_agent_id: String::new(),
             mode: default_delegation_mode(),
             timeout_ms: default_delegation_timeout_ms(),
             max_tokens: default_delegation_max_tokens(),
             max_context_chars: default_delegation_max_context_chars(),
+            primary_usd_per_1k_tokens: default_delegation_primary_usd_per_1k_tokens(),
+            local_usd_per_1k_tokens: default_delegation_local_usd_per_1k_tokens(),
             task_allowlist: Vec::new(),
         }
     }
@@ -255,6 +270,8 @@ impl DelegationConfig {
         if self.max_context_chars == 0 {
             self.max_context_chars = default_delegation_max_context_chars();
         }
+        self.primary_usd_per_1k_tokens = sanitize_non_negative_f64(self.primary_usd_per_1k_tokens);
+        self.local_usd_per_1k_tokens = sanitize_non_negative_f64(self.local_usd_per_1k_tokens);
     }
 }
 
@@ -591,6 +608,15 @@ fn apply_env_overrides(config: &mut AppConfig) {
     if let Some(value) = env_bool("DOCDEX_DELEGATION_AUTO_ENABLE") {
         config.llm.delegation.auto_enable = value;
     }
+    if let Some(value) = env_bool("DOCDEX_DELEGATION_ENFORCE_LOCAL") {
+        config.llm.delegation.enforce_local = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_DELEGATION_ALLOW_FALLBACK") {
+        config.llm.delegation.allow_fallback_to_primary = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_DELEGATION_REEVALUATE") {
+        config.llm.delegation.re_evaluate = value;
+    }
     if let Some(value) = env_trimmed("DOCDEX_DELEGATION_LOCAL_AGENT") {
         config.llm.delegation.local_agent_id = value;
     }
@@ -614,6 +640,12 @@ fn apply_env_overrides(config: &mut AppConfig) {
     }
     if let Some(value) = env_u32("DOCDEX_DELEGATION_MAX_TOKENS") {
         config.llm.delegation.max_tokens = value;
+    }
+    if let Some(value) = env_f64("DOCDEX_DELEGATION_PRIMARY_USD_PER_1K_TOKENS") {
+        config.llm.delegation.primary_usd_per_1k_tokens = sanitize_non_negative_f64(value);
+    }
+    if let Some(value) = env_f64("DOCDEX_DELEGATION_LOCAL_USD_PER_1K_TOKENS") {
+        config.llm.delegation.local_usd_per_1k_tokens = sanitize_non_negative_f64(value);
     }
     if let Some(value) = env_mcp_ipc_mode("DOCDEX_MCP_IPC") {
         config.server.mcp_ipc_mode = value;
@@ -670,6 +702,11 @@ fn env_u32(key: &str) -> Option<u32> {
     raw.parse::<u32>().ok()
 }
 
+fn env_f64(key: &str) -> Option<f64> {
+    let raw = env_trimmed(key)?;
+    raw.parse::<f64>().ok()
+}
+
 fn env_mcp_ipc_mode(key: &str) -> Option<String> {
     let raw = env_trimmed(key)?;
     let normalized = raw.to_lowercase();
@@ -712,6 +749,18 @@ fn default_delegation_auto_enable() -> bool {
     true
 }
 
+fn default_delegation_enforce_local() -> bool {
+    false
+}
+
+fn default_delegation_allow_fallback_to_primary() -> bool {
+    false
+}
+
+fn default_delegation_re_evaluate() -> bool {
+    true
+}
+
 fn default_delegation_mode() -> String {
     DEFAULT_DELEGATION_MODE.to_string()
 }
@@ -726,6 +775,22 @@ fn default_delegation_max_tokens() -> u32 {
 
 fn default_delegation_max_context_chars() -> usize {
     DEFAULT_DELEGATION_MAX_CONTEXT_CHARS
+}
+
+fn default_delegation_primary_usd_per_1k_tokens() -> f64 {
+    0.0
+}
+
+fn default_delegation_local_usd_per_1k_tokens() -> f64 {
+    0.0
+}
+
+fn sanitize_non_negative_f64(value: f64) -> f64 {
+    if value.is_finite() && value >= 0.0 {
+        value
+    } else {
+        0.0
+    }
 }
 
 fn default_profile_embed_model() -> String {

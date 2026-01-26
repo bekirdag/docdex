@@ -38,6 +38,7 @@ Repo selection rules:
 
 - `GET /healthz` - basic health check.
 - `GET /metrics` - Prometheus counters and timers.
+- `GET /v1/telemetry/delegation` - delegation savings telemetry (JSON).
 - `GET /v1/gates/status` - quality gate summary.
 
 ## Repo lifecycle
@@ -175,6 +176,38 @@ Notes:
 - `mode` defaults to `[llm.delegation].mode` when omitted.
 - `draft_then_refine` returns a primary-agent refinement when configured; otherwise returns the local draft with a warning.
 - `agent` overrides the local agent id for this request only; otherwise Docdex selects from the local model library.
+
+## Delegation telemetry
+
+`GET /v1/telemetry/delegation`
+
+Response:
+```json
+{
+  "generated_at_epoch_ms": 1710000000000,
+  "delegate_requests_total": 12,
+  "delegate_offloaded_total": 10,
+  "delegate_fallbacks_total": 2,
+  "delegate_token_estimate_total": 4200,
+  "delegate_local_tokens_total": 3100,
+  "delegate_primary_tokens_total": 400,
+  "delegate_tokens_total": 3500,
+  "delegate_token_savings_total": 3100,
+  "delegate_local_cost_micros_total": 0,
+  "delegate_primary_cost_micros_total": 1200000,
+  "delegate_cost_savings_micros_total": 950000,
+  "delegate_cost_savings_usd": 0.95,
+  "pricing": {
+    "primary_usd_per_1k_tokens": 2.5,
+    "local_usd_per_1k_tokens": 0.0
+  }
+}
+```
+
+Notes:
+- `delegate_offloaded_total` counts requests that produced a local draft.
+- Savings use actual local token usage and mcoda `cost_per_million` when available; Ollama models are treated as $0.
+- `pricing` reflects `[llm.delegation]` defaults and may differ from mcoda agent costs.
 
 ## Code intelligence
 

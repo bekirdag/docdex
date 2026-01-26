@@ -5,7 +5,7 @@ use base64::engine::general_purpose::STANDARD as Base64Engine;
 use base64::Engine;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::warn;
@@ -33,6 +33,12 @@ pub struct McodaAgent {
     pub config: Option<Value>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+    pub rating: Option<f64>,
+    pub cost_per_million: Option<f64>,
+    pub max_complexity: Option<i64>,
+    pub best_usage: Option<String>,
+    pub reasoning_rating: Option<f64>,
+    pub health_status: Option<String>,
     pub capabilities: Vec<String>,
     pub models: Vec<McodaAgentModel>,
     pub auth: Option<McodaAgentAuth>,
@@ -71,6 +77,7 @@ impl McodaRegistry {
         let mut capabilities = load_capabilities(&conn)?;
         let mut models = load_models(&conn)?;
         let mut auth = load_auth(&conn, key_path)?;
+        let mut health = load_health(&conn)?;
 
         for agent in &mut agents {
             if let Some(values) = capabilities.remove(&agent.id) {
@@ -81,6 +88,9 @@ impl McodaRegistry {
             }
             if let Some(value) = auth.remove(&agent.id) {
                 agent.auth = Some(value);
+            }
+            if let Some(value) = health.remove(&agent.id) {
+                agent.health_status = Some(value);
             }
         }
 
@@ -99,7 +109,7 @@ impl McodaRegistry {
     }
 }
 
-fn default_db_path() -> Result<PathBuf> {
+pub(crate) fn default_db_path() -> Result<PathBuf> {
     Ok(default_mcoda_dir()?.join(MCODA_DB))
 }
 
@@ -146,14 +156,57 @@ fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
     Ok(exists)
 }
 
+fn table_columns(conn: &Connection, table: &str) -> Result<HashSet<String>> {
+    if !table_exists(conn, table)? {
+        return Ok(HashSet::new());
+    }
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    let mut columns = HashSet::new();
+    for row in rows {
+        columns.insert(row?);
+    }
+    Ok(columns)
+}
+
 fn load_agents(conn: &Connection) -> Result<Vec<McodaAgent>> {
     if !table_exists(conn, "agents")? {
         return Ok(Vec::new());
     }
+    let columns = table_columns(conn, "agents")?;
+    let rating_sql = if columns.contains("rating") {
+        "rating"
+    } else {
+        "NULL"
+    };
+    let cost_sql = if columns.contains("cost_per_million") {
+        "cost_per_million"
+    } else {
+        "NULL"
+    };
+    let complexity_sql = if columns.contains("max_complexity") {
+        "max_complexity"
+    } else {
+        "NULL"
+    };
+    let usage_sql = if columns.contains("best_usage") {
+        "best_usage"
+    } else {
+        "NULL"
+    };
+    let reasoning_sql = if columns.contains("reasoning_rating") {
+        "reasoning_rating"
+    } else {
+        "NULL"
+    };
     let mut stmt = conn.prepare(
-        "SELECT id, slug, adapter, default_model, config_json, created_at, updated_at
-         FROM agents
-         ORDER BY slug ASC",
+        &format!(
+            "SELECT id, slug, adapter, default_model, config_json, created_at, updated_at,
+                    {rating_sql} as rating, {cost_sql} as cost_per_million, {complexity_sql} as max_complexity,
+                    {usage_sql} as best_usage, {reasoning_sql} as reasoning_rating
+             FROM agents
+             ORDER BY slug ASC"
+        ),
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((
@@ -164,12 +217,30 @@ fn load_agents(conn: &Connection) -> Result<Vec<McodaAgent>> {
             row.get::<_, Option<String>>(4)?,
             row.get::<_, Option<String>>(5)?,
             row.get::<_, Option<String>>(6)?,
+            row.get::<_, Option<f64>>(7)?,
+            row.get::<_, Option<f64>>(8)?,
+            row.get::<_, Option<i64>>(9)?,
+            row.get::<_, Option<String>>(10)?,
+            row.get::<_, Option<f64>>(11)?,
         ))
     })?;
 
     let mut agents = Vec::new();
     for row in rows {
-        let (id, slug, adapter, default_model, config_raw, created_at, updated_at) = row?;
+        let (
+            id,
+            slug,
+            adapter,
+            default_model,
+            config_raw,
+            created_at,
+            updated_at,
+            rating,
+            cost_per_million,
+            max_complexity,
+            best_usage,
+            reasoning_rating,
+        ) = row?;
         let config = match config_raw {
             Some(raw) => Some(serde_json::from_str(&raw).context("parse agents.config_json")?),
             None => None,
@@ -182,9 +253,15 @@ fn load_agents(conn: &Connection) -> Result<Vec<McodaAgent>> {
             config,
             created_at,
             updated_at,
+            rating,
+            cost_per_million,
+            max_complexity,
+            best_usage,
+            reasoning_rating,
             capabilities: Vec::new(),
             models: Vec::new(),
             auth: None,
+            health_status: None,
         });
     }
     Ok(agents)
@@ -321,6 +398,29 @@ fn load_auth(conn: &Connection, key_path: &Path) -> Result<HashMap<String, Mcoda
                 updated_at,
             },
         );
+    }
+    Ok(map)
+}
+
+fn load_health(conn: &Connection) -> Result<HashMap<String, String>> {
+    if !table_exists(conn, "agent_health")? {
+        return Ok(HashMap::new());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT agent_id, status
+         FROM agent_health
+         ORDER BY agent_id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut map: HashMap<String, String> = HashMap::new();
+    for row in rows {
+        let (agent_id, status) = row?;
+        let trimmed = status.trim();
+        if !trimmed.is_empty() {
+            map.insert(agent_id, trimmed.to_string());
+        }
     }
     Ok(map)
 }

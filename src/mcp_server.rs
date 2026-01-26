@@ -7,18 +7,22 @@ use crate::error::{
     ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY,
     ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED,
     ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
+    ERR_DELEGATION_LOCAL_REQUIRED,
 };
 use crate::impact::{build_impact_diagnostics_response, ImpactDiagnosticsEntry, ImpactGraphStore};
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
 use crate::llm::delegation::{
-    allowlist_allows, mode_from_config, run_delegation_flow, select_local_target, DelegationMode,
-    TaskType,
+    allowlist_allows, compute_cost_micros, compute_delegation_savings, mode_from_config,
+    parse_local_target_override, resolve_local_cost_per_million, resolve_primary_cost_per_million,
+    run_delegation_flow, select_local_target, select_primary_target, DelegationEnforcementError,
+    DelegationMode, LocalTarget, TaskType,
 };
 use crate::llm::local_library::{
     delegation_is_enabled, refresh_local_library_if_stale, refresh_local_library_if_stale_with_web,
 };
 use crate::memory::{inject_embedding_metadata, repo_state_root_from_state_dir, MemoryStore};
+use crate::metrics;
 use crate::ollama::OllamaEmbedder;
 use crate::orchestrator::web::{run_web_research, WebResearchResponse};
 use crate::orchestrator::{
@@ -2729,13 +2733,47 @@ Produce a phased plan with risks and tests to run."
             .max_context_chars
             .filter(|value| *value > 0)
             .unwrap_or(self.llm_config.delegation.max_context_chars);
-        let local_target = library
+        let agent_override = args
+            .agent
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let override_target =
+            agent_override.and_then(|value| parse_local_target_override(value, library.as_ref()));
+        let local_target = override_target.clone().or_else(|| {
+            library
+                .as_ref()
+                .and_then(|library| select_local_target(task_type, library))
+        });
+        let primary_target = library
             .as_ref()
-            .and_then(|library| select_local_target(task_type, library));
+            .and_then(|library| select_primary_target(task_type, library, local_target.as_ref()));
+        let local_agent_override = match (&override_target, agent_override) {
+            (Some(LocalTarget::OllamaModel(model)), _) => Some(format!("model:{model}")),
+            (Some(LocalTarget::McodaAgent(_)), Some(value)) => Some(value.to_string()),
+            (None, Some(value)) => Some(value.to_string()),
+            _ => None,
+        };
+        let local_override = local_agent_override
+            .as_deref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+            || !self.llm_config.delegation.local_agent_id.trim().is_empty();
+        if self.llm_config.delegation.enforce_local && local_target.is_none() && !local_override {
+            let metrics = metrics::global();
+            metrics.inc_delegate_local_enforced_failure();
+            return Err(AppError::new(
+                ERR_DELEGATION_LOCAL_REQUIRED,
+                "local delegation required but no local target is configured",
+            )
+            .into());
+        }
+        let started_at = Instant::now();
         let result = run_delegation_flow(
             &self.llm_config,
-            args.agent.as_deref(),
+            local_agent_override.as_deref(),
             local_target.as_ref(),
+            primary_target.as_ref(),
             task_type,
             &args.instruction,
             &args.context,
@@ -2744,7 +2782,54 @@ Produce a phased plan with risks and tests to run."
             args.timeout_ms,
             mode,
         )
-        .await?;
+        .await
+        .map_err(|err| {
+            if err.downcast_ref::<DelegationEnforcementError>().is_some() {
+                let metrics = metrics::global();
+                metrics.inc_delegate_local_enforced_failure();
+                return AppError::new(
+                    ERR_DELEGATION_LOCAL_REQUIRED,
+                    err.to_string(),
+                )
+                .into();
+            }
+            err
+        })?;
+
+        let metrics = metrics::global();
+        metrics.inc_delegate_request();
+        metrics.record_delegate_latency(started_at.elapsed().as_millis());
+        metrics.record_delegate_token_estimate(result.token_estimate);
+        let local_cost_per_million = resolve_local_cost_per_million(
+            &self.llm_config,
+            local_agent_override.as_deref(),
+            local_target.as_ref(),
+            library.as_ref(),
+        );
+        let primary_cost_per_million = resolve_primary_cost_per_million(
+            &self.llm_config,
+            primary_target.as_ref(),
+            library.as_ref(),
+        );
+        let local_cost_micros = compute_cost_micros(result.local_tokens, local_cost_per_million);
+        let primary_cost_micros = compute_cost_micros(result.primary_tokens, primary_cost_per_million);
+        if result.local_tokens > 0 {
+            metrics.inc_delegate_offloaded();
+        }
+        metrics.record_delegate_local_tokens(result.local_tokens);
+        metrics.record_delegate_primary_tokens(result.primary_tokens);
+        metrics.record_delegate_local_cost_micros(local_cost_micros);
+        metrics.record_delegate_primary_cost_micros(primary_cost_micros);
+        let savings = compute_delegation_savings(
+            result.local_tokens,
+            local_cost_per_million,
+            primary_cost_per_million,
+        );
+        metrics.record_delegate_token_savings(savings.token_savings);
+        metrics.record_delegate_cost_savings_micros(savings.cost_savings_micros);
+        if result.fallback_used {
+            metrics.inc_delegate_fallback();
+        }
 
         Ok(json!({
             "id": Uuid::new_v4().to_string(),

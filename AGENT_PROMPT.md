@@ -12,6 +12,11 @@ Health check endpoint: `GET /healthz` (not `/v1/health`).
 - Use Docdex tools intentionally: docdex_search/symbols/ast for repo truth; docdex_stats/files/repo_inspect/index for index health.
 - For folder structure, use docdex_tree instead of raw `rg --files`/`find` to avoid noisy folders.
 - When you do not know something, run docdex_web_research (force_web=true). Web research is encouraged by default for non-repo facts and external APIs.
+- When a Docdex feature makes a task easier/safer, you MUST use it instead of ad-hoc inspection. Examples: `docdex_search` for context, `docdex_open`/`/v1/snippet` for file slices, `docdex_symbols`/`docdex_ast` for structure, `docdex_impact_graph`/`docdex_impact_diagnostics` for dependency safety, and `docdex_dag_export` to review session traces.
+- For dependency/library docs, run `docdexd libs discover`/`docdexd libs fetch` and search with `include_libs` rather than web searching.
+- For test execution, use `docdexd run-tests` (or `docdexd test run-node`) instead of ad-hoc commands when feasible.
+- For staged-change validation, use `docdexd hook pre-commit`.
+- For MCP client registration, use `docdexd mcp add` (or `--all`) instead of editing configs by hand.
 
 # Docdex Agent Usage Instructions
 
@@ -92,8 +97,23 @@ Use local delegation for low-complexity, code-generation-oriented tasks to reduc
 | docdex_local_completion | Delegate small tasks to a local model with strict output formats. |
 | HTTP /v1/delegate | HTTP endpoint for delegated completions with structured responses. |
 
-Required fields: `task_type`, `instruction`, `context`. Optional: `max_tokens`, `timeout_ms`, `mode` (`draft_only` or `draft_then_refine`), `agent` (local agent id/slug).
+Required fields: `task_type`, `instruction`, `context`. Optional: `max_tokens`, `timeout_ms`, `mode` (`draft_only` or `draft_then_refine`), `agent` (local agent id/slug or `model:<name>` to force an Ollama model; raw model names from `docdexd delegation agents` are also accepted).
 Expensive model library: `docs/expensive_models.json` (match by `agent_id`, `agent_slug`, `model`, or adapter type; case-insensitive).
+To choose a local target, run `docdexd delegation agents` (or `--json`) and prefer:
+- `code_writer` for scaffolding/boilerplate/docstrings.
+- `code_reviewer` for tests/format/refactors.
+- `general_chat` for lightweight Q&A or fallback.
+For mcoda agents, also consider:
+- `max_complexity`: do not assign tasks above this ceiling.
+- `rating`: prefer higher-rated agents for reliability.
+- `cost_per_million`: USD per 1M tokens; prefer lower cost when ratings/complexity match.
+- `usage`: best-fit role (for example `code_writer` or `code_reviewer`); use this for quick matching.
+- `reasoning_rating`: reasoning score out of 10; prefer higher for complex reasoning tasks.
+- `health_status`: only use agents marked `healthy` (treat `-` as unknown).
+Table output shows `USAGE`, `COMPLEXITY`, `RATING`, `REASON`, `COST/$1M`, and `HEALTH` for mcoda agents (`-` means unknown).
+- When `llm.delegation.re_evaluate = true` (default), Docdex reviews successful local mcoda runs using the primary agent when available and writes updated ratings to `~/.mcoda/mcoda.db` (disable with `DOCDEX_DELEGATION_REEVALUATE=0`).
+Use `agent: model:<ollama-model>` to force a specific local model (for example, `model:phi3.5:3.8b`).
+Avoid entries that only advertise `embedding` or `vision`.
 
 ### E. Index Health + File Access
 
@@ -125,6 +145,8 @@ Use these to verify index coverage, repo binding, and to read precise file slice
 - docdex_impact_graph: Mandatory before code changes to review inbound/outbound deps (use MCP/IPC if shell networking is blocked).
 - docdex_dag_export: Export dependency graph to plan change order.
 - HTTP /v1/initialize: Mount/bind a repo for HTTP daemon mode. Request JSON uses rootUri/root_uri (NOT repo_root).
+- HTTP /v1/snippet: Fetch exact line-safe snippets for a doc_id returned by search.
+- HTTP /v1/impact/diagnostics: Inspect unresolved/dynamic imports when impact graphs look incomplete.
 
 ## CLI Fallbacks (when MCP/IPC is unavailable)
 Use these only when MCP tools cannot be called (e.g., blocked sandbox networking). Prefer MCP/IPC otherwise.
@@ -133,11 +155,18 @@ Use these only when MCP tools cannot be called (e.g., blocked sandbox networking
 - `docdexd repo id --repo <path>`: compute repo fingerprint locally.
 - `docdexd repo status --repo <path>` / `docdexd repo dirty --exit-code`: git working tree status.
 - `docdexd impact-graph --repo <path> --file <rel>`: impact graph (HTTP/local).
-- `docdexd dag export --repo <path> <session_id>`: DAG export alias.
+- `docdexd dag view --repo <path> <session_id>` / `docdexd dag export --repo <path> <session_id>`: DAG export/render.
 - `docdexd search --repo <path> --query "<q>"`: /search equivalent (HTTP/local).
+- `docdexd delegation savings`: delegation telemetry (JSON: offloaded count, local/primary tokens & costs, savings).
+- `docdexd delegation agents --json`: list local delegation targets and capabilities (mcoda agents include `max_complexity`, `rating`, `cost_per_million`, `usage`, `reasoning_rating`, `health_status`).
 - `docdexd open --repo <path> --file <rel>`: safe file slice read (head/start/end/clamp).
 - `docdexd file ensure-newline|write --repo <path> --file <rel>`: minimal file edits.
 - `docdexd test run-node --repo <path> --file <rel> --args "..."`: run Node scripts.
+- `docdexd run-tests --repo <path> [--target <file|dir>]`: run repo tests (preferred for test execution).
+- `docdexd hook pre-commit --repo <path>`: run semantic gatekeeper hooks against staged changes.
+- `docdexd impact-diagnostics --repo <path> [--file <rel>]`: list unresolved import diagnostics.
+- `docdexd libs discover|fetch --repo <path> [--sources <file>]`: dependency docs discovery/ingestion.
+- `docdexd mcp add --agent <name> [--transport http|ipc] [--all]`: register Docdex MCP in supported clients.
 
 ## Docdex Usage Cookbook (Mandatory, Exact Schemas)
 

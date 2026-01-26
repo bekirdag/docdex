@@ -26,6 +26,14 @@ fn metrics_baseline_includes_required_counters() -> Result<(), Box<dyn Error>> {
     metrics.inc_project_map_cache_hit();
     metrics.inc_project_map_cache_miss();
     metrics.record_delegate_token_estimate(100);
+    metrics.inc_delegate_offloaded();
+    metrics.record_delegate_local_tokens(80);
+    metrics.record_delegate_primary_tokens(20);
+    metrics.record_delegate_token_savings(80);
+    metrics.record_delegate_local_cost_micros(1200);
+    metrics.record_delegate_primary_cost_micros(300);
+    metrics.record_delegate_cost_savings_micros(1500);
+    metrics.inc_delegate_local_enforced_failure();
 
     let body = metrics.render_prometheus();
     let recall = metric_value(&body, "docdex_profile_recall_requests_total")?;
@@ -34,6 +42,16 @@ fn metrics_baseline_includes_required_counters() -> Result<(), Box<dyn Error>> {
     let map_hits = metric_value(&body, "docdex_project_map_cache_hits_total")?;
     let budget_drops = metric_value(&body, "docdex_profile_budget_drops_total")?;
     let delegate_tokens = metric_value(&body, "docdex_delegate_token_estimate_total")?;
+    let delegate_offloaded = metric_value(&body, "docdex_delegate_offloaded_total")?;
+    let delegate_local_tokens = metric_value(&body, "docdex_delegate_local_tokens_total")?;
+    let delegate_primary_tokens = metric_value(&body, "docdex_delegate_primary_tokens_total")?;
+    let delegate_savings = metric_value(&body, "docdex_delegate_token_savings_total")?;
+    let delegate_local_cost = metric_value(&body, "docdex_delegate_local_cost_micros_total")?;
+    let delegate_primary_cost =
+        metric_value(&body, "docdex_delegate_primary_cost_micros_total")?;
+    let delegate_cost = metric_value(&body, "docdex_delegate_cost_savings_micros_total")?;
+    let delegate_enforced =
+        metric_value(&body, "docdex_delegate_local_enforced_failures_total")?;
 
     assert!(recall > 0.0, "expected profile recall counter to increment");
     assert!(
@@ -55,6 +73,38 @@ fn metrics_baseline_includes_required_counters() -> Result<(), Box<dyn Error>> {
     assert!(
         delegate_tokens > 0.0,
         "expected delegate token estimate counter to increment"
+    );
+    assert!(
+        delegate_offloaded > 0.0,
+        "expected delegate offloaded counter to increment"
+    );
+    assert!(
+        delegate_local_tokens > 0.0,
+        "expected delegate local tokens counter to increment"
+    );
+    assert!(
+        delegate_primary_tokens > 0.0,
+        "expected delegate primary tokens counter to increment"
+    );
+    assert!(
+        delegate_savings > 0.0,
+        "expected delegate token savings counter to increment"
+    );
+    assert!(
+        delegate_local_cost > 0.0,
+        "expected delegate local cost counter to increment"
+    );
+    assert!(
+        delegate_primary_cost > 0.0,
+        "expected delegate primary cost counter to increment"
+    );
+    assert!(
+        delegate_cost > 0.0,
+        "expected delegate cost savings counter to increment"
+    );
+    assert!(
+        delegate_enforced > 0.0,
+        "expected delegate enforcement failure counter to increment"
     );
     Ok(())
 }

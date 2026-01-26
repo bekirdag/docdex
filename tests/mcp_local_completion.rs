@@ -2,9 +2,13 @@ use reqwest::blocking::Client;
 use serde_json::Value;
 use std::error::Error;
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -111,34 +115,83 @@ impl Drop for ChildGuard {
     }
 }
 
-struct MockOllamaGuard(Option<thread::JoinHandle<()>>);
+struct MockOllamaGuard {
+    stop: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
 
 impl Drop for MockOllamaGuard {
     fn drop(&mut self) {
-        if let Some(handle) = self.0.take() {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
     }
 }
 
+fn handle_mock_ollama_request(mut stream: TcpStream) -> std::io::Result<()> {
+    let mut buffer = [0u8; 4096];
+    let read = stream.read(&mut buffer)?;
+    if read == 0 {
+        return Ok(());
+    }
+    let request = String::from_utf8_lossy(&buffer[..read]);
+    let request_line = request.lines().next().unwrap_or("");
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("");
+    match (method, path) {
+        ("GET", "/api/tags") => {
+            write_http_response(&mut stream, 200, r#"{"models":[{"name":"test-model"}]}"#)
+        }
+        ("POST", "/api/generate") => write_http_response(&mut stream, 200, r#"{"response":"ok"}"#),
+        _ => write_http_response(&mut stream, 404, r#"{"error":"not found"}"#),
+    }
+}
+
+fn write_http_response(stream: &mut TcpStream, status: u16, body: &str) -> std::io::Result<()> {
+    let status_text = match status {
+        200 => "OK",
+        404 => "Not Found",
+        _ => "OK",
+    };
+    let response = format!(
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
+        status = status,
+        status_text = status_text,
+        len = body.len(),
+        body = body
+    );
+    stream.write_all(response.as_bytes())?;
+    stream.flush()
+}
+
 fn spawn_mock_ollama() -> Result<(u16, MockOllamaGuard), Box<dyn Error>> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_handle = stop.clone();
     let handle = thread::spawn(move || {
-        if let Ok((mut stream, _)) = listener.accept() {
-            let mut buffer = [0u8; 4096];
-            let _ = stream.read(&mut buffer);
-            let body = r#"{"response":"ok"}"#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            let _ = stream.write_all(response.as_bytes());
-            let _ = stream.flush();
+        while !stop_handle.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = handle_mock_ollama_request(stream);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(25));
+                }
+                Err(_) => break,
+            }
         }
     });
-    Ok((port, MockOllamaGuard(Some(handle))))
+    Ok((
+        port,
+        MockOllamaGuard {
+            stop,
+            handle: Some(handle),
+        },
+    ))
 }
 
 fn write_config(path: &Path, ollama_port: u16) -> Result<(), Box<dyn Error>> {

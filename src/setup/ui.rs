@@ -527,18 +527,18 @@ fn build_menu_details<S: WizardServices>(
     let _ = writeln!(
         web_body,
         "- Brave Search: {}",
-        format_key_status(provider_status.brave)
+        format_key_status(&provider_status.brave)
     );
     let _ = writeln!(
         web_body,
         "- Google CSE: key {}, cx {}",
-        format_key_status(provider_status.google_cse_key),
-        format_key_status(provider_status.google_cse_cx)
+        format_key_status(&provider_status.google_cse_key),
+        format_key_status(&provider_status.google_cse_cx)
     );
     let _ = writeln!(
         web_body,
         "- Bing Web Search: {}",
-        format_key_status(provider_status.bing)
+        format_key_status(&provider_status.bing)
     );
     web_body.push_str("\nSelect this section to add or update API keys.");
 
@@ -1030,28 +1030,32 @@ fn configure_web_providers_section<I: WizardInput, S: WizardServices>(
     let current = resolve_web_provider_status(config.as_ref());
     let current_detail = format!("{}/3 configured", current.configured_count());
 
+    let brave_current = current_key_display(&current.brave, true);
+    let google_api_current = current_key_display(&current.google_cse_key, true);
+    let google_cse_current = current_key_display(&current.google_cse_cx, false);
+    let bing_current = current_key_display(&current.bing, true);
     let brave_key = input.prompt_text(
         state,
         "Brave Search API key (X-Subscription-Token)",
-        current_key_label(current.brave),
+        brave_current.as_deref(),
         true,
     )?;
     let google_api_key = input.prompt_text(
         state,
         "Google CSE API key",
-        current_key_label(current.google_cse_key),
+        google_api_current.as_deref(),
         true,
     )?;
     let google_cse_cx = input.prompt_text(
         state,
         "Google CSE Search Engine ID (cx)",
-        current_key_label(current.google_cse_cx),
+        google_cse_current.as_deref(),
         false,
     )?;
     let bing_key = input.prompt_text(
         state,
         "Bing Web Search API key",
-        current_key_label(current.bing),
+        bing_current.as_deref(),
         true,
     )?;
 
@@ -1530,13 +1534,14 @@ fn resolve_browser_summary_from_detection() -> Option<String> {
         })
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct ProviderKeyStatus {
     configured: bool,
     from_env: bool,
+    value: Option<String>,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct WebProviderStatus {
     brave: ProviderKeyStatus,
     google_cse_key: ProviderKeyStatus,
@@ -1582,21 +1587,34 @@ fn resolve_key_status(
     env_key: &str,
     extract: impl FnOnce(&app_config::AppConfig) -> Option<&String>,
 ) -> ProviderKeyStatus {
-    let env_set = env::var(env_key)
+    let env_value = env::var(env_key)
         .ok()
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
-    let config_set = config
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let config_value = config
         .and_then(extract)
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
-    ProviderKeyStatus {
-        configured: env_set || config_set,
-        from_env: env_set,
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    match (env_value, config_value) {
+        (Some(value), _) => ProviderKeyStatus {
+            configured: true,
+            from_env: true,
+            value: Some(value),
+        },
+        (None, Some(value)) => ProviderKeyStatus {
+            configured: true,
+            from_env: false,
+            value: Some(value),
+        },
+        (None, None) => ProviderKeyStatus {
+            configured: false,
+            from_env: false,
+            value: None,
+        },
     }
 }
 
-fn format_key_status(status: ProviderKeyStatus) -> &'static str {
+fn format_key_status(status: &ProviderKeyStatus) -> &'static str {
     if status.configured {
         if status.from_env {
             "set (env)"
@@ -1608,12 +1626,40 @@ fn format_key_status(status: ProviderKeyStatus) -> &'static str {
     }
 }
 
-fn current_key_label(status: ProviderKeyStatus) -> Option<&'static str> {
-    if status.configured {
-        Some(format_key_status(status))
-    } else {
-        None
+fn mask_secret_value(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
     }
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() <= 6 {
+        let prefix_len = chars.len().min(2);
+        let prefix: String = chars[..prefix_len].iter().collect();
+        return format!("{prefix}***");
+    }
+    let prefix: String = chars[..4].iter().collect();
+    let suffix: String = chars[chars.len().saturating_sub(3)..].iter().collect();
+    format!("{prefix}***{suffix}")
+}
+
+fn current_key_display(status: &ProviderKeyStatus, secret: bool) -> Option<String> {
+    if !status.configured {
+        return None;
+    }
+    let value = status
+        .value
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            if secret {
+                mask_secret_value(value)
+            } else {
+                value.to_string()
+            }
+        })
+        .unwrap_or_else(|| format_key_status(status).to_string());
+    let suffix = if status.from_env { " (env)" } else { "" };
+    Some(format!("{value}{suffix}"))
 }
 
 fn prompt_retry<I: WizardInput>(input: &mut I, state: &SetupState, message: &str) -> Result<bool> {
@@ -1916,7 +1962,10 @@ impl WizardInput for TuiInput {
             "Type to set, Enter=save, Esc=skip, Backspace=delete"
         };
         loop {
-            let current_label = current.unwrap_or("not set");
+            let current_label = current
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .unwrap_or("not set");
             let displayed = if buffer.is_empty() {
                 "<leave unchanged>".to_string()
             } else if secret {
@@ -1924,7 +1973,9 @@ impl WizardInput for TuiInput {
             } else {
                 buffer.clone()
             };
-            let body = format!("{prompt}\nCurrent: {current_label}\nInput: {displayed}");
+            let current_field = format!("[ {current_label} ]");
+            let input_field = format!("[ {displayed} ]");
+            let body = format!("{prompt}\nCurrent: {current_field}\nInput:   {input_field}");
             self.draw_prompt(state, &body, hint, None, state.current)?;
             match self.read_key()? {
                 KeyCode::Char(c) => {
@@ -2374,6 +2425,15 @@ mod tests {
         fn set_web_provider_keys(&self, _update: config::WebProviderKeysUpdate) -> Result<bool> {
             Ok(false)
         }
+    }
+
+    #[test]
+    fn scripted_input_prompt_text_returns_value() -> Result<()> {
+        let mut input = ScriptedInput::new(vec![ScriptedAnswer::Text(Some("hello".to_string()))]);
+        let state = SetupState::new();
+        let value = input.prompt_text(&state, "Prompt", None, false)?;
+        assert_eq!(value.as_deref(), Some("hello"));
+        Ok(())
     }
 
     #[test]

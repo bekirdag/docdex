@@ -135,9 +135,12 @@ Core endpoints:
 - `GET /healthz`
 - `GET /search?q=...&limit=...`
 - `GET /snippet/:doc_id`
+- `POST /v1/delegate`
 - `POST /v1/chat/completions`
 - `GET /v1/symbols`, `GET /v1/ast`, `GET /v1/graph/impact`
+- `GET /v1/impact/diagnostics`
 - `GET /v1/index/status`
+- `GET /v1/telemetry/delegation`
 
 Reference: `docs/http_api.md`.
 
@@ -189,6 +192,9 @@ docdexd repo dirty --repo /path/to/repo --exit-code
 Impact + DAG helpers:
 ```bash
 docdexd impact-graph --repo /path/to/repo --file src/app.ts --max-depth 3
+docdexd impact-diagnostics --repo /path/to/repo
+docdexd impact-diagnostics --repo /path/to/repo --file src/app.ts
+docdexd dag view --repo /path/to/repo <session_id> --format text
 docdexd dag export --repo /path/to/repo <session_id> --format json
 ```
 
@@ -196,6 +202,19 @@ Search helpers:
 ```bash
 docdexd search --repo /path/to/repo --query "auth flow" --limit 8 --snippets false
 docdexd search --repo /path/to/repo --query "config" --force-web --async-web=false
+```
+
+Libs ingestion helpers:
+```bash
+docdexd libs discover --repo /path/to/repo
+docdexd libs fetch --repo /path/to/repo --sources /path/to/libs_sources.json
+docdexd search --repo /path/to/repo --query "jwt decode" --include-libs
+```
+
+Delegation helpers:
+```bash
+docdexd delegation savings
+docdexd delegation agents --json
 ```
 
 File helpers:
@@ -209,6 +228,29 @@ docdexd file write --repo /path/to/repo --file notes.txt --content "hello" --cre
 Test helper:
 ```bash
 docdexd test run-node --repo /path/to/repo --file scripts/check.js --args "foo bar"
+```
+
+Run-tests helper:
+```bash
+docdexd run-tests --repo /path/to/repo
+docdexd run-tests --repo /path/to/repo --target src/lib.rs
+```
+
+Hook helper:
+```bash
+docdexd hook pre-commit --repo /path/to/repo
+```
+
+MCP registration helper:
+```bash
+docdexd mcp add --agent codex --transport http
+docdexd mcp add --all
+docdexd mcp add --agent codex --remove
+```
+
+TUI:
+```bash
+docdexd tui --repo /path/to/repo
 ```
 
 Notes:
@@ -271,23 +313,36 @@ Config (`~/.docdex/config.toml`):
 [llm.delegation]
 enabled = true
 auto_enable = true
+enforce_local = false
+allow_fallback_to_primary = false
+re_evaluate = true
 local_agent_id = "ollama-local" # mcoda agent id/slug (optional)
 primary_agent_id = "claude-code" # optional, used for refinement/fallback
 mode = "draft_only" # or "draft_then_refine"
 timeout_ms = 30000
 max_tokens = 512
 max_context_chars = 12000
+primary_usd_per_1k_tokens = 0.0
+local_usd_per_1k_tokens = 0.0
 task_allowlist = ["generate_tests", "write_docstring", "scaffold_boilerplate", "refactor_simple", "format_code"]
 ```
 
 Notes:
 - `auto_enable` defaults to true; delegation auto-enables when local models or mcoda agents are present (opt out with `auto_enable = false`).
 - If `local_agent_id` is empty, Docdex selects a local model/agent from the library by task type; fallback is the configured Ollama model.
+- If `primary_agent_id` is empty, Docdex selects a primary model/agent from the local library by task type (preferring mcoda agents) for refinement/fallback.
+- To force an Ollama model, set `local_agent_id`/`primary_agent_id` to `model:<name>` or `ollama:<name>`. Per-request `agent` also accepts model names listed by `docdexd delegation agents`.
+- Use `docdexd delegation agents --json` to inspect mcoda fields (`max_complexity`, `rating`, `cost_per_million`, `usage`, `reasoning_rating`, `health_status`) and pick agents that can handle the task complexity with acceptable cost.
+- Prefer agents whose `usage` matches the task, whose `reasoning_rating` is higher for complex work, and whose `health_status` is `healthy`.
+- Table output shows `USAGE`, `COMPLEXITY`, `RATING`, `REASON`, `COST/$1M`, and `HEALTH` for mcoda agents (`-` means unknown).
+- When `re_evaluate = true`, Docdex reviews successful local mcoda outputs (using the primary agent when available) and updates the mcoda ratings in `~/.mcoda/mcoda.db`. Review failures fall back to a heuristic score and never block delegation responses.
 - `task_allowlist` is optional; an empty list allows all task types.
 - `draft_then_refine` returns a primary-agent refinement when available; otherwise returns the local draft with a warning.
+- `enforce_local = true` requires a local agent/model to be available; if `allow_fallback_to_primary = false`, primary usage (fallback/refine) is disabled and the local draft is returned.
 - Local model library: `~/.docdex/state/llm/local_model_library.json` (or under `DOCDEX_STATE_DIR`).
-- Env overrides: `DOCDEX_DELEGATION_ENABLED`, `DOCDEX_DELEGATION_AUTO_ENABLE`, `DOCDEX_DELEGATION_LOCAL_AGENT`, `DOCDEX_DELEGATION_PRIMARY_AGENT`, `DOCDEX_DELEGATION_MODE`, `DOCDEX_DELEGATION_TIMEOUT_MS`, `DOCDEX_DELEGATION_MAX_TOKENS`.
+- Env overrides: `DOCDEX_DELEGATION_ENABLED`, `DOCDEX_DELEGATION_AUTO_ENABLE`, `DOCDEX_DELEGATION_ENFORCE_LOCAL`, `DOCDEX_DELEGATION_ALLOW_FALLBACK`, `DOCDEX_DELEGATION_REEVALUATE`, `DOCDEX_DELEGATION_LOCAL_AGENT`, `DOCDEX_DELEGATION_PRIMARY_AGENT`, `DOCDEX_DELEGATION_MODE`, `DOCDEX_DELEGATION_TIMEOUT_MS`, `DOCDEX_DELEGATION_MAX_TOKENS`, `DOCDEX_DELEGATION_PRIMARY_USD_PER_1K_TOKENS`, `DOCDEX_DELEGATION_LOCAL_USD_PER_1K_TOKENS`.
 - Expensive model library: `docs/expensive_models.json`. Agents should match `agent_id`, `agent_slug`, `model`, or adapter type (case-insensitive) to decide whether to delegate.
+- Telemetry: `GET /v1/telemetry/delegation` or `docdexd delegation savings` (JSON). Includes offloaded counts, local/primary token totals, and costs. Savings use mcoda `cost_per_million` when available; Ollama models are treated as free.
 
 ## Repo memory
 Repo memory stores project facts (notes, decisions, edge cases) and is used during chat/context assembly. Memory is enabled by default; disable with `DOCDEX_ENABLE_MEMORY=0` or `[memory].enabled = false`.

@@ -5,10 +5,14 @@ use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use uuid::Uuid;
 
-use crate::error::{AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT};
+use crate::error::{
+    AppError, ERR_DELEGATION_LOCAL_REQUIRED, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
+};
 use crate::llm::delegation::{
-    allowlist_allows, mode_from_config, run_delegation_flow, select_local_target, DelegationMode,
-    TaskType,
+    allowlist_allows, compute_cost_micros, compute_delegation_savings, mode_from_config,
+    parse_local_target_override, resolve_local_cost_per_million, resolve_primary_cost_per_million,
+    run_delegation_flow, select_local_target, select_primary_target, DelegationEnforcementError,
+    DelegationMode, LocalTarget, TaskType,
 };
 use crate::llm::local_library::{
     delegation_is_enabled, refresh_local_library_if_stale, refresh_local_library_if_stale_with_web,
@@ -16,7 +20,7 @@ use crate::llm::local_library::{
 use crate::orchestrator::web::{run_web_research, WebResearchResponse};
 use crate::orchestrator::WebGateConfig;
 use crate::search::resolve_repo_context;
-use crate::search::{json_error, status_for_app_error, AppState};
+use crate::search::{json_error, json_error_with_details, status_for_app_error, AppState};
 use tracing::warn;
 
 #[derive(Debug, Deserialize)]
@@ -175,15 +179,52 @@ pub async fn delegate_handler(
         .filter(|value| *value > 0)
         .unwrap_or(state.llm_config.delegation.max_context_chars);
 
-    let local_target = library
+    let agent_override = payload
+        .agent
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let override_target =
+        agent_override.and_then(|value| parse_local_target_override(value, library.as_ref()));
+    let local_target = override_target.clone().or_else(|| {
+        library
+            .as_ref()
+            .and_then(|library| select_local_target(task_type, library))
+    });
+    let primary_target = library
         .as_ref()
-        .and_then(|library| select_local_target(task_type, library));
+        .and_then(|library| select_primary_target(task_type, library, local_target.as_ref()));
+    let local_agent_override = match (&override_target, agent_override) {
+        (Some(LocalTarget::OllamaModel(model)), _) => Some(format!("model:{model}")),
+        (Some(LocalTarget::McodaAgent(_)), Some(value)) => Some(value.to_string()),
+        (None, Some(value)) => Some(value.to_string()),
+        _ => None,
+    };
+    let local_override = local_agent_override
+        .as_deref()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+        || !state.llm_config.delegation.local_agent_id.trim().is_empty();
+    if state.llm_config.delegation.enforce_local && local_target.is_none() && !local_override {
+        state.metrics.inc_delegate_local_enforced_failure();
+        return Err(json_error_with_details(
+            StatusCode::BAD_REQUEST,
+            ERR_DELEGATION_LOCAL_REQUIRED,
+            "local delegation required but no local target is configured",
+            serde_json::json!({
+                "enforce_local": state.llm_config.delegation.enforce_local,
+                "allow_fallback_to_primary": state.llm_config.delegation.allow_fallback_to_primary,
+                "hint": "Configure a local agent/model or disable enforcement; set DOCDEX_DELEGATION_ALLOW_FALLBACK=1 to permit primary fallback."
+            }),
+        ));
+    }
 
     let started_at = Instant::now();
     let result = run_delegation_flow(
         &state.llm_config,
-        payload.agent.as_deref(),
+        local_agent_override.as_deref(),
         local_target.as_ref(),
+        primary_target.as_ref(),
         task_type,
         &payload.instruction,
         &payload.context,
@@ -194,6 +235,19 @@ pub async fn delegate_handler(
     )
     .await
     .map_err(|err| {
+        if let Some(enforcement) = err.downcast_ref::<DelegationEnforcementError>() {
+            state.metrics.inc_delegate_local_enforced_failure();
+            return json_error_with_details(
+                StatusCode::BAD_REQUEST,
+                ERR_DELEGATION_LOCAL_REQUIRED,
+                enforcement.reason.clone(),
+                serde_json::json!({
+                    "enforce_local": state.llm_config.delegation.enforce_local,
+                    "allow_fallback_to_primary": state.llm_config.delegation.allow_fallback_to_primary,
+                    "hint": "Configure a local agent/model or set DOCDEX_DELEGATION_ALLOW_FALLBACK=1 to permit primary fallback."
+                }),
+            );
+        }
         warn!(target: "docdexd", error = ?err, "delegation completion failed");
         let app_error = AppError::new(ERR_INTERNAL_ERROR, "delegation failed");
         json_error(
@@ -210,6 +264,45 @@ pub async fn delegate_handler(
     state
         .metrics
         .record_delegate_token_estimate(result.token_estimate);
+    let local_cost_per_million = resolve_local_cost_per_million(
+        &state.llm_config,
+        local_agent_override.as_deref(),
+        local_target.as_ref(),
+        library.as_ref(),
+    );
+    let primary_cost_per_million = resolve_primary_cost_per_million(
+        &state.llm_config,
+        primary_target.as_ref(),
+        library.as_ref(),
+    );
+    let local_cost_micros = compute_cost_micros(result.local_tokens, local_cost_per_million);
+    let primary_cost_micros = compute_cost_micros(result.primary_tokens, primary_cost_per_million);
+    if result.local_tokens > 0 {
+        state.metrics.inc_delegate_offloaded();
+    }
+    state
+        .metrics
+        .record_delegate_local_tokens(result.local_tokens);
+    state
+        .metrics
+        .record_delegate_primary_tokens(result.primary_tokens);
+    state
+        .metrics
+        .record_delegate_local_cost_micros(local_cost_micros);
+    state
+        .metrics
+        .record_delegate_primary_cost_micros(primary_cost_micros);
+    let savings = compute_delegation_savings(
+        result.local_tokens,
+        local_cost_per_million,
+        primary_cost_per_million,
+    );
+    state
+        .metrics
+        .record_delegate_token_savings(savings.token_savings);
+    state
+        .metrics
+        .record_delegate_cost_savings_micros(savings.cost_savings_micros);
     if result.fallback_used {
         state.metrics.inc_delegate_fallback();
     }

@@ -68,6 +68,18 @@ pub struct LocalAgentEntry {
     pub adapter: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_complexity: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_per_million: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_rating: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_status: Option<String>,
     #[serde(default)]
     pub capabilities: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -603,11 +615,30 @@ fn is_candidate_capabilities(capabilities: &[String]) -> bool {
 }
 
 fn mcoda_agent_entry(agent: &McodaAgent, now_ms: u128) -> LocalAgentEntry {
+    let max_complexity = agent.max_complexity.filter(|value| *value >= 0);
+    let usage = agent
+        .best_usage
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    let health_status = agent
+        .health_status
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
     LocalAgentEntry {
         agent_id: agent.id.clone(),
         agent_slug: agent.slug.clone(),
         adapter: agent.adapter.clone(),
         default_model: agent.default_model.clone(),
+        max_complexity,
+        rating: agent.rating,
+        cost_per_million: agent.cost_per_million,
+        usage,
+        reasoning_rating: agent.reasoning_rating,
+        health_status,
         capabilities: normalize_agent_capabilities(&agent.adapter, &agent.capabilities),
         notes: None,
         classification_method: "registry".to_string(),
@@ -658,8 +689,34 @@ fn now_ms() -> u128 {
 mod tests {
     use super::*;
     use crate::setup::test_support::ENV_LOCK;
+    use rusqlite::{params, Connection};
     use std::fs;
     use tempfile::TempDir;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.prev.take() {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     #[test]
     fn local_library_roundtrip() -> Result<()> {
@@ -682,6 +739,12 @@ mod tests {
                 agent_slug: "agent-one".to_string(),
                 adapter: "ollama".to_string(),
                 default_model: Some("phi3.5".to_string()),
+                max_complexity: Some(3),
+                rating: Some(9.1),
+                cost_per_million: Some(1.2),
+                usage: Some("code_reviewer".to_string()),
+                reasoning_rating: Some(7.4),
+                health_status: Some("healthy".to_string()),
                 capabilities: vec!["code_reviewer".to_string()],
                 notes: None,
                 classification_method: "heuristic".to_string(),
@@ -762,6 +825,12 @@ mod tests {
             config: None,
             created_at: None,
             updated_at: None,
+            rating: Some(7.5),
+            cost_per_million: Some(2.25),
+            max_complexity: Some(4),
+            best_usage: Some("code_writer".to_string()),
+            reasoning_rating: Some(8.5),
+            health_status: Some("healthy".to_string()),
             capabilities: vec!["Code_Writer".to_string()],
             models: Vec::new(),
             auth: None,
@@ -770,8 +839,122 @@ mod tests {
         assert_eq!(entry.agent_id, "agent-1");
         assert!(entry.capabilities.contains(&"code_writer".to_string()));
         assert!(entry.capabilities.contains(&"local".to_string()));
+        assert_eq!(entry.rating, Some(7.5));
+        assert_eq!(entry.cost_per_million, Some(2.25));
+        assert_eq!(entry.max_complexity, Some(4));
+        assert_eq!(entry.usage.as_deref(), Some("code_writer"));
+        assert_eq!(entry.reasoning_rating, Some(8.5));
+        assert_eq!(entry.health_status.as_deref(), Some("healthy"));
         assert_eq!(entry.classification_method, "registry");
         assert_eq!(entry.last_seen_at_ms, 10);
+    }
+
+    #[test]
+    fn discover_mcoda_agents_reads_registry() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let dir = TempDir::new()?;
+        let mcoda_dir = dir.path().join(".mcoda");
+        fs::create_dir_all(&mcoda_dir)?;
+        let db_path = mcoda_dir.join("mcoda.db");
+        let conn = Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TABLE agents (
+                id TEXT PRIMARY KEY,
+                slug TEXT NOT NULL,
+                adapter TEXT NOT NULL,
+                default_model TEXT,
+                config_json TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                rating REAL,
+                cost_per_million REAL,
+                max_complexity INTEGER,
+                best_usage TEXT,
+                reasoning_rating REAL
+            );
+            CREATE TABLE agent_capabilities (
+                agent_id TEXT NOT NULL,
+                capability TEXT NOT NULL
+            );
+            CREATE TABLE agent_health (
+                agent_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL
+            );",
+        )?;
+        conn.execute(
+            "INSERT INTO agents (id, slug, adapter, default_model, config_json, created_at, updated_at, rating, cost_per_million, max_complexity, best_usage, reasoning_rating)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                "agent-1",
+                "agent-one",
+                "ollama",
+                Option::<String>::None,
+                Option::<String>::None,
+                Option::<String>::None,
+                Option::<String>::None,
+                8.25,
+                1.5,
+                6,
+                "code_writer",
+                9.0
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO agent_capabilities (agent_id, capability) VALUES (?1, ?2)",
+            params!["agent-1", "Code_Writer"],
+        )?;
+        conn.execute(
+            "INSERT INTO agent_health (agent_id, status) VALUES (?1, ?2)",
+            params!["agent-1", "healthy"],
+        )?;
+        drop(conn);
+
+        let _home = EnvVarGuard::set("HOME", dir.path());
+        let _userprofile = EnvVarGuard::set("USERPROFILE", dir.path());
+        let agents = discover_mcoda_agents();
+
+        assert_eq!(agents.len(), 1);
+        let entry = &agents[0];
+        assert_eq!(entry.agent_id, "agent-1");
+        assert_eq!(entry.agent_slug, "agent-one");
+        assert_eq!(entry.adapter, "ollama");
+        assert!(entry.capabilities.contains(&"code_writer".to_string()));
+        assert!(entry.capabilities.contains(&"local".to_string()));
+        assert_eq!(entry.rating, Some(8.25));
+        assert_eq!(entry.cost_per_million, Some(1.5));
+        assert_eq!(entry.max_complexity, Some(6));
+        assert_eq!(entry.usage.as_deref(), Some("code_writer"));
+        assert_eq!(entry.reasoning_rating, Some(9.0));
+        assert_eq!(entry.health_status.as_deref(), Some("healthy"));
+        assert_eq!(entry.classification_method, "registry");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn discover_ollama_models_reads_tags() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buffer = [0u8; 512];
+                let _ = socket.read(&mut buffer).await;
+                let body =
+                    "{\"models\":[{\"name\":\"phi3.5:3.8b\"},{\"name\":\"text-embedding-3-large\"}]}";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let base_url = format!("http://{}", addr);
+        let models = discover_ollama_models(&base_url, Duration::from_secs(1), false).await;
+        let _ = server.await;
+        assert!(models.contains(&"phi3.5:3.8b".to_string()));
+        assert!(models.contains(&"text-embedding-3-large".to_string()));
+        Ok(())
     }
 
     #[tokio::test]
@@ -832,6 +1015,12 @@ mod tests {
             agent_slug: "agent".to_string(),
             adapter: "openai".to_string(),
             default_model: None,
+            max_complexity: None,
+            rating: None,
+            cost_per_million: None,
+            usage: None,
+            reasoning_rating: None,
+            health_status: None,
             capabilities: Vec::new(),
             notes: None,
             classification_method: "registry".to_string(),

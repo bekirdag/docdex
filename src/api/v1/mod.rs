@@ -10,4 +10,5 @@ pub mod initialize;
 pub mod libs;
 pub mod profile;
 pub mod symbols;
+pub mod telemetry;
 pub mod web;

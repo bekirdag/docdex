@@ -63,7 +63,7 @@ jobs:
           DOCDEX_HTTP_BASE_URL: "http://127.0.0.1:28491"
           DOCDEX_LOAD_PATH: "/search?q=docdex&limit=5"
         run: |
-          ./target/release/docdexd index --repo .
+          DOCDEX_CLI_LOCAL=1 ./target/release/docdexd index --repo .
           ./target/release/docdexd serve --repo . --secure-mode=false --enable-memory=false --disable-mcp --access-log=false --log warn --preflight-check=false &
           pid=$!
           trap "kill $pid" EXIT

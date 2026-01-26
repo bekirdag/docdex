@@ -393,6 +393,11 @@ pub(crate) enum Command {
     },
     /// Show hardware-aware LLM recommendations.
     LlmList,
+    /// Delegation telemetry and savings.
+    Delegation {
+        #[command(subcommand)]
+        command: DelegationCommand,
+    },
     /// Run the interactive setup wizard for Ollama and models.
     #[command(visible_alias = "llm-setup")]
     Setup {
@@ -955,6 +960,30 @@ pub(crate) enum RepoCommand {
 }
 
 #[derive(Subcommand, Debug)]
+pub(crate) enum DelegationCommand {
+    /// Show delegation savings telemetry.
+    Savings {
+        #[arg(
+            long,
+            default_value_t = true,
+            action = ArgAction::Set,
+            help = "Print JSON output"
+        )]
+        json: bool,
+    },
+    /// List available local delegation agents and models.
+    Agents {
+        #[arg(
+            long,
+            default_value_t = false,
+            action = ArgAction::SetTrue,
+            help = "Print JSON output"
+        )]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub(crate) enum FileCommand {
     /// Ensure the file ends with a newline.
     EnsureNewline {
@@ -1229,6 +1258,14 @@ pub async fn run() -> Result<()> {
 }
 
 fn should_ensure_daemon(command: &Command) -> bool {
+    if matches!(
+        command,
+        Command::Delegation {
+            command: DelegationCommand::Agents { .. }
+        }
+    ) {
+        return false;
+    }
     !matches!(
         command,
         Command::Serve { .. }

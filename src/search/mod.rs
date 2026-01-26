@@ -327,6 +327,10 @@ pub fn router(state: AppState) -> Router {
             post(crate::api::v1::delegate::delegate_handler),
         )
         .route(
+            "/v1/telemetry/delegation",
+            get(crate::api::v1::telemetry::delegation_telemetry_handler),
+        )
+        .route(
             "/v1/initialize",
             post(crate::api::v1::initialize::initialize_handler),
         )
@@ -1460,6 +1464,12 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 method: "GET",
                 path: "/metrics",
                 description: "Prometheus-style metrics (rate limits, errors, HTTP latency).",
+                params: &[],
+            },
+            AiHelpEndpoint {
+                method: "GET",
+                path: "/v1/telemetry/delegation",
+                description: "Delegation savings telemetry (tokens + USD).",
                 params: &[],
             },
             AiHelpEndpoint {

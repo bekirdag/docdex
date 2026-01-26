@@ -107,6 +107,24 @@ fn ensure_daemon_skips_serve() {
 }
 
 #[test]
+fn ensure_daemon_for_delegation_savings() {
+    let cmd = Command::Delegation {
+        command: super::DelegationCommand::Savings { json: true },
+    };
+    assert!(should_ensure_daemon(&cmd));
+    assert!(repo_hint_for_command(&cmd).is_none());
+}
+
+#[test]
+fn ensure_daemon_skips_delegation_agents() {
+    let cmd = Command::Delegation {
+        command: super::DelegationCommand::Agents { json: true },
+    };
+    assert!(!should_ensure_daemon(&cmd));
+    assert!(repo_hint_for_command(&cmd).is_none());
+}
+
+#[test]
 fn parse_mcp_ipc_flag() {
     let cli = Cli::try_parse_from(["docdexd", "serve", "--repo", ".", "--mcp-ipc", "off"])
         .expect("parse");
@@ -130,5 +148,30 @@ fn parse_dag_export_alias() {
             _ => panic!("expected dag export"),
         },
         _ => panic!("expected dag command"),
+    }
+}
+
+#[test]
+fn parse_delegation_savings_command() {
+    let cli = Cli::try_parse_from(["docdexd", "delegation", "savings", "--json", "true"])
+        .expect("parse");
+    match cli.command {
+        Command::Delegation { command } => match command {
+            super::DelegationCommand::Savings { json } => assert!(json),
+            _ => panic!("expected delegation savings command"),
+        },
+        _ => panic!("expected delegation command"),
+    }
+}
+
+#[test]
+fn parse_delegation_agents_command() {
+    let cli = Cli::try_parse_from(["docdexd", "delegation", "agents", "--json"]).expect("parse");
+    match cli.command {
+        Command::Delegation { command } => match command {
+            super::DelegationCommand::Agents { json } => assert!(json),
+            _ => panic!("expected delegation agents command"),
+        },
+        _ => panic!("expected delegation command"),
     }
 }

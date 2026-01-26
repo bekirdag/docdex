@@ -30,12 +30,28 @@ scrape_configs:
   `rate(docdex_project_map_cache_hits_total[5m]) / (rate(docdex_project_map_cache_hits_total[5m]) + rate(docdex_project_map_cache_misses_total[5m]))`
 - Delegation request rate:
   `rate(docdex_delegate_total[5m])`
+- Delegation offloaded rate:
+  `rate(docdex_delegate_offloaded_total[5m])`
 - Delegation fallback rate:
   `rate(docdex_delegate_fallback_total[5m])`
 - Delegation latency avg (ms):
   `docdex_delegate_latency_ms_total / docdex_delegate_latency_count_total`
 - Delegation token estimate rate:
   `rate(docdex_delegate_token_estimate_total[5m])`
+- Delegation local token rate:
+  `rate(docdex_delegate_local_tokens_total[5m])`
+- Delegation primary token rate:
+  `rate(docdex_delegate_primary_tokens_total[5m])`
+- Delegation token savings rate:
+  `rate(docdex_delegate_token_savings_total[5m])`
+- Delegation local cost (USD/s):
+  `rate(docdex_delegate_local_cost_micros_total[5m]) / 1000000`
+- Delegation primary cost (USD/s):
+  `rate(docdex_delegate_primary_cost_micros_total[5m]) / 1000000`
+- Delegation cost savings (USD/s):
+  `rate(docdex_delegate_cost_savings_micros_total[5m]) / 1000000`
+- Delegation enforcement failures:
+  `rate(docdex_delegate_local_enforced_failures_total[5m])`
 
 ## Alert thresholds (quality gates)
 

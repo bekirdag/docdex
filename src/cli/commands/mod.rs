@@ -21,6 +21,7 @@ pub mod search;
 pub mod self_check;
 pub mod serve;
 pub mod symbols;
+pub mod telemetry;
 pub mod test;
 pub mod tree;
 pub mod tui;
@@ -217,6 +218,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
         } => open::run(repo, file, start, end, head, clamp),
         super::Command::File { command } => file::run(command),
         super::Command::Test { command } => test::run(command),
+        super::Command::Delegation { command } => telemetry::run(command).await,
         super::Command::McpAdd {
             agent,
             transport,

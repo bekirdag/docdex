@@ -9,6 +9,8 @@ TIMEOUT_SECS="${DOCDEX_LOAD_TIMEOUT_SECS:-5}"
 REQUEST_PATH="${DOCDEX_LOAD_PATH:-/search?q=docdex&limit=5}"
 MAX_ERROR_RATE="${DOCDEX_LOAD_MAX_ERROR_RATE:-0}"
 AUTH_TOKEN="${DOCDEX_AUTH_TOKEN:-}"
+INDEX_WAIT_SECS="${DOCDEX_LOAD_INDEX_WAIT_SECS:-30}"
+INDEX_REBUILD_ON_MISSING="${DOCDEX_LOAD_REBUILD_ON_MISSING:-1}"
 REPO_ROOT="${DOCDEX_LOAD_REPO_ROOT:-${DOCDEX_REPO_ROOT:-}}"
 REPO_ID="${DOCDEX_LOAD_REPO_ID:-}"
 DOCDEX_BIN="${DOCDEX_BIN:-}"
@@ -146,6 +148,71 @@ apply_repo_id() {
   fi
 }
 
+index_status_path() {
+  local path="/v1/index/status"
+  if [[ -n "${REPO_ID}" && "${path}" != *"repo_id="* ]]; then
+    path=$(append_query_param "${path}" "repo_id" "${REPO_ID}")
+  fi
+  printf "%s" "${path}"
+}
+
+index_rebuild_path() {
+  local path="/v1/index/rebuild"
+  if [[ -n "${REPO_ID}" && "${path}" != *"repo_id="* ]]; then
+    path=$(append_query_param "${path}" "repo_id" "${REPO_ID}")
+  fi
+  printf "%s" "${path}"
+}
+
+wait_for_index_ready() {
+  local deadline=$(( $(date +%s) + INDEX_WAIT_SECS ))
+  local status_url
+  status_url="$(index_status_path)"
+  local rebuild_attempted=0
+  local last_status=""
+  local last_ready="false"
+
+  while [[ "$(date +%s)" -lt "${deadline}" ]]; do
+    local response
+    if ! response=$(curl -fsS "${CURL_AUTH_ARGS[@]}" "${BASE_URL}${status_url}" 2>/dev/null); then
+      log "index status check failed; retrying"
+      sleep 1
+      continue
+    fi
+    read -r last_ready last_status <<<"$(python3 - <<'PY' <<<"${response}"
+import json
+import sys
+
+ready = "false"
+status = ""
+try:
+    data = json.loads(sys.stdin.read())
+    ready = "true" if data.get("ready") else "false"
+    status = str(data.get("status") or "")
+except Exception:
+    pass
+print(f"{ready} {status}")
+PY
+)"
+    if [[ "${last_ready}" == "true" ]]; then
+      log "index status: ready"
+      return 0
+    fi
+    if [[ "${last_status}" == "missing" && "${INDEX_REBUILD_ON_MISSING}" != "0" && "${rebuild_attempted}" -eq 0 ]]; then
+      log "index status: missing; triggering rebuild"
+      local rebuild_path
+      rebuild_path="$(index_rebuild_path)"
+      curl -fsS -X POST "${CURL_AUTH_ARGS[@]}" "${BASE_URL}${rebuild_path}" >/dev/null 2>&1 || true
+      rebuild_attempted=1
+    fi
+    log "index status: ${last_status:-unknown} (ready=${last_ready})"
+    sleep 1
+  done
+
+  log "index not ready after ${INDEX_WAIT_SECS}s (status=${last_status:-unknown})"
+  return 1
+}
+
 require_server() {
   if ! curl -fsS "${BASE_URL}/healthz" >/dev/null 2>&1; then
     log "docdexd server not reachable at ${BASE_URL}"
@@ -172,6 +239,7 @@ worker() {
 log "using BASE_URL=${BASE_URL}"
 require_server
 apply_repo_id
+wait_for_index_ready
 log "duration=${DURATION_SECS}s concurrency=${CONCURRENCY} path=${REQUEST_PATH}"
 
 end_epoch="$(( $(date +%s) + DURATION_SECS ))"

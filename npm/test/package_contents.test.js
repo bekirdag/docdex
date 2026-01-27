@@ -42,6 +42,11 @@ test("npm tarball excludes native docdexd binaries and archives", () => {
   const files = readPackList();
   assert.ok(files.length > 0);
 
+  const normalized = files.map((file) => String(file || "").replace(/\\/g, "/"));
+  const required = ["bin/docdex.js", "bin/docdex-mcp-stdio.js", "lib/cli_entry.js"];
+  const missing = required.filter((file) => !normalized.includes(file));
+  assert.deepEqual(missing, [], `missing required package files: ${missing.join(", ")}`);
+
   const forbiddenPatterns = [
     /(^|\/)docdexd(\.exe)?$/,
     /(^|\/)docdexd-.*\.tar\.gz(\.sha256)?$/

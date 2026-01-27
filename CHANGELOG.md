@@ -1,7 +1,12 @@
 # Changelog
 
+## 0.2.31
+- Fix nightly HTTP soak by waiting for `/v1/index/status` readiness (with optional rebuild) before load testing.
+- Bump release metadata to 0.2.31.
+
 ## 0.2.30
-- Harden Windows npm installs: fallback to writable dist dirs when LOCALAPPDATA is locked, unblock downloaded binaries, and add AV/PowerShell guidance.
+- Harden Windows npm installs: fallback to writable dist dirs when LOCALAPPDATA is locked, unblock downloaded binaries, retry file operations on EPERM/EACCES, and add AV/PowerShell guidance.
+- Postinstall now restores missing CLI wrapper scripts and the npm tarball guardrails assert the required bin entrypoints are present.
 - Postinstall and CLI now search multiple dist roots to find the installed daemon reliably outside npm-managed paths.
 - Bump release metadata to 0.2.30.
 

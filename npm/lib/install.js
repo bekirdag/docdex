@@ -42,6 +42,31 @@ const DEFAULT_INTEGRITY_CONFIG = Object.freeze({
 const LOCAL_FALLBACK_ENV = "DOCDEX_LOCAL_FALLBACK";
 const LOCAL_BINARY_ENV = "DOCDEX_LOCAL_BINARY";
 const AGENTS_DOC_FILENAME = "agents.md";
+const CLI_WRAPPER_SCRIPT = [
+  "#!/usr/bin/env node",
+  "\"use strict\";",
+  "",
+  "require(\"../lib/cli_entry\");",
+  ""
+].join("\n");
+const MCP_STDIO_WRAPPER_SCRIPT = [
+  "#!/usr/bin/env node",
+  "\"use strict\";",
+  "",
+  "const { runBridge } = require(\"../lib/mcp_stdio_bridge\");",
+  "",
+  "async function main() {",
+  "  try {",
+  "    await runBridge({ stdin: process.stdin, stdout: process.stdout, stderr: process.stderr });",
+  "  } catch (err) {",
+  "    process.stderr.write(`[docdex-mcp-stdio] fatal: ${err}\\n`);",
+  "    process.exit(1);",
+  "  }",
+  "}",
+  "",
+  "main();",
+  ""
+].join("\n");
 
 const EXIT_CODE_BY_ERROR_CODE = Object.freeze({
   DOCDEX_INSTALLER_CONFIG: 2,
@@ -229,6 +254,53 @@ function writeAgentInstructions() {
   } catch {
     return false;
   }
+}
+
+function shouldWriteWrapper(fsModule, filePath) {
+  if (!fsModule?.existsSync) return true;
+  if (!fsModule.existsSync(filePath)) return true;
+  try {
+    const stat = fsModule.statSync(filePath);
+    if (!stat.isFile()) return true;
+    return stat.size < 8;
+  } catch {
+    return true;
+  }
+}
+
+function ensureCliWrappers({ fsModule = fs, pathModule = path, logger } = {}) {
+  const log = logger || console;
+  const binDir = pathModule.join(__dirname, "..", "bin");
+  const wrappers = [
+    { path: pathModule.join(binDir, "docdex.js"), contents: CLI_WRAPPER_SCRIPT },
+    { path: pathModule.join(binDir, "docdex-mcp-stdio.js"), contents: MCP_STDIO_WRAPPER_SCRIPT }
+  ];
+
+  try {
+    fsModule.mkdirSync(binDir, { recursive: true });
+  } catch (err) {
+    log?.warn?.(`[docdex] unable to ensure CLI wrappers (mkdir failed): ${err?.message || err}`);
+    return false;
+  }
+
+  let repaired = 0;
+  for (const wrapper of wrappers) {
+    if (!shouldWriteWrapper(fsModule, wrapper.path)) continue;
+    try {
+      fsModule.writeFileSync(wrapper.path, wrapper.contents, "utf8");
+      if (process.platform !== "win32" && fsModule.chmodSync) {
+        fsModule.chmodSync(wrapper.path, 0o755);
+      }
+      repaired += 1;
+    } catch (err) {
+      log?.warn?.(`[docdex] unable to write CLI wrapper at ${wrapper.path}: ${err?.message || err}`);
+    }
+  }
+
+  if (repaired > 0) {
+    log?.warn?.(`[docdex] restored ${repaired} CLI wrapper(s) under ${binDir}`);
+  }
+  return repaired > 0;
 }
 
 function selectHttpClient(url) {
@@ -421,6 +493,38 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableFsError(err) {
+  if (!err || typeof err !== "object") return false;
+  const code = err.code;
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY" || code === "ENOTEMPTY";
+}
+
+async function withWindowsRetry(fn, { attempts = 6, delayMs = 50 } = {}) {
+  if (process.platform !== "win32") {
+    return fn();
+  }
+  let lastErr = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableFsError(err)) throw err;
+      const waitMs = delayMs * Math.pow(2, attempt);
+      await sleep(waitMs);
+    }
+  }
+  throw lastErr;
+}
+
+async function renameWithRetry(fsModule, fromPath, toPath) {
+  return withWindowsRetry(() => fsModule.promises.rename(fromPath, toPath));
+}
+
 async function readJsonFileIfPossible({ fsModule, filePath }) {
   if (!fsModule?.promises?.readFile) {
     return { value: null, error: "readFile_unavailable", errorCode: "READFILE_UNAVAILABLE" };
@@ -447,7 +551,7 @@ async function writeJsonFileAtomic({ fsModule, pathModule, filePath, value }) {
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   const payload = `${JSON.stringify(value, null, 2)}\n`;
   await fsModule.promises.writeFile(tmp, payload, "utf8");
-  await fsModule.promises.rename(tmp, filePath);
+  await renameWithRetry(fsModule, tmp, filePath);
 }
 
 function isValidInstallMetadata(meta) {
@@ -605,7 +709,7 @@ async function installFromLocalBinary({
   writeJsonFileAtomicFn,
   logger
 }) {
-  await fsModule.promises.rm(distDir, { recursive: true, force: true });
+  await withWindowsRetry(() => fsModule.promises.rm(distDir, { recursive: true, force: true }));
   await fsModule.promises.mkdir(distDir, { recursive: true });
   const filename = isWin32 ? "docdexd.exe" : "docdexd";
   const destPath = pathModule.join(distDir, filename);
@@ -723,7 +827,7 @@ function failedDirName({ distDir, nonce }) {
 async function removeDirSafe(fsModule, dirPath) {
   if (!dirPath) return false;
   try {
-    await fsModule.promises.rm(dirPath, { recursive: true, force: true });
+    await withWindowsRetry(() => fsModule.promises.rm(dirPath, { recursive: true, force: true }));
     return true;
   } catch {
     return false;
@@ -865,7 +969,7 @@ async function recoverInterruptedInstall({ fsModule, pathModule, distDir, isWin3
     const candidate = await selectLatestCandidate(fsModule, backups);
     if (candidate) {
       try {
-        await fsModule.promises.rename(candidate.path, distDir);
+        await renameWithRetry(fsModule, candidate.path, distDir);
         recoveredFrom = candidate.path;
         action = "recovered";
       } catch (err) {
@@ -2002,11 +2106,11 @@ async function runInstaller(options) {
 
     if (existsSync && existsSync(distDir)) {
       await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
-      await fsModule.promises.rename(distDir, backupDir);
+      await renameWithRetry(fsModule, distDir, backupDir);
       backupMoved = true;
     }
 
-    await fsModule.promises.rename(stagingDir, distDir);
+    await renameWithRetry(fsModule, stagingDir, distDir);
     promoted = true;
 
     if (typeof restartFn === "function") {
@@ -2076,7 +2180,7 @@ async function runInstaller(options) {
         if (existsSync(distDir)) {
           await fsModule.promises.rm(distDir, { recursive: true, force: true });
         }
-        await fsModule.promises.rename(backupDir, distDir);
+        await renameWithRetry(fsModule, backupDir, distDir);
         rollbackStatus = "restored previous installation";
         rollbackSucceeded = true;
       } else if (promoted && !backupMoved) {
@@ -2137,6 +2241,11 @@ async function main() {
   const env = process.env;
   const distBaseCandidates = resolveDistBaseCandidates({ env });
   const distBaseDir = resolveDistBaseDir({ env, fsModule: fs });
+  try {
+    ensureCliWrappers({ logger: console });
+  } catch (err) {
+    console.warn(`[docdex] CLI wrapper check failed: ${err?.message || err}`);
+  }
   if (
     process.platform === "win32" &&
     !env?.DOCDEX_DIST_DIR &&

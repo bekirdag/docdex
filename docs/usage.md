@@ -37,7 +37,7 @@ Installer notes:
 - Platform diagnostics (no download): `docdex doctor` (alias `docdex diagnostics`).
 
 Postinstall behavior:
-- Docdex registers a local daemon and writes MCP client config pointing to `http://localhost:28491/v1/mcp/sse` (Codex uses `http://localhost:28491/v1/mcp`). Install fails if port `28491` is already in use.
+- Docdex registers a local daemon and writes MCP client config pointing to `http://localhost:28491/v1/mcp/sse` (Codex uses `http://localhost:28491/v1/mcp`). The installer will try to stop/reuse an existing Docdex daemon on that port; it only fails if a non-Docdex process is holding `28491`.
 - Auto-configured clients (when config files are present): Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Continue, VS Code, PearAI, Void, Zed, Codex. Restart clients after install.
 - If Ollama is missing, the installer can prompt to install it and the default embedding model.
 - Skip prompts with `DOCDEX_OLLAMA_INSTALL=0` or `DOCDEX_OLLAMA_MODEL_PROMPT=0`.

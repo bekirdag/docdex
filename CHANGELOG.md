@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.29
+- Fix nightly load tests in multi-repo mode by resolving `repo_id` from `/v1/initialize` in `load_test_http.sh` and wiring `DOCDEX_LOAD_REPO_ROOT` in CI.
+- Improve npm installer behavior: postinstall stops or reuses the existing daemon on 127.0.0.1:28491 and restarts when versions differ so the updated binary is running.
+- Bump release metadata to 0.2.29.
+
 ## 0.2.28
 - Add delegation enforcement controls (`enforce_local`, `allow_fallback_to_primary`) with new enforcement metric.
 - Add delegation savings telemetry endpoint + CLI output.

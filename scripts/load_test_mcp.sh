@@ -12,6 +12,18 @@ log() {
   printf "[load-mcp] %s\n" "$*" >&2
 }
 
+resolve_repo_root() {
+  local root="$1"
+  python3 - "$root" <<'PY'
+import os
+import sys
+
+print(os.path.abspath(os.path.expanduser(sys.argv[1])))
+PY
+}
+
+REPO_ROOT="$(resolve_repo_root "${REPO_ROOT}")"
+
 if [[ ! -d "${REPO_ROOT}" ]]; then
   log "repo path not found: ${REPO_ROOT}"
   exit 1

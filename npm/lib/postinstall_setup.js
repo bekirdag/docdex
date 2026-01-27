@@ -18,6 +18,8 @@ const DAEMON_HEALTH_TIMEOUT_MS = 8000;
 const DAEMON_HEALTH_REQUEST_TIMEOUT_MS = 1000;
 const DAEMON_HEALTH_POLL_INTERVAL_MS = 200;
 const DAEMON_HEALTH_PATH = "/healthz";
+const DAEMON_INFO_PATH = "/ai-help";
+const DAEMON_PORT_RELEASE_TIMEOUT_MS = 5000;
 const STARTUP_FAILURE_MARKER = "startup_registration_failed.json";
 const DEFAULT_OLLAMA_MODEL = "nomic-embed-text";
 const DEFAULT_OLLAMA_CHAT_MODEL = "phi3.5:3.8b";
@@ -118,6 +120,139 @@ async function waitForDaemonHealthy({ host, port, timeoutMs = DAEMON_HEALTH_TIME
     await sleep(DAEMON_HEALTH_POLL_INTERVAL_MS);
   }
   return false;
+}
+
+async function waitForPortAvailable({
+  host,
+  port,
+  timeoutMs = DAEMON_PORT_RELEASE_TIMEOUT_MS
+}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await isPortAvailable(port, host)) {
+      return true;
+    }
+    await sleep(DAEMON_HEALTH_POLL_INTERVAL_MS);
+  }
+  return false;
+}
+
+function isPidRunning(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err?.code === "EPERM";
+  }
+}
+
+function readDaemonLockMetadataForPort(port) {
+  for (const lockPath of daemonLockPaths()) {
+    if (!lockPath || !fs.existsSync(lockPath)) continue;
+    try {
+      const raw = fs.readFileSync(lockPath, "utf8");
+      if (!raw.trim()) continue;
+      const payload = JSON.parse(raw);
+      const lockPort = Number(payload?.port);
+      const pid = Number(payload?.pid);
+      if (!Number.isFinite(lockPort) || lockPort !== port) continue;
+      return { pid, port: lockPort };
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function normalizeVersion(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^v/i, "");
+}
+
+function fetchDaemonInfo({ host, port, timeoutMs = DAEMON_HEALTH_REQUEST_TIMEOUT_MS }) {
+  return new Promise((resolve) => {
+    const req = http.request(
+      {
+        host,
+        port,
+        path: DAEMON_INFO_PATH,
+        method: "GET",
+        timeout: timeoutMs
+      },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          body += chunk;
+        });
+        res.on("end", () => {
+          if (res.statusCode !== 200) return resolve(null);
+          try {
+            const payload = JSON.parse(body);
+            resolve(payload);
+          } catch {
+            resolve(null);
+          }
+        });
+      }
+    );
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(null);
+    });
+    req.on("error", () => resolve(null));
+    req.end();
+  });
+}
+
+function checkDocdexIdentity({ host, port, timeoutMs = DAEMON_HEALTH_REQUEST_TIMEOUT_MS }) {
+  return fetchDaemonInfo({ host, port, timeoutMs }).then((payload) => payload?.product === "Docdex");
+}
+
+async function resolveDaemonPortState({ host, port, logger, deps } = {}) {
+  const log = logger || console;
+  const helpers = {
+    isPortAvailable,
+    checkDaemonHealth,
+    checkDocdexIdentity,
+    stopDaemonService,
+    stopDaemonFromLock,
+    stopDaemonByName,
+    clearDaemonLocks,
+    sleep,
+    readDaemonLockMetadataForPort,
+    isPidRunning,
+    normalizeVersion
+  };
+  if (deps && typeof deps === "object") {
+    Object.assign(helpers, deps);
+  }
+
+  let available = await helpers.isPortAvailable(port, host);
+  if (available) return { available: true, reuseExisting: false, stopped: false };
+
+  helpers.stopDaemonService({ logger: log });
+  helpers.stopDaemonFromLock({ logger: log });
+  helpers.stopDaemonByName({ logger: log });
+  await helpers.sleep(DAEMON_HEALTH_POLL_INTERVAL_MS);
+
+  available = await helpers.isPortAvailable(port, host);
+  if (available) {
+    helpers.clearDaemonLocks();
+    return { available: true, reuseExisting: false, stopped: true };
+  }
+
+  const lockMeta = helpers.readDaemonLockMetadataForPort(port);
+  const lockRunning = lockMeta ? helpers.isPidRunning(lockMeta.pid) : false;
+  const healthy = await helpers.checkDaemonHealth({ host, port });
+  const identity = lockRunning ? true : await helpers.checkDocdexIdentity({ host, port });
+  const reuseExisting = Boolean(lockRunning || healthy || identity);
+  if (reuseExisting) {
+    log.warn?.(`[docdex] ${host}:${port} already in use by a running docdex daemon; reusing it.`);
+  }
+  return { available: false, reuseExisting, stopped: false };
 }
 
 function parseServerBind(contents) {
@@ -2254,8 +2389,12 @@ async function runPostInstallSetup({ binaryPath, logger } = {}) {
     existingConfig = fs.readFileSync(configPath, "utf8");
   }
   const port = DEFAULT_DAEMON_PORT;
-  const available = await isPortAvailable(port, DEFAULT_HOST);
-  if (!available) {
+  const portState = await resolveDaemonPortState({
+    host: DEFAULT_HOST,
+    port,
+    logger: log
+  });
+  if (!portState.available && !portState.reuseExisting) {
     log.error?.(
       `[docdex] ${DEFAULT_HOST}:${port} is already in use; docdex requires a fixed port. Stop the process using this port and re-run the install.`
     );
@@ -2268,19 +2407,42 @@ async function runPostInstallSetup({ binaryPath, logger } = {}) {
     binaryPath: resolvedBinary,
     logger: log
   });
-  stopDaemonService({ logger: log });
-  stopDaemonFromLock({ logger: log });
-  stopDaemonByName({ logger: log });
-  clearDaemonLocks();
-  const result = await startDaemonWithHealthCheck({
-    binaryPath: startupBinaries.binaryPath,
-    port,
-    host: DEFAULT_HOST,
-    logger: log
-  });
-  if (!result.ok) {
-    log.warn?.(`[docdex] daemon failed to start on ${DEFAULT_HOST}:${port}.`);
-    throw new Error("docdex daemon failed to start");
+  let reuseExisting = portState.reuseExisting;
+  if (reuseExisting) {
+    const daemonInfo = await fetchDaemonInfo({ host: DEFAULT_HOST, port });
+    const daemonVersion = normalizeVersion(daemonInfo?.version);
+    const packageVersion = normalizeVersion(resolvePackageVersion());
+    if (daemonInfo?.product === "Docdex" && daemonVersion && packageVersion) {
+      if (daemonVersion !== packageVersion) {
+        log.warn?.(
+          `[docdex] daemon version ${daemonVersion} differs from package ${packageVersion}; restarting daemon.`
+        );
+        stopDaemonService({ logger: log });
+        stopDaemonFromLock({ logger: log });
+        stopDaemonByName({ logger: log });
+        clearDaemonLocks();
+        const released = await waitForPortAvailable({
+          host: DEFAULT_HOST,
+          port
+        });
+        if (!released) {
+          throw new Error("docdex daemon restart failed; port still in use");
+        }
+        reuseExisting = false;
+      }
+    }
+  }
+  if (!reuseExisting) {
+    const result = await startDaemonWithHealthCheck({
+      binaryPath: startupBinaries.binaryPath,
+      port,
+      host: DEFAULT_HOST,
+      logger: log
+    });
+    if (!result.ok) {
+      log.warn?.(`[docdex] daemon failed to start on ${DEFAULT_HOST}:${port}.`);
+      throw new Error("docdex daemon failed to start");
+    }
   }
 
   const httpBindAddr = `${DEFAULT_HOST}:${port}`;
@@ -2345,5 +2507,7 @@ module.exports = {
   shouldSkipSetup,
   launchSetupWizard,
   applyAgentInstructions,
-  buildDaemonEnv
+  buildDaemonEnv,
+  resolveDaemonPortState,
+  normalizeVersion
 };

@@ -14,6 +14,8 @@ const {
   configUrlForPort,
   configStreamableUrlForPort,
   runPostInstallSetup,
+  resolveDaemonPortState,
+  normalizeVersion,
   resolveOllamaInstallMode,
   resolveOllamaModelPromptMode,
   parseOllamaListOutput,
@@ -225,6 +227,59 @@ test("runPostInstallSetup does not call Ollama installers", () => {
   const source = runPostInstallSetup.toString();
   assert.equal(source.includes("maybeInstallOllama"), false);
   assert.equal(source.includes("maybePromptOllamaModel"), false);
+});
+
+test("resolveDaemonPortState reuses existing daemon when port busy and healthy", async () => {
+  let cleared = false;
+  const state = await resolveDaemonPortState({
+    host: "127.0.0.1",
+    port: 28491,
+    logger: { warn: () => {} },
+    deps: {
+      isPortAvailable: async () => false,
+      stopDaemonService: () => {},
+      stopDaemonFromLock: () => {},
+      stopDaemonByName: () => {},
+      clearDaemonLocks: () => {
+        cleared = true;
+      },
+      sleep: async () => {},
+      checkDaemonHealth: async () => true,
+      checkDocdexIdentity: async () => false,
+      readDaemonLockMetadataForPort: () => null,
+      isPidRunning: () => false
+    }
+  });
+  assert.equal(state.available, false);
+  assert.equal(state.reuseExisting, true);
+  assert.equal(cleared, false);
+});
+
+test("resolveDaemonPortState reports busy when port in use by non-docdex", async () => {
+  const state = await resolveDaemonPortState({
+    host: "127.0.0.1",
+    port: 28491,
+    deps: {
+      isPortAvailable: async () => false,
+      stopDaemonService: () => {},
+      stopDaemonFromLock: () => {},
+      stopDaemonByName: () => {},
+      clearDaemonLocks: () => {},
+      sleep: async () => {},
+      checkDaemonHealth: async () => false,
+      checkDocdexIdentity: async () => false,
+      readDaemonLockMetadataForPort: () => null,
+      isPidRunning: () => false
+    }
+  });
+  assert.equal(state.available, false);
+  assert.equal(state.reuseExisting, false);
+});
+
+test("normalizeVersion strips v prefix and trims whitespace", () => {
+  assert.equal(normalizeVersion("v0.2.29"), "0.2.29");
+  assert.equal(normalizeVersion(" 0.2.29 "), "0.2.29");
+  assert.equal(normalizeVersion("V0.2.29"), "0.2.29");
 });
 
 test("buildDaemonEnv includes base daemon env values", () => {

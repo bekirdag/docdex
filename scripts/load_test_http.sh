@@ -8,6 +8,8 @@ TIMEOUT_SECS="${DOCDEX_LOAD_TIMEOUT_SECS:-5}"
 REQUEST_PATH="${DOCDEX_LOAD_PATH:-/search?q=docdex&limit=5}"
 MAX_ERROR_RATE="${DOCDEX_LOAD_MAX_ERROR_RATE:-0}"
 AUTH_TOKEN="${DOCDEX_AUTH_TOKEN:-}"
+REPO_ROOT="${DOCDEX_LOAD_REPO_ROOT:-${DOCDEX_REPO_ROOT:-}}"
+REPO_ID="${DOCDEX_LOAD_REPO_ID:-}"
 
 CURL_AUTH_ARGS=()
 if [[ -n "${AUTH_TOKEN//[[:space:]]/}" ]]; then
@@ -16,6 +18,85 @@ fi
 
 log() {
   printf "[load-http] %s\n" "$*" >&2
+}
+
+append_query_param() {
+  local path="$1"
+  local key="$2"
+  local value="$3"
+  if [[ "${path}" == *"?"* ]]; then
+    printf "%s&%s=%s" "${path}" "${key}" "${value}"
+  else
+    printf "%s?%s=%s" "${path}" "${key}" "${value}"
+  fi
+}
+
+resolve_repo_id() {
+  if [[ -n "${REPO_ID}" ]]; then
+    return 0
+  fi
+  if [[ -z "${REPO_ROOT//[[:space:]]/}" ]]; then
+    return 0
+  fi
+  local abs_root
+  abs_root=$(python3 - "${REPO_ROOT}" <<'PY'
+import os
+import sys
+
+print(os.path.abspath(os.path.expanduser(sys.argv[1])))
+PY
+)
+  local payload
+  payload=$(python3 - "${abs_root}" <<'PY'
+import json
+import sys
+
+print(json.dumps({"root_uri": sys.argv[1]}))
+PY
+)
+  local response
+  if ! response=$(curl -fsS "${CURL_AUTH_ARGS[@]}" \
+    -H "Content-Type: application/json" \
+    -d "${payload}" \
+    "${BASE_URL}/v1/initialize"); then
+    log "initialize failed for repo_root=${abs_root}"
+    return 1
+  fi
+  REPO_ID=$(python3 - <<'PY' <<<"${response}"
+import json
+import sys
+
+try:
+    data = json.loads(sys.stdin.read())
+    value = data.get("repo_id", "")
+    if isinstance(value, str):
+        print(value)
+except Exception:
+    pass
+PY
+)
+  if [[ -n "${REPO_ID}" ]]; then
+    log "resolved repo_id=${REPO_ID}"
+    return 0
+  fi
+  log "initialize response missing repo_id"
+  return 1
+}
+
+apply_repo_id() {
+  if [[ "${REQUEST_PATH}" == *"repo_id="* ]]; then
+    return 0
+  fi
+  if ! resolve_repo_id; then
+    if [[ -n "${REPO_ROOT//[[:space:]]/}" ]]; then
+      log "repo initialization failed; set DOCDEX_LOAD_REPO_ID to override"
+      exit 1
+    fi
+    return 0
+  fi
+  if [[ -n "${REPO_ID}" ]]; then
+    REQUEST_PATH=$(append_query_param "${REQUEST_PATH}" "repo_id" "${REPO_ID}")
+  fi
 }
 
 require_server() {
@@ -42,8 +123,9 @@ worker() {
 }
 
 log "using BASE_URL=${BASE_URL}"
-log "duration=${DURATION_SECS}s concurrency=${CONCURRENCY} path=${REQUEST_PATH}"
 require_server
+apply_repo_id
+log "duration=${DURATION_SECS}s concurrency=${CONCURRENCY} path=${REQUEST_PATH}"
 
 end_epoch="$(( $(date +%s) + DURATION_SECS ))"
 tmp_dir="$(mktemp -d)"

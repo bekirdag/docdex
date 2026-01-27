@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.32
+- Fix Windows npm installs by pointing CLI bin entries at stable `lib/` entrypoints (no missing `bin/docdex.js`).
+- Bump release metadata to 0.2.32.
+
 ## 0.2.31
 - Fix nightly HTTP soak by waiting for `/v1/index/status` readiness (with optional rebuild) before load testing.
 - Bump release metadata to 0.2.31.

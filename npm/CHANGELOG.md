@@ -5,6 +5,7 @@
 - Ensure npm tarballs include CLI wrapper entrypoints and restore missing wrappers during postinstall.
 - Retry Windows file operations during install to reduce EPERM/EACCES failures.
 - Nightly HTTP soak waits for index readiness before load testing.
+- Windows CLI shims now target stable `lib/` entrypoints to avoid missing `bin/docdex.js`.
 
 ## 0.2.23
 - Add Smithery session config schema metadata (titles/descriptions, defaults, example config) for local MCP sessions.

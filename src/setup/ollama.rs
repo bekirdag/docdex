@@ -1,4 +1,6 @@
 use anyhow::{anyhow, Context, Result};
+#[cfg(target_os = "windows")]
+use std::env;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tracing::warn;
@@ -71,8 +73,71 @@ pub fn resolve_ollama_path(explicit: Option<PathBuf>) -> Option<PathBuf> {
             return Some(path);
         }
     }
-    which("ollama").ok()
+    if let Ok(path) = which("ollama") {
+        return Some(path);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(path) = resolve_windows_ollama_path() {
+            if let Some(parent) = path.parent() {
+                ensure_path_contains(parent);
+            }
+            return Some(path);
+        }
+    }
+    None
 }
+
+#[cfg(target_os = "windows")]
+fn resolve_windows_ollama_path() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
+        candidates.push(
+            PathBuf::from(&local_app_data)
+                .join("Programs")
+                .join("Ollama")
+                .join("ollama.exe"),
+        );
+        candidates.push(PathBuf::from(local_app_data).join("Ollama").join("ollama.exe"));
+    }
+    if let Some(program_files) = env::var_os("ProgramFiles") {
+        candidates.push(
+            PathBuf::from(&program_files)
+                .join("Ollama")
+                .join("ollama.exe"),
+        );
+    }
+    if let Some(program_files_x86) = env::var_os("ProgramFiles(x86)") {
+        candidates.push(
+            PathBuf::from(&program_files_x86)
+                .join("Ollama")
+                .join("ollama.exe"),
+        );
+    }
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_path_contains(dir: &Path) {
+    let mut paths = env::var_os("PATH")
+        .map(|value| env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_default();
+    if paths.iter().any(|entry| path_eq(entry, dir)) {
+        return;
+    }
+    paths.push(dir.to_path_buf());
+    if let Ok(joined) = env::join_paths(paths) {
+        env::set_var("PATH", joined);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn path_eq(left: &Path, right: &Path) -> bool {
+    left.to_string_lossy()
+        .to_ascii_lowercase()
+        .eq(&right.to_string_lossy().to_ascii_lowercase())
+}
+
 
 pub fn list_models(bin: &Path) -> Result<Vec<String>> {
     match list_models_once(bin) {

@@ -1,11 +1,9 @@
 # Changelog
 
-## Unreleased
-- Remove legacy stdio MCP (`docdexd mcp` / `docdex-mcp-server`); MCP is served only over HTTP/SSE.
-- Ensure npm tarballs include CLI wrapper entrypoints and restore missing wrappers during postinstall.
-- Retry Windows file operations during install to reduce EPERM/EACCES failures.
-- Nightly HTTP soak waits for index readiness before load testing.
-- Windows CLI shims now target stable `lib/` entrypoints to avoid missing `bin/docdex.js`.
+## 0.2.33
+- Warn Windows users to install the VC++ 2015-2022 runtime in the npm README.
+- Ensure `docdex setup` detects the default Ollama install path on Windows.
+- Document the Windows default Chromium auto-install location.
 
 ## 0.2.23
 - Add Smithery session config schema metadata (titles/descriptions, defaults, example config) for local MCP sessions.

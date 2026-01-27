@@ -22,6 +22,10 @@ function isDoctorCommand(argv) {
   return sub === "doctor" || sub === "diagnostics";
 }
 
+function isVersionCommand(argv) {
+  return argv.includes("--version") || argv.includes("-V");
+}
+
 function printLines(lines, { stderr } = {}) {
   for (const line of lines) {
     if (!line) continue;
@@ -207,7 +211,7 @@ async function run() {
     return;
   }
 
-  const { binaryPath } = resolveInstallPaths(platformKey);
+  const { binaryPath, basePath } = resolveInstallPaths(platformKey);
 
   if (!fs.existsSync(binaryPath)) {
     console.error(`[docdex] Missing binary for ${platformKey}. Try reinstalling or set DOCDEX_DOWNLOAD_REPO to a repo with release assets.`);
@@ -216,6 +220,14 @@ async function run() {
       console.error(`[docdex] Asset naming pattern: ${assetPatternForPlatformKey(platformKey)}`);
     } catch {}
     process.exit(1);
+    return;
+  }
+
+  if (isVersionCommand(argv)) {
+    const installMeta = readInstallMetadata({ fsModule: fs, pathModule: path, basePath });
+    const version = installMeta?.version || pkg.version;
+    console.log(`docdexd ${version}`);
+    process.exit(0);
     return;
   }
 

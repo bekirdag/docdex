@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.33
+- Warn Windows users to install the VC++ 2015-2022 runtime in the README and npm README.
+- Fix Windows setup to detect the default Ollama install path and use it for the current process.
+- Document the Windows default Chromium auto-install location.
+- Bump release metadata to 0.2.33.
+
 ## 0.2.32
 - Fix Windows npm installs by pointing CLI bin entries at stable `lib/` entrypoints (no missing `bin/docdex.js`).
 - Bump release metadata to 0.2.32.

@@ -203,18 +203,19 @@ fn pull_model(bin: &PathBuf, model: &str) -> Result<()> {
 }
 
 fn ensure_ollama_installed(ollama_path: Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(path) = ollama_path {
-        return Ok(path);
-    }
-    if let Ok(path) = which("ollama") {
+    if let Some(path) = setup_ollama::resolve_ollama_path(ollama_path) {
         return Ok(path);
     }
     install_ollama()?;
-    which("ollama").map_err(|_| {
-        anyhow::anyhow!(
-            "ollama installed but not found on PATH; restart your shell or pass --ollama-path"
-        )
-    })
+    if let Some(path) = setup_ollama::resolve_ollama_path(None) {
+        return Ok(path);
+    }
+    let hint = if cfg!(target_os = "windows") {
+        "ollama installed but not found on PATH; add %LOCALAPPDATA%\\Programs\\Ollama to PATH or pass --ollama-path"
+    } else {
+        "ollama installed but not found on PATH; restart your shell or pass --ollama-path"
+    };
+    Err(anyhow::anyhow!(hint))
 }
 
 fn install_ollama() -> Result<()> {

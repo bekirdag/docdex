@@ -1,6 +1,7 @@
 # Browser Auto-Install (Chromium)
 
 Docdex can auto-install a Chromium build on macOS, Windows, and Linux when no browser is detected. The download is placed under `~/.docdex/state/bin/chromium/` with a `manifest.json` that records the installed version and binary path.
+On Windows this resolves to `%USERPROFILE%\.docdex\state\bin\chromium\` by default (unless `DOCDEX_STATE_DIR` is set).
 
 ## How It Works
 - On config load, Docdex runs browser discovery (env → config → Chromium manifest → system).

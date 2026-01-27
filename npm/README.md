@@ -51,6 +51,12 @@ npm i -g docdex
 
 ```
 
+> [!WARNING]
+> **Windows requirement:** Docdex uses the MSVC runtime. Install the **Microsoft Visual C++ Redistributable 2015-2022 (x64)** before running `docdex`/`docdexd`.
+> - Winget: `winget install --id Microsoft.VCRedist.2015+.x64`
+> - Manual: download `vc_redist.x64.exe` from Microsoft: https://aka.ms/vs/17/release/vc_redist.x64.exe
+> - If `docdexd` exits with `0xC0000135`, the runtime is missing.
+
 ### 2. Auto-Configuration
 
 If you have any of the following clients installed, Docdex automatically configures them to use the local MCP endpoint (daemon HTTP/SSE):

@@ -6,6 +6,7 @@ Provide consistent headless web scraping across macOS, Windows, and Linux using 
 ## Current Approach
 - Detection priority: env overrides → config → Docdex Chromium manifest → system Chromium paths.
 - Auto-install downloads Chrome for Testing (Chromium) into `~/.docdex/state/bin/chromium/` and writes `manifest.json`.
+  - Windows default: `%USERPROFILE%\.docdex\state\bin\chromium\` (unless `DOCDEX_STATE_DIR` is set).
 - Config persistence: `web.scraper.chrome_binary_path` + `web.scraper.browser_kind = "chromium"`.
 - Profiles: `web.scraper.user_data_dir` remains stable (default `~/.docdex/state/browser_profiles/chrome`).
 

@@ -11,6 +11,7 @@ MAX_ERROR_RATE="${DOCDEX_LOAD_MAX_ERROR_RATE:-0}"
 AUTH_TOKEN="${DOCDEX_AUTH_TOKEN:-}"
 REPO_ROOT="${DOCDEX_LOAD_REPO_ROOT:-${DOCDEX_REPO_ROOT:-}}"
 REPO_ID="${DOCDEX_LOAD_REPO_ID:-}"
+DOCDEX_BIN="${DOCDEX_BIN:-}"
 
 CURL_AUTH_ARGS=()
 if [[ -n "${AUTH_TOKEN//[[:space:]]/}" ]]; then
@@ -68,6 +69,30 @@ import sys
 print(os.path.abspath(os.path.expanduser(sys.argv[1])))
 PY
 )
+  if [[ -n "${DOCDEX_BIN//[[:space:]]/}" ]]; then
+    if command -v "${DOCDEX_BIN}" >/dev/null 2>&1; then
+      local id_payload
+      if id_payload=$(DOCDEX_CLI_LOCAL=1 "${DOCDEX_BIN}" repo id --repo "${abs_root}" 2>/dev/null); then
+        REPO_ID=$(python3 - <<'PY' <<<"${id_payload}"
+import json
+import sys
+
+try:
+    data = json.loads(sys.stdin.read())
+    value = data.get("repo_id", "")
+    if isinstance(value, str):
+        print(value)
+except Exception:
+    pass
+PY
+)
+        if [[ -n "${REPO_ID}" ]]; then
+          log "resolved repo_id=${REPO_ID} (local)"
+          return 0
+        fi
+      fi
+    fi
+  fi
   local payload
   payload=$(python3 - "${abs_root}" <<'PY'
 import json

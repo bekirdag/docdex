@@ -20,6 +20,23 @@ log() {
   printf "[load-http] %s\n" "$*" >&2
 }
 
+resolve_default_repo_root() {
+  local candidate=""
+  if command -v git >/dev/null 2>&1; then
+    candidate="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  fi
+  if [[ -z "${candidate//[[:space:]]/}" ]]; then
+    candidate="$(pwd)"
+  fi
+  if [[ -d "${candidate}" && ( -f "${candidate}/Cargo.toml" || -d "${candidate}/.git" ) ]]; then
+    printf "%s" "${candidate}"
+  fi
+}
+
+if [[ -z "${REPO_ROOT//[[:space:]]/}" ]]; then
+  REPO_ROOT="$(resolve_default_repo_root || true)"
+fi
+
 append_query_param() {
   local path="$1"
   local key="$2"

@@ -16,6 +16,17 @@ Assumptions (explicit):
 
 ---
 
+## Install location (dist base directory)
+
+The installer writes the daemon under the Docdex data directory (not inside the npm package):
+- macOS: `~/Library/Application Support/docdex/dist/<platformKey>/`
+- Linux: `$XDG_DATA_HOME/docdex/dist/<platformKey>/` (fallback `~/.local/share/docdex/dist/<platformKey>/`)
+- Windows: `%LOCALAPPDATA%\\docdex\\dist\\<platformKey>\\`
+
+Override with `DOCDEX_DIST_DIR` to point at the `dist` base directory. In this doc, `dist/<platformKey>` refers to `${DOCDEX_DIST_DIR:-<docdex data dir>/dist}/<platformKey>`.
+
+---
+
 ## Platform identifiers the installer uses
 
 Inputs (Node runtime):
@@ -90,8 +101,8 @@ If your platform is supported but the expected release artifact is missing (e.g.
 1) Build `docdexd` from source (same as above).
 2) Determine your `platformKey`:
    - Prefer `docdex doctor` (offline), or use the support table above.
-3) Copy the built binary into the installed package:
-   - Target directory: `dist/<platformKey>/`
+3) Copy the built binary into the wrapper lookup location:
+   - Target directory: `dist/<platformKey>/` (relative to the dist base directory above)
    - Expected filename: `docdexd` (or `docdexd.exe` on Windows)
 
 Risk note:
@@ -149,17 +160,17 @@ See also:
 
 ## Recover from partial/failed installs (safe cleanup)
 
-The wrapper looks for the binary under the installed package at:
-- `dist/<platformKey>/docdexd` (or `docdexd.exe` on Windows) — see `npm/bin/docdex.js`
+The wrapper looks for the binary at:
+- `dist/<platformKey>/docdexd` (or `docdexd.exe` on Windows), relative to the dist base directory above — see `npm/bin/docdex.js`
 
 Low-risk recovery steps:
 1) Remove the installed package (global or local), then reinstall:
    - Global: `npm uninstall -g docdex && npm i -g docdex`
    - Local: `npm uninstall docdex && npm install` (or your lockfile-friendly install command, e.g. `npm ci`)
 2) If you suspect a partial extraction, delete only the platform directory and reinstall:
-   - Delete: `.../docdex/dist/<platformKey>/`
+   - Delete: `<docdex data dir>/dist/<platformKey>/` (or the `DOCDEX_DIST_DIR` override)
    - Then re-run: `npm i -g docdex` (or `npm i docdex`)
 
 Risk note:
 - If you see `DOCDEX_INTEGRITY_MISMATCH`, treat it as a potential tampering/caching issue and avoid “working around” it by manually extracting an unverified download. Prefer a clean reinstall and/or building from source.
-- If you delete `dist/<platformKey>/` manually, double-check you are removing a path under the installed `docdex` package directory (to avoid deleting unrelated files).
+- If you delete `dist/<platformKey>/` manually, double-check you are removing a path under the Docdex data directory (to avoid deleting unrelated files).

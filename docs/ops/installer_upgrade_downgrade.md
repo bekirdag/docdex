@@ -7,6 +7,15 @@ Assumptions (explicit):
 - “Expected version” is the npm package version (or `DOCDEX_VERSION` if set).
 - The installer uses the published release manifest/checksums contracts when it needs to fetch an archive; see `docs/contracts/release_manifest_schema_v1.md`.
 
+## Install location (dist base directory)
+
+The installer writes the daemon under the Docdex data directory (not inside the npm package):
+- macOS: `~/Library/Application Support/docdex/dist/<platformKey>/`
+- Linux: `$XDG_DATA_HOME/docdex/dist/<platformKey>/` (fallback `~/.local/share/docdex/dist/<platformKey>/`)
+- Windows: `%LOCALAPPDATA%\\docdex\\dist\\<platformKey>\\`
+
+Override with `DOCDEX_DIST_DIR` to point at the `dist` base directory. In this doc, `dist/<platformKey>` refers to `${DOCDEX_DIST_DIR:-<docdex data dir>/dist}/<platformKey>`.
+
 ## Deterministic installer outcomes
 
 The installer converges to a single final state: the installed `docdexd` under `dist/<platformKey>/` matches the expected version for this npm package install.
@@ -58,24 +67,19 @@ This metadata enables deterministic `no-op` and `repair` decisions without downl
 
 ### Locate it (safe, cross-platform)
 
-Local install (project dependency):
-- Package root: `<repo>/node_modules/docdex/`
-- Metadata: `<repo>/node_modules/docdex/dist/<platformKey>/docdexd-install.json`
+Default locations (when `DOCDEX_DIST_DIR` is not set):
+- macOS: `~/Library/Application Support/docdex/dist/<platformKey>/docdexd-install.json`
+- Linux: `$XDG_DATA_HOME/docdex/dist/<platformKey>/docdexd-install.json` (fallback `~/.local/share/docdex/dist/<platformKey>/docdexd-install.json`)
+- Windows: `%LOCALAPPDATA%\\docdex\\dist\\<platformKey>\\docdexd-install.json`
 
-Global install:
-- Find global `node_modules`: `npm root -g`
-- Metadata: `$(npm root -g)/docdex/dist/<platformKey>/docdexd-install.json`
-
-OS notes (common defaults; prefer `npm root -g` over guessing):
-- macOS/Linux: often under `/usr/local/lib/node_modules/docdex/...` or `~/.nvm/.../lib/node_modules/docdex/...`
-- Windows: often under `%APPDATA%\\npm\\node_modules\\docdex\\...`
+If you set `DOCDEX_DIST_DIR`, the metadata lives at `DOCDEX_DIST_DIR/<platformKey>/docdexd-install.json`.
 
 ## Troubleshooting stale/corrupt daemon installs (risk-mitigated)
 
 ### 1) Confirm which `docdexd` you are running
 
 - Platform diagnostics (offline): `docdex doctor`
-- Wrapper expects the binary at: `dist/<platformKey>/docdexd` (or `docdexd.exe` on Windows).
+- Wrapper expects the binary at: `dist/<platformKey>/docdexd` (or `docdexd.exe` on Windows), relative to the dist base directory above.
 
 If you upgraded/downgraded but the daemon still behaves like an older build, you may be running an already-started process.
 
@@ -99,7 +103,7 @@ Safe reset options (in increasing destructiveness):
    - Local: `npm uninstall docdex && npm install` (or your lockfile-friendly equivalent, e.g. `npm ci`)
 
 Risk notes:
-- Double-check you’re deleting paths under the installed `docdex` package directory (avoid deleting unrelated files).
+- Double-check you’re deleting paths under the Docdex data directory (avoid deleting unrelated files).
 - If you see `DOCDEX_INTEGRITY_MISMATCH`, treat it as a potential tampering/proxy/cache corruption signal; avoid manual extraction of unverified downloads and prefer a clean reinstall or building from source.
 
 ### 4) If the daemon runs but indexing/search looks wrong

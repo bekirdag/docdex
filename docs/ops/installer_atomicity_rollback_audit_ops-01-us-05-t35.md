@@ -8,6 +8,12 @@ Task: `ops-01-us-05-t35` (Epic `ops-01`, Story `ops-01-us-05`)
 - “Install/upgrade” means running `node npm/lib/install.js` via npm `postinstall` (and optionally re-running the same installer to “repair”).
 - `docdexd` is not managed as a system service by this installer. If a user has a running `docdexd serve` process, reinstalling updates the on-disk binary but does not stop/restart the running process (see `docs/ops/installer_upgrade_downgrade.md`).
 
+Install location (dist base directory):
+- macOS: `~/Library/Application Support/docdex/dist/<platformKey>/`
+- Linux: `$XDG_DATA_HOME/docdex/dist/<platformKey>/` (fallback `~/.local/share/docdex/dist/<platformKey>/`)
+- Windows: `%LOCALAPPDATA%\\docdex\\dist\\<platformKey>\\`
+- Override with `DOCDEX_DIST_DIR`. In this doc, `dist/<platformKey>` refers to `${DOCDEX_DIST_DIR:-<docdex data dir>/dist}/<platformKey>`.
+
 ## Supported platforms covered by this audit
 
 Per `docs/ops/installer_supported_platforms.md` and `npm/lib/platform_matrix.js` (published targets):
@@ -24,7 +30,7 @@ Notes:
 
 All platforms use the same installer flow; what varies is the resolved `platformKey`, Rust target triple, and the expected binary filename.
 
-| OS | `platformKey` | Rust `targetTriple` | Release asset (archive) | Expected binary | Final location (package-local) |
+| OS | `platformKey` | Rust `targetTriple` | Release asset (archive) | Expected binary | Final location (dist base) |
 |---|---|---|---|---|---|
 | macOS (arm64) | `darwin-arm64` | `aarch64-apple-darwin` | `docdexd-darwin-arm64.tar.gz` | `docdexd` | `dist/darwin-arm64/` |
 | macOS (x64) | `darwin-x64` | `x86_64-apple-darwin` | `docdexd-darwin-x64.tar.gz` | `docdexd` | `dist/darwin-x64/` |
@@ -42,7 +48,7 @@ Important: the current npm installer does **not** manage `docdexd` as a system s
 ### 0) Resolve platform + local state
 
 1. Detect `platformKey` and `targetTriple` (`npm/lib/platform.js` + matrix).
-2. Compute `distDir`: `<packageRoot>/dist/<platformKey>/`.
+2. Compute `distDir`: `${DOCDEX_DIST_DIR:-<docdex data dir>/dist}/<platformKey>/`.
 3. Determine local outcome (`npm/lib/install.js:determineLocalInstallerOutcome`):
    - `no-op`: if `dist/<platformKey>/docdexd*` exists AND `dist/<platformKey>/docdexd-install.json` is valid AND binary SHA matches metadata.
    - otherwise: `update`, `repair`, or `reinstall_unknown` (all cause a download/install attempt).

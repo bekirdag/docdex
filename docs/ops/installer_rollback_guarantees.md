@@ -7,6 +7,15 @@ Assumptions (explicit):
 - Release assets live on GitHub Releases for the tag `vX.Y.Z` matching the npm package version (or `DOCDEX_VERSION` if set).
 - Integrity verification uses the release manifest/checksums contract when available; see `docs/contracts/release_manifest_schema_v1.md`.
 
+## Install location (dist base directory)
+
+The installer writes the daemon under the Docdex data directory (not inside the npm package):
+- macOS: `~/Library/Application Support/docdex/dist/<platformKey>/`
+- Linux: `$XDG_DATA_HOME/docdex/dist/<platformKey>/` (fallback `~/.local/share/docdex/dist/<platformKey>/`)
+- Windows: `%LOCALAPPDATA%\\docdex\\dist\\<platformKey>\\`
+
+Override with `DOCDEX_DIST_DIR` to point at the `dist` base directory. In this doc, `dist/<platformKey>` refers to `${DOCDEX_DIST_DIR:-<docdex data dir>/dist}/<platformKey>`.
+
 Related docs:
 - Error codes + remediation: `docs/ops/installer_error_codes.md`
 - Upgrade/downgrade outcomes: `docs/ops/installer_upgrade_downgrade.md`
@@ -128,4 +137,4 @@ Manual deletion should not be required for interrupted installs. Use it only if 
    - `dist/<platformKey>/`
 
 Risk note:
-- Prefer `npm root -g` (or inspecting your local `node_modules/`) to confirm you are deleting paths under the installed `docdex` package directory.
+- Prefer inspecting the Docdex data directory (or `DOCDEX_DIST_DIR`) to confirm you are deleting the right paths.

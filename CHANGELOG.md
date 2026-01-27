@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.30
+- Harden Windows npm installs: fallback to writable dist dirs when LOCALAPPDATA is locked, unblock downloaded binaries, and add AV/PowerShell guidance.
+- Postinstall and CLI now search multiple dist roots to find the installed daemon reliably outside npm-managed paths.
+- Bump release metadata to 0.2.30.
+
 ## 0.2.29
 - Fix nightly load tests in multi-repo mode by resolving `repo_id` from `/v1/initialize` in `load_test_http.sh` and wiring `DOCDEX_LOAD_REPO_ROOT` in CI.
 - Improve npm installer behavior: postinstall stops or reuses the existing daemon on 127.0.0.1:28491 and restarts when versions differ so the updated binary is running.

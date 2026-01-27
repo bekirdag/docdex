@@ -23,11 +23,21 @@ Optional overrides:
 - `DOCDEX_LIBC=gnu|musl|glibc` (Linux libc override)
 - `DOCDEX_MANIFEST_NAMES` / `DOCDEX_MANIFEST_NAME` (comma-separated manifest filenames)
 - `DOCDEX_CHECKSUMS_NAMES` / `DOCDEX_CHECKSUMS_NAME` (comma-separated checksum filenames)
+- `DOCDEX_DIST_DIR` (override install dist base directory)
 
 HTTP behavior:
 - `User-Agent: docdex-installer`
 - Up to 5 redirects
 - Manifest download size cap: 1 MiB
+
+## Install location (dist base directory)
+
+The installer writes the daemon under the Docdex data directory (not inside the npm package):
+- macOS: `~/Library/Application Support/docdex/dist/<platformKey>/`
+- Linux: `$XDG_DATA_HOME/docdex/dist/<platformKey>/` (fallback `~/.local/share/docdex/dist/<platformKey>/`)
+- Windows: `%LOCALAPPDATA%\\docdex\\dist\\<platformKey>\\`
+
+Override with `DOCDEX_DIST_DIR` to point at the `dist` base directory. In this doc, `dist/<platformKey>` refers to `${DOCDEX_DIST_DIR:-<docdex data dir>/dist}/<platformKey>`.
 
 ## Platform mapping (OS/arch/libc -> platformKey -> targetTriple)
 
@@ -53,7 +63,7 @@ Archive naming:
 
 Archive contents (required):
 - Must extract a binary named `docdexd` (or `docdexd.exe` on Windows) at the archive root.
-- The installer extracts directly into `dist/<platformKey>/` and expects the binary at:
+- The installer extracts into `dist/<platformKey>/` (relative to the dist base directory above) and expects the binary at:
   - macOS/Linux: `dist/<platformKey>/docdexd`
   - Windows: `dist/<platformKey>/docdexd.exe`
 

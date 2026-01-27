@@ -8,7 +8,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { pipeline } = require("node:stream/promises");
 const crypto = require("node:crypto");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 
 const pkg = require("../package.json");
 const {
@@ -21,6 +21,7 @@ const {
 } = require("./platform");
 const { ManifestResolutionError, resolveCanonicalAssetForTargetTriple } = require("./release_manifest");
 const { runPostInstallSetup } = require("./postinstall_setup");
+const { resolveDistBaseDir, resolveDistBaseCandidates } = require("./paths");
 
 const MAX_REDIRECTS = 5;
 const USER_AGENT = "docdex-installer";
@@ -366,6 +367,40 @@ async function extractTarballWithSystemTar(archivePath, targetDir) {
       }
     });
   });
+}
+
+function escapePowerShellLiteral(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function tryUnblockWindowsBinary(filePath, { logger, fsModule = fs, spawnSyncFn = spawnSync } = {}) {
+  if (process.platform !== "win32") return { ok: false, reason: "not_win32" };
+  if (!filePath) return { ok: false, reason: "missing_path" };
+  const existsSync = typeof fsModule.existsSync === "function" ? fsModule.existsSync.bind(fsModule) : null;
+  if (existsSync && !existsSync(filePath)) return { ok: false, reason: "missing_file" };
+  let unblocked = false;
+  try {
+    const zonePath = `${filePath}:Zone.Identifier`;
+    if (typeof fsModule.rmSync === "function") {
+      fsModule.rmSync(zonePath, { force: true });
+      unblocked = true;
+    } else if (typeof fsModule.unlinkSync === "function") {
+      try {
+        fsModule.unlinkSync(zonePath);
+        unblocked = true;
+      } catch {}
+    }
+  } catch {}
+  try {
+    const result = spawnSyncFn("powershell.exe", [
+      "-NoProfile",
+      "-Command",
+      `Unblock-File -LiteralPath ${escapePowerShellLiteral(filePath)}`
+    ], { stdio: "ignore" });
+    if (result?.status === 0) unblocked = true;
+  } catch {}
+  if (unblocked) return { ok: true, reason: "unblocked" };
+  return { ok: false, reason: "noop" };
 }
 
 async function sha256File(filePath) {
@@ -1954,11 +1989,16 @@ async function runInstaller(options) {
         manifestName: manifestAttempt?.manifestName ?? null,
         manifestVersion: manifestAttempt?.resolved?.manifestVersion ?? null,
         fallbackAttempted: source === "fallback",
-        binaryPath: stagedBinaryPath
+        binaryPath: stagedBinaryPath,
+        hint: isWin32 ? "possible_av_quarantine" : null
       });
     }
 
-    await fsModule.promises.chmod(stagedBinaryPath, 0o755);
+    if (isWin32) {
+      tryUnblockWindowsBinary(stagedBinaryPath, { logger, fsModule });
+    } else {
+      await fsModule.promises.chmod(stagedBinaryPath, 0o755);
+    }
 
     if (existsSync && existsSync(distDir)) {
       await fsModule.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
@@ -1974,6 +2014,9 @@ async function runInstaller(options) {
     }
 
     const binaryPath = pathModule.join(distDir, isWin32 ? "docdexd.exe" : "docdexd");
+    if (isWin32) {
+      tryUnblockWindowsBinary(binaryPath, { logger, fsModule });
+    }
     const binarySha256 = await sha256FileFn(binaryPath);
     const metadata = {
       schemaVersion: INSTALL_METADATA_SCHEMA_VERSION,
@@ -2091,12 +2134,25 @@ async function runInstaller(options) {
 }
 
 async function main() {
-  const result = await runInstaller();
+  const env = process.env;
+  const distBaseCandidates = resolveDistBaseCandidates({ env });
+  const distBaseDir = resolveDistBaseDir({ env, fsModule: fs });
+  if (
+    process.platform === "win32" &&
+    !env?.DOCDEX_DIST_DIR &&
+    distBaseCandidates[0] &&
+    distBaseDir !== distBaseCandidates[0]
+  ) {
+    console.warn(
+      `[docdex] LOCALAPPDATA not writable; using fallback dist dir: ${distBaseDir}. Set DOCDEX_DIST_DIR to override.`
+    );
+  }
+  const result = await runInstaller({ env, distBaseDir });
   try {
-    await runPostInstallSetup({ binaryPath: result?.binaryPath });
+    const skipDaemon = Boolean(env?.npm_lifecycle_event);
+    await runPostInstallSetup({ binaryPath: result?.binaryPath, env, skipDaemon, distBaseDir });
   } catch (err) {
     console.warn(`[docdex] postinstall setup failed: ${err?.message || err}`);
-    throw err;
   }
   try {
     writeAgentInstructions();
@@ -2134,6 +2190,11 @@ function printPostInstallBanner() {
     "\x1b[33mSetup:\x1b[0m configures Ollama/models + browser.",
     "\x1b[34mTip:\x1b[0m after setup, the daemon should auto-start; if not, run \x1b[36m`docdexd daemon`\x1b[0m"
   ];
+  if (process.platform === "win32") {
+    content.push(
+      "\x1b[33mNote:\x1b[0m If PowerShell blocks `docdex`, run `docdex.cmd` or set ExecutionPolicy RemoteSigned."
+    );
+  }
   width = Math.max(72, content.reduce((max, line) => Math.max(max, stripAnsi(line).length), 0));
   const padLine = (text) => {
     const visible = stripAnsi(text).length;
@@ -2361,18 +2422,23 @@ function describeFatalError(err) {
   }
 
   if (err instanceof ArchiveInvalidError) {
+    const lines = [
+      `[docdex] install failed: ${err.message}`,
+      `[docdex] error code: ${err.code}`,
+      err.details?.binaryPath ? `[docdex] Expected binary path: ${err.details.binaryPath}` : null
+    ].filter(Boolean);
+    if (process.platform === "win32" && err.details?.hint === "possible_av_quarantine") {
+      lines.push(
+        "[docdex] Windows Defender/AV may have quarantined the downloaded binary.",
+        "[docdex] Re-run the install or add an exclusion for the Docdex dist directory.",
+        "[docdex] Tip: set DOCDEX_DIST_DIR to a writable directory outside protected paths."
+      );
+    }
     return {
       code: err.code,
       exitCode: err.exitCode || EXIT_CODE_BY_ERROR_CODE[err.code] || 1,
       details: withBaseDetails(err.details),
-      lines: appendInstallSafetyLines(
-        [
-          `[docdex] install failed: ${err.message}`,
-          `[docdex] error code: ${err.code}`,
-          err.details?.binaryPath ? `[docdex] Expected binary path: ${err.details.binaryPath}` : null
-        ].filter(Boolean),
-        err
-      )
+      lines: appendInstallSafetyLines(lines, err)
     };
   }
 
@@ -2414,6 +2480,25 @@ function describeFatalError(err) {
   }
 
   const code = (err && typeof err.code === "string" && err.code) || "DOCDEX_INSTALL_FAILED";
+  if (code === "EACCES" || code === "EPERM") {
+    const location = err?.path ? ` (${err.path})` : "";
+    return {
+      code,
+      exitCode: EXIT_CODE_BY_ERROR_CODE[code] || 1,
+      details: withBaseDetails(err && err.details),
+      lines: appendInstallSafetyLines(
+        [
+          `[docdex] install failed: ${err?.message || "permission denied"}`,
+          `[docdex] error code: ${code}`,
+          `[docdex] Ensure write access${location} or set DOCDEX_DIST_DIR to a writable location.`,
+          process.platform === "win32"
+            ? "[docdex] On Windows, run in an elevated shell if needed."
+            : null
+        ].filter(Boolean),
+        err
+      )
+    };
+  }
   return {
     code,
     exitCode: (err && typeof err.exitCode === "number" && err.exitCode) || EXIT_CODE_BY_ERROR_CODE[code] || 1,

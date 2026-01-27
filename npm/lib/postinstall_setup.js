@@ -11,6 +11,12 @@ const tty = require("node:tty");
 const { spawn, spawnSync } = require("node:child_process");
 
 const { detectPlatformKey, UnsupportedPlatformError } = require("./platform");
+const {
+  resolveDistBaseDir,
+  resolveDistBaseCandidates,
+  resolveBinDir,
+  resolveWindowsRunnerPath
+} = require("./paths");
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_DAEMON_PORT = 28491;
@@ -1391,12 +1397,38 @@ function clientInstructionPaths() {
   }
 }
 
-function resolveBinaryPath({ binaryPath } = {}) {
+function sanitizeVersionForFilename(version) {
+  if (!version) return null;
+  return String(version).replace(/[^0-9A-Za-z._-]/g, "_");
+}
+
+function resolveBinaryPath({ binaryPath, env, distBaseDir, distBaseCandidates } = {}) {
   if (binaryPath && fs.existsSync(binaryPath)) return binaryPath;
   try {
     const platformKey = detectPlatformKey();
-    const candidate = path.join(__dirname, "..", "dist", platformKey, process.platform === "win32" ? "docdexd.exe" : "docdexd");
-    if (fs.existsSync(candidate)) return candidate;
+    const isWin32 = process.platform === "win32";
+    const resolvedVersion = sanitizeVersionForFilename(
+      normalizeVersion(resolvePackageVersion())
+    );
+    const resolvedDistBaseDir = distBaseDir || resolveDistBaseDir({ env, fsModule: fs });
+    const binDir = resolveBinDir({ env, distBaseDir: resolvedDistBaseDir });
+    const baseCandidates = distBaseCandidates || resolveDistBaseCandidates({ env });
+    const candidates = [];
+    if (binDir) {
+      if (isWin32 && resolvedVersion) {
+        candidates.push(path.join(binDir, `docdexd-${resolvedVersion}.exe`));
+      }
+      candidates.push(path.join(binDir, isWin32 ? "docdexd.exe" : "docdexd"));
+    }
+    for (const base of baseCandidates) {
+      candidates.push(path.join(base, platformKey, isWin32 ? "docdexd.exe" : "docdexd"));
+    }
+    candidates.push(
+      path.join(__dirname, "..", "dist", platformKey, isWin32 ? "docdexd.exe" : "docdexd")
+    );
+    for (const candidate of candidates) {
+      if (candidate && fs.existsSync(candidate)) return candidate;
+    }
   } catch (err) {
     if (!(err instanceof UnsupportedPlatformError)) throw err;
   }
@@ -1416,16 +1448,26 @@ function isMacProtectedPath(candidate) {
   return ["Desktop", "Documents", "Downloads"].some((dir) => isPathWithin(path.join(home, dir), candidate));
 }
 
-function ensureStartupBinary(binaryPath, { logger } = {}) {
+function ensureStartupBinary(binaryPath, { logger, env, distBaseDir } = {}) {
   if (!binaryPath) return null;
-  if (!isMacProtectedPath(binaryPath) && !isTempPath(binaryPath)) return binaryPath;
-  const binDir = path.join(os.homedir(), ".docdex", "bin");
-  const target = path.join(binDir, path.basename(binaryPath));
+  const isWin32 = process.platform === "win32";
+  const mustCopy = isWin32 || isMacProtectedPath(binaryPath) || isTempPath(binaryPath);
+  if (!mustCopy) return binaryPath;
+  const binDir = resolveBinDir({ env, distBaseDir });
+  const resolvedVersion = sanitizeVersionForFilename(
+    normalizeVersion(resolvePackageVersion())
+  );
+  const targetName = isWin32 && resolvedVersion
+    ? `docdexd-${resolvedVersion}.exe`
+    : path.basename(binaryPath);
+  const target = path.join(binDir, targetName);
   if (fs.existsSync(target)) return target;
   try {
     fs.mkdirSync(binDir, { recursive: true });
     fs.copyFileSync(binaryPath, target);
-    fs.chmodSync(target, 0o755);
+    if (!isWin32) {
+      fs.chmodSync(target, 0o755);
+    }
     return target;
   } catch (err) {
     logger?.warn?.(`[docdex] failed to stage daemon binary for startup: ${err?.message || err}`);
@@ -1433,8 +1475,8 @@ function ensureStartupBinary(binaryPath, { logger } = {}) {
   }
 }
 
-function resolveStartupBinaryPaths({ binaryPath, logger } = {}) {
-  const resolvedBinary = ensureStartupBinary(binaryPath, { logger });
+function resolveStartupBinaryPaths({ binaryPath, logger, env, distBaseDir } = {}) {
+  const resolvedBinary = ensureStartupBinary(binaryPath, { logger, env, distBaseDir });
   return { binaryPath: resolvedBinary };
 }
 
@@ -2112,7 +2154,32 @@ function buildDaemonEnv() {
   return Object.fromEntries(buildDaemonEnvPairs());
 }
 
-function registerStartup({ binaryPath, port, repoRoot, logger }) {
+function escapeCmdArg(value) {
+  return `"${String(value).replace(/"/g, "\"\"")}"`;
+}
+
+function writeWindowsRunner({ binaryPath, args, envPairs, workingDir, logger, distBaseDir } = {}) {
+  const runnerPath = resolveWindowsRunnerPath({ distBaseDir });
+  const lines = ["@echo off", "setlocal"];
+  for (const [key, value] of envPairs || []) {
+    lines.push(`set "${key}=${value}"`);
+  }
+  if (workingDir) {
+    lines.push(`cd /d ${escapeCmdArg(workingDir)}`);
+  }
+  const argString = (args || []).map((arg) => escapeCmdArg(arg)).join(" ");
+  lines.push(`${escapeCmdArg(binaryPath)} ${argString}`.trim());
+  try {
+    fs.mkdirSync(path.dirname(runnerPath), { recursive: true });
+    fs.writeFileSync(runnerPath, `${lines.join("\r\n")}\r\n`);
+    return runnerPath;
+  } catch (err) {
+    logger?.warn?.(`[docdex] failed to write Windows runner: ${err?.message || err}`);
+    return null;
+  }
+}
+
+function registerStartup({ binaryPath, port, repoRoot, logger, distBaseDir }) {
   if (!binaryPath) return { ok: false, reason: "missing_binary" };
   stopDaemonService({ logger });
   const envPairs = buildDaemonEnvPairs();
@@ -2208,11 +2275,16 @@ function registerStartup({ binaryPath, port, repoRoot, logger }) {
 
   if (process.platform === "win32") {
     const taskName = "Docdex Daemon";
-    const joinedArgs = args.map((arg) => `"${arg}"`).join(" ");
-    const envParts = envPairs.map(([key, value]) => `set "${key}=${value}"`);
-    const cdCommand = workingDir ? `cd /d "${workingDir}"` : null;
-    const taskArgs =
-      `"cmd.exe" /c "${envParts.join(" && ")}${cdCommand ? ` && ${cdCommand}` : ""} && \"${binaryPath}\" ${joinedArgs}"`;
+    const runnerPath = writeWindowsRunner({
+      binaryPath,
+      args,
+      envPairs,
+      workingDir,
+      logger,
+      distBaseDir
+    });
+    if (!runnerPath) return { ok: false, reason: "runner_failed" };
+    const taskArgs = `cmd.exe /c ${escapeCmdArg(runnerPath)}`;
     const create = spawnSync("schtasks", [
       "/Create",
       "/F",
@@ -2236,12 +2308,13 @@ function registerStartup({ binaryPath, port, repoRoot, logger }) {
   return { ok: false, reason: "unsupported_platform" };
 }
 
-async function startDaemonWithHealthCheck({ binaryPath, port, host, logger }) {
+async function startDaemonWithHealthCheck({ binaryPath, port, host, logger, distBaseDir }) {
   const startup = registerStartup({
     binaryPath,
     port,
     repoRoot: daemonRootPath(),
-    logger
+    logger,
+    distBaseDir
   });
   if (!startup.ok) {
     logger?.warn?.(`[docdex] daemon service registration failed (${startup.reason || "unknown"}).`);
@@ -2279,6 +2352,17 @@ function clearStartupFailure() {
 
 function startupFailureReported() {
   return fs.existsSync(path.join(stateDir(), STARTUP_FAILURE_MARKER));
+}
+
+function isNpmLifecycle(env = process.env) {
+  return Boolean(env?.npm_lifecycle_event);
+}
+
+function shouldSkipDaemonSideEffects({ env = process.env, skipDaemon } = {}) {
+  if (skipDaemon) return true;
+  if (isNpmLifecycle(env)) return true;
+  if (parseEnvBool(env?.DOCDEX_DAEMON_SKIP_SETUP)) return true;
+  return false;
 }
 
 function shouldSkipSetup(env = process.env) {
@@ -2381,34 +2465,49 @@ function launchSetupWizard({
   return { ok: false, reason: "unsupported_platform" };
 }
 
-async function runPostInstallSetup({ binaryPath, logger } = {}) {
+async function runPostInstallSetup({ binaryPath, logger, env, skipDaemon, distBaseDir } = {}) {
   const log = logger || console;
+  const effectiveEnv = env || process.env;
+  const distCandidates = resolveDistBaseCandidates({ env: effectiveEnv });
+  const resolvedDistBaseDir = distBaseDir || resolveDistBaseDir({ env: effectiveEnv, fsModule: fs });
+  let allowDaemon = !shouldSkipDaemonSideEffects({ env: effectiveEnv, skipDaemon });
   const configPath = defaultConfigPath();
   let existingConfig = "";
   if (fs.existsSync(configPath)) {
     existingConfig = fs.readFileSync(configPath, "utf8");
   }
   const port = DEFAULT_DAEMON_PORT;
-  const portState = await resolveDaemonPortState({
-    host: DEFAULT_HOST,
-    port,
-    logger: log
-  });
-  if (!portState.available && !portState.reuseExisting) {
-    log.error?.(
-      `[docdex] ${DEFAULT_HOST}:${port} is already in use; docdex requires a fixed port. Stop the process using this port and re-run the install.`
-    );
-    throw new Error(`docdex requires ${DEFAULT_HOST}:${port}, but the port is already in use`);
+  let portState = { available: true, reuseExisting: false };
+  if (allowDaemon) {
+    portState = await resolveDaemonPortState({
+      host: DEFAULT_HOST,
+      port,
+      logger: log
+    });
+    if (!portState.available && !portState.reuseExisting) {
+      log.warn?.(
+        `[docdex] ${DEFAULT_HOST}:${port} is already in use; skipping daemon startup. Run \`docdexd daemon\` after freeing the port.`
+      );
+      recordStartupFailure({ reason: "port_in_use", host: DEFAULT_HOST, port });
+      allowDaemon = false;
+    }
   }
 
   const daemonRoot = ensureDaemonRoot();
-  const resolvedBinary = resolveBinaryPath({ binaryPath });
+  const resolvedBinary = resolveBinaryPath({
+    binaryPath,
+    env: effectiveEnv,
+    distBaseDir: resolvedDistBaseDir,
+    distBaseCandidates: distCandidates
+  });
   const startupBinaries = resolveStartupBinaryPaths({
     binaryPath: resolvedBinary,
-    logger: log
+    logger: log,
+    env: effectiveEnv,
+    distBaseDir: resolvedDistBaseDir
   });
-  let reuseExisting = portState.reuseExisting;
-  if (reuseExisting) {
+  let reuseExisting = allowDaemon ? portState.reuseExisting : false;
+  if (reuseExisting && allowDaemon) {
     const daemonInfo = await fetchDaemonInfo({ host: DEFAULT_HOST, port });
     const daemonVersion = normalizeVersion(daemonInfo?.version);
     const packageVersion = normalizeVersion(resolvePackageVersion());
@@ -2426,22 +2525,29 @@ async function runPostInstallSetup({ binaryPath, logger } = {}) {
           port
         });
         if (!released) {
-          throw new Error("docdex daemon restart failed; port still in use");
+          log.warn?.("[docdex] daemon restart failed; port still in use.");
+          recordStartupFailure({ reason: "restart_failed", host: DEFAULT_HOST, port });
+          allowDaemon = false;
         }
         reuseExisting = false;
       }
     }
   }
-  if (!reuseExisting) {
+  let startupOk = reuseExisting;
+  if (allowDaemon && !reuseExisting) {
     const result = await startDaemonWithHealthCheck({
       binaryPath: startupBinaries.binaryPath,
       port,
       host: DEFAULT_HOST,
-      logger: log
+      logger: log,
+      distBaseDir: resolvedDistBaseDir
     });
     if (!result.ok) {
       log.warn?.(`[docdex] daemon failed to start on ${DEFAULT_HOST}:${port}.`);
-      throw new Error("docdex daemon failed to start");
+      recordStartupFailure({ reason: result.reason || "startup_failed", host: DEFAULT_HOST, port });
+      allowDaemon = false;
+    } else {
+      startupOk = true;
     }
   }
 
@@ -2475,8 +2581,13 @@ async function runPostInstallSetup({ binaryPath, logger } = {}) {
   }
   upsertCodexConfig(paths.codex, codexUrl);
   applyAgentInstructions({ logger: log });
-  clearStartupFailure();
-  const setupLaunch = launchSetupWizard({ binaryPath: startupBinaries.binaryPath, logger: log });
+  if (startupOk) {
+    clearStartupFailure();
+  }
+  const skipWizard = isNpmLifecycle(effectiveEnv) || shouldSkipSetup(effectiveEnv);
+  const setupLaunch = skipWizard
+    ? { ok: false, reason: "skipped" }
+    : launchSetupWizard({ binaryPath: startupBinaries.binaryPath, logger: log });
   if (!setupLaunch.ok && setupLaunch.reason !== "skipped") {
     log.warn?.("[docdex] setup wizard did not launch. Run `docdex setup`.");
     recordSetupPending({ reason: setupLaunch.reason, port, repoRoot: daemonRoot });

@@ -7,6 +7,15 @@ Assumptions (explicit):
 - "Expected version" is the npm package version or `DOCDEX_VERSION` if set (leading `v` is stripped).
 - Release assets live under the repo in `DOCDEX_DOWNLOAD_REPO` (or `package.json.repository.url`) and are tagged as `vX.Y.Z`.
 
+## Install location (dist base directory)
+
+The installer writes the daemon under the Docdex data directory (not inside the npm package):
+- macOS: `~/Library/Application Support/docdex/dist/<platformKey>/`
+- Linux: `$XDG_DATA_HOME/docdex/dist/<platformKey>/` (fallback `~/.local/share/docdex/dist/<platformKey>/`)
+- Windows: `%LOCALAPPDATA%\\docdex\\dist\\<platformKey>\\`
+
+Override with `DOCDEX_DIST_DIR` to point at the `dist` base directory. In this doc, `dist/<platformKey>` refers to `${DOCDEX_DIST_DIR:-<docdex data dir>/dist}/<platformKey>`.
+
 ## Deterministic compatibility rule (version alignment)
 
 - For npm package version `X.Y.Z`, the installer targets the GitHub Release tag `vX.Y.Z` and installs `docdexd` from that release.

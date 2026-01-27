@@ -19,6 +19,15 @@ The installer converges to a single final state: `docdexd` under `dist/<platform
 - If the expected version is present but fails integrity checks, the installer repairs it (reinstall after verification).
 - If local metadata is missing/invalid, the installer performs a deterministic reinstall.
 
+## Install location (dist base directory)
+
+The installer writes the daemon under the Docdex data directory (not inside the npm package):
+- macOS: `~/Library/Application Support/docdex/dist/<platformKey>/`
+- Linux: `$XDG_DATA_HOME/docdex/dist/<platformKey>/` (fallback `~/.local/share/docdex/dist/<platformKey>/`)
+- Windows: `%LOCALAPPDATA%\\docdex\\dist\\<platformKey>\\`
+
+Override with `DOCDEX_DIST_DIR` to point at the `dist` base directory. In this doc, `dist/<platformKey>` refers to `${DOCDEX_DIST_DIR:-<docdex data dir>/dist}/<platformKey>`.
+
 ## Deterministic release source, tag, and asset selection
 
 The installer resolves a single release asset deterministically:
@@ -59,7 +68,7 @@ See `docs/ops/installer_error_codes.md` for the stable error codes.
 ### Identify the detected daemon version
 
 - Read install metadata: `dist/<platformKey>/docdexd-install.json` (field `version`).
-- Or run the binary: `docdexd --version` (wrapper) or `<package>/dist/<platformKey>/docdexd --version`.
+- Or run the binary: `docdexd --version` (wrapper) or `dist/<platformKey>/docdexd --version` (relative to the dist base directory above).
 
 ### Remediate
 

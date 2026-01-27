@@ -2,12 +2,21 @@
 
 Task context: ops-01-us-05-t22 (interrupted/partial installs roll back cleanly).
 
-Scope: npm installer/downloader (`npm/lib/install.js`) that installs a platform-specific `docdexd` binary from GitHub Releases into `dist/<platformKey>/`.
+Scope: npm installer/downloader (`npm/lib/install.js`) that installs a platform-specific `docdexd` binary from GitHub Releases into the dist base directory (`dist/<platformKey>/` relative to that base).
 
 Assumptions (explicit):
 - The installed artifact is a single binary (`docdexd` or `docdexd.exe`) packaged as a `.tar.gz` containing only that binary (see `.github/workflows/release.yml`).
 - Node.js `>= 18`.
 - The installer is not allowed to elevate privileges; it runs with the permissions of the current npm install.
+
+## Install location (dist base directory)
+
+The installer writes the daemon under the Docdex data directory (not inside the npm package):
+- macOS: `~/Library/Application Support/docdex/dist/<platformKey>/`
+- Linux: `$XDG_DATA_HOME/docdex/dist/<platformKey>/` (fallback `~/.local/share/docdex/dist/<platformKey>/`)
+- Windows: `%LOCALAPPDATA%\\docdex\\dist\\<platformKey>\\`
+
+Override with `DOCDEX_DIST_DIR` to point at the `dist` base directory. In this doc, `dist/<platformKey>` refers to `${DOCDEX_DIST_DIR:-<docdex data dir>/dist}/<platformKey>`.
 
 ## Why “atomic replace” matters
 
@@ -79,4 +88,3 @@ If Docdex is packaged as an OS service (outside the npm installer), the recommen
 Global npm installs may target directories that require elevation (admin/root). The installer must:
 - Fail safely if it cannot write the install location.
 - Never delete an existing working binary before a verified replacement is ready.
-

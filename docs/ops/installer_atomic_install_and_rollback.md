@@ -1,17 +1,26 @@
 # Atomic (Staged) Installs and Rollback Guarantees
 
-Scope: the npm installer/downloader (`npm/lib/install.js`) that installs a platform-specific `docdexd` binary from GitHub Releases into the npm package directory.
+Scope: the npm installer/downloader (`npm/lib/install.js`) that installs a platform-specific `docdexd` binary from GitHub Releases into the Docdex data directory.
 
 This doc describes what operators should expect during upgrades/downgrades and how failed/interrupted installs behave.
 
 Assumptions (explicit):
 - Install path is the npm wrapper (global or local): `npm i -g docdex` / `npm install docdex`.
-- “Final location” means the wrapper’s runtime lookup path: `dist/<platformKey>/docdexd` (or `docdexd.exe` on Windows) inside the installed package.
+- “Final location” means the wrapper’s runtime lookup path: `dist/<platformKey>/docdexd` (or `docdexd.exe` on Windows), relative to the dist base directory below.
 - “Interrupted install” means the installer process receives a graceful signal (`SIGINT`/`SIGTERM`) or throws an error; `SIGKILL`/power loss cannot guarantee cleanup.
+
+## Install location (dist base directory)
+
+The installer writes the daemon under the Docdex data directory (not inside the npm package):
+- macOS: `~/Library/Application Support/docdex/dist/<platformKey>/`
+- Linux: `$XDG_DATA_HOME/docdex/dist/<platformKey>/` (fallback `~/.local/share/docdex/dist/<platformKey>/`)
+- Windows: `%LOCALAPPDATA%\\docdex\\dist\\<platformKey>\\`
+
+Override with `DOCDEX_DIST_DIR` to point at the `dist` base directory. In this doc, `dist/<platformKey>` refers to `${DOCDEX_DIST_DIR:-<docdex data dir>/dist}/<platformKey>`.
 
 ## Final install layout (what the wrapper runs)
 
-Inside the installed npm package directory:
+Inside the dist base directory:
 - Binary: `dist/<platformKey>/docdexd` (or `dist/<platformKey>/docdexd.exe`)
 - Install metadata: `dist/<platformKey>/docdexd-install.json`
 
@@ -72,4 +81,3 @@ Operational note:
 - Wrapper lookup path: `npm/bin/docdex.js`
 - Upgrade/downgrade semantics: `docs/ops/installer_upgrade_downgrade.md`
 - Error codes + remediation: `docs/ops/installer_error_codes.md`
-

@@ -37,9 +37,11 @@ Installer notes:
 - Platform diagnostics (no download): `docdex doctor` (alias `docdex diagnostics`).
 
 Postinstall behavior:
-- Docdex registers a local daemon and writes MCP client config pointing to `http://localhost:28491/v1/mcp/sse` (Codex uses `http://localhost:28491/v1/mcp`). The installer will try to stop/reuse an existing Docdex daemon on that port; it only fails if a non-Docdex process is holding `28491`.
+- The installer downloads/repairs `docdexd` into the Docdex data directory (`DOCDEX_DIST_DIR` override). It does not start the daemon during `npm i -g docdex`.
+- It writes MCP client config pointing to `http://localhost:28491/v1/mcp/sse` (Codex uses `http://localhost:28491/v1/mcp`) and updates known client config files when present.
 - Auto-configured clients (when config files are present): Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Continue, VS Code, PearAI, Void, Zed, Codex. Restart clients after install.
-- If Ollama is missing, the installer can prompt to install it and the default embedding model.
+- Start the daemon with `docdexd daemon` or run the setup wizard (`docdex setup`), which can also register OS startup (LaunchAgent/systemd/Task Scheduler). Windows uses `%LOCALAPPDATA%\\docdex\\run-daemon.cmd` for the scheduled task.
+- If Ollama is missing, the setup wizard can prompt to install it and the default embedding model.
 - Skip prompts with `DOCDEX_OLLAMA_INSTALL=0` or `DOCDEX_OLLAMA_MODEL_PROMPT=0`.
 - Force with `DOCDEX_OLLAMA_INSTALL=1` or `DOCDEX_OLLAMA_MODEL=<model>`.
 
@@ -51,6 +53,7 @@ Postinstall behavior:
 
 ### Uninstall
 - `npm uninstall -g docdex` stops the daemon, removes its startup registration, and deletes Docdex MCP entries from supported client config files.
+- The installer data dir (see below) is not removed automatically; delete it manually if you want a full cleanup.
 
 ## First run
 
@@ -395,6 +398,10 @@ Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary to
 - State/index directory: `~/.docdex/state/repos/<fingerprint>/index` by default (override with `--state-dir` / `DOCDEX_STATE_DIR`).
 - HTTP API: defaults to `127.0.0.1:28491` when serving.
 - Docdex data stays local under `~/.docdex/state` unless overridden.
+- Installer dist directory (daemon binaries + metadata): `${DOCDEX_DIST_DIR:-<docdex data dir>/dist}/<platformKey>/`.
+  - macOS: `~/Library/Application Support/docdex/dist/<platformKey>/`
+  - Linux: `$XDG_DATA_HOME/docdex/dist/<platformKey>/` (fallback `~/.local/share/docdex/dist/<platformKey>/`)
+  - Windows: `%LOCALAPPDATA%\\docdex\\dist\\<platformKey>\\`
 - Daemon lock: `~/.docdex/locks/daemon.lock` by default (override with `DOCDEX_DAEMON_LOCK_PATH`; falls back to OS temp dir when home is unavailable).
 - Logs: set `DOCDEX_LOG_TO_STATE=1` to also write `~/.docdex/state/logs/docdexd-<pid>.log`.
 
@@ -408,6 +415,7 @@ Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary to
 - `DOCDEX_HTTP_BASE_URL`: override daemon base URL for CLI.
 - `DOCDEX_HTTP_TIMEOUT_MS`: override CLI HTTP timeout (default 30000).
 - `DOCDEX_CLI_LOCAL=1`: run CLI in-process.
+- `DOCDEX_DIST_DIR`: override the installer dist base directory used by the npm wrapper.
 - `DOCDEX_ENABLE_SYMBOL_EXTRACTION`: deprecated (no-op).
 
 ### Security and serving

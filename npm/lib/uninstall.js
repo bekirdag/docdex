@@ -6,6 +6,7 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { resolveDocdexDataDir } = require("./paths");
 
 const DAEMON_TASK_NAME = "Docdex Daemon";
 const STARTUP_FAILURE_MARKER = "startup_registration_failed.json";
@@ -22,6 +23,10 @@ function docdexRootPath() {
 
 function daemonRootPath() {
   return path.join(docdexRootPath(), "daemon_root");
+}
+
+function docdexDataDir() {
+  return resolveDocdexDataDir({ env: process.env });
 }
 
 function stateDir() {
@@ -108,12 +113,15 @@ function manualStopInstructions() {
     ];
   }
   if (process.platform === "win32") {
+    const dataDir = docdexDataDir();
     return [
       "Manual cleanup required:",
       `- schtasks /End /TN "${DAEMON_TASK_NAME}"`,
       "- schtasks /Delete /TN \"Docdex Daemon\" /F",
       "- taskkill /IM docdexd.exe /T /F",
       "- del %USERPROFILE%\\.docdex\\locks\\daemon.lock",
+      `- del "${path.join(dataDir, "run-daemon.cmd")}"`,
+      `- rmdir /S /Q "${dataDir}"`,
       "- netstat -ano | findstr 28491",
     ];
   }

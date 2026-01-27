@@ -8,16 +8,22 @@ Assumptions (explicit):
 - You can run installs on each target OS/arch you care about (macOS, Linux gnu/musl, Windows).
 - Network is available for download scenarios (unless you are testing only the unit tests).
 
+## Install location (dist base directory)
+
+The installer writes the daemon under the Docdex data directory (not inside the npm package):
+- macOS: `~/Library/Application Support/docdex/dist/<platformKey>/`
+- Linux: `$XDG_DATA_HOME/docdex/dist/<platformKey>/` (fallback `~/.local/share/docdex/dist/<platformKey>/`)
+- Windows: `%LOCALAPPDATA%\\docdex\\dist\\<platformKey>\\`
+
+Override with `DOCDEX_DIST_DIR` to point at the `dist` base directory. In this doc, `dist/<platformKey>` refers to `${DOCDEX_DIST_DIR:-<docdex data dir>/dist}/<platformKey>`.
+
 ## Preflight (all platforms)
 
 - Record current version: `docdex --version` (or `docdexd --version`).
-- Find the installed package root:
-  - Global: `npm root -g` then look under `.../docdex/`
-  - Local: `node_modules/docdex/`
 - Determine `platformKey` without downloading:
   - `docdex doctor` (or `docdex diagnostics`)
 - Identify the final binary location:
-  - `dist/<platformKey>/docdexd` (or `docdexd.exe`) under the installed package root
+  - `dist/<platformKey>/docdexd` (or `docdexd.exe`) under the dist base directory above
 
 ## A. Success-path checks
 
@@ -72,4 +78,3 @@ Post-conditions (all interrupted scenarios):
 
 - Run npm unit tests: `cd npm && npm test`
   - Includes explicit rollback coverage in `npm/test/installer_atomic_rollback.test.js`.
-

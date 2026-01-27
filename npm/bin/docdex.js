@@ -6,6 +6,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 const pkg = require("../package.json");
+const { resolveDistBaseDir, resolveDistBaseCandidates } = require("../lib/paths");
 const {
   artifactName,
   detectLibcFromRuntime,
@@ -53,6 +54,30 @@ function formatInstallSource(meta) {
   return `release (${source})`;
 }
 
+function resolveInstallPaths(platformKey) {
+  const binaryName = process.platform === "win32" ? "docdexd.exe" : "docdexd";
+  const candidates = [];
+  for (const distBase of resolveDistBaseCandidates({ env: process.env })) {
+    candidates.push(path.join(distBase, platformKey));
+  }
+  candidates.push(path.join(__dirname, "..", "dist", platformKey));
+  const seen = new Set();
+  const unique = candidates.filter((candidate) => {
+    if (!candidate || seen.has(candidate)) return false;
+    seen.add(candidate);
+    return true;
+  });
+  for (const basePath of unique) {
+    const binaryPath = path.join(basePath, binaryName);
+    if (fs.existsSync(binaryPath)) {
+      return { basePath, binaryPath };
+    }
+  }
+  const fallbackBase =
+    unique[0] || path.join(resolveDistBaseDir({ env: process.env, fsModule: fs }), platformKey);
+  return { basePath: fallbackBase, binaryPath: path.join(fallbackBase, binaryName) };
+}
+
 function runDoctor() {
   const platform = process.platform;
   const arch = process.arch;
@@ -81,7 +106,7 @@ function runDoctor() {
     const targetTriple = targetTripleForPlatformKey(platformKey);
     const expectedAssetName = artifactName(platformKey);
     const expectedAssetPattern = assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAssetName });
-    const basePath = path.join(__dirname, "..", "dist", platformKey);
+    const { basePath } = resolveInstallPaths(platformKey);
     const installMeta = readInstallMetadata({ fsModule: fs, pathModule: path, basePath });
     const installSource = formatInstallSource(installMeta);
 
@@ -179,11 +204,7 @@ async function run() {
     return;
   }
 
-  const basePath = path.join(__dirname, "..", "dist", platformKey);
-  const binaryPath = path.join(
-    basePath,
-    process.platform === "win32" ? "docdexd.exe" : "docdexd"
-  );
+  const { binaryPath } = resolveInstallPaths(platformKey);
 
   if (!fs.existsSync(binaryPath)) {
     console.error(`[docdex] Missing binary for ${platformKey}. Try reinstalling or set DOCDEX_DOWNLOAD_REPO to a repo with release assets.`);

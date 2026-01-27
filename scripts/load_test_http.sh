@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASE_URL="${DOCDEX_HTTP_BASE_URL:-http://127.0.0.1:28491}"
 DURATION_SECS="${DOCDEX_LOAD_DURATION_SECS:-60}"
 CONCURRENCY="${DOCDEX_LOAD_CONCURRENCY:-4}"
@@ -22,6 +23,10 @@ log() {
 
 resolve_default_repo_root() {
   local candidate=""
+  if [[ -d "${ROOT_DIR}" && ( -f "${ROOT_DIR}/Cargo.toml" || -d "${ROOT_DIR}/.git" ) ]]; then
+    printf "%s" "${ROOT_DIR}"
+    return 0
+  fi
   if command -v git >/dev/null 2>&1; then
     candidate="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   fi

@@ -106,7 +106,10 @@ function runDoctor() {
     const targetTriple = targetTripleForPlatformKey(platformKey);
     const expectedAssetName = artifactName(platformKey);
     const expectedAssetPattern = assetPatternForPlatformKey(platformKey, { exampleAssetName: expectedAssetName });
-    const { basePath } = resolveInstallPaths(platformKey);
+    const distCandidates = resolveDistBaseCandidates({ env: process.env });
+    const distBase =
+      distCandidates[0] || resolveDistBaseDir({ env: process.env, fsModule: null });
+    const basePath = path.join(distBase, platformKey);
     const installMeta = readInstallMetadata({ fsModule: fs, pathModule: path, basePath });
     const installSource = formatInstallSource(installMeta);
 

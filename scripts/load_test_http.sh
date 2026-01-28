@@ -72,7 +72,7 @@ print(os.path.abspath(os.path.expanduser(sys.argv[1])))
 PY
 )
   if [[ -n "${DOCDEX_BIN//[[:space:]]/}" ]]; then
-    if command -v "${DOCDEX_BIN}" >/dev/null 2>&1; then
+    if [[ -x "${DOCDEX_BIN}" ]]; then
       local id_payload
       if id_payload=$(DOCDEX_CLI_LOCAL=1 "${DOCDEX_BIN}" repo id --repo "${abs_root}" 2>/dev/null); then
         REPO_ID=$(python3 - <<'PY' <<<"${id_payload}"
@@ -129,6 +129,10 @@ PY
     return 0
   fi
   log "initialize response missing repo_id"
+  if curl -fsS "${CURL_AUTH_ARGS[@]}" "${BASE_URL}/v1/index/status" >/dev/null 2>&1; then
+    log "index status reachable without repo_id; continuing"
+    return 0
+  fi
   return 1
 }
 

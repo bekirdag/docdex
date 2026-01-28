@@ -98,7 +98,11 @@ fn resolve_windows_ollama_path() -> Option<PathBuf> {
                 .join("Ollama")
                 .join("ollama.exe"),
         );
-        candidates.push(PathBuf::from(local_app_data).join("Ollama").join("ollama.exe"));
+        candidates.push(
+            PathBuf::from(local_app_data)
+                .join("Ollama")
+                .join("ollama.exe"),
+        );
     }
     if let Some(program_files) = env::var_os("ProgramFiles") {
         candidates.push(
@@ -137,7 +141,6 @@ fn path_eq(left: &Path, right: &Path) -> bool {
         .to_ascii_lowercase()
         .eq(&right.to_string_lossy().to_ascii_lowercase())
 }
-
 
 pub fn list_models(bin: &Path) -> Result<Vec<String>> {
     match list_models_once(bin) {

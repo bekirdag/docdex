@@ -587,9 +587,10 @@ fn delegation_selects_primary_skips_embedding_only_models() {
 }
 
 #[test]
-fn validate_output_rejects_empty_or_fenced() {
+fn validate_output_rejects_empty_or_wrapped_fences() {
     assert!(validate_output(TaskType::FormatCode, "").is_err());
     assert!(validate_output(TaskType::FormatCode, "```js\ncode\n```").is_err());
+    assert!(validate_output(TaskType::FormatCode, "let a = 1;\n```\ncode\n```").is_ok());
     assert!(validate_output(TaskType::FormatCode, "let a = 1;").is_ok());
 }
 

@@ -612,6 +612,43 @@ pub fn mode_from_config(mode: &str) -> DelegationMode {
     }
 }
 
+fn unwrap_markdown_fence(output: &str) -> Option<String> {
+    let trimmed = output.trim();
+    if !trimmed.starts_with("```") {
+        return None;
+    }
+    let mut lines = trimmed.lines();
+    let opening = lines.next()?;
+    if !opening.trim_start().starts_with("```") {
+        return None;
+    }
+    let mut body = Vec::new();
+    let mut found_close = false;
+    for line in lines.by_ref() {
+        if line.trim_start().starts_with("```") {
+            found_close = true;
+            break;
+        }
+        body.push(line);
+    }
+    if !found_close {
+        return None;
+    }
+    for remainder in lines {
+        if !remainder.trim().is_empty() {
+            return None;
+        }
+    }
+    Some(body.join("\n"))
+}
+
+fn normalize_delegation_output(output: &str) -> (String, bool) {
+    if let Some(unwrapped) = unwrap_markdown_fence(output) {
+        return (unwrapped, true);
+    }
+    (output.to_string(), false)
+}
+
 pub fn validate_output(task_type: TaskType, output: &str) -> Result<(), DelegationValidationError> {
     let trimmed = output.trim();
     if trimmed.is_empty() {
@@ -619,7 +656,7 @@ pub fn validate_output(task_type: TaskType, output: &str) -> Result<(), Delegati
             reason: "delegation output is empty".to_string(),
         });
     }
-    if trimmed.contains("```") {
+    if trimmed.starts_with("```") {
         return Err(DelegationValidationError {
             reason: "delegation output must not include markdown fences".to_string(),
         });
@@ -1179,6 +1216,17 @@ pub(crate) async fn run_flow_with_clients(
     {
         Ok(completion) => {
             local_tokens = completion_token_usage(&completion, &rendered.prompt);
+            let mut completion = completion;
+            let (normalized, stripped) = normalize_delegation_output(&completion.output);
+            if stripped {
+                completion.output = normalized;
+                warnings.push("stripped markdown fences from delegation output".to_string());
+                warn!(
+                    target: "docdexd",
+                    source = "local",
+                    "stripped markdown fences from delegation output"
+                );
+            }
             match validate_output(task_type, &completion.output) {
                 Ok(()) => Some(completion),
                 Err(err) => {
@@ -1220,6 +1268,17 @@ pub(crate) async fn run_flow_with_clients(
                 .context("primary agent completion failed")?;
             primary_tokens = primary_tokens
                 .saturating_add(completion_token_usage(&completion, &rendered.prompt));
+            let mut completion = completion;
+            let (normalized, stripped) = normalize_delegation_output(&completion.output);
+            if stripped {
+                completion.output = normalized;
+                warnings.push("stripped markdown fences from delegation output".to_string());
+                warn!(
+                    target: "docdexd",
+                    source = "primary",
+                    "stripped markdown fences from delegation output"
+                );
+            }
             validate_output(task_type, &completion.output)
                 .map_err(|err| anyhow!(err.to_string()))?;
             return Ok(DelegationFlowResult {
@@ -1286,6 +1345,18 @@ pub(crate) async fn run_flow_with_clients(
                 Ok(refined) => {
                     primary_tokens = primary_tokens
                         .saturating_add(completion_token_usage(&refined, &refine_rendered.prompt));
+                    let mut refined = refined;
+                    let (normalized, stripped) = normalize_delegation_output(&refined.output);
+                    if stripped {
+                        refined.output = normalized;
+                        warnings
+                            .push("stripped markdown fences from delegation output".to_string());
+                        warn!(
+                            target: "docdexd",
+                            source = "primary",
+                            "stripped markdown fences from delegation output"
+                        );
+                    }
                     if let Err(err) = validate_output(task_type, &refined.output) {
                         warn!(
                             target: "docdexd",

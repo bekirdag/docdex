@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.34
+- Normalize delegation output by stripping top-level markdown fences so local delegation doesn't fail on wrapped output.
+
 ## 0.2.33
 - Warn Windows users to install the VC++ 2015-2022 runtime in the npm README.
 - Ensure `docdex setup` detects the default Ollama install path on Windows.

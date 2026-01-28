@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.34
+- Normalize local delegation output by stripping top-level markdown fences (with warnings) so fenced wrappers don't fail delegation.
+- Allow delegation outputs to include fenced code markers inside content while still rejecting wrapped fenced output.
+- Bump release metadata to 0.2.34.
+
 ## 0.2.33
 - Warn Windows users to install the VC++ 2015-2022 runtime in the README and npm README.
 - Fix Windows setup to detect the default Ollama install path and use it for the current process.

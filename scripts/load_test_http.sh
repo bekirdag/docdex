@@ -75,12 +75,13 @@ PY
     if [[ -x "${DOCDEX_BIN}" ]]; then
       local id_payload
       if id_payload=$(DOCDEX_CLI_LOCAL=1 "${DOCDEX_BIN}" repo id --repo "${abs_root}" 2>/dev/null); then
-        REPO_ID=$(python3 - <<'PY' <<<"${id_payload}"
+        REPO_ID=$(python3 - "${id_payload}" <<'PY'
 import json
 import sys
 
+raw = sys.argv[1]
 try:
-    data = json.loads(sys.stdin.read())
+    data = json.loads(raw)
     value = data.get("repo_id", "")
     if isinstance(value, str):
         print(value)
@@ -111,12 +112,13 @@ PY
     log "initialize failed for repo_root=${abs_root}"
     return 1
   fi
-  REPO_ID=$(python3 - <<'PY' <<<"${response}"
+  REPO_ID=$(python3 - "${response}" <<'PY'
 import json
 import sys
 
+raw = sys.argv[1]
 try:
-    data = json.loads(sys.stdin.read())
+    data = json.loads(raw)
     value = data.get("repo_id", "")
     if isinstance(value, str):
         print(value)
@@ -183,14 +185,15 @@ wait_for_index_ready() {
       sleep 1
       continue
     fi
-    read -r last_ready last_status <<<"$(python3 - <<'PY' <<<"${response}"
+    read -r last_ready last_status <<<"$(python3 - "${response}" <<'PY'
 import json
 import sys
 
+raw = sys.argv[1]
 ready = "false"
 status = ""
 try:
-    data = json.loads(sys.stdin.read())
+    data = json.loads(raw)
     ready = "true" if data.get("ready") else "false"
     status = str(data.get("status") or "")
 except Exception:

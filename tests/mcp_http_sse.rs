@@ -387,6 +387,74 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         "stats followup project_root mismatch: {followup_root}"
     );
 
+    let legacy_stats_payload = json!({
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "docdex_stats",
+        "params": { "project_root": repo.path() }
+    });
+    let legacy_stats_resp = send_tools_call_with_backoff(
+        &client,
+        &mut reader,
+        &session_id,
+        port,
+        &legacy_stats_payload,
+        Duration::from_secs(10),
+    )?;
+    let legacy_stats_text = legacy_stats_resp
+        .get("result")
+        .and_then(|value| value.get("content"))
+        .and_then(|value| value.as_array())
+        .and_then(|value| value.first())
+        .and_then(|value| value.get("text"))
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("legacy stats missing content: {legacy_stats_resp}"))?;
+    let legacy_stats_json: serde_json::Value = serde_json::from_str(legacy_stats_text)
+        .map_err(|err| format!("legacy stats invalid json ({err}): {legacy_stats_text}"))?;
+    let legacy_root = legacy_stats_json
+        .get("project_root")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("legacy stats missing project_root: {legacy_stats_json}"))?;
+    let reported_legacy_root = normalize_windows_path(legacy_root);
+    assert!(
+        reported_legacy_root.contains(&expected_override_root),
+        "legacy stats project_root mismatch: {legacy_root}"
+    );
+
+    let legacy_dot_payload = json!({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "docdex.stats",
+        "params": { "project_root": repo.path() }
+    });
+    let legacy_dot_resp = send_tools_call_with_backoff(
+        &client,
+        &mut reader,
+        &session_id,
+        port,
+        &legacy_dot_payload,
+        Duration::from_secs(10),
+    )?;
+    let legacy_dot_text = legacy_dot_resp
+        .get("result")
+        .and_then(|value| value.get("content"))
+        .and_then(|value| value.as_array())
+        .and_then(|value| value.first())
+        .and_then(|value| value.get("text"))
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("legacy dot stats missing content: {legacy_dot_resp}"))?;
+    let legacy_dot_json: serde_json::Value = serde_json::from_str(legacy_dot_text)
+        .map_err(|err| format!("legacy dot stats invalid json ({err}): {legacy_dot_text}"))?;
+    let legacy_dot_root = legacy_dot_json
+        .get("project_root")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("legacy dot stats missing project_root: {legacy_dot_json}"))?;
+    let reported_legacy_dot_root = normalize_windows_path(legacy_dot_root);
+    assert!(
+        reported_legacy_dot_root.contains(&expected_override_root),
+        "legacy dot stats project_root mismatch: {legacy_dot_root}"
+    );
+
     let direct_resp = client
         .post(format!("http://127.0.0.1:{port}/v1/mcp"))
         .json(&init_payload)

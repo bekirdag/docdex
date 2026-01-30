@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.35
+- Route legacy MCP JSON-RPC method names (docdex_* / docdex.*) through tools/call so older clients keep working.
+- Harden the HTTP soak script with a /search preflight and safer index status parsing.
+- Bump release metadata to 0.2.35.
+
 ## 0.2.34
 - Normalize local delegation output by stripping top-level markdown fences (with warnings) so fenced wrappers don't fail delegation.
 - Allow delegation outputs to include fenced code markers inside content while still rejecting wrapped fenced output.

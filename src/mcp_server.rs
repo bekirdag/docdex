@@ -272,6 +272,39 @@ fn default_message_for_code(code: &str) -> &'static str {
     }
 }
 
+fn is_legacy_tool_method(method: &str) -> bool {
+    method.starts_with("docdex_") || method.starts_with("docdex.")
+}
+
+fn normalize_legacy_tool_name(method: &str) -> String {
+    match method {
+        "docdex.profile"
+        | "docdex_profile"
+        | "docdex.get_profile"
+        | "docdex_get_profile"
+        | "docdex.profile.get_profile"
+        | "docdex_profile_get_profile" => "docdex_get_profile".to_string(),
+        "docdex.profile.save_preference"
+        | "docdex_profile_save_preference"
+        | "docdex.save_preference"
+        | "docdex_save_preference" => "docdex_save_preference".to_string(),
+        other => {
+            if let Some(stripped) = other.strip_prefix("docdex.") {
+                format!("docdex_{}", stripped.replace('.', "_"))
+            } else {
+                other.to_string()
+            }
+        }
+    }
+}
+
+fn normalize_tool_arguments(value: Option<serde_json::Value>) -> serde_json::Value {
+    match value.unwrap_or_else(|| json!({})) {
+        serde_json::Value::Null => json!({}),
+        other => other,
+    }
+}
+
 fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
     if let Some(rate) = err.downcast_ref::<RateLimited>() {
         return (rate.code, Some(mcp_rate_limited_data(rate)));
@@ -910,7 +943,7 @@ fn annotations_with_priority(priority: f32) -> serde_json::Value {
 }
 
 impl McpServer {
-    async fn handle(&mut self, req: RpcRequest) -> Result<Option<RpcResponse>> {
+    async fn handle(&mut self, mut req: RpcRequest) -> Result<Option<RpcResponse>> {
         // Notifications (no id) do not expect a response.
         if req.id.is_none() {
             if req.method == "notifications/initialized" {
@@ -952,6 +985,14 @@ impl McpServer {
                         "hint": "Call initialize with auth_token",
                     })),
                 )),
+            }));
+        }
+        if is_legacy_tool_method(req.method.as_str()) {
+            let method_name = normalize_legacy_tool_name(req.method.as_str());
+            req.method = "tools/call".to_string();
+            req.params = Some(json!({
+                "name": method_name,
+                "arguments": normalize_tool_arguments(req.params.take()),
             }));
         }
         match req.method.as_str() {

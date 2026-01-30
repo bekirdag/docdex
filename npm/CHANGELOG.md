@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.35
+- Route legacy MCP JSON-RPC method names (docdex_* / docdex.*) through tools/call so older clients keep working.
+
 ## 0.2.34
 - Normalize delegation output by stripping top-level markdown fences so local delegation doesn't fail on wrapped output.
 

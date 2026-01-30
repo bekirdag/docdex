@@ -170,6 +170,20 @@ index_rebuild_path() {
   printf "%s" "${path}"
 }
 
+parse_index_status() {
+  python3 -c 'import json, sys
+ready = "false"
+status = ""
+try:
+    data = json.loads(sys.argv[1])
+    if isinstance(data, dict):
+        ready = "true" if data.get("ready") else "false"
+        status = str(data.get("status") or "")
+except Exception:
+    pass
+print(f"{ready} {status}")' "$1"
+}
+
 wait_for_index_ready() {
   local deadline=$(( $(date +%s) + INDEX_WAIT_SECS ))
   local status_url
@@ -185,22 +199,19 @@ wait_for_index_ready() {
       sleep 1
       continue
     fi
-    read -r last_ready last_status <<<"$(python3 - "${response}" <<'PY'
-import json
-import sys
-
-raw = sys.argv[1]
-ready = "false"
-status = ""
-try:
-    data = json.loads(raw)
-    ready = "true" if data.get("ready") else "false"
-    status = str(data.get("status") or "")
-except Exception:
-    pass
-print(f"{ready} {status}")
-PY
-)"
+    local parsed
+    if ! parsed=$(parse_index_status "${response}" 2>/dev/null); then
+      log "index status parse failed; retrying"
+      sleep 1
+      continue
+    fi
+    read -r last_ready last_status <<<"${parsed}"
+    if [[ -z "${last_ready}" ]]; then
+      last_ready="false"
+    fi
+    if [[ -z "${last_status}" ]]; then
+      last_status="unknown"
+    fi
     if [[ "${last_ready}" == "true" ]]; then
       log "index status: ready"
       return 0
@@ -218,6 +229,78 @@ PY
 
   log "index not ready after ${INDEX_WAIT_SECS}s (status=${last_status:-unknown})"
   return 1
+}
+
+strip_repo_id_param() {
+  python3 - "${REQUEST_PATH}" <<'PY'
+import sys
+from urllib.parse import urlsplit, parse_qsl, urlencode, urlunsplit
+
+path = sys.argv[1]
+parts = urlsplit(path)
+query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "repo_id"]
+new_query = urlencode(query, doseq=True)
+print(urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment)))
+PY
+}
+
+unknown_repo_response() {
+  python3 - "$1" <<'PY'
+import json
+import sys
+
+raw = sys.argv[1]
+try:
+    data = json.loads(raw)
+except Exception:
+    sys.exit(1)
+
+err = data.get("error") or {}
+code = str(err.get("code") or "")
+message = str(err.get("message") or "")
+if code == "unknown_repo" or "unknown repo" in message.lower():
+    sys.exit(0)
+sys.exit(1)
+PY
+}
+
+repo_id_optional() {
+  curl -fsS "${CURL_AUTH_ARGS[@]}" "${BASE_URL}/v1/index/status" >/dev/null 2>&1
+}
+
+preflight_search() {
+  local attempted_drop="${1:-0}"
+  local url="${BASE_URL}${REQUEST_PATH}"
+  local resp_file
+  resp_file="$(mktemp)"
+  local status
+  status=$(curl -sS -o "${resp_file}" -w "%{http_code}" --max-time "${TIMEOUT_SECS}" \
+    "${CURL_AUTH_ARGS[@]}" "${url}" || echo "000")
+  if [[ "${status}" == "000" ]]; then
+    log "preflight /search failed to connect"
+    cat "${resp_file}" >&2 || true
+    rm -f "${resp_file}"
+    return 1
+  fi
+  if [[ "${status}" -ge 400 ]]; then
+    local body
+    body="$(cat "${resp_file}")"
+    if [[ "${status}" -eq 404 && "${attempted_drop}" -eq 0 ]]; then
+      if unknown_repo_response "${body}" && repo_id_optional; then
+        log "search rejected repo_id; retrying without repo_id"
+        REQUEST_PATH="$(strip_repo_id_param)"
+        rm -f "${resp_file}"
+        preflight_search 1
+        return $?
+      fi
+    fi
+    log "preflight /search failed status=${status}"
+    printf "%s\n" "${body}" | head -c 2000 >&2
+    rm -f "${resp_file}"
+    return 1
+  fi
+  rm -f "${resp_file}"
+  return 0
 }
 
 require_server() {
@@ -247,6 +330,7 @@ log "using BASE_URL=${BASE_URL}"
 require_server
 apply_repo_id
 wait_for_index_ready
+preflight_search
 log "duration=${DURATION_SECS}s concurrency=${CONCURRENCY} path=${REQUEST_PATH}"
 
 end_epoch="$(( $(date +%s) + DURATION_SECS ))"

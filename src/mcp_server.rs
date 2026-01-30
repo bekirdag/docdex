@@ -3646,16 +3646,9 @@ Produce a phased plan with risks and tests to run."
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .or_else(|| self.default_agent_id.as_deref());
-        let Some(agent_id) = agent_id else {
-            return Err(AppError::new(ERR_INVALID_ARGUMENT, "agent_id must not be empty").into());
-        };
-        self.call_profile_endpoint(
-            Method::GET,
-            "/v1/profile/list",
-            Some(vec![("agent_id", agent_id.to_string())]),
-            None,
-        )
-        .await
+        let query = agent_id.map(|value| vec![("agent_id", value.to_string())]);
+        self.call_profile_endpoint(Method::GET, "/v1/profile/list", query, None)
+            .await
     }
 
     async fn call_profile_endpoint(

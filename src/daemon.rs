@@ -474,7 +474,26 @@ pub async fn serve(
     } else {
         None
     };
-    let profile_state = match global_state_dir.as_ref() {
+    let profile_state_dir = match global_state_dir.clone() {
+        Some(state_dir) => Some(state_dir),
+        None => match crate::state_paths::default_state_base_dir() {
+            Ok(state_dir) => {
+                warn!(
+                    state_dir = %state_dir.display(),
+                    "global_state_dir missing; falling back to default state dir for profile memory"
+                );
+                Some(state_dir)
+            }
+            Err(err) => {
+                warn!(
+                    error = ?err,
+                    "global_state_dir missing and default state dir unavailable; profile memory disabled"
+                );
+                None
+            }
+        },
+    };
+    let profile_state = match profile_state_dir.as_ref() {
         Some(state_dir) => match ProfileManager::new(state_dir, profile_embedding_dim) {
             Ok(manager) => {
                 let timeout = Duration::from_millis(embedding_timeout_ms);
@@ -500,10 +519,7 @@ pub async fn serve(
                 None
             }
         },
-        None => {
-            warn!("global_state_dir is missing; profile memory disabled");
-            None
-        }
+        None => None,
     };
     let mcp_auth_token = security.auth_token.clone();
     let metrics = Arc::new(metrics::Metrics::default());

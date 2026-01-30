@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.36
+- Bump release metadata to 0.2.36.
+
 ## 0.2.35
 - Route legacy MCP JSON-RPC method names (docdex_* / docdex.*) through tools/call so older clients keep working.
 - Harden the HTTP soak script with a /search preflight and safer index status parsing.

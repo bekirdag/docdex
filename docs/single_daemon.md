@@ -9,7 +9,7 @@ with multi-repo mounting, shared MCP transport, and automated config injection.
 - Auto-mount repos on client initialize without manual indexing.
 - Keep indexes up to date via background watchers.
 - Patch client configs automatically (Claude/Cursor/Codex).
-- Support shared MCP over HTTP/SSE and Unix sockets, plus a stdio proxy for legacy clients.
+- Support shared MCP over HTTP/SSE and Unix sockets.
 - No external process managers (pm2, launchd wrappers, etc.).
 
 ## Phase 1: Singleton Daemon + Lock
@@ -50,12 +50,9 @@ with multi-repo mounting, shared MCP transport, and automated config injection.
 ## Phase 4: Shared MCP Transport
 
 - Add shared MCP transport:
-  - HTTP/SSE endpoint, e.g. `http://127.0.0.1:3210/sse` (auto-select 3000 if free, fallback 3210). Codex uses streamable HTTP at `http://127.0.0.1:3210/v1/mcp`.
-  - Unix socket listener, e.g. `docdex-mcp-server --listen-unix ~/.docdex/mcp.sock`.
+  - HTTP/SSE endpoint: `http://127.0.0.1:28491/v1/mcp/sse` (fixed port; installer writes MCP configs but does not start the daemon during npm install). Codex uses streamable HTTP at `http://127.0.0.1:28491/v1/mcp`.
+  - Unix socket listener (future; served by the daemon).
 - Multi-client JSON-RPC; each request includes `rootUri` or `repo_id`.
-- Add stdio proxy:
-  - Codex instances use stdio proxy which multiplexes to the Unix socket.
-  - Avoids per-client MCP server processes.
 
 ## Phase 5: Auto-Config + Startup
 
@@ -69,9 +66,9 @@ with multi-repo mounting, shared MCP transport, and automated config injection.
   - Windows: Task Scheduler entry.
 - CLI commands should auto-start daemon when invoked.
 - Startup registration uses a lightweight daemon root under `~/.docdex/daemon_root` to avoid indexing arbitrary home directories.
-- Automatic port selection:
-  - If the preferred port is busy, pick the next available port.
-  - Inject the chosen port into client configs.
+- Fixed port:
+  - Use `127.0.0.1:28491` for the daemon bind.
+  - If the port is already in use, daemon startup can fail; installation still succeeds and configs are updated. Use `docdex setup` or adjust the port in config when needed.
 - First-run message:
   - Emit only when OS startup registration fails (permission or policy).
   - Provide manual setup instructions for that OS.
@@ -84,7 +81,7 @@ with multi-repo mounting, shared MCP transport, and automated config injection.
 ## Client Config Paths (Auto-Injection Targets)
 
 To achieve install-and-forget behavior, the installer should look for these files and
-append the docdex HTTP entry (`http://localhost:3000/sse`) where `mcpServers` is supported (Codex uses `http://localhost:3000/v1/mcp`).
+append the docdex HTTP entry (`http://localhost:28491/v1/mcp/sse`) where `mcpServers` is supported (Codex uses `http://localhost:28491/v1/mcp`).
 
 ### Windows
 
@@ -130,14 +127,12 @@ append the docdex HTTP entry (`http://localhost:3000/sse`) where `mcpServers` is
 - Check OS via `process.platform`.
 - Locate candidate config files from the lists above.
 - Read and parse JSON/TOML/YAML.
-- Inject `mcpServers.docdex = { url: "http://localhost:<port>/sse" }` if missing (port auto-selected and written to `~/.docdex/config.toml`). For Codex, inject `http://localhost:<port>/v1/mcp`.
+- Inject `mcpServers.docdex = { url: "http://localhost:28491/v1/mcp/sse" }` if missing. For Codex, inject `http://localhost:28491/v1/mcp`.
 - Write back to disk without duplicating entries.
 
-Note: the daemon default port remains 3210; if you use `http://localhost:3000/sse`,
-ensure the daemon is configured to bind to port 3000.
+Note: the daemon binds to `127.0.0.1:28491` by default; if you change it, update client configs to match.
 
 ## Defaults / Decisions
 
-- Default HTTP port stays `3210`.
+- Default HTTP port is fixed at `28491`.
 - Shared MCP endpoint supports HTTP/SSE + Unix socket (Unix socket first for local clients).
-- Provide a stdio proxy for legacy clients.

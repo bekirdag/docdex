@@ -20,6 +20,7 @@ use crate::llm::delegation::{
 };
 use crate::llm::local_library::{
     delegation_is_enabled, refresh_local_library_if_stale, refresh_local_library_if_stale_with_web,
+    resolve_local_ollama_base_url,
 };
 use crate::memory::{inject_embedding_metadata, repo_state_root_from_state_dir, MemoryStore};
 use crate::metrics;
@@ -2790,6 +2791,14 @@ Produce a phased plan with risks and tests to run."
             library
                 .as_ref()
                 .and_then(|library| select_local_target(task_type, library))
+        });
+        let local_target = local_target.or_else(|| {
+            let model = llm_config.default_model.trim();
+            if model.is_empty() {
+                return None;
+            }
+            resolve_local_ollama_base_url(&llm_config)
+                .map(|_| LocalTarget::OllamaModel(model.to_string()))
         });
         let primary_target = library
             .as_ref()

@@ -15,7 +15,8 @@ const {
   resolveDistBaseDir,
   resolveDistBaseCandidates,
   resolveBinDir,
-  resolveWindowsRunnerPath
+  resolveWindowsRunnerPath,
+  resolveWindowsSetupRunnerPath
 } = require("./paths");
 
 const DEFAULT_HOST = "127.0.0.1";
@@ -2261,6 +2262,27 @@ function writeWindowsRunner({ binaryPath, args, envPairs, workingDir, logger, di
   }
 }
 
+function writeWindowsSetupRunner({ binaryPath, args, logger, distBaseDir } = {}) {
+  if (!binaryPath) return null;
+  const runnerPath = resolveWindowsSetupRunnerPath({ distBaseDir });
+  const lines = [
+    "@echo off",
+    "setlocal",
+    "set \"DOCDEX_SETUP_AUTO=1\"",
+    "set \"DOCDEX_SETUP_MODE=auto\""
+  ];
+  const argString = (args || []).map((arg) => escapeCmdArg(arg)).join(" ");
+  lines.push(`${escapeCmdArg(binaryPath)} ${argString}`.trim());
+  try {
+    fs.mkdirSync(path.dirname(runnerPath), { recursive: true });
+    fs.writeFileSync(runnerPath, `${lines.join("\r\n")}\r\n`);
+    return runnerPath;
+  } catch (err) {
+    logger?.warn?.(`[docdex] failed to write Windows setup runner: ${err?.message || err}`);
+    return null;
+  }
+}
+
 function registerStartup({ binaryPath, port, repoRoot, logger, distBaseDir }) {
   if (!binaryPath) return { ok: false, reason: "missing_binary" };
   stopDaemonService({ logger });
@@ -2514,7 +2536,8 @@ function launchSetupWizard({
   spawnFn = spawn,
   spawnSyncFn = spawnSync,
   platform = process.platform,
-  canPrompt = canPromptWithTty
+  canPrompt = canPromptWithTty,
+  distBaseDir
 }) {
   if (!binaryPath) return { ok: false, reason: "missing_binary" };
   if (shouldSkipSetup(env)) return { ok: false, reason: "skipped" };
@@ -2535,9 +2558,21 @@ function launchSetupWizard({
   }
 
   if (platform === "win32") {
-    const quoted = `"${binaryPath}" ${args.map((arg) => `"${arg}"`).join(" ")}`;
-    const cmdline = `set DOCDEX_SETUP_AUTO=1 && set DOCDEX_SETUP_MODE=auto && ${quoted}`;
-    const result = spawnSyncFn("cmd", ["/c", "start", "", "cmd", "/c", cmdline]);
+    const runnerPath = writeWindowsSetupRunner({
+      binaryPath,
+      args,
+      logger,
+      distBaseDir
+    });
+    if (!runnerPath) return { ok: false, reason: "runner_failed" };
+    const result = spawnSyncFn("cmd", [
+      "/c",
+      "start",
+      "",
+      "cmd",
+      "/c",
+      escapeCmdArg(runnerPath)
+    ]);
     if (result.status === 0) return { ok: true };
     logger?.warn?.(`[docdex] cmd start failed: ${result.stderr || "unknown error"}`);
     return { ok: false, reason: "terminal_launch_failed" };
@@ -2681,13 +2716,20 @@ async function runPostInstallSetup({ binaryPath, logger, env, skipDaemon, distBa
   if (startupOk) {
     clearStartupFailure();
   }
-  const skipWizard = isNpmLifecycle(effectiveEnv) || shouldSkipSetup(effectiveEnv);
+  const skipExplicit = shouldSkipSetup(effectiveEnv);
+  const skipWizard = isNpmLifecycle(effectiveEnv) || skipExplicit;
   const setupLaunch = skipWizard
-    ? { ok: false, reason: "skipped" }
-    : launchSetupWizard({ binaryPath: startupBinaries.binaryPath, logger: log });
-  if (!setupLaunch.ok && setupLaunch.reason !== "skipped") {
-    log.warn?.("[docdex] setup wizard did not launch. Run `docdex setup`.");
-    recordSetupPending({ reason: setupLaunch.reason, port, repoRoot: daemonRoot });
+    ? { ok: false, reason: skipExplicit ? "skipped" : "npm_lifecycle" }
+    : launchSetupWizard({
+        binaryPath: startupBinaries.binaryPath,
+        logger: log,
+        distBaseDir: resolvedDistBaseDir
+      });
+  if (!setupLaunch.ok) {
+    if (setupLaunch.reason !== "skipped") {
+      log.warn?.("[docdex] setup wizard did not launch. Run `docdex setup`.");
+      recordSetupPending({ reason: setupLaunch.reason, port, repoRoot: daemonRoot });
+    }
   }
   return { port, url, configPath };
 }

@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode},
+    event::{self, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -1762,7 +1762,9 @@ impl TuiInput {
     fn read_key(&self) -> Result<KeyCode> {
         loop {
             if let Event::Key(key) = event::read()? {
-                return Ok(key.code);
+                if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                    return Ok(key.code);
+                }
             }
         }
     }
@@ -1790,6 +1792,9 @@ impl WizardInput for TuiInput {
         loop {
             let selected = steps[self.menu_index];
             let options = details.options_for(selected);
+            if options.is_none() && self.menu_focus == MenuFocus::Options {
+                self.menu_focus = MenuFocus::Menu;
+            }
             if self.option_step != Some(selected) {
                 self.option_step = Some(selected);
                 self.option_index = options

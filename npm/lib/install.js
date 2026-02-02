@@ -2286,6 +2286,14 @@ function printPostInstallBanner() {
       return false;
     }
   };
+  const writeStderr = (message) => {
+    try {
+      process.stderr.write(message);
+      return true;
+    } catch {
+      return false;
+    }
+  };
   let width = 0;
   const content = [
     "\x1b[31m      _               _           \x1b[0m",
@@ -2320,7 +2328,9 @@ function printPostInstallBanner() {
   lines.push(bottom);
   const banner = `\r\x1b[2K${lines.join("\n")}\n`;
   if (!writeDirect(banner)) {
-    console.log(banner);
+    if (!writeStderr(banner)) {
+      console.log(banner);
+    }
   }
 }
 

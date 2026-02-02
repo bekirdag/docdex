@@ -438,14 +438,19 @@ test("launchSetupWizard uses cmd start on Windows", () => {
     calls.push({ cmd, args });
     return { status: 0 };
   };
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-setup-runner-"));
+  const distBaseDir = path.join(tempDir, "dist");
+  const expectedRunner = path.join(tempDir, "run-setup.cmd");
   const result = launchSetupWizard({
     binaryPath: "C:\\\\docdexd.exe",
     spawnSyncFn,
-    platform: "win32"
+    platform: "win32",
+    distBaseDir
   });
   assert.equal(result.ok, true);
   assert.equal(calls[0].cmd, "cmd");
-  assert.deepEqual(calls[0].args.slice(0, 2), ["/c", "start"]);
+  assert.deepEqual(calls[0].args.slice(0, 5), ["/c", "start", "", "cmd", "/c"]);
+  assert.equal(calls[0].args[5], `"${expectedRunner.replace(/"/g, "\"\"")}"`);
 });
 
 test("parseOllamaListOutput extracts model names", () => {

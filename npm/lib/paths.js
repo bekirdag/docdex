@@ -102,11 +102,20 @@ function resolveWindowsRunnerPath(options = {}) {
   return pathModule.join(resolveDocdexDataDir({ ...options, pathModule }), "run-daemon.cmd");
 }
 
+function resolveWindowsSetupRunnerPath(options = {}) {
+  const pathModule = options.pathModule || path;
+  if (options.distBaseDir) {
+    return pathModule.join(pathModule.dirname(options.distBaseDir), "run-setup.cmd");
+  }
+  return pathModule.join(resolveDocdexDataDir({ ...options, pathModule }), "run-setup.cmd");
+}
+
 module.exports = {
   resolveUserDataDir,
   resolveDocdexDataDir,
   resolveDistBaseCandidates,
   resolveDistBaseDir,
   resolveBinDir,
-  resolveWindowsRunnerPath
+  resolveWindowsRunnerPath,
+  resolveWindowsSetupRunnerPath
 };

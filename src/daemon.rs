@@ -493,33 +493,66 @@ pub async fn serve(
             }
         },
     };
-    let profile_state = match profile_state_dir.as_ref() {
-        Some(state_dir) => match ProfileManager::new(state_dir, profile_embedding_dim) {
-            Ok(manager) => {
-                let timeout = Duration::from_millis(embedding_timeout_ms);
-                let embedder = match ProfileEmbedder::new(
-                    ollama_base_url.clone(),
-                    profile_embedding_model.clone(),
-                    timeout,
-                    profile_embedding_dim,
-                ) {
-                    Ok(embedder) => Some(embedder),
-                    Err(err) => {
-                        warn!(
-                            error = ?err,
-                            "profile embedder initialization failed; profile recall disabled"
-                        );
-                        None
+    let profile_state = {
+        let mut manager: Option<ProfileManager> = None;
+        if let Some(state_dir) = profile_state_dir.as_ref() {
+            match ProfileManager::new(state_dir, profile_embedding_dim) {
+                Ok(value) => manager = Some(value),
+                Err(err) => {
+                    warn!(
+                        error = ?err,
+                        state_dir = %state_dir.display(),
+                        "profile manager initialization failed; retrying with default state dir"
+                    );
+                }
+            }
+        }
+        if manager.is_none() {
+            if let Ok(fallback_dir) = crate::state_paths::default_state_base_dir() {
+                if Some(&fallback_dir) != profile_state_dir.as_ref() {
+                    match ProfileManager::new(&fallback_dir, profile_embedding_dim) {
+                        Ok(value) => manager = Some(value),
+                        Err(err) => {
+                            warn!(
+                                error = ?err,
+                                fallback_dir = %fallback_dir.display(),
+                                "profile manager fallback initialization failed"
+                            );
+                        }
                     }
-                };
-                Some(search::ProfileState { manager, embedder })
+                }
             }
-            Err(err) => {
-                warn!(error = ?err, "profile manager initialization failed; profile memory disabled");
-                None
+        }
+        if manager.is_none() {
+            let temp_dir = std::env::temp_dir().join("docdex").join("state");
+            match ProfileManager::new(&temp_dir, profile_embedding_dim) {
+                Ok(value) => {
+                    warn!(
+                        temp_dir = %temp_dir.display(),
+                        "profile manager initialized in temp dir"
+                    );
+                    manager = Some(value);
+                }
+                Err(err) => {
+                    warn!(
+                        error = ?err,
+                        temp_dir = %temp_dir.display(),
+                        "profile manager temp initialization failed"
+                    );
+                }
             }
-        },
-        None => None,
+        }
+        manager.map(|manager| {
+            let timeout = Duration::from_millis(embedding_timeout_ms);
+            let embedder = ProfileEmbedder::new(
+                ollama_base_url.clone(),
+                profile_embedding_model.clone(),
+                timeout,
+                profile_embedding_dim,
+            )
+            .ok();
+            search::ProfileState { manager, embedder }
+        })
     };
     let mcp_auth_token = security.auth_token.clone();
     let metrics = Arc::new(metrics::Metrics::default());

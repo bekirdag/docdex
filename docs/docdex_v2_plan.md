@@ -170,7 +170,7 @@ Based on the provided SDS and the current file structure of `docdex` v0.1.10, he
 A. Repo Manager & State (src/repo_manager)
 Path Normalization: The SDS explicitly requires the fingerprint to be the SHA256 of the normalized absolute path (resolving symlinks and case sensitivity). This is critical to prevent duplicate state for the same repo.
 
-Repo Meta File: The SDS mentions maintaining a repo_meta.json at the repo root containing the fingerprint and version. The plan implies this in "Registry," but explicit file creation is needed.
+Repo Meta File: The SDS mentions maintaining a repo_meta.json under the shared state base dir (default `~/.docdex/state/repos/<state_key>/repo_meta.json`) containing the fingerprint and version. The plan implies this in "Registry," but explicit file creation is needed.
 
 B. Web Tier Guardrails (src/web)
 Blocklist: The SDS mentions "blocklist support" for the DuckDuckGo DiscoveryService. The plan mentions rate limiting but should also include domain filtering.

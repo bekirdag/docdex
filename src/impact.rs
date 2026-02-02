@@ -1,3 +1,4 @@
+use crate::error::{AppError, ERR_MISSING_INDEX};
 use crate::symbols::{language_for_path, SchemaCompatibleRange, SchemaInfo, SourceLanguage};
 use anyhow::{anyhow, Context, Result};
 use once_cell::sync::Lazy;
@@ -796,10 +797,30 @@ impl ImpactGraphStore {
         }
     }
 
+    fn missing_index_error(&self) -> AppError {
+        AppError::new(
+            ERR_MISSING_INDEX,
+            format!(
+                "impact graph not found at {}; run `docdexd index` for this repo and ensure the state dir is writable",
+                self.path.display()
+            ),
+        )
+    }
+
+    pub fn ensure_exists(&self) -> Result<()> {
+        if self.path.exists() {
+            return Ok(());
+        }
+        Err(self.missing_index_error().into())
+    }
+
     pub fn read_edges(&self) -> Result<Vec<ImpactGraphEdge>> {
+        self.ensure_exists()?;
         let raw = match std::fs::read_to_string(&self.path) {
             Ok(data) => data,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(self.missing_index_error().into())
+            }
             Err(err) => return Err(err).with_context(|| format!("read {}", self.path.display())),
         };
         let value: serde_json::Value =
@@ -838,9 +859,12 @@ impl ImpactGraphStore {
     }
 
     pub fn read_diagnostics_map(&self) -> Result<HashMap<String, ImpactDiagnostics>> {
+        self.ensure_exists()?;
         let raw = match std::fs::read_to_string(&self.path) {
             Ok(data) => data,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(self.missing_index_error().into())
+            }
             Err(err) => return Err(err).with_context(|| format!("read {}", self.path.display())),
         };
         let value: serde_json::Value =
@@ -886,9 +910,12 @@ impl ImpactGraphStore {
     }
 
     pub fn read_diagnostics(&self, source: &str) -> Result<Option<ImpactDiagnostics>> {
+        self.ensure_exists()?;
         let raw = match std::fs::read_to_string(&self.path) {
             Ok(data) => data,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(self.missing_index_error().into())
+            }
             Err(err) => return Err(err).with_context(|| format!("read {}", self.path.display())),
         };
         let value: serde_json::Value =

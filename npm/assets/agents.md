@@ -1,4 +1,4 @@
----- START OF DOCDEX INFO V0.2.36 ----
+---- START OF DOCDEX INFO V0.2.37 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
 Health check endpoint: `GET /healthz` (not `/v1/health`).
@@ -6,6 +6,7 @@ Health check endpoint: `GET /healthz` (not `/v1/health`).
 ## Priority Directives (Mandatory)
 
 - Always use both memory lobes early: docdex_get_profile + docdex_memory_recall; save new facts via docdex_memory_save and new preferences via docdex_save_preference.
+- Profile memory is always-on and global; never gate on DOCDEX_ENABLE_MEMORY or repo state. docdex_save_preference must persist (fallback if embeddings/LLM unavailable). If profile calls fail, treat it as a bug.
 - Maintain agent-specific profile memory: use your agent_id with docdex_get_profile/docdex_save_preference; store generic self-knowledge (role, tooling, preferences).
 - Use impact analysis for every code change: prefer MCP tools `docdex_impact_graph` / `docdex_dag_export` (IPC/HTTP). If shell networking is blocked, do not use curl; use MCP/IPC instead. If unavailable, state it and proceed cautiously.
 - Apply DAG reasoning for planning: prefer dependency graph facts (impact results and /v1/dag/export) to choose the right change order and scope.
@@ -250,7 +251,7 @@ Query params:
 
 - SSE: `/v1/mcp/sse` + `/v1/mcp/message`. When multiple repos are mounted, initialize with `rootUri` first.
 - HTTP: `/v1/mcp` accepts repo context in the payload or via prior initialize.
-- If HTTP/SSE is unreachable (sandboxed clients), fall back to local IPC: configure `transport = "ipc"` with `socket_path` (Unix) or `pipe_name` (Windows) and send MCP JSON-RPC to `/v1/mcp` over IPC.
+- If HTTP/SSE is unreachable or fails (e.g., connection refused or sandboxed clients), fall back to local IPC: configure `transport = "ipc"` with `socket_path` (Unix) or `pipe_name` (Windows) and send MCP JSON-RPC to `/v1/mcp` over IPC.
 - For stdio-only clients (e.g., Smithery), use the `docdex-mcp-stdio` entrypoint to bridge stdio JSON-RPC to Docdex MCP.
 - For impact/DAG in sandboxed shells, prefer MCP/IPC tools over `curl` to `/v1/graph/impact` or `/v1/dag/export`.
 - MCP tools: `docdex_impact_graph` (impact traversal) and `docdex_dag_export` (DAG export).

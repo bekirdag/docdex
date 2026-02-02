@@ -117,6 +117,7 @@ start_daemon() {
     --host "$host" \
     --port "$port" \
     --log "$log_level" \
+    --preflight-check=false \
     --secure-mode=false \
     --enable-mcp \
     >"$log_file" 2>&1 &

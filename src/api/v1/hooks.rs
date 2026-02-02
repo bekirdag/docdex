@@ -8,12 +8,14 @@ use std::collections::HashSet;
 use std::time::Instant;
 use tracing::warn;
 
-use crate::error::{ERR_INTERNAL_ERROR, ERR_PROFILE_DISABLED};
+use crate::error::{AppError, ERR_INTERNAL_ERROR, ERR_PROFILE_DISABLED};
 use crate::profiles::{
     check_any_type_usage, check_circular_dependencies, match_constraint_rules, ConstraintRule,
     PreferenceCategory,
 };
-use crate::search::{json_error, repo_error_response, resolve_repo_context, AppState};
+use crate::search::{
+    json_error, repo_error_response, resolve_repo_context, status_for_app_error, AppState,
+};
 
 #[derive(Deserialize)]
 pub struct HookValidateRequest {
@@ -147,6 +149,16 @@ pub async fn hook_validate_handler(
             }
             Err(err) => {
                 state.metrics.inc_error();
+                if let Some(app) = err.downcast_ref::<AppError>() {
+                    return finalize(
+                        json_error(
+                            status_for_app_error(app.code),
+                            app.code,
+                            app.message.clone(),
+                        ),
+                        true,
+                    );
+                }
                 warn!(target: "docdexd", error = ?err, "hook validate cycle check failed");
                 return finalize(
                     json_error(

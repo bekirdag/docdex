@@ -832,8 +832,9 @@ async fn delegation_flow_blocks_primary_when_enforced() {
     )
     .await
     .err()
-    .expect("enforcement error");
-    assert!(err.downcast_ref::<DelegationEnforcementError>().is_some());
+    .expect("delegation error");
+    assert!(err.to_string().contains("local delegation failed"));
+    assert!(err.downcast_ref::<DelegationEnforcementError>().is_none());
 }
 
 #[tokio::test]

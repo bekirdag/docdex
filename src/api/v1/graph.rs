@@ -266,6 +266,13 @@ pub(crate) async fn impact_graph_handler(
         Ok(edges) => edges,
         Err(err) => {
             state.metrics.inc_error();
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                return json_error(
+                    status_for_app_error(app.code),
+                    app.code,
+                    app.message.clone(),
+                );
+            }
             warn!(target: "docdexd", error = ?err, "impact graph read failed");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -372,6 +379,13 @@ pub(crate) async fn impact_diagnostics_handler(
         Ok(map) => map,
         Err(err) => {
             state.metrics.inc_error();
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                return json_error(
+                    status_for_app_error(app.code),
+                    app.code,
+                    app.message.clone(),
+                );
+            }
             warn!(target: "docdexd", error = ?err, "impact diagnostics read failed");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,

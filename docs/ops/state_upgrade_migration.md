@@ -10,7 +10,7 @@ Docdex. It does not cover installer upgrades or downgrades; see
   metadata. When schemas change, the supported upgrade path is reindexing.
 - Shared-state metadata is versioned JSON:
   - `repos/repo_registry.json` (version 1)
-  - `repo_meta.json` at the repo root (version 1)
+  - `repos/<state_key>/repo_meta.json` (version 1, stored under the shared state base dir)
   Docdex fails closed if metadata does not match the current repo identity.
 - Code intelligence payloads include a `schema` block with `version` and
   `compatible` range; clients should validate compatibility before consuming
@@ -23,7 +23,7 @@ Docdex. It does not cover installer upgrades or downgrades; see
 ## State directory resolution (shared across CLI/HTTP/MCP)
 
 - Repo paths are normalized via canonicalization and slash normalization.
-- Default state base dir: `~/.docdex/state` (per-repo state under `repos/<repo_id>/index`).
+- Default state base dir: `~/.docdex/state` (per-repo state under `repos/<state_key>/index`).
 - Relative `--state-dir` values are resolved under the repo root.
 - Absolute `--state-dir` values outside the repo root are treated as a shared base
   directory; per-repo state lives under `<state-dir>/repos/<state_key>/index`.
@@ -38,8 +38,8 @@ Docdex. It does not cover installer upgrades or downgrades; see
   - `repos/repo_registry.json` maps fingerprint -> state_key + canonical path +
     prior paths.
 - Repo metadata:
-  - `repo_meta.json` at the repo root records fingerprint + canonical path +
-    timestamps.
+  - `repos/<state_key>/repo_meta.json` under the shared base dir (default
+    `~/.docdex/state`) records fingerprint + canonical path + timestamps.
 - Docdex refuses to reuse a state directory if the metadata does not match the
   current repo identity, preventing cross-repo data mixing.
 

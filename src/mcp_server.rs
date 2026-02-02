@@ -2701,6 +2701,11 @@ Produce a phased plan with risks and tests to run."
             self.ensure_project_root(project_root.as_deref())?;
         }
 
+        // Local completion is intentionally local-only; do not fall back to primary models.
+        let mut llm_config = self.llm_config.clone();
+        llm_config.delegation.enforce_local = true;
+        llm_config.delegation.allow_fallback_to_primary = false;
+
         let task_type = TaskType::parse(&args.task_type)
             .ok_or_else(|| AppError::new(ERR_INVALID_ARGUMENT, "task_type is invalid"))?;
         let web_gate = WebGateConfig::from_env();
@@ -2735,13 +2740,13 @@ Produce a phased plan with risks and tests to run."
             };
             refresh_local_library_if_stale_with_web(
                 self.global_state_dir.as_deref(),
-                &self.llm_config,
+                &llm_config,
                 true,
                 Some(&mut fetcher),
             )
             .await
         } else {
-            refresh_local_library_if_stale(self.global_state_dir.as_deref(), &self.llm_config, true)
+            refresh_local_library_if_stale(self.global_state_dir.as_deref(), &llm_config, true)
                 .await
         };
         let library = match library_result {
@@ -2755,10 +2760,10 @@ Produce a phased plan with risks and tests to run."
                 None
             }
         };
-        if !delegation_is_enabled(&self.llm_config.delegation, library.as_ref()) {
+        if !delegation_is_enabled(&llm_config.delegation, library.as_ref()) {
             return Err(AppError::new(ERR_INVALID_ARGUMENT, "delegation is disabled").into());
         }
-        if !allowlist_allows(task_type, &self.llm_config.delegation.task_allowlist) {
+        if !allowlist_allows(task_type, &llm_config.delegation.task_allowlist) {
             return Err(AppError::new(
                 ERR_INVALID_ARGUMENT,
                 "task_type not allowed by delegation allowlist",
@@ -2768,12 +2773,12 @@ Produce a phased plan with risks and tests to run."
         let mode = match args.mode.as_deref() {
             Some(value) => DelegationMode::parse(value)
                 .ok_or_else(|| AppError::new(ERR_INVALID_ARGUMENT, "mode is invalid"))?,
-            None => mode_from_config(&self.llm_config.delegation.mode),
+            None => mode_from_config(&llm_config.delegation.mode),
         };
         let max_context_chars = args
             .max_context_chars
             .filter(|value| *value > 0)
-            .unwrap_or(self.llm_config.delegation.max_context_chars);
+            .unwrap_or(llm_config.delegation.max_context_chars);
         let agent_override = args
             .agent
             .as_deref()
@@ -2799,8 +2804,8 @@ Produce a phased plan with risks and tests to run."
             .as_deref()
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false)
-            || !self.llm_config.delegation.local_agent_id.trim().is_empty();
-        if self.llm_config.delegation.enforce_local && local_target.is_none() && !local_override {
+            || !llm_config.delegation.local_agent_id.trim().is_empty();
+        if llm_config.delegation.enforce_local && local_target.is_none() && !local_override {
             let metrics = metrics::global();
             metrics.inc_delegate_local_enforced_failure();
             return Err(AppError::new(
@@ -2811,7 +2816,7 @@ Produce a phased plan with risks and tests to run."
         }
         let started_at = Instant::now();
         let result = run_delegation_flow(
-            &self.llm_config,
+            &llm_config,
             local_agent_override.as_deref(),
             local_target.as_ref(),
             primary_target.as_ref(),
@@ -2838,13 +2843,13 @@ Produce a phased plan with risks and tests to run."
         metrics.record_delegate_latency(started_at.elapsed().as_millis());
         metrics.record_delegate_token_estimate(result.token_estimate);
         let local_cost_per_million = resolve_local_cost_per_million(
-            &self.llm_config,
+            &llm_config,
             local_agent_override.as_deref(),
             local_target.as_ref(),
             library.as_ref(),
         );
         let primary_cost_per_million = resolve_primary_cost_per_million(
-            &self.llm_config,
+            &llm_config,
             primary_target.as_ref(),
             library.as_ref(),
         );

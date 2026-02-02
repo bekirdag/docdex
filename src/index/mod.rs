@@ -2166,7 +2166,24 @@ fn known_canonical_path_from_repo_meta(index_state_dir: &Path) -> Option<String>
     None
 }
 
-fn canonical_path_from_repo_meta(repo_root: &Path) -> Option<String> {
+fn canonical_path_from_repo_meta(
+    repo_root: &Path,
+    index_state_dir: Option<&Path>,
+) -> Option<String> {
+    if let Some(index_state_dir) = index_state_dir {
+        if index_state_dir.file_name().and_then(|s| s.to_str())? == "index" {
+            let state_key_dir = index_state_dir.parent()?;
+            let meta_path = state_key_dir.join("repo_meta.json");
+            if let Ok(raw) = fs::read_to_string(&meta_path) {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    if let Some(path) = parsed.get("canonical_path").and_then(|v| v.as_str()) {
+                        return Some(path.to_string());
+                    }
+                }
+            }
+        }
+    }
+
     let meta_path = repo_root.join("repo_meta.json");
     let raw = fs::read_to_string(&meta_path).ok()?;
     let parsed = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
@@ -2225,7 +2242,7 @@ fn repo_state_mismatch_error(
     let attempted_fingerprint = crate::repo_manager::repo_fingerprint_sha256(repo_root).ok();
     let mut known_canonical_path = index_state_dir.and_then(known_canonical_path_from_repo_meta);
     if known_canonical_path.is_none() {
-        known_canonical_path = canonical_path_from_repo_meta(repo_root);
+        known_canonical_path = canonical_path_from_repo_meta(repo_root, index_state_dir);
     }
     if let crate::repo_manager::RepoIdentityError::CanonicalPathCollision {
         canonical_path, ..

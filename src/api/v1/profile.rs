@@ -6,11 +6,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::error::{
-    ERR_EMBEDDING_FAILED, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_PROFILE_DISABLED,
-};
+use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_PROFILE_DISABLED};
 use crate::profiles::evolution::{build_ollama_evolution_client, EvolutionEngine};
-use crate::profiles::{Agent, Preference, PreferenceCategory};
+use crate::profiles::{Agent, Preference, PreferenceCategory, ProfileEmbedder};
 use crate::search::{json_error, AppState};
 use uuid::Uuid;
 
@@ -196,24 +194,21 @@ pub async fn profile_add_handler(
             );
         }
     }
-    let Some(embedder) = profile_state.embedder.as_ref() else {
-        return json_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            ERR_EMBEDDING_FAILED,
-            "profile embedder unavailable",
-        );
-    };
-    let embedding = match embedder.embed(content).await {
-        Ok(embedding) => embedding,
-        Err(err) => {
-            state.metrics.inc_error();
-            warn!(target: "docdexd", error = ?err, "profile embedding failed");
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                ERR_EMBEDDING_FAILED,
-                "profile embedding failed",
-            );
+    let embedding = if let Some(embedder) = profile_state.embedder.as_ref() {
+        match embedder.embed(content).await {
+            Ok(embedding) => embedding,
+            Err(err) => {
+                state.metrics.inc_error();
+                warn!(
+                    target: "docdexd",
+                    error = ?err,
+                    "profile embedding failed; falling back to local hash"
+                );
+                ProfileEmbedder::fallback_embedding(content, profile_state.manager.embedding_dim())
+            }
         }
+    } else {
+        ProfileEmbedder::fallback_embedding(content, profile_state.manager.embedding_dim())
     };
     let preference = match profile_state.manager.add_preference(
         agent_id,
@@ -259,24 +254,21 @@ pub async fn profile_search_handler(
             "agent_id and query are required",
         );
     }
-    let Some(embedder) = profile_state.embedder.as_ref() else {
-        return json_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            ERR_EMBEDDING_FAILED,
-            "profile embedder unavailable",
-        );
-    };
-    let embedding = match embedder.embed(query).await {
-        Ok(embedding) => embedding,
-        Err(err) => {
-            state.metrics.inc_error();
-            warn!(target: "docdexd", error = ?err, "profile embedding failed");
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                ERR_EMBEDDING_FAILED,
-                "profile embedding failed",
-            );
+    let embedding = if let Some(embedder) = profile_state.embedder.as_ref() {
+        match embedder.embed(query).await {
+            Ok(embedding) => embedding,
+            Err(err) => {
+                state.metrics.inc_error();
+                warn!(
+                    target: "docdexd",
+                    error = ?err,
+                    "profile embedding failed; falling back to local hash"
+                );
+                ProfileEmbedder::fallback_embedding(query, profile_state.manager.embedding_dim())
+            }
         }
+    } else {
+        ProfileEmbedder::fallback_embedding(query, profile_state.manager.embedding_dim())
     };
     let top_k = payload.top_k.unwrap_or(8).max(1);
     let results = match profile_state
@@ -384,42 +376,65 @@ pub async fn profile_save_handler(
             );
         }
     }
-    let llm_client =
-        match build_ollama_evolution_client(&state.llm_base_url, &state.llm_default_model) {
-            Ok(client) => client,
-            Err(err) => {
-                state.metrics.inc_error();
-                warn!(target: "docdexd", error = ?err, "profile evolution LLM unavailable");
-                return json_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    ERR_INTERNAL_ERROR,
-                    "profile evolution unavailable",
-                );
-            }
-        };
-    let Some(embedder) = profile_state.embedder.clone() else {
-        return json_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            ERR_EMBEDDING_FAILED,
-            "profile embedder unavailable",
-        );
-    };
-    let engine = EvolutionEngine::new(profile_state.manager.clone(), embedder, llm_client);
-    let request_id = Uuid::new_v4().to_string();
-    let agent_id = agent_id.to_string();
-    let content = content.to_string();
+    let seed_embedding =
+        ProfileEmbedder::fallback_embedding(content, profile_state.manager.embedding_dim());
     let category = payload.category;
+    let seed_pref = match profile_state.manager.add_preference(
+        agent_id,
+        content,
+        &seed_embedding,
+        category.clone(),
+        now_ms,
+    ) {
+        Ok(pref) => pref,
+        Err(err) => {
+            state.metrics.inc_error();
+            warn!(target: "docdexd", error = ?err, "profile save failed to persist seed");
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "profile save failed",
+            );
+        }
+    };
+    let seed_id = seed_pref.id.clone();
+    let llm_client = build_ollama_evolution_client(&state.llm_base_url, &state.llm_default_model)
+        .map_err(|err| {
+            state.metrics.inc_error();
+            warn!(target: "docdexd", error = ?err, "profile evolution LLM unavailable");
+            err
+        })
+        .ok();
+    let embedder = profile_state.embedder.clone();
+    let manager = profile_state.manager.clone();
+    let content = content.to_string();
+    let agent_id = agent_id.to_string();
+    let request_id = Uuid::new_v4().to_string();
     let request_id_log = request_id.clone();
     tokio::spawn(async move {
+        let Some(embedder) = embedder else {
+            return;
+        };
+        let Some(llm_client) = llm_client else {
+            return;
+        };
+        let engine = EvolutionEngine::new(manager.clone(), embedder, llm_client);
         match engine.evolve(&agent_id, category, &content).await {
-            Ok(outcome) => info!(
-                target: "docdexd",
-                request_id = %request_id_log,
-                agent_id = %agent_id,
-                action = ?outcome.action,
-                preference_id = outcome.preference_id.as_deref(),
-                "profile evolution completed"
-            ),
+            Ok(outcome) => {
+                if let Some(preference_id) = outcome.preference_id.as_deref() {
+                    if preference_id != seed_id {
+                        let _ = manager.delete_preference(&seed_id);
+                    }
+                }
+                info!(
+                    target: "docdexd",
+                    request_id = %request_id_log,
+                    agent_id = %agent_id,
+                    action = ?outcome.action,
+                    preference_id = outcome.preference_id.as_deref(),
+                    "profile evolution completed"
+                )
+            }
             Err(err) => warn!(
                 target: "docdexd",
                 request_id = %request_id_log,
@@ -461,26 +476,29 @@ pub async fn profile_import_handler(
             "profile embedding_dim mismatch",
         );
     }
-    let Some(embedder) = profile_state.embedder.as_ref() else {
-        return json_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            ERR_EMBEDDING_FAILED,
-            "profile embedder unavailable",
-        );
-    };
     let mut preferences = Vec::with_capacity(payload.preferences.len());
     for pref in payload.preferences {
-        let embedding = match embedder.embed(pref.content.trim()).await {
-            Ok(embedding) => embedding,
-            Err(err) => {
-                state.metrics.inc_error();
-                warn!(target: "docdexd", error = ?err, "profile embedding failed");
-                return json_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    ERR_EMBEDDING_FAILED,
-                    "profile embedding failed",
-                );
+        let embedding = if let Some(embedder) = profile_state.embedder.as_ref() {
+            match embedder.embed(pref.content.trim()).await {
+                Ok(embedding) => embedding,
+                Err(err) => {
+                    state.metrics.inc_error();
+                    warn!(
+                        target: "docdexd",
+                        error = ?err,
+                        "profile embedding failed; falling back to local hash"
+                    );
+                    ProfileEmbedder::fallback_embedding(
+                        pref.content.trim(),
+                        profile_state.manager.embedding_dim(),
+                    )
+                }
             }
+        } else {
+            ProfileEmbedder::fallback_embedding(
+                pref.content.trim(),
+                profile_state.manager.embedding_dim(),
+            )
         };
         preferences.push(Preference {
             id: pref.id,

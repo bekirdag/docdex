@@ -2258,7 +2258,7 @@ async function main() {
   }
   const result = await runInstaller({ env, distBaseDir });
   try {
-    const skipDaemon = Boolean(env?.npm_lifecycle_event);
+    const skipDaemon = parseEnvBool(env?.DOCDEX_DAEMON_SKIP_SETUP);
     await runPostInstallSetup({ binaryPath: result?.binaryPath, env, skipDaemon, distBaseDir });
   } catch (err) {
     console.warn(`[docdex] postinstall setup failed: ${err?.message || err}`);

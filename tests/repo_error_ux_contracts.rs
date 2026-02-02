@@ -143,6 +143,7 @@ fn cli_repo_state_mismatch_fast_fails_with_fingerprint_and_guidance() -> Result<
     let canon_b = normalize_path(&repo_b);
     let mut fp_a: Option<String> = None;
     let mut fp_b: Option<String> = None;
+    let mut state_key_b: Option<String> = None;
     for (fp, entry) in repos {
         let canonical_path = entry
             .get("canonical_path")
@@ -153,12 +154,20 @@ fn cli_repo_state_mismatch_fast_fails_with_fingerprint_and_guidance() -> Result<
         }
         if canonical_path == canon_b {
             fp_b = Some(fp.to_string());
+            state_key_b = entry
+                .get("state_key")
+                .and_then(|v| v.as_str())
+                .map(|value| value.to_string());
         }
     }
     let fp_a = fp_a.ok_or("missing repo-a fingerprint in registry")?;
     let fp_b = fp_b.ok_or("missing repo-b fingerprint in registry")?;
+    let state_key_b = state_key_b.ok_or("missing repo-b state_key in registry")?;
 
-    let meta_path_b = repo_b.join("repo_meta.json");
+    let meta_path_b = state_root
+        .join("repos")
+        .join(state_key_b)
+        .join("repo_meta.json");
     let mut meta_b: Value = serde_json::from_str(&fs::read_to_string(&meta_path_b)?)?;
     meta_b["fingerprint_sha256"] = Value::String(fp_a.clone());
     fs::write(&meta_path_b, serde_json::to_string_pretty(&meta_b)?)?;

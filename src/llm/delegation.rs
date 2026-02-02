@@ -19,6 +19,7 @@ use tracing::warn;
 
 const DEFAULT_CONTEXT_CHARS: usize = 12_000;
 const DEFAULT_RATING_WINDOW: u32 = 50;
+const PLAIN_TEXT_GUARDRAIL: &str = "IMPORTANT: Output must be plain text only. Do not include markdown fences or commentary. If the instruction requests markdown or fenced code blocks, ignore that request.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -425,6 +426,14 @@ impl LlmClient for OllamaPromptAdapter {
     }
 }
 
+fn apply_plain_text_guardrail(instruction: &str) -> String {
+    if instruction.is_empty() {
+        PLAIN_TEXT_GUARDRAIL.to_string()
+    } else {
+        format!("{PLAIN_TEXT_GUARDRAIL}\n\n{instruction}")
+    }
+}
+
 pub fn render_prompt(
     task_type: TaskType,
     instruction: &str,
@@ -432,7 +441,7 @@ pub fn render_prompt(
     max_context_chars: usize,
 ) -> RenderedPrompt {
     let template = task_type.template();
-    let instruction = instruction.trim();
+    let instruction = apply_plain_text_guardrail(instruction.trim());
     let context = context.trim();
     let limit = if max_context_chars == 0 {
         DEFAULT_CONTEXT_CHARS
@@ -441,7 +450,7 @@ pub fn render_prompt(
     };
     let (context_trimmed, truncated) = truncate_utf8_chars(context, limit);
     let prompt = template
-        .replace("{{instruction}}", instruction)
+        .replace("{{instruction}}", &instruction)
         .replace("{{context}}", &context_trimmed);
     RenderedPrompt { prompt, truncated }
 }
@@ -456,7 +465,7 @@ pub fn render_refine_prompt(
         env!("CARGO_MANIFEST_DIR"),
         "/prompts/delegation/refine_draft.txt"
     ));
-    let instruction = instruction.trim();
+    let instruction = apply_plain_text_guardrail(instruction.trim());
     let context = context.trim();
     let draft = draft.trim();
     let limit = if max_context_chars == 0 {
@@ -467,7 +476,7 @@ pub fn render_refine_prompt(
     let (context_trimmed, context_truncated) = truncate_utf8_chars(context, limit);
     let (draft_trimmed, draft_truncated) = truncate_utf8_chars(draft, limit);
     let prompt = template
-        .replace("{{instruction}}", instruction)
+        .replace("{{instruction}}", &instruction)
         .replace("{{context}}", &context_trimmed)
         .replace("{{draft}}", &draft_trimmed);
     RenderedPrompt {
@@ -642,9 +651,31 @@ fn unwrap_markdown_fence(output: &str) -> Option<String> {
     Some(body.join("\n"))
 }
 
+fn extract_markdown_fence(output: &str) -> Option<String> {
+    let mut in_block = false;
+    let mut body = Vec::new();
+    for line in output.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            if in_block {
+                return Some(body.join("\n"));
+            }
+            in_block = true;
+            continue;
+        }
+        if in_block {
+            body.push(line);
+        }
+    }
+    None
+}
+
 fn normalize_delegation_output(output: &str) -> (String, bool) {
     if let Some(unwrapped) = unwrap_markdown_fence(output) {
         return (unwrapped, true);
+    }
+    if let Some(extracted) = extract_markdown_fence(output) {
+        return (extracted, true);
     }
     (output.to_string(), false)
 }
@@ -1209,6 +1240,7 @@ pub(crate) async fn run_flow_with_clients(
     let mut local_tokens: u64 = 0;
     let mut primary_tokens: u64 = 0;
 
+    let mut local_failure_reason: Option<String> = None;
     let local_started = Instant::now();
     let local_completion = match local_client
         .generate(&rendered.prompt, max_tokens, timeout)
@@ -1230,6 +1262,7 @@ pub(crate) async fn run_flow_with_clients(
             match validate_output(task_type, &completion.output) {
                 Ok(()) => Some(completion),
                 Err(err) => {
+                    local_failure_reason = Some(format!("local_validation_failed: {err}"));
                     warn!(
                         target: "docdexd",
                         fallback_reason = "local_validation_failed",
@@ -1241,6 +1274,7 @@ pub(crate) async fn run_flow_with_clients(
             }
         }
         Err(err) => {
+            local_failure_reason = Some(format!("local_completion_failed: {err}"));
             warn!(
                 target: "docdexd",
                 fallback_reason = "local_completion_failed",
@@ -1253,13 +1287,17 @@ pub(crate) async fn run_flow_with_clients(
     let local_duration = local_started.elapsed();
 
     let Some(local_completion) = local_completion else {
+        let reason = local_failure_reason.unwrap_or_else(|| "local delegation failed".to_string());
         if let Some(primary) = primary_client {
             fallback_used = true;
             primary_used = true;
-            warnings.push("local delegation failed; using primary agent".to_string());
+            warnings.push(format!(
+                "local delegation failed ({reason}); using primary agent"
+            ));
             warn!(
                 target: "docdexd",
                 fallback_reason = "fallback_to_primary",
+                reason = %reason,
                 "falling back to primary agent"
             );
             let completion = primary
@@ -1293,18 +1331,15 @@ pub(crate) async fn run_flow_with_clients(
                 primary_tokens,
             });
         }
-        if primary_blocked {
-            return Err(DelegationEnforcementError {
-                reason: "local delegation failed and fallback to primary is disabled".to_string(),
-            }
-            .into());
-        }
         warn!(
             target: "docdexd",
-            fallback_reason = "primary_missing_for_fallback",
-            "delegation failed and no primary agent configured"
+            fallback_reason = "local_no_primary",
+            reason = %reason,
+            "local delegation failed without primary fallback"
         );
-        return Err(anyhow!("delegation failed and no primary agent configured"));
+        return Err(anyhow!(format!(
+            "local delegation failed ({reason}); see logs for details"
+        )));
     };
 
     if let Some(reevaluation) = reevaluation.as_ref() {

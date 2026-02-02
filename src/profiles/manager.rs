@@ -558,6 +558,33 @@ impl ProfileManager {
         Ok(())
     }
 
+    pub fn delete_preference(&self, preference_id: &str) -> Result<bool> {
+        let _file_lock = self.lock_exclusive()?;
+        let conn = self.conn.lock();
+        let rowid: Option<i64> = conn
+            .query_row(
+                "SELECT rowid FROM preferences WHERE id = ?1",
+                params![preference_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("lookup preference rowid")?;
+        let Some(rowid) = rowid else {
+            return Ok(false);
+        };
+        conn.execute(
+            "DELETE FROM preferences WHERE id = ?1",
+            params![preference_id],
+        )
+        .context("delete preference")?;
+        conn.execute(
+            "DELETE FROM preferences_vec WHERE rowid = ?1",
+            params![rowid],
+        )
+        .context("delete preference vector")?;
+        Ok(true)
+    }
+
     fn lock_shared(&self) -> Result<FileLock> {
         FileLock::acquire(&self.lock_path, true)
     }

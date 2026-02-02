@@ -58,6 +58,7 @@ PY
     --enable-memory=true \
     --ollama-base-url "$OLLAMA_BASE_URL" \
     --embedding-model "$EMBEDDING_MODEL" \
+    --preflight-check=false \
     --secure-mode=false \
     >"$LOG_FILE" 2>&1 &
   SERVER_PID=$!

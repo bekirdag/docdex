@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tracing::warn;
 
 pub(crate) async fn run(command: crate::cli::ProfileCommand) -> Result<()> {
     match command {
@@ -161,9 +162,10 @@ fn resolve_state_dir(config: &config::AppConfig) -> Result<PathBuf> {
 
 fn resolve_profile_embedder(config: &config::AppConfig) -> Result<ProfileEmbedder> {
     let provider = config.llm.provider.trim();
-    if !provider.eq_ignore_ascii_case("ollama") {
-        anyhow::bail!(
-            "unsupported llm provider `{provider}`; only ollama embeddings are supported"
+    if !provider.is_empty() && !provider.eq_ignore_ascii_case("ollama") {
+        warn!(
+            provider = %provider,
+            "unsupported llm provider for profile embeddings; falling back to local hash"
         );
     }
     let base_url = env_non_empty("DOCDEX_PROFILE_EMBEDDING_BASE_URL")

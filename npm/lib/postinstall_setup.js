@@ -313,6 +313,73 @@ function stopDaemonService({ logger } = {}) {
   return false;
 }
 
+function removeDaemonService({ logger, distBaseDir, env } = {}) {
+  if (process.platform === "darwin") {
+    const uid = typeof process.getuid === "function" ? process.getuid() : null;
+    const domain = uid != null ? `gui/${uid}` : null;
+    const plistPath = path.join(os.homedir(), "Library", "LaunchAgents", "com.docdex.daemon.plist");
+    const systemPlistPath = "/Library/LaunchDaemons/com.docdex.daemon.plist";
+    if (domain) {
+      spawnSync("launchctl", ["bootout", domain, "com.docdex.daemon"]);
+      spawnSync("launchctl", ["bootout", domain, plistPath]);
+    } else {
+      spawnSync("launchctl", ["bootout", "com.docdex.daemon"]);
+      spawnSync("launchctl", ["bootout", plistPath]);
+    }
+    spawnSync("launchctl", ["remove", "com.docdex.daemon"]);
+    spawnSync("launchctl", ["unload", "-w", plistPath]);
+    if (fs.existsSync(plistPath)) {
+      try {
+        fs.unlinkSync(plistPath);
+      } catch (err) {
+        logger?.warn?.(`[docdex] failed to remove LaunchAgent plist: ${err?.message || err}`);
+      }
+    }
+    if (fs.existsSync(systemPlistPath)) {
+      spawnSync("launchctl", ["bootout", "system", systemPlistPath]);
+      spawnSync("launchctl", ["remove", "com.docdex.daemon"]);
+      try {
+        fs.unlinkSync(systemPlistPath);
+      } catch (err) {
+        logger?.warn?.(`[docdex] failed to remove LaunchDaemon plist: ${err?.message || err}`);
+      }
+    }
+    return true;
+  }
+  if (process.platform === "linux") {
+    const systemdDir = path.join(os.homedir(), ".config", "systemd", "user");
+    const unitPath = path.join(systemdDir, "docdexd.service");
+    spawnSync("systemctl", ["--user", "stop", "docdexd.service"]);
+    spawnSync("systemctl", ["--user", "disable", "--now", "docdexd.service"]);
+    spawnSync("systemctl", ["--user", "reset-failed", "docdexd.service"]);
+    if (fs.existsSync(unitPath)) {
+      try {
+        fs.unlinkSync(unitPath);
+      } catch (err) {
+        logger?.warn?.(`[docdex] failed to remove systemd unit: ${err?.message || err}`);
+      }
+      spawnSync("systemctl", ["--user", "daemon-reload"]);
+    }
+    return true;
+  }
+  if (process.platform === "win32") {
+    const taskName = "Docdex Daemon";
+    spawnSync("schtasks", ["/End", "/TN", taskName]);
+    spawnSync("schtasks", ["/Delete", "/TN", taskName, "/F"]);
+    const resolvedDistBaseDir = distBaseDir || resolveDistBaseDir({ env, fsModule: fs });
+    const runnerPath = resolveWindowsRunnerPath({ distBaseDir: resolvedDistBaseDir, pathModule: path });
+    if (runnerPath && fs.existsSync(runnerPath)) {
+      try {
+        fs.unlinkSync(runnerPath);
+      } catch (err) {
+        logger?.warn?.(`[docdex] failed to remove Windows runner: ${err?.message || err}`);
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
 function startDaemonService({ logger } = {}) {
   if (process.platform === "darwin") {
     const uid = typeof process.getuid === "function" ? process.getuid() : null;
@@ -354,6 +421,21 @@ function stopDaemonByName({ logger } = {}) {
   }
   spawnSync("pkill", ["-TERM", "-f", "docdexd"]);
   return true;
+}
+
+async function cleanupExistingDaemon({ logger, env, distBaseDir, host, port } = {}) {
+  const log = logger || console;
+  stopDaemonService({ logger: log });
+  stopDaemonFromLock({ logger: log });
+  stopDaemonByName({ logger: log });
+  removeDaemonService({ logger: log, distBaseDir, env });
+  clearDaemonLocks();
+  if (!host || !port) return true;
+  const released = await waitForPortAvailable({ host, port });
+  if (!released) {
+    log.warn?.(`[docdex] ${host}:${port} still in use after daemon cleanup.`);
+  }
+  return released;
 }
 
 function clearDaemonLocks() {
@@ -2360,7 +2442,6 @@ function isNpmLifecycle(env = process.env) {
 
 function shouldSkipDaemonSideEffects({ env = process.env, skipDaemon } = {}) {
   if (skipDaemon) return true;
-  if (isNpmLifecycle(env)) return true;
   if (parseEnvBool(env?.DOCDEX_DAEMON_SKIP_SETUP)) return true;
   return false;
 }
@@ -2478,6 +2559,22 @@ async function runPostInstallSetup({ binaryPath, logger, env, skipDaemon, distBa
   }
   const port = DEFAULT_DAEMON_PORT;
   let portState = { available: true, reuseExisting: false };
+  if (allowDaemon) {
+    const cleaned = await cleanupExistingDaemon({
+      logger: log,
+      env: effectiveEnv,
+      distBaseDir: resolvedDistBaseDir,
+      host: DEFAULT_HOST,
+      port
+    });
+    if (!cleaned) {
+      log.warn?.(
+        `[docdex] ${DEFAULT_HOST}:${port} is still in use after removing the daemon service; skipping daemon startup.`
+      );
+      recordStartupFailure({ reason: "port_in_use", host: DEFAULT_HOST, port });
+      allowDaemon = false;
+    }
+  }
   if (allowDaemon) {
     portState = await resolveDaemonPortState({
       host: DEFAULT_HOST,

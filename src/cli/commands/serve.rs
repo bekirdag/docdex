@@ -47,6 +47,7 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         secure_mode,
         disable_snippet_text,
         enable_memory,
+        enable_memory_explicit,
         agent_id,
         enable_mcp,
         disable_mcp,
@@ -192,10 +193,10 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         !is_loopback,
     )?;
     let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);
-    let enable_memory = if std::env::var_os("DOCDEX_ENABLE_MEMORY").is_some() {
+    let enable_memory = if enable_memory_explicit {
         enable_memory
     } else {
-        enable_memory || config.memory.enabled
+        config.memory.enabled
     };
     let hook_socket_path = {
         let trimmed = config.server.hook_socket_path.trim();

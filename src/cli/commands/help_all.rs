@@ -29,6 +29,7 @@ pub fn run() -> Result<()> {
         "repo",
         "memory-store",
         "memory-recall",
+        "memory-compact",
         "impact-diagnostics",
         "symbols-status",
     ] {

@@ -254,9 +254,14 @@ fn index_writes_default_state_dir() -> Result<(), Box<dyn Error>> {
         resolved_index.exists(),
         "default state index dir should exist after indexing"
     );
+    let run_tests_config = repo_root.join(".docdex").join("run-tests.json");
     assert!(
-        !repo_root.join(".docdex").exists(),
-        "repo-local .docdex should not be created when using global state root"
+        run_tests_config.exists(),
+        "run-tests config should be created during indexing"
+    );
+    assert!(
+        !repo_root.join(".docdex").join("index").exists(),
+        "repo-local .docdex/index should not be created when using global state root"
     );
     Ok(())
 }
@@ -286,9 +291,14 @@ fn index_honors_custom_state_dir() -> Result<(), Box<dyn Error>> {
         resolved_index.exists(),
         "custom state dir should be created when provided"
     );
+    let run_tests_config = repo_root.join(".docdex").join("run-tests.json");
     assert!(
-        !repo_root.join(".docdex").exists(),
-        "default .docdex should not be created when custom state dir is used"
+        run_tests_config.exists(),
+        "run-tests config should be created during indexing"
+    );
+    assert!(
+        !repo_root.join(".docdex").join("index").exists(),
+        "default .docdex/index should not be created when custom state dir is used"
     );
     Ok(())
 }

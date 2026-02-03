@@ -11,6 +11,9 @@ use super::budget::{MemoryBudget, ProfileBudget};
 use super::plan::WaterfallPlan;
 use crate::dag::logging as dag_logging;
 use crate::diff;
+use crate::error::{
+    AppError, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT,
+};
 use crate::impact::{
     assemble_impact_context, expand_impact_from_diff_files, ImpactContextAssembly,
     ImpactQueryControlsRaw,
@@ -777,7 +780,21 @@ async fn collect_memory_context(
         return Ok(None);
     }
 
-    let embedding = memory.embedder.embed(trimmed).await?;
+    let embedding = match memory.embedder.embed(trimmed).await {
+        Ok(value) => value,
+        Err(err) => {
+            if embedding_unavailable(&err) {
+                warn!(
+                    target: "docdexd",
+                    repo_id = %memory.repo_id,
+                    error = ?err,
+                    "memory embedder unavailable; skipping memory context"
+                );
+                return Ok(None);
+            }
+            return Err(err);
+        }
+    };
     let recall_limit = budget.recall_candidates.max(1);
     let store = memory.store.clone();
     let recall = task::spawn_blocking(move || store.recall_candidates(&embedding, recall_limit))
@@ -799,6 +816,16 @@ async fn collect_memory_context(
         prune_and_truncate_memory_context(&recall, budget.max_items.max(1), budget.token_budget);
 
     Ok(Some(MemoryContextAssembly { items, prune_trace }))
+}
+
+fn embedding_unavailable(err: &anyhow::Error) -> bool {
+    let Some(app) = err.downcast_ref::<AppError>() else {
+        return false;
+    };
+    matches!(
+        app.code,
+        ERR_EMBEDDING_FAILED | ERR_EMBEDDING_TIMEOUT | ERR_EMBEDDING_MODEL_NOT_FOUND
+    )
 }
 
 async fn collect_profile_context(

@@ -1,5 +1,12 @@
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
+
+const SUPERSEDES_KEY: &str = "supersedes";
+const SUPERSEDES_AT_KEY: &str = "supersedesAtMs";
+const SUPERSEDED_BY_KEYS: [&str; 2] = ["supersededBy", "superseded_by"];
+const SUPERSEDED_AT_KEYS: [&str; 2] = ["supersededAtMs", "superseded_at_ms"];
+const SUPERSEDED_SCORE_PENALTY: f32 = 0.1;
 
 #[derive(Debug, Clone)]
 pub struct MemoryCandidate {
@@ -51,6 +58,134 @@ fn repo_id_from_metadata(metadata: &Value) -> Option<&str> {
         .get("repoId")
         .and_then(|value| value.as_str())
         .or_else(|| metadata.get("repo_id").and_then(|value| value.as_str()))
+}
+
+fn ensure_object(value: Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(map),
+        _ => json!({}),
+    }
+}
+
+fn ensure_object_mut(value: &mut Value) -> &mut serde_json::Map<String, Value> {
+    if !matches!(value, Value::Object(_)) {
+        *value = json!({});
+    }
+    value
+        .as_object_mut()
+        .expect("metadata should be an object after normalization")
+}
+
+fn value_for_keys<'a>(metadata: &'a Value, keys: &[&str]) -> Option<&'a Value> {
+    let obj = metadata.as_object()?;
+    for key in keys {
+        if let Some(value) = obj.get(*key) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn string_list_from_value(value: &Value) -> Vec<String> {
+    match value {
+        Value::String(value) => vec![value.to_string()],
+        Value::Array(values) => values
+            .iter()
+            .filter_map(|item| item.as_str().map(|value| value.to_string()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+pub(crate) fn supersedes_from_metadata(metadata: &Value) -> Vec<String> {
+    let Some(value) = value_for_keys(metadata, &[SUPERSEDES_KEY]) else {
+        return Vec::new();
+    };
+    string_list_from_value(value)
+}
+
+pub(crate) fn normalize_supersedes_metadata(
+    metadata: Value,
+    created_at_ms: i64,
+) -> (Value, Vec<String>) {
+    let mut metadata = ensure_object(metadata);
+    let supersedes = supersedes_from_metadata(&metadata);
+    if supersedes.is_empty() {
+        return (metadata, Vec::new());
+    }
+
+    let mut unique = BTreeSet::new();
+    for entry in supersedes {
+        let trimmed = entry.trim();
+        if !trimmed.is_empty() {
+            unique.insert(trimmed.to_string());
+        }
+    }
+    let supersedes = unique.into_iter().collect::<Vec<_>>();
+    if let Value::Object(map) = &mut metadata {
+        map.insert(
+            SUPERSEDES_KEY.to_string(),
+            Value::Array(
+                supersedes
+                    .iter()
+                    .cloned()
+                    .map(Value::String)
+                    .collect::<Vec<_>>(),
+            ),
+        );
+        map.entry(SUPERSEDES_AT_KEY.to_string())
+            .or_insert_with(|| Value::Number(serde_json::Number::from(created_at_ms)));
+    }
+    (metadata, supersedes)
+}
+
+pub(crate) fn mark_superseded_metadata(
+    metadata: &mut Value,
+    superseded_by: &str,
+    superseded_at_ms: i64,
+) {
+    let obj = ensure_object_mut(metadata);
+    obj.insert(
+        SUPERSEDED_BY_KEYS[0].to_string(),
+        Value::String(superseded_by.to_string()),
+    );
+    obj.insert(
+        SUPERSEDED_AT_KEYS[0].to_string(),
+        Value::Number(serde_json::Number::from(superseded_at_ms)),
+    );
+}
+
+pub(crate) fn superseded_by_from_metadata(metadata: &Value) -> Option<String> {
+    let value = value_for_keys(metadata, &SUPERSEDED_BY_KEYS)?;
+    let value = value.as_str()?.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+pub(crate) fn superseded_at_ms_from_metadata(metadata: &Value) -> Option<i64> {
+    let value = value_for_keys(metadata, &SUPERSEDED_AT_KEYS)?;
+    value.as_i64()
+}
+
+pub(crate) fn metadata_is_superseded(metadata: &Value) -> bool {
+    superseded_by_from_metadata(metadata).is_some()
+        || superseded_at_ms_from_metadata(metadata).is_some()
+}
+
+pub(crate) fn apply_supersedes_penalty(candidates: &mut [MemoryCandidate]) -> usize {
+    let mut penalized = 0;
+    for candidate in candidates {
+        if metadata_is_superseded(&candidate.metadata) {
+            candidate.score *= SUPERSEDED_SCORE_PENALTY;
+            let obj = ensure_object_mut(&mut candidate.metadata);
+            obj.insert("superseded".to_string(), Value::Bool(true));
+            penalized += 1;
+        }
+    }
+    penalized
 }
 
 pub fn inject_repo_metadata(value: Value, repo_id: &str) -> Value {
@@ -221,7 +356,7 @@ fn truncate_to_tokens(text: &str, max_tokens: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     fn candidate(id: &str, created_at_ms: i64, score: f32, content: &str) -> MemoryCandidate {
         MemoryCandidate {
@@ -277,5 +412,32 @@ mod tests {
         assert_eq!(trace.dropped[0].reason, "budget_exhausted");
         assert_eq!(trace.dropped[1].id, "c3");
         assert_eq!(trace.dropped[1].reason, "budget_exhausted");
+    }
+
+    #[test]
+    fn superseded_candidates_are_penalized() {
+        let mut superseded = MemoryCandidate {
+            id: "old".to_string(),
+            created_at_ms: 10,
+            content: "legacy".to_string(),
+            score: 0.9,
+            metadata: json!({ "supersededBy": "new" }),
+        };
+        let mut current = MemoryCandidate {
+            id: "new".to_string(),
+            created_at_ms: 12,
+            content: "current".to_string(),
+            score: 0.5,
+            metadata: json!({}),
+        };
+        let mut candidates = vec![superseded.clone(), current.clone()];
+        let penalized = apply_supersedes_penalty(&mut candidates);
+        assert_eq!(penalized, 1);
+        candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
+        assert_eq!(candidates[0].id, "new");
+        assert_eq!(
+            candidates[1].metadata.get("superseded"),
+            Some(&Value::Bool(true))
+        );
     }
 }

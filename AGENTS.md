@@ -1,4 +1,4 @@
----- START OF DOCDEX INFO V0.2.38 ----
+---- START OF DOCDEX INFO V0.2.39 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
 Health check endpoint: `GET /healthz` (not `/v1/health`).
@@ -305,9 +305,10 @@ When answering a complex coding query, follow this "Reasoning Trace":
 Save more memories for both lobes during the task, not just at the end.
 
 1. Repo memory: After each meaningful discovery or code change, save at least one durable fact (file location, behavior, config, gotcha) via `docdex_memory_save`.
-2. Profile memory: When the user expresses a preference, constraint, or workflow correction, call `docdex_save_preference` immediately with the right category.
-3. Keep it crisp: 1-3 short sentences, include file paths when relevant, avoid raw code blobs.
-4. Safety: Never store secrets, tokens, or sensitive user data. Skip transient or speculative info.
+2. Memory overrides: When a new repo memory replaces older facts, include `metadata.supersedes` with the prior memory id(s). Docdex marks the superseded entries with `supersededBy`/`supersededAtMs`, down-ranks them during recall, and they can be removed via `docdex memory compact` (dry-run unless `--apply`).
+3. Profile memory: When the user expresses a preference, constraint, or workflow correction, call `docdex_save_preference` immediately with the right category.
+4. Keep it crisp: 1-3 short sentences, include file paths when relevant, avoid raw code blobs.
+5. Safety: Never store secrets, tokens, or sensitive user data. Skip transient or speculative info.
 
 ### 3. Index Health + Diff-Aware Search (Mandatory)
 

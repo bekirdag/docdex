@@ -1,7 +1,11 @@
-use crate::memory::ops::{MemoryCandidate, MemoryItem};
+use crate::memory::ops::{
+    apply_supersedes_penalty, mark_superseded_metadata, metadata_is_superseded,
+    normalize_supersedes_metadata, MemoryCandidate, MemoryItem,
+};
 use anyhow::{Context, Result};
 use fs4::FileExt;
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OpenFlags, OptionalExtension};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
@@ -16,6 +20,7 @@ const MEMORY_PRUNE_TARGET_ROWS: i64 = 45_000;
 const MEMORY_META_EMBED_DIM: &str = "embedding_dim";
 const MEMORY_META_SCHEMA_VERSION: &str = "schema_version";
 const MEMORY_SCHEMA_VERSION: u32 = 1;
+const MEMORY_COMPACT_CHUNK: usize = 500;
 static MEMORY_WARNED: AtomicBool = AtomicBool::new(false);
 static SQLITE_VEC_INIT: Once = Once::new();
 
@@ -24,6 +29,14 @@ pub struct MemoryStore {
     path: PathBuf,
     lock: Arc<parking_lot::Mutex<()>>,
     lock_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryCompactSummary {
+    pub total: usize,
+    pub superseded: usize,
+    pub deleted: usize,
+    pub dry_run: bool,
 }
 
 impl MemoryStore {
@@ -71,6 +84,7 @@ impl MemoryStore {
         let _file_lock = self.lock_exclusive()?;
         let id = Uuid::new_v4();
         let embedding_blob = encode_embedding(embedding);
+        let (metadata, supersedes) = normalize_supersedes_metadata(metadata, created_at_ms);
         let metadata_json = serde_json::to_string(&metadata).context("serialize metadata")?;
         let (mut conn, _) = self.open_connection(Some(embedding.len()))?;
         conn.execute(
@@ -92,6 +106,15 @@ impl MemoryStore {
             params![rowid, embedding_json],
         )
         .context("insert memory vector")?;
+        if !supersedes.is_empty() {
+            let superseded_by = id.to_string();
+            let _ = self.update_superseded_metadata(
+                &mut conn,
+                &supersedes,
+                &superseded_by,
+                created_at_ms,
+            )?;
+        }
         self.enforce_guardrails(&mut conn)?;
         Ok((id, created_at_ms))
     }
@@ -155,6 +178,15 @@ impl MemoryStore {
             });
         }
 
+        let penalized = apply_supersedes_penalty(&mut scored);
+        if penalized > 0 {
+            scored.sort_by(|a, b| {
+                b.score
+                    .total_cmp(&a.score)
+                    .then_with(|| b.created_at_ms.cmp(&a.created_at_ms))
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+        }
         scored.truncate(top_k.max(1));
         Ok(scored)
     }
@@ -171,12 +203,121 @@ impl MemoryStore {
             .collect())
     }
 
+    pub fn compact_superseded(&self, dry_run: bool) -> Result<MemoryCompactSummary> {
+        let _guard = self.lock.lock();
+        let _file_lock = self.lock_exclusive()?;
+        let (mut conn, _) = self.open_connection(None)?;
+        let mut total = 0usize;
+        let mut superseded = 0usize;
+        let mut to_delete: Vec<i64> = Vec::new();
+        {
+            let mut stmt = conn
+                .prepare("SELECT rowid, metadata FROM memories")
+                .context("prepare memory scan")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (rowid, metadata_raw) = match row {
+                    Ok(row) => row,
+                    Err(_) => continue,
+                };
+                total += 1;
+                let metadata_value =
+                    serde_json::from_str::<Value>(&metadata_raw).unwrap_or_else(|_| json!({}));
+                let metadata = match metadata_value {
+                    Value::Object(_) => metadata_value,
+                    _ => json!({}),
+                };
+                if metadata_is_superseded(&metadata) {
+                    superseded += 1;
+                    to_delete.push(rowid);
+                }
+            }
+        }
+
+        let mut deleted = 0usize;
+        if !dry_run && !to_delete.is_empty() {
+            let tx = conn
+                .transaction()
+                .context("start memory compaction transaction")?;
+            for chunk in to_delete.chunks(MEMORY_COMPACT_CHUNK) {
+                let placeholders = std::iter::repeat("?")
+                    .take(chunk.len())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let delete_memories =
+                    format!("DELETE FROM memories WHERE rowid IN ({placeholders})");
+                let delete_vec = format!("DELETE FROM memory_vec WHERE rowid IN ({placeholders})");
+                deleted += tx
+                    .execute(&delete_memories, params_from_iter(chunk.iter()))
+                    .context("delete superseded memories")? as usize;
+                tx.execute(&delete_vec, params_from_iter(chunk.iter()))
+                    .context("delete superseded memory vectors")?;
+            }
+            tx.execute(
+                "DELETE FROM memory_vec WHERE rowid NOT IN (SELECT rowid FROM memories)",
+                [],
+            )
+            .context("cleanup memory vector rows")?;
+            tx.commit().context("commit memory compaction")?;
+            let _ = conn.execute_batch("PRAGMA optimize;");
+        }
+
+        Ok(MemoryCompactSummary {
+            total,
+            superseded,
+            deleted,
+            dry_run,
+        })
+    }
+
     fn lock_shared(&self) -> Result<FileLock> {
         FileLock::acquire(&self.lock_path, true)
     }
 
     fn lock_exclusive(&self) -> Result<FileLock> {
         FileLock::acquire(&self.lock_path, false)
+    }
+
+    fn update_superseded_metadata(
+        &self,
+        conn: &mut Connection,
+        superseded_ids: &[String],
+        superseded_by: &str,
+        superseded_at_ms: i64,
+    ) -> Result<usize> {
+        if superseded_ids.is_empty() {
+            return Ok(0);
+        }
+        let mut updated = 0usize;
+        let mut select = conn
+            .prepare("SELECT metadata FROM memories WHERE id = ?1")
+            .context("prepare superseded metadata fetch")?;
+        let mut update = conn
+            .prepare("UPDATE memories SET metadata = ?1 WHERE id = ?2")
+            .context("prepare superseded metadata update")?;
+        for superseded_id in superseded_ids {
+            if superseded_id == superseded_by {
+                continue;
+            }
+            let raw: Option<String> = select
+                .query_row(params![superseded_id], |row| row.get(0))
+                .optional()
+                .context("fetch superseded metadata")?;
+            let Some(raw) = raw else { continue };
+            let mut metadata_value =
+                serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| json!({}));
+            if !matches!(metadata_value, Value::Object(_)) {
+                metadata_value = json!({});
+            }
+            mark_superseded_metadata(&mut metadata_value, superseded_by, superseded_at_ms);
+            let metadata_json =
+                serde_json::to_string(&metadata_value).context("serialize metadata")?;
+            update.execute(params![metadata_json, superseded_id])?;
+            updated += 1;
+        }
+        Ok(updated)
     }
 
     fn enforce_guardrails(&self, conn: &mut Connection) -> Result<()> {

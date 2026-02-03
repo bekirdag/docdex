@@ -20,8 +20,8 @@ use parking_lot::Mutex;
 use regex::Regex;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Read};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex as StdMutex, Once};
 use tantivy::collector::TopDocs;
@@ -39,6 +39,7 @@ const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
 const MAX_BINARY_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8192;
 const INDEX_READY_FILENAME: &str = "index_ready.json";
+const RUN_TESTS_CONFIG_PATH: &str = ".docdex/run-tests.json";
 const DOC_EXTENSIONS: &[&str] = &[".md", ".markdown", ".mdx", ".txt", ".yaml", ".yml"];
 const CODE_EXTENSIONS: &[&str] = &[
     ".rs", ".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".java", ".cs", ".c", ".h", ".cc", ".cpp",
@@ -732,7 +733,120 @@ impl Indexer {
             self.write_impact_graph(impact_edges.into_iter().collect(), impact_diagnostics)?;
         }
         self.write_index_ready_marker(self.num_docs())?;
+        if let Err(err) = self.ensure_run_tests_config() {
+            warn!(
+                target: "docdexd",
+                error = ?err,
+                "run-tests config initialization failed"
+            );
+        }
         Ok(())
+    }
+
+    fn ensure_run_tests_config(&self) -> Result<()> {
+        let config_path = self.repo_root.join(RUN_TESTS_CONFIG_PATH);
+        if config_path.exists() {
+            return Ok(());
+        }
+        let (command, args) = Self::detect_run_tests_command(&self.repo_root)
+            .unwrap_or_else(Self::fallback_run_tests_command);
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create run-tests config dir {}", parent.display()))?;
+        }
+        let payload = serde_json::to_vec_pretty(&serde_json::json!({
+            "command": command,
+            "args": args,
+            "env": {},
+        }))?;
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&config_path)
+        {
+            Ok(mut file) => {
+                file.write_all(&payload)?;
+                file.write_all(b"\n")?;
+                Ok(())
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    fn detect_run_tests_command(repo_root: &Path) -> Option<(String, Vec<String>)> {
+        if Self::has_repo_file(repo_root, "Cargo.toml") {
+            return Some(("cargo".to_string(), vec!["test".to_string()]));
+        }
+        if Self::has_repo_file(repo_root, "go.mod") {
+            return Some((
+                "go".to_string(),
+                vec!["test".to_string(), "./...".to_string()],
+            ));
+        }
+        if Self::has_repo_file(repo_root, "package.json") {
+            return Some(("npm".to_string(), vec!["test".to_string()]));
+        }
+        if Self::has_any_repo_file(
+            repo_root,
+            &[
+                "pyproject.toml",
+                "setup.cfg",
+                "setup.py",
+                "requirements.txt",
+                "Pipfile",
+            ],
+        ) {
+            return Some((
+                "python".to_string(),
+                vec!["-m".to_string(), "pytest".to_string()],
+            ));
+        }
+        if Self::has_repo_file(repo_root, "pom.xml") {
+            return Some(("mvn".to_string(), vec!["test".to_string()]));
+        }
+        if Self::has_any_repo_file(repo_root, &["build.gradle", "build.gradle.kts"]) {
+            #[cfg(windows)]
+            {
+                if Self::has_repo_file(repo_root, "gradlew.bat") {
+                    return Some(("gradlew.bat".to_string(), vec!["test".to_string()]));
+                }
+            }
+            #[cfg(unix)]
+            {
+                if Self::has_repo_file(repo_root, "gradlew") {
+                    return Some(("./gradlew".to_string(), vec!["test".to_string()]));
+                }
+            }
+            return Some(("gradle".to_string(), vec!["test".to_string()]));
+        }
+        if Self::has_repo_file(repo_root, "Makefile") {
+            return Some(("make".to_string(), vec!["test".to_string()]));
+        }
+        None
+    }
+
+    #[cfg(unix)]
+    fn fallback_run_tests_command() -> (String, Vec<String>) {
+        let script = "echo 'No test runner detected; update .docdex/run-tests.json' 1>&2; exit 1";
+        ("sh".to_string(), vec!["-c".to_string(), script.to_string()])
+    }
+
+    #[cfg(windows)]
+    fn fallback_run_tests_command() -> (String, Vec<String>) {
+        let script = "echo No test runner detected; update .docdex\\run-tests.json & exit /b 1";
+        (
+            "cmd".to_string(),
+            vec!["/c".to_string(), script.to_string()],
+        )
+    }
+
+    fn has_repo_file(repo_root: &Path, name: &str) -> bool {
+        repo_root.join(name).is_file()
+    }
+
+    fn has_any_repo_file(repo_root: &Path, names: &[&str]) -> bool {
+        names.iter().any(|name| repo_root.join(name).is_file())
     }
 
     pub async fn ingest_file(&self, file: PathBuf) -> Result<FileDecision> {

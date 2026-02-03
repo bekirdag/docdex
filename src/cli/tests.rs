@@ -39,6 +39,7 @@ fn serve_args(repo: RepoArgs) -> ServeArgs {
         secure_mode: true,
         disable_snippet_text: false,
         enable_memory: false,
+        enable_memory_explicit: false,
         agent_id: None,
         enable_mcp: false,
         disable_mcp: false,

@@ -8,6 +8,7 @@ use crate::metrics;
 use crate::ollama::OllamaClient;
 use crate::profiles::manager::PreferenceRecall;
 use crate::profiles::{PreferenceCategory, ProfileEmbedder, ProfileManager};
+use std::collections::BTreeSet;
 use tracing::{info, warn};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -44,6 +45,10 @@ pub struct EvolutionEngine {
     retries: usize,
     recall_k: usize,
 }
+
+const STRONG_MATCH_THRESHOLD: f32 = 0.82;
+const MIN_MATCH_TOKENS: usize = 2;
+const MIN_MATCH_CHARS: usize = 10;
 
 impl EvolutionEngine {
     pub fn new(
@@ -121,9 +126,28 @@ impl EvolutionEngine {
             &query_embedding,
             self.recall_k,
         )?;
+        let strong_match = find_strong_match_id(&recalled, new_fact);
         let prompt = build_evolution_prompt(&recalled, new_fact);
-        let decision = self.decide_with_retry(&prompt).await?;
-        let reasoning = decision
+        let mut decision = self.decide_with_retry(&prompt).await?;
+        if decision.action == EvolutionAction::Add {
+            if let Some((match_id, score)) = strong_match.as_ref() {
+                decision.action = EvolutionAction::Update;
+                decision.target_preference_id = Some(match_id.clone());
+                if decision
+                    .new_content
+                    .as_ref()
+                    .map(|value| value.trim().is_empty())
+                    .unwrap_or(true)
+                {
+                    decision.new_content = Some(new_fact.trim().to_string());
+                }
+                decision.reasoning = Some(append_reason(
+                    decision.reasoning.clone(),
+                    &format!("heuristic_update(score={score:.2})"),
+                ));
+            }
+        }
+        let mut reasoning = decision
             .reasoning
             .clone()
             .unwrap_or_else(|| "no_reasoning".to_string());
@@ -155,24 +179,32 @@ impl EvolutionEngine {
                 Ok(outcome)
             }
             EvolutionAction::Update => {
-                let target = decision.target_preference_id.clone().unwrap_or_default();
-                let in_recall = recalled.iter().any(|item| item.id == target);
-                if !in_recall {
-                    let outcome = EvolutionOutcome {
-                        action: EvolutionAction::Ignore,
-                        preference_id: None,
-                        reasoning: format!("{reasoning}; target_not_found"),
-                    };
-                    metrics::global().inc_profile_evolution_decision();
-                    metrics::global()
-                        .record_profile_evolution_latency(started.elapsed().as_millis());
-                    info!(
-                        agent_id,
-                        action = "ignore",
-                        latency_ms = started.elapsed().as_millis(),
-                        "profile evolution applied"
-                    );
-                    return Ok(outcome);
+                let mut target = decision.target_preference_id.clone().unwrap_or_default();
+                let target_in_recall = recalled.iter().any(|item| item.id == target);
+                if !target_in_recall {
+                    if let Some((match_id, score)) = strong_match.as_ref() {
+                        target = match_id.clone();
+                        reasoning = append_reason(
+                            Some(reasoning),
+                            &format!("heuristic_target(score={score:.2})"),
+                        );
+                    } else {
+                        let outcome = EvolutionOutcome {
+                            action: EvolutionAction::Ignore,
+                            preference_id: None,
+                            reasoning: format!("{reasoning}; target_not_found"),
+                        };
+                        metrics::global().inc_profile_evolution_decision();
+                        metrics::global()
+                            .record_profile_evolution_latency(started.elapsed().as_millis());
+                        info!(
+                            agent_id,
+                            action = "ignore",
+                            latency_ms = started.elapsed().as_millis(),
+                            "profile evolution applied"
+                        );
+                        return Ok(outcome);
+                    }
                 }
                 let content = decision.new_content.as_deref().unwrap_or(new_fact).trim();
                 let embedding = self.embedder.embed(content).await?;
@@ -211,6 +243,101 @@ impl EvolutionEngine {
             }
         }
     }
+}
+
+fn append_reason(existing: Option<String>, suffix: &str) -> String {
+    let base = existing.unwrap_or_else(|| "no_reasoning".to_string());
+    if base.contains(suffix) {
+        base
+    } else {
+        format!("{base}; {suffix}")
+    }
+}
+
+fn normalize_text(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if ch.is_whitespace() {
+            out.push(' ');
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn token_set(text: &str) -> BTreeSet<String> {
+    text.split_whitespace()
+        .map(|value| value.to_string())
+        .collect()
+}
+
+fn jaccard_score(left: &BTreeSet<String>, right: &BTreeSet<String>) -> f32 {
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    let intersection = left.intersection(right).count();
+    let union = left.len() + right.len() - intersection;
+    if union == 0 {
+        0.0
+    } else {
+        intersection as f32 / union as f32
+    }
+}
+
+fn match_score(existing: &str, new_fact: &str) -> f32 {
+    let existing_norm = normalize_text(existing);
+    let new_norm = normalize_text(new_fact);
+    if existing_norm.is_empty() || new_norm.is_empty() {
+        return 0.0;
+    }
+    if existing_norm == new_norm {
+        return 1.0;
+    }
+    let tokens_existing = token_set(&existing_norm);
+    let tokens_new = token_set(&new_norm);
+    let jaccard = jaccard_score(&tokens_existing, &tokens_new);
+    let (shorter, longer) = if existing_norm.len() <= new_norm.len() {
+        (existing_norm.as_str(), new_norm.as_str())
+    } else {
+        (new_norm.as_str(), existing_norm.as_str())
+    };
+    let substring = if longer.contains(shorter) {
+        shorter.len() as f32 / longer.len() as f32
+    } else {
+        0.0
+    };
+    substring.max(jaccard)
+}
+
+fn has_min_signal(text: &str) -> bool {
+    let token_count = text.split_whitespace().count();
+    token_count >= MIN_MATCH_TOKENS || text.len() >= MIN_MATCH_CHARS
+}
+
+fn find_strong_match_id(recalled: &[PreferenceRecall], new_fact: &str) -> Option<(String, f32)> {
+    let new_norm = normalize_text(new_fact);
+    if !has_min_signal(&new_norm) {
+        return None;
+    }
+    let mut best: Option<(String, f32, i64)> = None;
+    for item in recalled {
+        let score = match_score(&item.content, new_fact);
+        if score < STRONG_MATCH_THRESHOLD {
+            continue;
+        }
+        match &best {
+            Some((_, best_score, best_updated)) => {
+                if score > *best_score
+                    || (score == *best_score && item.last_updated > *best_updated)
+                {
+                    best = Some((item.id.clone(), score, item.last_updated));
+                }
+            }
+            None => best = Some((item.id.clone(), score, item.last_updated)),
+        }
+    }
+    best.map(|(id, score, _)| (id, score))
 }
 
 pub fn build_ollama_evolution_client(base_url: &str, model: &str) -> Result<Arc<dyn LlmClient>> {
@@ -471,6 +598,38 @@ mod tests {
         assert!(results
             .iter()
             .any(|item| item.preference.content == "Prefer Jest"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn evolve_add_upgraded_to_update_on_strong_match() -> Result<()> {
+        let dir = tempdir()?;
+        let manager = ProfileManager::new(dir.path(), 2)?;
+        manager.create_agent("agent-heuristic", "test", 1)?;
+        let existing = manager.add_preference(
+            "agent-heuristic",
+            "Prefer Jest for unit tests",
+            &[0.0, 0.0],
+            PreferenceCategory::Tooling,
+            10,
+        )?;
+        let embedder = ProfileEmbedder::new_test(2, vec![0.0, 0.0])?;
+        let llm = Arc::new(StubLlm {
+            output: "{ \"action\": \"ADD\", \"target_preference_id\": null, \"new_content\": \"Prefer Jest for unit tests\", \"reasoning\": \"new\" }".to_string(),
+        });
+        let engine = EvolutionEngine::new(manager.clone(), embedder, llm);
+
+        let outcome = engine
+            .evolve(
+                "agent-heuristic",
+                PreferenceCategory::Tooling,
+                "Prefer Jest for unit tests",
+            )
+            .await?;
+        assert_eq!(outcome.action, EvolutionAction::Update);
+        assert_eq!(outcome.preference_id, Some(existing.id));
+        let prefs = manager.list_preferences(Some("agent-heuristic"))?;
+        assert_eq!(prefs.len(), 1);
         Ok(())
     }
 

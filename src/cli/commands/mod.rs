@@ -174,6 +174,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             )
             .await
         }
+        super::Command::MemoryCompact { repo, apply } => memory::run_compact(repo, apply).await,
         super::Command::Profile { command } => profile::run(command).await,
         super::Command::Hook { command } => hook::run(command).await,
         super::Command::SymbolsStatus { repo } => symbols::run_status(repo).await,

@@ -199,6 +199,8 @@ pub(crate) struct ServeArgs {
         help = "Enable repo-scoped memory endpoints (/v1/memory/store, /v1/memory/recall)"
     )]
     pub enable_memory: bool,
+    #[arg(skip)]
+    pub enable_memory_explicit: bool,
     #[arg(
         long,
         env = "DOCDEX_AGENT_ID",
@@ -762,6 +764,17 @@ pub(crate) enum Command {
         )]
         embedding_timeout_ms: u64,
     },
+    /// Compact repo memory by removing superseded entries.
+    MemoryCompact {
+        #[command(flatten)]
+        repo: RepoArgs,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Apply deletions (default: dry-run)"
+        )]
+        apply: bool,
+    },
     /// Manage global agent profiles and preference memory.
     Profile {
         #[command(subcommand)]
@@ -1220,8 +1233,13 @@ pub async fn run() -> Result<()> {
                 daemon_matches.value_source("repo"),
                 Some(ValueSource::EnvVariable)
             );
+        let enable_memory_explicit = matches!(
+            daemon_matches.value_source("enable_memory"),
+            Some(ValueSource::CommandLine | ValueSource::EnvVariable)
+        );
         if let Command::Daemon { args } = &mut cli.command {
             args.repo_explicit = repo_explicit;
+            args.enable_memory_explicit = enable_memory_explicit;
         }
     }
     if let Some(serve_matches) = matches.subcommand_matches("serve") {
@@ -1230,8 +1248,13 @@ pub async fn run() -> Result<()> {
                 serve_matches.value_source("repo"),
                 Some(ValueSource::EnvVariable)
             );
+        let enable_memory_explicit = matches!(
+            serve_matches.value_source("enable_memory"),
+            Some(ValueSource::CommandLine | ValueSource::EnvVariable)
+        );
         if let Command::Serve { args } = &mut cli.command {
             args.repo_explicit = repo_explicit;
+            args.enable_memory_explicit = enable_memory_explicit;
         }
     }
     let config = if !matches!(cli.command, Command::HelpAll) {
@@ -1323,6 +1346,7 @@ fn repo_hint_for_command(command: &Command) -> Option<PathBuf> {
             .map(|root| root.canonicalize().unwrap_or_else(|_| root.to_path_buf())),
         Command::MemoryStore { repo, .. } => Some(repo.repo_root()),
         Command::MemoryRecall { repo, .. } => Some(repo.repo_root()),
+        Command::MemoryCompact { repo, .. } => Some(repo.repo_root()),
         Command::WebRag { repo, .. } => Some(repo.repo_root()),
         Command::Repo { command } => match command {
             RepoCommand::Init { repo, .. } => Some(repo.repo_root()),

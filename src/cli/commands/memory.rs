@@ -135,6 +135,28 @@ pub async fn run_recall(
     Ok(())
 }
 
+pub async fn run_compact(repo: RepoArgs, apply: bool) -> Result<()> {
+    if !crate::cli::cli_local_mode() {
+        anyhow::bail!("memory compact is only supported in local CLI mode");
+    }
+    let repo_root = repo.repo_root();
+    let index_config = index::IndexConfig::with_overrides(
+        &repo_root,
+        repo.state_dir_override(),
+        repo.exclude_dir_overrides(),
+        repo.exclude_prefix_overrides(),
+        repo.symbols_enabled(),
+    )?;
+    util::init_logging("warn")?;
+    index::ensure_state_dir_secure(index_config.state_dir())?;
+
+    let store = memory::MemoryStore::new(index_config.state_dir());
+    let dry_run = !apply;
+    let summary = tokio::task::spawn_blocking(move || store.compact_superseded(dry_run)).await??;
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
 async fn run_store_via_http(repo: RepoArgs, text: String, metadata: Option<String>) -> Result<()> {
     let repo_root = repo.repo_root();
     let user_metadata = match metadata {

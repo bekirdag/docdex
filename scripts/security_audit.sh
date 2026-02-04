@@ -63,7 +63,7 @@ for raw in match.group(1).split(','):
 PY
 )"
     if [[ -z "${ignores}" ]]; then
-      ignores="$(grep -oE 'RUSTSEC-[0-9]{4}-[0-9]+' "${ROOT_DIR}/audit.toml" | sort -u)"
+      ignores="$(grep -oE 'RUSTSEC-[0-9]{4}-[0-9]+' "${ROOT_DIR}/audit.toml" 2>/dev/null | sort -u || true)"
     fi
     if [[ -n "${ignores}" ]]; then
       while read -r advisory_id; do

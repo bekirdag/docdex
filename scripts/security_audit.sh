@@ -29,9 +29,13 @@ log "running cargo audit"
 if require_tool "cargo-audit" "cargo audit --version"; then
   audit_ignore_args=()
   if [[ -f "${ROOT_DIR}/audit.toml" ]]; then
-    ignores="$(python3 - <<'PY' 2>/dev/null || true
+    ignores="$(python3 - "${ROOT_DIR}" <<'PY' 2>/dev/null || true
 import tomllib
-with open('audit.toml', 'rb') as f:
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+with open(root / 'audit.toml', 'rb') as f:
     data = tomllib.load(f)
 for advisory_id in data.get('advisories', {}).get('ignore', []):
     print(advisory_id)

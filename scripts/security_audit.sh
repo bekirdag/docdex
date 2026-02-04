@@ -30,17 +30,41 @@ if require_tool "cargo-audit" "cargo audit --version"; then
   audit_ignore_args=()
   if [[ -f "${ROOT_DIR}/audit.toml" ]]; then
     ignores="$(python3 - "${ROOT_DIR}" <<'PY' 2>/dev/null || true
-import tomllib
 import pathlib
+import re
 import sys
 
 root = pathlib.Path(sys.argv[1])
-with open(root / 'audit.toml', 'rb') as f:
-    data = tomllib.load(f)
-for advisory_id in data.get('advisories', {}).get('ignore', []):
-    print(advisory_id)
+path = root / 'audit.toml'
+text = path.read_text(encoding='utf-8')
+
+toml = None
+try:
+    import tomllib as toml  # py311+
+except Exception:
+    try:
+        import tomli as toml  # optional backport
+    except Exception:
+        toml = None
+
+if toml is not None:
+    data = toml.loads(text)
+    for advisory_id in data.get('advisories', {}).get('ignore', []):
+        print(advisory_id)
+    raise SystemExit(0)
+
+match = re.search(r'ignore\\s*=\\s*\\[(.*?)\\]', text, re.S)
+if not match:
+    raise SystemExit(0)
+for raw in match.group(1).split(','):
+    val = raw.strip().strip('\"').strip(\"'\")
+    if val:
+        print(val)
 PY
 )"
+    if [[ -z "${ignores}" ]]; then
+      ignores="$(grep -oE 'RUSTSEC-[0-9]{4}-[0-9]+' "${ROOT_DIR}/audit.toml" | sort -u)"
+    fi
     if [[ -n "${ignores}" ]]; then
       while read -r advisory_id; do
         [[ -n "${advisory_id}" ]] && audit_ignore_args+=(--ignore "${advisory_id}")

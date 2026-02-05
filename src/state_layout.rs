@@ -417,8 +417,17 @@ fn canonical_path_from_repo_meta(
         }
     }
 
-    let meta_path = repo_root.join("repo_meta.json");
-    let raw = fs::read_to_string(&meta_path).ok()?;
+    let workspace_meta = repo_root.join(".docdex").join("repo_meta.json");
+    if let Ok(raw) = fs::read_to_string(&workspace_meta) {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(path) = parsed.get("canonical_path").and_then(|v| v.as_str()) {
+                return Some(path.to_string());
+            }
+        }
+    }
+
+    let legacy_meta = repo_root.join("repo_meta.json");
+    let raw = fs::read_to_string(&legacy_meta).ok()?;
     let parsed = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
     parsed
         .get("canonical_path")

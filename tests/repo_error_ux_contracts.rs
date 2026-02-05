@@ -170,6 +170,7 @@ fn cli_repo_state_mismatch_fast_fails_with_fingerprint_and_guidance() -> Result<
         .join("repo_meta.json");
     let mut meta_b: Value = serde_json::from_str(&fs::read_to_string(&meta_path_b)?)?;
     meta_b["fingerprint_sha256"] = Value::String(fp_a.clone());
+    meta_b["canonical_path"] = Value::String(canon_a.clone());
     fs::write(&meta_path_b, serde_json::to_string_pretty(&meta_b)?)?;
 
     let query_out = Command::new(docdex_bin())

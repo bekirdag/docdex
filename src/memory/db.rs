@@ -73,6 +73,13 @@ impl MemoryStore {
         Ok(())
     }
 
+    pub fn embedding_dim(&self) -> Result<Option<usize>> {
+        let _guard = self.lock.lock();
+        let _file_lock = self.lock_shared()?;
+        let (_, stored_dim) = self.open_connection(None)?;
+        Ok(stored_dim)
+    }
+
     pub fn store(
         &self,
         content: &str,

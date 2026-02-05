@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,117 +16,44 @@ pub fn legacy_repo_id_for_root(repo_root: &Path) -> String {
 }
 
 pub fn repo_fingerprint_sha256(repo_root: &Path) -> Result<String> {
-    let target = git_identity_target(repo_root);
-    let payload = file_identity_payload(&target)
-        .with_context(|| format!("read filesystem identity for {}", target.to_string_lossy()))?;
+    let repo_root = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    let repo_name = repo_root
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| repo_root.to_string_lossy().to_string());
+    let payload = format!("v2|name|{}", repo_name);
     Ok(hex::encode(Sha256::digest(payload.as_bytes())))
 }
 
-fn git_identity_target(repo_root: &Path) -> PathBuf {
+pub(crate) fn git_dir_for_repo(repo_root: &Path) -> Option<PathBuf> {
     let dot_git = repo_root.join(".git");
     let Ok(meta) = fs::metadata(&dot_git) else {
-        return repo_root.to_path_buf();
+        return None;
     };
     if meta.is_dir() {
-        return dot_git;
+        return Some(dot_git);
     }
     if !meta.is_file() {
-        return repo_root.to_path_buf();
+        return None;
     }
     let Ok(contents) = fs::read_to_string(&dot_git) else {
-        return repo_root.to_path_buf();
+        return None;
     };
     let line = contents.lines().next().unwrap_or_default().trim();
     let Some(rest) = line.strip_prefix("gitdir:") else {
-        return repo_root.to_path_buf();
+        return None;
     };
     let rest = rest.trim();
     if rest.is_empty() {
-        return repo_root.to_path_buf();
+        return None;
     }
     let candidate = PathBuf::from(rest);
     if candidate.is_absolute() {
-        return candidate;
+        return Some(candidate);
     }
-    repo_root.join(candidate)
-}
-
-fn file_identity_payload(path: &Path) -> Result<String> {
-    let meta = fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        return Ok(format!(
-            "v1|unix|dev={}|ino={}|is_dir={}",
-            meta.dev(),
-            meta.ino(),
-            meta.is_dir()
-        ));
-    }
-
-    #[cfg(windows)]
-    {
-        if let Some((volume, file_index)) = windows_file_id(path) {
-            return Ok(format!(
-                "v1|windows|vol={volume}|file={file_index}|is_dir={}",
-                meta.is_dir(),
-            ));
-        }
-        let normalized = normalize_path(path);
-        return Ok(format!(
-            "v1|windows|path={normalized}|is_dir={}",
-            meta.is_dir(),
-        ));
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    {
-        let normalized = normalize_path(path);
-        Ok(format!("v1|path|{}", normalized))
-    }
-}
-
-#[cfg(windows)]
-fn windows_file_id(path: &Path) -> Option<(u32, u64)> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, OPEN_EXISTING,
-    };
-
-    let wide: Vec<u16> = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    unsafe {
-        let handle = CreateFileW(
-            wide.as_ptr(),
-            FILE_READ_ATTRIBUTES,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            std::ptr::null_mut(),
-            OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS,
-            0,
-        );
-        if handle == INVALID_HANDLE_VALUE {
-            return None;
-        }
-        let mut info = std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>();
-        let ok = GetFileInformationByHandle(handle, &mut info as *mut _);
-        let _ = CloseHandle(handle);
-        if ok == 0 {
-            return None;
-        }
-        let file_index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
-        if info.dwVolumeSerialNumber == 0 && file_index == 0 {
-            return None;
-        }
-        Some((info.dwVolumeSerialNumber, file_index))
-    }
+    Some(repo_root.join(candidate))
 }
 
 #[cfg(test)]

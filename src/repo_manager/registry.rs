@@ -2,7 +2,7 @@ use crate::error::{
     repo_resolution_details, AppError, ERR_INVALID_ARGUMENT, ERR_MISSING_REPO_PATH,
 };
 use crate::repo_manager::fingerprint::{
-    legacy_repo_id_for_root, normalize_path, repo_fingerprint_sha256,
+    git_dir_for_repo, legacy_repo_id_for_root, normalize_path, repo_fingerprint_sha256,
 };
 use crate::state_paths;
 use anyhow::{Context, Result};
@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use tracing::warn;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepoIdentityError {
@@ -159,6 +161,7 @@ const REPO_REGISTRY_VERSION: u32 = 1;
 const REPO_META_VERSION: u32 = 1;
 const REPO_REGISTRY_FILENAME: &str = "repo_registry.json";
 const REPO_META_FILENAME: &str = "repo_meta.json";
+const WORKSPACE_META_DIR: &str = ".docdex";
 
 pub fn inspect_repo(
     repo_root: &Path,
@@ -410,14 +413,35 @@ pub fn record_repo_opened(repo_root: &Path, index_state_dir: &Path) -> Result<()
 
     let mut registry = load_registry(&registry_path)?;
 
-    if let Some((other_fp, _)) = registry.repos.iter().find(|(fp, entry)| {
-        fp.as_str() != fingerprint.as_str() && entry.canonical_path == canonical_path
-    }) {
-        return Err(RepoIdentityError::CanonicalPathCollision {
-            canonical_path,
-            other_fingerprint: other_fp.to_string(),
+    let collision_fp = registry
+        .repos
+        .iter()
+        .find(|(fp, entry)| {
+            fp.as_str() != fingerprint.as_str() && entry.canonical_path == canonical_path
+        })
+        .map(|(fp, _)| fp.to_string());
+    if let Some(other_fp) = collision_fp {
+        let healed = try_auto_heal_canonical_path_collision(
+            &mut registry,
+            &canonical_path,
+            &fingerprint,
+            &meta_base_dir,
+        )?;
+        if healed {
+            warn!(
+                canonical_path,
+                other_fingerprint = other_fp.as_str(),
+                "auto-healed canonical path collision in repo registry"
+            );
+        } else if is_daemon_root(repo_root, Some(index_state_dir)) {
+            registry.repos.remove(&other_fp);
+        } else {
+            return Err(RepoIdentityError::CanonicalPathCollision {
+                canonical_path,
+                other_fingerprint: other_fp,
+            }
+            .into());
         }
-        .into());
     }
 
     let existing_entry = registry.repos.get(&fingerprint).cloned();
@@ -442,13 +466,14 @@ pub fn record_repo_opened(repo_root: &Path, index_state_dir: &Path) -> Result<()
 
     if let Some(existing) = existing_entry {
         if existing.canonical_path != canonical_path {
-            return Err(RepoIdentityError::ReassociationRequired {
-                fingerprint,
-                state_key: existing.state_key,
-                registered_canonical_path: existing.canonical_path,
-                requested_canonical_path: canonical_path,
+            if !entry
+                .prior_paths
+                .iter()
+                .any(|path| path == &existing.canonical_path)
+            {
+                entry.prior_paths.push(existing.canonical_path.clone());
             }
-            .into());
+            entry.canonical_path = canonical_path.clone();
         }
     }
     entry.last_seen_at_epoch_ms = now_ms;
@@ -491,7 +516,8 @@ pub fn validate_repo_state_dir(repo_root: &Path, index_state_dir: &Path) -> Resu
 
     let canonical_path = normalize_path(repo_root);
     let registry_path = repo_registry_path(&base_dir);
-    let registry = load_registry(&registry_path)?;
+    let mut registry = load_registry(&registry_path)?;
+    let mut registry_updated = false;
     if let Some(entry) = registry.repos.get(&fingerprint) {
         if entry.state_key != state_key {
             return Err(RepoIdentityError::StateKeyConflict {
@@ -501,25 +527,43 @@ pub fn validate_repo_state_dir(repo_root: &Path, index_state_dir: &Path) -> Resu
             }
             .into());
         }
-        if entry.canonical_path != canonical_path {
-            return Err(RepoIdentityError::ReassociationRequired {
-                fingerprint: fingerprint.clone(),
-                state_key: entry.state_key.clone(),
-                registered_canonical_path: entry.canonical_path.clone(),
-                requested_canonical_path: canonical_path.clone(),
+    }
+
+    let collision_fp = registry
+        .repos
+        .iter()
+        .find(|(fp, entry)| {
+            fp.as_str() != fingerprint.as_str() && entry.canonical_path == canonical_path
+        })
+        .map(|(fp, _)| fp.to_string());
+    if let Some(other_fp) = collision_fp {
+        let healed = try_auto_heal_canonical_path_collision(
+            &mut registry,
+            &canonical_path,
+            &fingerprint,
+            &meta_base_dir,
+        )?;
+        if healed {
+            warn!(
+                canonical_path,
+                other_fingerprint = other_fp.as_str(),
+                "auto-healed canonical path collision in repo registry"
+            );
+            registry_updated = true;
+        } else if is_daemon_root(repo_root, Some(index_state_dir)) {
+            registry.repos.remove(&other_fp);
+            registry_updated = true;
+        } else {
+            return Err(RepoIdentityError::CanonicalPathCollision {
+                canonical_path,
+                other_fingerprint: other_fp,
             }
             .into());
         }
     }
 
-    if let Some((other_fp, _)) = registry.repos.iter().find(|(fp, entry)| {
-        fp.as_str() != fingerprint.as_str() && entry.canonical_path == canonical_path
-    }) {
-        return Err(RepoIdentityError::CanonicalPathCollision {
-            canonical_path,
-            other_fingerprint: other_fp.to_string(),
-        }
-        .into());
+    if registry_updated {
+        save_registry_atomic(&registry_path, &registry)?;
     }
 
     Ok(())
@@ -791,7 +835,8 @@ fn resolve_state_dir_for_inspect(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RepoMetaOrigin {
     Scoped,
-    Legacy,
+    Local,
+    LegacyRoot,
 }
 
 struct RepoMetaSnapshot {
@@ -837,11 +882,20 @@ fn read_repo_meta_with_origin(
         }
     }
 
-    let legacy_path = legacy_repo_meta_path(repo_root);
-    read_repo_meta_at(&legacy_path).map(|meta| RepoMetaSnapshot {
+    let local_path = workspace_repo_meta_path(repo_root);
+    if let Some(meta) = read_repo_meta_at(&local_path) {
+        return Some(RepoMetaSnapshot {
+            meta,
+            path: local_path,
+            origin: RepoMetaOrigin::Local,
+        });
+    }
+
+    let legacy_root = legacy_root_repo_meta_path(repo_root);
+    read_repo_meta_at(&legacy_root).map(|meta| RepoMetaSnapshot {
         meta,
-        path: legacy_path,
-        origin: RepoMetaOrigin::Legacy,
+        path: legacy_root,
+        origin: RepoMetaOrigin::LegacyRoot,
     })
 }
 
@@ -868,7 +922,11 @@ fn repo_meta_path_for_state(base_dir: &Path, state_key: &str) -> PathBuf {
         .join(REPO_META_FILENAME)
 }
 
-fn legacy_repo_meta_path(repo_root: &Path) -> PathBuf {
+fn workspace_repo_meta_path(repo_root: &Path) -> PathBuf {
+    repo_root.join(WORKSPACE_META_DIR).join(REPO_META_FILENAME)
+}
+
+fn legacy_root_repo_meta_path(repo_root: &Path) -> PathBuf {
     repo_root.join(REPO_META_FILENAME)
 }
 
@@ -918,6 +976,24 @@ fn validate_repo_meta(
         return Ok(());
     };
     if snapshot.meta.fingerprint_sha256 != expected_fingerprint {
+        if snapshot.origin == RepoMetaOrigin::Local {
+            let _ = fs::remove_file(&snapshot.path);
+            return Ok(());
+        }
+        if try_auto_heal_repo_meta_mismatch(
+            repo_root,
+            expected_fingerprint,
+            base_dir,
+            state_key,
+            &snapshot,
+        )? {
+            warn!(
+                expected_fingerprint,
+                found_fingerprint = snapshot.meta.fingerprint_sha256.as_str(),
+                "auto-healed repo metadata fingerprint mismatch"
+            );
+            return Ok(());
+        }
         return Err(RepoIdentityError::StateMetaFingerprintMismatch {
             state_key: state_key.unwrap_or("<repo_meta>").to_string(),
             expected_fingerprint: expected_fingerprint.to_string(),
@@ -926,6 +1002,156 @@ fn validate_repo_meta(
         .into());
     }
     Ok(())
+}
+
+fn try_auto_heal_repo_meta_mismatch(
+    repo_root: &Path,
+    expected_fingerprint: &str,
+    base_dir: Option<&Path>,
+    state_key: Option<&str>,
+    snapshot: &RepoMetaSnapshot,
+) -> Result<bool> {
+    let (Some(base_dir), Some(state_key)) = (base_dir, state_key) else {
+        return Ok(false);
+    };
+
+    let canonical_path = normalize_path(repo_root);
+    if snapshot.meta.canonical_path != canonical_path {
+        return Ok(false);
+    }
+
+    let registry_path = repo_registry_path(base_dir);
+    let mut registry = load_registry(&registry_path)?;
+
+    if let Some(existing) = registry.repos.get(expected_fingerprint) {
+        if existing.state_key != state_key {
+            return Err(RepoIdentityError::StateKeyConflict {
+                fingerprint: expected_fingerprint.to_string(),
+                existing_state_key: existing.state_key.clone(),
+                requested_state_key: state_key.to_string(),
+            }
+            .into());
+        }
+    }
+
+    if let Some((other_fp, _)) = registry.repos.iter().find(|(fp, entry)| {
+        fp.as_str() != expected_fingerprint && entry.canonical_path == canonical_path
+    }) {
+        if other_fp.as_str() != snapshot.meta.fingerprint_sha256.as_str() {
+            return Err(RepoIdentityError::CanonicalPathCollision {
+                canonical_path,
+                other_fingerprint: other_fp.to_string(),
+            }
+            .into());
+        }
+    }
+
+    if snapshot.meta.fingerprint_sha256 != expected_fingerprint {
+        if let Some(old_entry) = registry.repos.get(&snapshot.meta.fingerprint_sha256) {
+            if old_entry.canonical_path == canonical_path || old_entry.state_key == state_key {
+                registry.repos.remove(&snapshot.meta.fingerprint_sha256);
+            }
+        }
+    }
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let entry = registry
+        .repos
+        .entry(expected_fingerprint.to_string())
+        .or_insert_with(|| RepoRegistryEntry {
+            state_key: state_key.to_string(),
+            canonical_path: canonical_path.clone(),
+            prior_paths: Vec::new(),
+            last_seen_at_epoch_ms: now_ms,
+        });
+    if entry.state_key != state_key {
+        return Err(RepoIdentityError::StateKeyConflict {
+            fingerprint: expected_fingerprint.to_string(),
+            existing_state_key: entry.state_key.clone(),
+            requested_state_key: state_key.to_string(),
+        }
+        .into());
+    }
+    if entry.canonical_path != canonical_path {
+        if !entry.prior_paths.contains(&entry.canonical_path) {
+            entry.prior_paths.push(entry.canonical_path.clone());
+        }
+        entry.canonical_path = canonical_path.clone();
+    }
+    entry.last_seen_at_epoch_ms = now_ms;
+
+    save_registry_atomic(&registry_path, &registry)?;
+    write_repo_meta(
+        repo_root,
+        base_dir,
+        state_key,
+        expected_fingerprint,
+        &canonical_path,
+        now_ms,
+    )?;
+    Ok(true)
+}
+
+fn canonical_path_in_use(
+    registry: &RepoRegistryFile,
+    canonical_path: &str,
+    exclude_fingerprint: &str,
+) -> bool {
+    registry.repos.iter().any(|(fp, entry)| {
+        fp.as_str() != exclude_fingerprint && entry.canonical_path == canonical_path
+    })
+}
+
+fn repo_meta_canonical_path(meta_base_dir: &Path, state_key: &str) -> Option<String> {
+    let path = repo_meta_path_for_state(meta_base_dir, state_key);
+    read_repo_meta_at(&path).map(|meta| meta.canonical_path)
+}
+
+fn try_auto_heal_canonical_path_collision(
+    registry: &mut RepoRegistryFile,
+    canonical_path: &str,
+    expected_fingerprint: &str,
+    meta_base_dir: &Path,
+) -> Result<bool> {
+    let Some((other_fp, other_entry)) = registry
+        .repos
+        .iter()
+        .find(|(fp, entry)| {
+            fp.as_str() != expected_fingerprint && entry.canonical_path == canonical_path
+        })
+        .map(|(fp, entry)| (fp.clone(), entry.clone()))
+    else {
+        return Ok(false);
+    };
+
+    let mut replacement = repo_meta_canonical_path(meta_base_dir, &other_entry.state_key)
+        .filter(|candidate| candidate != canonical_path)
+        .filter(|candidate| !canonical_path_in_use(registry, candidate, &other_fp));
+
+    if replacement.is_none() {
+        replacement = other_entry
+            .prior_paths
+            .iter()
+            .rev()
+            .find(|candidate| {
+                *candidate != canonical_path
+                    && !canonical_path_in_use(registry, candidate, &other_fp)
+            })
+            .cloned();
+    }
+
+    if let Some(replacement_path) = replacement {
+        if let Some(entry) = registry.repos.get_mut(&other_fp) {
+            if !entry.prior_paths.contains(&entry.canonical_path) {
+                entry.prior_paths.push(entry.canonical_path.clone());
+            }
+            entry.canonical_path = replacement_path;
+        }
+        return Ok(true);
+    }
+
+    registry.repos.remove(&other_fp);
+    Ok(true)
 }
 
 fn write_repo_meta(
@@ -967,11 +1193,134 @@ fn write_repo_meta(
     fs::rename(&tmp, &path)
         .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
     if let Some(existing) = existing {
-        if existing.origin == RepoMetaOrigin::Legacy {
+        if existing.origin == RepoMetaOrigin::LegacyRoot {
             let _ = fs::remove_file(&existing.path);
         }
     }
+    if let Err(err) = ensure_workspace_repo_meta(repo_root, fingerprint, canonical_path, now_ms) {
+        warn!(error = ?err, "failed to persist workspace repo metadata");
+    }
     Ok(())
+}
+
+fn ensure_workspace_repo_meta(
+    repo_root: &Path,
+    fingerprint: &str,
+    canonical_path: &str,
+    now_ms: i64,
+) -> Result<()> {
+    let path = workspace_repo_meta_path(repo_root);
+    let existing = read_repo_meta_at(&path);
+    let mut created_at = now_ms;
+    if let Some(existing) = existing.as_ref() {
+        if existing.version == REPO_META_VERSION && existing.fingerprint_sha256 == fingerprint {
+            created_at = existing.created_at_epoch_ms.max(1);
+        }
+    }
+
+    let payload = RepoStateMetaV1 {
+        version: REPO_META_VERSION,
+        fingerprint_sha256: fingerprint.to_string(),
+        canonical_path: canonical_path.to_string(),
+        created_at_epoch_ms: created_at,
+        last_seen_at_epoch_ms: now_ms,
+    };
+    let bytes = serde_json::to_vec_pretty(&payload).context("serialize workspace repo meta")?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let tmp = path.with_extension(format!("tmp.{}", uuid::Uuid::new_v4()));
+    fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
+    if path.exists() {
+        let _ = fs::remove_file(&path);
+    }
+    fs::rename(&tmp, &path)
+        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
+
+    ensure_git_exclude(repo_root)?;
+    Ok(())
+}
+
+fn ensure_git_exclude(repo_root: &Path) -> Result<()> {
+    ensure_gitignore(repo_root)?;
+    let Some(git_dir) = git_dir_for_repo(repo_root) else {
+        return Ok(());
+    };
+    if !git_dir.is_dir() || !git_dir.join("HEAD").exists() {
+        return Ok(());
+    }
+    let exclude_path = git_dir.join("info").join("exclude");
+    let existing = fs::read_to_string(&exclude_path).unwrap_or_default();
+    if existing.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed == ".docdex/" || trimmed == ".docdex" || trimmed == "/.docdex/"
+    }) {
+        return Ok(());
+    }
+    if let Some(parent) = exclude_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&exclude_path)
+        .with_context(|| format!("open {}", exclude_path.display()))?;
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        file.write_all(b"\n")
+            .with_context(|| format!("write {}", exclude_path.display()))?;
+    }
+    writeln!(file, "/.docdex/").with_context(|| format!("write {}", exclude_path.display()))?;
+    Ok(())
+}
+
+fn ensure_gitignore(repo_root: &Path) -> Result<()> {
+    let ignore_path = repo_root.join(".gitignore");
+    let existing = fs::read_to_string(&ignore_path).unwrap_or_default();
+    if existing.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed == ".docdex"
+            || trimmed == ".docdex/"
+            || trimmed == "/.docdex/"
+            || trimmed == "/.docdex"
+    }) {
+        return Ok(());
+    }
+    if let Some(parent) = ignore_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&ignore_path)
+        .with_context(|| format!("open {}", ignore_path.display()))?;
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        file.write_all(b"\n")
+            .with_context(|| format!("write {}", ignore_path.display()))?;
+    }
+    writeln!(file, "/.docdex/").with_context(|| format!("write {}", ignore_path.display()))?;
+    Ok(())
+}
+
+fn is_daemon_root(repo_root: &Path, index_state_dir: Option<&Path>) -> bool {
+    let normalized_root = normalize_path(repo_root);
+    let mut candidates = Vec::new();
+    if let Some(index_state_dir) = index_state_dir {
+        if let Some((base_dir, _)) = base_dir_and_state_key_from_index_dir(index_state_dir) {
+            if let Ok(daemon_root) = state_paths::daemon_root_dir_from_state_base(&base_dir) {
+                candidates.push(daemon_root);
+            }
+        }
+    }
+    if candidates.is_empty() {
+        if let Ok(base_dir) = state_paths::default_state_base_dir() {
+            if let Ok(daemon_root) = state_paths::daemon_root_dir_from_state_base(&base_dir) {
+                candidates.push(daemon_root);
+            }
+        }
+    }
+    candidates
+        .into_iter()
+        .any(|candidate| normalize_path(&candidate) == normalized_root)
 }
 
 fn base_dir_and_state_key_from_index_dir(index_state_dir: &Path) -> Option<(PathBuf, String)> {

@@ -1,3 +1,4 @@
+use docdexd::repo_manager::repo_fingerprint_sha256;
 use serde_json::Value;
 use std::error::Error;
 use std::fs;
@@ -43,6 +44,22 @@ where
 fn write_repo(repo_root: &Path, filename: &str, token: &str) -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(repo_root)?;
     fs::create_dir_all(repo_root.join(".git"))?;
+    fs::write(
+        repo_root.join(filename),
+        format!(
+            r#"
+# Fixture
+
+shared_term
+{token}
+"#
+        ),
+    )?;
+    Ok(())
+}
+
+fn write_repo_no_git(repo_root: &Path, filename: &str, token: &str) -> Result<(), Box<dyn Error>> {
+    fs::create_dir_all(repo_root)?;
     fs::write(
         repo_root.join(filename),
         format!(
@@ -263,91 +280,9 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
         ])
         .output()?;
     assert!(
-        !moved_out.status.success(),
-        "expected moved repo to fast-fail before explicit re-association"
+        moved_out.status.success(),
+        "expected moved repo to reindex successfully"
     );
-    let err_payload = parse_error(&moved_out.stderr)?;
-    assert_eq!(
-        err_payload
-            .get("error")
-            .and_then(|e| e.get("code"))
-            .and_then(|v| v.as_str()),
-        Some("repo_state_mismatch")
-    );
-    let steps = err_payload
-        .get("error")
-        .and_then(|e| e.get("details"))
-        .and_then(|d| d.get("recoverySteps"))
-        .and_then(|v| v.as_array())
-        .ok_or("expected recoverySteps array")?;
-    assert!(
-        steps
-            .iter()
-            .any(|v| v.as_str().unwrap_or_default().contains("repo reassociate")),
-        "expected recoverySteps to mention `repo reassociate`; got: {err_payload}"
-    );
-    let known_canonical = err_payload
-        .get("error")
-        .and_then(|e| e.get("details"))
-        .and_then(|d| d.get("knownCanonicalPath"))
-        .and_then(|v| v.as_str())
-        .ok_or("expected details.knownCanonicalPath")?
-        .to_string();
-
-    let reassociate_out = run_docdex([
-        "repo",
-        "reassociate",
-        "--repo",
-        repo_b_str.as_str(),
-        "--state-dir",
-        &state_root_str,
-        "--old-path",
-        known_canonical.as_str(),
-    ])?;
-    let reassociated: Value = serde_json::from_slice(&reassociate_out)?;
-    assert_eq!(
-        reassociated
-            .get("fingerprint")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default(),
-        fp_a.as_str(),
-        "expected reassociate diagnostics to include the repo fingerprint"
-    );
-    assert_eq!(
-        reassociated
-            .get("state_key")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default(),
-        state_key.as_str(),
-        "expected reassociate diagnostics to include the mapped state_key"
-    );
-    assert_eq!(
-        reassociated
-            .get("canonical_path")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default(),
-        repo_b
-            .canonicalize()
-            .unwrap_or_else(|_| repo_b.clone())
-            .to_string_lossy()
-            .replace('\\', "/")
-    );
-    assert_eq!(
-        reassociated
-            .get("prior_canonical_path")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default(),
-        known_canonical.as_str(),
-        "expected reassociate to report the prior canonical path"
-    );
-
-    run_docdex([
-        "index",
-        "--repo",
-        repo_b_str.as_str(),
-        "--state-dir",
-        &state_root_str,
-    ])?;
 
     let repo_dirs_after: Vec<PathBuf> = fs::read_dir(&repos_dir)?
         .filter_map(|entry| entry.ok())
@@ -363,15 +298,23 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
         .collect();
     assert_eq!(
         repo_dirs_after.len(),
-        1,
-        "expected repo move to reuse existing state dir (no new state key)"
+        2,
+        "expected repo move with new folder name to create a new state key"
     );
-    let state_key_after = repo_dirs_after[0]
-        .file_name()
-        .and_then(|s| s.to_str())
-        .ok_or("state dir missing name")?
-        .to_string();
-    assert_eq!(state_key_after, state_key);
+    let repo_dirs_after_names: Vec<String> = repo_dirs_after
+        .iter()
+        .filter_map(|path| {
+            path.file_name()
+                .and_then(|s| s.to_str())
+                .map(|v| v.to_string())
+        })
+        .collect();
+    assert!(
+        repo_dirs_after_names
+            .iter()
+            .any(|value| value == &state_key),
+        "expected original state key to remain"
+    );
 
     let registry_path = state_root.join("repos").join("repo_registry.json");
     let registry_raw = fs::read_to_string(&registry_path)?;
@@ -384,12 +327,21 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
         .values()
         .find(|value| {
             value
-                .get("state_key")
+                .get("canonical_path")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
-                == state_key
+                == normalize_path(&repo_b)
         })
-        .ok_or("registry entry missing for state_key")?;
+        .ok_or("registry entry missing for moved repo")?;
+    let state_key_after = entry
+        .get("state_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        state_key_after != state_key,
+        "expected new state key after renaming repo folder"
+    );
     let canonical = entry
         .get("canonical_path")
         .and_then(|v| v.as_str())
@@ -403,6 +355,17 @@ fn moved_repo_reuses_existing_state_key_under_shared_state_dir() -> Result<(), B
     assert_eq!(
         canonical, expected,
         "expected registry canonical path to update after move"
+    );
+
+    let entry = repos
+        .get(fp_a.as_str())
+        .ok_or("expected registry entry for original repo")?;
+    assert_eq!(
+        entry
+            .get("canonical_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+        canon_a
     );
 
     Ok(())
@@ -497,6 +460,109 @@ fn reassociate_fails_closed_when_fingerprint_mismatches() -> Result<(), Box<dyn 
             .unwrap_or_default()
             == canon_b),
         "failed reassociate must not create a new registry entry"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn index_adds_docdex_to_gitignore_without_git_dir() -> Result<(), Box<dyn Error>> {
+    let state_root = TempDir::new()?;
+    let state_root = state_root.path().canonicalize()?;
+    let workspace = TempDir::new()?;
+
+    let repo = workspace.path().join("repo-no-git");
+    write_repo_no_git(&repo, "doc.md", "repo_token")?;
+
+    let state_root_str = state_root.to_string_lossy().to_string();
+    run_docdex([
+        "index",
+        "--repo",
+        repo.to_string_lossy().as_ref(),
+        "--state-dir",
+        &state_root_str,
+    ])?;
+
+    let gitignore_path = repo.join(".gitignore");
+    let contents = fs::read_to_string(&gitignore_path)?;
+    assert!(
+        contents.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed == ".docdex"
+                || trimmed == ".docdex/"
+                || trimmed == "/.docdex/"
+                || trimmed == "/.docdex"
+        }),
+        "expected .docdex entry in .gitignore"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn reclone_keeps_same_fingerprint_for_repo_name() -> Result<(), Box<dyn Error>> {
+    let state_root = TempDir::new()?;
+    let state_root = state_root.path().canonicalize()?;
+    let workspace = TempDir::new()?;
+
+    let repo = workspace.path().join("repo");
+    write_repo(&repo, "a.md", "repo_a_token")?;
+
+    let state_root_str = state_root.to_string_lossy().to_string();
+    run_docdex([
+        "index",
+        "--repo",
+        repo.to_string_lossy().as_ref(),
+        "--state-dir",
+        &state_root_str,
+    ])?;
+
+    let fingerprint_old = repo_fingerprint_sha256(&repo)?;
+    let git_dir = repo.join(".git");
+    let old_git_dir = repo.join(".git_old");
+    fs::rename(&git_dir, &old_git_dir)?;
+    fs::create_dir_all(&git_dir)?;
+    fs::write(repo.join("b.md"), "repo_b_token")?;
+    let fingerprint_new = repo_fingerprint_sha256(&repo)?;
+    assert_eq!(
+        fingerprint_old, fingerprint_new,
+        "expected reclone to keep deterministic repo name fingerprint"
+    );
+
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
+        .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
+        .args([
+            "index",
+            "--repo",
+            repo.to_string_lossy().as_ref(),
+            "--state-dir",
+            &state_root_str,
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "expected reindex to succeed after reclone; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let registry_path = state_root.join("repos").join("repo_registry.json");
+    let registry_raw = fs::read_to_string(&registry_path)?;
+    let registry_json: Value = serde_json::from_str(&registry_raw)?;
+    let repos = registry_json
+        .get("repos")
+        .and_then(|value| value.as_object())
+        .ok_or("registry missing repos object")?;
+    let entry = repos
+        .get(&fingerprint_new)
+        .ok_or("expected registry entry for repo fingerprint")?;
+    assert_eq!(
+        entry
+            .get("canonical_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+        normalize_path(&repo)
     );
 
     Ok(())

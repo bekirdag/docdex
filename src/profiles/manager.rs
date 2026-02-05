@@ -4,8 +4,10 @@ use anyhow::{Context, Result};
 use fs4::FileExt;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::fs::OpenOptions;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tracing::warn;
 use uuid::Uuid;
 
 use super::db::{
@@ -616,32 +618,84 @@ impl ToString for PreferenceCategory {
 }
 
 struct FileLock {
-    file: std::fs::File,
+    file: Option<std::fs::File>,
+    locked: bool,
 }
 
 impl FileLock {
     fn acquire(path: &Path, shared: bool) -> Result<Self> {
-        let file = OpenOptions::new()
+        let file = match OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
             .open(path)
-            .with_context(|| format!("open lock file {}", path.display()))?;
-        if shared {
-            file.lock_shared()
-                .with_context(|| format!("lock shared {}", path.display()))?;
-        } else {
-            file.lock_exclusive()
-                .with_context(|| format!("lock exclusive {}", path.display()))?;
+        {
+            Ok(file) => Some(file),
+            Err(err) => {
+                if should_ignore_lock_error(&err) {
+                    warn!(
+                        error = ?err,
+                        path = %path.display(),
+                        "profile lock unavailable; proceeding without file lock"
+                    );
+                    return Ok(Self {
+                        file: None,
+                        locked: false,
+                    });
+                }
+                return Err(err).with_context(|| format!("open lock file {}", path.display()));
+            }
+        };
+        if let Some(file_ref) = file.as_ref() {
+            let result = if shared {
+                file_ref
+                    .lock_shared()
+                    .with_context(|| format!("lock shared {}", path.display()))
+            } else {
+                file_ref
+                    .lock_exclusive()
+                    .with_context(|| format!("lock exclusive {}", path.display()))
+            };
+            if let Err(err) = result {
+                if should_ignore_lock_error_anyhow(&err) {
+                    warn!(
+                        error = ?err,
+                        path = %path.display(),
+                        "profile lock unavailable; proceeding without file lock"
+                    );
+                    return Ok(Self {
+                        file,
+                        locked: false,
+                    });
+                }
+                return Err(err);
+            }
         }
-        Ok(Self { file })
+        Ok(Self { file, locked: true })
     }
 }
 
 impl Drop for FileLock {
     fn drop(&mut self) {
-        let _ = self.file.unlock();
+        if self.locked {
+            if let Some(file) = self.file.as_ref() {
+                let _ = file.unlock();
+            }
+        }
     }
+}
+
+fn should_ignore_lock_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        ErrorKind::Unsupported | ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem
+    )
+}
+
+fn should_ignore_lock_error_anyhow(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<std::io::Error>()
+        .map(should_ignore_lock_error)
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

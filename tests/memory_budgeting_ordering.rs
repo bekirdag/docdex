@@ -208,6 +208,7 @@ impl ServerHarness {
             .env("DOCDEX_ENABLE_MEMORY", "0")
             .env("DOCDEX_STATE_DIR", state_root)
             .env("DOCDEX_ENABLE_MCP", "0")
+            .env("RUST_LOG", "info")
             .env("HOME", home_dir)
             .args([
                 "serve",
@@ -325,8 +326,8 @@ fn e2e_chat_budgeting_logs_and_ordering() -> Result<(), Box<dyn Error>> {
     let client = Client::builder().timeout(Duration::from_secs(3)).build()?;
     let store_url = format!("http://{host}:{port}/v1/memory/store");
     let texts = [
-        "remember budget alpha context",
-        "remember budget beta context",
+        "remember budget alpha context with extra tokens one two",
+        "remember budget beta context with extra tokens three four",
     ];
     for text in texts {
         let resp = client
@@ -367,8 +368,11 @@ fn e2e_chat_budgeting_logs_and_ordering() -> Result<(), Box<dyn Error>> {
         "expected Memory context to precede local context: {content}"
     );
 
-    let log_ok = server.wait_for_log("memory_dropped=", Duration::from_secs(5))
-        && server.wait_for_log("context pruned to fit token budget", Duration::from_secs(5));
+    let log_ok = server.wait_for_log(
+        "memory_context pruned to fit token budget",
+        Duration::from_secs(5),
+    ) || (server.wait_for_log("memory_dropped=", Duration::from_secs(5))
+        && server.wait_for_log("context pruned to fit token budget", Duration::from_secs(5)));
     assert!(
         log_ok,
         "expected token budget drop log, got: {}",

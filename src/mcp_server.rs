@@ -30,6 +30,7 @@ use crate::orchestrator::{
     memory_budget_from_max_answer_tokens, run_waterfall, ProfileBudget, WaterfallPlan,
     WaterfallRequest, WebGateConfig,
 };
+use crate::profiles::ProfileEmbedder;
 use crate::ratelimit::RateLimiter;
 use crate::search;
 use crate::symbols::SymbolsStore;
@@ -66,6 +67,7 @@ const DIAGNOSTICS_DEFAULT_LIMIT: usize = 200;
 const DIAGNOSTICS_MAX_LIMIT: usize = 1000;
 const MAX_ERROR_MESSAGE_BYTES: usize = 256;
 const MAX_ERROR_REASON_BYTES: usize = 768;
+const DEFAULT_FALLBACK_EMBED_DIM: usize = 768;
 
 #[derive(Error, Debug)]
 #[error("path must be relative and not contain parent components")]
@@ -804,9 +806,15 @@ impl McpService {
                 .ok()
                 .and_then(|v| v.trim().parse::<u64>().ok())
                 .unwrap_or(5000);
+            let fallback_dim = config
+                .as_ref()
+                .map(|cfg| cfg.memory.profile.embedding_dim)
+                .unwrap_or(DEFAULT_FALLBACK_EMBED_DIM)
+                .max(1);
             Some(McpMemoryState {
                 store: MemoryStore::new(indexer.state_dir()),
                 embedder: OllamaEmbedder::new(base_url, model, Duration::from_millis(timeout_ms))?,
+                fallback_dim,
             })
         } else {
             None
@@ -917,6 +925,13 @@ impl McpService {
 struct McpMemoryState {
     store: MemoryStore,
     embedder: OllamaEmbedder,
+    fallback_dim: usize,
+}
+
+struct MemoryEmbedding {
+    embedding: Vec<f32>,
+    provider: String,
+    model: String,
 }
 
 struct McpServer {
@@ -3489,6 +3504,62 @@ Produce a phased plan with risks and tests to run."
         }
     }
 
+    async fn embed_memory_text(
+        &self,
+        memory: &McpMemoryState,
+        text: &str,
+    ) -> Result<MemoryEmbedding> {
+        let stored_dim = match memory.store.embedding_dim() {
+            Ok(dim) => dim,
+            Err(err) => {
+                warn!(
+                    error = ?err,
+                    "memory embedding_dim lookup failed; falling back to default"
+                );
+                None
+            }
+        };
+        match memory.embedder.embed(text).await {
+            Ok(embedding) => {
+                if let Some(expected) = stored_dim {
+                    if embedding.len() != expected {
+                        warn!(
+                            provider = memory.embedder.provider(),
+                            model = memory.embedder.model(),
+                            expected,
+                            actual = embedding.len(),
+                            "memory embedding dimension mismatch; falling back to local hash"
+                        );
+                        let fallback = ProfileEmbedder::fallback_embedding(text, expected);
+                        return Ok(MemoryEmbedding {
+                            embedding: fallback,
+                            provider: "fallback".to_string(),
+                            model: "hash-embed-v1".to_string(),
+                        });
+                    }
+                }
+                Ok(MemoryEmbedding {
+                    embedding,
+                    provider: memory.embedder.provider().to_string(),
+                    model: memory.embedder.model().to_string(),
+                })
+            }
+            Err(err) => {
+                warn!(
+                    error = ?err,
+                    "memory embedding failed; falling back to local hash"
+                );
+                let expected = stored_dim.unwrap_or(memory.fallback_dim).max(1);
+                let fallback = ProfileEmbedder::fallback_embedding(text, expected);
+                Ok(MemoryEmbedding {
+                    embedding: fallback,
+                    provider: "fallback".to_string(),
+                    model: "hash-embed-v1".to_string(),
+                })
+            }
+        }
+    }
+
     async fn handle_memory_store(&self, args: MemoryStoreArgs) -> Result<serde_json::Value> {
         let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
         self.ensure_project_root(project_root.as_deref())?;
@@ -3516,20 +3587,17 @@ Produce a phased plan with risks and tests to run."
             }),
         );
         let started = Instant::now();
-        let embedding = memory.embedder.embed(text).await?;
+        let embedding = self.embed_memory_text(&memory, text).await?;
 
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_millis() as i64;
-        let metadata = inject_embedding_metadata(
-            args.metadata,
-            memory.embedder.provider(),
-            memory.embedder.model(),
-        );
+        let metadata =
+            inject_embedding_metadata(args.metadata, &embedding.provider, &embedding.model);
         let store = memory.store.clone();
         let text_owned = text.to_string();
         let stored = tokio::task::spawn_blocking(move || {
-            store.store(&text_owned, &embedding, metadata, created_at)
+            store.store(&text_owned, &embedding.embedding, metadata, created_at)
         })
         .await??;
         queue_dag_log(
@@ -3583,10 +3651,11 @@ Produce a phased plan with risks and tests to run."
             }),
         );
         let started = Instant::now();
-        let embedding = memory.embedder.embed(query).await?;
+        let embedding = self.embed_memory_text(&memory, query).await?;
 
         let store = memory.store.clone();
-        let items = tokio::task::spawn_blocking(move || store.recall(&embedding, top_k)).await??;
+        let items = tokio::task::spawn_blocking(move || store.recall(&embedding.embedding, top_k))
+            .await??;
         queue_dag_log(
             &repo_state_root,
             &session_id,

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.40
+- Ensure startup registration runs even when a daemon is already running so auto-start after reboot works on macOS/Linux/Windows (best-effort systemd linger on Linux).
+- Allow nightly release manifests to be generated from partial asset sets and align nightly artifact naming with release assets.
+- Add `docdex start` as an alias for `docdexd daemon` and document it in README/usage/agents guides.
+- Bump release metadata to 0.2.40.
+
 ## 0.2.39
 - Bump release metadata to 0.2.39.
 

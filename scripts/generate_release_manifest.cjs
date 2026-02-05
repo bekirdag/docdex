@@ -12,11 +12,15 @@ const DEFAULT_TARGETS = Object.freeze(PUBLISHED_RELEASE_TARGETS.slice());
 
 function usage() {
   return [
-    "Usage: node scripts/generate_release_manifest.cjs --dir <assets_dir> --out <manifest_path> [--tag vX.Y.Z] [--repo owner/repo]",
+    "Usage: node scripts/generate_release_manifest.cjs --dir <assets_dir> --out <manifest_path> [--tag vX.Y.Z] [--repo owner/repo] [--allow-partial]",
     "",
     "Generates a machine-readable release manifest with per-target SHA-256 integrity metadata,",
     "writes a sibling .sha256 file for the manifest itself, and writes SHA256SUMS (+ SHA256SUMS.txt)",
     "in the assets directory for deterministic installer fallback.",
+    "",
+    "Optional flags:",
+    "  --allow-partial   Generate a manifest from only assets present in the dir. Missing targets",
+    "                    are ignored if neither the archive nor its .sha256 exists.",
     "",
     "Optional signing:",
     "  Set DOCDEX_RELEASE_SIGNING_PRIVATE_KEY to a PEM-encoded Ed25519 private key to write",
@@ -34,7 +38,7 @@ function usage() {
 }
 
 function parseArgs(argv) {
-  const args = { dir: null, out: null, tag: null, repo: null };
+  const args = { dir: null, out: null, tag: null, repo: null, allowPartial: false };
   const rest = [...argv];
   while (rest.length) {
     const flag = rest.shift();
@@ -43,6 +47,7 @@ function parseArgs(argv) {
     else if (flag === "--out") args.out = rest.shift() || null;
     else if (flag === "--tag") args.tag = rest.shift() || null;
     else if (flag === "--repo") args.repo = rest.shift() || null;
+    else if (flag === "--allow-partial") args.allowPartial = true;
     else return { ...args, error: `Unknown arg: ${flag}` };
   }
   return args;
@@ -91,6 +96,7 @@ function uniqueOrThrow(values, label) {
  *   tag?: string|null,
  *   repo?: string|null,
  *   targets?: {targetTriple: string, archiveBase: string}[],
+ *   allowPartial?: boolean,
  *   now?: Date
  * }} options
  */
@@ -99,6 +105,7 @@ function generateReleaseManifest(options) {
   const outPath = options?.outPath;
   const tag = options?.tag ?? null;
   const repo = options?.repo ?? null;
+  const allowPartial = Boolean(options?.allowPartial);
   const targets = Array.isArray(options?.targets) && options.targets.length ? options.targets : DEFAULT_TARGETS;
   const now = options?.now instanceof Date ? options.now : new Date();
 
@@ -118,6 +125,7 @@ function generateReleaseManifest(options) {
   );
 
   const missing = [];
+  const presentTargets = [];
   const targetsObj = {};
   const publishedAssets = [];
 
@@ -126,9 +134,24 @@ function generateReleaseManifest(options) {
     const tarPath = path.join(assetsDir, tarName);
     const shaName = `${tarName}.sha256`;
     const shaPath = path.join(assetsDir, shaName);
+    const hasTar = fs.existsSync(tarPath);
+    const hasSha = fs.existsSync(shaPath);
 
-    if (!fs.existsSync(tarPath)) missing.push(tarName);
-    if (!fs.existsSync(shaPath)) missing.push(shaName);
+    if (hasTar && hasSha) {
+      presentTargets.push(t);
+      continue;
+    }
+
+    if (hasTar || hasSha) {
+      if (!hasTar) missing.push(tarName);
+      if (!hasSha) missing.push(shaName);
+      continue;
+    }
+
+    if (!allowPartial) {
+      missing.push(tarName);
+      missing.push(shaName);
+    }
   }
 
   if (missing.length) {
@@ -137,7 +160,14 @@ function generateReleaseManifest(options) {
     throw err;
   }
 
-  for (const t of targets) {
+  const resolvedTargets = allowPartial ? presentTargets : targets;
+  if (allowPartial && resolvedTargets.length === 0) {
+    const err = new Error(`No release assets found in ${assetsDir}`);
+    err.exitCode = 3;
+    throw err;
+  }
+
+  for (const t of resolvedTargets) {
     const tarName = `${t.archiveBase}.tar.gz`;
     const tarPath = path.join(assetsDir, tarName);
     const shaName = `${tarName}.sha256`;
@@ -241,7 +271,8 @@ if (require.main === module) {
       assetsDir: args.dir,
       outPath: args.out,
       tag: args.tag,
-      repo: args.repo
+      repo: args.repo,
+      allowPartial: args.allowPartial
     });
 
     process.stdout.write(

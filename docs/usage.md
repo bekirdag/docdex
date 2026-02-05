@@ -37,10 +37,11 @@ Installer notes:
 - Platform diagnostics (no download): `docdex doctor` (alias `docdex diagnostics`).
 
 Postinstall behavior:
-- The installer downloads/repairs `docdexd` into the Docdex data directory (`DOCDEX_DIST_DIR` override). It does not start the daemon during `npm i -g docdex`.
+- The installer downloads/repairs `docdexd` into the Docdex data directory (`DOCDEX_DIST_DIR` override).
 - It writes MCP client config pointing to `http://localhost:28491/v1/mcp/sse` (Codex uses `http://localhost:28491/v1/mcp`) and updates known client config files when present.
 - Auto-configured clients (when config files are present): Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Continue, VS Code, PearAI, Void, Zed, Codex. Restart clients after install.
-- Start the daemon with `docdexd daemon` or run the setup wizard (`docdex setup`), which can also register OS startup (LaunchAgent/systemd/Task Scheduler). Windows uses `%LOCALAPPDATA%\\docdex\\run-daemon.cmd` for the scheduled task.
+- It registers OS startup (LaunchAgent/systemd user/Task Scheduler) so the daemon starts after reboot/login, and attempts to start it immediately when safe.
+- Start the daemon with `docdex start` (alias: `docdexd daemon`) or run the setup wizard (`docdex setup`) if startup registration fails. Windows uses `%LOCALAPPDATA%\\docdex\\run-daemon.cmd` for the scheduled task.
 - If Ollama is missing, the setup wizard can prompt to install it and the default embedding model.
 - Skip prompts with `DOCDEX_OLLAMA_INSTALL=0` or `DOCDEX_OLLAMA_MODEL_PROMPT=0`.
 - Force with `DOCDEX_OLLAMA_INSTALL=1` or `DOCDEX_OLLAMA_MODEL=<model>`.
@@ -68,7 +69,7 @@ docdexd serve --repo /path/to/repo --host 127.0.0.1 --port 28491 --log warn --se
 
 # singleton daemon (shared MCP over /v1/mcp/sse; preferred)
 
-docdexd daemon --host 127.0.0.1 --port 28491 --log warn --secure-mode=false
+docdex start --host 127.0.0.1 --port 28491 --log warn --secure-mode=false
 
 # ad-hoc query via CLI
 
@@ -113,7 +114,7 @@ Supported auto-detected MCP clients (installation adds config when the file exis
 - Codex
 
 ### Shared MCP (daemon, HTTP/SSE)
-Start the daemon and point clients at `http://localhost:28491/v1/mcp/sse`.
+Start the daemon (`docdex start`) and point clients at `http://localhost:28491/v1/mcp/sse`.
 
 JSON config example (Cursor, Continue, Cline, Claude Desktop devtools):
 ```json
@@ -305,7 +306,7 @@ Enable Ollama later (if skipped during install):
 
 Run Docdex with Ollama:
 ```bash
-DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdexd daemon --host 127.0.0.1 --port 28491
+DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdex start --host 127.0.0.1 --port 28491
 ```
 
 ## Local delegation (cheap agents)

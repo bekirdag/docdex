@@ -2283,9 +2283,11 @@ function writeWindowsSetupRunner({ binaryPath, args, logger, distBaseDir } = {})
   }
 }
 
-function registerStartup({ binaryPath, port, repoRoot, logger, distBaseDir }) {
+function registerStartup({ binaryPath, port, repoRoot, logger, distBaseDir, startNow = true }) {
   if (!binaryPath) return { ok: false, reason: "missing_binary" };
-  stopDaemonService({ logger });
+  if (startNow) {
+    stopDaemonService({ logger });
+  }
   const envPairs = buildDaemonEnvPairs();
   const workingDir = repoRoot ? path.resolve(repoRoot) : null;
   const args = [
@@ -2337,6 +2339,7 @@ function registerStartup({ binaryPath, port, repoRoot, logger, distBaseDir }) {
       `</plist>\n`;
     fs.mkdirSync(path.dirname(plistPath), { recursive: true });
     fs.writeFileSync(plistPath, plist);
+    if (!startNow) return { ok: true };
     const uid = typeof process.getuid === "function" ? process.getuid() : null;
     const bootstrap = uid != null
       ? spawnSync("launchctl", ["bootstrap", `gui/${uid}`, plistPath])
@@ -2371,7 +2374,11 @@ function registerStartup({ binaryPath, port, repoRoot, logger, distBaseDir }) {
     ].filter(Boolean).join("\n");
     fs.writeFileSync(unitPath, unit);
     const reload = spawnSync("systemctl", ["--user", "daemon-reload"]);
-    const enable = spawnSync("systemctl", ["--user", "enable", "--now", "docdexd.service"]);
+    const enableArgs = startNow
+      ? ["--user", "enable", "--now", "docdexd.service"]
+      : ["--user", "enable", "docdexd.service"];
+    const enable = spawnSync("systemctl", enableArgs);
+    ensureSystemdUserLinger({ logger });
     if (reload.status === 0 && enable.status === 0) return { ok: true };
     logger?.warn?.(`[docdex] systemd failed: ${enable.stderr || reload.stderr || "unknown error"}`);
     return { ok: false, reason: "systemd_failed" };
@@ -2402,7 +2409,9 @@ function registerStartup({ binaryPath, port, repoRoot, logger, distBaseDir }) {
       taskArgs
     ]);
     if (create.status === 0) {
-      spawnSync("schtasks", ["/Run", "/TN", taskName]);
+      if (startNow) {
+        spawnSync("schtasks", ["/Run", "/TN", taskName]);
+      }
       return { ok: true };
     }
     logger?.warn?.(`[docdex] schtasks failed: ${create.stderr || "unknown error"}`);
@@ -2412,17 +2421,21 @@ function registerStartup({ binaryPath, port, repoRoot, logger, distBaseDir }) {
   return { ok: false, reason: "unsupported_platform" };
 }
 
-async function startDaemonWithHealthCheck({ binaryPath, port, host, logger, distBaseDir }) {
+async function startDaemonWithHealthCheck({ binaryPath, port, host, logger, distBaseDir, startNow = true }) {
   const startup = registerStartup({
     binaryPath,
     port,
     repoRoot: daemonRootPath(),
     logger,
-    distBaseDir
+    distBaseDir,
+    startNow
   });
   if (!startup.ok) {
     logger?.warn?.(`[docdex] daemon service registration failed (${startup.reason || "unknown"}).`);
     return { ok: false, reason: "startup_failed" };
+  }
+  if (!startNow) {
+    return { ok: true, reason: "registered" };
   }
   startDaemonService({ logger });
   const healthy = await waitForDaemonHealthy({ host, port });
@@ -2476,6 +2489,25 @@ function commandExists(cmd, spawnSyncFn) {
   const result = spawnSyncFn(cmd, ["--version"], { stdio: "ignore" });
   if (result?.error?.code === "ENOENT") return false;
   return true;
+}
+
+function currentUsername() {
+  try {
+    const info = os.userInfo();
+    if (info && info.username) return info.username;
+  } catch {}
+  return process.env.USER || process.env.LOGNAME || process.env.USERNAME || null;
+}
+
+function ensureSystemdUserLinger({ logger } = {}) {
+  if (process.platform !== "linux") return { ok: false, reason: "unsupported_platform" };
+  if (!commandExists("loginctl", spawnSync)) return { ok: false, reason: "loginctl_missing" };
+  const username = currentUsername();
+  if (!username) return { ok: false, reason: "username_missing" };
+  const result = spawnSync("loginctl", ["enable-linger", username]);
+  if (result.status === 0) return { ok: true };
+  logger?.warn?.(`[docdex] loginctl enable-linger failed: ${result.stderr || "unknown error"}`);
+  return { ok: false, reason: "loginctl_failed" };
 }
 
 function launchMacTerminal({ binaryPath, args, spawnSyncFn, logger }) {
@@ -2665,14 +2697,15 @@ async function runPostInstallSetup({ binaryPath, logger, env, skipDaemon, distBa
       }
     }
   }
-  let startupOk = reuseExisting;
-  if (allowDaemon && !reuseExisting) {
+  let startupOk = false;
+  if (allowDaemon) {
     const result = await startDaemonWithHealthCheck({
       binaryPath: startupBinaries.binaryPath,
       port,
       host: DEFAULT_HOST,
       logger: log,
-      distBaseDir: resolvedDistBaseDir
+      distBaseDir: resolvedDistBaseDir,
+      startNow: !reuseExisting
     });
     if (!result.ok) {
       log.warn?.(`[docdex] daemon failed to start on ${DEFAULT_HOST}:${port}.`);

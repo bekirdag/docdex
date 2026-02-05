@@ -1,4 +1,4 @@
----- START OF DOCDEX INFO V0.2.39 ----
+---- START OF DOCDEX INFO V0.2.40 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
 Health check endpoint: `GET /healthz` (not `/v1/health`).
@@ -177,7 +177,7 @@ This section is the authoritative source for how to call Docdex. Do not guess fi
 
 - Default HTTP base URL: http://127.0.0.1:28491 (override with DOCDEX_HTTP_BASE_URL).
 - Single-repo HTTP daemon: `docdexd serve --repo /abs/path`. /v1/initialize is NOT used. repo_id is optional, but must match the serving repo if provided.
-- Multi-repo HTTP daemon: `docdexd daemon`. You MUST call /v1/initialize before repo-scoped HTTP endpoints. When multiple repos are mounted, repo_id is required on every repo-scoped request.
+- Multi-repo HTTP daemon: `docdexd daemon` (alias: `docdex start`). You MUST call /v1/initialize before repo-scoped HTTP endpoints. When multiple repos are mounted, repo_id is required on every repo-scoped request.
 
 ### 1) Initialize (HTTP) - exact request payload
 

@@ -113,19 +113,20 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/docdexd dist/docdexd
-          tar -czf docdexd-nightly-linux-x64-gnu.tar.gz -C dist docdexd
-          python -c "import hashlib, pathlib; p=pathlib.Path('docdexd-nightly-linux-x64-gnu.tar.gz'); h=hashlib.sha256(p.read_bytes()).hexdigest(); pathlib.Path(f'{p}.sha256').write_text(f'{h}  {p.name}\n')"
+          tar -czf docdexd-linux-x64-gnu.tar.gz -C dist docdexd
+          python -c "import hashlib, pathlib; p=pathlib.Path('docdexd-linux-x64-gnu.tar.gz'); h=hashlib.sha256(p.read_bytes()).hexdigest(); pathlib.Path(f'{p}.sha256').write_text(f'{h}  {p.name}\n')"
           node scripts/generate_release_manifest.cjs \
             --dir . \
             --out docdexd-nightly-manifest.json \
             --tag nightly \
-            --repo "${GITHUB_REPOSITORY}"
+            --repo "${GITHUB_REPOSITORY}" \
+            --allow-partial
 
       - name: Upload nightly artifacts
         uses: actions/upload-artifact@v4
         with:
           name: docdexd-nightly-linux-x64-gnu
           path: |
-            docdexd-nightly-linux-x64-gnu.tar.gz
-            docdexd-nightly-linux-x64-gnu.tar.gz.sha256
+            docdexd-linux-x64-gnu.tar.gz
+            docdexd-linux-x64-gnu.tar.gz.sha256
             docdexd-nightly-manifest.json

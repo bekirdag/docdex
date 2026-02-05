@@ -51,7 +51,7 @@ pub fn run() -> Result<()> {
     println!("  Shared MCP endpoint (HTTP/SSE): {}", urls.sse_url);
     println!("  MCP JSON-RPC endpoint: {}", urls.http_url);
     if !endpoint_info.running {
-        println!("  Daemon not running; start with: docdexd daemon");
+        println!("  Daemon not running; start with: docdex start (alias: docdexd daemon)");
         println!("  Default MCP base URL: {}", endpoint_info.base_url);
     }
     Ok(())

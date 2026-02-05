@@ -357,6 +357,7 @@ pub(crate) enum Command {
         args: ServeArgs,
     },
     /// Run singleton daemon service (multi-repo).
+    #[command(visible_alias = "start")]
     Daemon {
         #[command(flatten)]
         args: ServeArgs,

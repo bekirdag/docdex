@@ -83,7 +83,8 @@ docdexd index --repo /path/to/my-project
 Start the shared server. This handles HTTP requests and MCP connections.
 
 ```bash
-docdexd daemon --host 127.0.0.1 --port 28491
+docdex start
+# or: docdexd daemon --host 127.0.0.1 --port 28491
 
 ```
 
@@ -189,7 +190,7 @@ Docdex uses Ollama for embeddings and optional local chat.
 * **Manual:** Ensure `nomic-embed-text` is pulled in Ollama (`ollama pull nomic-embed-text`).
 * **Custom URL:**
 ```bash
-DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdexd daemon --host 127.0.0.1 --port 28491
+DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdex start --host 127.0.0.1 --port 28491
 
 ```
 
@@ -210,7 +211,7 @@ Docdex runs as a local daemon serving:
 Run a single daemon and mount additional repos on demand.
 
 ```bash
-docdexd daemon --port 28491
+docdex start --port 28491
 
 # Mount repos and capture repo_id values
 curl -X POST "http://127.0.0.1:28491/v1/initialize" \

@@ -2472,7 +2472,11 @@ function startupFailureReported() {
 }
 
 function isNpmLifecycle(env = process.env) {
-  return Boolean(env?.npm_lifecycle_event);
+  if (env?.npm_lifecycle_event) return true;
+  const userAgent = String(env?.npm_config_user_agent || "");
+  if (userAgent.includes("npm/")) return true;
+  if (env?.npm_execpath) return true;
+  return false;
 }
 
 function shouldSkipDaemonSideEffects({ env = process.env, skipDaemon } = {}) {
@@ -2590,6 +2594,9 @@ function launchSetupWizard({
   }
 
   if (platform === "win32") {
+    if (!canPrompt(stdin, stdout)) {
+      return { ok: false, reason: "non_interactive" };
+    }
     const runnerPath = writeWindowsSetupRunner({
       binaryPath,
       args,
@@ -2616,6 +2623,7 @@ function launchSetupWizard({
 async function runPostInstallSetup({ binaryPath, logger, env, skipDaemon, distBaseDir } = {}) {
   const log = logger || console;
   const effectiveEnv = env || process.env;
+  const isNpm = isNpmLifecycle(effectiveEnv);
   const distCandidates = resolveDistBaseCandidates({ env: effectiveEnv });
   const resolvedDistBaseDir = distBaseDir || resolveDistBaseDir({ env: effectiveEnv, fsModule: fs });
   let allowDaemon = !shouldSkipDaemonSideEffects({ env: effectiveEnv, skipDaemon });
@@ -2699,13 +2707,14 @@ async function runPostInstallSetup({ binaryPath, logger, env, skipDaemon, distBa
   }
   let startupOk = false;
   if (allowDaemon) {
+    const allowStartNow = !(process.platform === "win32" && isNpm);
     const result = await startDaemonWithHealthCheck({
       binaryPath: startupBinaries.binaryPath,
       port,
       host: DEFAULT_HOST,
       logger: log,
       distBaseDir: resolvedDistBaseDir,
-      startNow: !reuseExisting
+      startNow: !reuseExisting && allowStartNow
     });
     if (!result.ok) {
       log.warn?.(`[docdex] daemon failed to start on ${DEFAULT_HOST}:${port}.`);
@@ -2750,7 +2759,7 @@ async function runPostInstallSetup({ binaryPath, logger, env, skipDaemon, distBa
     clearStartupFailure();
   }
   const skipExplicit = shouldSkipSetup(effectiveEnv);
-  const skipWizard = isNpmLifecycle(effectiveEnv) || skipExplicit;
+  const skipWizard = isNpm || skipExplicit;
   const setupLaunch = skipWizard
     ? { ok: false, reason: skipExplicit ? "skipped" : "npm_lifecycle" }
     : launchSetupWizard({

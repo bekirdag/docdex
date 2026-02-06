@@ -1855,6 +1855,8 @@ pub struct SearchMeta {
     pub generated_at_epoch_ms: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_last_updated_epoch_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dag_session_id: Option<String>,
     pub repo_root: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo_id: Option<String>,
@@ -2978,6 +2980,7 @@ pub(crate) fn build_search_meta(
     Ok(SearchMeta {
         generated_at_epoch_ms,
         index_last_updated_epoch_ms: last_updated,
+        dag_session_id: None,
         repo_root: indexer.repo_root().display().to_string(),
         repo_id,
         query,
@@ -3344,7 +3347,11 @@ async fn search_handler(
                 pruned,
                 selected_sources,
             };
-            let meta = build_search_meta(&repo.indexer, query_meta, Some(context_assembly)).ok();
+            let mut meta =
+                build_search_meta(&repo.indexer, query_meta, Some(context_assembly)).ok();
+            if let Some(meta) = meta.as_mut() {
+                meta.dag_session_id = Some(dag_session_id.to_string());
+            }
             let top_score_normalized = top_score.map(normalize_score);
             let web_context = web_context_from_status(&waterfall_result.tier2.status);
             response.hits = hits;

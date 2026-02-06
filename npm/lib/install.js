@@ -2294,6 +2294,16 @@ function printPostInstallBanner() {
       return false;
     }
   };
+  if (process.platform === "win32") {
+    const plain = [
+      "[docdex] Docdex installed successfully.",
+      "[docdex] Next step: run `docdex setup` to complete the installation.",
+      "[docdex] Setup configures Ollama/models + browser."
+    ].join("\r\n") + "\r\n";
+    if (!writeDirect(plain)) {
+      writeStderr(plain);
+    }
+  }
   let width = 0;
   const content = [
     "\x1b[31m      _               _           \x1b[0m",

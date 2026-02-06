@@ -644,7 +644,8 @@ struct ImpactGraphArgs {
 
 #[derive(Deserialize)]
 struct DagExportArgs {
-    session_id: String,
+    #[serde(default, alias = "dagSessionId", alias = "dag_session_id")]
+    session_id: Option<String>,
     #[serde(default)]
     format: Option<String>,
     #[serde(default)]
@@ -1096,7 +1097,7 @@ impl McpServer {
                 let protocol_version = init_params
                     .protocol_version
                     .unwrap_or_else(|| "2025-11-25".to_string());
-                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, docdex_tree for folder structure, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast, docdex_impact_diagnostics for unresolved imports, and docdex_impact_graph for dependency traversal.\nUse docdex_dag_export to export DAG sessions by session_id.\nUse docdex_local_completion to offload small code tasks to a local model.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nProfile tools (docdex_save_preference/docdex_get_profile) use global profile memory and do not require project_root.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
+                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, docdex_tree for folder structure, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast, docdex_impact_diagnostics for unresolved imports, and docdex_impact_graph for dependency traversal.\nUse docdex_dag_export to export DAG sessions; pass the dag_session_id from docdex_search/docdex_web_research responses (or provide session_id directly).\nUse docdex_local_completion to offload small code tasks to a local model.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nProfile tools (docdex_save_preference/docdex_get_profile) use global profile memory and do not require project_root.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
                 let mut caps = json!({
                     "tools": { "listChanged": false },
                     "resources": { "listChanged": false },
@@ -2212,12 +2213,16 @@ impl McpServer {
                     "type": "object",
                     "properties": {
                         "session_id": { "type": "string", "minLength": 1, "description": "DAG session id to export" },
+                        "dag_session_id": { "type": "string", "minLength": 1, "description": "Alias for session_id (use the dag_session_id returned by search/web_research)" },
                         "format": { "type": "string", "description": "Output format: json, text, or dot (default json)" },
                         "max_nodes": { "type": "integer", "minimum": 1, "description": "Optional max nodes to include" },
                         "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
                         "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
                     },
-                    "required": ["session_id"]
+                    "anyOf": [
+                        { "required": ["session_id"] },
+                        { "required": ["dag_session_id"] }
+                    ]
                 }),
             },
             ToolDefinition {
@@ -2672,12 +2677,14 @@ Produce a phased plan with risks and tests to run."
         let mut meta = response.meta.unwrap_or_else(|| search::SearchMeta {
             generated_at_epoch_ms: 0,
             index_last_updated_epoch_ms: None,
+            dag_session_id: None,
             repo_root: self.repo_root.display().to_string(),
             repo_id: None,
             query: None,
             context_assembly: None,
         });
         meta.repo_root = project_root_path.clone();
+        meta.dag_session_id = Some(dag_session_id.to_string());
         if meta.repo_id.is_none() {
             meta.repo_id = crate::repo_manager::repo_fingerprint_sha256(&self.repo_root).ok();
         }
@@ -3013,6 +3020,7 @@ Produce a phased plan with risks and tests to run."
             );
             obj.insert("limit".to_string(), json!(limit));
             obj.insert("project_root".to_string(), json!(project_root_path));
+            obj.insert("dag_session_id".to_string(), json!(dag_session_id));
         }
         Ok(payload)
     }
@@ -3458,10 +3466,22 @@ Produce a phased plan with risks and tests to run."
         let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
         self.ensure_project_root(project_root.as_deref())?;
 
-        let session_id = args.session_id.trim();
-        if session_id.is_empty() {
-            return Err(AppError::new(ERR_INVALID_ARGUMENT, "session_id is required").into());
-        }
+        let session_id = args
+            .session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let Some(session_id) = session_id else {
+            let details = json!({
+                "hint": "Pass the dag_session_id from docdex_search/docdex_web_research responses (meta.dag_session_id or top-level dag_session_id).",
+                "expected_params": ["session_id", "dag_session_id"]
+            });
+            return Err(
+                AppError::new(ERR_INVALID_ARGUMENT, "session_id is required")
+                    .with_details(details)
+                    .into(),
+            );
+        };
         let format = args
             .format
             .as_deref()

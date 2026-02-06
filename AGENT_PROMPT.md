@@ -1,4 +1,4 @@
----- START OF DOCDEX INFO V0.2.40 ----
+---- START OF DOCDEX INFO V0.2.41 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
 Health check endpoint: `GET /healthz` (not `/v1/health`).
@@ -246,6 +246,8 @@ Query params:
 - `format` (optional: json/text/dot; default json)
 - `max_nodes` (optional)
 - `repo_id` (required when multiple repos are mounted)
+Notes:
+- Use the `dag_session_id` from `/search` responses (or MCP `docdex_search`/`docdex_web_research`) as the `session_id`. `dag_session_id` is accepted as an alias.
 
 ### 7) MCP over HTTP/SSE
 
@@ -270,7 +272,7 @@ Do not guess fields; use these canonical shapes.
 - `docdex_ast`: `{ project_root, path, max_nodes? }`
 - `docdex_impact_diagnostics`: `{ project_root, file? }`
 - `docdex_impact_graph`: `{ project_root, file, max_edges?, max_depth?, edge_types? }`
-- `docdex_dag_export`: `{ project_root, session_id, format?, max_nodes? }`
+- `docdex_dag_export`: `{ project_root, session_id|dag_session_id, format?, max_nodes? }`
 - `docdex_memory_save`: `{ project_root, text }`
 - `docdex_memory_recall`: `{ project_root, query, top_k? }`
 - `docdex_get_profile`: `{ agent_id }`

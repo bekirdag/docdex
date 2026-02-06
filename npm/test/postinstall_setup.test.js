@@ -445,7 +445,10 @@ test("launchSetupWizard uses cmd start on Windows", () => {
     binaryPath: "C:\\\\docdexd.exe",
     spawnSyncFn,
     platform: "win32",
-    distBaseDir
+    distBaseDir,
+    stdin: { isTTY: true },
+    stdout: { isTTY: true },
+    canPrompt: () => true
   });
   assert.equal(result.ok, true);
   assert.equal(calls[0].cmd, "cmd");

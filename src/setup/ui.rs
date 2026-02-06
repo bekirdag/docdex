@@ -2068,10 +2068,15 @@ fn render_status_list(
     steps: &[StepSnapshot],
     current: StepKey,
 ) {
+    let mut selected_index = 0usize;
     let items: Vec<ListItem> = MENU_STEPS
         .iter()
         .filter_map(|key| steps.iter().find(|step| step.key == *key))
-        .map(|step| {
+        .enumerate()
+        .map(|(idx, step)| {
+            if step.key == current {
+                selected_index = idx;
+            }
             let status = step.status.label();
             let label = match step.detail.as_ref().map(|value| value.trim()) {
                 Some(detail) if !detail.is_empty() => {
@@ -2079,22 +2084,25 @@ fn render_status_list(
                 }
                 _ => format!("{}: {}", step.key.label(), status),
             };
-            let mut style = match step.status {
+            let style = match step.status {
                 StepStatus::Done => Style::default().fg(Color::Green),
                 StepStatus::Failed => Style::default().fg(Color::Red),
                 StepStatus::Active => Style::default().fg(Color::Yellow),
                 StepStatus::Skipped => Style::default().fg(Color::DarkGray),
                 StepStatus::Pending => Style::default().fg(Color::Gray),
             };
-            if step.key == current {
-                style = style.add_modifier(Modifier::BOLD);
-            }
             ListItem::new(Line::from(Span::styled(label, style)))
         })
         .collect();
 
-    let list = List::new(items).block(Block::default().title("Setup").borders(Borders::ALL));
-    frame.render_widget(list, area);
+    let mut state = ListState::default();
+    if !items.is_empty() {
+        state.select(Some(selected_index.min(items.len() - 1)));
+    }
+    let list = List::new(items)
+        .block(Block::default().title("Setup").borders(Borders::ALL))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn render_body(

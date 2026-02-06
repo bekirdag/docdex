@@ -201,6 +201,8 @@ docdexd impact-diagnostics --repo /path/to/repo --file src/app.ts
 docdexd dag view --repo /path/to/repo <session_id> --format text
 docdexd dag export --repo /path/to/repo <session_id> --format json
 ```
+Notes:
+- Use the `dag_session_id` returned by `/search` (or MCP `docdex_search`/`docdex_web_research`) as the `<session_id>` for DAG view/export.
 
 Search helpers:
 ```bash

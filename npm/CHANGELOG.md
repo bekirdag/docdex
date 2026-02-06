@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.42
+- Bump release metadata to 0.2.42.
+
 ## 0.2.41
 - Improve Windows npm postinstall UX with a plain setup hint, npm lifecycle non-interactive detection, and no empty cmd window from immediate daemon start.
 - Fix setup TUI menu selection highlighting on Windows terminals.

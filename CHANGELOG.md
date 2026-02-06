@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.42
+- Bump release metadata to 0.2.42.
+
 ## 0.2.41
 - Propagate DAG session IDs: `/search` responses include `meta.dag_session_id`, MCP `docdex_dag_export` accepts `dag_session_id`, and agent docs call out passing it to export traces.
 - Improve Windows npm postinstall UX with a plain setup hint, npm lifecycle non-interactive detection, and no empty cmd window from immediate daemon start.

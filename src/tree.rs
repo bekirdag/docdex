@@ -9,6 +9,11 @@ const DEFAULT_EXCLUDES: &[&str] = &[
     ".git",
     ".hg",
     ".svn",
+    ".docdex",
+    ".docdex-state",
+    ".docdex_state",
+    ".mcoda",
+    ".DS_Store",
     "node_modules",
     ".bun",
     ".yarn",
@@ -228,7 +233,12 @@ mod tests {
         fs::create_dir(root.join("src")).unwrap();
         write_file(&root.join("src").join("lib.rs"));
         write_file(&root.join("README.md"));
+        write_file(&root.join(".DS_Store"));
         fs::create_dir(root.join(".git")).unwrap();
+        fs::create_dir(root.join(".docdex")).unwrap();
+        fs::create_dir(root.join(".docdex-state")).unwrap();
+        fs::create_dir(root.join(".docdex_state")).unwrap();
+        fs::create_dir(root.join(".mcoda")).unwrap();
         fs::create_dir(root.join("target")).unwrap();
 
         let output = render_tree(root, &TreeOptions::default()).unwrap();
@@ -282,6 +292,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
         fs::create_dir(root.join(".hidden")).unwrap();
+        fs::create_dir(root.join(".docdex")).unwrap();
+        fs::create_dir(root.join(".mcoda")).unwrap();
+        write_file(&root.join(".DS_Store"));
         let options = TreeOptions {
             include_hidden: true,
             ..TreeOptions::default()

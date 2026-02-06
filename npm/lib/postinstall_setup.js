@@ -1068,10 +1068,21 @@ function upsertVsCodeInstructions(pathname, instructions, legacyPath) {
   return true;
 }
 
-function upsertMcpServerJson(pathname, url) {
+function upsertMcpServerJson(pathname, url, options = {}) {
   const { value } = readJson(pathname);
   if (typeof value !== "object" || value == null || Array.isArray(value)) return false;
   const root = value;
+  const extra =
+    options &&
+    typeof options === "object" &&
+    options.extra &&
+    typeof options.extra === "object" &&
+    !Array.isArray(options.extra)
+      ? options.extra
+      : {};
+  const extraEntries = Object.entries(extra);
+  const matchesExtras = (entry) =>
+    extraEntries.every(([key, value]) => entry && entry[key] === value);
   const pickSection = () => {
     if (root.mcpServers && typeof root.mcpServers === "object" && !Array.isArray(root.mcpServers)) {
       return { key: "mcpServers", section: root.mcpServers };
@@ -1084,12 +1095,13 @@ function upsertMcpServerJson(pathname, url) {
   if (Array.isArray(root.mcpServers)) {
     const idx = root.mcpServers.findIndex((entry) => entry && entry.name === "docdex");
     if (idx >= 0) {
-      if (root.mcpServers[idx].url === url) return false;
-      root.mcpServers[idx] = { ...root.mcpServers[idx], url };
+      const current = root.mcpServers[idx] || {};
+      if (current.url === url && matchesExtras(current)) return false;
+      root.mcpServers[idx] = { ...current, ...extra, url, name: "docdex" };
       writeJson(pathname, root);
       return true;
     }
-    root.mcpServers.push({ name: "docdex", url });
+    root.mcpServers.push({ ...extra, url, name: "docdex" });
     writeJson(pathname, root);
     return true;
   }
@@ -1100,8 +1112,10 @@ function upsertMcpServerJson(pathname, url) {
   }
   const section = picked ? picked.section : root.mcpServers;
   const current = section.docdex;
-  if (current && current.url === url) return false;
-  section.docdex = { url };
+  if (current && current.url === url && matchesExtras(current)) return false;
+  const base =
+    current && typeof current === "object" && !Array.isArray(current) ? current : {};
+  section.docdex = { ...base, ...extra, url };
   writeJson(pathname, root);
   return true;
 }
@@ -1343,6 +1357,7 @@ function clientConfigPaths() {
     case "win32":
       return {
         claude: path.join(appData, "Claude", "claude_desktop_config.json"),
+        claude_code: path.join(home, ".claude.json"),
         cursor: path.join(userProfile, ".cursor", "mcp.json"),
         windsurf: path.join(userProfile, ".codeium", "windsurf", "mcp_config.json"),
         cline: path.join(appData, "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
@@ -1358,6 +1373,7 @@ function clientConfigPaths() {
     case "darwin":
       return {
         claude: path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
+        claude_code: path.join(home, ".claude.json"),
         cursor: path.join(home, ".cursor", "mcp.json"),
         windsurf: path.join(home, ".codeium", "windsurf", "mcp_config.json"),
         cline: path.join(home, "Library", "Application Support", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
@@ -1373,6 +1389,7 @@ function clientConfigPaths() {
     default:
       return {
         claude: path.join(home, ".config", "Claude", "claude_desktop_config.json"),
+        claude_code: path.join(home, ".claude.json"),
         cursor: path.join(home, ".cursor", "mcp.json"),
         windsurf: path.join(home, ".codeium", "windsurf", "mcp_config.json"),
         cline: path.join(home, ".config", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
@@ -2733,7 +2750,7 @@ async function runPostInstallSetup({ binaryPath, logger, env, skipDaemon, distBa
   }
 
   const url = configUrlForPort(port);
-  const codexUrl = configStreamableUrlForPort(port);
+  const httpUrl = configStreamableUrlForPort(port);
   const paths = clientConfigPaths();
   const jsonPaths = [
     paths.claude,
@@ -2750,10 +2767,13 @@ async function runPostInstallSetup({ binaryPath, logger, env, skipDaemon, distBa
   for (const jsonPath of jsonPaths) {
     upsertMcpServerJson(jsonPath, url);
   }
+  if (paths.claude_code) {
+    upsertMcpServerJson(paths.claude_code, httpUrl, { extra: { type: "http" } });
+  }
   if (paths.zed) {
     upsertZedConfig(paths.zed, url);
   }
-  upsertCodexConfig(paths.codex, codexUrl);
+  upsertCodexConfig(paths.codex, httpUrl);
   applyAgentInstructions({ logger: log });
   if (startupOk) {
     clearStartupFailure();

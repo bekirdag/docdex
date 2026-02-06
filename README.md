@@ -134,6 +134,20 @@ If you need to configure your client manually:
 
 ```
 
+**Claude Code (CLI) JSON (`~/.claude.json` or project `.mcp.json`):**
+
+```json
+{
+  "mcpServers": {
+    "docdex": {
+      "type": "http",
+      "url": "http://localhost:28491/v1/mcp"
+    }
+  }
+}
+
+```
+
 **TOML (Codex):**
 
 ```toml

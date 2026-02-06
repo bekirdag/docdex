@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.43
+- Fix MCP tool schema compatibility with Claude Code by removing top-level anyOf from `docdex_dag_export`.
+- Bump release metadata to 0.2.43.
+
 ## 0.2.42
 - Bump release metadata to 0.2.42.
 

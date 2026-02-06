@@ -94,6 +94,29 @@ test("upsertMcpServerJson respects mcp_servers map", () => {
   assert.equal(parsed.mcp_servers.docdex.url, url);
 });
 
+test("upsertMcpServerJson merges extra fields", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-json-extra-"));
+  const file = path.join(dir, "config.json");
+  fs.writeFileSync(
+    file,
+    JSON.stringify(
+      {
+        mcpServers: {
+          docdex: { type: "http", url: "http://localhost:7777/v1/mcp" }
+        }
+      },
+      null,
+      2
+    )
+  );
+  const url = configStreamableUrlForPort(3000);
+  const changed = upsertMcpServerJson(file, url, { extra: { type: "http" } });
+  assert.equal(changed, true);
+  const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(parsed.mcpServers.docdex.url, url);
+  assert.equal(parsed.mcpServers.docdex.type, "http");
+});
+
 test("upsertZedConfig sets experimental_mcp_servers", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-zed-"));
   const file = path.join(dir, "settings.json");

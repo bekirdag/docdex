@@ -1251,10 +1251,21 @@ fn ensure_git_exclude(repo_root: &Path) -> Result<()> {
     }
     let exclude_path = git_dir.join("info").join("exclude");
     let existing = fs::read_to_string(&exclude_path).unwrap_or_default();
-    if existing.lines().any(|line| {
+    let has_docdex = existing.lines().any(|line| {
         let trimmed = line.trim();
-        trimmed == ".docdex/" || trimmed == ".docdex" || trimmed == "/.docdex/"
-    }) {
+        trimmed == ".docdex"
+            || trimmed == ".docdex/"
+            || trimmed == "/.docdex/"
+            || trimmed == "/.docdex"
+    });
+    let has_docdex_state = existing.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed == ".docdex-state"
+            || trimmed == ".docdex-state/"
+            || trimmed == "/.docdex-state/"
+            || trimmed == "/.docdex-state"
+    });
+    if has_docdex && has_docdex_state {
         return Ok(());
     }
     if let Some(parent) = exclude_path.parent() {
@@ -1269,20 +1280,34 @@ fn ensure_git_exclude(repo_root: &Path) -> Result<()> {
         file.write_all(b"\n")
             .with_context(|| format!("write {}", exclude_path.display()))?;
     }
-    writeln!(file, "/.docdex/").with_context(|| format!("write {}", exclude_path.display()))?;
+    if !has_docdex {
+        writeln!(file, "/.docdex/").with_context(|| format!("write {}", exclude_path.display()))?;
+    }
+    if !has_docdex_state {
+        writeln!(file, "/.docdex-state/")
+            .with_context(|| format!("write {}", exclude_path.display()))?;
+    }
     Ok(())
 }
 
 fn ensure_gitignore(repo_root: &Path) -> Result<()> {
     let ignore_path = repo_root.join(".gitignore");
     let existing = fs::read_to_string(&ignore_path).unwrap_or_default();
-    if existing.lines().any(|line| {
+    let has_docdex = existing.lines().any(|line| {
         let trimmed = line.trim();
         trimmed == ".docdex"
             || trimmed == ".docdex/"
             || trimmed == "/.docdex/"
             || trimmed == "/.docdex"
-    }) {
+    });
+    let has_docdex_state = existing.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed == ".docdex-state"
+            || trimmed == ".docdex-state/"
+            || trimmed == "/.docdex-state/"
+            || trimmed == "/.docdex-state"
+    });
+    if has_docdex && has_docdex_state {
         return Ok(());
     }
     if let Some(parent) = ignore_path.parent() {
@@ -1297,7 +1322,13 @@ fn ensure_gitignore(repo_root: &Path) -> Result<()> {
         file.write_all(b"\n")
             .with_context(|| format!("write {}", ignore_path.display()))?;
     }
-    writeln!(file, "/.docdex/").with_context(|| format!("write {}", ignore_path.display()))?;
+    if !has_docdex {
+        writeln!(file, "/.docdex/").with_context(|| format!("write {}", ignore_path.display()))?;
+    }
+    if !has_docdex_state {
+        writeln!(file, "/.docdex-state/")
+            .with_context(|| format!("write {}", ignore_path.display()))?;
+    }
     Ok(())
 }
 

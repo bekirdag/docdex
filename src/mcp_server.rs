@@ -2218,11 +2218,7 @@ impl McpServer {
                         "max_nodes": { "type": "integer", "minimum": 1, "description": "Optional max nodes to include" },
                         "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
                         "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
-                    },
-                    "anyOf": [
-                        { "required": ["session_id"] },
-                        { "required": ["dag_session_id"] }
-                    ]
+                    }
                 }),
             },
             ToolDefinition {

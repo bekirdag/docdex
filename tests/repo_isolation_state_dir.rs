@@ -495,6 +495,16 @@ fn index_adds_docdex_to_gitignore_without_git_dir() -> Result<(), Box<dyn Error>
         }),
         "expected .docdex entry in .gitignore"
     );
+    assert!(
+        contents.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed == ".docdex-state"
+                || trimmed == ".docdex-state/"
+                || trimmed == "/.docdex-state/"
+                || trimmed == "/.docdex-state"
+        }),
+        "expected .docdex-state entry in .gitignore"
+    );
 
     Ok(())
 }

@@ -127,6 +127,18 @@ JSON config example (Cursor, Continue, Cline, Claude Desktop devtools):
 }
 ```
 
+Claude Code (CLI) config (user/local scope in `~/.claude.json`, project scope in `.mcp.json`):
+```json
+{
+  "mcpServers": {
+    "docdex": {
+      "type": "http",
+      "url": "http://localhost:28491/v1/mcp"
+    }
+  }
+}
+```
+
 Codex config example (TOML):
 ```toml
 [mcp_servers]

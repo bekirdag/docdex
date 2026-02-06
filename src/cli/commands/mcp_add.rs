@@ -942,7 +942,14 @@ fn handle_mcp_add(
                 if remove {
                     cmd.args(["mcp", "remove", "docdex"]);
                 } else {
-                    cmd.args(["mcp", "add", "docdex", &urls.sse_url]);
+                    cmd.args([
+                        "mcp",
+                        "add",
+                        "--transport",
+                        "http",
+                        "docdex",
+                        &urls.http_url,
+                    ]);
                 }
                 let status = cmd.status().context("run claude mcp command")?;
                 if status.success() {
@@ -953,18 +960,18 @@ fn handle_mcp_add(
                     );
                 } else {
                     println!(
-                        "Claude CLI MCP {} failed with status {}; run manually: claude mcp {} docdex {}",
+                        "Claude CLI MCP {} failed with status {}; run manually: claude mcp {} --transport http docdex {}",
                         if remove { "remove" } else { "add" },
                         status,
                         if remove { "remove" } else { "add" },
-                        urls.sse_url
+                        urls.http_url
                     );
                 }
             } else {
                 println!(
-                    "Claude CLI not detected; run manually: claude mcp {} docdex {}",
+                    "Claude CLI not detected; run manually: claude mcp {} --transport http docdex {}",
                     if remove { "remove" } else { "add" },
-                    urls.sse_url
+                    urls.http_url
                 );
             }
         }

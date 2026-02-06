@@ -153,6 +153,7 @@ function clientConfigPaths() {
       return {
         json: [
           path.join(appData, "Claude", "claude_desktop_config.json"),
+          path.join(home, ".claude.json"),
           path.join(userProfile, ".cursor", "mcp.json"),
           path.join(userProfile, ".codeium", "windsurf", "mcp_config.json"),
           path.join(appData, "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
@@ -171,6 +172,7 @@ function clientConfigPaths() {
       return {
         json: [
           path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
+          path.join(home, ".claude.json"),
           path.join(home, ".cursor", "mcp.json"),
           path.join(home, ".codeium", "windsurf", "mcp_config.json"),
           path.join(home, "Library", "Application Support", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
@@ -189,6 +191,7 @@ function clientConfigPaths() {
       return {
         json: [
           path.join(home, ".config", "Claude", "claude_desktop_config.json"),
+          path.join(home, ".claude.json"),
           path.join(home, ".cursor", "mcp.json"),
           path.join(home, ".codeium", "windsurf", "mcp_config.json"),
           path.join(home, ".config", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),

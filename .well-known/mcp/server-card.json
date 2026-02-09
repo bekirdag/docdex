@@ -1,10 +1,10 @@
 {
-  "version": "1.0",
+  "version": "0.2.43",
   "protocolVersion": "2025-06-18",
   "serverInfo": {
     "name": "docdex",
     "title": "Docdex – Repo Docs Index & Search",
-    "version": "0.1.8"
+    "version": "0.2.43"
   },
   "description": "Per-repo documentation indexer and search daemon that exposes fast search tools over MCP.",
   "iconUrl": "https://raw.githubusercontent.com/bekirdag/docdex/main/.well-known/icons/docdex-icon-512.png",

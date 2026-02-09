@@ -1,7 +1,6 @@
 {
-  "name": "docdex-smithery",
-  "version": "0.2.29",
+  "name": "docdex",
+  "version": "0.2.43",
   "private": true,
-  "type": "commonjs",
-  "module": "./smithery/entry.js"
+  "type": "commonjs"
 }

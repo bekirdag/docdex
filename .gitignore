@@ -1,6 +1,7 @@
 # Build artifacts
 /target/
 /npm/node_modules/
+/node_modules/
 /npm/dist/
 
 # Local indexes/state
@@ -26,3 +27,5 @@
 logs/
 .mcoda/
 tmp/
+/.smithery/
+/.tmp/

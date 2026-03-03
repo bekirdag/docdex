@@ -4,10 +4,6 @@
 ![GitHub Release](https://img.shields.io/github/v/release/bekirdag/docdex)
 ![Made with Rust](https://img.shields.io/badge/Made%20with-Rust-orange?logo=rust)
 
-<a href="https://glama.ai/mcp/servers/@bekirdag/docdex">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/@bekirdag/docdex/badge" />
-</a>
-
 # Docdex
 
 > **Turn your repository into fast, private context that humans and AI can trust.**
@@ -255,3 +251,8 @@ Notes:
 * **Detailed Usage:** `docs/usage.md`
 * **API Reference:** `docs/http_api.md`
 * **MCP Specs:** `docs/mcp/errors.md`
+
+
+<a href="https://glama.ai/mcp/servers/@bekirdag/docdex">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@bekirdag/docdex/badge" />
+</a>
